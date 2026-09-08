@@ -700,6 +700,10 @@ jobs:
       artifact_digest: sha256:${{ steps.upload_resume.outputs.artifact-digest }}
       full_reuse: ${{ steps.resume.outputs.full_reuse }}
       target_jobs_required: ${{ steps.resume.outputs.target_jobs_required }}
+      runtime_matrix: ${{ steps.runtime_matrix.outputs.runtime_matrix }}
+      runtime_workers_required: ${{ steps.runtime_matrix.outputs.runtime_workers_required }}
+      supervisor_key: ${{ steps.runtime_matrix.outputs.supervisor_key }}
+      wave_failed: 'false'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -739,6 +743,13 @@ jobs:
             --contract-handoff build/product-resume-inputs/release/contract-input \
             --destination build/product-resume-state \
             --github-output "$GITHUB_OUTPUT"
+      - name: Elect Runtime workers from the verified resumed state
+        id: runtime_matrix
+        run: |
+          python3 -B ci/runtime_workflow.py matrix \
+            --plan build/product-resume-inputs/plan/impact-plan.json \
+            --discovery-root build/product-resume-state --state-root build/product-resume-state \
+            --github-output "$GITHUB_OUTPUT"
       - name: Preserve the resumed state and all original transport evidence
         id: upload_resume
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -752,6 +763,443 @@ jobs:
             build/product-resume-state
           compression-level: 0
           retention-days: 90
+
+  runtime-linux-arm64-supervisor:
+    name: runtime-linux-arm64-supervisor
+    needs: [plan, product-resume]
+    if: needs.product-resume.outputs.supervisor_key != ''
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: sha256:${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: captured
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.product-resume.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.product-resume.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          component: linux-arm64
+          phase: binary
+          target: linux-arm64
+          build-key: ${{ needs.product-resume.outputs.supervisor_key }}
+      - uses: ./.github/actions/setup-kmp
+        with:
+          product-worker: 'true'
+          cache-read-only: 'true'
+      - id: execute
+        env:
+          PLAN: ${{ steps.captured.outputs.plan-path }}
+          DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+          STATE: ${{ steps.captured.outputs.state-root }}
+          BUILD_KEY: ${{ needs.product-resume.outputs.supervisor_key }}
+        run: |
+          echo "key_hex=${BUILD_KEY#sha256:}" >> "$GITHUB_OUTPUT"
+          python3 -B ci/product_reuse.py execute-runtime-supervisor \
+            --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+            --expected-build-key "$BUILD_KEY" --destination build/runtime-supervisor
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-runtime-supervisor-linux-arm64-${{ steps.execute.outputs.key_hex }}-${{ needs.plan.outputs.validation_tree }}
+          path: build/runtime-supervisor/supervisor
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 90
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-runtime-supervisor-diagnostics-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
+          path: |
+            build/runtime-supervisor
+            build/runtime-input/capture-transport.json
+          if-no-files-found: warn
+          overwrite: false
+          include-hidden-files: true
+          retention-days: 90
+
+  runtime-workers-1:
+    name: runtime-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}
+    needs: [plan, product-resume, runtime-linux-arm64-supervisor]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.product-resume.result == 'success' &&
+      needs.product-resume.outputs.runtime_workers_required == 'true' &&
+      needs.product-resume.outputs.wave_failed != 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.product-resume.outputs.runtime_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      DEVELOPER_DIR: ${{ startsWith(matrix.runner, 'macos-') && '/Applications/Xcode_26.6.app/Contents/Developer' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: identity
+        shell: bash
+        env:
+          BUILD_KEY: ${{ matrix.buildKey }}
+        run: echo "key_hex=${BUILD_KEY#sha256:}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/run-runtime-product-phase
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.product-resume.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.product-resume.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          state-wave: '0'
+          component: ${{ matrix.component }}
+          phase: ${{ matrix.phase }}
+          target: ${{ matrix.target }}
+          build-key: ${{ matrix.buildKey }}
+          revision: ${{ needs.plan.outputs.validation_commit }}
+          supervisor-id: ${{ needs.runtime-linux-arm64-supervisor.outputs.artifact_id }}
+          supervisor-sha256: ${{ needs.runtime-linux-arm64-supervisor.outputs.artifact_digest }}
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-runtime-worker-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}-${{ steps.identity.outputs.key_hex }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
+          path: build/runtime-worker
+          if-no-files-found: warn
+          overwrite: false
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 90
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-runtime-worker-diagnostics-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
+          path: |
+            build/runtime-input/capture-transport.json
+            build/runtime-plan
+          if-no-files-found: warn
+          overwrite: false
+          include-hidden-files: true
+          retention-days: 90
+
+  runtime-collect-1:
+    name: runtime-collect-1
+    needs: [plan, product-resume, runtime-workers-1]
+    if: >-
+      always() && needs.product-resume.result == 'success' &&
+      needs.product-resume.outputs.runtime_workers_required == 'true' &&
+      needs.product-resume.outputs.wave_failed != 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
+      runtime_matrix: ${{ steps.collect.outputs.runtime-matrix }}
+      runtime_workers_required: ${{ steps.collect.outputs.runtime-workers-required }}
+      wave_failed: ${{ steps.collect.outputs.wave-failed }}
+      full_reuse: ${{ steps.collect.outputs.full-reuse }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: collect
+        uses: ./.github/actions/collect-runtime-wave
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.product-resume.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.product-resume.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          state-wave: '0'
+          wave: '1'
+          tree: ${{ needs.plan.outputs.validation_tree }}
+
+  runtime-workers-2:
+    name: runtime-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}
+    needs: [plan, runtime-collect-1]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.runtime-collect-1.result == 'success' &&
+      needs.runtime-collect-1.outputs.runtime_workers_required == 'true' &&
+      needs.runtime-collect-1.outputs.wave_failed != 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.runtime-collect-1.outputs.runtime_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      DEVELOPER_DIR: ${{ startsWith(matrix.runner, 'macos-') && '/Applications/Xcode_26.6.app/Contents/Developer' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: identity
+        shell: bash
+        env:
+          BUILD_KEY: ${{ matrix.buildKey }}
+        run: echo "key_hex=${BUILD_KEY#sha256:}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/run-runtime-product-phase
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.runtime-collect-1.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.runtime-collect-1.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          state-wave: '1'
+          component: ${{ matrix.component }}
+          phase: ${{ matrix.phase }}
+          target: ${{ matrix.target }}
+          build-key: ${{ matrix.buildKey }}
+          revision: ${{ needs.plan.outputs.validation_commit }}
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-runtime-worker-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}-${{ steps.identity.outputs.key_hex }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
+          path: build/runtime-worker
+          if-no-files-found: warn
+          overwrite: false
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 90
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-runtime-worker-diagnostics-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
+          path: |
+            build/runtime-input/capture-transport.json
+            build/runtime-plan
+          if-no-files-found: warn
+          overwrite: false
+          include-hidden-files: true
+          retention-days: 90
+
+  runtime-collect-2:
+    name: runtime-collect-2
+    needs: [plan, runtime-collect-1, runtime-workers-2]
+    if: >-
+      always() && needs.runtime-collect-1.result == 'success' &&
+      needs.runtime-collect-1.outputs.runtime_workers_required == 'true' &&
+      needs.runtime-collect-1.outputs.wave_failed != 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
+      runtime_matrix: ${{ steps.collect.outputs.runtime-matrix }}
+      runtime_workers_required: ${{ steps.collect.outputs.runtime-workers-required }}
+      wave_failed: ${{ steps.collect.outputs.wave-failed }}
+      full_reuse: ${{ steps.collect.outputs.full-reuse }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: collect
+        uses: ./.github/actions/collect-runtime-wave
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.runtime-collect-1.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.runtime-collect-1.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          state-wave: '1'
+          wave: '2'
+          tree: ${{ needs.plan.outputs.validation_tree }}
+
+  runtime-workers-3:
+    name: runtime-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}
+    needs: [plan, runtime-collect-2]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.runtime-collect-2.result == 'success' &&
+      needs.runtime-collect-2.outputs.runtime_workers_required == 'true' &&
+      needs.runtime-collect-2.outputs.wave_failed != 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.runtime-collect-2.outputs.runtime_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      DEVELOPER_DIR: ${{ startsWith(matrix.runner, 'macos-') && '/Applications/Xcode_26.6.app/Contents/Developer' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: identity
+        shell: bash
+        env:
+          BUILD_KEY: ${{ matrix.buildKey }}
+        run: echo "key_hex=${BUILD_KEY#sha256:}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/run-runtime-product-phase
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.runtime-collect-2.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.runtime-collect-2.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          state-wave: '2'
+          component: ${{ matrix.component }}
+          phase: ${{ matrix.phase }}
+          target: ${{ matrix.target }}
+          build-key: ${{ matrix.buildKey }}
+          revision: ${{ needs.plan.outputs.validation_commit }}
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-runtime-worker-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}-${{ steps.identity.outputs.key_hex }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
+          path: build/runtime-worker
+          if-no-files-found: warn
+          overwrite: false
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 90
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-runtime-worker-diagnostics-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
+          path: |
+            build/runtime-input/capture-transport.json
+            build/runtime-plan
+          if-no-files-found: warn
+          overwrite: false
+          include-hidden-files: true
+          retention-days: 90
+
+  runtime-collect-3:
+    name: runtime-collect-3
+    needs: [plan, runtime-collect-2, runtime-workers-3]
+    if: >-
+      always() && needs.runtime-collect-2.result == 'success' &&
+      needs.runtime-collect-2.outputs.runtime_workers_required == 'true' &&
+      needs.runtime-collect-2.outputs.wave_failed != 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
+      runtime_matrix: ${{ steps.collect.outputs.runtime-matrix }}
+      runtime_workers_required: ${{ steps.collect.outputs.runtime-workers-required }}
+      wave_failed: ${{ steps.collect.outputs.wave-failed }}
+      full_reuse: ${{ steps.collect.outputs.full-reuse }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: collect
+        uses: ./.github/actions/collect-runtime-wave
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.runtime-collect-2.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.runtime-collect-2.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          state-wave: '2'
+          wave: '3'
+          tree: ${{ needs.plan.outputs.validation_tree }}
+
+  runtime-workers-4:
+    name: runtime-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}
+    needs: [plan, runtime-collect-3]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.runtime-collect-3.result == 'success' &&
+      needs.runtime-collect-3.outputs.runtime_workers_required == 'true' &&
+      needs.runtime-collect-3.outputs.wave_failed != 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.runtime-collect-3.outputs.runtime_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      DEVELOPER_DIR: ${{ startsWith(matrix.runner, 'macos-') && '/Applications/Xcode_26.6.app/Contents/Developer' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: identity
+        shell: bash
+        env:
+          BUILD_KEY: ${{ matrix.buildKey }}
+        run: echo "key_hex=${BUILD_KEY#sha256:}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/run-runtime-product-phase
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.runtime-collect-3.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.runtime-collect-3.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          state-wave: '3'
+          component: ${{ matrix.component }}
+          phase: ${{ matrix.phase }}
+          target: ${{ matrix.target }}
+          build-key: ${{ matrix.buildKey }}
+          revision: ${{ needs.plan.outputs.validation_commit }}
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-runtime-worker-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}-${{ steps.identity.outputs.key_hex }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
+          path: build/runtime-worker
+          if-no-files-found: warn
+          overwrite: false
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 90
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-runtime-worker-diagnostics-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
+          path: |
+            build/runtime-input/capture-transport.json
+            build/runtime-plan
+          if-no-files-found: warn
+          overwrite: false
+          include-hidden-files: true
+          retention-days: 90
+
+  runtime-collect-4:
+    name: runtime-collect-4
+    needs: [plan, runtime-collect-3, runtime-workers-4]
+    if: >-
+      always() && needs.runtime-collect-3.result == 'success' &&
+      needs.runtime-collect-3.outputs.runtime_workers_required == 'true' &&
+      needs.runtime-collect-3.outputs.wave_failed != 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
+      runtime_matrix: ${{ steps.collect.outputs.runtime-matrix }}
+      runtime_workers_required: ${{ steps.collect.outputs.runtime-workers-required }}
+      wave_failed: ${{ steps.collect.outputs.wave-failed }}
+      full_reuse: ${{ steps.collect.outputs.full-reuse }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: collect
+        uses: ./.github/actions/collect-runtime-wave
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.runtime-collect-3.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.runtime-collect-3.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          state-wave: '3'
+          wave: '4'
+          tree: ${{ needs.plan.outputs.validation_tree }}
+
 
   android:
     if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_android == 'true'
@@ -949,7 +1397,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
+    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -966,6 +1414,8 @@ jobs:
           PRODUCT_RESUME_RESULT: ${{ needs.product-resume.result }}
           PRODUCT_RESUME_ARTIFACT_ID: ${{ needs.product-resume.outputs.artifact_id }}
           PRODUCT_RESUME_ARTIFACT_DIGEST: ${{ needs.product-resume.outputs.artifact_digest }}
+          RUNTIME_WAVE_FAILED: ${{ needs.runtime-collect-1.outputs.wave_failed }} ${{ needs.runtime-collect-2.outputs.wave_failed }} ${{ needs.runtime-collect-3.outputs.wave_failed }} ${{ needs.runtime-collect-4.outputs.wave_failed }}
+          PRODUCT_FULL_REUSE: ${{ needs.runtime-collect-4.outputs.full_reuse || needs.runtime-collect-3.outputs.full_reuse || needs.runtime-collect-2.outputs.full_reuse || needs.runtime-collect-1.outputs.full_reuse || needs.product-resume.outputs.full_reuse }}
         run: |
           if [ "$EVENT_AUTHORIZED" != true ]; then
             echo 'The workflow-owned event gate did not authorize remote product CI.' >&2
@@ -983,6 +1433,10 @@ jobs:
             exit 1
           fi
           if [ "$CONTRACT_COMPLETE" = true ]; then
+            if [[ "$RUNTIME_WAVE_FAILED" = *true* ]] || [ "$PRODUCT_FULL_REUSE" != true ]; then
+              echo 'Product continuation is incomplete or a collected Runtime wave failed.' >&2
+              exit 1
+            fi
             test "$CONTRACT_ATTESTATION_RESULT" = success
             test -n "$CONTRACT_ATTESTATION_ARTIFACT_ID"
             [[ "$CONTRACT_ATTESTATION_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1

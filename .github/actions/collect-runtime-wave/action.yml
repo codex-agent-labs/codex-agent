@@ -1,0 +1,82 @@
+name: Collect a Runtime product wave
+description: Preserve every original worker result, advance the same planner, and upload state before the final failure gate.
+inputs:
+  plan-id:
+    required: true
+    description: Original plan upload ID.
+  artifact-id:
+    required: true
+    description: Original predecessor state upload ID.
+  artifact-sha256:
+    required: true
+    description: Original predecessor state digest.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  state-wave:
+    required: true
+    description: Fixed predecessor wave.
+  wave:
+    required: true
+    description: Fixed current wave, one through four.
+  tree:
+    required: true
+    description: Exact tested tree.
+outputs:
+  artifact-id:
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-sha256:
+    value: sha256:${{ steps.upload.outputs.artifact-digest }}
+  runtime-matrix:
+    value: ${{ steps.collect.outputs.runtime_matrix }}
+  runtime-workers-required:
+    value: ${{ steps.collect.outputs.runtime_workers_required }}
+  wave-failed:
+    value: ${{ steps.collect.outputs.wave_failed }}
+  full-reuse:
+    value: ${{ steps.collect.outputs.full_reuse }}
+runs:
+  using: composite
+  steps:
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+        state-wave: ${{ inputs.state-wave }}
+    - id: collect
+      shell: bash
+      env:
+        INPUT_ROOT: ${{ steps.captured.outputs.input-root }}
+        WAVE: ${{ inputs.wave }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B ci/runtime_workflow.py collect --input-root "$INPUT_ROOT" \
+          --destination build/runtime-next --wave "$WAVE" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT"
+    - id: upload
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-runtime-wave-${{ inputs.wave }}-state-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/runtime-next/handoff
+        if-no-files-found: error
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90
+    - if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-runtime-wave-${{ inputs.wave }}-diagnostics-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: |
+          ${{ failure() && 'build/runtime-next' || 'build/runtime-next/collection' }}
+          build/runtime-input/capture-transport.json
+          build/runtime-plan
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90

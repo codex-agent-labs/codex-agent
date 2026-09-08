@@ -3249,10 +3249,12 @@ def capture_runtime_supervisor_upload(
 def capture_runtime_resume_upload(
     plan_path: Path, destination: Path, *, artifact_id: int, artifact_sha256: str,
     trusted_workflow_sha: str, repository_root: Path | None = None,
-    environ: Mapping[str, str] | None = None, token: str,
+    environ: Mapping[str, str] | None = None, token: str, state_wave: int = 0,
 ) -> dict[str, Any]:
     """Retain the exact resumed upload; full product replay grants admission."""
     require_integer(artifact_id, "Runtime resume artifact ID", 1)
+    if type(state_wave) is not int or not 0 <= state_wave <= 4:
+        raise ValueError("Runtime state wave must be an integer from zero through four")
     require_sha256(artifact_sha256, "Runtime resume artifact digest")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     if destination.exists() or destination.is_symlink():
@@ -3269,11 +3271,14 @@ def capture_runtime_resume_upload(
         if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
             raise ValueError("Runtime resume capture requires an authorized PR or merge-group run")
         producer = _consumer(plan, os.environ if environ is None else environ)["producer"]
+        job_name = "product-validation / product-resume" if state_wave == 0 else f"product-validation / runtime-collect-{state_wave}"
+        artifact_name = (f"codex-agent-product-resume-{producer['tree']}" if state_wave == 0 else
+                         f"codex-agent-runtime-wave-{state_wave}-state-{producer['tree']}-attempt-{producer['runAttempt']}")
         observed = _observe_ci_producer_jobs(
-            {"resume": producer}, jobs_by_phase={"resume": "product-validation / product-resume"},
+            {"resume": producer}, jobs_by_phase={"resume": job_name},
             trusted_workflow_sha=trusted_workflow_sha, token=token)
         artifact, raw = _download_contract_ci_upload(
-            artifact_id, artifact_sha256, f"codex-agent-product-resume-{producer['tree']}",
+            artifact_id, artifact_sha256, artifact_name,
             producer, observed[0]["run"], token)
         archive = private / "transport.zip"
         archive.write_bytes(raw)
@@ -3281,13 +3286,16 @@ def capture_runtime_resume_upload(
         prepared = private / "captured"
         original = prepared / "original"
         safe_extract(archive, original)
-        if ({member.name for member in original.iterdir()} != {"product-resume-inputs", "product-resume-state"}
+        expected_roots = {"product-resume-inputs", "product-resume-state"} | ({"runtime-state"} if state_wave else set())
+        if ({member.name for member in original.iterdir()} != expected_roots
                 or any(not member.is_dir() for member in original.iterdir())):
-            raise ValueError("Runtime resume upload requires the exact two original directories")
+            raise ValueError("Runtime resume upload requires its exact original directories")
         if read_regular_file_bytes(original / "product-resume-inputs/plan/impact-plan.json",
                 max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes:
             raise ValueError("Runtime resume upload plan differs from the validated original plan")
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed}
+        if state_wave:
+            transport["stateWave"] = state_wave
         write_canonical_json(prepared / "capture-transport.json", transport)
         publish_regular_tree(prepared, destination, allow_empty=True)
     return transport
@@ -3723,6 +3731,7 @@ def parser() -> argparse.ArgumentParser:
     for name in ("plan", "destination"):
         runtime_resume_capture.add_argument(f"--{name}", type=Path, required=True)
     runtime_resume_capture.add_argument("--artifact-id", type=int, required=True)
+    runtime_resume_capture.add_argument("--state-wave", type=int, default=0)
     for name in ("artifact-sha256", "trusted-workflow-sha"):
         runtime_resume_capture.add_argument(f"--{name}", required=True)
     runtime_collection = commands.add_parser("collect-runtime-workers")
@@ -3856,7 +3865,8 @@ def main(argv: list[str] | None = None) -> int:
             capture_runtime_resume_upload(
                 arguments.plan, arguments.destination, artifact_id=arguments.artifact_id,
                 artifact_sha256=arguments.artifact_sha256,
-                trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""))
+                trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""),
+                **({"state_wave": arguments.state_wave} if arguments.state_wave else {}))
         elif arguments.command == "capture-product-resume-inputs":
             capture_product_resume_inputs(
                 arguments.plan, arguments.destination,

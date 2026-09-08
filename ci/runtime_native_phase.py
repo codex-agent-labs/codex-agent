@@ -6,15 +6,18 @@ The worker owns authentication and the common Contract/version/candidate fields.
 from __future__ import annotations
 
 from collections.abc import Callable
+import argparse
 import os
 from pathlib import Path
 import re
+import sys
 import tempfile
 from typing import Any
 
 from products.inventory import (
+    canonical_json_bytes, load_canonical_json_bytes,
     git_regular_blob_bytes, publish_regular_tree, read_regular_file_bytes,
-    require_exact_keys, require_regular_directory, require_semver, require_sha256, sha256_bytes,
+    regular_file_inventory, require_exact_keys, require_regular_directory, require_semver, require_sha256, sha256_bytes,
 )
 from products.contract_projection import VerifiedContractProjection
 from products.plan import attach_runtime_binary_identity
@@ -101,15 +104,8 @@ def binary_plan(
     return complete
 
 
-def capture_archive(
-    plan: dict[str, Any], *, repository_root: Path, revision: str,
-    source: Path, destination: Path,
-) -> Path:
-    """Capture only Git-pinned upstream bytes for the offline native producer.
-
-    The worker already replays the complete plan. No download, unpacking,
-    product receipt or producer provenance is created by this capture.
-    """
+def archive_spec(plan: dict[str, Any], *, repository_root: Path, revision: str) -> dict[str, str]:
+    """Return the elected Git-pinned download identity, not product admission."""
     value = _native_plan(plan)
     if value["phase"] != "binary":
         raise ValueError("Pinned app-server capture requires a native binary phase")
@@ -119,17 +115,6 @@ def capture_archive(
     if compute_build_key(product="runtime", component=value["component"], phase="binary",
                          target=value["target"], inputs=inputs) != value["buildKey"]:
         raise ValueError("Pinned archive plan build key differs from its canonical inputs")
-    source, destination = Path(source), Path(destination)
-    _path(source, "Pinned archive source")
-    _path(destination, "Pinned archive destination")
-    if destination.exists() or destination.is_symlink():
-        raise ValueError("Pinned archive destination must not exist")
-    for parent in destination.parents:
-        if parent.exists() or parent.is_symlink():
-            require_regular_directory(parent, "Pinned archive destination ancestor")
-    for left, right in ((source, destination), (source.resolve(strict=True), destination.resolve(strict=False))):
-        if left == right or left in right.parents or right in left.parents:
-            raise ValueError("Pinned archive capture overlaps its original input")
     manifest_bytes = git_regular_blob_bytes(repository_root, revision, _DISTRIBUTION_MANIFEST,
                                             max_bytes=1024 * 1024)
     expected_record = {"relativePath": _DISTRIBUTION_MANIFEST, "bytes": len(manifest_bytes),
@@ -145,12 +130,39 @@ def capture_archive(
                         if PRODUCT_RUNTIME_TARGETS[record.target] == value["target"])
         if selected.classifier != f"app-server-{value['target']}":
             raise ValueError("Pinned app-server classifier differs from the selected native target")
+        require_semver(manifest.version, "Pinned upstream release version")
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", selected.asset) is None:
+            raise ValueError("Pinned archive asset must be a safe URL path segment")
+        return {"asset": selected.asset,
+                "url": f"https://github.com/openai/codex/releases/download/{manifest.release_tag}/{selected.asset}",
+                "sha256": f"sha256:{selected.archive_sha256}"}
+
+
+def capture_archive(
+    plan: dict[str, Any], *, repository_root: Path, revision: str,
+    source: Path, destination: Path,
+) -> Path:
+    """Capture Git-pinned bytes without download, unpacking or product admission."""
+    spec = archive_spec(plan, repository_root=repository_root, revision=revision)
+    source, destination = Path(source), Path(destination)
+    _path(source, "Pinned archive source")
+    _path(destination, "Pinned archive destination")
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Pinned archive destination must not exist")
+    for parent in destination.parents:
+        if parent.exists() or parent.is_symlink():
+            require_regular_directory(parent, "Pinned archive destination ancestor")
+    for left, right in ((source, destination), (source.resolve(strict=True), destination.resolve(strict=False))):
+        if left == right or left in right.parents or right in left.parents:
+            raise ValueError("Pinned archive capture overlaps its original input")
+    with tempfile.TemporaryDirectory(prefix="runtime-pinned-archive-") as temporary:
+        private = Path(temporary).resolve()
         contents = read_regular_file_bytes(source, max_bytes=_PINNED_ARCHIVE_LIMIT, reject_symlink_parents=True)
-        if not contents or sha256_bytes(contents) != f"sha256:{selected.archive_sha256}":
+        if not contents or sha256_bytes(contents) != spec["sha256"]:
             raise ValueError("Pinned app-server archive SHA-256 mismatch")
         staged = private / "archive"
         staged.mkdir()
-        (staged / selected.asset).write_bytes(contents)
+        (staged / spec["asset"]).write_bytes(contents)
         if read_regular_file_bytes(source, max_bytes=_PINNED_ARCHIVE_LIMIT, reject_symlink_parents=True) != contents:
             raise ValueError("Pinned app-server archive changed during capture")
         publish_regular_tree(staged, destination)
@@ -223,3 +235,50 @@ def properties(
         "codexAgent.runtimeVariantValidationEvidence": _path(
             report(component, component), "Original native validation report"),
     }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Provision only Git-pinned native Runtime upstream bytes")
+    parser.add_argument("command", choices=("archive-spec", "capture-archive", "verify-archive"))
+    parser.add_argument("--phase-plan", type=Path, required=True)
+    parser.add_argument("--revision", required=True)
+    parser.add_argument("--repository-root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--github-output", type=Path)
+    parser.add_argument("--source", type=Path)
+    args = parser.parse_args(argv)
+    _path(args.phase_plan, "Native Runtime phase plan")
+    plan = load_canonical_json_bytes(read_regular_file_bytes(
+        args.phase_plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
+    spec = archive_spec(plan, repository_root=args.repository_root, revision=args.revision)
+    directory = args.repository_root.resolve() / "build/runtime-upstream" / spec["sha256"].removeprefix("sha256:")
+    archive = directory / spec["asset"]
+    if any(character in str(directory) for character in "\r\n"):
+        raise ValueError("Archive cache path cannot contain output delimiters")
+    for parent in (directory, *directory.parents):
+        if parent.exists() or parent.is_symlink():
+            require_regular_directory(parent, "Pinned archive cache ancestor")
+    if args.command == "archive-spec":
+        if directory.exists() or directory.is_symlink():
+            raise ValueError("Archive setup must not overwrite an existing cache directory")
+        if args.github_output is not None:
+            with args.github_output.open("a", encoding="utf-8") as stream:
+                for key, value in {**spec, "directory": str(directory), "archive": str(archive)}.items():
+                    stream.write(f"{key}={value}\n")
+        sys.stdout.buffer.write(canonical_json_bytes(spec))
+    elif args.command == "capture-archive":
+        if args.source is None:
+            parser.error("capture-archive requires --source")
+        capture_archive(plan, repository_root=args.repository_root, revision=args.revision,
+                        source=args.source, destination=directory)
+    else:
+        contents = read_regular_file_bytes(archive, max_bytes=_PINNED_ARCHIVE_LIMIT, reject_symlink_parents=True)
+        if not contents or sha256_bytes(contents) != spec["sha256"]:
+            raise ValueError("Pinned app-server archive SHA-256 mismatch")
+        inventory = regular_file_inventory(directory)
+        if len(inventory) != 1 or inventory[0]["relativePath"] != spec["asset"]:
+            raise ValueError("Pinned archive cache must contain exactly the selected asset")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

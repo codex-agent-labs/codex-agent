@@ -1,0 +1,96 @@
+name: Run elected Runtime product phase
+description: Authenticate original inputs, provision tools, execute once and retain external diagnostics.
+inputs:
+  plan-id:
+    required: true
+    description: Original caller-owned plan artifact ID.
+  artifact-id:
+    required: true
+    description: Caller-owned predecessor state artifact ID.
+  artifact-sha256:
+    required: true
+    description: Caller-owned predecessor state digest.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  state-wave:
+    required: true
+    description: Fixed predecessor wave number.
+  component:
+    required: true
+    description: Elected Runtime component.
+  phase:
+    required: true
+    description: Elected phase.
+  target:
+    required: true
+    description: Elected target.
+  build-key:
+    required: true
+    description: Exact elected build key.
+  revision:
+    required: true
+    description: Exact tested commit.
+  supervisor-id:
+    default: ''
+    description: Original supervisor upload ID, only for Linux Arm64 binary.
+  supervisor-sha256:
+    default: ''
+    description: Original supervisor upload digest.
+runs:
+  using: composite
+  steps:
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+        state-wave: ${{ inputs.state-wave }}
+        component: ${{ inputs.component }}
+        phase: ${{ inputs.phase }}
+        target: ${{ inputs.target }}
+        build-key: ${{ inputs.build-key }}
+    - if: runner.os == 'Windows' && inputs.component == 'windows-x64'
+      uses: ./.github/actions/setup-msvc
+    - uses: ./.github/actions/setup-kmp
+      with:
+        product-worker: 'true'
+        cache-read-only: 'true'
+        node-version: ${{ (inputs.component == 'node-js' || inputs.component == 'node-wasm') && (inputs.phase == 'binary' || inputs.phase == 'validation') && '24.18.0' || '' }}
+        xcode-fingerprint: ${{ runner.os == 'macOS' && 'auto' || 'none' }}
+    - id: archive
+      if: inputs.phase == 'binary' && contains(fromJSON('["macos-arm64","macos-x64","linux-arm64","linux-x64","windows-x64"]'), inputs.component)
+      uses: ./.github/actions/setup-runtime-archive
+      with:
+        phase-plan: ${{ steps.captured.outputs.phase-plan }}
+        revision: ${{ inputs.revision }}
+    - name: Execute the exact elected phase
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        COMPONENT: ${{ inputs.component }}
+        PHASE: ${{ inputs.phase }}
+        TARGET: ${{ inputs.target }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        ARCHIVE: ${{ steps.archive.outputs.archive }}
+        SUPERVISOR_ID: ${{ inputs.supervisor-id }}
+        SUPERVISOR_SHA256: ${{ inputs.supervisor-sha256 }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        extra=()
+        if [ -n "$ARCHIVE" ]; then extra+=(--app-server-archive "$ARCHIVE"); fi
+        if [ "$COMPONENT" = linux-arm64 ] && [ "$PHASE" = binary ]; then
+          test -n "$SUPERVISOR_ID"
+          test -n "$SUPERVISOR_SHA256"
+          extra+=(--supervisor-artifact-id "$SUPERVISOR_ID" --supervisor-artifact-sha256 "$SUPERVISOR_SHA256" --supervisor-trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA")
+        fi
+        python3 -B ci/product_reuse.py execute-runtime-phase \
+          --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+          --product runtime --component "$COMPONENT" --phase "$PHASE" --target "$TARGET" \
+          --expected-build-key "$BUILD_KEY" --destination build/runtime-worker "${extra[@]}"

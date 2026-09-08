@@ -1,0 +1,72 @@
+name: Capture authenticated Runtime state
+description: Verify the exact parent upload and re-elect work before any platform setup.
+inputs:
+  plan-id:
+    required: true
+    description: Caller-owned original plan artifact ID.
+  artifact-id:
+    required: true
+    description: Caller-owned parent state artifact ID.
+  artifact-sha256:
+    required: true
+    description: Caller-owned parent state artifact digest.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed literal product workflow revision.
+  state-wave:
+    default: '0'
+    description: Zero for initial resume; otherwise the fixed preceding wave.
+  component:
+    default: ''
+    description: Optional elected Runtime component.
+  phase:
+    default: ''
+    description: Optional elected phase.
+  target:
+    default: ''
+    description: Optional elected target.
+  build-key:
+    default: ''
+    description: Optional exact elected build key.
+outputs:
+  plan-path:
+    value: ${{ steps.capture.outputs.plan_path }}
+  discovery-root:
+    value: ${{ steps.capture.outputs.discovery_root }}
+  state-root:
+    value: ${{ steps.capture.outputs.state_root }}
+  input-root:
+    value: ${{ steps.capture.outputs.input_root }}
+  phase-plan:
+    value: ${{ steps.capture.outputs.phase_plan }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        artifact-ids: ${{ inputs.plan-id }}
+        path: build/runtime-plan
+        merge-multiple: true
+    - id: capture
+      shell: bash
+      env:
+        ARTIFACT_ID: ${{ inputs.artifact-id }}
+        ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        STATE_WAVE: ${{ inputs.state-wave }}
+        COMPONENT: ${{ inputs.component }}
+        PHASE: ${{ inputs.phase }}
+        TARGET: ${{ inputs.target }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        selected=()
+        if [ -n "$COMPONENT$PHASE$TARGET$BUILD_KEY" ]; then
+          selected=(--component "$COMPONENT" --phase "$PHASE" --target "$TARGET" --expected-build-key "$BUILD_KEY")
+        fi
+        python3 -B ci/runtime_workflow.py capture \
+          --plan build/runtime-plan/impact-plan.json --destination build/runtime-input \
+          --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --state-wave "$STATE_WAVE" \
+          --github-output "$GITHUB_OUTPUT" "${selected[@]}"

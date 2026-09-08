@@ -1468,7 +1468,7 @@ class ImpactPlanTest(GitFixture):
             self.assertEqual(2, workflow.count(f"matrix.lane == '{consumer}'"))
         gate = workflow[workflow.index("\n  merge-gate:"):]
         self.assertIn(
-            "needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]",
+            "needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]",
             gate,
         )
         self.assertIn("pattern: codex-agent-ci-*", gate)

@@ -118,12 +118,15 @@ class ProductResumeWorkflowTest(unittest.TestCase):
             "CONTRACT_ATTESTATION_ARTIFACT_ID": "700", "CONTRACT_ATTESTATION_ARTIFACT_DIGEST": "sha256:" + "a" * 64,
             "PRODUCT_RESUME_RESULT": "success", "PRODUCT_RESUME_ARTIFACT_ID": "701",
             "PRODUCT_RESUME_ARTIFACT_DIGEST": "sha256:" + "b" * 64,
+            "PRODUCT_FULL_REUSE": "true", "RUNTIME_WAVE_FAILED": "false false false false",
         }
         cases = [({}, True), ({"CONTRACT_COMPLETE": "false", "PRODUCT_RESUME_RESULT": "skipped",
                                "PRODUCT_RESUME_ARTIFACT_ID": "", "PRODUCT_RESUME_ARTIFACT_DIGEST": ""}, True)]
         cases.extend(({"PRODUCT_RESUME_RESULT": value}, False) for value in ("failure", "cancelled", "skipped", ""))
         cases.extend(({field: ""}, False) for field in ("PRODUCT_RESUME_ARTIFACT_ID", "PRODUCT_RESUME_ARTIFACT_DIGEST"))
         cases.append(({"PRODUCT_RESUME_ARTIFACT_DIGEST": "not-a-digest"}, False))
+        cases.extend(({"PRODUCT_FULL_REUSE": value}, False) for value in ("false", ""))
+        cases.append(({"RUNTIME_WAVE_FAILED": "false true false false"}, False))
         for change, expected in cases:
             with self.subTest(change=change):
                 result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script],
