@@ -305,13 +305,23 @@ def verify_contract_producer_runs(
 def _observe_contract_producer_runs(
     producers: Mapping[str, Any], *, phases: tuple[str, ...], trusted_workflow_sha: str, token: str,
 ) -> list[dict[str, Any]]:
-    require_exact_keys(producers, set(phases), "Contract phase producers")
+    return _observe_ci_producer_jobs(
+        producers, jobs_by_phase={phase: "product-validation / product-contracts" if phase == "binary"
+                                 else "product-validation / contract-continuation" for phase in phases},
+        trusted_workflow_sha=trusted_workflow_sha, token=token)
+
+
+def _observe_ci_producer_jobs(
+    producers, *, jobs_by_phase, trusted_workflow_sha, token,
+) -> list[dict[str, Any]]:
+    # Both callers choose fixed job names; transported data cannot select a job.
+    require_exact_keys(producers, set(jobs_by_phase), "Contract phase producers")
     if not isinstance(trusted_workflow_sha, str) or re.fullmatch(r"[0-9a-f]{40}", trusted_workflow_sha) is None:
         raise ValueError("Contract producer admission requires a caller-pinned workflow SHA")
     repository = "codex-agent-labs/codex-agent"
     workflow = f"{repository}/.github/workflows/product-validation.yml@{trusted_workflow_sha}"
     attempts: dict[tuple[int, int], dict[str, Any]] = {}
-    for phase in phases:
+    for phase in jobs_by_phase:
         producer = validate_producer(producers[phase], f"Contract {phase} producer")
         if (producer["repository"] != repository
                 or producer["workflowPath"] != ".github/workflows/ci.yml"
@@ -352,8 +362,7 @@ def _observe_contract_producer_runs(
         jobs = paginated_items(f"{url}/jobs", "jobs", token)
         if any(not isinstance(job, dict) for job in jobs):
             raise ValueError("Contract original CI jobs are malformed")
-        names = {"product-validation / product-contracts" if phase == "binary"
-                 else "product-validation / contract-continuation" for phase in original["phases"]}
+        names = {jobs_by_phase[phase] for phase in original["phases"]}
         for name in sorted(names):
             selected_jobs = [job for job in jobs if job.get("name") == name]
             if len(selected_jobs) != 1:
@@ -2995,6 +3004,52 @@ def materialize_contract(
         return restored
 
 
+def capture_runtime_supervisor_upload(
+    plan_path: Path, destination: Path, *, artifact_id: int, artifact_sha256: str,
+    expected_build_key: str, trusted_workflow_sha: str,
+    repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
+    token: str,
+) -> dict[str, Any]:
+    """Capture the fixed producer job's upload, not a caller-authored success claim.
+
+    Caller-owned job outputs supply ID/digest/key. This transport evidence alone
+    cannot admit a supervisor: the worker must independently verify its complete
+    content against the authenticated elected binary plan before using it.
+    """
+    require_integer(artifact_id, "Runtime supervisor artifact ID", 1)
+    require_sha256(artifact_sha256, "Runtime supervisor artifact digest")
+    require_sha256(expected_build_key, "Runtime supervisor elected build key")
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
+    plan = _validate_plan(plan_path, root)
+    if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
+        raise ValueError("Runtime supervisor capture requires an authorized PR or merge-group run")
+    producer = _consumer(plan, os.environ if environ is None else environ)["producer"]
+    if Path(destination).exists() or Path(destination).is_symlink():
+        raise ValueError("Runtime supervisor capture destination must not exist")
+    destination = _prepare_destination(destination, root)
+    destination.rmdir()
+    observed = _observe_ci_producer_jobs(
+        {"supervisor": producer},
+        jobs_by_phase={"supervisor": "product-validation / runtime-linux-arm64-supervisor"},
+        trusted_workflow_sha=trusted_workflow_sha, token=token)
+    artifact, raw = _download_contract_ci_upload(
+        artifact_id, artifact_sha256,
+        f"codex-agent-runtime-supervisor-linux-arm64-{expected_build_key.removeprefix('sha256:')}-{producer['tree']}",
+        producer, observed[0]["run"], token)
+    with tempfile.TemporaryDirectory(prefix="codex-agent-supervisor-capture-", dir=root) as temporary:
+        private = Path(temporary).resolve()
+        archive = private / "transport.zip"
+        archive.write_bytes(raw)
+        verified_zip_contents(archive, retained_paths=(), **_CATALOG_ZIP_LIMITS)
+        prepared = private / "captured"
+        safe_extract(archive, prepared / "original")
+        evidence = {"artifact": artifact, "captureProducer": producer, "observed": observed,
+                    "buildKey": expected_build_key}
+        write_canonical_json(prepared / "capture-transport.json", evidence)
+        publish_regular_tree(prepared, destination)
+    return evidence
+
+
 def capture_product_resume_inputs(
     plan_path: Path, destination: Path, *, uploads: Mapping[str, Any],
     trusted_workflow_sha: str, repository_root: Path | None = None,
@@ -3413,6 +3468,12 @@ def parser() -> argparse.ArgumentParser:
     for name in ("plan", "state", "release"):
         resume_capture.add_argument(f"--{name}-artifact-id", type=int, required=True)
         resume_capture.add_argument(f"--{name}-artifact-sha256", required=True)
+    supervisor_capture = commands.add_parser("capture-runtime-supervisor-upload")
+    for name in ("plan", "destination"):
+        supervisor_capture.add_argument(f"--{name}", type=Path, required=True)
+    supervisor_capture.add_argument("--artifact-id", type=int, required=True)
+    for name in ("artifact-sha256", "expected-build-key", "trusted-workflow-sha"):
+        supervisor_capture.add_argument(f"--{name}", required=True)
     for command in (discover_command, products_command):
         command.add_argument("--sdk-validation-evidence", type=Path, action="append", default=[])
         command.add_argument("--sdk-validation-tooling", type=Path,
@@ -3507,6 +3568,11 @@ def main(argv: list[str] | None = None) -> int:
                 transport_producer=_canonical_control(arguments.transport_producer, "Caller capture producer"),
                 trusted_workflow_sha=arguments.trusted_workflow_sha,
                 contract_version=arguments.contract_version, token=os.environ.get("GITHUB_TOKEN", ""))
+        elif arguments.command == "capture-runtime-supervisor-upload":
+            capture_runtime_supervisor_upload(
+                arguments.plan, arguments.destination, artifact_id=arguments.artifact_id,
+                artifact_sha256=arguments.artifact_sha256, expected_build_key=arguments.expected_build_key,
+                trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""))
         elif arguments.command == "capture-product-resume-inputs":
             capture_product_resume_inputs(
                 arguments.plan, arguments.destination,
