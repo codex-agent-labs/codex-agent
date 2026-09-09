@@ -11,13 +11,12 @@ import argparse
 from collections.abc import Mapping
 import os
 from pathlib import Path
-import re
 import tempfile
 from typing import Any
 
-from impact import evaluate_remote_build_authorization, require_object, require_oid
+from product_release_context import verify_product_release_context
 from product_reuse import (
-    _git_value, _release_trust, capture_contract_ci_artifact,
+    _release_trust, capture_contract_ci_artifact,
     capture_contract_original_ci_phases,
 )
 from products.contract_attestation import build_contract_attestation
@@ -25,7 +24,6 @@ from products.inventory import (
     load_json_bytes, publish_regular_tree, read_regular_file_bytes,
     regular_file_inventory, require_semver, sha256_file, snapshot_regular_tree, write_canonical_json,
 )
-from products.receipt import validate_producer
 from products.signatures import load_keyring, require_active_release_key
 
 
@@ -37,52 +35,11 @@ def attest_contract_ci(
     token: str | None = None, release_handoffs: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
     """Authenticate original bytes before key access; publish external evidence once."""
-    require_oid(trusted_source_sha, "trusted source commit pin")
-    require_oid(trusted_workflow_sha, "trusted workflow SHA pin")
     require_semver(contract_version, "Contract release version")
-    repository_root = Path(repository_root).resolve(strict=True)
-    if _git_value(repository_root, "rev-parse", "HEAD") != trusted_source_sha:
-        raise ValueError("Trusted source commit does not match its reviewed pin")
-    if _git_value(repository_root, "status", "--porcelain", "--untracked-files=no"):
-        raise ValueError("Trusted source checkout must have clean tracked files")
-    source_tree = _git_value(repository_root, "rev-parse", "HEAD^{tree}")
-    producer = validate_producer(dict(transport_producer))
-    if producer["repository"] != "codex-agent-labs/codex-agent" or \
-            producer["workflowPath"] != ".github/workflows/ci.yml":
-        raise ValueError("Contract caller producer repository/workflow is not supported")
-    event = producer["event"]
-    if event not in {"pull_request", "merge_group"}:
-        raise ValueError("Contract original CI signing supports PR/merge_group events only")
-    expected_environment = {
-        "GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": producer["repository"],
-        "GITHUB_EVENT_NAME": event, "GITHUB_SHA": producer["commit"],
-        "GITHUB_RUN_ID": str(producer["runId"]),
-        "GITHUB_RUN_ATTEMPT": str(producer["runAttempt"]),
-    }
-    for name, expected in expected_environment.items():
-        if environment.get(name) != expected:
-            raise ValueError(f"Contract caller Actions context mismatch: {name}")
-    payload = require_object(event_payload, "Contract caller event")
-    if event == "pull_request":
-        request = require_object(payload.get("pull_request"), "Contract caller pull request")
-        base = require_object(request.get("base"), "Contract caller base").get("sha")
-        head = require_object(request.get("head"), "Contract caller head").get("sha")
-        number = producer["pullRequest"]
-    else:
-        group = require_object(payload.get("merge_group"), "Contract caller merge group")
-        base, head = group.get("base_sha"), group.get("head_sha")
-        ref = group.get("head_ref")
-        match = re.search(r"(?:^|/)pr-(\d+)-", ref) if type(ref) is str else None
-        number = int(match.group(1)) if match else None
-    authorized, reason, _ = evaluate_remote_build_authorization(
-        event=event, event_payload=payload, repository=producer["repository"],
-        pull_request=number, base_commit=base, head_commit=head,
-        validation_commit=producer["commit"], validation_tree=producer["tree"],
-        github_ref=environment.get("GITHUB_REF"), github_sha=environment.get("GITHUB_SHA"),
-        dispatch_approved=False,
-    )
-    if not authorized:
-        raise ValueError(f"Contract caller event is not authorized: {reason}")
+    repository_root, producer, source_tree, expected_environment, reason = verify_product_release_context(
+        repository_root, trusted_source_sha=trusted_source_sha, trusted_workflow_sha=trusted_workflow_sha,
+        transport_producer=transport_producer, event_payload=event_payload, environment=environment)
+    payload = event_payload
     destination = Path(os.path.abspath(destination))
     if destination.exists() or destination.is_symlink():
         raise ValueError("Contract caller destination must not exist")

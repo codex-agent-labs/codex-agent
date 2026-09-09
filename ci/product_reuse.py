@@ -659,6 +659,8 @@ def capture_runtime_original_ci_phases(
                 for phase in matching:
                     releases.setdefault(phase, number)
         ci_phases = tuple(phase for phase in phases if phase not in releases)
+        if ci_phases and (type(token) is not str or not token):
+            raise ValueError("Original Runtime CI observation requires a token for uncovered phases")
         jobs = {phase: f"product-validation / runtime-{target}-{phase}-{target}" for phase in ci_phases}
         observed = _observe_ci_producer_jobs(
             {phase: receipts[phase]["producer"] for phase in ci_phases}, jobs_by_phase=jobs,

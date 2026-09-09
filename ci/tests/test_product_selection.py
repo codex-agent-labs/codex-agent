@@ -1296,6 +1296,8 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/sdk_phase.py",
             "ci/sdk_ios_phase.py",
             "ci/contract_release.py",
+            "ci/product_release_context.py",
+            "ci/runtime_release.py",
             "ci/products/contract_projection.py",
             "ci/products/plan.py",
             "ci/products/registry.py",

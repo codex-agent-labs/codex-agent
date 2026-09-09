@@ -222,6 +222,8 @@ _IOS_BINARY_BUILD_LOGIC = frozenset({
 _CONTROL_ONLY_FILES = frozenset({
     "ci/cache_seed.py",
     "ci/contract_release.py",
+    "ci/product_release_context.py",
+    "ci/runtime_release.py",
     "ci/impact.py",
     "ci/lane_selection.py",
     "ci/run-lane.sh",
