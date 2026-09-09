@@ -673,17 +673,15 @@ runtimeAdapterMetadataComponents.forEach { (component, title) ->
         "verify${title}RuntimeMetadataInputs",
     ) {
         group = "verification"
-        description = "Verifies the authenticated $component projection and original-primary Maven handoff."
-        dependsOn("finalize${title}RuntimeMavenHandoff")
+        description = "Verifies the authenticated $component validation projection."
         this.component.set(component)
         stageDirectory.set(phaseRoot)
         validationHandoff.set(layout.dir(importedRuntimeValidationHandoff))
         this.projection.set(projection)
-        mavenRepository.set(layout.buildDirectory.dir("runtime-adapter-maven/$component/repository"))
     }
     val stage = tasks.register("stage${title}RuntimeMetadata") {
         group = "verification"
-        description = "Stages the authenticated $component projection and original-primary Runtime Maven bytes."
+        description = "Stages the authenticated $component validation projection."
         dependsOn(verifyInputs)
     }
     registerRuntimeOutputManifest(
@@ -695,7 +693,6 @@ runtimeAdapterMetadataComponents.forEach { (component, title) ->
         runtimeProductVersion,
         mapOf(
             "adapter-evidence" to "outputs/evidence",
-            "maven" to "outputs/maven",
         ),
         outputsRoot,
         phaseRoot,
@@ -751,17 +748,31 @@ mavenPublishing {
 val runtimeAdapterPublications = mapOf("jvm" to "jvm", "node-js" to "js", "node-wasm" to "wasmJs")
 // Create imported publications early enough for Vanniktech's own afterEvaluate callbacks.
 afterEvaluate {
-    runtimeAdapterMetadataComponents.forEach { (component, title) ->
-        if (providers.gradleProperty("codexAgent.product").orNull == "runtime" &&
-            providers.gradleProperty("codexAgent.phase").orNull == "metadata" &&
-            providers.gradleProperty("codexAgent.component").orNull == component) {
-            registerRuntimeAdapterMavenHandoff(
-                component, title, runtimeAdapterPublications.getValue(component),
-                layout.dir(providers.gradleProperty("codexAgent.runtimePackageStage").map(::file)),
-                providers.gradleProperty("codexAgent.runtimePackageVersion"),
-                runtimeProductTooling, repositoryRootFile,
-            )
+    if (providers.gradleProperty("codexAgent.product").orNull == "runtime" &&
+        providers.gradleProperty("codexAgent.component").orNull == "runtime-aggregate" &&
+        providers.gradleProperty("codexAgent.phase").orNull == "metadata") {
+        val native = desktopRuntimeEvidenceTargets.map { (target, spec) ->
+            Triple(spec.classifier.removePrefix("app-server-"), target.replaceFirstChar(Char::uppercaseChar), target)
         }
+        val adapters = runtimeAdapterMetadataComponents.map { (component, title) ->
+            Triple(component, title, runtimeAdapterPublications.getValue(component))
+        }
+        val handoffs = (native + adapters).map { (component, title, publication) ->
+            registerRuntimeAdapterMavenHandoff(component, title, publication,
+                layout.dir(providers.gradleProperty("codexAgent.runtimeMavenStage.$component").map(::file)),
+                providers.gradleProperty("codexAgent.runtimeMavenVersion.$component"),
+                runtimeProductTooling, repositoryRootFile,
+                originalPhase = if (component in runtimeAdapterMetadataComponents) "package" else "binary")
+        }
+        val phaseRoot = layout.buildDirectory.dir("product-stage/runtime/runtime-aggregate/metadata")
+        val stage = tasks.register<Sync>("stageRuntimeAggregateMavenOutputs") {
+            into(phaseRoot.map { it.dir("outputs/maven") })
+            handoffs.forEach { handoff -> from(handoff.flatMap { it.repository }) }
+        }
+        registerRuntimeOutputManifest("writeRuntimeAggregateMavenOutputManifest", stage,
+            providers.provider { "runtime-aggregate" }, "metadata", providers.provider { "aggregate" },
+            runtimeProductVersion, mapOf("maven" to "outputs/maven"),
+            phaseRoot.map { it.dir("outputs") }, phaseRoot, runtimeProductTooling, repositoryRootFile)
     }
 }
 // KGP supplies main/sources through nested afterEvaluate callbacks. Capture only

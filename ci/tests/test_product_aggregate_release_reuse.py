@@ -107,14 +107,7 @@ class AggregateReleaseReuseTest(unittest.TestCase):
             "aggregate_manifest": chain["aggregate"], "aggregate_inputs": cls.inputs,
         }}
         stage = cls.root / "aggregate-stage"
-        for output in cls.receipt["outputs"]:
-            path = stage / output["relativePath"]
-            path.parent.mkdir(parents=True)
-            path.write_bytes(chain["aggregate"].read_bytes())
-        write_canonical_json(stage / "output-manifest.json", {
-            "schemaVersion": 1, **{key: cls.receipt[key] for key in
-                ("product", "component", "phase", "target", "productVersion")}, "outputs": cls.receipt["outputs"],
-        })
+        shutil.copytree(chain["aggregate"].parent.parent, stage)
         cls.object = store_local_object(stage, chain["aggregate_receipt"], cls.root / "objects")["path"]
         source = IndexEntrySource(cls.raw, cls.receipt["outputs"][0]["relativePath"])
         admission = release_attested_runtime_aggregate_admission(

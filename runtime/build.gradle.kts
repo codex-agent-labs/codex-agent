@@ -73,6 +73,9 @@ tasks.register("ciProductPhase") {
         val component = requestedComponent.get()
         val phase = requestedPhase.get()
         val target = providers.gradleProperty("codexAgent.target").get()
+        if (component == "runtime-aggregate" && phase == "metadata" && target == "aggregate") {
+            return@provider desktopRuntime.tasks.named("writeRuntimeAggregateMavenOutputManifest")
+        }
         if (component == "node-js" && phase == "validation" && target == "node-js-binding") {
             return@provider desktopRuntime.tasks.named("writeNodeJsBindingValidationOutputManifest")
         }

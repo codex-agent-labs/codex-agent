@@ -105,7 +105,7 @@ class RuntimeProductPhaseMappingTest {
     }
 
     @Test
-    fun `adapter metadata owns canonical projection and imported primary Maven outputs`() {
+    fun `adapter metadata owns only canonical projection while aggregate owns Maven outputs`() {
         val metadata = nodeBuild.substringAfter("val runtimeAdapterMetadataComponents = linkedMapOf(")
             .substringBefore("mavenPublishing {")
         listOf("jvm", "node-js", "node-wasm").forEach { component ->
@@ -115,7 +115,6 @@ class RuntimeProductPhaseMappingTest {
             "providers.gradleProperty(\"codexAgent.runtimeValidationHandoff\")",
             "providers.gradleProperty(\"codexAgent.runtimePackageStage\")",
             "providers.gradleProperty(\"codexAgent.runtimePackageVersion\")",
-            "dependsOn(\"finalize\${title}RuntimeMavenHandoff\")",
             "ValidateRuntimeAdapterMetadataInputsTask",
             "it.resolve(\"projection.json\")",
             "\"adapter-evidence\" to \"outputs/evidence\"",
@@ -135,15 +134,18 @@ class RuntimeProductPhaseMappingTest {
         listOf(
             "@get:Internal\n    abstract val validationHandoff",
             "@get:InputFile",
-            "@get:Internal\n    abstract val mavenRepository",
             "generateSequence(normalized) { it.parent }",
             "verifyProjection(adapter, output.resolve(\"evidence/\$adapter.json\").toFile())",
             "outputs.upToDateWhen { false }",
             "@get:OutputDirectory",
-            "check(inventory(originals()) == before)",
+            "check(inventory(files) == before)",
             "check(stagedInventory() == before)",
         ).forEach { contract -> assertTrue(contract in adapterMetadataInputs, contract) }
         assertFalse("@get:InputDirectory" in adapterMetadataInputs)
+        assertFalse("mavenRepository" in adapterMetadataInputs)
+        assertFalse("\"maven\" to \"outputs/maven\"" in metadata)
+        assertTrue("stageRuntimeAggregateMavenOutputs" in nodeBuild)
+        assertTrue("writeRuntimeAggregateMavenOutputManifest" in rootBuild)
         assertFalse("tasks.register<Delete>" in metadata)
         assertFalse("tasks.register<Sync>" in metadata)
         assertFalse("from(" in metadata)

@@ -70,21 +70,24 @@ pluginManagement {
         requestedComponent in adapterTargets && requestedTarget in nativeRuntimeTargets
     val adapterMetadata = requestedProduct == "runtime" && requestedPhase == "metadata" &&
         requestedComponent in adapterTargets
+    val aggregateMetadata = requestedProduct == "runtime" && requestedPhase == "metadata" &&
+        requestedComponent == "runtime-aggregate" && requestedTarget == "aggregate"
     if (requestedProduct != null) {
-        require(requestedProduct == "runtime" && requestedComponent in runtimeTargets &&
+        require(aggregateMetadata || (requestedProduct == "runtime" && requestedComponent in runtimeTargets &&
             requestedPhase in setOf("binary", "package", "validation", "metadata") &&
             if (requestedPhase == "validation" && requestedComponent in adapterTargets) {
                 adapterHostValidation || bindingValidation
             } else {
                 requestedTarget == requestedComponent
-            }) { "Unsupported Runtime phase identity: $requestedProduct/$requestedComponent/$requestedPhase/$requestedTarget" }
+            })) { "Unsupported Runtime phase identity: $requestedProduct/$requestedComponent/$requestedPhase/$requestedTarget" }
     }
     val contractComponent = when {
+        aggregateMetadata -> "jvm"
         bindingValidation -> "node-js"
         adapterHostValidation -> checkNotNull(requestedComponent)
         else -> requestedTarget
     }
-    require(contractComponent in runtimeTargets) {
+    require(aggregateMetadata || contractComponent in runtimeTargets) {
         "Unsupported standalone Desktop Runtime target: ${values.getValue("codexAgent.target")}"
     }
     val nativePredecessorProperty = if (bindingValidation) {
@@ -100,8 +103,8 @@ pluginManagement {
     }
     val requiredPredecessors = if (adapterHostValidation) {
         listOf("codexAgent.runtimePackageStage", "codexAgent.runtimeNativePackageStage")
-    } else if (adapterMetadata) {
-        listOf("codexAgent.runtimePackageStage")
+    } else if (aggregateMetadata) {
+        runtimeTargets.map { "codexAgent.runtimeMavenStage.$it" }
     } else {
         listOfNotNull(nativePredecessorProperty)
     }
@@ -137,15 +140,16 @@ pluginManagement {
             }
         }
     }
-    if (adapterMetadata) {
+    if (adapterMetadata || aggregateMetadata) {
         val name = "codexAgent.runtimeMavenRepository"
         require(name !in commandLineProperties && System.getProperty("org.gradle.project.$name") == null &&
             System.getenv("ORG_GRADLE_PROJECT_$name") == null) {
-            "$name is not an adapter metadata input; publish from the original Runtime package stage"
+            "$name is not an input; aggregate publication requires exact original phase stages"
         }
     }
-    if (adapterHostValidation || bindingValidation || adapterMetadata) {
-        val versionProperties = listOf("codexAgent.runtimePackageVersion") +
+    if (adapterHostValidation || bindingValidation || aggregateMetadata) {
+        val versionProperties = (if (aggregateMetadata) runtimeTargets.map { "codexAgent.runtimeMavenVersion.$it" }
+            else listOf("codexAgent.runtimePackageVersion")) +
             if (adapterHostValidation) listOf("codexAgent.runtimeNativePackageVersion") else emptyList()
         versionProperties.forEach { name ->
             require(System.getProperty("org.gradle.project.$name") == null &&
@@ -256,6 +260,9 @@ pluginManagement {
     )
     if (adapterHostValidation) {
         verifyCommand += listOf("--required-component", requestedTarget)
+    }
+    if (aggregateMetadata) {
+        (runtimeTargets - contractComponent).forEach { verifyCommand += listOf("--required-component", it) }
     }
     if (expectedTrustDomain == "release") {
         verifyCommand += listOf(

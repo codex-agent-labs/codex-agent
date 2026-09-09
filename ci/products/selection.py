@@ -410,7 +410,7 @@ def _runtime_build_logic_selection(path: str) -> set[PhaseInstanceId] | None:
     if name == "RuntimeAdapterMetadataInputsTask.kt":
         return _runtime(("jvm", "node-js", "node-wasm"), "metadata") | _runtime(("macos-arm64",), "validation")
     if name == "RuntimeAdapterMavenHandoff.kt":
-        return _runtime(RUNTIME_COMPONENTS)
+        return _runtime(RUNTIME_COMPONENTS) | _from_phase("runtime", "runtime-aggregate", "metadata")
     if name == "ImportedRuntimeVariantTask.kt":
         return _runtime(NATIVE_TARGETS, "metadata")
     if name in _RUNTIME_BUILD_LOGIC_NATIVE_VALIDATION:
@@ -600,7 +600,7 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         return set(ALL_METADATA)
 
     if path == "ci/products/contract_model.py":
-        return _contract() | _runtime(("macos-arm64",), "validation").union(*(
+        return _contract() | _from_phase("runtime", "runtime-aggregate", "metadata") | _runtime(("macos-arm64",), "validation").union(*(
             _from_phase("sdk", language, "package") for language in NATIVE_BINDINGS
         ))
     if path == "ci/products/contract.py":
@@ -626,6 +626,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         )
     if path in {"ci/products/runtime_aggregate.py", "ci/runtime_aggregate_phase.py"}:
         return _from_phase("runtime", "runtime-aggregate", "metadata")
+    if path == "ci/products/runtime_maven.py":
+        return _from_phase("runtime", "runtime-aggregate", "metadata") | _classify("ci/products/sdk_compatibility.py")
     if path == "ci/products/runtime_adapter_validation.py":
         return _runtime(("jvm", "node-js", "node-wasm"), "validation",
                         validation_targets=NATIVE_TARGETS) | _classify("ci/products/sdk_runtime_content.py")
@@ -635,7 +637,7 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             selected.update(_from_phase("sdk", component, "package"))
         return selected
     if path == "ci/products/sdk_maven.py":
-        return set().union(*(
+        return _from_phase("runtime", "runtime-aggregate", "metadata") | _bindings(NATIVE_BINDINGS) | set().union(*(
             _from_phase("sdk", component, "binary")
             for component in ("sdk-core", "sdk-android", "sdk-ios")
         ))
@@ -977,6 +979,7 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
                       and instance.component in {"jvm", "node-js", "node-wasm"}
                       and instance.phase == "validation" and instance.target in NATIVE_TARGETS)
     if path in {"ci/products/sdk_runtime_content.py", "ci/products/contract_model.py",
+                "ci/products/runtime_maven.py", "ci/products/sdk_maven.py",
                 "ci/products/runtime_adapter_validation.py",
                 "ci/products/test_results.py", "ci/products/runtime_evidence.py",
                 "ci/products/runtime_variant.py", "ci/products/c_abi.py"}:
@@ -1009,9 +1012,8 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
     if path == "runtime/build-logic/src/main/kotlin/RuntimeAdapterMetadataInputsTask.kt":
         direct.add(PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64"))
     if path == "runtime/build-logic/src/main/kotlin/RuntimeAdapterMavenHandoff.kt":
-        # Metadata executes the imported publication producer independently of binary capture.
-        direct.update(PhaseInstanceId("runtime", component, "metadata", component)
-                      for component in ("jvm", "node-js", "node-wasm"))
+        # Exact-release publication executes only at aggregate, separate from binary capture.
+        direct.add(PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"))
     if path == "runtime/build-logic/src/main/kotlin/RuntimeReleaseIo.kt":
         # Checked-byte adapter staging hashes imports independently of validation.
         direct.update(instance for instance in selected if instance.phase == "validation")
@@ -1042,7 +1044,14 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
     if any(
         instance.product == "runtime" and instance.component != "runtime-aggregate"
         for instance in direct
-    ):
+    ) and path not in _RUNTIME_BUILD_INPUTS and path not in {
+        "ci/products/contract_model.py",
+        "runtime/build-logic/src/main/kotlin/RuntimeAdapterMavenHandoff.kt",
+        "runtime/build-logic/src/main/kotlin/RuntimeProductStageRegistration.kt",
+        "runtime/build-logic/src/main/kotlin/RuntimeProductPythonTooling.kt",
+        "runtime/build-logic/src/main/kotlin/RuntimeReleaseIo.kt",
+        "runtime/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts",
+    }:
         direct.discard(
             PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
         )

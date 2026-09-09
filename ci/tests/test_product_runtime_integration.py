@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -12,11 +11,9 @@ import ci.products.runtime_aggregate as runtime_aggregate_module
 from ci.products.aggregate import (
     RUNTIME_ADAPTERS,
     RUNTIME_EVIDENCE_TARGETS,
-    RUNTIME_MAVEN_COMPONENTS,
     RUNTIME_TARGETS,
     verify_runtime_aggregate_artifacts,
 )
-from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
 from ci.products.inventory import (
     canonical_json_bytes,
     load_canonical_json_bytes,
@@ -32,6 +29,7 @@ from ci.products.runtime_evidence import (
 )
 from ci.products.signatures import generate_development_key
 from ci.tests.test_products import phase_receipt, runtime_aggregate
+from ci.tests.test_product_runtime_maven import runtime_maven_fixture
 from ci.tests.test_runtime_evidence import RuntimeEvidenceFixture
 
 
@@ -152,47 +150,51 @@ class RuntimeAggregateIntegrationTest(unittest.TestCase):
                 receipt_map[(component, phase, target)] = receipt
                 adapter_receipt_values.append(receipt)
 
-        maven_files = []
-        for component in RUNTIME_MAVEN_COMPONENTS:
-            contents = f"maven-{component}\n".encode()
-            logical_path = f"maven/{component}/runtime.bin"
-            source = root / logical_path
-            source.parent.mkdir(parents=True, exist_ok=True)
-            source.write_bytes(contents)
-            maven_files.append({
-                "path": logical_path,
-                "role": "runtime-resolution",
-                "component": component,
-                "file": source,
-            })
-            owner = (
-                variant_receipts[component]["package"]
-                if component in RUNTIME_TARGETS
-                else receipt_map[(component, "metadata", component)]
-            )
-            owner["outputs"].append(_output("maven", f"outputs/{logical_path}", contents))
-            if component in RUNTIME_ADAPTERS:
-                primary = "main.jar" if component == "jvm" else "main.klib"
-                for phase in ("binary", "package"):
-                    receipt_map[(component, phase, component)]["outputs"].append(
-                        _output("publication", f"outputs/publication/{primary}", contents),
-                    )
-            for suffix in CONTRACT_CHECKSUM_SUFFIXES:
-                sidecar_contents = (
-                    hashlib.new(suffix[1:], contents).hexdigest().encode("ascii") + b"\n"
-                )
-                sidecar_path = logical_path + suffix
-                sidecar = root / sidecar_path
-                sidecar.write_bytes(sidecar_contents)
-                maven_files.append({
-                    "path": sidecar_path,
-                    "role": "checksum",
-                    "component": component,
-                    "file": sidecar,
+        original_primaries = {}
+        for component in (*RUNTIME_TARGETS, *RUNTIME_ADAPTERS):
+            main = "main.jar" if component == "jvm" else "main.klib"
+            contents = {
+                main: f"synthetic {component} Runtime publication\n".encode(),
+                "sources.jar": f"synthetic {component} sources publication\n".encode(),
+                "javadoc.jar": f"synthetic {component} documentation publication\n".encode(),
+            }
+            if component in RUNTIME_TARGETS:
+                contents.update({
+                    "cinterop-codexDesktop.klib":
+                        f"synthetic {component} desktop cinterop\n".encode(),
+                    "cinterop-codexAgentC.klib":
+                        f"synthetic {component} C ABI cinterop\n".encode(),
                 })
-                owner["outputs"].append(_output(
-                    "maven", f"outputs/{sidecar_path}", sidecar_contents,
-                ))
+                if component in {"macos-arm64", "macos-x64"}:
+                    contents["metadata.jar"] = (
+                        f"synthetic {component} metadata publication\n".encode()
+                    )
+                owner_phases = (variant_receipts[component]["binary"],)
+            else:
+                owner_phases = (
+                    receipt_map[(component, "binary", component)],
+                    receipt_map[(component, "package", component)],
+                )
+            original_primaries[component] = contents
+            for owner in owner_phases:
+                owner["outputs"].extend(
+                    _output("publication", f"outputs/publication/{name}", value)
+                    for name, value in contents.items()
+                )
+                owner["outputs"].sort(key=lambda value: value["relativePath"])
+
+        maven_records, maven_contents = runtime_maven_fixture(
+            runtime_aggregate()["runtimeVersion"], "0.2.0", original_primaries=original_primaries,
+        )
+        maven_files = []
+        for record in maven_records:
+            source = root / "aggregate" / record["path"]
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(maven_contents[record["path"]])
+            maven_files.append({
+                "path": record["path"], "role": record["role"],
+                "component": record["component"], "file": source,
+            })
 
         contract_bytes = contract_receipt_path.read_bytes()
         for component in RUNTIME_ADAPTERS:
@@ -300,7 +302,11 @@ class RuntimeAggregateIntegrationTest(unittest.TestCase):
             "runtime-aggregate",
             f"outputs/codex-agent-runtime-{aggregate['runtimeVersion']}-manifest.json",
             canonical_json_bytes(aggregate),
+        ), *(
+            _output("maven", f"outputs/{record['path']}", maven_contents[record["path"]])
+            for record in maven_records
         )]
+        aggregate_receipt["outputs"].sort(key=lambda value: value["relativePath"])
         return {
             "aggregate": aggregate,
             "aggregate_receipt": aggregate_receipt,
@@ -360,9 +366,11 @@ class RuntimeAggregateIntegrationTest(unittest.TestCase):
         manifest = root / f"codex-agent-runtime-{fixture['aggregate']['runtimeVersion']}-manifest.json"
         write_canonical_json(manifest, fixture["aggregate"])
         receipt = fixture["aggregate_receipt"]
-        receipt["outputs"] = [_output(
-            "runtime-aggregate", f"outputs/{manifest.name}", manifest.read_bytes(),
-        )]
+        receipt["outputs"] = [
+            *(value for value in receipt["outputs"] if value["kind"] == "maven"),
+            _output("runtime-aggregate", f"outputs/{manifest.name}", manifest.read_bytes()),
+        ]
+        receipt["outputs"].sort(key=lambda value: value["relativePath"])
         receipt["buildKey"] = compute_build_key(
             product=receipt["product"], component=receipt["component"],
             phase=receipt["phase"], target=receipt["target"], inputs=receipt["inputs"],
@@ -504,18 +512,13 @@ class RuntimeAggregateIntegrationTest(unittest.TestCase):
                 self.verify(wrong_raw_kind)
 
             wrong_maven_path = copy.deepcopy(fixture)
-            receipt = next(
-                candidate for candidate in wrong_maven_path["adapter_receipt_values"]
-                if (candidate["component"], candidate["phase"], candidate["target"])
-                == ("jvm", "metadata", "jvm")
-            )
+            receipt = wrong_maven_path["aggregate_receipt"]
             output = next(
                 candidate for candidate in receipt["outputs"]
-                if candidate["relativePath"] == "outputs/maven/jvm/runtime.bin"
+                if candidate["kind"] == "maven"
             )
-            output["relativePath"] = "outputs/maven/jvm/wrong.bin"
+            output["relativePath"] += ".wrong"
             receipt["outputs"].sort(key=lambda value: value["relativePath"])
-            refresh_reference(wrong_maven_path["aggregate_receipt"], receipt)
             with self.assertRaisesRegex(ValueError, "owned by exactly one"):
                 self.verify(wrong_maven_path)
 
@@ -550,6 +553,28 @@ class RuntimeAggregateIntegrationTest(unittest.TestCase):
                                 ):
                             self.verify(changed)
 
+            for component in RUNTIME_TARGETS:
+                for mutation in ("missing", "mismatch"):
+                    changed = copy.deepcopy(fixture)
+                    receipt = changed["variant_receipts"][component]["binary"]
+                    publication = next(
+                        value for value in receipt["outputs"]
+                        if value["relativePath"] == "outputs/publication/main.klib"
+                    )
+                    if mutation == "missing":
+                        receipt["outputs"].remove(publication)
+                    else:
+                        publication["sha256"] = sha256_bytes(
+                            b"different original native publication",
+                        )
+                    with self.subTest(component=component, phase="binary", mutation=mutation), \
+                            self.assertRaisesRegex(
+                                ValueError,
+                                f"Runtime {component} Maven runtime-resolution differs from "
+                                "its original binary publication",
+                            ):
+                        self.verify(changed)
+
     def test_attestation_builder_rejects_unverified_aggregate_content(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -583,7 +608,7 @@ class RuntimeAggregateIntegrationTest(unittest.TestCase):
                     )
                     record["bytes"] = source.stat().st_size
                     record["sha256"] = sha256_bytes(source.read_bytes())
-                    expected = "owned by exactly one"
+                    expected = "metadata receipt does not bind the exact payload"
                 else:
                     fixture["aggregate_receipt"]["inputs"]["upstreamArtifacts"].pop()
                     expected = "predecessor closure mismatch"

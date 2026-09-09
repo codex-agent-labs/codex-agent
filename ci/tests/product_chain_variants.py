@@ -29,7 +29,6 @@ from ci.products.c_abi import (
     portable_verify_c_abi_package_evidence,
     write_c_abi_package_evidence,
 )
-from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
 from ci.products.inventory import (
     canonical_json_bytes,
     load_canonical_json_bytes,
@@ -194,10 +193,6 @@ def _c_abi_values(
     )
 
 
-def _checksum(contents: bytes, suffix: str) -> bytes:
-    return hashlib.new(suffix.removeprefix("."), contents).hexdigest().encode("ascii") + b"\n"
-
-
 def build_variants(
     root: Path, contract: dict[str, Any], context: dict[str, Any], *, include_bootstrap: bool = False,
     include_execution: bool = True,
@@ -225,7 +220,7 @@ def build_variants(
     manifests: dict[str, dict[str, Any]] = {}
     receipts: dict[str, dict[str, dict[str, Any]]] = {}
     raw_sdks: dict[str, dict[str, Any]] = {}
-    runtime_maven_files: list[dict[str, Any]] = []
+    publication_primaries: dict[str, dict[str, Path]] = {}
 
     for evidence_target, target in PRODUCT_RUNTIME_TARGETS.items():
         spec = TARGET_SPECS[evidence_target]
@@ -233,8 +228,7 @@ def build_variants(
         validation_stage = stages / target / "validation"
         c_abi_dir = package_stage / "outputs/c-abi"
         app_dir = package_stage / "outputs/app-server"
-        maven_dir = package_stage / "outputs/maven" / target
-        for directory in (c_abi_dir, app_dir, maven_dir, validation_stage / "outputs/c-abi", validation_stage / "outputs/native"):
+        for directory in (c_abi_dir, app_dir, validation_stage / "outputs/c-abi", validation_stage / "outputs/native"):
             directory.mkdir(parents=True, exist_ok=True)
 
         library = inputs / evidence_target / "library"
@@ -264,25 +258,6 @@ def build_variants(
         snapshot = package_c_abi_sdk(package_input, c_abi_archive)
         app_archive = app_dir / app_archives[evidence_target].name
         app_archive.write_bytes(app_archives[evidence_target].read_bytes())
-
-        maven_primary = maven_dir / "runtime.klib"
-        maven_contents = f"S808 synthetic {target} Maven runtime fixture\n".encode()
-        maven_primary.write_bytes(maven_contents)
-        runtime_maven_files.append({
-            "path": f"maven/{target}/runtime.klib",
-            "role": "runtime-resolution",
-            "component": target,
-            "file": maven_primary,
-        })
-        for suffix in CONTRACT_CHECKSUM_SUFFIXES:
-            sidecar = maven_primary.with_name(maven_primary.name + suffix)
-            sidecar.write_bytes(_checksum(maven_contents, suffix))
-            runtime_maven_files.append({
-                "path": f"maven/{target}/runtime.klib{suffix}",
-                "role": "checksum",
-                "component": target,
-                "file": sidecar,
-            })
 
         raw_evidence = validation_stage / "outputs/c-abi" / f"c-abi-package-{target}.json"
         write_c_abi_package_evidence(
@@ -356,7 +331,7 @@ def build_variants(
             write_synthetic_bootstrap(validation_stage / "outputs/c-abi-bootstrap", references, verified_sdk, contract)
         package_outputs = write_output_manifest(
             package_stage, "runtime", target, "package", target, _VERSION,
-            {"c-abi": "outputs/c-abi", "app-server": "outputs/app-server", "maven": "outputs/maven"},
+            {"c-abi": "outputs/c-abi", "app-server": "outputs/app-server"},
         )["outputs"]
         validation_outputs = write_output_manifest(
             validation_stage, "runtime", target, "validation", target, _VERSION,
@@ -374,9 +349,26 @@ def build_variants(
         binary_library = binary_stage / binary_relative
         binary_library.parent.mkdir(parents=True)
         binary_library.write_bytes(library.read_bytes())
+        primary_contents = {
+            "main.klib": f"S808 synthetic {target} Kotlin/Native publication fixture\n".encode(),
+            "sources.jar": f"S808 synthetic {target} sources publication fixture\n".encode(),
+            "javadoc.jar": f"S808 synthetic {target} documentation publication fixture\n".encode(),
+            "cinterop-codexDesktop.klib": f"S808 synthetic {target} desktop cinterop fixture\n".encode(),
+            "cinterop-codexAgentC.klib": f"S808 synthetic {target} C ABI cinterop fixture\n".encode(),
+        }
+        if target in {"macos-arm64", "macos-x64"}:
+            primary_contents["metadata.jar"] = (
+                f"S808 synthetic {target} metadata publication fixture\n".encode()
+            )
+        publication_primaries[target] = {}
+        for name, contents in primary_contents.items():
+            primary = binary_stage / "outputs/publication" / name
+            primary.parent.mkdir(parents=True, exist_ok=True)
+            primary.write_bytes(contents)
+            publication_primaries[target][name] = primary
         binary_outputs = write_output_manifest(
             binary_stage, "runtime", target, "binary", target, _VERSION,
-            {"runtime-binary": "outputs/binary"},
+            {"runtime-binary": "outputs/binary", "publication": "outputs/publication"},
         )["outputs"]
         for phase, stage in (("binary", binary_stage), ("package", package_stage), ("validation", validation_stage)):
             context.setdefault("phase_stages", {})[PhaseInstanceId("runtime", target, phase, target)] = stage
@@ -519,5 +511,5 @@ def build_variants(
         "receipts": receipts,
         "stages": stages,
         "raw_sdks": raw_sdks,
-        "runtime_maven_files": runtime_maven_files,
+        "publication_primaries": publication_primaries,
     }

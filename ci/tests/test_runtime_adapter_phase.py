@@ -155,15 +155,14 @@ class RuntimeAdapterPhaseTest(unittest.TestCase):
                                     predecessor=self.predecessor))
         self.assertEqual([("node-js", "package", "node-js")], self.calls)
 
-    def test_metadata_imports_original_package_and_exact_validated_handoff_not_maven(self):
+    def test_metadata_imports_only_exact_validated_handoff_not_release_maven(self):
         for component in RUNTIME_ADAPTERS:
             with self.subTest(component=component):
                 self.calls.clear()
-                self.assertEqual({**self.expected(component, "package", "runtimePackage"),
-                                  "codexAgent.runtimeValidationHandoff": str(self.handoff)},
+                self.assertEqual({"codexAgent.runtimeValidationHandoff": str(self.handoff)},
                                  properties(self.plan(component, "metadata"), predecessor=self.predecessor,
                                             validation_handoff=self.handoff))
-                self.assertEqual([(component, "package", component)], self.calls)
+                self.assertEqual([], self.calls)
 
     def test_unsupported_routes_and_missing_or_misplaced_handoff_fail_before_predecessor(self):
         invalid = [{}, {**self.plan("jvm", "binary"), "product": "sdk"},

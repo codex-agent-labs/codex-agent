@@ -1227,10 +1227,12 @@ class ProductSelectionTest(unittest.TestCase):
     def test_sdk_package_and_runtime_identity_tools_have_exact_product_owners(self) -> None:
         maven = classify_paths(["ci/products/sdk_maven.py"])
         self.assertEqual(
-            {"sdk-core", "sdk-android", "sdk-ios"},
+            {"sdk-core", "sdk-android", "sdk-ios", "runtime-aggregate", *NATIVE_BINDINGS},
             {instance.component for instance in maven.instances},
         )
-        self.assertTrue(all(instance.product == "sdk" for instance in maven.instances))
+        self.assertTrue(all(instance.product == "sdk" or
+                            (instance.component == "runtime-aggregate" and instance.phase == "metadata")
+                            for instance in maven.instances))
         self.assertEqual({"binary", "package", "validation", "metadata"}, {instance.phase for instance in maven.instances})
         paths = (
             "ci/products/sdk_maven.py",
@@ -1370,7 +1372,7 @@ class ProductSelectionTest(unittest.TestCase):
         expected = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "runtime" and (
             instance.phase in {"binary", "validation"} or
             (instance.phase == "package" and instance.component in NATIVE_TARGETS) or
-            (instance.phase == "metadata" and instance.component in {"jvm", "node-js", "node-wasm"}))}
+            (instance.phase == "metadata" and instance.component in {"jvm", "node-js", "node-wasm", "runtime-aggregate"}))}
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((path,) if instance in expected else (), phase_inventory_paths((path,), instance))
 
@@ -1379,10 +1381,10 @@ class ProductSelectionTest(unittest.TestCase):
         path = "runtime/build-logic/src/main/kotlin/RuntimeAdapterMavenHandoff.kt"
         adapters = {"jvm", "node-js", "node-wasm"}
         direct = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "runtime" and (
-            (instance.component in adapters and instance.phase in {"binary", "metadata"}) or
-            (instance.component in NATIVE_TARGETS and instance.phase == "binary"))}
+            (instance.component in RUNTIME_COMPONENTS and instance.phase == "binary") or
+            (instance.component == "runtime-aggregate" and instance.phase == "metadata"))}
         selected = identities(classify_paths((path,)))
-        self.assertEqual(11, len(direct))
+        self.assertEqual(9, len(direct))
         self.assertTrue({instance for instance in PHASE_INSTANCE_IDS
                          if instance.product == "runtime" and instance.component in adapters}.issubset(selected))
         self.assertIn(PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"), selected)
@@ -1416,11 +1418,33 @@ class ProductSelectionTest(unittest.TestCase):
             instance.phase == "binary" or
             (instance.phase == "package" and instance.component in NATIVE_TARGETS) or
             (instance.phase == "validation" and instance.target in NATIVE_TARGETS) or
-            (instance.phase == "metadata" and instance.component in {"jvm", "node-js", "node-wasm"}))}
-        self.assertEqual(36, len(expected))
+            (instance.phase == "metadata" and instance.component in {"jvm", "node-js", "node-wasm", "runtime-aggregate"}))}
+        self.assertEqual(37, len(expected))
         self.assertTrue(expected.issubset(identities(classify_paths((path,)))))
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((path,) if instance in expected else (), phase_inventory_paths((path,), instance))
+
+    def test_runtime_maven_semantic_helpers_key_aggregate_and_independent_native_validation(self):
+        from ci.tests.test_product_plan import plan
+        aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+        paths = ("ci/products/runtime_maven.py", "ci/products/contract_model.py", "ci/products/sdk_maven.py")
+        for path in paths:
+            self.assertEqual((path,), phase_inventory_paths((path,), aggregate))
+            for language in NATIVE_BINDINGS:
+                for target in NATIVE_TARGETS:
+                    instance = PhaseInstanceId("sdk", language, "validation", target)
+                    self.assertEqual((path,), phase_inventory_paths((path,), instance))
+            for target in NATIVE_TARGETS:
+                self.assertEqual((), phase_inventory_paths((path,), PhaseInstanceId("runtime", target, "binary", target)))
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / path
+                source.parent.mkdir(parents=True)
+                keys = []
+                for contents in (b"first semantic policy", b"changed semantic policy"):
+                    source.write_bytes(contents)
+                    keys.append(plan(aggregate, inventory=phase_file_inventory(root, (path,), aggregate))["buildKey"])
+                self.assertNotEqual(*keys)
 
     def test_native_metadata_task_keys_only_five_sdk_metadata_phases(self):
         path = "gradle/build-logic/src/main/kotlin/NativeWrapperMetadataContentTask.kt"

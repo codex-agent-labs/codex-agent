@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import product_reuse as products
 import runtime_aggregate_phase
 from products import runtime_aggregate
+from products.inventory import canonical_json_bytes, load_canonical_json_bytes
 from products.registry import NATIVE_TARGETS, PhaseInstanceId
 
 
@@ -24,6 +25,7 @@ class RuntimeAggregateExecutionTest(unittest.TestCase):
         self.trust_root = self.root / 'original-trust'
         self.trust_root.mkdir()
         self.destination = self.root / 'output'
+        self.stage = self.root / 'codex-agent-runtime-desktop/build/product-stage/runtime/runtime-aggregate/metadata'
         self.key = 'sha256:' + 'a' * 64
         self.instance = PhaseInstanceId('runtime', 'runtime-aggregate', 'metadata', 'aggregate')
         self.state = SimpleNamespace(prior_ready_plans={self.instance: {'buildKey': self.key}},
@@ -41,13 +43,31 @@ class RuntimeAggregateExecutionTest(unittest.TestCase):
     def prepare(self, _state, _instance, destination, _key, _root):
         destination.mkdir(parents=True)
         (destination / 'original').write_bytes(b'unchanged original')
-        return {f'codexAgent.{name}': str(destination / 'original') for name in (
+        return {**{f'codexAgent.{name}': str(destination / 'original') for name in (
             'contractPayload', 'contractMetadataReceipt', 'contractAttestation',
-            'contractAttestationSignature', 'contractPublicKey')}, {}
+            'contractAttestationSignature', 'contractPublicKey')}, 'codexAgent.contractVersion': '0.2.0'}, {}
+
+    def publication(self, *args, **kwargs):
+        from products.receipt import write_output_manifest
+        directory = self.stage / 'outputs/maven/jvm'
+        directory.mkdir(parents=True)
+        (directory / 'fixture.jar').write_bytes(b'composition control only')
+        write_output_manifest(self.stage, 'runtime', 'runtime-aggregate', 'metadata', 'aggregate',
+                              '0.2.7', {'maven': 'outputs/maven'})
+        return SimpleNamespace(returncode=0)
 
     def produce(self, **kwargs):
         self.arguments = kwargs
-        (kwargs['output_directory'] / 'codex-agent-runtime-0.2.7-manifest.json').write_bytes(b'{}\n')
+        original = load_canonical_json_bytes((self.stage / 'output-manifest.json').read_bytes())['outputs']
+        manifest = {'runtimeMavenFiles': [{'path': item['relativePath'].removeprefix('outputs/'),
+                                         'bytes': item['bytes'], 'sha256': item['sha256']} for item in original]}
+        (kwargs['output_directory'] / 'codex-agent-runtime-0.2.7-manifest.json').write_bytes(canonical_json_bytes(manifest))
+        return {'manifest': manifest}
+
+    def policy(self, _root, _commit, destination):
+        destination.mkdir()
+        (destination / 'keyring').write_bytes(b'original policy')
+        return SimpleNamespace(keyring=destination / 'keyring', keys=destination)
 
     def invoke(self, **changes):
         return products.execute_runtime_aggregate(
@@ -58,13 +78,16 @@ class RuntimeAggregateExecutionTest(unittest.TestCase):
     def mocks(self, stack, *, collect=None, produce=None):
         stack.enter_context(mock.patch.object(products, '_verified_product_state', return_value=self.state))
         stack.enter_context(mock.patch.object(products, '_runtime_worker_checkout'))
+        stack.enter_context(mock.patch.object(products, '_runtime_worker_environment', return_value=({}, self.root / 'gradlew')))
+        stack.enter_context(mock.patch.object(products.subprocess, 'run', side_effect=self.publication))
+        stack.enter_context(mock.patch.object(runtime_aggregate_phase, 'collect_maven_outputs',
+            side_effect=lambda *_: ([], load_canonical_json_bytes((self.stage / 'output-manifest.json').read_bytes())['outputs'])))
         stack.enter_context(mock.patch.object(products, '_prepare_runtime_phase', side_effect=self.prepare))
-        stack.enter_context(mock.patch.object(products, '_release_trust', return_value=SimpleNamespace(
-            keyring=self.root / 'keyring', keys=self.root / 'keys')))
+        stack.enter_context(mock.patch.object(products, '_release_trust', side_effect=self.policy))
         stack.enter_context(mock.patch.object(runtime_aggregate_phase, 'collect_inputs',
             side_effect=collect, return_value={'variant_bundles': self.bundles,
                 'variant_phase_receipts': {}, 'variant_validation_evidence': {},
-                'runtime_maven_files': [], 'adapter_evidence': {}, 'adapter_receipts': [], 'adapter_report_files': {}}))
+                'publication_inputs': {}, 'adapter_evidence': {}, 'adapter_receipts': [], 'adapter_report_files': {}}))
         producer = stack.enter_context(mock.patch.object(runtime_aggregate, 'produce_runtime_aggregate',
                                                          side_effect=produce or self.produce))
         finalizer = stack.enter_context(mock.patch.object(products, 'finalize_phase_object', return_value={'fixture': True}))
@@ -80,7 +103,7 @@ class RuntimeAggregateExecutionTest(unittest.TestCase):
         self.assertNotIn('private_key', self.arguments)
         self.assertEqual(set(NATIVE_TARGETS), set(self.arguments['variant_attestations']))
         self.assertEqual('development', finalizer.call_args.kwargs['trust_domain'])
-        self.assertTrue((self.destination / 'stage/output-manifest.json').is_file())
+        self.assertTrue((self.stage / 'output-manifest.json').is_file())
 
     def test_input_mutation_during_translation_or_production_never_finalizes(self):
         for when in ('translation', 'production'):
@@ -89,16 +112,65 @@ class RuntimeAggregateExecutionTest(unittest.TestCase):
                 def mutate(*args, **kwargs):
                     (self.destination / 'inputs/original').write_bytes(b'changed')
                     if when == 'production':
-                        self.produce(**kwargs)
-                        return None
+                        return self.produce(**kwargs)
                     return {'variant_bundles': self.bundles, 'variant_phase_receipts': {},
-                            'variant_validation_evidence': {}, 'runtime_maven_files': [],
+                            'variant_validation_evidence': {}, 'publication_inputs': {},
                             'adapter_evidence': {}, 'adapter_receipts': [], 'adapter_report_files': {}}
                 with ExitStack() as stack:
                     _, finalizer = self.mocks(stack, **{'collect' if when == 'translation' else 'produce': mutate})
                     with self.assertRaisesRegex(ValueError, 'inputs changed'):
                         self.invoke()
                     finalizer.assert_not_called()
+
+    def test_coherent_maven_swap_after_original_binding_never_finalizes(self):
+        def swapped(**kwargs):
+            from products.receipt import write_output_manifest
+            (self.stage / 'outputs/maven/jvm/fixture.jar').write_bytes(b'changed but coherently redeclared')
+            write_output_manifest(self.stage, 'runtime', 'runtime-aggregate', 'metadata', 'aggregate',
+                                  '0.2.7', {'maven': 'outputs/maven'})
+            return self.produce(**kwargs)
+        with ExitStack() as stack:
+            _, finalizer = self.mocks(stack, produce=swapped)
+            with self.assertRaisesRegex(ValueError, 'Maven manifest changed'):
+                self.invoke()
+            finalizer.assert_not_called()
+
+    def test_staged_maven_change_after_manifest_creation_never_finalizes(self):
+        def swapped(**kwargs):
+            result = self.produce(**kwargs)
+            (self.stage / 'outputs/maven/jvm/fixture.jar').write_bytes(b'changed after manifest')
+            return result
+        with ExitStack() as stack:
+            _, finalizer = self.mocks(stack, produce=swapped)
+            with self.assertRaisesRegex(ValueError, 'staged bytes changed'):
+                self.invoke()
+            finalizer.assert_not_called()
+
+    def test_release_policy_change_during_publication_never_reaches_product_verifier(self):
+        def changed(*args, **kwargs):
+            result = self.publication(*args, **kwargs)
+            (self.destination / 'release-policy/keyring').write_bytes(b'changed policy')
+            return result
+        with ExitStack() as stack:
+            producer, finalizer = self.mocks(stack)
+            stack.enter_context(mock.patch.object(products.subprocess, 'run', side_effect=changed))
+            with self.assertRaisesRegex(ValueError, 'release policy changed'):
+                self.invoke()
+            producer.assert_not_called()
+            finalizer.assert_not_called()
+
+    def test_bytecode_namespace_created_by_publication_is_rejected(self):
+        def changed(*args, **kwargs):
+            result = self.publication(*args, **kwargs)
+            (self.destination / 'python-bytecode').mkdir()
+            return result
+        with ExitStack() as stack:
+            producer, finalizer = self.mocks(stack)
+            stack.enter_context(mock.patch.object(products.subprocess, 'run', side_effect=changed))
+            with self.assertRaisesRegex(ValueError, 'bytecode namespace'):
+                self.invoke()
+            producer.assert_not_called()
+            finalizer.assert_not_called()
 
     def test_wrong_election_overlapping_originals_and_extra_trust_fail_closed(self):
         with ExitStack() as stack:

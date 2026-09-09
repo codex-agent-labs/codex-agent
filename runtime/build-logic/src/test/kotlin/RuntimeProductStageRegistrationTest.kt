@@ -132,7 +132,7 @@ class RuntimeProductStageRegistrationTest {
             assertEquals(null, rejected.task(":invalidateAdapterMetadataOutputs"))
             assertEquals(TaskOutcome.FAILED, rejected.task(":verifyAdapterMetadataInputs")?.outcome)
             assertTrue(
-                "Runtime Maven repository" in rejected.output,
+                "projection" in rejected.output.lowercase(),
                 rejected.output,
             )
             assertFalse(phaseRoot.exists())
@@ -265,9 +265,6 @@ class RuntimeProductStageRegistrationTest {
                                         )
                                         adapter.projection.set(
                                             layout.projectDirectory.file("adapter-handoff/projection.json"),
-                                        )
-                                        adapter.mavenRepository.set(
-                                            layout.projectDirectory.dir("empty-maven-repository"),
                                         )
                                     }
                                 },

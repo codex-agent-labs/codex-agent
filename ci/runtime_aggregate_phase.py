@@ -13,7 +13,7 @@ from typing import Any
 
 from products.aggregate import (
     RUNTIME_ADAPTERS, RUNTIME_EVIDENCE_TARGETS, RUNTIME_TARGETS,
-    require_runtime_adapter_maven_primary, validate_runtime_maven_inventory,
+    require_runtime_adapter_maven_primary,
 )
 from products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
 from products.inventory import canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys
@@ -120,35 +120,48 @@ No fallback compilation, publication reconstruction, or attestation is allowed.
                                    reject_symlink_parents=True) != canonical_json_bytes(projection):
             raise ValueError("Runtime aggregate adapter projection differs from original reports")
 
-    maven, maven_records, contents = [], [], {}
-    receipts = {identity: original["receipt"] for identity, original in originals.items()}
+    publications = {}
     for component in (*RUNTIME_TARGETS, *RUNTIME_ADAPTERS):
-        original = originals[(component, "package" if component in RUNTIME_TARGETS else "metadata", component)]
-        outputs = [record for record in original["receipt"]["outputs"] if record["kind"] == "maven"]
+        original = originals[(component, "binary" if component in RUNTIME_TARGETS else "package", component)]
+        outputs = [record for record in original["receipt"]["outputs"] if record["kind"] == "publication"]
         if not outputs:
-            raise ValueError(f"Runtime aggregate requires original {component} Maven outputs")
-        for record in outputs:
-            if not record["relativePath"].startswith(f"outputs/maven/{component}/"):
-                raise ValueError("Runtime aggregate Maven output escapes its original component")
-            logical = record["relativePath"].removeprefix("outputs/")
-            name = Path(logical).name
-            role = ("checksum" if any(name.endswith(suffix) for suffix in CONTRACT_CHECKSUM_SUFFIXES)
-                    else "module-metadata" if name.endswith((".pom", ".module")) or name == "maven-metadata.xml"
-                    else "sources" if name == "sources.jar" or name.endswith("-sources.jar")
-                    else "javadoc" if name == "javadoc.jar" or name.endswith("-javadoc.jar")
-                    else "runtime-resolution")
-            require_runtime_adapter_maven_primary(component, role, record, receipts)
-            path = original["stage"] / record["relativePath"]
-            maven.append({"path": logical, "role": role, "component": component, "file": path})
-            maven_records.append({"path": logical, "role": role, "component": component,
-                                  "bytes": record["bytes"], "sha256": record["sha256"]})
-            contents[logical] = read_regular_file_bytes(path, reject_symlink_parents=True)
-    validate_runtime_maven_inventory(maven_records, contents)
+            raise ValueError(f"Runtime aggregate requires original {component} publication outputs")
+        publications[component] = {"stage": original["stage"], "version": original["receipt"]["productVersion"]}
     return {
         "variant_bundles": bundles, "variant_phase_receipts": phases, "variant_validation_evidence": validation,
-        "runtime_maven_files": sorted(maven, key=lambda record: record["path"]), "adapter_evidence": evidence,
+        "publication_inputs": publications, "adapter_evidence": evidence,
         "adapter_receipts": [{"component": component, "phase": phase, "target": target,
                               "receipt": originals[(component, phase, target)]["receiptPath"]}
                              for component, phase, target in _adapter_receipt_identities()],
         "adapter_report_files": reports,
     }
+
+
+def collect_maven_outputs(stage, runtime_version, contract_version, predecessor):
+    """Verify Gradle's fresh declaration in place, including original primaries."""
+    from products.runtime_maven import validate_runtime_maven_publications
+    manifest = verify_output_manifest_identity(stage, "runtime", "runtime-aggregate", "metadata", "aggregate", runtime_version)
+    originals = {(component, phase, component): predecessor(component, phase, component)["receipt"]
+                 for component in (*RUNTIME_TARGETS, *RUNTIME_ADAPTERS)
+                 for phase in (("binary", "package") if component in RUNTIME_ADAPTERS else ("binary",))}
+    files, records, contents = [], [], {}
+    for output in manifest["outputs"]:
+        parts = Path(output["relativePath"]).parts
+        if output["kind"] != "maven" or len(parts) < 4 or parts[:2] != ("outputs", "maven"):
+            raise ValueError("Aggregate Maven stage contains an undeclared output kind/path")
+        component, logical = parts[2], output["relativePath"].removeprefix("outputs/")
+        if component not in (*RUNTIME_TARGETS, *RUNTIME_ADAPTERS):
+            raise ValueError("Aggregate Maven output has an unknown component")
+        name = parts[-1]
+        role = ("checksum" if any(name.endswith(suffix) for suffix in CONTRACT_CHECKSUM_SUFFIXES)
+                else "module-metadata" if name.endswith((".pom", ".module"))
+                else "sources" if name.endswith("-sources.jar")
+                else "javadoc" if name.endswith("-javadoc.jar") else "runtime-resolution")
+        record = {"path": logical, "role": role, "component": component,
+                  "bytes": output["bytes"], "sha256": output["sha256"]}
+        require_runtime_adapter_maven_primary(component, role, record, originals)
+        records.append(record)
+        files.append({"path": logical, "role": role, "component": component, "file": stage / output["relativePath"]})
+        contents[logical] = read_regular_file_bytes(stage / output["relativePath"], reject_symlink_parents=True)
+    validate_runtime_maven_publications(runtime_version, contract_version, records, contents)
+    return files, manifest["outputs"]

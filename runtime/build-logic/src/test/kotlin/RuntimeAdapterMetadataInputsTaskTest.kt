@@ -23,7 +23,7 @@ class RuntimeAdapterMetadataInputsTaskTest {
     }
 
     @Test
-    fun `valid disjoint inputs survive owned cleanup and semantic verifier receives originals`() = fixture { value ->
+    fun `valid disjoint inputs survive owned cleanup and semantic verifier receives captured projection`() = fixture { value ->
         val sibling = value.root.resolve("build/product-stage/runtime/node-js/metadata/preserved")
         Files.createDirectories(sibling.parent)
         Files.writeString(sibling, "sibling")
@@ -37,25 +37,25 @@ class RuntimeAdapterMetadataInputsTaskTest {
         }
         assertEquals(1, calls)
         assertEquals("original projection", Files.readString(value.projection))
-        assertEquals("original Maven bytes", Files.readString(value.maven.resolve("artifact.jar")))
+        assertEquals("external original evidence", Files.readString(value.handoff.resolve("original-receipt.json")))
         assertEquals("sibling", Files.readString(sibling))
-        assertEquals("original Maven bytes", Files.readString(value.stage.resolve("outputs/maven/artifact.jar")))
+        assertFalse(Files.exists(value.stage.resolve("outputs/maven")))
     }
 
     @Test
     fun `input output aliases and out of scope output preserve all originals`() {
-        for (mutation in listOf("maven-child", "maven-parent", "handoff", "stage")) fixture { value ->
-            val maven = when (mutation) {
-                "maven-child" -> value.stage.resolve("original-maven").also { Files.createDirectories(it) }
-                "maven-parent" -> value.root.resolve("build")
-                else -> value.maven
+        for (mutation in listOf("handoff-child", "handoff-parent", "handoff", "stage")) fixture { value ->
+            val handoff = when (mutation) {
+                "handoff-child" -> value.stage.resolve("original-handoff").also { Files.createDirectories(it) }
+                "handoff-parent" -> value.root.resolve("build")
+                "handoff" -> value.stage
+                else -> value.handoff
             }
-            val handoff = if (mutation == "handoff") value.stage else value.handoff
             val projection = handoff.resolve("projection.json")
             if (projection != value.projection) Files.writeString(projection, "original imported projection")
             val stage = if (mutation == "stage") value.root.resolve("inputs") else value.stage
             assertFailsWith<IllegalStateException> {
-                verifyRuntimeAdapterMetadataInputs("jvm", handoff, projection, maven, stage,
+                verifyRuntimeAdapterMetadataInputs("jvm", handoff, projection, stage,
                     value.root.resolve("build")) { _, _ -> error("Verifier must not run") }
             }
             value.assertPreserved()
@@ -69,19 +69,19 @@ class RuntimeAdapterMetadataInputsTaskTest {
             val external = value.root.resolve("external").also { Files.createDirectories(it) }
             val sentinel = external.resolve("original").also { Files.writeString(it, "external original") }
             val link = when (mutation) {
-                "input-child" -> value.maven.resolve("unsafe")
+                "input-child" -> value.handoff.resolve("unsafe")
                 "output-child" -> value.stage.resolve("unsafe")
                 else -> value.root.resolve("linked-parent")
             }
             Files.createSymbolicLink(link, if (mutation == "dangling") value.root.resolve("absent") else external)
             try {
-                val maven = when (mutation) {
+                val handoff = when (mutation) {
                     "parent", "dangling" -> link.resolve("repository")
-                    "parent-dotdot" -> link.resolve("../inputs/maven")
-                    else -> value.maven
+                    "parent-dotdot" -> link.resolve("../inputs/handoff")
+                    else -> value.handoff
                 }
                 assertFailsWith<IllegalStateException> {
-                    verifyRuntimeAdapterMetadataInputs("jvm", value.handoff, value.projection, maven,
+                    verifyRuntimeAdapterMetadataInputs("jvm", handoff, handoff.resolve("projection.json"),
                         value.stage, value.root.resolve("build")) { _, _ -> error("Verifier must not run") }
                 }
                 value.assertPreserved()
@@ -99,7 +99,7 @@ class RuntimeAdapterMetadataInputsTaskTest {
             value.verify { _, _ -> error("Verifier must not run") }
         }
         assertEquals("prior manifest", Files.readString(value.stage.resolve("output-manifest.json")))
-        assertEquals("original Maven bytes", Files.readString(value.maven.resolve("artifact.jar")))
+        assertEquals("external original evidence", Files.readString(value.handoff.resolve("original-receipt.json")))
     }
 
     @Test
@@ -115,17 +115,18 @@ class RuntimeAdapterMetadataInputsTaskTest {
             }
             assertTrue(Files.isSameFile(buildAlias, value.root.resolve("build")))
             val stageAlias = buildAlias.resolve("product-stage/runtime/jvm/metadata")
-            val maven = when (mutation) {
+            val handoff = when (mutation) {
                 "equal" -> stageAlias
-                "descendant" -> stageAlias.resolve("imported-maven").also { Files.createDirectories(it) }
+                "descendant" -> stageAlias.resolve("imported-handoff").also { Files.createDirectories(it) }
                 else -> buildAlias
             }
             val original = value.root.resolve("build/original-input").also { Files.writeString(it, "original") }
             if (mutation == "absent-stage") {
                 Files.walk(value.stage).use { entries -> entries.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
             }
+            val projection = handoff.resolve("projection.json").also { Files.writeString(it, "original aliased projection") }
             val failure = assertFailsWith<IllegalStateException> {
-                verifyRuntimeAdapterMetadataInputs("jvm", value.handoff, value.projection, maven,
+                verifyRuntimeAdapterMetadataInputs("jvm", handoff, projection,
                     value.stage, value.root.resolve("build")) { _, _ -> error("Verifier must not run") }
             }
             assertTrue("resolved original input" in failure.message.orEmpty(), failure.message)
@@ -141,8 +142,8 @@ class RuntimeAdapterMetadataInputsTaskTest {
 
     @Test
     fun `nonoverlapping semantic failures still remove stale output`() {
-        for (mutation in listOf("empty-maven", "projection")) fixture { value ->
-            if (mutation == "empty-maven") Files.delete(value.maven.resolve("artifact.jar"))
+        for (mutation in listOf("empty-projection", "projection")) fixture { value ->
+            if (mutation == "empty-projection") Files.writeString(value.projection, "")
             var calls = 0
             assertFailsWith<IllegalStateException> {
                 value.verify { _, _ ->
@@ -152,20 +153,18 @@ class RuntimeAdapterMetadataInputsTaskTest {
             }
             assertFalse(Files.exists(value.stage))
             assertEquals(if (mutation == "projection") 1 else 0, calls)
-            assertEquals("original projection", Files.readString(value.projection))
-            assertTrue(Files.isDirectory(value.maven))
+            assertEquals(if (mutation == "projection") "original projection" else "", Files.readString(value.projection))
+            assertEquals("external original evidence", Files.readString(value.handoff.resolve("original-receipt.json")))
         }
     }
 
     @Test
     fun `original or staged mutations reject success and remove partial metadata`() {
-        for (mutation in listOf("projection", "maven", "extra-original", "staged", "extra-staged")) fixture { value ->
+        for (mutation in listOf("projection", "staged", "extra-staged")) fixture { value ->
             val failure = assertFailsWith<IllegalStateException> {
                 value.verify { _, captured ->
                     when (mutation) {
                         "projection" -> Files.writeString(value.projection, "changed original")
-                        "maven" -> Files.writeString(value.maven.resolve("artifact.jar"), "changed Maven bytes")
-                        "extra-original" -> Files.writeString(value.maven.resolve("extra.jar"), "extra original")
                         "staged" -> captured.writeText("changed captured bytes")
                         "extra-staged" -> Files.writeString(value.stage.resolve("outputs/extra.json"), "undeclared bytes")
                     }
@@ -174,7 +173,7 @@ class RuntimeAdapterMetadataInputsTaskTest {
             assertTrue("changed during verification" in failure.message.orEmpty(), failure.message)
             assertFalse(Files.exists(value.stage))
             assertTrue(Files.isRegularFile(value.projection))
-            assertTrue(Files.isRegularFile(value.maven.resolve("artifact.jar")))
+            assertEquals("external original evidence", Files.readString(value.handoff.resolve("original-receipt.json")))
         }
     }
 
@@ -186,45 +185,73 @@ class RuntimeAdapterMetadataInputsTaskTest {
         Files.writeString(value.stage.resolve("output-manifest.json"), "prior manifest")
         Files.writeString(value.stage.resolve("outputs/obsolete.json"), "old bytes")
         Files.writeString(value.projection, "new original projection")
-        Files.writeString(value.maven.resolve("artifact.jar"), "new original Maven bytes")
         value.verify(verify)
         assertEquals(listOf("original projection", "new original projection"), observed)
         assertFalse(Files.exists(value.stage.resolve("output-manifest.json")))
         assertFalse(Files.exists(value.stage.resolve("outputs/obsolete.json")))
         assertEquals("new original projection", Files.readString(value.stage.resolve("outputs/evidence/jvm.json")))
-        assertEquals("new original Maven bytes", Files.readString(value.stage.resolve("outputs/maven/artifact.jar")))
+        assertFalse(Files.exists(value.stage.resolve("outputs/maven")))
     }
 
-    private fun fixture(block: (Fixture) -> Unit) {
+    @Test
+    fun `all adapters emit only unchanged projection bytes across repeated staging`() {
+        for (adapter in listOf("jvm", "node-js", "node-wasm")) fixture(adapter) { value ->
+            val obsoleteMaven = value.stage.resolve("outputs/maven/obsolete.jar")
+            Files.createDirectories(obsoleteMaven.parent)
+            Files.writeString(obsoleteMaven, "prior exact-release publication must not survive")
+            val originals = listOf(value.projection, value.handoff.resolve("original-receipt.json"))
+                .associateWith { Files.readAllBytes(it).toList() }
+            fun inventory(): Map<String, List<Byte>> = Files.walk(value.stage).use { entries ->
+                entries.filter { Files.isRegularFile(it) }.toList().associate { path ->
+                    value.stage.relativize(path).joinToString("/") to Files.readAllBytes(path).toList()
+                }
+            }
+            var calls = 0
+            val verify: (String, File) -> Unit = { component, captured ->
+                calls++
+                assertEquals(adapter, component)
+                assertEquals("original projection", captured.readText())
+            }
+            value.verify(verify)
+            val first = inventory()
+            assertEquals(setOf("outputs/evidence/$adapter.json"), first.keys)
+            value.verify(verify)
+            assertEquals(first, inventory())
+            assertEquals(2, calls)
+            originals.forEach { (path, bytes) -> assertEquals(bytes, Files.readAllBytes(path).toList()) }
+            assertFalse(Files.exists(obsoleteMaven))
+        }
+    }
+
+    private fun fixture(adapter: String = "jvm", block: (Fixture) -> Unit) {
         val root = createTempDirectory("runtime-adapter-metadata-inputs-").toFile().canonicalFile.toPath()
         try {
-            block(Fixture(root))
+            block(Fixture(root, adapter))
         } finally {
             Files.walk(root).use { entries -> entries.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
         }
     }
 
-    private class Fixture(val root: Path) {
+    private class Fixture(val root: Path, val adapter: String) {
         val handoff = root.resolve("inputs/handoff")
         val projection = handoff.resolve("projection.json")
-        val maven = root.resolve("inputs/maven")
-        val stage = root.resolve("build/product-stage/runtime/jvm/metadata")
+        val stage = root.resolve("build/product-stage/runtime/$adapter/metadata")
 
         init {
-            listOf(handoff, maven, stage).forEach { Files.createDirectories(it) }
+            listOf(handoff, stage).forEach { Files.createDirectories(it) }
             Files.writeString(projection, "original projection")
-            Files.writeString(maven.resolve("artifact.jar"), "original Maven bytes")
+            Files.writeString(handoff.resolve("original-receipt.json"), "external original evidence")
             Files.writeString(stage.resolve("output-manifest.json"), "prior manifest")
         }
 
         fun verify(verifier: (String, File) -> Unit) = verifyRuntimeAdapterMetadataInputs(
-            "jvm", handoff, projection, maven, stage, root.resolve("build"), verifier,
+            adapter, handoff, projection, stage, root.resolve("build"), verifier,
         )
 
         fun assertPreserved() {
             assertEquals("prior manifest", Files.readString(stage.resolve("output-manifest.json")))
             assertEquals("original projection", Files.readString(projection))
-            assertEquals("original Maven bytes", Files.readString(maven.resolve("artifact.jar")))
+            assertEquals("external original evidence", Files.readString(handoff.resolve("original-receipt.json")))
         }
     }
 }

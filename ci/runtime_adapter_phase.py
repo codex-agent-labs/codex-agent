@@ -114,9 +114,9 @@ not a caller-selected Maven repository or an unverified projection.
         return {}
     if phase == "package":
         return imported(component, "binary", component, "runtimeBinary")
+    if phase == "metadata":
+        return {"codexAgent.runtimeValidationHandoff": handoff}
     result = imported(component, "package", component, "runtimePackage")
     if phase == "validation" and target in NATIVE_TARGETS:
         result.update(imported(target, "package", target, "runtimeNativePackage"))
-    if phase == "metadata":
-        result["codexAgent.runtimeValidationHandoff"] = handoff
     return result

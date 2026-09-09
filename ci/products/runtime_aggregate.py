@@ -27,6 +27,7 @@ from .inventory import (
     load_canonical_json_bytes,
     publish_regular_tree,
     read_regular_file_bytes,
+    regular_file_inventory,
     require_array,
     require_exact_keys,
     require_identifier,
@@ -290,6 +291,8 @@ def produce_runtime_aggregate(
         )
     maven_records.sort(key=lambda record: record["path"])
     validate_runtime_maven_inventory(maven_records, maven_contents)
+    from .runtime_maven import validate_runtime_maven_publications
+    validate_runtime_maven_publications(version, contract["contractVersion"], maven_records, maven_contents)
     if type(adapter_evidence) is not dict or set(adapter_evidence) != set(RUNTIME_ADAPTERS):
         raise ValueError("Runtime adapter evidence must contain exactly JVM, Node JS, and Node Wasm")
     adapter_records = sorted((
@@ -316,8 +319,13 @@ def produce_runtime_aggregate(
     output = _safe_output_directory(Path(output_directory))
     manifest_name = f"codex-agent-runtime-{version}-manifest.json"
     with _held_output_parent(output) as (descriptor, held_output):
+        expected = []
         if os.listdir(held_output if os.name == "nt" else descriptor):
-            raise ValueError("Runtime aggregate output directory must be empty")
+            expected = [{"relativePath": record["path"], "bytes": record["bytes"], "sha256": record["sha256"]}
+                        for record in maven_records]
+            if regular_file_inventory(output) != expected or any(
+                    Path(record["file"]) != output / record["path"] for record in runtime_maven_files):
+                raise ValueError("Runtime aggregate output directory must be empty or its exact staged Maven inventory")
         if not _publish_output(
             manifest_bytes, descriptor, held_output, manifest_name, max_bytes=_JSON_LIMIT,
         ):
@@ -326,7 +334,9 @@ def produce_runtime_aggregate(
             descriptor, held_output, manifest_name, max_bytes=_JSON_LIMIT,
         ) != manifest_bytes:
             raise ValueError("Published Runtime aggregate manifest changed")
-        if sorted(os.listdir(held_output if os.name == "nt" else descriptor)) != [manifest_name]:
+        final_inventory = sorted([*expected, {"relativePath": manifest_name,
+            "bytes": len(manifest_bytes), "sha256": sha256_bytes(manifest_bytes)}], key=lambda record: record["relativePath"])
+        if regular_file_inventory(output) != final_inventory:
             raise ValueError("Runtime aggregate output directory contains unexpected entries")
         _require_parent_identity(descriptor, held_output)
     return {
@@ -493,7 +503,11 @@ def _aggregate_bound_inputs(
         "bytes": payload["bytes"],
         "sha256": payload["sha256"],
     }
-    if receipt["outputs"] != [expected_output]:
+    expected_outputs = sorted([expected_output, *({
+        "kind": "maven", "relativePath": f"outputs/{record['path']}",
+        "bytes": record["bytes"], "sha256": record["sha256"],
+    } for record in aggregate["runtimeMavenFiles"])], key=lambda record: record["relativePath"])
+    if receipt["outputs"] != expected_outputs:
         raise ValueError("Runtime aggregate metadata receipt does not bind the exact payload")
     return aggregate, receipt, receipt_bytes, payload
 

@@ -1,6 +1,5 @@
 """Original signed synthetic artifacts, not compiler or hosted-runner evidence."""
 import copy
-import hashlib
 from pathlib import Path
 import shutil
 import sys
@@ -10,8 +9,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import runtime_aggregate_phase
 from products.inventory import canonical_json_bytes, load_canonical_json_bytes, sha256_bytes, write_canonical_json
-from products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
-from products.receipt import compute_build_key, output_inventory_digest
+from products.receipt import compute_build_key, output_inventory_digest, write_output_manifest
 from products.runtime_aggregate import produce_runtime_aggregate
 from ci.tests.test_product_native_chain import build_chain
 
@@ -80,7 +78,9 @@ class RuntimeAggregatePhaseTest(unittest.TestCase):
         self.assertEqual(25, len(result["adapter_receipts"]))
         self.assertEqual(15, sum(map(len, result["adapter_report_files"].values())))
         self.assertEqual({"variant_bundles", "variant_phase_receipts", "variant_validation_evidence",
-                          "runtime_maven_files", "adapter_evidence", "adapter_receipts", "adapter_report_files"}, set(result))
+                          "publication_inputs", "adapter_evidence", "adapter_receipts", "adapter_report_files"}, set(result))
+        self.assertEqual(8, len(result.pop("publication_inputs")))
+        result["runtime_maven_files"] = self.chain["adapters"]["runtime_maven_files"]
         contract, variants = self.chain["contract"], self.chain["variants"]
         output = self.work / "aggregate"
         output.mkdir()
@@ -143,41 +143,41 @@ class RuntimeAggregatePhaseTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "projection differs"):
             self.collect()
 
-    def test_missing_native_maven_is_a_real_required_producer_input_not_reconstructed(self):
+    def test_missing_native_publication_is_a_required_original_not_reconstructed(self):
         def remove(stage, receipt, manifest):
             for record in receipt["outputs"]:
-                if record["kind"] == "maven":
+                if record["kind"] == "publication":
                     (stage / record["relativePath"]).unlink()
-            receipt["outputs"] = [record for record in receipt["outputs"] if record["kind"] != "maven"]
+            receipt["outputs"] = [record for record in receipt["outputs"] if record["kind"] != "publication"]
             manifest["outputs"] = copy.deepcopy(receipt["outputs"])
-        self.mutant(("linux-arm64", "package", "linux-arm64"), remove)
-        with self.assertRaisesRegex(ValueError, "original linux-arm64 Maven"):
+        self.mutant(("linux-arm64", "binary", "linux-arm64"), remove)
+        with self.assertRaisesRegex(ValueError, "original linux-arm64 publication"):
             self.collect()
 
     def test_coherent_crosspaired_maven_primary_cannot_replace_original_publication(self):
-        foreign = self.originals[("node-js", "metadata", "node-js")]
-        foreign_primary = next(record for record in foreign["receipt"]["outputs"]
-                               if record["relativePath"] == "outputs/maven/node-js/runtime.bin")
-        replacement = (foreign["stage"] / foreign_primary["relativePath"]).read_bytes()
+        from ci.tests.test_product_runtime_maven import runtime_maven_fixture
+        originals = {}
+        for component in (*runtime_aggregate_phase.RUNTIME_TARGETS, *runtime_aggregate_phase.RUNTIME_ADAPTERS):
+            phase = "package" if component in runtime_aggregate_phase.RUNTIME_ADAPTERS else "binary"
+            original = self.originals[(component, phase, component)]
+            originals[component] = {Path(record["relativePath"]).name:
+                (original["stage"] / record["relativePath"]).read_bytes()
+                for record in original["receipt"]["outputs"] if record["kind"] == "publication"}
+        originals["jvm"]["main.jar"] = originals["node-js"]["main.klib"]
+        _, contents = runtime_maven_fixture("0.2.7", "0.2.0", original_primaries=originals)
+        stage = self.work / "fresh-maven-stage"
+        for relative, raw in contents.items():
+            path = stage / "outputs" / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+        write_output_manifest(stage, "runtime", "runtime-aggregate", "metadata", "aggregate", "0.2.7",
+                              {"maven": "outputs/maven"})
         original_binary = self.originals[("jvm", "binary", "jvm")]["receiptPath"].read_bytes()
         original_package = self.originals[("jvm", "package", "jvm")]["receiptPath"].read_bytes()
 
-        def replace(stage, receipt, manifest):
-            for record in receipt["outputs"]:
-                if record["kind"] != "maven":
-                    continue
-                suffix = next((value for value in CONTRACT_CHECKSUM_SUFFIXES
-                               if record["relativePath"].endswith(value)), None)
-                raw = (hashlib.new(suffix[1:], replacement).hexdigest().encode() + b"\n"
-                       if suffix else replacement)
-                (stage / record["relativePath"]).write_bytes(raw)
-                record.update(bytes=len(raw), sha256=sha256_bytes(raw))
-            manifest["outputs"] = copy.deepcopy(receipt["outputs"])
-
-        # The substitute has coherent hashes, all checksum sidecars, stage and
-        # receipt inventories, and the corresponding newly keyed aggregate plan.
-        self.mutant(("jvm", "metadata", "jvm"), replace)
+        # Maven POM/GMM/file hashes and stage declaration are coherent, but the
+        # substituted primary cannot replace the immutable original binary.
         with self.assertRaisesRegex(ValueError, "differs from its original binary publication"):
-            self.collect()
+            runtime_aggregate_phase.collect_maven_outputs(stage, "0.2.7", "0.2.0", self.predecessor)
         self.assertEqual(original_binary, self.originals[("jvm", "binary", "jvm")]["receiptPath"].read_bytes())
         self.assertEqual(original_package, self.originals[("jvm", "package", "jvm")]["receiptPath"].read_bytes())

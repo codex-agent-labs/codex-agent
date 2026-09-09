@@ -2480,7 +2480,7 @@ def _prepare_runtime_phase(state, instance, destination, expected_build_key, roo
             "codexAgent.contractPublicKey": str(handoff / "public-key.pub"),
         }
         if instance.component == "runtime-aggregate":
-            specific = {}  # Aggregate is Python metadata production, not a Gradle worker.
+            specific = {}  # Aggregate imports all publication stages after closure collection.
         elif instance.component in NATIVE_TARGETS:
             from runtime_native_phase import properties as native_properties
             binary_plan_path = inputs / "phase-plan.json"
@@ -2738,7 +2738,7 @@ def execute_runtime_aggregate(
     sdk_validation_tooling: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Produce deterministic metadata from originals; never sign or rebuild inputs."""
-    from runtime_aggregate_phase import collect_inputs
+    from runtime_aggregate_phase import collect_inputs, collect_maven_outputs
     from products.runtime_aggregate import produce_runtime_aggregate
     from products.receipt import write_output_manifest
 
@@ -2768,6 +2768,8 @@ def execute_runtime_aggregate(
     snapshot_regular_tree(variant_trust_root, trust_root)
     before = regular_file_inventory(inputs, allow_empty=True)
     records = collect_inputs(ready, predecessor)
+    if before != regular_file_inventory(inputs, allow_empty=True):
+        raise ValueError("Runtime aggregate original inputs changed during translation")
     expected = set()
     detached = {name: {} for name in ("variant_attestations", "variant_attestation_signatures", "variant_public_keys")}
     for target, bundle in records["variant_bundles"].items():
@@ -2782,14 +2784,43 @@ def execute_runtime_aggregate(
     trust = _release_trust(root, state.producer["commit"], destination / "release-policy")
     if trust is None:
         raise ValueError("Runtime aggregate requires Git-authoritative release policy")
+    policy_before = regular_file_inventory(destination / "release-policy")
     contract = {name: Path(properties[f"codexAgent.{property_name}"]) for name, property_name in (
         ("contract_payload", "contractPayload"), ("contract_metadata_receipt", "contractMetadataReceipt"),
         ("contract_attestation", "contractAttestation"), ("contract_attestation_signature", "contractAttestationSignature"),
         ("contract_public_key", "contractPublicKey"))}
-    stage = destination / "stage"
-    (stage / "outputs").mkdir(parents=True)
+    stage = root / "codex-agent-runtime-desktop/build/product-stage/runtime/runtime-aggregate/metadata"
+    if stage == destination or stage in destination.parents or destination in stage.parents:
+        raise ValueError("Runtime aggregate stage overlaps its original inputs/diagnostics")
+    if stage.exists() or stage.is_symlink():
+        raise ValueError("Runtime aggregate refuses a pre-existing output stage")
+    _prepare_destination(stage, root).rmdir()
     version = state.expected_fixed["versions"]["runtime-release"]
-    produce_runtime_aggregate(
+    for component, original in records.pop("publication_inputs").items():
+        properties[f"codexAgent.runtimeMavenStage.{component}"] = str(original["stage"])
+        properties[f"codexAgent.runtimeMavenVersion.{component}"] = original["version"]
+    environment, wrapper = _runtime_worker_environment(root, state.producer, destination, environment)
+    command = _runtime_worker_command(wrapper, properties, environment)
+    started = time.monotonic_ns()
+    with (destination / "gradle.log").open("xb") as log:
+        completed = subprocess.run(command, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT, check=False)
+    write_canonical_json(destination / "execution.json", {
+        "schemaVersion": 1, "producer": state.producer, "buildKey": ready["buildKey"],
+        "command": command, "returnCode": completed.returncode,
+        "elapsedNs": time.monotonic_ns() - started,
+    })
+    if completed.returncode != 0:
+        raise ValueError(f"Runtime aggregate Maven publication failed with exit code {completed.returncode}; see gradle.log")
+    _runtime_worker_checkout(root, state.producer)
+    if (destination / "python-bytecode").exists() or (destination / "python-bytecode").is_symlink():
+        raise ValueError("Runtime aggregate private Python bytecode namespace was modified")
+    if policy_before != regular_file_inventory(destination / "release-policy"):
+        raise ValueError("Runtime aggregate release policy changed during Maven publication")
+    if before != regular_file_inventory(inputs, allow_empty=True):
+        raise ValueError("Runtime aggregate original inputs changed during Maven publication")
+    records["runtime_maven_files"], verified_maven_outputs = collect_maven_outputs(
+        stage, version, properties["codexAgent.contractVersion"], predecessor)
+    produced = produce_runtime_aggregate(
         runtime_version=version, **contract, **detached,
         **{name: value for name, value in records.items() if name not in {"adapter_receipts", "adapter_report_files"}},
         required_trust_domain="release", output_directory=stage / "outputs",
@@ -2798,8 +2829,23 @@ def execute_runtime_aggregate(
     _runtime_worker_checkout(root, state.producer)
     if before != regular_file_inventory(inputs, allow_empty=True):
         raise ValueError("Runtime aggregate original inputs changed during production")
-    write_output_manifest(stage, "runtime", "runtime-aggregate", "metadata", "aggregate", version,
-                          {"runtime-aggregate": "outputs"})
+    if policy_before != regular_file_inventory(destination / "release-policy"):
+        raise ValueError("Runtime aggregate release policy changed during production")
+    manifest_bytes = canonical_json_bytes(produced["manifest"])
+    expected_outputs = sorted([*verified_maven_outputs, {
+        "kind": "runtime-aggregate", "relativePath": f"outputs/codex-agent-runtime-{version}-manifest.json",
+        "bytes": len(manifest_bytes), "sha256": sha256_bytes(manifest_bytes),
+    }], key=lambda record: record["relativePath"])
+    if sorted([{"kind": "maven", "relativePath": f"outputs/{record['path']}",
+                "bytes": record["bytes"], "sha256": record["sha256"]}
+               for record in produced["manifest"]["runtimeMavenFiles"]],
+              key=lambda record: record["relativePath"]) != verified_maven_outputs:
+        raise ValueError("Runtime aggregate Maven manifest changed after original-primary verification")
+    final_manifest = write_output_manifest(stage, "runtime", "runtime-aggregate", "metadata", "aggregate", version,
+                          {"runtime-aggregate": f"outputs/codex-agent-runtime-{version}-manifest.json",
+                           "maven": "outputs/maven"})
+    if final_manifest["outputs"] != expected_outputs:
+        raise ValueError("Runtime aggregate staged bytes changed after original-primary verification")
     return finalize_phase_object(
         stage_root=stage, phase_plan=ready, producer=state.producer, product_version=version,
         trust_domain="development" if state.plan["event"] == "pull_request" else "release",

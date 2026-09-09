@@ -796,14 +796,20 @@ def _runtime_variant_bundle_name(target: str, component_id: str) -> str:
 
 
 def require_runtime_adapter_maven_primary(component, role, record, receipts):
-    """Bind published primaries to both original artifact-only phase receipts."""
-    if component not in RUNTIME_ADAPTERS or role not in {"runtime-resolution", "sources", "javadoc"}:
+    """Bind release primaries to their exact original publication content."""
+    if role not in {"runtime-resolution", "sources", "javadoc"}:
         return
     primary = {"runtime-resolution": "main.jar" if component == "jvm" else "main.klib",
                "sources": "sources.jar", "javadoc": "javadoc.jar"}[role]
+    if component in RUNTIME_TARGETS and role == "runtime-resolution":
+        name = PurePosixPath(record.get("path", record.get("relativePath", ""))).name
+        for suffix in ("cinterop-codexDesktop.klib", "cinterop-codexAgentC.klib", "metadata.jar"):
+            if name.endswith("-" + suffix):
+                primary = suffix
+                break
     original = {"kind": "publication", "relativePath": f"outputs/publication/{primary}",
                 "bytes": record["bytes"], "sha256": record["sha256"]}
-    for phase in ("binary", "package"):
+    for phase in (("binary", "package") if component in RUNTIME_ADAPTERS else ("binary",)):
         if original not in receipts[(component, phase, component)]["outputs"]:
             raise ValueError(f"Runtime {component} Maven {role} differs from its original {phase} publication")
 
@@ -917,6 +923,7 @@ def verify_runtime_aggregate_artifacts(
         raise ValueError("Runtime aggregate does not reference the authenticated Contract")
 
     all_receipts = [
+        aggregate_receipt,
         *(receipt for receipts in variant_receipts.values() for receipt in receipts.values()),
         *adapter_receipt_values,
     ]
@@ -970,18 +977,20 @@ def verify_runtime_aggregate_artifacts(
         }
         actual_maven.append(record)
         actual_maven_contents[logical_path] = contents
-        owner_receipt = (
-            variant_receipts[component]["package"]
-            if component in RUNTIME_TARGETS
-            else adapter_receipt_map[(component, "metadata", component)]
-        )
         require_owner(
             "maven", f"outputs/{logical_path}", record["bytes"], record["sha256"],
-            f"Runtime Maven input {logical_path}", owner_receipt,
+            f"Runtime Maven input {logical_path}", aggregate_receipt,
         )
-        require_runtime_adapter_maven_primary(component, role, record, adapter_receipt_map)
+        require_runtime_adapter_maven_primary(component, role, record, {
+            **adapter_receipt_map,
+            **{(target, phase, target): receipt for target, phases in variant_receipts.items()
+               for phase, receipt in phases.items()},
+        })
     actual_maven.sort(key=lambda record: record["path"])
     validate_runtime_maven_inventory(actual_maven, actual_maven_contents)
+    from .runtime_maven import validate_runtime_maven_publications
+    validate_runtime_maven_publications(aggregate["runtimeVersion"], contract["contractVersion"],
+                                        actual_maven, actual_maven_contents)
     if actual_maven != aggregate["runtimeMavenFiles"]:
         raise ValueError("Runtime aggregate Maven files differ from the verified inputs")
 

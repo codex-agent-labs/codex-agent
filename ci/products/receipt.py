@@ -222,7 +222,7 @@ def write_output_manifest(
         outputs = []
         for record in records:
             relative = PurePosixPath(record["relativePath"])
-            matches = [path for path, value in parsed.items() if value in relative.parents]
+            matches = [path for path, value in parsed.items() if value == relative or value in relative.parents]
             if len(matches) != 1:
                 raise ValueError(
                     f"Staged output must belong to exactly one declared output root: {relative}"

@@ -26,9 +26,6 @@ abstract class ValidateRuntimeAdapterMetadataInputsTask : DefaultTask() {
     abstract val projection: RegularFileProperty
 
     @get:Internal
-    abstract val mavenRepository: DirectoryProperty
-
-    @get:Internal
     abstract val stageDirectory: DirectoryProperty
 
     @get:Internal
@@ -51,20 +48,20 @@ abstract class ValidateRuntimeAdapterMetadataInputsTask : DefaultTask() {
         }
         verifyRuntimeAdapterMetadataInputs(
             component.get(), validationHandoff.get().asFile.toPath(), projection.get().asFile.toPath(),
-            mavenRepository.get().asFile.toPath(), stageDirectory.get().asFile.toPath(),
+            stageDirectory.get().asFile.toPath(),
             ownedBuildDirectory.get().asFile.toPath(),
         )
     }
 }
 
 internal fun verifyRuntimeAdapterMetadataInputs(
-    adapter: String, handoff: Path, projectionFile: Path, maven: Path, stage: Path, ownedBuild: Path,
+    adapter: String, handoff: Path, projectionFile: Path, stage: Path, ownedBuild: Path,
     verifyProjection: (String, java.io.File) -> Unit = ::verifyRuntimeAdapterProjection,
 ) {
     check(adapter in setOf("jvm", "node-js", "node-wasm")) {
         "Unsupported Runtime adapter metadata component: $adapter"
     }
-    listOf(handoff, projectionFile, maven, stage, ownedBuild).forEach { path ->
+    listOf(handoff, projectionFile, stage, ownedBuild).forEach { path ->
         check(path.isAbsolute && path.normalize() == path) { "Runtime adapter metadata path must be absolute and normalized: $path" }
         // Inspect raw ancestry before any deletion, including dangling links.
         generateSequence(path.parent) { it.parent }.forEach { parent ->
@@ -80,19 +77,18 @@ internal fun verifyRuntimeAdapterMetadataInputs(
     check(projectionFile.parent == handoff && projectionFile.fileName.toString() == "projection.json") {
         "Runtime adapter projection must be the validation handoff's projection.json"
     }
-    listOf(handoff, projectionFile, maven).forEach { input ->
+    listOf(handoff, projectionFile).forEach { input ->
         check(!input.startsWith(stage) && !stage.startsWith(input)) {
             "Runtime adapter metadata output overlaps an original input: $input"
         }
     }
     requireRegularRuntimeProductDirectory(handoff, "Runtime validation handoff")
-    requireRegularRuntimeProductDirectory(maven, "Runtime Maven repository")
     check(Files.isRegularFile(projectionFile, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(projectionFile)) {
         "Runtime adapter projection must be a regular original file"
     }
     // Safety is distinct from semantic validity: empty real input directories
     // may fail below after invalidation, but links/special entries never may.
-    listOf(handoff, maven, stage).forEach { root ->
+    listOf(handoff, stage).forEach { root ->
         if (Files.exists(root, LinkOption.NOFOLLOW_LINKS)) {
             requireRegularRuntimeProductDirectory(root, "Runtime adapter metadata tree")
             Files.walk(root).use { entries ->
@@ -114,7 +110,7 @@ internal fun verifyRuntimeAdapterMetadataInputs(
         existingStage = checkNotNull(existingStage.parent)
     }
     val realStage = missingNames.asReversed().fold(existingStage.toRealPath()) { parent, name -> parent.resolve(name) }
-    listOf(handoff, projectionFile, maven).forEach { input ->
+    listOf(handoff, projectionFile).forEach { input ->
         val realInput = input.toRealPath()
         fun containsSameFile(descendant: Path, ancestor: Path): Boolean =
             Files.exists(ancestor, LinkOption.NOFOLLOW_LINKS) &&
@@ -131,16 +127,6 @@ internal fun verifyRuntimeAdapterMetadataInputs(
         Files.walk(stage).use { entries -> entries.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
     }
     try {
-        fun originals(): Map<String, Path> {
-            requireRegularRuntimeProductTree(maven, "Runtime Maven repository")
-            val files = sortedMapOf("evidence/$adapter.json" to projectionFile)
-            Files.walk(maven).use { entries ->
-                entries.filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }.forEach { path ->
-                    files["maven/" + maven.relativize(path).joinToString("/")] = path
-                }
-            }
-            return files
-        }
         fun inventory(files: Map<String, Path>): Map<String, Pair<Long, String>> = files.mapValues { (_, path) ->
             generateSequence(path.parent) { it.parent }.forEach { parent ->
                 check(!Files.isSymbolicLink(parent) && Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)) {
@@ -152,7 +138,7 @@ internal fun verifyRuntimeAdapterMetadataInputs(
             }
             Files.size(path) to Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS).use { it.releaseDigest() }
         }
-        val files = originals()
+        val files = mapOf("evidence/$adapter.json" to projectionFile)
         val before = inventory(files)
         val output = stage.resolve("outputs")
         files.forEach { (relative, source) ->
@@ -172,7 +158,7 @@ internal fun verifyRuntimeAdapterMetadataInputs(
         }
         check(stagedInventory() == before) { "Runtime adapter metadata inputs changed during capture" }
         verifyProjection(adapter, output.resolve("evidence/$adapter.json").toFile())
-        check(inventory(originals()) == before) { "Original Runtime adapter metadata inputs changed during verification" }
+        check(inventory(files) == before) { "Original Runtime adapter metadata inputs changed during verification" }
         check(stagedInventory() == before) { "Staged Runtime adapter metadata changed during verification" }
     } catch (error: Exception) {
         if (Files.exists(stage, LinkOption.NOFOLLOW_LINKS)) {

@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import base64
 from pathlib import Path
 from typing import Any
 
 from ci.products.aggregate import RUNTIME_ADAPTERS, RUNTIME_EVIDENCE_TARGETS, RUNTIME_TARGETS
-from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
 from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, load_json_bytes, sha256_bytes, write_canonical_json
 from ci.products.receipt import write_output_manifest
 from ci.products.registry import PhaseInstanceId
@@ -120,48 +118,23 @@ def build_adapters(
         adapter_report_files[component] = reports
         adapter_evidence[component] = projection_path
 
-    runtime_maven_files = list(variants["runtime_maven_files"])
-    maven_outputs: dict[str, list[dict[str, Any]]] = {}
-    maven_contents_by_component: dict[str, dict[str, bytes]] = {}
     publication_outputs: dict[str, list[dict[str, Any]]] = {}
     publication_contents: dict[str, dict[str, bytes]] = {}
+    publication_primaries: dict[str, dict[str, Path]] = {}
     for component in RUNTIME_ADAPTERS:
-        contents = f"S808 synthetic {component} Maven Runtime fixture\n".encode()
-        logical_path = f"maven/{component}/runtime.bin"
-        primary = root / logical_path
-        primary.parent.mkdir(parents=True)
-        primary.write_bytes(contents)
-        files = [{
-            "path": logical_path,
-            "role": "runtime-resolution",
-            "component": component,
-            "file": primary,
-        }]
-        for suffix in CONTRACT_CHECKSUM_SUFFIXES:
-            sidecar_contents = (
-                hashlib.new(suffix.removeprefix("."), contents).hexdigest().encode("ascii")
-                + b"\n"
-            )
-            sidecar = primary.with_name(primary.name + suffix)
-            sidecar.write_bytes(sidecar_contents)
-            files.append({
-                "path": logical_path + suffix,
-                "role": "checksum",
-                "component": component,
-                "file": sidecar,
-            })
-        runtime_maven_files.extend(files)
-        maven_outputs[component] = [
-            output("maven", f"outputs/{record['path']}", Path(record["file"]).read_bytes())
-            for record in files
-        ]
-        maven_contents_by_component[component] = {
-            f"outputs/{record['path']}": Path(record["file"]).read_bytes() for record in files
+        contents = {
+            "main.jar" if component == "jvm" else "main.klib":
+                f"S808 synthetic {component} Runtime publication fixture\n".encode(),
+            "sources.jar": f"S808 synthetic {component} sources publication fixture\n".encode(),
+            "javadoc.jar": f"S808 synthetic {component} documentation publication fixture\n".encode(),
         }
-        publication_path = f"outputs/publication/{'main.jar' if component == 'jvm' else 'main.klib'}"
-        publication_outputs[component] = [output("publication", publication_path, contents)]
-        publication_contents[component] = {publication_path: contents}
-    runtime_maven_files.sort(key=lambda record: record["path"])
+        publication_contents[component] = {
+            f"outputs/publication/{name}": value for name, value in contents.items()
+        }
+        publication_outputs[component] = [
+            output("publication", path, value)
+            for path, value in publication_contents[component].items()
+        ]
 
     receipt_paths: dict[tuple[str, str, str], Path] = {}
     phase_stages: dict[PhaseInstanceId, Path] = {}
@@ -270,6 +243,10 @@ def build_adapters(
             contents=package_contents,
             upstream=[reference(binary)],
         )
+        publication_primaries[component] = {
+            Path(path).name: root / "stages" / component / f"binary-{component}" / path
+            for path in publication_contents[component]
+        }
         metadata_upstream = []
         projection_digest = sha256_bytes(adapter_evidence[component].read_bytes())
         for target in RUNTIME_TARGETS:
@@ -333,16 +310,12 @@ def build_adapters(
             component,
             "metadata",
             component,
-            outputs=[
-                output(
-                    "adapter-evidence",
-                    f"outputs/evidence/{component}.json",
-                    projection_contents,
-                ),
-                *maven_outputs[component],
-            ],
-            contents={f"outputs/evidence/{component}.json": projection_contents,
-                      **maven_contents_by_component[component]},
+            outputs=[output(
+                "adapter-evidence",
+                f"outputs/evidence/{component}.json",
+                projection_contents,
+            )],
+            contents={f"outputs/evidence/{component}.json": projection_contents},
             upstream=metadata_upstream,
         )
 
@@ -356,7 +329,7 @@ def build_adapters(
         for component, phase, target in sorted(receipt_paths)
     ]
     return {
-        "runtime_maven_files": runtime_maven_files,
+        "publication_primaries": publication_primaries,
         "adapter_evidence": adapter_evidence,
         "adapter_receipts": adapter_receipts,
         "adapter_report_files": adapter_report_files,

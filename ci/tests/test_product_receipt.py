@@ -121,6 +121,25 @@ class ProductReceiptEmissionTest(unittest.TestCase):
             self.assertEqual(b"preserve me", sibling.read_bytes())
             self.assertEqual(b"payload", (self.stage / expected[0]).read_bytes())
 
+    def test_exact_file_root_can_share_outputs_with_a_disjoint_directory(self) -> None:
+        manifest_file = self.stage / "outputs/aggregate.json"
+        manifest_file.write_bytes(b"{}\n")
+        arguments = (self.stage, "runtime", "runtime-aggregate", "metadata", "aggregate", "1.2.3")
+        roots = {"runtime-aggregate": "outputs/aggregate.json", "maven": "outputs/library"}
+        value = write_output_manifest(*arguments, roots)
+        self.assertEqual([("runtime-aggregate", "outputs/aggregate.json"),
+                          ("maven", "outputs/library/value.bin")],
+                         [(record["kind"], record["relativePath"]) for record in value["outputs"]])
+        for invalid in ({**roots, "ambiguous": "outputs"}, {**roots, "alias": "outputs/aggregate.json"}):
+            with self.assertRaises(ValueError):
+                write_output_manifest(*arguments, invalid)
+        sibling = self.stage / "outputs/undeclared.json"
+        sibling.write_bytes(b"preserve\n")
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            write_output_manifest(*arguments, roots)
+        self.assertEqual(b"{}\n", manifest_file.read_bytes())
+        self.assertEqual(b"preserve\n", sibling.read_bytes())
+
     def test_emits_canonical_deterministic_receipt_without_changing_stage(self) -> None:
         before = {
             path.relative_to(self.stage).as_posix(): path.read_bytes()

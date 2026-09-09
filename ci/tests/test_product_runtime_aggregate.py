@@ -34,6 +34,7 @@ from ci.products.runtime_aggregate import (
     verify_runtime_aggregate_attestation_closure,
 )
 from ci.products.signatures import generate_development_key
+from ci.tests.test_product_runtime_maven import runtime_maven_fixture
 from ci.tests.test_products import phase_receipt
 
 
@@ -61,22 +62,6 @@ def _adapter_identities() -> list[tuple[str, str, str]]:
         *(("node-wasm", phase, "node-wasm") for phase in ("binary", "package", "metadata")),
         *(("node-wasm", "validation", target) for target in RUNTIME_TARGETS),
     ])
-
-
-def _checksum_input(primary: dict, suffix: str, contents: bytes | None = None) -> dict:
-    source = Path(f"{primary['file']}{suffix}")
-    if contents is None:
-        contents = (
-            hashlib.new(suffix[1:], Path(primary["file"]).read_bytes()).hexdigest().encode()
-            + b"\n"
-        )
-    source.write_bytes(contents)
-    return {
-        "path": f"{primary['path']}{suffix}",
-        "role": "checksum",
-        "component": primary["component"],
-        "file": source,
-    }
 
 
 class Fixture:
@@ -169,22 +154,17 @@ class Fixture:
             self.variant_manifests[target] = manifest
 
         self.maven_inputs = []
-        for component in RUNTIME_MAVEN_COMPONENTS:
-            source = root / "maven" / component / "artifact.jar"
-            source.parent.mkdir(parents=True)
-            source.write_bytes(f"maven-{component}\n".encode())
+        # Actual KGP-shaped POM/GMM and complete checksums around explicitly
+        # synthetic primaries; existing upstream verifier mocks remain unchanged.
+        maven_records, maven_contents = runtime_maven_fixture(VERSION, "0.2.0")
+        for record in maven_records:
+            source = root / record["path"]
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(maven_contents[record["path"]])
             self.maven_inputs.append({
-                "path": f"maven/{component}/artifact.jar",
-                "role": "runtime-resolution",
-                "component": component,
+                **{key: record[key] for key in ("path", "role", "component")},
                 "file": source,
             })
-        primaries = list(self.maven_inputs)
-        self.maven_inputs.extend(
-            _checksum_input(primary, suffix)
-            for primary in primaries
-            for suffix in CONTRACT_CHECKSUM_SUFFIXES
-        )
         self.adapter_evidence = {}
         for target in ("jvm", "node-js", "node-wasm"):
             path = root / f"{target}-projection.json"
@@ -271,9 +251,13 @@ class Fixture:
         stage = self.root / f"aggregate-stage-{len(list(self.root.glob('aggregate-stage-*')))}"
         (stage / "outputs").mkdir(parents=True)
         (stage / "outputs" / manifest.name).write_bytes(manifest.read_bytes())
+        for original in self.maven_inputs:
+            destination = stage / "outputs" / original["path"]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(Path(original["file"]).read_bytes())
         write_output_manifest(
             stage, "runtime", "runtime-aggregate", "metadata", "aggregate", VERSION,
-            {"runtime-aggregate": "outputs"},
+            {"runtime-aggregate": f"outputs/{manifest.name}", "maven": "outputs/maven"},
         )
         receipt_root = self.root / f"aggregate-receipt-{len(list(self.root.glob('aggregate-receipt-*')))}"
         receipt_root.mkdir()
@@ -376,15 +360,47 @@ class RuntimeAggregateProducerTest(unittest.TestCase):
                 if record["role"] == "checksum"
             ]
             self.assertEqual(
-                len(RUNTIME_MAVEN_COMPONENTS) * len(CONTRACT_CHECKSUM_SUFFIXES),
+                52 * len(CONTRACT_CHECKSUM_SUFFIXES),
                 len(checksums),
             )
+            self.assertEqual(260, len(first["manifest"]["runtimeMavenFiles"]))
+            self.assertEqual(set(RUNTIME_MAVEN_COMPONENTS), {
+                record["component"] for record in first["manifest"]["runtimeMavenFiles"]
+            })
             for record in checksums:
                 source = next(
                     value["file"] for value in fixture.maven_inputs
                     if value["path"] == record["path"]
                 )
                 self.assertEqual(sha256_file(source), record["sha256"])
+
+    def test_exact_staged_maven_is_preserved_and_external_aliases_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture = Fixture(root / "fixture")
+            originals = {Path(record["file"]): Path(record["file"]).read_bytes() for record in fixture.maven_inputs}
+            output = root / "staged"
+            output.mkdir()
+            rebound = []
+            for record in fixture.maven_inputs:
+                path = output / record["path"]
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(originals[Path(record["file"])])
+                rebound.append({**record, "file": path})
+            staged = {Path(record["file"]): Path(record["file"]).read_bytes() for record in rebound}
+            # Equal external files do not authorize an already-populated output.
+            with self.assertRaisesRegex(ValueError, "exact staged Maven inventory"):
+                fixture.produce(output)
+            self.assertEqual(staged, {path: path.read_bytes() for path in staged})
+            fixture.maven_inputs = rebound
+            result = fixture.produce(output)
+            self.assertEqual(260, len(result["manifest"]["runtimeMavenFiles"]))
+            self.assertEqual(staged, {path: path.read_bytes() for path in staged})
+            self.assertEqual(originals, {path: path.read_bytes() for path in originals})
+            before = result["manifestPath"].read_bytes()
+            with self.assertRaisesRegex(ValueError, "must be empty"):
+                fixture.produce(output)
+            self.assertEqual(before, result["manifestPath"].read_bytes())
 
     def test_runtime_maven_checksum_is_owned_by_the_exact_publication_receipt(self) -> None:
         from ci.tests.test_product_runtime_integration import (
@@ -399,15 +415,11 @@ class RuntimeAggregateProducerTest(unittest.TestCase):
 
             for mode in ("moved", "duplicated"):
                 fixture = copy.deepcopy(baseline)
-                owner = next(
-                    receipt for receipt in fixture["adapter_receipt_values"]
-                    if (receipt["component"], receipt["phase"], receipt["target"])
-                    == ("jvm", "metadata", "jvm")
-                )
-                sidecar_path = "outputs/maven/jvm/runtime.bin.sha256"
+                owner = fixture["aggregate_receipt"]
                 sidecar_output = next(
                     value for value in owner["outputs"]
-                    if value["relativePath"] == sidecar_path
+                    if value["kind"] == "maven" and value["relativePath"].startswith("outputs/maven/jvm/")
+                    and value["relativePath"].endswith(".sha256")
                 )
                 wrong_owner = next(
                     receipt for receipt in fixture["adapter_receipt_values"]
@@ -418,14 +430,12 @@ class RuntimeAggregateProducerTest(unittest.TestCase):
                     owner["outputs"].remove(sidecar_output)
                 wrong_owner["outputs"].append(copy.deepcopy(sidecar_output))
                 wrong_owner["outputs"].sort(key=lambda value: value["relativePath"])
-                for receipt in (owner, wrong_owner):
-                    upstream = next(
-                        value
-                        for value in fixture["aggregate_receipt"]["inputs"]["upstreamArtifacts"]
-                        if (value["component"], value["phase"], value["target"])
-                        == (receipt["component"], receipt["phase"], receipt["target"])
-                    )
-                    upstream["outputsDigest"] = output_inventory_digest(receipt["outputs"])
+                upstream = next(
+                    value for value in fixture["aggregate_receipt"]["inputs"]["upstreamArtifacts"]
+                    if (value["component"], value["phase"], value["target"])
+                    == (wrong_owner["component"], wrong_owner["phase"], wrong_owner["target"])
+                )
+                upstream["outputsDigest"] = output_inventory_digest(wrong_owner["outputs"])
                 with self.subTest(mode=mode), self.assertRaisesRegex(
                     ValueError, "owned by exactly one",
                 ):
@@ -435,7 +445,7 @@ class RuntimeAggregateProducerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             fixture = Fixture(root / "fixture")
-            primary = fixture.maven_inputs[0]
+            primary = next(record for record in fixture.maven_inputs if record["role"] == "runtime-resolution")
             primary_bytes = Path(primary["file"]).read_bytes()
             sha256 = hashlib.sha256(primary_bytes).hexdigest().encode() + b"\n"
             files = root / "invalid-maven-inputs"
@@ -606,12 +616,18 @@ class RuntimeAggregateProducerTest(unittest.TestCase):
             bare = load_canonical_json_bytes(metadata.read_bytes())
             bare["outputs"][0]["relativePath"] = manifest.name
             write_canonical_json(bare_receipt, bare)
+            missing_maven_receipt = root / "missing-maven.receipt.json"
+            missing_maven = load_canonical_json_bytes(metadata.read_bytes())
+            missing_maven["outputs"] = [record for record in missing_maven["outputs"]
+                                       if record["kind"] != "maven"]
+            write_canonical_json(missing_maven_receipt, missing_maven)
             bad_signature = root / signature.name
             bad_signature.write_bytes(signature.read_bytes() + b"tampered\n")
             _, wrong_public, _ = generate_development_key(root / "wrong-key")
             for replacement in (
                 {"manifest": bad_manifest},
                 {"metadata_receipt": bare_receipt},
+                {"metadata_receipt": missing_maven_receipt},
                 {"signature": bad_signature},
                 {"public_key": wrong_public},
             ):

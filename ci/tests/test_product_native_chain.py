@@ -20,6 +20,37 @@ from ci.tests.product_chain_support import output, reference, write_receipt
 from ci.tests.product_chain_variants import build_variants
 from ci.tests.product_chain_adapters import build_adapters
 from ci.tests.test_contract_execution_closure import execution_closure_fixture
+from ci.tests.test_product_runtime_maven import runtime_maven_fixture
+
+
+def _stage_runtime_maven_publications(
+    stage: Path, variants: dict, adapters: dict,
+) -> list[dict]:
+    original_primaries = {
+        **{
+            component: {name: path.read_bytes() for name, path in paths.items()}
+            for component, paths in variants["publication_primaries"].items()
+        },
+        **{
+            component: {name: path.read_bytes() for name, path in paths.items()}
+            for component, paths in adapters["publication_primaries"].items()
+        },
+    }
+    records, contents = runtime_maven_fixture(
+        "0.2.7", "0.2.0", original_primaries=original_primaries,
+    )
+    files = []
+    for record in records:
+        destination = stage / "outputs" / record["path"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(contents[record["path"]])
+        files.append({
+            "path": record["path"],
+            "role": record["role"],
+            "component": record["component"],
+            "file": destination,
+        })
+    return files
 
 
 def build_chain(root: Path, run: int, *, variants: dict | None = None, include_bootstrap: bool = False,
@@ -67,6 +98,13 @@ def build_chain(root: Path, run: int, *, variants: dict | None = None, include_b
     if variants is None:
         variants = build_variants(root / "variants", contract, context, include_bootstrap=include_bootstrap)
     adapters = build_adapters(root / "adapters", contract, variants, context)
+    aggregate_stage = root / "aggregate-stage"
+    runtime_maven_files = _stage_runtime_maven_publications(
+        aggregate_stage, variants, adapters,
+    )
+    # Existing consumers use this key for the exact aggregate inputs. It no
+    # longer denotes adapter-owned Maven outputs.
+    adapters["runtime_maven_files"] = runtime_maven_files
     contract_args = {
         "contract_payload": payload, "contract_metadata_receipt": receipt,
         "contract_attestation": contract["attestation"],
@@ -78,23 +116,20 @@ def build_chain(root: Path, run: int, *, variants: dict | None = None, include_b
     )}
     aggregate_args = {
         **contract_args, **variant_args,
-        "runtime_maven_files": adapters["runtime_maven_files"],
+        "runtime_maven_files": runtime_maven_files,
         "adapter_evidence": adapters["adapter_evidence"],
     }
-    (root / "aggregate").mkdir()
     aggregate = produce_runtime_aggregate(
         runtime_version="0.2.7", required_trust_domain="development",
-        output_directory=root / "aggregate", **aggregate_args,
+        output_directory=aggregate_stage / "outputs", **aggregate_args,
     )
     aggregate_path = aggregate["manifestPath"]
     aggregate_receipt = root / "aggregate-receipt.json"
+    aggregate_outputs = write_output_manifest(
+        aggregate_stage, "runtime", "runtime-aggregate", "metadata", "aggregate", "0.2.7",
+        {"runtime-aggregate": f"outputs/{aggregate_path.name}", "maven": "outputs/maven"},
+    )["outputs"]
     if "plan_factory" in context:
-        aggregate_stage = root / "aggregate-stage"
-        aggregate_payload = aggregate_stage / "outputs" / aggregate_path.name
-        aggregate_payload.parent.mkdir(parents=True)
-        aggregate_payload.write_bytes(aggregate_path.read_bytes())
-        write_output_manifest(aggregate_stage, "runtime", "runtime-aggregate", "metadata", "aggregate",
-                              "0.2.7", {"runtime-aggregate": "outputs"})
         context["phase_stages"][PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")] = aggregate_stage
     metadata_receipts = [values["metadata"] for values in variants["variant_phase_receipts"].values()]
     metadata_receipts.extend(
@@ -104,7 +139,7 @@ def build_chain(root: Path, run: int, *, variants: dict | None = None, include_b
         aggregate_receipt, component="runtime-aggregate", phase="metadata", target="aggregate",
         version_identity="0.2.7", context=context,
         upstream=[reference(load_canonical_json_bytes(path.read_bytes())) for path in metadata_receipts],
-        outputs=[output("runtime-aggregate", f"outputs/{aggregate_path.name}", aggregate_path.read_bytes())],
+        outputs=aggregate_outputs,
     )
     aggregate_trust = root / "aggregate-trust"
     build_runtime_aggregate_attestation(
@@ -192,6 +227,69 @@ class ProductNativeChainTest(unittest.TestCase):
             for target, report in reports.items():
                 self.assertNotEqual(report.read_bytes(), right["adapters"]["adapter_report_files"][component][target].read_bytes())
 
+    def test_original_publications_and_final_maven_have_exact_receipt_owners(self) -> None:
+        chain = self.left
+        for target, receipts in chain["variants"]["receipts"].items():
+            binary = receipts["binary"]
+            package = receipts["package"]
+            names = {
+                Path(record["relativePath"]).name
+                for record in binary["outputs"] if record["kind"] == "publication"
+            }
+            expected = {
+                "main.klib", "sources.jar", "javadoc.jar",
+                "cinterop-codexDesktop.klib", "cinterop-codexAgentC.klib",
+            }
+            if target in {"macos-arm64", "macos-x64"}:
+                expected.add("metadata.jar")
+            self.assertEqual(expected, names)
+            self.assertFalse(any(record["kind"] == "maven" for record in package["outputs"]))
+
+        adapter_receipts = {
+            (record["component"], record["phase"], record["target"]):
+                load_canonical_json_bytes(record["receipt"].read_bytes())
+            for record in chain["adapters"]["adapter_receipts"]
+        }
+        for component in ("jvm", "node-js", "node-wasm"):
+            expected = {"main.jar" if component == "jvm" else "main.klib",
+                        "sources.jar", "javadoc.jar"}
+            phase_outputs = []
+            for phase in ("binary", "package"):
+                outputs = adapter_receipts[(component, phase, component)]["outputs"]
+                phase_outputs.append([
+                    record for record in outputs if record["kind"] == "publication"
+                ])
+                self.assertEqual(expected, {
+                    Path(record["relativePath"]).name for record in phase_outputs[-1]
+                })
+            self.assertEqual(phase_outputs[0], phase_outputs[1])
+            self.assertEqual(
+                {"adapter-evidence"},
+                {record["kind"] for record in adapter_receipts[(component, "metadata", component)]["outputs"]},
+            )
+
+        aggregate_receipt = load_canonical_json_bytes(chain["aggregate_receipt"].read_bytes())
+        aggregate_manifest = load_canonical_json_bytes(chain["aggregate"].read_bytes())
+        maven_outputs = [
+            record for record in aggregate_receipt["outputs"] if record["kind"] == "maven"
+        ]
+        self.assertEqual(260, len(maven_outputs))
+        maven_inputs = {
+            record["path"]: record for record in chain["adapters"]["runtime_maven_files"]
+        }
+        self.assertEqual(aggregate_manifest["runtimeMavenFiles"], [{
+            "path": record["relativePath"].removeprefix("outputs/"),
+            "role": maven_inputs[record["relativePath"].removeprefix("outputs/")]["role"],
+            "component": maven_inputs[record["relativePath"].removeprefix("outputs/")]["component"],
+            "bytes": record["bytes"],
+            "sha256": record["sha256"],
+        } for record in maven_outputs])
+        self.assertEqual(
+            [f"outputs/{chain['aggregate'].name}"],
+            [record["relativePath"] for record in aggregate_receipt["outputs"]
+             if record["kind"] == "runtime-aggregate"],
+        )
+
     def test_mixed_original_producers_keep_content_and_original_receipts(self) -> None:
         sources = {
             target: (self.left, self.right)[index % 2]["variants"]
@@ -199,12 +297,8 @@ class ProductNativeChainTest(unittest.TestCase):
         }
         mixed = {
             key: {target: source[key][target] for target, source in sources.items()}
-            for key in self.left["variants"] if key not in {"stages", "runtime_maven_files"}
+            for key in self.left["variants"] if key != "stages"
         }
-        mixed["runtime_maven_files"] = [
-            record for target, source in sources.items()
-            for record in source["runtime_maven_files"] if record["component"] == target
-        ]
         mixed["stages"] = self.root / "mixed-stages"
         for target, source in sources.items():
             shutil.copytree(source["stages"] / target, mixed["stages"] / target)
