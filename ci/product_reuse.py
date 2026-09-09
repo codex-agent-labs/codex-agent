@@ -2527,13 +2527,13 @@ def materialize_runtime_attestation_inputs(
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Restore one completed selected native closure, not a new build election.
+    """Restore a completed native or aggregate closure, not a new build election.
 
 The protected caller separately authenticates original CI/release sources and
-the complete native semantics. This selection never grants signing authority.
+the complete product semantics. This selection never grants signing authority.
 """
-    if target not in NATIVE_TARGETS:
-        raise ValueError("Runtime attestation selection requires a native target")
+    if target not in (*NATIVE_TARGETS, "aggregate"):
+        raise ValueError("Runtime attestation selection requires a native or aggregate target")
     require_sha256(expected_build_key, "Selected Runtime metadata build key")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     discovery_root, state_root, destination = _product_materialization_paths(
@@ -2543,7 +2543,7 @@ the complete native semantics. This selection never grants signing authority.
     state = _verified_product_state(plan_path, discovery_root, state_root, root,
         os.environ if environ is None else environ, sdk_validation_tooling)
     _runtime_worker_checkout(root, state.producer)
-    metadata = PhaseInstanceId("runtime", target, "metadata", target)
+    metadata = PhaseInstanceId("runtime", "runtime-aggregate" if target == "aggregate" else target, "metadata", target)
     selected = state.prior_by_instance.get(metadata)
     instances = _dependency_closure((metadata,))
     if (selected is None or selected["buildKey"] != expected_build_key
@@ -2581,6 +2581,25 @@ the complete native semantics. This selection never grants signing authority.
             raise ValueError("Runtime attestation selection has no Git-authoritative release policy")
         contract, version, handoff, _ = _capture_runtime_contract(
             root, evidence, original, one_output, prepared, trust)
+        if target == "aggregate":
+            value = original("runtime", "runtime-aggregate", "metadata", "aggregate")
+            selection = {
+                "schemaVersion": 1, "target": target, "metadata": selected,
+                "producer": state.producer, "contractVersion": version,
+                "aggregateStage": value["stage"].relative_to(prepared).as_posix(),
+                "aggregateReceipt": value["receiptPath"].relative_to(prepared).as_posix(),
+                "aggregateManifest": one_output(value, "runtime-aggregate").relative_to(prepared).as_posix(),
+                "originals": [{**_identity_record(instance),
+                    "receiptSha256": state.prior_carrier_phases[instance]["receiptSha256"],
+                    "directory": "predecessors/" + "-".join((instance.product, instance.component,
+                                                               instance.phase, instance.target))}
+                    for instance in instances],
+                "contractHandoff": handoff.relative_to(prepared).as_posix(),
+            }
+            write_canonical_json(prepared / "selection.json", selection)
+            _runtime_worker_checkout(root, state.producer)
+            publish_regular_tree(prepared, destination)
+            return selection
         phase_receipts = {}
         payload = None
         for phase in ("binary", "package", "validation", "metadata"):

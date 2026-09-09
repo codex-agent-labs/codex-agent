@@ -59,6 +59,15 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_apple_authenticated_tooling_adapter_is_control_only(self) -> None:
+        path = "ci/products/sdk_apple_content.py"
+        result = classify_paths([path])
+        self.assertEqual(set(PHASE_INSTANCE_IDS), identities(result))
+        self.assertEqual((), result.inventory_paths)
+        self.assertEqual((), result.unknown_paths)
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((), phase_inventory_paths([path], instance))
+
     def test_pure_apple_package_verifier_selects_no_compilation(self) -> None:
         path = "gradle/build-logic/src/main/kotlin/AppleVerifiedDistributionVerification.kt"
         selected = identities(classify_paths([path]))

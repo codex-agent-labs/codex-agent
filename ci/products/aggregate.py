@@ -849,12 +849,6 @@ def verify_runtime_aggregate_artifacts(
         verify_runtime_aggregate_attestation,
         verify_runtime_aggregate_attestation_closure,
     )
-    from .runtime_evidence import (
-        derive_runtime_adapter_projection,
-        jvm_evidence_filename,
-        node_evidence_filename,
-    )
-
     contract, contract_receipt, contract_attestation_value = verify_contract_attestation(
         Path(contract_payload),
         Path(contract_metadata_receipt),
@@ -891,6 +885,30 @@ def verify_runtime_aggregate_artifacts(
             variant_keys_directory=variant_keys_directory,
         )
     )
+    return _verify_runtime_aggregate_semantics(
+        aggregate, aggregate_receipt, contract, contract_receipt, contract_attestation_value,
+        variant_manifests, variant_receipts, adapter_receipt_values,
+        contract_metadata_receipt, adapter_report_files, runtime_maven_files, adapter_evidence,
+    )
+
+
+def _verify_runtime_aggregate_semantics(
+    aggregate, aggregate_receipt, contract, contract_receipt, contract_attestation_value,
+    variant_manifests, variant_receipts, adapter_receipt_values,
+    contract_metadata_receipt, adapter_report_files, runtime_maven_files, adapter_evidence,
+) -> dict[str, Any]:
+    """One unchanged semantic gate for signed and protected pre-sign callers.
+
+    Callers establish exact original receipt/payload binding and authenticate
+    Contract/variant inputs first. This helper grants no aggregate signature or
+    original CI source authority.
+    """
+    from .runtime_evidence import (
+        derive_runtime_adapter_projection,
+        jvm_evidence_filename,
+        node_evidence_filename,
+    )
+
     adapter_receipt_map = {
         (receipt["component"], receipt["phase"], receipt["target"]): receipt
         for receipt in adapter_receipt_values

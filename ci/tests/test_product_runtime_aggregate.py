@@ -11,11 +11,13 @@ import ci.products.runtime_aggregate as runtime_aggregate_module
 from ci.products.aggregate import (
     RUNTIME_MAVEN_COMPONENTS,
     RUNTIME_TARGETS,
+    verify_runtime_aggregate_artifacts,
 )
 from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
 from ci.products.inventory import (
     canonical_json_bytes,
     load_canonical_json_bytes,
+    regular_file_inventory,
     sha256_bytes,
     sha256_file,
     write_canonical_json,
@@ -32,6 +34,7 @@ from ci.products.runtime_aggregate import (
     validate_runtime_aggregate_attestation,
     verify_runtime_aggregate_attestation,
     verify_runtime_aggregate_attestation_closure,
+    verify_runtime_aggregate_presigning_content,
 )
 from ci.products.signatures import generate_development_key
 from ci.tests.test_product_runtime_maven import runtime_maven_fixture
@@ -283,6 +286,10 @@ class Fixture:
         ), patch.object(
             runtime_aggregate_module,
             "verify_runtime_aggregate_artifacts",
+            return_value={},
+        ), patch.object(
+            runtime_aggregate_module,
+            "verify_runtime_aggregate_presigning_content",
             return_value={},
         ):
             return build_runtime_aggregate_attestation(
@@ -740,6 +747,109 @@ class RuntimeAggregateProducerTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "must not exist"):
                 fixture.build_attestation(manifest, metadata, attestation_output)
             self.assertEqual(b"preserve\n", attestation_sentinel.read_bytes())
+
+
+class RuntimeAggregatePresigningContentTest(unittest.TestCase):
+    """Full signed synthetic K/R inputs, not compiler or protected CI evidence."""
+
+    @classmethod
+    def setUpClass(cls):
+        from ci.tests.test_product_native_chain import build_chain
+
+        cls.temporary = tempfile.TemporaryDirectory(prefix="aggregate-presigning-test-")
+        cls.addClassCleanup(cls.temporary.cleanup)
+        cls.root = Path(cls.temporary.name).resolve()
+        cls.chain = build_chain(cls.root / "original", 91)
+
+    def inputs(self):
+        chain = self.chain
+        contract = chain["contract"]
+        return {
+            "contract_payload": contract["payload"], "contract_metadata_receipt": contract["receipt"],
+            "contract_attestation": contract["attestation"], "contract_attestation_signature": contract["signature"],
+            "contract_public_key": chain["context"]["public_key"],
+            **{key: chain["variants"][key] for key in (
+                "variant_bundles", "variant_phase_receipts", "variant_attestations",
+                "variant_attestation_signatures", "variant_public_keys", "variant_validation_evidence",
+            )},
+            **{key: chain["adapters"][key] for key in (
+                "adapter_receipts", "adapter_report_files", "runtime_maven_files", "adapter_evidence",
+            )},
+        }
+
+    def presign(self, **changes):
+        arguments = {"manifest": self.chain["aggregate"], "metadata_receipt": self.chain["aggregate_receipt"],
+                     "required_trust_domain": "development", **self.inputs(), **changes}
+        return verify_runtime_aggregate_presigning_content(**arguments)
+
+    def signed(self):
+        trust = self.chain["compatibility_args"]
+        return verify_runtime_aggregate_artifacts(
+            self.chain["aggregate"], aggregate_metadata_receipt=self.chain["aggregate_receipt"],
+            aggregate_attestation=trust["runtime_attestation"],
+            aggregate_attestation_signature=trust["runtime_attestation_signature"],
+            aggregate_public_key=trust["runtime_public_key"], required_trust_domain="development", **self.inputs(),
+        )
+
+    def test_presign_matches_full_signed_gate_without_writing_any_original(self):
+        before = regular_file_inventory(self.root, allow_empty=True)
+        with patch.object(runtime_aggregate_module, "sign_manifest", side_effect=AssertionError("pre-sign key access")):
+            expected = self.signed()
+            actual = self.presign()
+        self.assertIs(type(actual), dict)
+        self.assertEqual(expected, actual)
+        self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
+
+    def test_missing_aggregate_signature_never_grants_signed_admission(self):
+        signature = self.chain["compatibility_args"]["runtime_attestation_signature"]
+        hidden = signature.with_name(signature.name + ".hidden")
+        signature.rename(hidden)
+        try:
+            with patch.object(runtime_aggregate_module, "verify_runtime_aggregate_attestation",
+                              side_effect=AssertionError("pre-sign aggregate signature")), \
+                    patch.object(runtime_aggregate_module, "sign_manifest", side_effect=AssertionError("signing")):
+                self.assertIs(type(self.presign()), dict)
+            with self.assertRaises((ValueError, OSError)):
+                self.signed()
+        finally:
+            hidden.rename(signature)
+
+    def test_full_contract_maven_report_projection_and_upstream_checks_run_before_signing(self):
+        inputs = self.inputs()
+        cases = {
+            "contract-signature": inputs["contract_attestation_signature"],
+            "variant-signature": inputs["variant_attestation_signatures"]["linux-x64"],
+            "maven": Path(inputs["runtime_maven_files"][0]["file"]),
+            "raw-report": inputs["adapter_report_files"]["jvm"]["linux-x64"],
+            "projection": inputs["adapter_evidence"]["jvm"],
+            "upstream": self.chain["aggregate_receipt"],
+        }
+        context = self.chain["context"]
+        for name, path in cases.items():
+            original, mode = path.read_bytes(), path.stat().st_mode
+            destination = self.root / f"rejected-{name}"
+            try:
+                path.chmod(0o600)
+                if name == "upstream":
+                    receipt = load_canonical_json_bytes(original)
+                    receipt["inputs"]["upstreamArtifacts"] = []
+                    _rekey(receipt)
+                    write_canonical_json(path, receipt)
+                else:
+                    path.write_bytes(original + b"invalid original\n")
+                with self.subTest(name=name), \
+                        patch.object(runtime_aggregate_module, "sign_manifest", side_effect=AssertionError("sign before full gate")), \
+                        self.assertRaises((ValueError, OSError)):
+                    build_runtime_aggregate_attestation(
+                        self.chain["aggregate"], self.chain["aggregate_receipt"], **inputs,
+                        signing_metadata=context["signing"], private_key=context["private_key"],
+                        public_key=context["public_key"], output_directory=destination,
+                        required_variant_trust_domain="development",
+                    )
+                self.assertFalse(destination.exists())
+            finally:
+                path.write_bytes(original)
+                path.chmod(mode)
 
 
 if __name__ == "__main__":

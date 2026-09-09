@@ -603,7 +603,19 @@ def verify_runtime_aggregate_attestation_closure(
         variant_keyring=variant_keyring,
         variant_keys_directory=variant_keys_directory,
     )
-    if payload_records != aggregate_value["variants"] or variant_records != attestation_value["variants"]:
+    if variant_records != attestation_value["variants"]:
+        raise ValueError("Runtime aggregate variant closure differs from its payload or attestation")
+    _require_aggregate_variant_content(aggregate_value, payload_records, manifests)
+    records, values = _adapter_receipt_closure(
+        adapter_receipts, aggregate_value["runtimeCompatibilityVersion"],
+    )
+    if records != attestation_value["adapterReceipts"]:
+        raise ValueError("Runtime aggregate adapter receipt closure differs from its attestation")
+    return manifests, receipts, values
+
+
+def _require_aggregate_variant_content(aggregate_value, payload_records, manifests) -> None:
+    if payload_records != aggregate_value["variants"]:
         raise ValueError("Runtime aggregate variant closure differs from its payload or attestation")
     if _compatibility(manifests, aggregate_value["runtimeCompatibilityVersion"]) != \
             aggregate_value["compatibility"]:
@@ -613,12 +625,63 @@ def verify_runtime_aggregate_attestation_closure(
         for manifest in manifests.values()
     ):
         raise ValueError("Runtime aggregate Contract digest differs from its variants")
-    records, values = _adapter_receipt_closure(
-        adapter_receipts, aggregate_value["runtimeCompatibilityVersion"],
+
+
+def verify_runtime_aggregate_presigning_content(
+    manifest: Path,
+    metadata_receipt: Path,
+    *,
+    contract_payload: Path,
+    contract_metadata_receipt: Path,
+    contract_attestation: Path,
+    contract_attestation_signature: Path,
+    contract_public_key: Path,
+    variant_bundles: dict[str, Path],
+    variant_phase_receipts: dict[str, dict[str, Path]],
+    variant_attestations: dict[str, Path],
+    variant_attestation_signatures: dict[str, Path],
+    variant_public_keys: dict[str, Path],
+    variant_validation_evidence: dict[str, Path],
+    adapter_receipts: list[dict[str, Any]],
+    adapter_report_files: dict[str, dict[str, Path]],
+    runtime_maven_files: list[dict[str, Any]],
+    adapter_evidence: dict[str, Path],
+    required_trust_domain: str,
+    contract_keyring: Path | None = None,
+    contract_keys_directory: Path | None = None,
+    variant_keyring: Path | None = None,
+    variant_keys_directory: Path | None = None,
+) -> dict[str, Any]:
+    """Verify original aggregate semantics without its not-yet-created signature.
+
+    Contract and all five variants still require their existing signatures. The
+    protected caller supplies private original captures and independently admits
+    original CI/release sources before signing-key access. This ordinary dict is
+    not signed admission and never rebuilds or publishes product bytes.
+    """
+    from .aggregate import _verify_runtime_aggregate_semantics
+
+    contract, contract_receipt, contract_attestation_value = verify_contract_attestation(
+        Path(contract_payload), Path(contract_metadata_receipt), Path(contract_attestation),
+        Path(contract_attestation_signature), Path(contract_public_key),
+        required_trust_domain=required_trust_domain,
+        keyring=contract_keyring, keys_directory=contract_keys_directory,
     )
-    if records != attestation_value["adapterReceipts"]:
-        raise ValueError("Runtime aggregate adapter receipt closure differs from its attestation")
-    return manifests, receipts, values
+    aggregate, aggregate_receipt, _, _ = _aggregate_bound_inputs(Path(manifest), Path(metadata_receipt))
+    payload_records, _, variants, receipts = _variant_inputs(
+        variant_bundles=variant_bundles, variant_phase_receipts=variant_phase_receipts,
+        variant_attestations=variant_attestations, variant_attestation_signatures=variant_attestation_signatures,
+        variant_public_keys=variant_public_keys, variant_validation_evidence=variant_validation_evidence,
+        required_variant_trust_domain=required_trust_domain,
+        variant_keyring=variant_keyring, variant_keys_directory=variant_keys_directory,
+    )
+    _require_aggregate_variant_content(aggregate, payload_records, variants)
+    _, adapter_values = _adapter_receipt_closure(adapter_receipts, aggregate["runtimeCompatibilityVersion"])
+    return _verify_runtime_aggregate_semantics(
+        aggregate, aggregate_receipt, contract, contract_receipt, contract_attestation_value,
+        variants, receipts, adapter_values, contract_metadata_receipt,
+        adapter_report_files, runtime_maven_files, adapter_evidence,
+    )
 
 
 def build_runtime_aggregate_attestation(
@@ -703,6 +766,20 @@ def build_runtime_aggregate_attestation(
         stem = f"codex-agent-runtime-{aggregate['runtimeVersion']}.attestation"
         attestation_path = prepared / f"{stem}.json"
         write_canonical_json(attestation_path, value)
+        verify_runtime_aggregate_presigning_content(
+            Path(manifest), Path(metadata_receipt),
+            contract_payload=Path(contract_payload), contract_metadata_receipt=Path(contract_metadata_receipt),
+            contract_attestation=Path(contract_attestation),
+            contract_attestation_signature=Path(contract_attestation_signature),
+            contract_public_key=Path(contract_public_key), variant_bundles=variant_bundles,
+            variant_phase_receipts=variant_phase_receipts, variant_attestations=variant_attestations,
+            variant_attestation_signatures=variant_attestation_signatures, variant_public_keys=variant_public_keys,
+            variant_validation_evidence=variant_validation_evidence, adapter_receipts=adapter_receipts,
+            adapter_report_files=adapter_report_files, runtime_maven_files=runtime_maven_files,
+            adapter_evidence=adapter_evidence, required_trust_domain=signing["trustDomain"],
+            contract_keyring=contract_keyring, contract_keys_directory=contract_keys_directory,
+            variant_keyring=variant_keyring, variant_keys_directory=variant_keys_directory,
+        )
         signature = sign_manifest(attestation_path, Path(private_key), signing)
         verify_runtime_aggregate_artifacts(
             Path(manifest),

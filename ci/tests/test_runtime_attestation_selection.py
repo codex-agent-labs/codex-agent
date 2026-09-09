@@ -143,6 +143,44 @@ class RuntimeAttestationSelectionTest(unittest.TestCase):
             self.materialize()
         self.assertFalse(self.output.exists())
 
+    def test_completed_aggregate_restores_all_fifty_originals_without_building(self):
+        aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+        instances = product_reuse._dependency_closure((aggregate,))
+        self.assertEqual(50, len(instances))
+        for instance in instances:
+            if instance in self.state.sources:
+                continue
+            if instance.component == "runtime-aggregate":
+                stage = self.chain["root"] / "aggregate-stage"
+                receipt = self.chain["aggregate_receipt"]
+            else:
+                key = next(key for key in self.context["phase_stages"]
+                           if all(getattr(key, name) == getattr(instance, name)
+                                  for name in ("product", "component", "phase", "target")))
+                stage = self.context["phase_stages"][key]
+                if instance.component in product_reuse.NATIVE_TARGETS:
+                    receipt = self.chain["variants"]["variant_phase_receipts"][instance.target][instance.phase]
+                else:
+                    receipt = next(record["receipt"] for record in self.chain["adapters"]["adapter_receipts"]
+                                   if all(record[name] == getattr(instance, name)
+                                          for name in ("component", "phase", "target")))
+            stored = store_local_object(stage, receipt, self.discovery / "objects")
+            value = load_canonical_json_bytes(receipt.read_bytes())
+            self.state.prior_by_instance[instance] = {
+                **product_reuse._identity_record(instance), "buildKey": value["buildKey"],
+                "receiptSha256": stored["receiptSha256"], "objectSha256": stored["objectSha256"]}
+            self.state.sources[instance] = stored["path"]
+            self.originals[instance] = receipt.read_bytes()
+        before = regular_file_inventory(self.discovery)
+        result = self.materialize(target="aggregate", expected_build_key=self.state.prior_by_instance[aggregate]["buildKey"])
+        self.assertEqual(50, len(result["originals"]))
+        self.assertEqual(self.chain["aggregate"].read_bytes(), (self.output / result["aggregateManifest"]).read_bytes())
+        for record in result["originals"]:
+            instance = PhaseInstanceId(*(record[name] for name in ("product", "component", "phase", "target")))
+            self.assertEqual(self.originals[instance],
+                             (self.output / record["directory"] / "phase-receipt.json").read_bytes())
+        self.assertEqual(before, regular_file_inventory(self.discovery))
+
     def test_corrupt_original_object_never_publishes_a_selection(self):
         path = self.state.sources[self.metadata]
         path.chmod(0o600)
