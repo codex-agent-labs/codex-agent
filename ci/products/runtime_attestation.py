@@ -16,10 +16,12 @@ from .inventory import (
     require_identifier,
     require_integer,
     require_relative_path,
+    require_regular_directory,
     require_sha256,
     require_string,
     publish_regular_tree,
     read_regular_file_bytes,
+    regular_file_inventory,
     sha256_bytes,
     verified_zip_contents,
     write_canonical_json,
@@ -809,7 +811,44 @@ def build_runtime_variant_attestation(
     *,
     keyring: Path | None = None,
     keys_directory: Path | None = None,
+    complete_handoff: bool = False,
 ) -> dict[str, Any]:
+    """Sign exact originals; optionally retain their external nine-file handoff.
+
+    Assembly does not authorize original CI sources or replace the caller's
+    complete K/R and raw C ABI verification. No trust material enters the ZIP.
+    """
+    if type(complete_handoff) is not bool:
+        raise ValueError("Complete Runtime handoff selection must be boolean")
+    original_paths = {
+        "payload": (Path(payload), _PAYLOAD_LIMIT),
+        **{phase: (Path(path), _JSON_LIMIT) for phase, path in (
+            ("binary", binary_receipt), ("package", package_receipt),
+            ("validation", validation_receipt), ("metadata", metadata_receipt),
+        )},
+        "validation_evidence": (Path(validation_evidence), 64 * 1024 * 1024),
+        "public_key": (Path(public_key), 1024 * 1024),
+    }
+    originals = {}
+    if complete_handoff:
+        output = Path(output_directory)
+        if output.exists() or output.is_symlink():
+            raise ValueError("Complete Runtime handoff destination must not exist")
+        ancestor = output.absolute().parent
+        while not ancestor.exists() and not ancestor.is_symlink():
+            ancestor = ancestor.parent
+        for directory in (ancestor, *ancestor.parents):
+            require_regular_directory(directory, "Complete Runtime handoff destination ancestor")
+        sources = [path for path, _ in original_paths.values()] + [Path(private_key)]
+        sources.extend(Path(path) for path in (keyring, keys_directory) if path is not None)
+        for source in sources:
+            for left, right in ((source.absolute(), output.absolute()), (source.resolve(), output.resolve())):
+                if left == right or left in right.parents or right in left.parents:
+                    raise ValueError("Complete Runtime handoff output overlaps an original input")
+        originals = {
+            name: read_regular_file_bytes(path, max_bytes=limit, reject_symlink_parents=True)
+            for name, (path, limit) in original_paths.items()
+        }
     signing = validate_signing_metadata(signing_metadata)
     if signing["trustDomain"] == "release":
         if keyring is None or keys_directory is None:
@@ -823,29 +862,51 @@ def build_runtime_variant_attestation(
             raise ValueError("Runtime variant attestation public key is not the active release key")
     elif keyring is not None or keys_directory is not None:
         raise ValueError("Development Runtime variant attestation creation rejects keyring inputs")
-    manifest, _, receipt_bytes, payload_identity, manifest_sha256 = _bound_inputs(
-        Path(payload), Path(binary_receipt), Path(package_receipt),
-        Path(validation_receipt), Path(metadata_receipt), Path(validation_evidence),
-    )
-    value = validate_runtime_variant_attestation({
-        "schemaVersion": 1,
-        "product": "runtime",
-        "target": manifest["target"],
-        "componentId": manifest["componentId"],
-        "payload": payload_identity,
-        "manifestSha256": manifest_sha256,
-        "phaseReceipts": {
-            phase: sha256_bytes(receipt_bytes[phase]) for phase in _ATTESTATION_PHASES
-        },
-        "signing": signing,
-    })
     with tempfile.TemporaryDirectory(prefix="runtime-variant-attestation-build-") as temporary:
         prepared = Path(temporary).resolve() / "attestation"
         prepared.mkdir()
+        captured = {}
+        if complete_handoff:
+            relative_paths = {
+                "payload": Path(payload).name,
+                **{phase: f"receipts/{phase}.json" for phase in _ATTESTATION_PHASES},
+                "validation_evidence": "validation-evidence.json",
+                "public_key": "public-key.pub",
+            }
+            for name, relative in relative_paths.items():
+                captured[name] = prepared / relative
+                captured[name].parent.mkdir(parents=True, exist_ok=True)
+                captured[name].write_bytes(originals[name])
+            payload, binary_receipt, package_receipt, validation_receipt, metadata_receipt, \
+                validation_evidence, public_key = (captured[name] for name in (
+                    "payload", "binary", "package", "validation", "metadata",
+                    "validation_evidence", "public_key",
+                ))
+        manifest, _, receipt_bytes, payload_identity, manifest_sha256 = _bound_inputs(
+            Path(payload), Path(binary_receipt), Path(package_receipt),
+            Path(validation_receipt), Path(metadata_receipt), Path(validation_evidence),
+        )
+        value = validate_runtime_variant_attestation({
+            "schemaVersion": 1,
+            "product": "runtime",
+            "target": manifest["target"],
+            "componentId": manifest["componentId"],
+            "payload": payload_identity,
+            "manifestSha256": manifest_sha256,
+            "phaseReceipts": {
+                phase: sha256_bytes(receipt_bytes[phase]) for phase in _ATTESTATION_PHASES
+            },
+            "signing": signing,
+        })
         stem = Path(payload_identity["fileName"]).stem
         attestation = prepared / f"{stem}.attestation.json"
         write_canonical_json(attestation, value)
         signature = sign_manifest(attestation, Path(private_key), signing)
+        if complete_handoff:
+            verified_inventory = regular_file_inventory(prepared)
+            expected_paths = set(relative_paths.values()) | {attestation.name, signature.name}
+            if {record["relativePath"] for record in verified_inventory} != expected_paths:
+                raise ValueError("Complete Runtime handoff file inventory is not exact")
         verify_runtime_variant_attestation(
             Path(payload), Path(binary_receipt), Path(package_receipt),
             Path(validation_receipt), Path(metadata_receipt), attestation, signature,
@@ -854,5 +915,13 @@ def build_runtime_variant_attestation(
             validation_evidence=Path(validation_evidence),
             keyring=keyring, keys_directory=keys_directory,
         )
+        if complete_handoff:
+            if regular_file_inventory(prepared) != verified_inventory:
+                raise ValueError("Captured Runtime handoff changed during verification")
+            for name, (path, limit) in original_paths.items():
+                if read_regular_file_bytes(path, max_bytes=limit, reject_symlink_parents=True) != originals[name]:
+                    raise ValueError("Original Runtime inputs changed during handoff assembly")
+                if read_regular_file_bytes(captured[name], max_bytes=limit, reject_symlink_parents=True) != originals[name]:
+                    raise ValueError("Captured Runtime inputs changed during handoff assembly")
         publish_regular_tree(prepared, Path(output_directory))
     return value

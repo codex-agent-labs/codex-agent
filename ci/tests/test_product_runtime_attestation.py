@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import copy
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
-from ci.products.inventory import canonical_json_bytes, sha256_bytes
+from ci.products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes, write_canonical_json
 from ci.products.runtime_attestation import (
-    derive_runtime_component_attestation, verify_runtime_validation_inputs,
+    build_runtime_variant_attestation, derive_runtime_component_attestation,
+    verify_runtime_validation_inputs, verify_runtime_variant_attestation,
 )
 from ci.products.receipt import output_inventory_digest
 from ci.products.runtime_identity import derive_runtime_identity
+from ci.products.runtime_variant import produce_runtime_variant
+from ci.products.signatures import generate_development_key, sign_manifest
+from ci.tests.test_product_runtime_variant import Fixture, _write_metadata_receipt
 
 
 DIGEST_A = "sha256:" + "a" * 64
@@ -315,6 +322,184 @@ class RuntimeComponentAttestationTest(unittest.TestCase):
         invalid["componentId"] = DIGEST_A
         with self.assertRaisesRegex(ValueError, "derived identity"):
             derive_runtime_component_attestation(invalid, phases(), artifacts())
+
+
+class RuntimeVariantCompleteHandoffTest(unittest.TestCase):
+    """Real signatures over synthetic originals; not CI or native-host admission."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.private, self.public, self.signing = generate_development_key(self.root / "keys")
+        self.fixture = Fixture(self.root / "original", self.private, self.public, self.signing)
+        self.payload = produce_runtime_variant(**self.fixture.arguments())["bundlePath"]
+        # Fault-injection fixture only: generated payloads normally publish read-only.
+        self.payload.chmod(0o600)
+        self.receipts = {**self.fixture.receipt_paths,
+                         "metadata": _write_metadata_receipt(self.fixture, self.payload)}
+        self.originals = {self.payload.name: self.payload, "public-key.pub": self.public,
+                          "validation-evidence.json": self.fixture.validation,
+                          **{f"receipts/{phase}.json": path for phase, path in self.receipts.items()}}
+        self.before = {name: path.read_bytes() for name, path in self.originals.items()}
+
+    def build(self, output: Path, **changes):
+        arguments = dict(payload=self.payload, binary_receipt=self.receipts["binary"],
+            package_receipt=self.receipts["package"], validation_receipt=self.receipts["validation"],
+            metadata_receipt=self.receipts["metadata"], validation_evidence=self.fixture.validation,
+            signing_metadata=self.signing, private_key=self.private, public_key=self.public,
+            output_directory=output, complete_handoff=True)
+        arguments.update(changes)
+        return build_runtime_variant_attestation(**arguments)
+
+    def verify(self, root: Path, **changes):
+        arguments = dict(payload=root / self.payload.name,
+            **{f"{phase}_receipt": root / f"receipts/{phase}.json" for phase in self.receipts},
+            attestation=root / f"{self.payload.stem}.attestation.json",
+            signature=root / f"{self.payload.stem}.attestation.sig", public_key=root / "public-key.pub",
+            required_trust_domain="development", validation_evidence=root / "validation-evidence.json")
+        arguments.update(changes)
+        return verify_runtime_variant_attestation(**arguments)
+
+    def test_exact_originals_relocate_and_default_still_publishes_only_detached_files(self) -> None:
+        detached = self.root / "detached"
+        previous = self.build(detached, complete_handoff=False)
+        self.assertEqual({f"{self.payload.stem}.attestation.json", f"{self.payload.stem}.attestation.sig"},
+                         {item["relativePath"] for item in regular_file_inventory(detached)})
+        output = self.root / "handoff"
+        with patch("ci.products.runtime_variant.produce_runtime_variant", side_effect=AssertionError("rebuild")):
+            value = self.build(output)
+        self.assertEqual(previous, value)
+        expected = set(self.before) | {f"{self.payload.stem}.attestation.json", f"{self.payload.stem}.attestation.sig"}
+        self.assertEqual(9, len(expected))
+        self.assertEqual(expected, {item["relativePath"] for item in regular_file_inventory(output)})
+        self.assertEqual(self.before, {name: path.read_bytes() for name, path in self.originals.items()})
+        self.assertEqual(self.before, {name: (output / name).read_bytes() for name in self.before})
+        retained = regular_file_inventory(output)
+        moved = self.root / "relocated"
+        output.rename(moved)
+        self.fixture.root.rename(self.root / "hidden-original")
+        self.private.parent.rename(self.root / "hidden-keys")
+        self.assertEqual(value, self.verify(moved)[2])
+        self.assertEqual(retained, regular_file_inventory(moved))
+        with patch("ci.products.runtime_attestation.sign_manifest", side_effect=AssertionError("resign")), \
+                self.assertRaisesRegex(ValueError, "destination must not exist"):
+            self.build(moved)
+
+    def test_hostile_destinations_and_inputs_never_sign_or_replace_originals(self) -> None:
+        link = self.root / "linked-original"
+        link.symlink_to(self.fixture.root, target_is_directory=True)
+        dangling = self.root / "dangling"
+        dangling.symlink_to(self.root / "absent", target_is_directory=True)
+        existing = self.root / "existing"
+        existing.mkdir()
+        (existing / "sentinel").write_bytes(b"keep")
+        outputs = (existing, self.root, self.payload / "nested", link / "fresh",
+                   link / ".." / "fresh", dangling / "fresh")
+        with patch("ci.products.runtime_attestation.sign_manifest", side_effect=AssertionError("sign")):
+            for output in outputs:
+                with self.subTest(output=output), self.assertRaises((ValueError, OSError)):
+                    self.build(output)
+            for selection in (1, "true", None):
+                with self.subTest(selection=selection), self.assertRaisesRegex(ValueError, "boolean"):
+                    self.build(self.root / "bad-selection", complete_handoff=selection)
+            for field, source in (("binary_receipt", self.receipts["binary"]),
+                                  ("validation_evidence", self.fixture.validation),
+                                  ("public_key", self.public), ("payload", self.payload)):
+                alias = self.root / f"unsafe-{field}"
+                alias.symlink_to(source)
+                with self.subTest(field=field), self.assertRaises((ValueError, OSError)):
+                    self.build(self.root / f"rejected-{field}", **{field: alias})
+        self.assertEqual(b"keep", (existing / "sentinel").read_bytes())
+        self.assertEqual(self.before, {name: path.read_bytes() for name, path in self.originals.items()})
+
+    def test_original_mutation_during_signing_never_publishes(self) -> None:
+        for name, path in self.originals.items():
+            def mutate(attestation, private, signing):
+                signature = sign_manifest(attestation, private, signing)
+                path.write_bytes(b"changed original\n")
+                return signature
+            output = self.root / "rejected-original"
+            try:
+                with self.subTest(name=name), patch("ci.products.runtime_attestation.sign_manifest", side_effect=mutate), \
+                        self.assertRaisesRegex(ValueError, "Original Runtime inputs changed"):
+                    self.build(output)
+                self.assertFalse(output.exists())
+            finally:
+                path.write_bytes(self.before[name])
+
+    def test_missing_or_unbound_original_evidence_is_rejected_before_signing(self) -> None:
+        with patch("ci.products.runtime_attestation.sign_manifest", side_effect=AssertionError("sign")):
+            for name, path in self.originals.items():
+                if name == "public-key.pub":
+                    continue
+                try:
+                    path.write_bytes(b"not original evidence\n")
+                    with self.subTest(name=name), self.assertRaises((ValueError, OSError)):
+                        self.build(self.root / "invalid-original")
+                    self.assertFalse((self.root / "invalid-original").exists())
+                finally:
+                    path.write_bytes(self.before[name])
+            with self.assertRaises((ValueError, OSError)):
+                self.build(self.root / "missing-original", validation_evidence=self.root / "absent.json")
+            with patch("ci.products.runtime_attestation._PAYLOAD_LIMIT", self.payload.stat().st_size - 1), \
+                    self.assertRaises(ValueError):
+                self.build(self.root / "oversized-original")
+        self.assertFalse((self.root / "missing-original").exists())
+        self.assertFalse((self.root / "oversized-original").exists())
+
+    def test_captured_mutation_or_extra_file_never_publishes(self) -> None:
+        for relative in (*self.before, "extra-private-key"):
+            def mutate(attestation, private, signing):
+                signature = sign_manifest(attestation, private, signing)
+                (attestation.parent / relative).write_bytes(b"changed capture\n")
+                return signature
+            output = self.root / "rejected-capture"
+            with self.subTest(relative=relative), patch("ci.products.runtime_attestation.sign_manifest", side_effect=mutate), \
+                    self.assertRaises((ValueError, OSError)):
+                self.build(output)
+            self.assertFalse(output.exists())
+        # The captured closure also remains immutable across a successful full verifier.
+        def mutate_after_verify(*args, **kwargs):
+            result = verify_runtime_variant_attestation(*args, **kwargs)
+            args[5].write_bytes(b"changed verified attestation\n")
+            return result
+        with patch("ci.products.runtime_attestation.verify_runtime_variant_attestation", side_effect=mutate_after_verify), \
+                self.assertRaisesRegex(ValueError, "changed during verification"):
+            self.build(self.root / "rejected-late-capture")
+        self.assertFalse((self.root / "rejected-late-capture").exists())
+        self.assertEqual(self.before, {name: path.read_bytes() for name, path in self.originals.items()})
+
+    def test_release_handoff_requires_external_caller_policy_and_preserves_receipt_trust(self) -> None:
+        signing = {**self.signing, "trustDomain": "release", "keyId": "release-fixture"}
+        keys = self.root / "public-policy-keys"
+        keys.mkdir()
+        (keys / "release-fixture.pub").write_bytes(self.public.read_bytes())
+        keyring = self.root / "keyring.json"
+        write_canonical_json(keyring, {
+            "schemaVersion": 1, "namespace": signing["namespace"], "algorithm": signing["algorithm"],
+            "trustDomain": "release", "activeKey": {
+                "keyId": signing["keyId"], "fingerprint": signing["fingerprint"],
+            }, "retiredKeys": [],
+        })
+        with patch("ci.products.runtime_attestation.sign_manifest", side_effect=AssertionError("sign")), \
+                self.assertRaisesRegex(ValueError, "requires a keyring"):
+            self.build(self.root / "untrusted", signing_metadata=signing)
+        output = self.root / "release-handoff"
+        value = self.build(output, signing_metadata=signing, keyring=keyring, keys_directory=keys)
+        with self.assertRaisesRegex(ValueError, "requires a keyring"):
+            self.verify(output, required_trust_domain="release")
+        _, receipts, verified = self.verify(output, required_trust_domain="release", keyring=keyring, keys_directory=keys)
+        self.assertEqual(value, verified)
+        self.assertEqual({"development"}, {receipt["trustDomain"] for receipt in receipts.values()})
+        self.assertEqual(self.before, {name: (output / name).read_bytes() for name in self.before})
+        self.assertEqual(9, len(regular_file_inventory(output)))
+        self.assertFalse((output / "keyring.json").exists())
+        self.assertFalse((output / self.private.name).exists())
+        _, other_public, _ = generate_development_key(self.root / "unrelated-key")
+        (keys / "release-fixture.pub").write_bytes(other_public.read_bytes())
+        with self.assertRaises(ValueError):
+            self.verify(output, required_trust_domain="release", keyring=keyring, keys_directory=keys)
 
 
 if __name__ == "__main__":

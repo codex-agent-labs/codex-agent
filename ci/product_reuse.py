@@ -86,7 +86,7 @@ from products.restore import (
     write_carrier,
     finalize_phase_object,
 )
-from products.receipt import validate_producer, verify_output_manifest_identity
+from products.receipt import validate_phase_receipt, validate_producer, verify_output_manifest_identity
 from products.reuse import (
     SOURCES, _dependency_closure, plan_reuse_wave,
     _native_comparison_records, _native_evidence_paths,
@@ -593,6 +593,78 @@ def capture_contract_original_ci_phases(
             evidence["releaseAttestations"] = releases
         write_canonical_json(prepared / "transport/original-ci-phases.json", evidence)
         publish_regular_tree(prepared, destination)
+    return evidence
+
+
+def capture_runtime_original_ci_phases(
+    phase_receipts: Mapping[str, Path], destination: Path, *, target: str,
+    trusted_workflow_sha: str, token: str,
+) -> dict[str, Any]:
+    """Bind original native receipts to CI bytes; this does not authorize signing."""
+    phases = ("binary", "package", "validation", "metadata")
+    require_exact_keys(phase_receipts, set(phases), "Original Runtime phase receipts")
+    if target not in NATIVE_TARGETS:
+        raise ValueError("Original Runtime capture requires a native target")
+    destination = Path(destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Original Runtime CI destination must not exist")
+    resolved_output = destination.parent.resolve(strict=False) / destination.name
+    originals, receipts = {}, {}
+    for phase in phases:
+        source = Path(phase_receipts[phase])
+        resolved_source = source.resolve(strict=True)
+        if resolved_source == resolved_output or resolved_output in resolved_source.parents:
+            raise ValueError("Original Runtime CI destination overlaps an input")
+        raw = read_regular_file_bytes(source, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+        receipt = validate_phase_receipt(load_canonical_json_bytes(raw))
+        if _identity(receipt) != PhaseInstanceId("runtime", target, phase, target):
+            raise ValueError("Original Runtime receipt has the wrong phase identity")
+        originals[phase], receipts[phase] = raw, receipt
+    jobs = {phase: f"product-validation / runtime-{target}-{phase}-{target}" for phase in phases}
+    observed = _observe_ci_producer_jobs(
+        {phase: receipts[phase]["producer"] for phase in phases}, jobs_by_phase=jobs,
+        trusted_workflow_sha=trusted_workflow_sha, token=token)
+    attempts = {(value["run"]["id"], value["run"]["run_attempt"]): value for value in observed}
+    with tempfile.TemporaryDirectory(prefix="runtime-original-ci-") as temporary:
+        root = Path(temporary).resolve()
+        prepared = root / "captured"
+        inventories, artifacts = {}, {}
+        for phase in phases:
+            receipt = receipts[phase]
+            producer = receipt["producer"]
+            run_id = producer["runId"]
+            if run_id not in inventories:
+                inventories[run_id] = paginated_items(
+                    f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{run_id}/artifacts",
+                    "artifacts", token)
+            name = (f"codex-agent-runtime-worker-{target}-{phase}-{target}-"
+                    f"{receipt['buildKey'].removeprefix('sha256:')}-{producer['tree']}-attempt-{producer['runAttempt']}")
+            candidates = [item for item in inventories[run_id] if isinstance(item, dict) and item.get("name") == name]
+            if len(candidates) != 1:
+                raise ValueError("Original Runtime upload is missing or ambiguous")
+            attempt = attempts[(run_id, producer["runAttempt"])]
+            candidate = candidates[0]
+            artifact, raw = _download_contract_ci_upload(
+                candidate.get("id"), candidate.get("digest"), name, producer, attempt["run"], token)
+            job = next(value for value in attempt["jobs"] if value.get("name") == jobs[phase])
+            timestamps = [datetime.fromisoformat(require_string(value, "Original Runtime CI timestamp").replace("Z", "+00:00"))
+                          for value in (job.get("started_at"), artifact.get("created_at"), job.get("completed_at"))]
+            if any(value.utcoffset() != timedelta(0) for value in timestamps) or not timestamps[0] <= timestamps[1] <= timestamps[2]:
+                raise ValueError("Original Runtime upload is outside its original job-attempt window")
+            retained = prepared / "phases" / phase
+            retained.mkdir(parents=True)
+            archive = retained / "transport.zip"
+            archive.write_bytes(raw)
+            verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+            safe_extract(archive, retained / "original")
+            verified = verify_phase_shard(retained / "original/shard", PhaseInstanceId("runtime", target, phase, target))
+            if verified["receiptBytes"] != originals[phase]:
+                raise ValueError("Original Runtime upload differs from the requested original receipt")
+            artifacts[phase] = artifact
+        evidence = {"target": target, "observed": observed, "artifacts": artifacts,
+                    "receiptSha256s": {phase: sha256_bytes(raw) for phase, raw in originals.items()}}
+        write_canonical_json(prepared / "transport/original-ci-phases.json", evidence)
+        publish_regular_tree(prepared, destination, allow_empty=True)
     return evidence
 
 
