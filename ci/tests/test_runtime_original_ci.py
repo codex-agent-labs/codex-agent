@@ -127,3 +127,86 @@ class RuntimeOriginalCiTest(unittest.TestCase):
         self.assertEqual(2, len(result["observed"]))
         self.assertEqual(self.receipts["metadata"].read_bytes(),
             (self.output / "phases/metadata/original/shard/phase-receipt.json").read_bytes())
+
+
+class RuntimeRetainedOriginalTest(unittest.TestCase):
+    api = fixture.ContractOriginalCiCaptureTest.api
+
+    def setUp(self):
+        RuntimeOriginalCiTest.setUp(self)
+        from ci.tests import test_product_runtime_variant as variant
+        from products.runtime_attestation import build_runtime_variant_attestation
+        from products.signatures import generate_development_key
+        self.private, self.public, signing = generate_development_key(self.root / "release-key")
+        self.signing = {**signing, "trustDomain": "release", "keyId": "retained-fixture"}
+        self.keys = self.root / "public-policy/keys"
+        self.keys.mkdir(parents=True)
+        (self.keys / "retained-fixture.pub").write_bytes(self.public.read_bytes())
+        self.keyring = self.keys.parent / "keyring.json"
+        policy = {"schemaVersion": 1, **{key: self.signing[key] for key in ("algorithm", "namespace", "trustDomain")},
+                  "activeKey": {key: self.signing[key] for key in ("keyId", "fingerprint")}, "retiredKeys": []}
+        self.keyring.write_bytes(fixture.canonical_json_bytes(policy))
+        original = variant.Fixture(self.root / "native-original", self.private, self.public, signing)
+        self.payload = variant.produce_runtime_variant(**original.arguments())["bundlePath"]
+        self.receipts = {**original.receipt_paths, "metadata": variant._write_metadata_receipt(original, self.payload)}
+        self.handoff = self.root / "release-handoff"
+        build_runtime_variant_attestation(self.payload, *(self.receipts[phase] for phase in fixture.PHASES),
+            original.validation, self.signing, self.private, self.public, self.handoff,
+            keyring=self.keyring, keys_directory=self.keys, complete_handoff=True)
+
+    def capture(self, **changes):
+        arguments = dict(target=TARGET, trusted_workflow_sha=self.pin, token="not-a-real-token",
+                         release_handoffs=(self.handoff,), keyring=self.keyring, keys_directory=self.keys)
+        arguments.update(changes)
+        return adapter.capture_runtime_original_ci_phases(self.receipts, self.output, **arguments)
+
+    def test_complete_retired_release_reuses_without_network_or_signing(self):
+        policy = fixture.load_canonical_json_bytes(self.keyring.read_bytes())
+        policy["retiredKeys"] = [policy["activeKey"]]
+        policy["activeKey"] = None
+        self.keyring.write_bytes(fixture.canonical_json_bytes(policy))
+        before = fixture.regular_file_inventory(self.handoff)
+        with mock.patch("reuse.api_request", side_effect=AssertionError("network")), \
+                mock.patch("products.runtime_attestation.sign_manifest", side_effect=AssertionError("sign")):
+            result = self.capture()
+        self.assertEqual([], result["observed"])
+        self.assertEqual({}, result["artifacts"])
+        self.assertEqual(dict.fromkeys(fixture.PHASES, 0), result["releaseAttestations"])
+        self.assertEqual(before, fixture.regular_file_inventory(self.output / "release-handoffs/0"))
+        self.assertEqual(before, fixture.regular_file_inventory(self.handoff))
+
+    def test_mixed_release_and_ci_preserves_originals_and_fetches_only_missing_phase(self):
+        from products.receipt import write_output_manifest
+        receipt = fixture.load_canonical_json_bytes(self.receipts["metadata"].read_bytes())
+        stage = self.root / "new-metadata-stage"
+        (stage / "outputs").mkdir(parents=True)
+        (stage / "outputs" / self.payload.name).write_bytes(self.payload.read_bytes())
+        write_output_manifest(stage, "runtime", TARGET, "metadata", TARGET, receipt["productVersion"],
+                              {"runtime-variant": "outputs"})
+        upload = self.root / "new-metadata-upload"
+        plan = {key: receipt[key] for key in ("schemaVersion", "product", "component", "phase", "target", "buildKey", "inputs")}
+        fixture.finalize_phase_object(stage_root=stage, phase_plan=plan, producer=self.producer,
+            product_version=receipt["productVersion"], trust_domain="development", destination=upload / "shard")
+        self.receipts["metadata"] = upload / "shard/phase-receipt.json"
+        raw = fixture.archive_tree(upload)
+        self.archives["metadata"] = raw
+        self.artifacts["metadata"].update(digest=fixture.sha256_bytes(raw), size_in_bytes=len(raw),
+            name=f"codex-agent-runtime-worker-{TARGET}-metadata-{TARGET}-{receipt['buildKey'][7:]}-{self.producer['tree']}-attempt-2")
+        with mock.patch("reuse.api_request", side_effect=self.api()) as http:
+            result = self.capture()
+        self.assertEqual({"metadata"}, set(result["artifacts"]))
+        self.assertEqual(dict.fromkeys(("binary", "package", "validation"), 0), result["releaseAttestations"])
+        downloaded = [call.args[0] for call in http.call_args_list if call.args[0].endswith("/zip")]
+        self.assertEqual([self.artifacts["metadata"]["archive_download_url"]], downloaded)
+
+    def test_invalid_retained_evidence_never_falls_back_to_ci(self):
+        with mock.patch("reuse.api_request", side_effect=AssertionError("network")):
+            for changes in ({"keyring": None}, {"keys_directory": None}, {"release_handoffs": ()},
+                            {"target": "macos-x64"}):
+                with self.subTest(changes=changes), self.assertRaises(ValueError):
+                    self.capture(**changes)
+                self.assertFalse(self.output.exists())
+            (self.handoff / "unexpected").write_bytes(b"untrusted")
+            with self.assertRaises(ValueError):
+                self.capture()
+            self.assertFalse(self.output.exists())

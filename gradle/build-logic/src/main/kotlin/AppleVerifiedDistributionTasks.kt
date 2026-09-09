@@ -20,6 +20,7 @@ import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.LocalState
+import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
@@ -496,6 +497,12 @@ abstract class VerifyTransportedAppleSdkPackageClosureTask : DefaultTask() {
     abstract val productDirectory: DirectoryProperty
     @get:InputDirectory @get:PathSensitive(PathSensitivity.NONE)
     abstract val validationEvidenceDirectory: DirectoryProperty
+    // These expectations must come from an independently authenticated caller;
+    // configuring them does not itself authorize the transported closure.
+    @get:Optional @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val expectedSdkCompatibility: RegularFileProperty
+    @get:Optional @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val expectedDistributionProof: RegularFileProperty
     @get:Input abstract val version: Property<String>
     @get:Internal abstract val ownedBuildDirectory: DirectoryProperty
     @get:LocalState abstract val workDirectory: DirectoryProperty
@@ -509,6 +516,8 @@ abstract class VerifyTransportedAppleSdkPackageClosureTask : DefaultTask() {
         version.get(),
         ownedBuildDirectory.get().asFile,
         workDirectory.get().asFile,
+        expectedSdkCompatibility.orNull?.asFile,
+        expectedDistributionProof.orNull?.asFile,
     )
 }
 
@@ -518,9 +527,15 @@ internal fun verifyTransportedAppleSdkPackageClosure(
     version: String,
     ownedBuildDirectory: File,
     workDirectory: File,
+    expectedSdkCompatibility: File? = null,
+    expectedDistributionProof: File? = null,
 ) {
     check(PRODUCT_SEMVER.matches(version)) { "Transported Apple SDK version is invalid" }
-    listOf(productDirectory, validationEvidenceDirectory).forEach {
+    check((expectedSdkCompatibility == null) == (expectedDistributionProof == null)) {
+        "Transported Apple SDK caller expectations must be supplied together"
+    }
+    val expectedInputs = listOfNotNull(expectedSdkCompatibility, expectedDistributionProof)
+    (listOf(productDirectory, validationEvidenceDirectory) + expectedInputs).forEach {
         requireApplePackagePathWithoutSymlinks(it, "transported input")
     }
     listOf(ownedBuildDirectory, workDirectory).forEach {
@@ -528,8 +543,15 @@ internal fun verifyTransportedAppleSdkPackageClosure(
     }
     val product = productDirectory.canonicalFile
     val validation = validationEvidenceDirectory.canonicalFile
+    val expectedCompatibility = expectedSdkCompatibility?.canonicalFile
+    val expectedProof = expectedDistributionProof?.canonicalFile
     val ownedRoot = ownedBuildDirectory.canonicalFile
     val work = workDirectory.canonicalFile
+    listOfNotNull(expectedCompatibility, expectedProof).forEach { input ->
+        check(input.isFile && !Files.isSymbolicLink(input.toPath())) {
+            "Transported Apple SDK caller expectation is missing or unsafe: $input"
+        }
+    }
     val productFiles = verifiedRegularFiles(product)
     val validationFiles = verifiedRegularFiles(validation)
     check(productFiles.keys == appleVerifiedArtifactNames(version)) {
@@ -538,7 +560,10 @@ internal fun verifyTransportedAppleSdkPackageClosure(
     check((!ownedRoot.exists() || ownedRoot.isDirectory) && work.toPath() != ownedRoot.toPath() &&
         work.toPath().startsWith(ownedRoot.toPath()) &&
         !work.toPath().startsWith(product.toPath()) && !product.toPath().startsWith(work.toPath()) &&
-        !work.toPath().startsWith(validation.toPath()) && !validation.toPath().startsWith(work.toPath())) {
+        !work.toPath().startsWith(validation.toPath()) && !validation.toPath().startsWith(work.toPath()) &&
+        listOfNotNull(expectedCompatibility, expectedProof).all { input ->
+            !work.toPath().startsWith(input.toPath()) && !input.toPath().startsWith(work.toPath())
+        }) {
         "Transported Apple SDK verification work directory is unsafe"
     }
     val protectedRoots = listOf(File(System.getProperty("user.home")).canonicalFile, File(".").canonicalFile)
@@ -566,12 +591,26 @@ internal fun verifyTransportedAppleSdkPackageClosure(
         "Transported Apple SDK validation evidence inventory mismatch"
     }
 
+    val expectedCompatibilityBytes = expectedCompatibility?.readBytes()
+    val expectedProofBytes = expectedProof?.readBytes()
     ownedRoot.mkdirs()
     deleteReleaseTree(work)
     val capturedProduct = work.resolve("product").apply { mkdirs() }
     productFiles.forEach { (path, file) -> copyVerified(file, capturedProduct.resolve(path)) }
     val capturedValidation = work.resolve("validation").apply { mkdirs() }
     validationFiles.forEach { (path, file) -> copyVerified(file, capturedValidation.resolve(path)) }
+    val capturedExpectedCompatibility = expectedCompatibilityBytes?.let { bytes ->
+        work.resolve("caller-expected/sdk-compatibility.json").apply {
+            parentFile.mkdirs()
+            writeBytes(bytes)
+        }
+    }
+    val capturedExpectedProof = expectedProofBytes?.let { bytes ->
+        work.resolve("caller-expected/verified-distribution-proof.json").apply {
+            parentFile.mkdirs()
+            writeBytes(bytes)
+        }
+    }
     val reconstructed = work.resolve("verified-distribution").apply { mkdirs() }
     productFiles.keys.forEach { path -> copyVerified(capturedProduct.resolve(path), reconstructed.resolve(path)) }
     distributionFiles.keys.forEach { path ->
@@ -585,6 +624,11 @@ internal fun verifyTransportedAppleSdkPackageClosure(
     val currentNativeReceipt = capturedValidation.resolve(currentNativeReceiptPath)
     val proofFile = reconstructed.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF)
     val proof = proofFile.readReleaseObject()
+    if (capturedExpectedProof != null) {
+        check(Files.mismatch(proofFile.toPath(), capturedExpectedProof.toPath()) == -1L) {
+            "Transported Apple SDK distribution proof differs from the caller expectation"
+        }
+    }
     val receiptKeys = setOf(
         "schemaVersion", "protocol", "result", "producerCommit", "producerTree",
         "consumerCommit", "consumerTree", "sourceProofSha256",
@@ -625,11 +669,18 @@ internal fun verifyTransportedAppleSdkPackageClosure(
             proof.releaseString("nativeProvenanceSha256"),
             proof.releaseString("packageSwiftSha256"),
             originalNativeReceipt.releaseDigest(),
-            proof.releaseString("sdkCompatibilitySha256"),
+            capturedExpectedCompatibility?.releaseDigest()
+                ?: proof.releaseString("sdkCompatibilitySha256"),
         ),
     )
     check(sameApplePackageFiles(productFiles, product, capturedProduct) &&
-        sameApplePackageFiles(validationFiles, validation, capturedValidation)) {
+        sameApplePackageFiles(validationFiles, validation, capturedValidation) &&
+        (expectedCompatibility == null || Files.mismatch(
+            expectedCompatibility.toPath(), capturedExpectedCompatibility!!.toPath(),
+        ) == -1L) &&
+        (expectedProof == null || Files.mismatch(
+            expectedProof.toPath(), capturedExpectedProof!!.toPath(),
+        ) == -1L)) {
         "Transported Apple SDK inputs changed during verification"
     }
 }

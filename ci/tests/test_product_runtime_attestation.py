@@ -9,7 +9,7 @@ from unittest.mock import patch
 from ci.products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes, write_canonical_json
 from ci.products.runtime_attestation import (
     build_runtime_variant_attestation, derive_runtime_component_attestation,
-    verify_runtime_validation_inputs, verify_runtime_variant_attestation,
+    read_runtime_variant_handoff, verify_runtime_validation_inputs, verify_runtime_variant_attestation,
 )
 from ci.products.receipt import output_inventory_digest
 from ci.products.runtime_identity import derive_runtime_identity
@@ -500,6 +500,115 @@ class RuntimeVariantCompleteHandoffTest(unittest.TestCase):
         (keys / "release-fixture.pub").write_bytes(other_public.read_bytes())
         with self.assertRaises(ValueError):
             self.verify(output, required_trust_domain="release", keyring=keyring, keys_directory=keys)
+
+    def release_handoff(self):
+        signing = {**self.signing, "trustDomain": "release", "keyId": "release-fixture"}
+        keys = self.root / "reader-policy-keys"
+        keys.mkdir()
+        (keys / "release-fixture.pub").write_bytes(self.public.read_bytes())
+        keyring = self.root / "reader-keyring.json"
+        policy = {"schemaVersion": 1, "namespace": signing["namespace"], "algorithm": signing["algorithm"],
+                  "trustDomain": "release", "activeKey": {
+                      "keyId": signing["keyId"], "fingerprint": signing["fingerprint"],
+                  }, "retiredKeys": []}
+        write_canonical_json(keyring, policy)
+        output = self.root / "reader-handoff"
+        self.build(output, signing_metadata=signing, keyring=keyring, keys_directory=keys)
+        return output, keyring, keys, policy
+
+    def test_release_reader_returns_exact_original_bytes_without_signing_and_accepts_retired_key(self) -> None:
+        output, keyring, keys, policy = self.release_handoff()
+        before = regular_file_inventory(output)
+        files = {record["relativePath"]: (output / record["relativePath"]).read_bytes() for record in before}
+        with patch("ci.products.runtime_attestation.sign_manifest", side_effect=AssertionError("reader signed")):
+            active = read_runtime_variant_handoff(output, target="linux-x64", keyring=keyring, keys_directory=keys)
+            policy["retiredKeys"] = [policy.pop("activeKey")]
+            policy["activeKey"] = None
+            write_canonical_json(keyring, policy)
+            retired = read_runtime_variant_handoff(output, target="linux-x64", keyring=keyring, keys_directory=keys)
+        self.assertEqual(active, retired)
+        self.assertEqual({"manifest", "receipts", "receiptBytes", "attestation", "files"}, set(active))
+        self.assertEqual(files, active["files"])
+        self.assertEqual({phase: self.before[f"receipts/{phase}.json"] for phase in self.receipts}, active["receiptBytes"])
+        self.assertEqual({"development"}, {value["trustDomain"] for value in active["receipts"].values()})
+        self.assertEqual(before, regular_file_inventory(output))
+        output.rename(self.root / "moved-after-read")
+        self.assertEqual(files, active["files"])
+
+    def test_release_reader_rejects_every_tampered_member_missing_extra_symlink_and_wrong_name(self) -> None:
+        output, keyring, keys, _ = self.release_handoff()
+        originals = {record["relativePath"]: (output / record["relativePath"]).read_bytes()
+                     for record in regular_file_inventory(output)}
+        cases = [("tamper", name) for name in originals] + [
+            ("missing", "receipts/binary.json"), ("extra", "unexpected.json"),
+            ("symlink", "validation-evidence.json"), ("extra-receipt", "receipts/unexpected.json"),
+            ("wrong-name", f"{self.payload.stem}.attestation.json"),
+        ]
+        for index, (kind, name) in enumerate(cases):
+            # Mutable transport fixtures; the published original handoff remains unchanged.
+            mutant = self.root / f"reader-mutant-{index}"
+            for relative, raw in originals.items():
+                path = mutant / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(raw)
+            path = mutant / name
+            if kind == "missing":
+                path.unlink()
+            elif kind == "symlink":
+                path.unlink()
+                path.symlink_to(output / name)
+            elif kind == "wrong-name":
+                path.rename(mutant / "wrong.attestation.json")
+            else:
+                path.write_bytes(b"unverified handoff bytes\n")
+            with self.subTest(kind=kind, name=name), \
+                    patch("ci.products.runtime_attestation.sign_manifest", side_effect=AssertionError("reader signed")), \
+                    self.assertRaises((ValueError, OSError)):
+                read_runtime_variant_handoff(mutant, target="linux-x64", keyring=keyring, keys_directory=keys)
+        self.assertEqual(originals, {name: (output / name).read_bytes() for name in originals})
+
+    def test_release_reader_rejects_wrong_target_unpinned_policy_and_development_handoff(self) -> None:
+        output, keyring, keys, policy = self.release_handoff()
+        with patch("ci.products.runtime_attestation.sign_manifest", side_effect=AssertionError("reader signed")):
+            for target in ("macos-arm64", "unsupported", "../linux-x64"):
+                with self.subTest(target=target), self.assertRaises(ValueError):
+                    read_runtime_variant_handoff(output, target=target, keyring=keyring, keys_directory=keys)
+            with self.assertRaises(ValueError):
+                read_runtime_variant_handoff(output, target="linux-x64", keyring=None, keys_directory=None)
+            alias = self.root / "reader-symlink"
+            alias.symlink_to(output, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                read_runtime_variant_handoff(alias, target="linux-x64", keyring=keyring, keys_directory=keys)
+        development = self.root / "reader-development"
+        self.build(development)
+        with self.assertRaisesRegex(ValueError, "not release trust"):
+            read_runtime_variant_handoff(development, target="linux-x64", keyring=keyring, keys_directory=keys)
+        _, other_public, other_signing = generate_development_key(self.root / "reader-other-key")
+        (keys / "other.pub").write_bytes(other_public.read_bytes())
+        policy["activeKey"] = {"keyId": "other", "fingerprint": other_signing["fingerprint"]}
+        write_canonical_json(keyring, policy)
+        with self.assertRaises(ValueError):
+            read_runtime_variant_handoff(output, target="linux-x64", keyring=keyring, keys_directory=keys)
+
+    def test_release_reader_rejects_original_or_private_capture_mutation_during_verification(self) -> None:
+        output, keyring, keys, _ = self.release_handoff()
+        original = output / "validation-evidence.json"
+        raw = original.read_bytes()
+        for changed in ("original", "private"):
+            def mutate(*args, **kwargs):
+                result = verify_runtime_variant_attestation(*args, **kwargs)
+                path = original if changed == "original" else kwargs["validation_evidence"]
+                path.chmod(0o600)
+                path.write_bytes(b"changed after full verification\n")
+                return result
+            try:
+                with self.subTest(changed=changed), \
+                        patch("ci.products.runtime_attestation.verify_runtime_variant_attestation", side_effect=mutate), \
+                        self.assertRaisesRegex(ValueError, "changed during verification"):
+                    read_runtime_variant_handoff(output, target="linux-x64", keyring=keyring, keys_directory=keys)
+            finally:
+                original.chmod(0o600)
+                original.write_bytes(raw)
 
 
 if __name__ == "__main__":

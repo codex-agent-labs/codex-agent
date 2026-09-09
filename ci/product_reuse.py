@@ -599,8 +599,13 @@ def capture_contract_original_ci_phases(
 def capture_runtime_original_ci_phases(
     phase_receipts: Mapping[str, Path], destination: Path, *, target: str,
     trusted_workflow_sha: str, token: str,
+    release_handoffs: tuple[Path, ...] = (), keyring: Path | None = None,
+    keys_directory: Path | None = None,
 ) -> dict[str, Any]:
-    """Bind original native receipts to CI bytes; this does not authorize signing."""
+    """Bind original receipts to CI or retained release trust, never new signing."""
+    if bool(release_handoffs) != (keyring is not None and keys_directory is not None) or \
+            (keyring is None) != (keys_directory is None):
+        raise ValueError("Retained Runtime handoffs require caller-owned keyring and keys only")
     phases = ("binary", "package", "validation", "metadata")
     require_exact_keys(phase_receipts, set(phases), "Original Runtime phase receipts")
     if target not in NATIVE_TARGETS:
@@ -609,6 +614,10 @@ def capture_runtime_original_ci_phases(
     if destination.exists() or destination.is_symlink():
         raise ValueError("Original Runtime CI destination must not exist")
     resolved_output = destination.parent.resolve(strict=False) / destination.name
+    for source in (*release_handoffs, *(path for path in (keyring, keys_directory) if path is not None)):
+        resolved_source = Path(source).resolve(strict=True)
+        if resolved_source == resolved_output or resolved_source in resolved_output.parents or resolved_output in resolved_source.parents:
+            raise ValueError("Original Runtime CI destination overlaps release evidence or policy")
     originals, receipts = {}, {}
     for phase in phases:
         source = Path(phase_receipts[phase])
@@ -620,16 +629,43 @@ def capture_runtime_original_ci_phases(
         if _identity(receipt) != PhaseInstanceId("runtime", target, phase, target):
             raise ValueError("Original Runtime receipt has the wrong phase identity")
         originals[phase], receipts[phase] = raw, receipt
-    jobs = {phase: f"product-validation / runtime-{target}-{phase}-{target}" for phase in phases}
-    observed = _observe_ci_producer_jobs(
-        {phase: receipts[phase]["producer"] for phase in phases}, jobs_by_phase=jobs,
-        trusted_workflow_sha=trusted_workflow_sha, token=token)
-    attempts = {(value["run"]["id"], value["run"]["run_attempt"]): value for value in observed}
     with tempfile.TemporaryDirectory(prefix="runtime-original-ci-") as temporary:
         root = Path(temporary).resolve()
         prepared = root / "captured"
+        releases = {}
+        if release_handoffs:
+            from products.runtime_attestation import read_runtime_variant_handoff
+            policy = prepared / "release-policy"
+            policy.mkdir(parents=True)
+            captured_keyring = policy / "keyring.json"
+            captured_keyring.write_bytes(read_regular_file_bytes(keyring, max_bytes=16 * 1024 * 1024,
+                                                                 reject_symlink_parents=True))
+            captured_keys = policy / "keys"
+            captured_keys.mkdir()
+            public_policy = load_keyring(captured_keyring, keys_directory)
+            for record in ([public_policy["activeKey"]] if public_policy["activeKey"] else []) + public_policy["retiredKeys"]:
+                key_id = record["keyId"]
+                (captured_keys / f"{key_id}.pub").write_bytes(read_regular_file_bytes(
+                    public_key_path(keys_directory, key_id), max_bytes=1024 * 1024, reject_symlink_parents=True))
+            load_keyring(captured_keyring, captured_keys)
+            for number, original in enumerate(release_handoffs):
+                retained = prepared / "release-handoffs" / str(number)
+                snapshot_regular_tree(original, retained)
+                verified = read_runtime_variant_handoff(retained, target=target,
+                    keyring=captured_keyring, keys_directory=captured_keys)
+                matching = [phase for phase in phases if verified["receiptBytes"][phase] == originals[phase]]
+                if not matching:
+                    raise ValueError("Retained Runtime handoff proves no requested original phase")
+                for phase in matching:
+                    releases.setdefault(phase, number)
+        ci_phases = tuple(phase for phase in phases if phase not in releases)
+        jobs = {phase: f"product-validation / runtime-{target}-{phase}-{target}" for phase in ci_phases}
+        observed = _observe_ci_producer_jobs(
+            {phase: receipts[phase]["producer"] for phase in ci_phases}, jobs_by_phase=jobs,
+            trusted_workflow_sha=trusted_workflow_sha, token=token)
+        attempts = {(value["run"]["id"], value["run"]["run_attempt"]): value for value in observed}
         inventories, artifacts = {}, {}
-        for phase in phases:
+        for phase in ci_phases:
             receipt = receipts[phase]
             producer = receipt["producer"]
             run_id = producer["runId"]
@@ -663,6 +699,8 @@ def capture_runtime_original_ci_phases(
             artifacts[phase] = artifact
         evidence = {"target": target, "observed": observed, "artifacts": artifacts,
                     "receiptSha256s": {phase: sha256_bytes(raw) for phase, raw in originals.items()}}
+        if release_handoffs:
+            evidence["releaseAttestations"] = releases
         write_canonical_json(prepared / "transport/original-ci-phases.json", evidence)
         publish_regular_tree(prepared, destination, allow_empty=True)
     return evidence

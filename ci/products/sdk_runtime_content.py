@@ -8,6 +8,7 @@ and receipts remain mandatory external proof.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import io
 from pathlib import Path
 import re
@@ -114,6 +115,45 @@ def verify_native_runtime_validation_content(
     keyring: Path | None = None, keys_directory: Path | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     """Use the same private K/R captures for authentication and semantic reads."""
+    with _native_runtime_capture(target, runtime_stage_root, phase_receipts,
+                                 variant_payload, contract_payload) as captured:
+        runtime, receipts, variant, contract = captured
+        return _verify_native_runtime_validation_snapshot(
+            target, runtime, receipts, variant, attestation, signature, public_key,
+            contract_projection, contract, required_trust_domain=required_trust_domain,
+            keyring=keyring, keys_directory=keys_directory,
+        )
+
+
+def verify_native_runtime_presigning_content(
+    target: str, runtime_stage_root: Path, phase_receipts: dict[str, Path],
+    variant_payload: Path, contract_projection: Any, contract_payload: Path,
+) -> dict[str, Any]:
+    """Check original unsigned Runtime semantics before any signing-key access.
+
+    The Contract projection remains authenticated. Runtime source/CI authority
+    belongs to the protected caller; this ordinary dict grants no admission.
+    """
+    from .runtime_attestation import _bound_inputs
+
+    with _native_runtime_capture(target, runtime_stage_root, phase_receipts,
+                                 variant_payload, contract_payload) as captured:
+        runtime, receipt_paths, payload, contract = captured
+        variant, receipts, original_bytes, _, _ = _bound_inputs(
+            payload, *(receipt_paths[phase] for phase in ("binary", "package", "validation", "metadata")),
+            _native_desktop_report(runtime, target),
+        )
+        # Exact byte binding only, deliberately not an attestation/signature.
+        binding = {"phaseReceipts": {phase: sha256_bytes(data) for phase, data in original_bytes.items()}}
+        content, _ = _verify_native_runtime_semantics(
+            target, runtime, receipt_paths, contract_projection, contract, variant, receipts, binding,
+        )
+        return content
+
+
+@contextmanager
+def _native_runtime_capture(target, runtime_stage_root, phase_receipts, variant_payload, contract_payload):
+    """Both entry points consume and recheck the same exact private originals."""
     from .c_abi import TARGET_SPECS
 
     targets = {spec.classifier.removeprefix("c-abi-") for spec in TARGET_SPECS.values()}
@@ -124,6 +164,10 @@ def verify_native_runtime_validation_content(
     original_receipts = {phase: read_regular_file_bytes(path, max_bytes=16 * 1024 * 1024,
                                                        reject_symlink_parents=True)
                          for phase, path in phase_receipts.items()}
+    payload_paths = {"variant": Path(variant_payload), "contract": Path(contract_payload)}
+    payload_bytes = {name: read_regular_file_bytes(path, max_bytes=1024 * 1024 * 1024,
+                                                  reject_symlink_parents=True)
+                     for name, path in payload_paths.items()}
     with tempfile.TemporaryDirectory(prefix="runtime-native-inputs-") as temporary:
         root = Path(temporary).resolve()
         runtime = root / "runtime"
@@ -136,18 +180,35 @@ def verify_native_runtime_validation_content(
         for phase, data in original_receipts.items():
             captured_receipts[phase] = root / f"{phase}-receipt.json"
             captured_receipts[phase].write_bytes(data)
-        content, receipt = _verify_native_runtime_validation_snapshot(
-            target, runtime, captured_receipts, variant_payload, attestation, signature, public_key,
-            contract_projection, contract_payload, required_trust_domain=required_trust_domain,
-            keyring=keyring, keys_directory=keys_directory,
-        )
+        captured_payloads = {}
+        for name, source in payload_paths.items():
+            captured_payloads[name] = root / name / source.name
+            captured_payloads[name].parent.mkdir()
+            captured_payloads[name].write_bytes(payload_bytes[name])
+        yield runtime, captured_receipts, captured_payloads["variant"], captured_payloads["contract"]
         if before != [regular_file_inventory(source) for source in roots] or any(
             data != read_regular_file_bytes(phase_receipts[phase], max_bytes=16 * 1024 * 1024,
                                             reject_symlink_parents=True)
             for phase, data in original_receipts.items()
         ):
             raise ValueError("Native Runtime original evidence changed during content verification")
-        return content, receipt
+        if before != [regular_file_inventory(runtime / target / source.name) for source in roots] or any(
+            data != read_regular_file_bytes(captured_receipts[phase], max_bytes=16 * 1024 * 1024,
+                                            reject_symlink_parents=True)
+            for phase, data in original_receipts.items()
+        ):
+            raise ValueError("Native Runtime captured evidence changed during content verification")
+        for name, source in payload_paths.items():
+            if any(read_regular_file_bytes(path, max_bytes=1024 * 1024 * 1024,
+                                           reject_symlink_parents=True) != payload_bytes[name]
+                   for path in (source, captured_payloads[name])):
+                raise ValueError("Native Runtime original or captured payload changed during content verification")
+
+
+def _native_desktop_report(runtime_stage_root: Path, target: str) -> Path:
+    from .c_abi import TARGET_SPECS
+    spec = next(spec for spec in TARGET_SPECS.values() if spec.classifier.removeprefix("c-abi-") == target)
+    return runtime_stage_root / target / "validation/outputs/native" / f"desktop-runtime-{spec.target}.json"
 
 
 def _verify_native_runtime_validation_snapshot(
@@ -156,7 +217,27 @@ def _verify_native_runtime_validation_snapshot(
     contract_projection: Any, contract_payload: Path, *, required_trust_domain: str,
     keyring: Path | None = None, keys_directory: Path | None = None,
 ) -> tuple[dict[str, Any], bytes]:
-    """Authenticate K/R inputs and return semantic facts plus the original receipt.
+    """Signed admission never falls back to unsigned content verification."""
+    from .runtime_attestation import verify_runtime_variant_attestation
+
+    variant, receipts, authenticated = verify_runtime_variant_attestation(
+        variant_payload, *(phase_receipts[phase] for phase in ("binary", "package", "validation", "metadata")),
+        attestation, signature, public_key, required_trust_domain=required_trust_domain,
+        validation_evidence=_native_desktop_report(runtime_stage_root, target),
+        keyring=keyring, keys_directory=keys_directory,
+    )
+    return _verify_native_runtime_semantics(
+        target, runtime_stage_root, phase_receipts, contract_projection, contract_payload,
+        variant, receipts, authenticated,
+    )
+
+
+def _verify_native_runtime_semantics(
+    target: str, runtime_stage_root: Path, phase_receipts: dict[str, Path],
+    contract_projection: Any, contract_payload: Path, variant: dict[str, Any],
+    receipts: dict[str, dict[str, Any]], binding: dict[str, Any],
+) -> tuple[dict[str, Any], bytes]:
+    """Check the same bound originals for signed and protected pre-sign callers.
 
     This is not a planner/host token. Contract projection must come from the
     existing full Contract verifier; no SDK product or compatibility declaration
@@ -164,7 +245,7 @@ def _verify_native_runtime_validation_snapshot(
     """
     from .c_abi import TARGET_SPECS, c_abi_archive_file_name, portable_verify_c_abi_package_evidence
     from .contract_projection import VerifiedContractProjection
-    from .runtime_attestation import verify_runtime_stages, verify_runtime_variant_attestation
+    from .runtime_attestation import verify_runtime_stages
     from .runtime_evidence import (
         DESKTOP_RUNTIME_TEST_CLASS, DESKTOP_RUNTIME_TEST_METHODS,
         derive_authenticated_runtime_validation_projection, verify_desktop_test_report,
@@ -204,16 +285,11 @@ def _verify_native_runtime_validation_snapshot(
                                                        reject_symlink_parents=True)
                          for phase, path in phase_receipts.items()}
     desktop_report = validation / "outputs/native" / f"desktop-runtime-{spec.target}.json"
-    variant, receipts, authenticated = verify_runtime_variant_attestation(
-        variant_payload, *(phase_receipts[phase] for phase in ("binary", "package", "validation", "metadata")),
-        attestation, signature, public_key, required_trust_domain=required_trust_domain,
-        validation_evidence=desktop_report, keyring=keyring, keys_directory=keys_directory,
-    )
     if variant["target"] != target or variant["contract"] != {
         "digest": contract["contractDigest"], "componentDigest": components[target],
     }:
         raise ValueError("Native Runtime variant differs from authenticated Contract/target")
-    verify_runtime_stages(runtime_stage_root, target, phase_receipts, authenticated)
+    verify_runtime_stages(runtime_stage_root, target, phase_receipts, binding)
     receipt = receipts["validation"]
     execution_name = f"outputs/execution/desktop-runtime-{spec.target}-execution.json"
     exact_outputs = {
@@ -229,7 +305,7 @@ def _verify_native_runtime_validation_snapshot(
                 else exact_outputs.get(path))
         if kind is None or item["kind"] != kind:
             raise ValueError("Native Runtime content has an unprojected validation output")
-    if any(sha256_bytes(original_receipts[phase]) != authenticated["phaseReceipts"][phase]
+    if any(sha256_bytes(original_receipts[phase]) != binding["phaseReceipts"][phase]
            for phase in phase_receipts):
         raise ValueError("Native Runtime original receipt changed during authentication")
     if target == "macos-arm64":

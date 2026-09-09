@@ -98,10 +98,12 @@ def verify_runtime_stages(
     phase_receipts: dict[str, Path],
     authenticated_attestation: dict[str, Any],
 ) -> None:
-    """Bind raw Runtime stages to already-authenticated original receipts.
+    """Check raw stage inventories against the exact bound original receipts.
 
-    The caller must first verify the variant attestation. This composes existing
-    inventory checks; it does not mint trust or depend on any SDK product.
+    This is not a signature or trust gate. Signed consumers first verify the
+    variant attestation; pre-sign consumers supply receipt digests established
+    by _bound_inputs over their exact private originals. CI/release source
+    authorization remains caller-owned. No SDK product dependency is introduced.
     """
     for phase in ("package", "validation"):
         receipt_bytes = read_regular_file_bytes(
@@ -795,6 +797,88 @@ def verify_runtime_variant_attestation(
             snapshot_attestation, snapshot_signature, snapshot_public_key, signing,
         )
     return manifest, receipts, value
+
+
+def read_runtime_variant_handoff(
+    root: Path,
+    *,
+    target: str,
+    keyring: Path,
+    keys_directory: Path,
+) -> dict[str, Any]:
+    """Read a complete release handoff using independently supplied public policy.
+
+    Returned bytes are the verified originals, not paths to reread or a source
+    admission token. Original phase matching and complete K/R/raw C ABI admission
+    remain caller-owned; this reader never signs, reconstructs or publishes.
+    """
+    if require_identifier(target, "Runtime handoff target") not in _PRODUCT_TO_EVIDENCE_TARGET:
+        raise ValueError("Runtime handoff target is unsupported")
+    if keyring is None or keys_directory is None:
+        raise ValueError("Runtime release handoff requires caller-owned keyring inputs")
+    root = Path(root).absolute()
+    for directory in (root, *root.parents):
+        require_regular_directory(directory, "Runtime handoff directory")
+    names = {path.name for path in root.iterdir()}
+    attestation_names = [name for name in names if name.endswith(".attestation.json")]
+    if len(names) != 6 or len(attestation_names) != 1:
+        raise ValueError("Complete Runtime handoff file inventory is not exact")
+    attestation_name = attestation_names[0]
+    attestation_bytes = read_regular_file_bytes(
+        root / attestation_name, max_bytes=_JSON_LIMIT, reject_symlink_parents=True,
+    )
+    declared = validate_runtime_variant_attestation(load_canonical_json_bytes(attestation_bytes))
+    if declared["target"] != target:
+        raise ValueError("Runtime handoff target does not match its attestation")
+    payload_name = declared["payload"]["fileName"]
+    stem = Path(payload_name).stem
+    limits = {
+        payload_name: _PAYLOAD_LIMIT,
+        f"{stem}.attestation.json": _JSON_LIMIT,
+        f"{stem}.attestation.sig": 1024 * 1024,
+        "public-key.pub": 1024 * 1024,
+        "validation-evidence.json": 64 * 1024 * 1024,
+        **{f"receipts/{phase}.json": _JSON_LIMIT for phase in _ATTESTATION_PHASES},
+    }
+    expected_names = {Path(name).parts[0] for name in limits}
+    expected_receipts = {f"{phase}.json" for phase in _ATTESTATION_PHASES}
+    if names != expected_names:
+        raise ValueError("Complete Runtime handoff file inventory is not exact")
+    require_regular_directory(root / "receipts", "Runtime handoff receipts")
+    if {path.name for path in (root / "receipts").iterdir()} != expected_receipts:
+        raise ValueError("Complete Runtime handoff receipt inventory is not exact")
+    files = {name: read_regular_file_bytes(root / name, max_bytes=limit, reject_symlink_parents=True)
+             for name, limit in limits.items()}
+    if files[attestation_name] != attestation_bytes:
+        raise ValueError("Runtime handoff attestation changed during capture")
+    expected_inventory = [{"relativePath": name, "bytes": len(raw), "sha256": sha256_bytes(raw)}
+                          for name, raw in sorted(files.items())]
+    with tempfile.TemporaryDirectory(prefix="runtime-variant-handoff-read-") as temporary:
+        snapshot = Path(temporary).resolve()
+        for name, raw in files.items():
+            path = snapshot / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+        manifest, receipts, attestation = verify_runtime_variant_attestation(
+            snapshot / payload_name,
+            *(snapshot / f"receipts/{phase}.json" for phase in _ATTESTATION_PHASES),
+            snapshot / attestation_name, snapshot / f"{stem}.attestation.sig",
+            snapshot / "public-key.pub", required_trust_domain="release",
+            validation_evidence=snapshot / "validation-evidence.json",
+            keyring=keyring, keys_directory=keys_directory,
+        )
+        if regular_file_inventory(snapshot) != expected_inventory:
+            raise ValueError("Captured Runtime handoff changed during verification")
+        if ({path.name for path in root.iterdir()} != expected_names
+                or {path.name for path in (root / "receipts").iterdir()} != expected_receipts
+                or regular_file_inventory(root) != expected_inventory):
+            raise ValueError("Original Runtime handoff changed during verification")
+        for name, raw in files.items():
+            if read_regular_file_bytes(root / name, max_bytes=limits[name], reject_symlink_parents=True) != raw:
+                raise ValueError("Original Runtime handoff changed during verification")
+    return {"manifest": manifest, "receipts": receipts, "attestation": attestation,
+            "receiptBytes": {phase: files[f"receipts/{phase}.json"] for phase in _ATTESTATION_PHASES},
+            "files": files}
 
 
 def build_runtime_variant_attestation(

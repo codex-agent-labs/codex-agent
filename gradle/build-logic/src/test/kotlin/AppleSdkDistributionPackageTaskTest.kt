@@ -37,6 +37,38 @@ class AppleSdkDistributionPackageTaskTest {
     }
 
     @Test
+    fun `caller expectations bind exact compatibility and original distribution proof`() = fixture().use { fixture ->
+        fixture.prepareFullClosure()
+        fixture.stage()
+        val before = fixture.originalDigests() + fixture.transportedDigests()
+        fixture.verifyTransportedWithCallerExpectations()
+        assertEquals(before, fixture.originalDigests() + fixture.transportedDigests())
+    }
+
+    @Test
+    fun `caller expectation crosspairs and partial authority reject without changing inputs`() {
+        listOf("compatibility", "proof", "partial").forEach { mutation -> fixture().use { fixture ->
+            fixture.prepareFullClosure()
+            fixture.stage()
+            val before = fixture.originalDigests() + fixture.transportedDigests()
+            if (mutation == "partial") fixture.seedVerificationWork()
+            assertFailsWith<IllegalStateException>(mutation) {
+                when (mutation) {
+                    "compatibility" -> fixture.verifyTransportedWithCallerExpectations(
+                        compatibility = fixture.differentExpectedCompatibility(),
+                    )
+                    "proof" -> fixture.verifyTransportedWithCallerExpectations(
+                        proof = fixture.differentExpectedProof(),
+                    )
+                    else -> fixture.verifyTransportedWithCallerExpectations(proof = null)
+                }
+            }
+            assertEquals(before, fixture.originalDigests() + fixture.transportedDigests(), mutation)
+            if (mutation == "partial") assertTrue(fixture.verificationWorkSentinel().isFile)
+        } }
+    }
+
+    @Test
     fun `transported verifier rejects input work aliases without deletion`() = fixture().use { fixture ->
         fixture.prepareFullClosure()
         fixture.stage()
@@ -236,6 +268,13 @@ private class AppleSdkPackageFixture : AutoCloseable {
         output, validationOutput, version, owned, verifyWork,
     )
 
+    fun verifyTransportedWithCallerExpectations(
+        compatibility: File? = this.compatibility,
+        proof: File? = evidence.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF),
+    ) = verifyTransportedAppleSdkPackageClosure(
+        output, validationOutput, "0.2.0", owned, verifyWork, compatibility, proof,
+    )
+
     fun verifyWithProductAsWork() = verifyTransportedAppleSdkPackageClosure(
         output, validationOutput, "0.2.0", owned, output,
     )
@@ -243,6 +282,22 @@ private class AppleSdkPackageFixture : AutoCloseable {
     fun transportedDigests() = buildMap {
         verifiedRegularFiles(output).forEach { (path, file) -> put("product/$path", file.releaseDigest()) }
         verifiedRegularFiles(validationOutput).forEach { (path, file) -> put("validation/$path", file.releaseDigest()) }
+    }
+
+    fun seedVerificationWork() = verificationWorkSentinel().apply {
+        parentFile.mkdirs()
+        writeText("preserved")
+    }
+
+    fun verificationWorkSentinel() = verifyWork.resolve("sentinel")
+
+    fun differentExpectedCompatibility() = root.resolve("different-sdk-compatibility.json").apply {
+        writeText("{\"schemaVersion\":1,\"sdkVersion\":\"0.2.1\"}\n")
+    }
+
+    fun differentExpectedProof() = root.resolve("different-verified-distribution-proof.json").apply {
+        val original = evidence.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF).readReleaseObject()
+        atomicWriteJson(JsonObject(original + ("candidateTree" to JsonPrimitive("9".repeat(40)))))
     }
 
     fun symbolicOutput(): File {
@@ -436,6 +491,7 @@ private class AppleSdkPackageFixture : AutoCloseable {
         }
         put("import-receipt", receipt.releaseDigest())
         put("current-native-receipt", nativeReceipt.releaseDigest())
+        put("sdk-compatibility", compatibility.releaseDigest())
     }
 
     fun productDigests() = artifactNames.associateWith { evidence.resolve(it).releaseDigest() }
