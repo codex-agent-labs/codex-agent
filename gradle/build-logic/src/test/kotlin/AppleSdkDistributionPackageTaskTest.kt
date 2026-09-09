@@ -46,6 +46,23 @@ class AppleSdkDistributionPackageTaskTest {
     }
 
     @Test
+    fun `standalone packaged tool verifies the complete caller-bound Apple closure`() = fixture().use { fixture ->
+        fixture.prepareFullClosure()
+        fixture.stage()
+        val before = fixture.originalDigests() + fixture.transportedDigests()
+        fixture.verifyUsingPackagedTool()
+        assertEquals(before, fixture.originalDigests() + fixture.transportedDigests())
+    }
+
+    @Test
+    fun `Apple package staging rejects unsupported compression before codec loading`() = fixture().use { fixture ->
+        fixture.unsupportedFrameworkCompression()
+        fixture.prepareFullClosure()
+        val failure = assertFailsWith<IllegalStateException> { fixture.stage() }
+        assertTrue("archive entry is unsafe or duplicated" in failure.message.orEmpty())
+    }
+
+    @Test
     fun `caller expectation crosspairs and partial authority reject without changing inputs`() {
         listOf("compatibility", "proof", "partial").forEach { mutation -> fixture().use { fixture ->
             fixture.prepareFullClosure()
@@ -274,6 +291,36 @@ private class AppleSdkPackageFixture : AutoCloseable {
     ) = verifyTransportedAppleSdkPackageClosure(
         output, validationOutput, "0.2.0", owned, verifyWork, compatibility, proof,
     )
+
+    fun verifyUsingPackagedTool() {
+        val java = File(System.getProperty("java.home"), "bin/${if (System.getProperty("os.name").startsWith("Windows")) "java.exe" else "java"}")
+        val jar = checkNotNull(System.getProperty("codexAgent.releaseToolingJar"))
+        val process = ProcessBuilder(
+            java.path, "-jar", jar, "verify-transported-apple-sdk-package-closure",
+            "--product-directory", output.path,
+            "--validation-evidence-directory", validationOutput.path,
+            "--version", "0.2.0",
+            "--owned-build-directory", owned.path,
+            "--work-directory", verifyWork.path,
+            "--expected-sdk-compatibility", compatibility.path,
+            "--expected-distribution-proof", evidence.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF).path,
+        ).directory(root).redirectErrorStream(true).start()
+        val log = process.inputStream.bufferedReader().use { it.readText() }
+        val exit = process.waitFor()
+        assertEquals(0, exit, log)
+    }
+
+    fun unsupportedFrameworkCompression() {
+        val bytes = frameworkArchive.readBytes()
+        val central = (0..bytes.size - 12).first { index ->
+            bytes[index] == 0x50.toByte() && bytes[index + 1] == 0x4b.toByte() &&
+                bytes[index + 2] == 0x01.toByte() && bytes[index + 3] == 0x02.toByte()
+        }
+        bytes[central + 10] = 12 // BZIP2: not an accepted Apple package method.
+        bytes[central + 11] = 0
+        frameworkArchive.writeBytes(bytes)
+        checksum.writeText("${frameworkArchive.releaseDigest()}\n")
+    }
 
     fun verifyWithProductAsWork() = verifyTransportedAppleSdkPackageClosure(
         output, validationOutput, "0.2.0", owned, output,

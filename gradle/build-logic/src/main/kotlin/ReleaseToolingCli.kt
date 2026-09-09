@@ -27,7 +27,9 @@ private class ReleaseToolingArguments(values: Array<String>) {
     }
 }
 
-fun main(arguments: Array<String>) {
+fun main(arguments: Array<String>) = runReleaseTooling(arguments)
+
+internal fun runReleaseTooling(arguments: Array<String>) {
     val command = arguments.firstOrNull() ?: error("Release-tooling command is required")
     val options = ReleaseToolingArguments(arguments.drop(1).toTypedArray())
     when (command) {
@@ -48,6 +50,22 @@ fun main(arguments: Array<String>) {
             check(crossLanguageCAbiTargetSpecs.size == 5)
             check(productionCrossLanguageCAbiScenarioMappings().sumOf { it.testIds.size } == 231)
             println("codex-agent release tooling is ready")
+        }
+        "verify-transported-apple-sdk-package-closure" -> {
+            options.requireOnly(
+                "product-directory", "validation-evidence-directory", "version",
+                "owned-build-directory", "work-directory",
+                "expected-sdk-compatibility", "expected-distribution-proof",
+            )
+            verifyTransportedAppleSdkPackageClosure(
+                options.file("product-directory"),
+                options.file("validation-evidence-directory"),
+                options.required("version"),
+                options.file("owned-build-directory"),
+                options.file("work-directory"),
+                options.file("expected-sdk-compatibility"),
+                options.file("expected-distribution-proof"),
+            )
         }
         "assemble-c-abi-binding-receipt" -> {
             options.requireOnly(

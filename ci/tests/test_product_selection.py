@@ -59,6 +59,13 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_pure_apple_package_verifier_selects_no_compilation(self) -> None:
+        path = "gradle/build-logic/src/main/kotlin/AppleVerifiedDistributionVerification.kt"
+        selected = identities(classify_paths([path]))
+        self.assertEqual({item for item in PHASE_INSTANCE_IDS
+                          if item.product == "sdk" and item.component == "sdk-ios"
+                          and item.phase in {"package", "validation", "metadata"}}, selected)
+
     def test_shared_capture_owns_adapter_and_native_host_validation_keys(self) -> None:
         self._assert_adapter_host_validation_keys("runtime/build-logic/src/main/kotlin/RuntimeEvidenceExecutionCapture.kt", native=True)
 

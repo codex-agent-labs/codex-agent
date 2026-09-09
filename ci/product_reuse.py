@@ -2450,6 +2450,20 @@ def _product_materialization_paths(root, discovery_root, state_root, destination
     return discovery_root, state_root, destination
 
 
+def _restore_product_objects(state, instances, destination):
+    for dependency in instances:
+        record = state.prior_carrier_phases[dependency]
+        name = "-".join((dependency.product, dependency.component, dependency.phase, dependency.target))
+        predecessor = destination / name
+        predecessor.mkdir()
+        restored = restore_object(
+            state.sources[dependency], predecessor / "stage",
+            build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
+            object_sha256=record["objectSha256"],
+        )
+        (predecessor / "phase-receipt.json").write_bytes(restored["receiptBytes"])
+
+
 def _materialize_product_predecessors(state, instance, destination, expected_build_key, root):
     expected_build_key = require_sha256(expected_build_key, "Expected elected build key")
     if instance not in PHASE_INSTANCE_IDS:
@@ -2466,17 +2480,7 @@ def _materialize_product_predecessors(state, instance, destination, expected_bui
     with tempfile.TemporaryDirectory(prefix="codex-agent-product-inputs-", dir=root) as temporary:
         prepared = Path(temporary).resolve() / "inputs"
         prepared.mkdir()
-        for dependency in dependencies:
-            record = state.prior_carrier_phases[dependency]
-            name = "-".join((dependency.product, dependency.component, dependency.phase, dependency.target))
-            predecessor = prepared / name
-            predecessor.mkdir()
-            restored = restore_object(
-                state.sources[dependency], predecessor / "stage",
-                build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
-                object_sha256=record["objectSha256"],
-            )
-            (predecessor / "phase-receipt.json").write_bytes(restored["receiptBytes"])
+        _restore_product_objects(state, dependencies, prepared)
         write_canonical_json(prepared / "phase-plan.json", ready)
         write_canonical_json(prepared / "producer.json", state.producer)
         publish_regular_tree(prepared, destination)
@@ -2517,6 +2521,127 @@ def prepare_runtime_phase(
     return _prepare_runtime_phase(state, instance, destination, expected_build_key, root)[0]
 
 
+def materialize_runtime_attestation_inputs(
+    plan_path: Path, discovery_root: Path, state_root: Path | None,
+    destination: Path, *, target: str, expected_build_key: str,
+    repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
+    sdk_validation_tooling: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Restore one completed selected native closure, not a new build election.
+
+The protected caller separately authenticates original CI/release sources and
+the complete native semantics. This selection never grants signing authority.
+"""
+    if target not in NATIVE_TARGETS:
+        raise ValueError("Runtime attestation selection requires a native target")
+    require_sha256(expected_build_key, "Selected Runtime metadata build key")
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
+    discovery_root, state_root, destination = _product_materialization_paths(
+        root, discovery_root, state_root, destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Runtime attestation selection destination must not exist")
+    state = _verified_product_state(plan_path, discovery_root, state_root, root,
+        os.environ if environ is None else environ, sdk_validation_tooling)
+    _runtime_worker_checkout(root, state.producer)
+    metadata = PhaseInstanceId("runtime", target, "metadata", target)
+    selected = state.prior_by_instance.get(metadata)
+    instances = _dependency_closure((metadata,))
+    if (selected is None or selected["buildKey"] != expected_build_key
+            or any(instance not in state.sources or instance not in state.prior_carrier_phases
+                   for instance in instances)):
+        raise ValueError("Selected Runtime metadata lacks its exact complete retained closure")
+    evidence = state.rebased_request["contractEvidence"]
+    if evidence is None or evidence["expectedTrustDomain"] != "release":
+        raise ValueError("Runtime attestation selection requires release Contract evidence")
+    destination = _prepare_destination(destination, root)
+    destination.rmdir()
+    with tempfile.TemporaryDirectory(prefix="runtime-attestation-selection-", dir=root) as temporary:
+        prepared = Path(temporary).resolve() / "selection"
+        inputs = prepared / "predecessors"
+        inputs.mkdir(parents=True)
+        _restore_product_objects(state, instances, inputs)
+
+        def original(product, component, phase, target):
+            identity = PhaseInstanceId(product, component, phase, target)
+            if identity not in instances:
+                raise ValueError("Runtime attestation requested an unrelated original")
+            directory = inputs / "-".join((product, component, phase, target))
+            receipt_path = directory / "phase-receipt.json"
+            receipt = _canonical_control(receipt_path, "Runtime attestation original receipt")
+            return {"stage": directory / "stage", "receiptPath": receipt_path, "receipt": receipt}
+
+        def one_output(value, kind):
+            outputs = [record for record in value["receipt"]["outputs"] if record["kind"] == kind]
+            if len(outputs) != 1:
+                raise ValueError(f"Runtime attestation requires one original {kind} output")
+            return value["stage"] / outputs[0]["relativePath"]
+
+        trust = _release_trust(root, state.producer["commit"], prepared)
+        if trust is None:
+            raise ValueError("Runtime attestation selection has no Git-authoritative release policy")
+        contract, version, handoff, _ = _capture_runtime_contract(
+            root, evidence, original, one_output, prepared, trust)
+        phase_receipts = {}
+        payload = None
+        for phase in ("binary", "package", "validation", "metadata"):
+            value = original("runtime", target, phase, target)
+            moved = prepared / "runtime" / target / phase
+            moved.parent.mkdir(parents=True, exist_ok=True)
+            if phase == "metadata":
+                relative = one_output(value, "runtime-variant").relative_to(value["stage"])
+                payload = moved / relative
+            value["stage"].rename(moved)  # Move only the freshly restored private copy.
+            phase_receipts[phase] = value["receiptPath"].relative_to(prepared).as_posix()
+        stem = f"codex-agent-contract-{version}"
+        paths = {"stage": contract["stage"], "receipt": contract["receiptPath"],
+                 "payload": handoff / f"{stem}.zip", "attestation": handoff / f"{stem}.attestation.json",
+                 "signature": handoff / f"{stem}.attestation.sig", "public_key": handoff / "public-key.pub"}
+        selection = {
+            "schemaVersion": 1, "target": target, "metadata": selected,
+            "producer": state.producer, "contractVersion": version,
+            "contract": {name: path.relative_to(prepared).as_posix() for name, path in paths.items()},
+            "contractReceiptSha256": state.prior_carrier_phases[
+                PhaseInstanceId("contract", "contract", "metadata", "common")]["receiptSha256"],
+            "receiptSha256s": {phase: state.prior_carrier_phases[
+                PhaseInstanceId("runtime", target, phase, target)]["receiptSha256"] for phase in phase_receipts},
+            "phaseReceipts": phase_receipts, "runtimeStageRoot": "runtime",
+            "variantPayload": payload.relative_to(prepared).as_posix(),
+        }
+        write_canonical_json(prepared / "selection.json", selection)
+        _runtime_worker_checkout(root, state.producer)
+        publish_regular_tree(prepared, destination)
+    return selection
+
+
+def _capture_runtime_contract(root, evidence, original, one_output, prepared, trust):
+    contract = original("contract", "contract", "metadata", "common")
+    version = contract["receipt"]["productVersion"]
+    stem = f"codex-agent-contract-{version}"
+    handoff = prepared / "contract-input"
+    handoff.mkdir()
+    for source, name, limit in (
+        (one_output(contract, "contract-bundle"), f"{stem}.zip", 512 * 1024 * 1024),
+        (root / evidence["attestation"], f"{stem}.attestation.json", 16 * 1024 * 1024),
+        (root / evidence["attestationSignature"], f"{stem}.attestation.sig", 1024 * 1024),
+        (root / evidence["publicKey"], "public-key.pub", 1024 * 1024),
+    ):
+        (handoff / name).write_bytes(read_regular_file_bytes(
+            source, max_bytes=limit, reject_symlink_parents=True))
+    snapshot_regular_tree((root / evidence["attestation"]).parent / "execution-closure",
+                          handoff / "execution-closure")
+    for phase in ("binary", "package", "validation", "metadata"):
+        retained = original("contract", "contract", phase, "common")["receiptPath"]
+        if read_regular_file_bytes(retained) != read_regular_file_bytes(
+                handoff / f"execution-closure/receipts/{phase}.json"):
+            raise ValueError("Runtime worker Contract closure rewrites an original receipt")
+    manifest, _, _ = verify_contract_attestation(
+        handoff / f"{stem}.zip", contract["receiptPath"],
+        handoff / f"{stem}.attestation.json", handoff / f"{stem}.attestation.sig",
+        handoff / "public-key.pub", required_trust_domain="release",
+        keyring=trust.keyring, keys_directory=trust.keys)
+    return contract, version, handoff, manifest
+
+
 def _prepare_runtime_phase(state, instance, destination, expected_build_key, root):
     evidence = state.rebased_request["contractEvidence"]
     if evidence is None or evidence["expectedTrustDomain"] != "release":
@@ -2554,31 +2679,9 @@ def _prepare_runtime_phase(state, instance, destination, expected_build_key, roo
                 raise ValueError(f"Runtime worker requires one exact original {kind} output")
             return value["stage"] / outputs[0]["relativePath"]
 
-        contract = original("contract", "contract", "metadata", "common")
-        version = contract["receipt"]["productVersion"]
+        contract, version, handoff, manifest = _capture_runtime_contract(
+            root, evidence, original, one_output, prepared, trust)
         stem = f"codex-agent-contract-{version}"
-        handoff = prepared / "contract-input"
-        handoff.mkdir()
-        for source, name, limit in (
-            (one_output(contract, "contract-bundle"), f"{stem}.zip", 512 * 1024 * 1024),
-            (root / evidence["attestation"], f"{stem}.attestation.json", 16 * 1024 * 1024),
-            (root / evidence["attestationSignature"], f"{stem}.attestation.sig", 1024 * 1024),
-            (root / evidence["publicKey"], "public-key.pub", 1024 * 1024),
-        ):
-            (handoff / name).write_bytes(read_regular_file_bytes(
-                source, max_bytes=limit, reject_symlink_parents=True))
-        snapshot_regular_tree((root / evidence["attestation"]).parent / "execution-closure",
-                              handoff / "execution-closure")
-        for phase in ("binary", "package", "validation", "metadata"):
-            retained = original("contract", "contract", phase, "common")["receiptPath"]
-            if read_regular_file_bytes(retained) != read_regular_file_bytes(
-                    handoff / f"execution-closure/receipts/{phase}.json"):
-                raise ValueError("Runtime worker Contract closure rewrites an original receipt")
-        manifest, _, _ = verify_contract_attestation(
-            handoff / f"{stem}.zip", contract["receiptPath"],
-            handoff / f"{stem}.attestation.json", handoff / f"{stem}.attestation.sig",
-            handoff / "public-key.pub", required_trust_domain="release",
-            keyring=trust.keyring, keys_directory=trust.keys)
         properties = {
             **{f"codexAgent.{key}": value for key, value in _identity_record(instance).items()},
             "codexAgent.contractVersion": version,

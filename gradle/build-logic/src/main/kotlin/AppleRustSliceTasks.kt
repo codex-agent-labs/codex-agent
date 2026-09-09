@@ -4,7 +4,6 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import javax.inject.Inject
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -244,15 +243,6 @@ abstract class ImportAppleRustEvidenceTask @Inject constructor(private val exec:
             }) } })
         })
     }
-}
-
-internal fun appleProofProducerIdentity(proof: JsonObject): Pair<String, String> {
-    val commit = proof.releaseString("candidateCommit")
-    val tree = proof.releaseString("candidateTree")
-    check(listOf(commit, tree).all { value ->
-        value.length == 40 && value.all { it in '0'..'9' || it in 'a'..'f' }
-    }) { "Apple proof producer Git identity is invalid" }
-    return commit to tree
 }
 
 internal fun verifyAppleEvidenceCheckout(

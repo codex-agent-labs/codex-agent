@@ -53,12 +53,34 @@ class ReleaseToolingCliFunctionalTest {
             }
             val jdepsName = if (System.getProperty("os.name").startsWith("Windows")) "jdeps.exe" else "jdeps"
             val jdeps = File(System.getProperty("java.home"), "bin/$jdepsName")
-            val modules = ProcessBuilder(jdeps.absolutePath, "--print-module-deps", jar.absolutePath)
+            // Commons Compress carries optional non-ZIP codecs. Our Apple reader
+            // rejects every method except STORED/DEFLATED before opening a member.
+            // Account for those exact codec families first: never ignore a missing
+            // first-party class, ZIP dependency, Gradle API, or unknown dependency.
+            val missing = ProcessBuilder(jdeps.absolutePath, "--missing-deps", jar.absolutePath)
+                .redirectErrorStream(true).start()
+            val missingOutput = missing.inputStream.bufferedReader().use { it.readText() }
+            assertEquals(0, missing.waitFor(), missingOutput)
+            val optionalCodecs = mapOf(
+                "org.apache.commons.compress.archivers.sevenz." to "org.tukaani.xz.",
+                "org.apache.commons.compress.compressors.lzma." to "org.tukaani.xz.",
+                "org.apache.commons.compress.compressors.xz." to "org.tukaani.xz.",
+                "org.apache.commons.compress.compressors.brotli." to "org.brotli.dec.",
+                "org.apache.commons.compress.compressors.zstandard." to "com.github.luben.zstd.",
+                "org.apache.commons.compress.harmony.pack200." to "org.objectweb.asm.",
+            )
+            missingOutput.lineSequence().filter { it.startsWith("   ") }.forEach { line ->
+                val dependency = checkNotNull(Regex("\\s+(\\S+)\\s+->\\s+(\\S+)\\s+not found").matchEntire(line)) { line }
+                assertTrue(optionalCodecs.any { (owner, target) ->
+                    dependency.groupValues[1].startsWith(owner) && dependency.groupValues[2].startsWith(target)
+                }, "Unexpected standalone dependency: $line")
+            }
+            val modules = ProcessBuilder(jdeps.absolutePath, "--ignore-missing-deps", "--print-module-deps", jar.absolutePath)
                 .redirectErrorStream(true)
                 .start()
             val moduleOutput = modules.inputStream.bufferedReader().use { it.readText() }
             assertEquals(0, modules.waitFor(), moduleOutput)
-            assertEquals("java.base,java.net.http,java.xml", moduleOutput.trim())
+            assertEquals("java.base,java.desktop,java.logging,java.net.http", moduleOutput.trim())
         } finally {
             workingDirectory.deleteRecursively()
         }

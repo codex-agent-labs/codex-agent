@@ -200,6 +200,7 @@ _IOS_VALIDATION_BUILD_LOGIC = frozenset({
 })
 _IOS_PACKAGE_BUILD_LOGIC = frozenset({
     "AppleDistributionFileTasks.kt",
+    "AppleVerifiedDistributionVerification.kt",
     "IosAppleDistributionTasks.kt",
     "IosPrivacyArchive.kt",
     "IosPrivacyManifest.kt",

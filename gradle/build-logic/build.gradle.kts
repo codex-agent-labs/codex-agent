@@ -54,16 +54,25 @@ val releaseToolingRuntime by configurations.creating {
     isTransitive = true
 }
 dependencies.add(releaseToolingRuntime.name, libs.kotlinx.serialization.json)
+dependencies.add(releaseToolingRuntime.name, configurations["implementation"].dependencies.single {
+    it.group == "org.apache.commons" && it.name == "commons-compress"
+})
 val releaseToolingClasses = listOf(
     "AndroidRuntimeEvidenceFilesKt",
     "AndroidRuntimeEvidenceSupportKt",
     "AppleArtifactMetrics",
+    "AppleDistributionFileTasksKt",
+    "AppleDistributionInputs",
     "AppleNativeTestCommand",
     "AppleNativeTestsIdentity",
     "AppleReleaseCheckTasksKt",
     "AppleRustEvidenceIdentity",
     "AppleRustSliceModelKt",
     "AppleRustSliceSpec",
+    "AppleVerifiedDistributionVerificationKt",
+    "AppleVerifiedDistributionModelKt",
+    "AppleVerifiedDistributionIdentity",
+    "AppleVerifiedDistributionInventory",
     "BoundProducedEvidence",
     "BoundRuntimeEvidence",
     "CandidateCiProvenanceKt",
@@ -136,6 +145,7 @@ val releaseToolingClasses = listOf(
     "FirebaseAndroidRuntimeEvidenceModelKt",
     "FirebaseTestMatrix",
     "IosPrivacyAuditVerificationKt",
+    "ImportedAppleFrameworkTasksKt",
     "IosPrivacyCategory",
     "IosPrivacyHit",
     "IosPrivacyPolicy",
@@ -188,7 +198,11 @@ val releaseToolingJar = tasks.register<Jar>("releaseToolingJar") {
         releaseToolingRuntime.filter { dependency ->
             dependency.name.startsWith("kotlin-stdlib-") ||
                 dependency.name.startsWith("kotlinx-serialization-core-jvm-") ||
-                dependency.name.startsWith("kotlinx-serialization-json-jvm-")
+                dependency.name.startsWith("kotlinx-serialization-json-jvm-") ||
+                dependency.name.startsWith("commons-compress-") ||
+                dependency.name.startsWith("commons-io-") ||
+                dependency.name.startsWith("commons-codec-") ||
+                dependency.name.startsWith("commons-lang3-")
         }.map(::zipTree)
     })
     exclude(

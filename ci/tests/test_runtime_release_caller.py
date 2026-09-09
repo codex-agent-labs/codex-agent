@@ -162,6 +162,19 @@ class RuntimeReleaseCallerTest(unittest.TestCase):
         self.assertEqual(0, self.environment.secret_reads)
         self.assertFalse(self.destination.exists())
 
+    def test_selected_receipt_bindings_cannot_be_crosspaired(self):
+        self.environment.forbid_secret = True
+        for changes in (
+            {"expected_contract_receipt_sha256": "sha256:" + "0" * 64},
+            {"expected_receipt_sha256s": {phase: "sha256:" + "0" * 64 for phase in fixture.PHASES}},
+        ):
+            with self.subTest(changes=changes), \
+                    patch("reuse.api_request", side_effect=AssertionError("HTTP before selected receipt binding")), \
+                    self.assertRaisesRegex(ValueError, "selected original"):
+                self.invoke(**changes)
+            self.assertFalse(self.destination.exists())
+        self.assertEqual(0, self.environment.secret_reads)
+
     def test_retained_forwarding_uses_verified_bytes_not_a_later_source_read(self):
         real_read = runtime_release.read_runtime_variant_handoff
         changed = []
