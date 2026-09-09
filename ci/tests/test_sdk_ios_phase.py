@@ -22,6 +22,10 @@ class SdkIosPhaseTest(unittest.TestCase):
             directory.mkdir()
         self.request = self.root / "compatibility-request.json"
         self.request.write_bytes(b"caller-authenticated request fixture\n")
+        self.compatibility = self.root / "sdk-compatibility.json"
+        self.compatibility.write_bytes(b"caller-authenticated compatibility fixture\n")
+        self.proof = self.root / "original-apple-proof.json"
+        self.proof.write_bytes(b"caller-authenticated original proof fixture\n")
         self.calls = []
         self.record = {
             "stage": self.contract,
@@ -49,6 +53,8 @@ class SdkIosPhaseTest(unittest.TestCase):
             verified_distribution=changes.get("verified_distribution", self.distribution),
             native_evidence=changes.get("native_evidence", self.native),
             compatibility_request=changes.get("compatibility_request", self.request),
+            expected_sdk_compatibility=changes.get("expected_sdk_compatibility", self.compatibility),
+            expected_distribution_proof=changes.get("expected_distribution_proof", self.proof),
         )
 
     def test_exact_original_inputs_route_to_the_existing_transported_verifier(self):
@@ -61,6 +67,8 @@ class SdkIosPhaseTest(unittest.TestCase):
             "codexAgent.iosVerifiedDistributionDirectory": str(self.distribution),
             "codexAgent.iosNativeEvidenceDirectory": str(self.native),
             "codexAgent.sdkCompatibilityRequest": str(self.request),
+            "codexAgent.iosExpectedSdkCompatibility": str(self.compatibility),
+            "codexAgent.iosExpectedDistributionProof": str(self.proof),
         }, self.translate())
         self.assertEqual([("contract", "contract", "binary", "common")], self.calls)
 
@@ -74,6 +82,7 @@ class SdkIosPhaseTest(unittest.TestCase):
                     self.plan(**changes), predecessor=self.predecessor,
                     verified_distribution=Path("relative"), native_evidence=Path("relative"),
                     compatibility_request=Path("relative"),
+                    expected_sdk_compatibility=Path("relative"), expected_distribution_proof=Path("relative"),
                 )
         self.assertEqual([], self.calls)
 
@@ -110,6 +119,11 @@ class SdkIosPhaseTest(unittest.TestCase):
             {"compatibility_request": self.distribution},
             {"compatibility_request": request_link},
             {"compatibility_request": empty},
+            {"expected_sdk_compatibility": empty},
+            {"expected_sdk_compatibility": request_link},
+            {"expected_distribution_proof": self.root / "missing"},
+            {"expected_distribution_proof": request_link},
+            {"expected_distribution_proof": Path("relative")},
         )
         for changes in cases:
             self.calls.clear()

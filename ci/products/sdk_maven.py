@@ -494,7 +494,18 @@ def verify_packaged_sdk_maven_repository(
         _verify_archive(archive, kind, resource_path, compatibility)
 
 
-def _verify_sdk_maven_stage(stage: Path, receipt: dict[str, Any], phase: str) -> None:
+_APPLE_VERIFICATION_KEYS = {
+    "validation_evidence_directory", "expected_sdk_compatibility", "expected_distribution_proof",
+    "repository", "tooling_evidence", "tooling_public_key", "java_executable", "policy_revision",
+    "required_trust_domain", "tooling_keyring", "tooling_keys_directory",
+}
+
+
+def _verify_sdk_maven_stage_inventory(stage: Path, receipt: dict[str, Any], phase: str) -> None:
+    """Validate original stage identity and required evidence before reading it.
+
+    This structural preflight alone grants no Maven or Apple semantic admission.
+    """
     component = receipt["component"]
     if (receipt["product"] != "sdk" or receipt["phase"] != phase or
             component not in COMPONENT_CARRIERS or
@@ -507,21 +518,71 @@ def _verify_sdk_maven_stage(stage: Path, receipt: dict[str, Any], phase: str) ->
         raise ValueError("SDK Maven receipt and stage output inventories differ")
     evidence_name = "maven-primary-inventory.json" if phase == "binary" else "sdk-compatibility.json"
     evidence = [record for record in receipt["outputs"] if record["kind"] == "evidence"]
-    if (len(evidence) != 1 or evidence[0]["relativePath"] != f"outputs/evidence/{evidence_name}" or
-            any(record["kind"] != "maven" or
-                not record["relativePath"].startswith("outputs/maven/")
-                for record in receipt["outputs"] if record not in evidence)):
+    if len(evidence) != 1 or evidence[0]["relativePath"] != f"outputs/evidence/{evidence_name}":
+        raise ValueError(f"SDK Maven {phase} output kinds or paths are invalid")
+
+
+def _verify_sdk_maven_stage(
+    stage: Path, receipt: dict[str, Any], phase: str, *,
+    apple_verification: dict[str, Any] | None = None, authenticated_compatibility: bytes | None = None,
+) -> None:
+    _verify_sdk_maven_stage_inventory(stage, receipt, phase)
+    component = receipt["component"]
+    apple_outputs = []
+    if apple_verification is not None:
+        if ((receipt["product"], component, phase, receipt["target"]) != ("sdk", "sdk-ios", "package", "ios") or
+                type(apple_verification) is not dict or set(apple_verification) != _APPLE_VERIFICATION_KEYS):
+            raise ValueError("Apple verification requires exact sdk-ios package identity and complete caller inputs")
+        if authenticated_compatibility is None:
+            raise ValueError("Apple verification requires authenticated SDK compatibility")
+        expected_path = Path(apple_verification["expected_sdk_compatibility"])
+        expected_bytes = read_regular_file_bytes(expected_path, max_bytes=16 * 1024 * 1024,
+                                                 reject_symlink_parents=True)
+        if expected_bytes != authenticated_compatibility:
+            raise ValueError("Apple caller compatibility differs from authenticated SDK compatibility")
+        from .sdk_apple_content import verify_sdk_apple_package_content
+
+        # The fixed authenticated tooling gate, not a generic extra-output allowlist.
+        with tempfile.TemporaryDirectory(prefix="sdk-apple-compatibility-") as temporary:
+            captured_compatibility = Path(temporary).resolve() / "sdk-compatibility.json"
+            captured_compatibility.write_bytes(expected_bytes)
+            inventory = verify_sdk_apple_package_content(
+                product_directory=stage / "outputs/apple", sdk_version=receipt["productVersion"],
+                **{**apple_verification, "expected_sdk_compatibility": captured_compatibility},
+            )
+            if read_regular_file_bytes(captured_compatibility, max_bytes=16 * 1024 * 1024,
+                                       reject_symlink_parents=True) != expected_bytes:
+                raise ValueError("Captured Apple compatibility changed during verification")
+        version = receipt["productVersion"]
+        expected_names = {f"CodexAgentPackage-{version}.zip", f"CodexAgent-{version}.xcframework.zip",
+                          f"CodexAgent-{version}.xcframework.zip.sha256"}
+        if (len(inventory) != 3 or {record["relativePath"] for record in inventory} != expected_names or
+                inventory != regular_file_inventory(stage / "outputs/apple")):
+            raise ValueError("Apple gate inventory differs from exact original SDK package files")
+        apple_outputs = [{**record, "kind": "apple", "relativePath": f"outputs/apple/{record['relativePath']}"}
+                         for record in inventory]
+        if [record for record in receipt["outputs"] if record["kind"] == "apple"] != apple_outputs:
+            raise ValueError("Apple package files differ from exact receipt outputs")
+        if read_regular_file_bytes(expected_path, max_bytes=16 * 1024 * 1024,
+                                   reject_symlink_parents=True) != expected_bytes:
+            raise ValueError("Apple caller compatibility changed during verification")
+    evidence = [record for record in receipt["outputs"] if record["kind"] == "evidence"]
+    if any(record["kind"] != "maven" or not record["relativePath"].startswith("outputs/maven/")
+           for record in receipt["outputs"] if record not in evidence and record not in apple_outputs):
         raise ValueError(f"SDK Maven {phase} output kinds or paths are invalid")
 
 
 def verify_packaged_sdk_maven_phase(
     stage_root: Path, receipt_path: Path, compatibility_request: Path,
+    *, apple_verification: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     """Verify final-stage semantics; not upstream execution or release admission.
 
     Return the original receipt and its unchanged canonical bytes. Authenticating
     the selected binary predecessor and planned upstream closure remains the
     caller's responsibility; a self-consistent receipt alone cannot prove them.
+    Apple outputs require complete caller-owned verification inputs; omitting
+    them preserves the strict Maven-only stage contract.
     """
     # The compatibility producer imports Maven-independent archive authorities.
     from .sdk_compatibility import load_sdk_compatibility_request, produce_sdk_compatibility
@@ -545,7 +606,7 @@ def verify_packaged_sdk_maven_phase(
         (private / "phase-receipt.json").write_bytes(receipt_bytes)
         receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
         component = receipt["component"]
-        _verify_sdk_maven_stage(stage, receipt, "package")
+        _verify_sdk_maven_stage_inventory(stage, receipt, "package")
         evidence_path = "outputs/evidence/sdk-compatibility.json"
 
         private_request = private / "sdk-compatibility-request.json"
@@ -559,11 +620,14 @@ def verify_packaged_sdk_maven_phase(
             raise ValueError("Authenticated SDK compatibility version differs from package receipt")
         if authenticated.read_bytes() != (stage / evidence_path).read_bytes():
             raise ValueError("SDK Maven evidence differs from authenticated compatibility")
+        _verify_sdk_maven_stage(stage, receipt, "package", apple_verification=apple_verification,
+                               authenticated_compatibility=authenticated.read_bytes())
         verify_packaged_sdk_maven_repository(
             stage / "outputs/maven", authenticated,
             MAVEN_GROUPS[component], receipt["productVersion"], component,
         )
         if (regular_file_inventory(stage_root) != original_inventory or
+                regular_file_inventory(stage) != original_inventory or
                 read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024,
                                         reject_symlink_parents=True) != receipt_bytes or
                 read_regular_file_bytes(compatibility_request, max_bytes=16 * 1024 * 1024,
@@ -578,12 +642,14 @@ def verify_sdk_maven_binary_predecessor(
     package_stage_root: Path,
     package_receipt_path: Path,
     compatibility_file: Path,
+    *, apple_verification: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bytes]:
-    """Prove exact binary-to-package transformation, not execution or admission.
+    """Prove exact Maven transformation plus optional imported Apple closure.
 
     The caller authenticates compatibility and planned upstream inputs. Replay
     uses only the existing Python archive/metadata transformation in private
-    storage; it never invokes a build or rewrites original evidence.
+    storage; it never invokes a build or rewrites original evidence. Optional
+    Apple originals additionally require the fixed authenticated tooling gate.
     """
     stages = {"binary": Path(binary_stage_root), "package": Path(package_stage_root)}
     receipt_paths = {"binary": Path(binary_receipt_path), "package": Path(package_receipt_path)}
@@ -606,11 +672,14 @@ def verify_sdk_maven_binary_predecessor(
             if regular_file_inventory(private / phase) != original_inventories[phase]:
                 raise ValueError(f"SDK Maven {phase} stage changed during snapshot")
             receipts[phase] = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes[phase]))
-            _verify_sdk_maven_stage(private / phase, receipts[phase], phase)
+            if phase == "binary":
+                _verify_sdk_maven_stage(private / phase, receipts[phase], phase)
         binary, package = receipts["binary"], receipts["package"]
         if any(binary[field] != package[field] for field in ("component", "target", "productVersion")):
             raise ValueError("SDK Maven binary predecessor and package identities differ")
         component, version = binary["component"], binary["productVersion"]
+        _verify_sdk_maven_stage(private / "package", package, "package",
+                               apple_verification=apple_verification, authenticated_compatibility=compatibility)
         raw_maven = private / "binary/outputs/maven"
         verify_sdk_maven_repository(raw_maven, MAVEN_GROUPS[component], version, component)
         # This is the existing Gradle primary-inventory authority, not a new
@@ -640,6 +709,7 @@ def verify_sdk_maven_binary_predecessor(
         if regular_file_inventory(replay) != regular_file_inventory(private / "package/outputs/maven"):
             raise ValueError("SDK Maven package differs from its exact binary predecessor transformation")
         if (any(regular_file_inventory(path) != original_inventories[phase] for phase, path in stages.items()) or
+                any(regular_file_inventory(private / phase) != original_inventories[phase] for phase in stages) or
                 any(read_regular_file_bytes(path, max_bytes=16 * 1024 * 1024,
                                             reject_symlink_parents=True) != receipt_bytes[phase]
                     for phase, path in receipt_paths.items()) or

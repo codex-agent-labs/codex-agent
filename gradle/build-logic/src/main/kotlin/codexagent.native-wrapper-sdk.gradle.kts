@@ -112,7 +112,7 @@ val sdkMavenPackageManifestTasks = sdkMavenPackageSpecs.mapValues { (component, 
         from(generateNativeWrapperSdkCompatibility.flatMap { it.outputFile })
         into(phaseOutputs.map { it.dir("evidence") })
     }
-    tasks.register<WriteProductOutputManifestTask>("write${title}PackageOutputManifest") {
+    val manifest = tasks.register<WriteProductOutputManifestTask>("write${title}PackageOutputManifest") {
         dependsOn(evidence)
         product.set("sdk")
         this.component.set(component)
@@ -129,6 +129,58 @@ val sdkMavenPackageManifestTasks = sdkMavenPackageSpecs.mapValues { (component, 
         stageRoot.set(phaseRoot)
         manifestFile.set(phaseRoot.map { it.file("output-manifest.json") })
     }
+    if (component == "sdk-ios") {
+        val appleScratch = layout.buildDirectory.dir(
+            nativeWrapperCandidateTree.map { "apple-sdk-package-tasks/$it" },
+        )
+        val importedApple = providers.gradleProperty(IOS_VERIFIED_DISTRIBUTION_PROPERTY)
+        val expectedCompatibility = providers.gradleProperty("codexAgent.iosExpectedSdkCompatibility")
+        val expectedProof = providers.gradleProperty("codexAgent.iosExpectedDistributionProof")
+        val canonicalRequest = gradle.startParameter.projectProperties.let { properties ->
+            properties["codexAgent.product"] == "sdk" &&
+                properties["codexAgent.component"] == "sdk-ios" &&
+                properties["codexAgent.phase"] == "package"
+        }
+        if (canonicalRequest) {
+            check(importedApple.isPresent && expectedCompatibility.isPresent && expectedProof.isPresent) {
+                "Canonical SDK iOS package production requires imported Apple artifacts and caller expectations"
+            }
+        }
+        manifest.configure {
+            doFirst {
+                check(importedApple.isPresent && expectedCompatibility.isPresent && expectedProof.isPresent) {
+                    "SDK iOS package output requires imported Apple artifacts and caller expectations"
+                }
+            }
+        }
+        if (importedApple.isPresent) {
+            val iosRuntime = project(":codex-agent-runtime-ios")
+            iosRuntime.pluginManager.withPlugin("codexagent.ios-runtime") {
+                val appleStage = iosRuntime.tasks.named<StageImportedAppleSdkPackageArtifactsTask>(
+                    "stageImportedCodexAgentIosSdkPackageArtifacts",
+                ) {
+                    dependsOn(invalidate)
+                    ownedBuildDirectory.set(layout.buildDirectory)
+                    workDirectory.set(appleScratch.map { it.dir("stage-work") })
+                    outputDirectory.set(phaseOutputs.map { it.dir("apple") })
+                    validationEvidenceDirectory.set(appleScratch.map { it.dir("validation-evidence") })
+                }
+                val appleVerifier = iosRuntime.tasks.named<VerifyTransportedAppleSdkPackageClosureTask>(
+                    "verifyTransportedCodexAgentIosSdkPackageClosure",
+                ) {
+                    productDirectory.set(appleStage.flatMap { it.outputDirectory })
+                    validationEvidenceDirectory.set(appleStage.flatMap { it.validationEvidenceDirectory })
+                    ownedBuildDirectory.set(layout.buildDirectory)
+                    workDirectory.set(appleScratch.map { it.dir("verification-work") })
+                }
+                manifest.configure {
+                    dependsOn(appleVerifier)
+                    outputRoots.put("apple", "outputs/apple")
+                }
+            }
+        }
+    }
+    manifest
 }
 val stageNativeWrapperCAbiSdks = tasks.register<StageCrossLanguageNativeWrapperSdksTask>(
     "stageNativeWrapperCAbiSdks",

@@ -52,6 +52,39 @@ class RuntimeAggregatePhaseTest(unittest.TestCase):
     def collect(self):
         return runtime_aggregate_phase.collect_inputs(self.plan, self.predecessor)
 
+    def test_finalized_aggregate_translates_exact_original_manifest_maven_and_receipt(self):
+        stage = self.chain["root"] / "aggregate-stage"
+        before = {path: path.read_bytes() for path in stage.rglob("*") if path.is_file()}
+        receipt = self.chain["aggregate_receipt"].read_bytes()
+        result = runtime_aggregate_phase.collect_finalized_inputs(
+            stage, self.chain["aggregate_receipt"], "0.2.0", self.predecessor)
+        self.assertEqual(self.chain["aggregate"], result["manifest"])
+        self.assertEqual(self.chain["aggregate_receipt"], result["metadata_receipt"])
+        self.assertEqual(260, len(result["runtime_maven_files"]))
+        self.assertNotIn("publication_inputs", result)
+        self.assertEqual(receipt, self.chain["aggregate_receipt"].read_bytes())
+        self.assertEqual(before, {path: path.read_bytes() for path in stage.rglob("*") if path.is_file()})
+
+    def test_finalized_stage_rejects_extra_missing_and_crosspaired_outputs(self):
+        stage = self.work / "final-stage"
+        shutil.copytree(self.chain["root"] / "aggregate-stage", stage)
+        extra = stage / "extra"
+        extra.write_bytes(b"undeclared")
+        with self.assertRaises(ValueError):
+            runtime_aggregate_phase.collect_finalized_inputs(
+                stage, self.chain["aggregate_receipt"], "0.2.0", self.predecessor)
+        extra.unlink()
+        manifest = stage / "outputs" / self.chain["aggregate"].name
+        original = manifest.read_bytes()
+        manifest.write_bytes(original + b"mutation")
+        with self.assertRaises(ValueError):
+            runtime_aggregate_phase.collect_finalized_inputs(
+                stage, self.chain["aggregate_receipt"], "0.2.0", self.predecessor)
+        manifest.unlink()
+        with self.assertRaises(ValueError):
+            runtime_aggregate_phase.collect_finalized_inputs(
+                stage, self.chain["aggregate_receipt"], "0.2.0", self.predecessor)
+
     def mutant(self, identity, mutate):
         original = self.originals[identity]
         stage = self.work / "stage"

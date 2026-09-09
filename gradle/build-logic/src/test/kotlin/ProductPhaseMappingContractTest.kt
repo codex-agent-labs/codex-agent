@@ -266,6 +266,8 @@ class ProductPhaseMappingContractTest {
                 "app-server" to "outputs/app-server",
                 "c-abi" to "outputs/c-abi",
                 "kmp-klib" to "outputs/kmp-klib",
+                "publication" to "outputs/publication",
+                "runtime-identity" to "outputs/identity",
                 "supervisor" to "outputs/supervisor",
                 "validation-runner" to "outputs/validation-runner",
             ),
@@ -310,6 +312,7 @@ class ProductPhaseMappingContractTest {
     fun JVM_and_Node_stages_declare_exact_adapter_and_required_validation_runners() {
         val expected = mapOf(
             "adapter" to "outputs/adapter",
+            "publication" to "outputs/publication",
             "validation-runner" to "outputs/validation-runner",
         )
         val stages = listOf(
@@ -344,13 +347,14 @@ class ProductPhaseMappingContractTest {
     }
 
     @Test
-    fun native_validation_stages_declare_only_C_ABI_and_native_evidence() {
+    fun native_validation_stages_declare_exact_C_ABI_native_and_execution_evidence() {
         val validation = nativeValidation()
         assertEquals(
             mapOf(
                 "c-abi" to "outputs/c-abi",
                 "c-abi-reference" to "outputs/c-abi-reference",
                 "native" to "outputs/native",
+                "execution" to "outputs/execution",
             ),
             outputRoots(validation),
         )

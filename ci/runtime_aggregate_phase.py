@@ -137,7 +137,32 @@ No fallback compilation, publication reconstruction, or attestation is allowed.
     }
 
 
-def collect_maven_outputs(stage, runtime_version, contract_version, predecessor):
+def collect_finalized_inputs(stage: Path, receipt_path: Path, contract_version: str, predecessor) -> dict[str, Any]:
+    """Translate an already-selected final receipt without rebuilding its Maven files.
+
+    Original-source admission, detached variant trust and private capture remain
+    caller obligations. This is the same receipt/Maven translation as execution,
+    not signed aggregate admission.
+    """
+    receipt = validate_phase_receipt(load_canonical_json_bytes(read_regular_file_bytes(
+        receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)))
+    plan = {key: receipt[key] for key in ("schemaVersion", "product", "component", "phase", "target", "buildKey", "inputs")}
+    records = collect_inputs(plan, predecessor)
+    outputs = verify_output_manifest_identity(stage, "runtime", "runtime-aggregate", "metadata", "aggregate",
+                                              receipt["productVersion"])["outputs"]
+    if outputs != receipt["outputs"]:
+        raise ValueError("Final aggregate stage differs from its original receipt")
+    expected = f"outputs/codex-agent-runtime-{receipt['productVersion']}-manifest.json"
+    manifests = [record for record in outputs if record["kind"] == "runtime-aggregate"]
+    if len(manifests) != 1 or manifests[0]["relativePath"] != expected:
+        raise ValueError("Final aggregate requires exactly its versioned manifest output")
+    files, _ = collect_maven_outputs(stage, receipt["productVersion"], contract_version, predecessor,
+                                      finalized_manifest=expected)
+    records.pop("publication_inputs")
+    return {**records, "runtime_maven_files": files, "manifest": stage / expected, "metadata_receipt": receipt_path}
+
+
+def collect_maven_outputs(stage, runtime_version, contract_version, predecessor, *, finalized_manifest=None):
     """Verify Gradle's fresh declaration in place, including original primaries."""
     from products.runtime_maven import validate_runtime_maven_publications
     manifest = verify_output_manifest_identity(stage, "runtime", "runtime-aggregate", "metadata", "aggregate", runtime_version)
@@ -146,6 +171,8 @@ def collect_maven_outputs(stage, runtime_version, contract_version, predecessor)
                  for phase in (("binary", "package") if component in RUNTIME_ADAPTERS else ("binary",))}
     files, records, contents = [], [], {}
     for output in manifest["outputs"]:
+        if finalized_manifest is not None and output["kind"] == "runtime-aggregate" and output["relativePath"] == finalized_manifest:
+            continue
         parts = Path(output["relativePath"]).parts
         if output["kind"] != "maven" or len(parts) < 4 or parts[:2] != ("outputs", "maven"):
             raise ValueError("Aggregate Maven stage contains an undeclared output kind/path")

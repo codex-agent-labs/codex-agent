@@ -41,6 +41,15 @@ internal fun Project.registerIosVerifiedDistributionTasks(
         layout.buildDirectory.file("reports/cross-language-api/bindings/objective-c-parity.json"),
     )
     val importedPath = providers.gradleProperty(IOS_VERIFIED_DISTRIBUTION_PROPERTY)
+    val expectedSdkCompatibilityPath = providers.gradleProperty(
+        "codexAgent.iosExpectedSdkCompatibility",
+    )
+    val expectedDistributionProofPath = providers.gradleProperty(
+        "codexAgent.iosExpectedDistributionProof",
+    )
+    check(expectedSdkCompatibilityPath.isPresent == expectedDistributionProofPath.isPresent) {
+        "Imported Apple SDK caller expectations must be supplied together"
+    }
     tasks.register<ExportAppleVerifiedDistributionTask>("exportCodexAgentIosVerifiedDistribution") {
         dependsOn("verifyIosRuntime", "validateImportedCodexAgentIosNativeEvidence")
         this.candidateCommit.set(candidateCommit)
@@ -136,6 +145,10 @@ internal fun Project.registerIosVerifiedDistributionTasks(
         version.set(project.version.toString())
         ownedBuildDirectory.set(sdkPackageArtifactRoot)
         workDirectory.set(sdkPackageArtifactRoot.map { it.dir("transported-verification-work") })
+        if (expectedSdkCompatibilityPath.isPresent) {
+            expectedSdkCompatibility.set(layout.file(expectedSdkCompatibilityPath.map(rootProject::file)))
+            expectedDistributionProof.set(layout.file(expectedDistributionProofPath.map(rootProject::file)))
+        }
     }
     tasks.named<StageCodexAgentAppleDistributionTask>("stageCodexAgentAppleDistribution") {
         // The original package is imported; checkout Sources/Tests must never reconstruct it.

@@ -36,14 +36,14 @@ def _directory(value: Path, label: str) -> str:
     return str(value)
 
 
-def _request(value: Path) -> str:
+def _request(value: Path, label: str = "SDK compatibility request") -> str:
     if not isinstance(value, Path) or not value.is_absolute():
-        raise ValueError("SDK compatibility request must be an absolute normalized file")
+        raise ValueError(f"{label} must be an absolute normalized file")
     contents = read_regular_file_bytes(
         value, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
     )
     if not contents or value.resolve(strict=True) != value:
-        raise ValueError("SDK compatibility request must be nonempty, non-symbolic and normalized")
+        raise ValueError(f"{label} must be nonempty, non-symbolic and normalized")
     return str(value)
 
 
@@ -53,12 +53,16 @@ def properties(
     verified_distribution: Path,
     native_evidence: Path,
     compatibility_request: Path,
+    expected_sdk_compatibility: Path,
+    expected_distribution_proof: Path,
 ) -> dict[str, str]:
     """Return only existing imported-package properties; ``TASK`` executes them."""
     _identity(plan)
     distribution = _directory(verified_distribution, "Original Apple verified distribution")
     native = _directory(native_evidence, "Original Apple native evidence")
     request = _request(compatibility_request)
+    compatibility = _request(expected_sdk_compatibility, "Caller SDK compatibility")
+    proof = _request(expected_distribution_proof, "Caller original Apple distribution proof")
     original = predecessor("contract", "contract", "binary", "common")
     receipt = original["receipt"]
     if tuple(receipt.get(field) for field in ("product", "component", "phase", "target")) != (
@@ -73,4 +77,6 @@ def properties(
         "codexAgent.iosVerifiedDistributionDirectory": distribution,
         "codexAgent.iosNativeEvidenceDirectory": native,
         "codexAgent.sdkCompatibilityRequest": request,
+        "codexAgent.iosExpectedSdkCompatibility": compatibility,
+        "codexAgent.iosExpectedDistributionProof": proof,
     }

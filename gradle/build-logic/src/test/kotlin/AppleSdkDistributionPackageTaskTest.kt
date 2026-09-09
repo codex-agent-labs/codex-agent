@@ -214,10 +214,38 @@ class AppleSdkDistributionPackageTaskTest {
         assertTrue("version.set(project.version.toString())" in transported)
         assertTrue("ownedBuildDirectory.set(sdkPackageArtifactRoot)" in transported)
         assertTrue("transported-verification-work" in transported)
+        assertTrue("expectedSdkCompatibility.set" in transported)
+        assertTrue("expectedDistributionProof.set" in transported)
         assertFalse("prepareCodexAgentReleaseXCFramework" in registration)
         assertFalse("assembleCodexAgentReleaseXCFramework" in registration)
         assertFalse("compileKotlin" in registration)
         assertFalse("packageCodexAgent" in transported)
+    }
+
+    @Test
+    fun `canonical sdk ios package owns exact Apple products and keeps validation external`() {
+        val source = File("src/main/kotlin/codexagent.native-wrapper-sdk.gradle.kts").readText()
+        val ios = source.substringAfter("if (component == \"sdk-ios\")")
+            .substringBefore("val stageNativeWrapperCAbiSdks")
+        assertTrue("codexAgent.iosExpectedSdkCompatibility" in ios)
+        assertTrue("codexAgent.iosExpectedDistributionProof" in ios)
+        assertTrue("canonicalRequest" in ios)
+        assertTrue(ios.indexOf("if (importedApple.isPresent)") <
+            ios.indexOf("project(\":codex-agent-runtime-ios\")"))
+        assertTrue("stageImportedCodexAgentIosSdkPackageArtifacts" in ios)
+        assertTrue("verifyTransportedCodexAgentIosSdkPackageClosure" in ios)
+        assertTrue("dependsOn(invalidate)" in ios)
+        assertTrue("outputDirectory.set(phaseOutputs.map { it.dir(\"apple\") })" in ios)
+        assertTrue("apple-sdk-package-tasks" in ios)
+        assertTrue("validationEvidenceDirectory.set(appleScratch.map" in ios)
+        assertTrue("ownedBuildDirectory.set(layout.buildDirectory)" in ios)
+        assertTrue("dependsOn(appleVerifier)" in ios)
+        assertTrue("outputRoots.put(\"apple\", \"outputs/apple\")" in ios)
+        assertTrue("\n    manifest\n" in ios)
+        assertFalse("codexAgent.target" in ios)
+        assertFalse("phaseRoot.map { it.dir(\"apple-validation-evidence\") }" in ios)
+        assertFalse("outputs/apple-validation-evidence" in ios)
+        assertFalse("tasks.register<Sync>" in ios)
     }
 }
 
