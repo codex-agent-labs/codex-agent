@@ -50,6 +50,7 @@ from products.inventory import (
     write_canonical_json,
 )
 from products.registry import (
+    NATIVE_BINDINGS,
     NATIVE_TARGETS,
     PHASE_INSTANCE_IDS,
     PhaseInstanceId,
@@ -2758,6 +2759,8 @@ def _runtime_worker_checkout(root, producer):
         raise ValueError("Runtime worker requires the exact unchanged tracked checkout")
     untracked = _git_value(root, "ls-files", "--others", "--",
                           "runtime", "codex-agent-runtime-desktop", "ci", "gradle", "legal", "build-logic",
+                          "codex-agent-core", "codex-agent-sdk", "codex-agent-bindings",
+                          "codex-agent-runtime-android", "codex-agent-runtime-ios",
                           ":(glob)**/*.py", ":(glob)**/*.pyc", ":(glob)**/*.pyo",
                           "sitecustomize", "usercustomize", ":(glob)sitecustomize.*", ":(glob)usercustomize.*",
                           ":(exclude).codex/**", ":(exclude)**/build/**",
@@ -2766,9 +2769,11 @@ def _runtime_worker_checkout(root, producer):
         raise ValueError("Runtime worker rejects untracked source or build policy")
 
 
-def _runtime_worker_command(wrapper, properties, environment):
+def _runtime_worker_command(wrapper, properties, environment, *, build_directory="runtime"):
+    if build_directory not in {"runtime", "."}:
+        raise ValueError("Product worker requires the fixed Runtime or root SDK build")
     command = [str(wrapper), "--offline", "--no-daemon", "--configuration-cache",
-               "--configuration-cache-problems=fail", "-p", "runtime", "ciProductPhase",
+               "--configuration-cache-problems=fail", "-p", build_directory, "ciProductPhase",
                *(f"-P{key}={value}" for key, value in sorted(properties.items()))]
     if os.name == "nt":
         java_home = environment.get("JAVA_HOME", "")
@@ -2949,6 +2954,69 @@ def execute_runtime_phase(
         product_version=state.expected_fixed["versions"]["runtime-release"],
         trust_domain="development" if state.plan["event"] == "pull_request" else "release",
         destination=destination / "shard")
+
+
+def execute_sdk_metadata(
+    plan_path: Path, discovery_root: Path, state_root: Path | None, destination: Path, *,
+    component: str, expected_build_key: str, compatibility_request: Path,
+    runtime_stages: Path, staged_sdks: Path, sdk_validation_tooling: Mapping[str, Any],
+    repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Execute only an exact metadata election after replaying its original SDK hosts."""
+    from sdk_metadata_phase import execute
+    from products.sdk_validation import sdk_validation_provider
+
+    if component not in NATIVE_BINDINGS:
+        raise ValueError("SDK metadata worker requires an exact native language")
+    instance = PhaseInstanceId("sdk", component, "metadata", "desktop")
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
+    discovery_root, state_root, destination = _product_materialization_paths(root, discovery_root, state_root, destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("SDK metadata worker destination must not exist")
+    for source in (compatibility_request, runtime_stages, staged_sdks):
+        _product_materialization_paths(root, Path(source), Path(source), destination)
+    environment = dict(os.environ if environ is None else environ)
+    state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling)
+    ready = state.prior_ready_plans.get(instance)
+    if ready is None or ready["buildKey"] != require_sha256(expected_build_key, "SDK metadata elected key"):
+        raise ValueError("SDK metadata is not ready with the expected elected build key")
+    _runtime_worker_checkout(root, state.producer)
+    inputs = destination / "inputs"
+    _materialize_product_predecessors(state, instance, inputs, expected_build_key, root)
+
+    def original(product, name, phase, target):
+        dependency = PhaseInstanceId(product, name, phase, target)
+        if dependency not in phase_instance_dependencies(instance):
+            raise ValueError("SDK metadata requested an unrelated direct predecessor")
+        directory = inputs / "-".join((product, name, phase, target))
+        receipt_path = directory / "phase-receipt.json"
+        receipt = validate_phase_receipt(_canonical_control(receipt_path, "Original SDK metadata predecessor"))
+        if tuple(receipt[field] for field in ("product", "component", "phase", "target")) != (product, name, phase, target):
+            raise ValueError("SDK metadata original predecessor identity mismatch")
+        return {"stage": directory / "stage", "receiptPath": receipt_path, "receipt": receipt}
+
+    request = dict(state.rebased_request)
+    _merge_native_comparison_records(request, _retained_sdk_handoffs(state_root, root), key="sdkValidationEvidence")
+    provider = sdk_validation_provider(root, request.get("sdkValidationEvidence", []), repository=root,
+        policy_revision=state.producer["commit"], tooling=sdk_validation_tooling)
+    if provider is None:
+        raise ValueError("SDK metadata requires authenticated original host evidence")
+    projections = []
+    for dependency in sdk_validation_dependencies(instance):
+        value = original(dependency.product, dependency.component, dependency.phase, dependency.target)
+        projections.append(provider({**value["receipt"], "receiptSha256": sha256_file(value["receiptPath"])}))
+    policy = require_exact_keys(dict(sdk_validation_tooling),
+        {"evidence", "publicKey", "javaExecutable", "requiredTrustDomain", "keyring", "keysDirectory"},
+        "SDK metadata caller tooling policy")
+    return execute(ready, producer=state.producer, sdk_version=state.expected_fixed["versions"]["sdk"],
+        trust_domain="development" if state.plan["event"] == "pull_request" else "release",
+        repository_root=root, destination=destination / "worker", predecessor=original,
+        compatibility_request=Path(compatibility_request), runtime_stages=Path(runtime_stages), staged_sdks=Path(staged_sdks),
+        sdk_validation_projections=tuple(projections), tooling_evidence=Path(policy["evidence"]),
+        tooling_public_key=Path(policy["publicKey"]), java_executable=Path(policy["javaExecutable"]),
+        policy_revision=state.producer["commit"], required_trust_domain=policy["requiredTrustDomain"], environ=environment,
+        tooling_keyring=Path(policy["keyring"]) if policy["keyring"] is not None else None,
+        tooling_keys_directory=Path(policy["keysDirectory"]) if policy["keysDirectory"] is not None else None)
 
 
 def execute_runtime_aggregate(
@@ -4095,6 +4163,13 @@ def parser() -> argparse.ArgumentParser:
     aggregate_execute.add_argument("--state-root", type=Path)
     aggregate_execute.add_argument("--expected-build-key", required=True)
     aggregate_execute.add_argument("--sdk-validation-tooling", type=Path)
+    sdk_metadata = commands.add_parser("execute-sdk-metadata")
+    for name in ("plan", "discovery-root", "destination", "compatibility-request",
+                 "runtime-stages", "staged-sdks", "sdk-validation-tooling"):
+        sdk_metadata.add_argument(f"--{name}", type=Path, required=True)
+    sdk_metadata.add_argument("--state-root", type=Path)
+    sdk_metadata.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
+    sdk_metadata.add_argument("--expected-build-key", required=True)
     for command in (discover_command, products_command):
         command.add_argument("--sdk-validation-evidence", type=Path, action="append", default=[])
         command.add_argument("--sdk-validation-tooling", type=Path,
@@ -4228,6 +4303,12 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.plan, arguments.discovery_root, arguments.state_root,
                 arguments.contract_handoff, arguments.destination, arguments.github_output,
                 sdk_validation_tooling=tooling)
+        elif arguments.command == "execute-sdk-metadata":
+            execute_sdk_metadata(
+                arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,
+                component=arguments.component, expected_build_key=arguments.expected_build_key,
+                compatibility_request=arguments.compatibility_request, runtime_stages=arguments.runtime_stages,
+                staged_sdks=arguments.staged_sdks, sdk_validation_tooling=tooling)
         elif arguments.command == "execute-runtime-aggregate":
             execute_runtime_aggregate(
                 arguments.plan, arguments.discovery_root, arguments.state_root,

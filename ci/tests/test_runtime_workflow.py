@@ -5,6 +5,7 @@ below only verify delegation to their existing separately tested authorities.
 """
 
 from pathlib import Path
+from copy import deepcopy
 import sys
 import tempfile
 import unittest
@@ -20,6 +21,7 @@ PIN = "b" * 40
 NODE = workflow.PhaseInstanceId("runtime", "node-js", "validation", "node-js-binding")
 JVM = workflow.PhaseInstanceId("runtime", "jvm", "binary", "jvm")
 SUPERVISOR = workflow.PhaseInstanceId("runtime", "linux-arm64", "binary", "linux-arm64")
+AGGREGATE = workflow.PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
 
 
 def row(instance, **extra):
@@ -122,6 +124,141 @@ class RuntimeWorkflowTest(unittest.TestCase):
         with mock.patch.object(workflow.products, "runtime_worker_matrix", return_value={"include": [row(SUPERVISOR), row(SUPERVISOR)]}):
             with self.assertRaisesRegex(ValueError, "Duplicate"):
                 workflow.matrix(*paths, self.output)
+
+    def final_fixture(self, state="build"):
+        # Explicit replay seam: no raw dictionary below is accepted by the
+        # production entrypoint; inspect_products is its sole source of state.
+        phases = []
+        for index, instance in enumerate(workflow.products._dependency_closure((AGGREGATE,)), 1):
+            phases.append({**row(instance), "buildKey": f"sha256:{index:064x}",
+                           "state": "retained", "receiptSha256": f"sha256:{index + 100:064x}",
+                           "objectSha256": f"sha256:{index + 200:064x}"})
+        selected = next(record for record in phases if workflow.products._identity(record) == AGGREGATE)
+        selected["state"] = state
+        ready = []
+        if state == "build":
+            selected.update(receiptSha256=None, objectSha256=None)
+            ready = [{name: selected[name] for name in ("product", "component", "phase", "target", "buildKey")}]
+        return {"result": {"phases": phases, "fullReuse": state == "reused"}, "readyPlans": ready}
+
+    def final_route(self):
+        return workflow.continuation(self.root / "plan", self.root / "discovery", self.root / "state",
+                                     self.output, repository_root=self.root, environ=self.environment,
+                                     sdk_validation_tooling={"fixture": "caller policy"})
+
+    def test_final_route_uses_replay_and_exact_five_native_keys_before_aggregate_build(self):
+        inspected = self.final_fixture()
+        with mock.patch.object(workflow.products, "inspect_products", return_value=inspected) as gate, \
+                mock.patch.object(workflow.products, "runtime_worker_matrix", side_effect=AssertionError("empty matrix is not proof")):
+            result = self.final_route()
+        gate.assert_called_once_with(self.root / "plan", self.root / "discovery", self.root / "state",
+                                    repository_root=self.root, environ=self.environment,
+                                    sdk_validation_tooling={"fixture": "caller policy"})
+        phases = {workflow.products._identity(record): record for record in inspected["result"]["phases"]}
+        expected = {"include": [{"target": target,
+            "buildKey": phases[workflow.PhaseInstanceId("runtime", target, "metadata", target)]["buildKey"]}
+            for target in workflow.NATIVE_TARGETS]}
+        self.assertEqual(expected, result["nativeAttestationMatrix"])
+        self.assertEqual({"state": "ready", "buildKey": phases[AGGREGATE]["buildKey"], "receiptSha256": None},
+                         result["aggregate"])
+        outputs = self.outputs()
+        self.assertEqual({"native_attestation_matrix", "aggregate_state", "aggregate_key",
+                          "aggregate_receipt_sha256", "aggregate_required", "aggregate_payload_complete"}, set(outputs))
+        self.assertEqual("true", outputs["aggregate_required"])
+        self.assertEqual("false", outputs["aggregate_payload_complete"])
+        self.assertEqual("", outputs["aggregate_receipt_sha256"])
+
+    def test_final_route_completed_and_fully_reused_payloads_still_require_all_originals(self):
+        for state in ("retained", "reused"):
+            inspected = self.final_fixture(state)
+            selected = next(record for record in inspected["result"]["phases"]
+                            if workflow.products._identity(record) == AGGREGATE)
+            with self.subTest(state=state), mock.patch.object(workflow.products, "inspect_products", return_value=inspected):
+                result = self.final_route()
+            self.assertEqual({"state": "completed", "buildKey": selected["buildKey"],
+                              "receiptSha256": selected["receiptSha256"]}, result["aggregate"])
+            self.assertEqual("false", self.outputs()["aggregate_required"])
+            self.assertEqual("true", self.outputs()["aggregate_payload_complete"])
+            self.assertEqual(5, len(result["nativeAttestationMatrix"]["include"]))
+
+    def test_final_route_missing_native_adapter_or_contract_original_rejects_before_outputs(self):
+        identities = [workflow.PhaseInstanceId("runtime", target, "metadata", target) for target in workflow.NATIVE_TARGETS]
+        identities.extend((workflow.PhaseInstanceId("runtime", "node-js", "validation", "node-js-binding"),
+                           workflow.PhaseInstanceId("runtime", "jvm", "metadata", "jvm"),
+                           workflow.PhaseInstanceId("contract", "contract", "validation", "common")))
+        for identity in identities:
+            for state in ("build", "reused"):
+                inspected = self.final_fixture(state)
+                inspected["result"]["phases"] = [record for record in inspected["result"]["phases"]
+                    if workflow.products._identity(record) != identity]
+                with self.subTest(identity=identity, aggregate=state), \
+                        mock.patch.object(workflow.products, "inspect_products", return_value=inspected), \
+                        self.assertRaisesRegex(ValueError, "incomplete original predecessor"):
+                    self.final_route()
+                self.assertFalse(self.output.exists())
+
+    def test_final_route_incomplete_or_unqualified_originals_are_not_early_native_fanout(self):
+        for field, value in (("state", "waiting"), ("state", "build"), ("state", "failed"),
+                             ("receiptSha256", None), ("objectSha256", None), ("buildKey", "caller-key")):
+            inspected = self.final_fixture("reused")
+            predecessor = next(record for record in inspected["result"]["phases"]
+                               if record["component"] == "node-wasm" and record["phase"] == "metadata")
+            predecessor[field] = value
+            with self.subTest(field=field, value=value), \
+                    mock.patch.object(workflow.products, "inspect_products", return_value=inspected), \
+                    self.assertRaises(ValueError):
+                self.final_route()
+            self.assertFalse(self.output.exists())
+
+    def test_final_route_requires_exact_aggregate_election_not_empty_workers(self):
+        good = self.final_fixture()
+        cases = []
+        for mutation in ("missing", "waiting", "no-plan", "wrong-key", "duplicate-phase", "duplicate-plan", "completed-plan"):
+            value = deepcopy(good)
+            selected = next(record for record in value["result"]["phases"]
+                            if workflow.products._identity(record) == AGGREGATE)
+            if mutation == "missing":
+                value["result"]["phases"].remove(selected)
+            elif mutation == "waiting":
+                selected["state"] = "waiting"
+            elif mutation == "no-plan":
+                value["readyPlans"] = []
+            elif mutation == "wrong-key":
+                value["readyPlans"][0]["buildKey"] = KEY
+            elif mutation == "duplicate-phase":
+                value["result"]["phases"].append(deepcopy(selected))
+            elif mutation == "duplicate-plan":
+                value["readyPlans"].append(deepcopy(value["readyPlans"][0]))
+            else:
+                selected.update(state="retained", receiptSha256=KEY, objectSha256=KEY)
+            cases.append((mutation, value))
+        for mutation, inspected in cases:
+            with self.subTest(mutation=mutation), mock.patch.object(workflow.products, "inspect_products", return_value=inspected), \
+                    self.assertRaises(ValueError):
+                self.final_route()
+            self.assertFalse(self.output.exists())
+
+    def test_final_route_rejected_replay_does_not_publish_caller_control(self):
+        self.write_tree(self.root / "state", {"reuse-wave-result.json": b'{"fullReuse":true}\n'})
+        with mock.patch.object(workflow.products, "inspect_products", side_effect=ValueError("original carrier rejected")), \
+                mock.patch.object(workflow, "github_output") as output, \
+                self.assertRaisesRegex(ValueError, "original carrier rejected"):
+            self.final_route()
+        output.assert_not_called()
+
+    def test_final_route_cli_forwards_only_paths_and_explicit_tooling_policy(self):
+        args = ["continuation", "--plan", "plan", "--discovery-root", "discovery", "--state-root", "state",
+                "--github-output", str(self.output)]
+        with mock.patch.object(workflow, "continuation") as route:
+            self.assertEqual(0, workflow.main(args))
+        route.assert_called_once_with(Path("plan"), Path("discovery"), Path("state"), self.output,
+                                      sdk_validation_tooling=None)
+        policy = {"fixture": "explicit caller tooling policy"}
+        with mock.patch.object(workflow.products, "_canonical_control", return_value=policy) as read, \
+                mock.patch.object(workflow, "continuation") as route:
+            self.assertEqual(0, workflow.main([*args, "--sdk-validation-tooling", "tooling.json"]))
+        read.assert_called_once_with(Path("tooling.json"), "Caller SDK tooling policy")
+        self.assertEqual(policy, route.call_args.kwargs["sdk_validation_tooling"])
 
     def test_capture_uses_caller_upload_then_current_captured_paths_for_each_wave(self):
         for wave in (0, 1, 4):

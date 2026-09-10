@@ -7,8 +7,12 @@ import stat
 import tempfile
 import zipfile
 
-from ..impact import effective_pathspecs
-from ..receipt import INPUT_NAMES, parse_validation_actions, validate_receipt
+if __package__ == "products":  # Script entry points in ci/ use this namespace.
+    from impact import effective_pathspecs
+    from receipt import INPUT_NAMES, parse_validation_actions, validate_receipt
+else:
+    from ..impact import effective_pathspecs
+    from ..receipt import INPUT_NAMES, parse_validation_actions, validate_receipt
 from .inventory import (
     git_inventory, git_regular_blob_bytes, load_canonical_json_bytes, load_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys, require_integer,

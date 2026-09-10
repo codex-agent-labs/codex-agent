@@ -6,8 +6,8 @@ import os
 from pathlib import Path
 
 import product_reuse as products
-from products.inventory import canonical_json_bytes, snapshot_regular_tree
-from products.registry import PhaseInstanceId
+from products.inventory import canonical_json_bytes, require_sha256, snapshot_regular_tree
+from products.registry import NATIVE_TARGETS, PhaseInstanceId
 from reuse import github_output
 
 
@@ -22,6 +22,73 @@ def matrix(plan_path, discovery_root, state_root, github_output_path, *, reposit
         "runtime_matrix": canonical_json_bytes(value).decode().strip(),
         "runtime_workers_required": bool(value["include"]),
         "supervisor_key": supervisors[0] if supervisors else "",
+    })
+    return value
+
+
+def continuation(plan_path, discovery_root, state_root, github_output_path, *,
+                 repository_root=None, environ=None, sdk_validation_tooling=None):
+    """Route the final fully materialized Runtime closure, not early native fanout.
+
+    The sole replay supplies every identity/key/receipt. A completed aggregate
+    here is an unsigned payload state, never signature or CI signing authority.
+    Protected callers must independently capture/elect these same originals.
+    Empty standalone worker matrices do not establish this prerequisite.
+    """
+    inspected = products.inspect_products(plan_path, discovery_root, state_root,
+        repository_root=repository_root, environ=environ,
+        sdk_validation_tooling=sdk_validation_tooling)
+    aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+    phases = {}
+    for record in inspected["result"]["phases"]:
+        instance = products._identity(record)
+        if instance in phases:
+            raise ValueError("Duplicate replayed Runtime continuation identity")
+        phases[instance] = record
+    if aggregate not in phases:
+        raise ValueError("Runtime continuation requires a selected aggregate")
+    closure = products._dependency_closure((aggregate,))
+    for instance in closure:
+        if instance == aggregate:
+            continue
+        record = phases.get(instance)
+        if record is None or record["state"] not in {"retained", "reused"}:
+            raise ValueError(f"Runtime continuation has an incomplete original predecessor: {instance}")
+        for name in ("buildKey", "receiptSha256", "objectSha256"):
+            require_sha256(record[name], f"Completed Runtime predecessor {name}")
+
+    ready = {}
+    for plan in inspected["readyPlans"]:
+        instance = products._identity(plan)
+        if instance in ready:
+            raise ValueError("Duplicate replayed Runtime continuation plan")
+        ready[instance] = plan
+    selected = phases[aggregate]
+    key = require_sha256(selected["buildKey"], "Runtime aggregate elected key")
+    if selected["state"] in {"retained", "reused"}:
+        if aggregate in ready:
+            raise ValueError("Completed Runtime aggregate also has a build election")
+        receipt = require_sha256(selected["receiptSha256"], "Original Runtime aggregate receipt")
+        require_sha256(selected["objectSha256"], "Original Runtime aggregate object")
+        status = "completed"
+    elif (selected["state"] == "build" and aggregate in ready
+          and ready[aggregate]["buildKey"] == key
+          and selected["receiptSha256"] is None and selected["objectSha256"] is None):
+        receipt, status = None, "ready"
+    else:
+        raise ValueError("Runtime aggregate lacks an exact ready plan or completed original payload")
+    native = {"include": [{"target": target,
+        "buildKey": phases[PhaseInstanceId("runtime", target, "metadata", target)]["buildKey"]}
+        for target in NATIVE_TARGETS]}
+    value = {"nativeAttestationMatrix": native,
+             "aggregate": {"state": status, "buildKey": key, "receiptSha256": receipt}}
+    # Publish all routing fields together only after every prerequisite passes.
+    github_output(github_output_path, {
+        "native_attestation_matrix": canonical_json_bytes(native).decode().strip(),
+        "aggregate_state": status, "aggregate_key": key,
+        "aggregate_receipt_sha256": receipt or "",
+        "aggregate_required": status == "ready",
+        "aggregate_payload_complete": status == "completed",
     })
     return value
 
@@ -97,6 +164,10 @@ def main(argv=None):
     show = commands.add_parser("matrix")
     for name in ("plan", "discovery-root", "state-root", "github-output"):
         show.add_argument(f"--{name}", type=Path, required=True)
+    final = commands.add_parser("continuation")
+    for name in ("plan", "discovery-root", "state-root", "github-output"):
+        final.add_argument(f"--{name}", type=Path, required=True)
+    final.add_argument("--sdk-validation-tooling", type=Path)
     captured = commands.add_parser("capture")
     for name in ("plan", "destination", "github-output"):
         captured.add_argument(f"--{name}", type=Path, required=True)
@@ -115,6 +186,11 @@ def main(argv=None):
     try:
         if args.command == "matrix":
             matrix(args.plan, args.discovery_root, args.state_root, args.github_output)
+        elif args.command == "continuation":
+            tooling = (None if args.sdk_validation_tooling is None else
+                       products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy"))
+            continuation(args.plan, args.discovery_root, args.state_root, args.github_output,
+                         sdk_validation_tooling=tooling)
         elif args.command == "capture":
             values = (args.component, args.phase, args.target, args.expected_build_key)
             if any(value is not None for value in values) and any(value is None for value in values):

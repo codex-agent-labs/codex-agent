@@ -1318,6 +1318,8 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/runtime_workflow.py",
             "ci/sdk_phase.py",
             "ci/sdk_ios_phase.py",
+            "ci/sdk_metadata_phase.py",
+            "ci/products/sdk_apple_source.py",
             "ci/contract_release.py",
             "ci/product_release_context.py",
             "ci/runtime_release.py",

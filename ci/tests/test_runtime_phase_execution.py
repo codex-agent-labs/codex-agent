@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import unittest
 from unittest import mock
 
@@ -404,6 +405,48 @@ class RuntimePhaseExecutionTest(unittest.TestCase):
         self.assertEqual(b"preserve prior output", sentinel.read_bytes())
         self.assertFalse(destination.exists())
         self.assertEqual(original, regular_file_inventory(resumed))
+
+
+class ProductWorkerCheckoutTest(unittest.TestCase):
+    def test_shared_command_only_selects_fixed_runtime_or_sdk_build(self):
+        with mock.patch.object(adapter.os, "name", "posix"):
+            for directory in ("runtime", "."):
+                command = adapter._runtime_worker_command(Path("/trusted/gradlew"), {}, {}, build_directory=directory)
+                self.assertEqual(directory, command[command.index("-p") + 1])
+                self.assertIn("--offline", command)
+            with self.assertRaisesRegex(ValueError, "fixed Runtime or root SDK"):
+                adapter._runtime_worker_command(Path("/trusted/gradlew"), {}, {}, build_directory="/untrusted")
+
+    def test_shared_guard_rejects_untracked_sdk_sources_without_rejecting_user_notes(self):
+        with tempfile.TemporaryDirectory(prefix="product-checkout-fixture-") as temporary:
+            root = Path(temporary)
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=root, check=True,
+                                      capture_output=True, text=True).stdout.strip()
+            git("init", "-q")
+            git("config", "user.email", "fixture@example.invalid")
+            git("config", "user.name", "Fixture")
+            (root / "tracked.txt").write_text("baseline\n")
+            git("add", "tracked.txt")
+            git("commit", "-qm", "fixture")
+            producer = {"commit": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}")}
+            (root / "DRAFT_TODO.md").write_text("user note\n")
+            adapter._runtime_worker_checkout(root, producer)
+            for path in (
+                "codex-agent-core/src/commonMain/Injected.kt",
+                "codex-agent-sdk/src/commonMain/Injected.kt",
+                "codex-agent-bindings/rust/src/injected.rs",
+                "codex-agent-runtime-ios/native/injected.c",
+                "codex-agent-runtime-android/src/main/Injected.kt",
+            ):
+                source = root / path
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(b"untracked source")
+                with self.subTest(path=path), self.assertRaisesRegex(ValueError, "untracked source"):
+                    adapter._runtime_worker_checkout(root, producer)
+                self.assertEqual(b"untracked source", source.read_bytes())
+                source.unlink()
+            self.assertEqual("user note\n", (root / "DRAFT_TODO.md").read_text())
 
 
 if __name__ == "__main__":
