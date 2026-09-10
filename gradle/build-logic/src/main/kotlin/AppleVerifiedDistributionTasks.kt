@@ -47,9 +47,19 @@ abstract class ExportAppleVerifiedDistributionTask @Inject constructor(
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val nativeProvenance: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val packageSwift: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val sdkCompatibility: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val canonicalApiReport: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val canonicalCoverageReceipt: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE) abstract val swiftConsumer: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE) abstract val objectiveCConsumer: RegularFileProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE) abstract val compilerRawDirectory: DirectoryProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE) abstract val xcframeworkDirectory: DirectoryProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE) abstract val xcresultDirectory: DirectoryProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE) abstract val xctestPackageDirectory: DirectoryProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE) abstract val xctestProductsDirectory: DirectoryProperty
     @get:Internal abstract val repositoryDirectory: DirectoryProperty
     @get:Internal abstract val canonicalBuildDirectory: DirectoryProperty
     @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
+    @get:OutputDirectory abstract val executionDirectory: DirectoryProperty
 
     init { outputs.upToDateWhen { false } }
 
@@ -57,18 +67,16 @@ abstract class ExportAppleVerifiedDistributionTask @Inject constructor(
         check(freshSemanticVerification.get()) { "Verified Apple distribution cannot be re-exported from imported evidence" }
         val repository = repositoryDirectory.get().asFile.canonicalFile
         val (commit, tree) = verifyAppleEvidenceCheckout(exec, repository, candidateCommit.get())
-        val output = outputDirectory.get().asFile
-        deleteReleaseTree(output); output.mkdirs()
         val artifacts = listOf(
             applePackageArchive.get().asFile,
             swiftPackageArchive.get().asFile,
             swiftPackageChecksum.get().asFile,
-        ).associate { input -> input.name to copyVerified(input, output.resolve(input.name)) }
+        ).associateBy(File::getName)
         val build = canonicalBuildDirectory.get().asFile.canonicalFile
         val reports = appleVerifiedReportLayout.mapValues { (destination, source) ->
             val input = if (destination.endsWith("privacy-required-reason-review.json"))
                 privacyReviewFile.get().asFile else build.resolve(source)
-            copyVerified(input, output.resolve(destination))
+            input
         }
         check(reportFiles.files.map(File::getCanonicalFile).toSet() ==
             appleVerifiedReportLayout.map { (destination, source) ->
@@ -76,15 +84,12 @@ abstract class ExportAppleVerifiedDistributionTask @Inject constructor(
                     privacyReviewFile.get().asFile.canonicalFile else build.resolve(source).canonicalFile
             }.toSet()) { "Verified Apple report inputs do not match the canonical report layout" }
         val toolchain = linkedMapOf(
-            "toolchain/xcode.txt" to copyVerified(xcodeVersionFile.get().asFile, output.resolve("toolchain/xcode.txt")),
-            "toolchain/swift.txt" to copyVerified(swiftVersionFile.get().asFile, output.resolve("toolchain/swift.txt")),
+            "toolchain/xcode.txt" to xcodeVersionFile.get().asFile,
+            "toolchain/swift.txt" to swiftVersionFile.get().asFile,
         )
         val nativeEvidence = verifiedRegularFiles(nativeEvidenceDirectory.get().asFile)
         val receipts = mapOf(
-            IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT to copyVerified(
-                nativeEvidenceReceipt.get().asFile,
-                output.resolve(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT),
-            ),
+            IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT to nativeEvidenceReceipt.get().asFile,
         )
         val identity = AppleVerifiedDistributionIdentity(
             commit, tree, version.get(), nativeProvenance.get().asFile.releaseDigest(),
@@ -92,10 +97,115 @@ abstract class ExportAppleVerifiedDistributionTask @Inject constructor(
             receipts.getValue(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT).releaseDigest(),
             sdkCompatibility.get().asFile.releaseDigest(),
         )
-        output.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF).atomicWriteJson(
-            buildAppleVerifiedDistributionProof(identity, artifacts, reports, toolchain, nativeEvidence, receipts),
+        val executionFiles = linkedMapOf(
+            "canonical/canonical-api.json" to canonicalApiReport.get().asFile,
+            "canonical/canonical-coverage.json" to canonicalCoverageReceipt.get().asFile,
+            "consumer/CodexFailureSwiftConsumer.swift" to swiftConsumer.get().asFile,
+            "consumer/CodexFailureObjectiveCConsumer.m" to objectiveCConsumer.get().asFile,
+            "source/Package.swift" to packageSwift.get().asFile,
+            "source/native-provenance.json" to nativeProvenance.get().asFile,
+            "sdk-compatibility.json" to sdkCompatibility.get().asFile,
+        )
+        val executionRoots = linkedMapOf(
+            "compiler-raw" to compilerRawDirectory.get().asFile,
+            "xcframework" to xcframeworkDirectory.get().asFile,
+            "xcresult" to xcresultDirectory.get().asFile,
+            "xctest-package" to xctestPackageDirectory.get().asFile,
+            "xctest-products" to xctestProductsDirectory.get().asFile,
+            "native-evidence" to nativeEvidenceDirectory.get().asFile,
+        )
+        executionRoots.forEach { (prefix, directory) ->
+            requireApplePackagePathWithoutSymlinks(directory, "original execution")
+            val files = verifiedRegularFiles(directory)
+            check(files.isNotEmpty()) { "Original Apple $prefix evidence is empty" }
+            files.forEach { (path, file) -> executionFiles["$prefix/$path"] = file }
+        }
+        exportAppleVerifiedOriginals(
+            identity, artifacts, reports, toolchain, receipts, nativeEvidence, executionFiles, executionRoots,
+            build, outputDirectory.get().asFile, executionDirectory.get().asFile,
         )
     }
+}
+
+internal fun exportAppleVerifiedOriginals(
+    identity: AppleVerifiedDistributionIdentity,
+    artifacts: Map<String, File>, reports: Map<String, File>, toolchain: Map<String, File>,
+    receipts: Map<String, File>, nativeEvidence: Map<String, File>, executionFiles: Map<String, File>,
+    executionRoots: Map<String, File>,
+    ownedBuild: File, output: File, execution: File,
+) {
+    val distributionFiles = artifacts + reports + toolchain + receipts
+    (distributionFiles.keys + executionFiles.keys).forEach { path ->
+        check(path.isNotEmpty() && !path.startsWith('/') && '\\' !in path && ':' !in path &&
+            path.split('/').none { it.isEmpty() || it == "." || it == ".." }) {
+            "Original Apple export path is unsafe: $path"
+        }
+    }
+    check(distributionFiles.size == artifacts.size + reports.size + toolchain.size + receipts.size) {
+        "Original Apple distribution record groups overlap"
+    }
+    val work = ownedBuild.resolve("apple-verified-distribution-export-work")
+    val outputs = listOf(output, execution, work)
+    val sources = (distributionFiles.values + nativeEvidence.values + executionFiles.values).distinct()
+    (sources + outputs + ownedBuild).forEach { requireApplePackagePathWithoutSymlinks(it, "original export") }
+    val owned = ownedBuild.canonicalFile
+    check(output.canonicalFile == owned.resolve("apple-verified-distribution") &&
+        execution.canonicalFile == owned.resolve("apple-verified-distribution-execution")) {
+        "Original Apple export requires its exact owned output directories"
+    }
+    check(sources.all { it.isFile } && outputs.none { target -> sources.any { source ->
+        val left = target.canonicalFile.toPath()
+        val right = source.canonicalFile.toPath()
+        left.startsWith(right) || right.startsWith(left)
+    } }) { "Original Apple export output overlaps or has a missing original input" }
+    outputs.filter(File::exists).forEach { verifiedRegularFiles(it) }
+    val sourceDigests = sources.associateWith { it.releaseDigest() }
+    val rootDigests = executionRoots.mapValues { (_, directory) ->
+        requireApplePackagePathWithoutSymlinks(directory, "original execution")
+        verifiedRegularFiles(directory).mapValues { (_, file) -> file.releaseDigest() }
+    }
+    deleteReleaseTree(work)
+    val capturedDistribution = work.resolve("distribution")
+    val capturedExecution = work.resolve("execution")
+    distributionFiles.forEach { (path, file) -> copyVerified(file, capturedDistribution.resolve(path)) }
+    executionFiles.forEach { (path, file) -> copyVerified(file, capturedExecution.resolve(path)) }
+    check(distributionFiles.all { (path, file) ->
+        capturedDistribution.resolve(path).releaseDigest() == sourceDigests.getValue(file)
+    } && executionFiles.all { (path, file) ->
+        capturedExecution.resolve(path).releaseDigest() == sourceDigests.getValue(file)
+    }) { "Original Apple capture differs from the original input snapshot" }
+    val capturedNative = nativeEvidence.mapValues { (path, _) -> capturedExecution.resolve("native-evidence/$path") }
+    check(capturedNative.all { (path, file) -> file.isFile && file.releaseDigest() == nativeEvidence.getValue(path).releaseDigest() }) {
+        "Original Apple native execution evidence was not retained exactly"
+    }
+    check(capturedExecution.resolve("source/Package.swift").releaseDigest() == identity.packageSwiftSha256 &&
+        capturedExecution.resolve("source/native-provenance.json").releaseDigest() == identity.nativeProvenanceSha256 &&
+        capturedExecution.resolve("sdk-compatibility.json").releaseDigest() == identity.sdkCompatibilitySha256) {
+        "Original Apple source or compatibility changed before export"
+    }
+    capturedDistribution.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF).atomicWriteJson(buildAppleVerifiedDistributionProof(
+        identity, artifacts.mapValues { (path, _) -> capturedDistribution.resolve(path) },
+        reports.mapValues { (path, _) -> capturedDistribution.resolve(path) },
+        toolchain.mapValues { (path, _) -> capturedDistribution.resolve(path) }, capturedNative,
+        receipts.mapValues { (path, _) -> capturedDistribution.resolve(path) },
+    ))
+    verifyAppleVerifiedDistribution(capturedDistribution, capturedExecution.resolve("native-evidence"), identity)
+    check(sources.all { source ->
+        requireApplePackagePathWithoutSymlinks(source, "original export recheck")
+        source.isFile && source.releaseDigest() == sourceDigests.getValue(source)
+    }) { "Original Apple inputs changed during export" }
+    check(executionRoots.all { (name, directory) ->
+        requireApplePackagePathWithoutSymlinks(directory, "original execution recheck")
+        verifiedRegularFiles(directory).mapValues { (_, file) -> file.releaseDigest() } == rootDigests.getValue(name)
+    }) { "Original Apple execution inventory changed during export" }
+    for ((destination, captured) in listOf(output to capturedDistribution, execution to capturedExecution)) {
+        deleteReleaseTree(destination)
+        copyReleaseTree(captured, destination)
+        check(sameApplePackageFiles(verifiedRegularFiles(captured), captured, destination)) {
+            "Original Apple export copy differs from captured bytes"
+        }
+    }
+    deleteReleaseTree(work)
 }
 
 @DisableCachingByDefault(because = "Validates transported evidence and restores canonical candidate inputs")

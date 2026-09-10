@@ -16,6 +16,8 @@ internal fun Project.registerIosVerifiedDistributionTasks(
     distribution: IosAppleDistributionTasks,
     release: IosAppleReleaseVerificationTasks,
     runtimeMetrics: Provider<RegularFile>,
+    appleCompilerEvidence: TaskProvider<AppleCompilerEvidenceTask>,
+    appleBindingEvidence: TaskProvider<GenerateAppleBindingEvidenceTask>,
 ): IosVerifiedDistributionTasks {
     val candidateCommit = providers.gradleProperty("codexAgent.candidateCommit")
     val nativeEvidencePath = providers.gradleProperty("codexAgent.iosNativeEvidenceDirectory")
@@ -64,9 +66,26 @@ internal fun Project.registerIosVerifiedDistributionTasks(
         nativeEvidenceDirectory.set(nativeEvidence); nativeEvidenceReceipt.set(nativeReceipt)
         nativeProvenance.set(provenance); this.packageSwift.set(packageSwift)
         distribution.sdkCompatibilityFile?.let { sdkCompatibility.set(it) }
+        if (distribution.sdkCompatibilityFile == null) {
+            sdkCompatibility.set(providers.provider<RegularFile> {
+                error("Original Apple export requires authenticated codexAgent.sdkCompatibilityRequest inputs")
+            })
+        }
+        canonicalApiReport.set(appleBindingEvidence.flatMap { it.canonicalApiReport })
+        canonicalCoverageReceipt.set(appleBindingEvidence.flatMap { it.canonicalCoverageReceipt })
+        swiftConsumer.set(appleBindingEvidence.flatMap { it.swiftConsumer })
+        objectiveCConsumer.set(appleBindingEvidence.flatMap { it.objectiveCConsumer })
+        compilerRawDirectory.set(appleCompilerEvidence.flatMap { it.rawEvidenceDirectory })
+        xcframeworkDirectory.set(appleBindingEvidence.flatMap { it.xcframeworkDirectory })
+        xcresultDirectory.set(appleBindingEvidence.flatMap { it.xcresultDirectory })
+        xctestPackageDirectory.set(appleBindingEvidence.flatMap { it.xctestPackageDirectory })
+        xctestProductsDirectory.set(distribution.verifyCodexAgentSwiftAuthenticationTests.flatMap {
+            it.derivedDataDirectory.dir("Build/Products")
+        })
         repositoryDirectory.set(rootProject.layout.projectDirectory)
         canonicalBuildDirectory.set(layout.buildDirectory)
         outputDirectory.set(layout.buildDirectory.dir("apple-verified-distribution"))
+        executionDirectory.set(layout.buildDirectory.dir("apple-verified-distribution-execution"))
     }
     if (!importedPath.isPresent) return IosVerifiedDistributionTasks(null, null, null)
     val validate = tasks.register<ImportAppleVerifiedDistributionTask>(

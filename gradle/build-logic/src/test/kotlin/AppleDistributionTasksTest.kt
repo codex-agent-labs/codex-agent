@@ -1,15 +1,96 @@
 import java.io.File
+import java.io.OutputStream
+import java.lang.reflect.Proxy
 import kotlin.io.path.createTempDirectory
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertContentEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import org.gradle.api.tasks.CacheableTask
+import org.gradle.api.Action
+import org.gradle.process.ExecOperations
+import org.gradle.process.ExecResult
+import org.gradle.process.ExecSpec
 
 class AppleDistributionTasksTest {
+    @Test
+    fun `actual capture wrapper retains nonzero and launch failure bytes before throwing`() = withRoot { temporaryRoot ->
+        val root = temporaryRoot.canonicalFile
+        val bytes = byteArrayOf(-1, 0, 10)
+        for (launchFailure in listOf(false, true)) for (explicitDirectory in listOf(false, true)) {
+            var stdout: OutputStream? = null
+            var stderr: OutputStream? = null
+            val defaultDirectory = root.resolve("project-aware-default").apply { mkdirs() }
+            var configuredDirectory = defaultDirectory
+            val spec = Proxy.newProxyInstance(ExecSpec::class.java.classLoader, arrayOf(ExecSpec::class.java)) { _, method, args ->
+                when (method.name) {
+                    "setStandardOutput" -> stdout = args!![0] as OutputStream
+                    "setErrorOutput" -> stderr = args!![0] as OutputStream
+                    "workingDir", "setWorkingDir" -> configuredDirectory = args!![0] as File
+                    "getWorkingDir" -> return@newProxyInstance configuredDirectory
+                }
+                null
+            } as ExecSpec
+            val operations = Proxy.newProxyInstance(ExecOperations::class.java.classLoader,
+                arrayOf(ExecOperations::class.java)) { _, method, args ->
+                check(method.name == "exec")
+                @Suppress("UNCHECKED_CAST")
+                (args!![0] as Action<ExecSpec>).execute(spec)
+                stdout!!.write(bytes); stderr!!.write(bytes.reversedArray())
+                if (launchFailure) error("original launch failure")
+                Proxy.newProxyInstance(ExecResult::class.java.classLoader, arrayOf(ExecResult::class.java)) { _, call, _ ->
+                    check(call.name == "getExitValue")
+                    65
+                } as ExecResult
+            } as ExecOperations
+            val capture = root.resolve("capture-$launchFailure-$explicitDirectory")
+            val failure = assertFailsWith<IllegalStateException> {
+                operations.captureReleaseProcess(listOf("/synthetic/tool", "unchanged argument"),
+                    workingDirectory = if (explicitDirectory) root else null, captureDirectory = capture)
+            }
+            assertTrue(if (launchFailure) "original launch failure" in failure.message.orEmpty()
+                else "failed (65)" in failure.message.orEmpty())
+            assertContentEquals(bytes, capture.resolve("stdout.bin").readBytes())
+            assertContentEquals(bytes.reversedArray(), capture.resolve("stderr.bin").readBytes())
+            assertEquals(if (launchFailure) "null" else "65",
+                capture.resolve("execution.json").readReleaseObject().getValue("exitCode").toString())
+            assertEquals(kotlinx.serialization.json.JsonPrimitive(
+                (if (explicitDirectory) root else defaultDirectory).absolutePath),
+                capture.resolve("execution.json").readReleaseObject().getValue("workingDirectory"))
+        }
+    }
+
+    @Test
+    fun `raw process capture preserves exact streams including failure and empty diagnostics`() = withRoot { temporaryRoot ->
+        val root = temporaryRoot.canonicalFile
+        val bytes = byteArrayOf(0, -1, -61, 40, 10)
+        for (exit in listOf(0, 65, null)) {
+            val directory = root.resolve("capture-$exit")
+            val command = listOf("/usr/bin/xcrun", "swiftc", "argument with spaces")
+            writeReleaseProcessCapture(directory, command, root, mapOf("LC_ALL" to "C"), exit, bytes, byteArrayOf())
+            assertContentEquals(bytes, directory.resolve("stdout.bin").readBytes())
+            assertContentEquals(byteArrayOf(), directory.resolve("stderr.bin").readBytes())
+            val record = directory.resolve("execution.json").readReleaseObject()
+            assertEquals(exit?.toString() ?: "null", record.getValue("exitCode").toString())
+            assertEquals(setOf("execution.json", "stdout.bin", "stderr.bin"), verifiedRegularFiles(directory).keys)
+            val before = verifiedRegularFiles(directory).mapValues { (_, file) -> file.releaseDigest() }
+            assertFailsWith<IllegalStateException> {
+                writeReleaseProcessCapture(directory, command, root, emptyMap(), 0, byteArrayOf(), bytes)
+            }
+            assertEquals(before, verifiedRegularFiles(directory).mapValues { (_, file) -> file.releaseDigest() })
+        }
+        val linked = root.resolve("linked")
+        Files.createSymbolicLink(linked.toPath(), root.toPath())
+        assertFailsWith<IllegalStateException> {
+            writeReleaseProcessCapture(linked.resolve("new"), listOf("tool"), root, emptyMap(), 0, bytes, bytes)
+        }
+        assertFalse(root.resolve("new").exists())
+    }
+
     @Test
     fun `Swift and Objective-C consumers have four separately identified XCTest methods`() {
         val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }

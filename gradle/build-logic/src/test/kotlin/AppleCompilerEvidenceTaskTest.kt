@@ -14,6 +14,25 @@ import org.gradle.work.DisableCachingByDefault
 
 class AppleCompilerEvidenceTaskTest {
     @Test
+    fun `compiler retains every actual process and unparsed symbol graphs outside the report`() {
+        val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
+            .first { it.resolve("codex-agent-runtime-ios").isDirectory }
+        val source = repository.resolve("gradle/build-logic/src/main/kotlin/AppleCompilerEvidenceTask.kt").readText()
+        assertTrue(AppleCompilerEvidenceTask::class.java.getMethod("getRawEvidenceDirectory")
+            .isAnnotationPresent(org.gradle.api.tasks.OutputDirectory::class.java))
+        assertEquals(9, Regex("captureDirectory = raw.resolve").findAll(source).count())
+        for (name in listOf("toolchain/xcode", "toolchain/swift", "toolchain/clang", "sdk-path",
+            "sdk-version", "swift-symbolgraph", "objective-c-extract-api", "swift-consumer-ast",
+            "objective-c-consumer-ast", "swift-symbols", "CodexAgent.objc.symbols.json")) {
+            assertTrue(name in source, name)
+        }
+        val process = repository.resolve("gradle/build-logic/src/main/kotlin/ReleaseGradleProcess.kt").readText()
+        assertTrue(process.indexOf("environmentVariables, result.exitValue") <
+            process.indexOf("return requireSuccessfulReleaseProcess("))
+        assertTrue("environmentVariables, null" in process)
+    }
+
+    @Test
     fun `commands bind exact module targets frameworks consumers and temporary outputs`() {
         val sdk = File("/tmp/apple evidence/SDK")
         val frameworks = File("/tmp/apple evidence/ios-arm64-simulator")

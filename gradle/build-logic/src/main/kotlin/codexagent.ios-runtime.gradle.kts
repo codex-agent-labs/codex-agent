@@ -275,6 +275,8 @@ private val verifiedDistributionTasks = registerIosVerifiedDistributionTasks(
     appleDistributionTasks,
     appleReleaseTasks,
     iosRuntimeMetrics,
+    appleCompilerEvidence,
+    appleBindingEvidence,
 )
 verifiedDistributionTasks.importedXCFramework?.let { imported ->
     val contractEvidence = registerIosImportedContractEvidenceTasks(

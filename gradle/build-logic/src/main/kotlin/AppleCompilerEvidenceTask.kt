@@ -16,6 +16,8 @@ import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
@@ -7378,27 +7380,49 @@ abstract class AppleCompilerEvidenceTask @Inject constructor(
     @get:Input abstract val expectedXcodeBuild: Property<String>
     @get:Input abstract val expectedSwiftVersion: Property<String>
     @get:OutputFile abstract val evidenceFile: RegularFileProperty
+    @get:OutputDirectory abstract val rawEvidenceDirectory: DirectoryProperty
+    @get:Internal abstract val ownedEvidenceDirectory: DirectoryProperty
+
+    init {
+        ownedEvidenceDirectory.convention(project.layout.buildDirectory.dir("apple-compiler-evidence-task"))
+        rawEvidenceDirectory.convention(ownedEvidenceDirectory.dir("raw"))
+        outputs.upToDateWhen { false }
+    }
 
     @TaskAction
     fun generate() {
         val output = evidenceFile.get().asFile
+        val raw = rawEvidenceDirectory.get().asFile
+        val owned = ownedEvidenceDirectory.get().asFile
+        val originalInputs = listOf(xcframeworkDirectory.get().asFile, canonicalApiReport.get().asFile,
+            canonicalCoverageReceipt.get().asFile, swiftConsumer.get().asFile, objectiveCConsumer.get().asFile, output)
+        (originalInputs + listOf(raw, owned)).forEach { requireApplePackagePathWithoutSymlinks(it, "compiler evidence") }
+        check(raw.canonicalFile == owned.canonicalFile.resolve("raw") && originalInputs.none {
+            val input = it.canonicalFile.toPath()
+            input.startsWith(raw.canonicalFile.toPath()) || raw.canonicalFile.toPath().startsWith(input)
+        }) { "Apple compiler raw evidence output overlaps an input or is not task-owned" }
+        deleteReleaseTree(raw)
+        Files.createDirectories(raw.toPath())
         Files.deleteIfExists(output.toPath())
         check(minimumIosVersion.get() == "15.0") { "Apple compiler evidence target contract changed" }
         val canonical = readCrossLanguageCanonicalApiEvidence(
             canonicalApiReport.get().asFile, canonicalCoverageReceipt.get().asFile,
         )
         val capabilities = appleBindingCapabilityKeys(canonical.memberKeys)
-        val xcodeOutput = processes.captureReleaseProcess(listOf("/usr/bin/xcodebuild", "-version"))
-        val swiftOutput = processes.captureReleaseProcess(listOf("/usr/bin/xcrun", "swift", "--version"))
+        val xcodeOutput = processes.captureReleaseProcess(listOf("/usr/bin/xcodebuild", "-version"),
+            captureDirectory = raw.resolve("toolchain/xcode"))
+        val swiftOutput = processes.captureReleaseProcess(listOf("/usr/bin/xcrun", "swift", "--version"),
+            captureDirectory = raw.resolve("toolchain/swift"))
         verifyAppleToolchainOutput(
             xcodeOutput, swiftOutput, expectedXcodeVersion.get(), expectedXcodeBuild.get(), expectedSwiftVersion.get(),
         )
-        val clangVersion = processes.captureReleaseProcess(listOf("/usr/bin/xcrun", "clang", "--version"))
+        val clangVersion = processes.captureReleaseProcess(listOf("/usr/bin/xcrun", "clang", "--version"),
+            captureDirectory = raw.resolve("toolchain/clang"))
             .lineSequence().firstOrNull()?.also { check(it.startsWith("Apple clang version ")) }
             ?: error("Apple Clang version is missing")
         val xcframework = xcframeworkDirectory.get().asFile
         val work = temporaryDir.resolve("compiler-evidence").also { deleteReleaseTree(it); Files.createDirectories(it.toPath()) }
-        val slices = appleCompilerSlices.map { specification -> inspectSlice(specification, xcframework, work) }
+        val slices = appleCompilerSlices.map { specification -> inspectSlice(specification, xcframework, work, raw) }
         check(slices.map(InspectedAppleCompilerSlice::swiftSurface).distinct().size == 1) {
             "Swift Apple binding device and simulator surfaces differ"
         }
@@ -7461,7 +7485,7 @@ abstract class AppleCompilerEvidenceTask @Inject constructor(
         })
     }
 
-    private fun inspectSlice(specification: AppleCompilerSlice, xcframework: File, work: File): InspectedAppleCompilerSlice {
+    private fun inspectSlice(specification: AppleCompilerSlice, xcframework: File, work: File, raw: File): InspectedAppleCompilerSlice {
         val frameworkSearchPath = xcframework.resolve(specification.name)
         val framework = frameworkSearchPath.resolve("CodexAgent.framework")
         val header = framework.resolve("Headers/CodexAgent.h")
@@ -7474,23 +7498,25 @@ abstract class AppleCompilerEvidenceTask @Inject constructor(
         }
         val sdkPath = processes.captureReleaseProcess(
             listOf("/usr/bin/xcrun", "--sdk", specification.sdkName, "--show-sdk-path"),
+            captureDirectory = raw.resolve("${specification.name}/sdk-path"),
         ).trim().let(::File).also { check(it.isDirectory) { "Apple SDK is missing: $it" } }
         val sdkVersion = processes.captureReleaseProcess(
             listOf("/usr/bin/xcrun", "--sdk", specification.sdkName, "--show-sdk-version"),
+            captureDirectory = raw.resolve("${specification.name}/sdk-version"),
         ).trim().also { check(it.matches(Regex("[0-9]+(?:\\.[0-9]+)*"))) { "Apple SDK version is invalid" } }
         val sliceWork = work.resolve(specification.name).also { Files.createDirectories(it.toPath()) }
-        val swiftOutput = sliceWork.resolve("swift-symbols").also { Files.createDirectories(it.toPath()) }
+        val swiftOutput = raw.resolve("${specification.name}/swift-symbols").also { Files.createDirectories(it.toPath()) }
         val swiftCache = sliceWork.resolve("swift-module-cache").also { Files.createDirectories(it.toPath()) }
         processes.captureReleaseProcess(swiftSymbolGraphCommand(
             specification.targetTriple, sdkPath, frameworkSearchPath, swiftCache, swiftOutput,
-        ))
+        ), captureDirectory = raw.resolve("${specification.name}/swift-symbolgraph"))
         val swiftSymbolGraph = swiftOutput.resolve("CodexAgent.symbols.json")
         check(swiftSymbolGraph.isFile && swiftSymbolGraph.length() > 0L) { "Swift symbol graph was not produced" }
-        val objectiveCExtractApi = sliceWork.resolve("CodexAgent.objc.symbols.json")
+        val objectiveCExtractApi = raw.resolve("${specification.name}/CodexAgent.objc.symbols.json")
         val clangCache = sliceWork.resolve("clang-module-cache").also { Files.createDirectories(it.toPath()) }
         processes.captureReleaseProcess(objectiveCExtractApiCommand(
             specification.targetTriple, sdkPath, frameworkSearchPath, clangCache, header, objectiveCExtractApi,
-        ))
+        ), captureDirectory = raw.resolve("${specification.name}/objective-c-extract-api"))
         check(objectiveCExtractApi.isFile && objectiveCExtractApi.length() > 0L) {
             "Objective-C extract-api output was not produced"
         }
@@ -7501,11 +7527,11 @@ abstract class AppleCompilerEvidenceTask @Inject constructor(
         val swiftAst = processes.captureReleaseProcess(swiftConsumerAstCommand(
             specification.targetTriple, sdkPath, frameworkSearchPath, swiftConsumerCache,
             swiftConsumer.get().asFile,
-        ))
+        ), captureDirectory = raw.resolve("${specification.name}/swift-consumer-ast"))
         val objectiveCAst = processes.captureReleaseProcess(objectiveCConsumerAstCommand(
             specification.targetTriple, sdkPath, frameworkSearchPath, objectiveCConsumerCache,
             objectiveCConsumer.get().asFile,
-        ))
+        ), captureDirectory = raw.resolve("${specification.name}/objective-c-consumer-ast"))
         return InspectedAppleCompilerSlice(
             specification, sdkVersion, framework,
             parseSwiftAppleBindingSurface(swiftSymbolGraph.readText()),
