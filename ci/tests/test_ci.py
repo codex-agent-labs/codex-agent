@@ -37,6 +37,7 @@ from evidence import main as evidence_main  # noqa: E402
 from receipt import (  # noqa: E402
     aggregate,
     create_receipt,
+    parse_files,
     required_lanes,
     safe_extract,
     validate_receipt,
@@ -2889,6 +2890,8 @@ class StageArchiveTest(unittest.TestCase):
         self.assertEqual((
             ("test", "codex-agent-runtime-ios/build/swift-authentication-tests-summary.json", "xctest-summary"),
             ("test", "codex-agent-runtime-ios/build/swift-authentication-tests.xcresult/**/*", "xctest-result"),
+            ("test", "codex-agent-runtime-ios/build/apple-compiler-evidence-task/raw/**/*", "apple-compiler-raw-evidence"),
+            ("test", "codex-agent-runtime-ios/build/swift-authentication-evidence-task/raw/**/*", "apple-xctest-raw-evidence"),
             compiler_evidence,
             *binding_outputs,
         ), OUTPUTS["ios-swift-tests"])
@@ -2900,6 +2903,33 @@ class StageArchiveTest(unittest.TestCase):
                     ValueError, "Required lane output did not match",
                 ):
                     copy_matches(root, root / "staged", pattern)
+
+    def test_apple_raw_execution_transport_preserves_empty_streams_and_attempts(self) -> None:
+        raw_outputs = [entry for entry in OUTPUTS["ios-swift-tests"] if entry[2].endswith("raw-evidence")]
+        self.assertEqual(2, len(raw_outputs))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "staged"
+            for action, pattern, kind in raw_outputs:
+                self.assertEqual("test", action)
+                self.assertTrue(selected_output("ios-swift-tests", {"test": True}, action, kind))
+                with self.assertRaisesRegex(ValueError, "Required lane output did not match"):
+                    copy_matches(root, output, pattern)
+                raw = root / pattern.removesuffix("/**/*")
+                for attempt in ("attempt-0", "attempt-1"):
+                    directory = raw / attempt / "operation"
+                    directory.mkdir(parents=True)
+                    (directory / "stdout.bin").write_bytes(b"\x00\xffobserved\n")
+                    (directory / "stderr.bin").write_bytes(b"")
+                    (directory / "execution.json").write_bytes(b'{"fixture":true}\n')
+                copied = copy_matches(root, output, pattern)
+                self.assertEqual(6, len(copied))
+                evidence = parse_files([f"{relative}={kind}" for relative in copied], output, include_bytes=False)
+                self.assertEqual(set(copied), {record["relativePath"] for record in evidence})
+                self.assertTrue(all(record["kind"] == kind for record in evidence))
+                for relative in copied:
+                    original = root / Path(relative).relative_to("payload")
+                    self.assertEqual(original.read_bytes(), (output / relative).read_bytes())
 
     def test_recursive_output_globs_are_python_312_compatible(self) -> None:
         self.assertFalse([

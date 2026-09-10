@@ -31,6 +31,7 @@ from products.inventory import (
     load_json_bytes,
     publish_regular_tree,
     read_regular_file_bytes,
+    git_product_versions,
     regular_file_inventory,
     require_array,
     require_boolean,
@@ -120,11 +121,6 @@ _WAVE_REQUEST_KEYS = {
 _NATIVE_REQUEST_KEYS = {"nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence"}
 _ADAPTER_REQUEST_KEY = "adapterRuntimeComparisonEvidence"
 _SDK_REQUEST_KEYS = {"sdkValidationEvidence"}
-_VERSION_PATHS = {
-    "contract": "gradle/release/versions/contract.txt",
-    "runtime-release": "gradle/release/versions/runtime.txt",
-    "sdk": "gradle/release/versions/sdk.txt",
-}
 _KEYRING_PATH = "gradle/release/product-signing-keys.json"
 _KEYS_ROOT = "gradle/release/keys"
 _PROFILE_ROOT = "gradle/release/toolchains/runtime"
@@ -736,17 +732,7 @@ def _requested(plan: Mapping[str, Any]) -> tuple[PhaseInstanceId, ...]:
     return PHASE_INSTANCE_IDS if plan["fullRequested"] or selection.unknown_paths else selection.instances
 
 
-def _versions(root: Path, revision: str) -> dict[str, str]:
-    values = {
-        name: require_semver(
-            git_regular_blob_bytes(root, revision, path, max_bytes=256).decode("utf-8").strip(),
-            f"{name} version",
-        )
-        for name, path in _VERSION_PATHS.items()
-    }
-    major, minor, _ = values["runtime-release"].split("-", 1)[0].split(".")
-    values["runtime-compatibility"] = f"{major}.{minor}.0"
-    return values
+_versions = git_product_versions
 
 
 def _authorities(

@@ -33,6 +33,36 @@ def _request(arguments: dict) -> dict:
     return result
 
 
+class SdkInputsCliPolicyTest(unittest.TestCase):
+    def test_runtime_handoff_dispatch_preserves_explicit_caller_policy(self):
+        with patch("products.runtime_sdk_handoff.stage_runtime_sdk_handoff") as stage:
+            self.assertEqual(0, main([
+                "--runtime-handoff", "original", "--output", "sdk-inputs",
+                "--sdk-version", "0.2.4", "--compatible-release-range", ">=0.2.1 <0.3.0",
+                "--compatible-runtime-compatibility-range", ">=0.2.0 <0.3.0",
+                "--keyring", "pinned.json", "--keys-directory", "public-keys",
+            ]))
+            stage.assert_called_once_with(
+                Path("original"), Path("sdk-inputs"), sdk_version="0.2.4",
+                compatible_release_range=">=0.2.1 <0.3.0",
+                compatible_runtime_compatibility_range=">=0.2.0 <0.3.0",
+                keyring=Path("pinned.json"), keys_directory=Path("public-keys"),
+            )
+
+    def test_ambiguous_or_incomplete_handoff_policy_rejects_before_input_access(self):
+        cases = (
+            ["--runtime-handoff", "missing", "--output", "unused"],
+            ["--runtime-handoff", "missing", "--request", "missing", "--output", "unused"],
+            ["--request", "missing", "--output", "unused", "--sdk-version", "0.2.0"],
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments), patch("ci.products.sdk_inputs.stage_sdk_inputs") as stage:
+                with self.assertRaises(SystemExit) as error:
+                    main(arguments)
+                self.assertEqual(2, error.exception.code)
+                stage.assert_not_called()
+
+
 @unittest.skipUnless(shutil.which("ssh-keygen"), "OpenSSH signing tool unavailable")
 class SdkInputsTest(unittest.TestCase):
     @classmethod

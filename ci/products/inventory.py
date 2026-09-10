@@ -27,6 +27,26 @@ SEMVER = re.compile(
 )
 
 
+_VERSION_PATHS = {
+    "contract": "gradle/release/versions/contract.txt",
+    "runtime-release": "gradle/release/versions/runtime.txt",
+    "sdk": "gradle/release/versions/sdk.txt",
+}
+
+
+def git_product_versions(root: Path, revision: str) -> dict[str, str]:
+    values = {
+        name: require_semver(
+            git_regular_blob_bytes(root, revision, path, max_bytes=256).decode("utf-8").strip(),
+            f"{name} version",
+        )
+        for name, path in _VERSION_PATHS.items()
+    }
+    major, minor, _ = values["runtime-release"].split("-", 1)[0].split(".")
+    values["runtime-compatibility"] = f"{major}.{minor}.0"
+    return values
+
+
 def run_git(root: Path, *arguments: str, binary: bool = False) -> bytes | str:
     result = subprocess.run(
         ["git", *arguments],

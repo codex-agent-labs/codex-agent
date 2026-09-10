@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import sys
 import tempfile
 from typing import Any
 
@@ -119,11 +120,35 @@ def stage_sdk_inputs(request: Path, output: Path, *, request_directory: Path | N
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--request", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--request")
+    source.add_argument("--runtime-handoff")
     parser.add_argument("--output", required=True)
+    for name in ("sdk-version", "compatible-release-range", "compatible-runtime-compatibility-range",
+                 "keyring", "keys-directory"):
+        parser.add_argument(f"--{name}")
     arguments = parser.parse_args(argv)
+    policy = (arguments.sdk_version, arguments.compatible_release_range,
+              arguments.compatible_runtime_compatibility_range, arguments.keyring, arguments.keys_directory)
+    if arguments.runtime_handoff is not None:
+        if not all(policy):
+            parser.error("Runtime handoff requires SDK version, both compatibility ranges and pinned keyring/keys directory")
+    elif any(value is not None for value in policy):
+        parser.error("Request mode does not accept Runtime handoff policy overrides")
     try:
-        stage_sdk_inputs(Path(arguments.request), Path(arguments.output))
+        if arguments.runtime_handoff is not None:
+            # Existing CI callers use one products.* namespace. Keep their opaque
+            # proof types identical when entered through `-m ci.products.sdk_inputs`.
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+            from products.runtime_sdk_handoff import stage_runtime_sdk_handoff
+            stage_runtime_sdk_handoff(
+                Path(arguments.runtime_handoff), Path(arguments.output),
+                sdk_version=arguments.sdk_version, compatible_release_range=arguments.compatible_release_range,
+                compatible_runtime_compatibility_range=arguments.compatible_runtime_compatibility_range,
+                keyring=Path(arguments.keyring), keys_directory=Path(arguments.keys_directory),
+            )
+        else:
+            stage_sdk_inputs(Path(arguments.request), Path(arguments.output))
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

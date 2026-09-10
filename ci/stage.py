@@ -145,6 +145,8 @@ OUTPUTS: dict[str, tuple[tuple[str, str, str], ...]] = {
     "ios-swift-tests": (
         ("test", "codex-agent-runtime-ios/build/swift-authentication-tests-summary.json", "xctest-summary"),
         ("test", "codex-agent-runtime-ios/build/swift-authentication-tests.xcresult/**/*", "xctest-result"),
+        ("test", "codex-agent-runtime-ios/build/apple-compiler-evidence-task/raw/**/*", "apple-compiler-raw-evidence"),
+        ("test", "codex-agent-runtime-ios/build/swift-authentication-evidence-task/raw/**/*", "apple-xctest-raw-evidence"),
         ("test", "codex-agent-runtime-ios/build/reports/cross-language-api/apple/compiler-evidence.json", "apple-compiler-evidence"),
         ("test", "codex-agent-runtime-ios/build/reports/cross-language-api/apple/binding-evidence.json", "apple-binding-evidence"),
         (

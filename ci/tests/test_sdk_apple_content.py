@@ -8,7 +8,9 @@ import unittest
 from unittest.mock import patch
 
 from ci.products.inventory import regular_file_inventory
-from ci.products.sdk_apple_content import verify_sdk_apple_package_content
+from ci.products.sdk_apple_content import (
+    verify_sdk_apple_original_execution, verify_sdk_apple_package_content,
+)
 
 
 class SdkAppleContentTest(unittest.TestCase):
@@ -29,6 +31,13 @@ class SdkAppleContentTest(unittest.TestCase):
         self.compatibility.write_bytes(b"caller authenticated compatibility\n")
         self.proof = self.root / "verified-distribution-proof.json"
         self.proof.write_bytes(b"caller authenticated original proof\n")
+        self.distribution = self.root / "original-distribution"
+        self.distribution.mkdir()
+        (self.distribution / "verified-distribution-proof.json").write_bytes(self.proof.read_bytes())
+        self.execution = self.root / "original-execution"
+        (self.execution / "compiler-raw").mkdir(parents=True)
+        (self.execution / "compiler-raw/raw-observation.json").write_bytes(b"synthetic raw observation\n")
+        (self.execution / "compiler-raw/empty-stderr.bin").write_bytes(b"")
         self.java = self.root / "jdk/bin/java"
         self.java.parent.mkdir(parents=True)
         self.java.write_bytes(b"synthetic Java, never executed\n")
@@ -52,9 +61,31 @@ class SdkAppleContentTest(unittest.TestCase):
 
     def execute(self, command, **kwargs):
         self.calls.append(command)
-        self.assertEqual([str(self.java), "-jar", str(self.jar),
-                          "verify-transported-apple-sdk-package-closure"], command[:4])
+        self.assertEqual([str(self.java), "-jar", str(self.jar)], command[:3])
         fields = dict(zip(command[4::2], command[5::2], strict=True))
+        if command[3] == "verify-original-apple-execution":
+            self.assertEqual({"--distribution-directory", "--execution-directory",
+                              "--expected-sdk-compatibility", "--expected-distribution-proof"}, set(fields))
+            fields = {name: Path(value) for name, value in fields.items()}
+            for option, source in (("--distribution-directory", self.distribution),
+                                   ("--execution-directory", self.execution)):
+                self.assertNotEqual(source, fields[option])
+                allow_empty = option == "--execution-directory"
+                self.assertEqual(regular_file_inventory(source, allow_empty=allow_empty),
+                                 regular_file_inventory(fields[option], allow_empty=allow_empty))
+            for option, source in (("--expected-sdk-compatibility", self.compatibility),
+                                   ("--expected-distribution-proof", self.proof)):
+                self.assertNotEqual(source, fields[option])
+                self.assertEqual(source.read_bytes(), fields[option].read_bytes())
+            self.assertEqual(fields["--distribution-directory"].parent, kwargs["cwd"])
+            self.assertTrue(kwargs["check"])
+            self.assertEqual(subprocess.PIPE, kwargs["stdout"])
+            self.assertEqual(subprocess.PIPE, kwargs["stderr"])
+            self.assertFalse({"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "CLASSPATH", "PYTHONPATH"}
+                             & set(kwargs["env"]))
+            self.mutate(fields)
+            return subprocess.CompletedProcess(command, 0)
+        self.assertEqual("verify-transported-apple-sdk-package-closure", command[3])
         self.assertEqual({"--product-directory", "--validation-evidence-directory", "--version",
                           "--owned-build-directory", "--work-directory", "--expected-sdk-compatibility",
                           "--expected-distribution-proof"}, set(fields))
@@ -82,6 +113,16 @@ class SdkAppleContentTest(unittest.TestCase):
         with patch("ci.products.sdk_apple_content.verified_tooling_capture", self.capture), \
                 patch("ci.products.sdk_apple_content.subprocess.run", side_effect=self.execute):
             return verify_sdk_apple_package_content(**{**self.args, **changes})
+
+    def verify_original(self, **changes):
+        arguments = {**self.args, "distribution_directory": self.distribution,
+                     "execution_directory": self.execution}
+        arguments.pop("product_directory")
+        arguments.pop("validation_evidence_directory")
+        arguments.pop("sdk_version")
+        with patch("ci.products.sdk_apple_content.verified_tooling_capture", self.capture), \
+                patch("ci.products.sdk_apple_content.subprocess.run", side_effect=self.execute):
+            return verify_sdk_apple_original_execution(**{**arguments, **changes})
 
     def test_fixed_verified_tool_command_private_bytes_empty_diagnostics_and_no_publication(self):
         before = regular_file_inventory(self.root, allow_empty=True)
@@ -164,6 +205,47 @@ class SdkAppleContentTest(unittest.TestCase):
                 self.verify()
         finally:
             self.java.write_bytes(original)
+
+    def test_original_execution_uses_only_private_caller_bound_inputs_and_returns_no_authority(self):
+        before = regular_file_inventory(self.root, allow_empty=True)
+        self.assertIsNone(self.verify_original())
+        self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
+        self.assertEqual("verify-original-apple-execution", self.calls[-1][3])
+
+    def test_original_execution_failure_or_mutation_never_returns_success(self):
+        original = (self.execution / "compiler-raw/raw-observation.json").read_bytes()
+        for private in (False, True):
+            def mutate(fields):
+                target = (fields["--execution-directory"] if private else self.execution) / \
+                    "compiler-raw/raw-observation.json"
+                target.write_bytes(b"changed observation\n")
+            self.mutate = mutate
+            try:
+                with self.subTest(private=private), \
+                        self.assertRaisesRegex(ValueError, "changed during verification"):
+                    self.verify_original()
+            finally:
+                (self.execution / "compiler-raw/raw-observation.json").write_bytes(original)
+        self.mutate = lambda fields: (_ for _ in ()).throw(
+            subprocess.CalledProcessError(9, "original replay", output=b"stdout", stderr=b"stderr"))
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            self.verify_original()
+        self.assertEqual(b"stderr", caught.exception.stderr)
+
+    def test_original_execution_overlap_and_untrusted_tooling_fail_before_replay(self):
+        with self.assertRaisesRegex(ValueError, "source inputs must not overlap"):
+            self.verify_original(execution_directory=self.distribution)
+        with patch("ci.products.sdk_apple_content.verified_tooling_capture",
+                   side_effect=ValueError("tooling authority")), \
+                patch("ci.products.sdk_apple_content.subprocess.run",
+                      side_effect=AssertionError("execution")), \
+                self.assertRaisesRegex(ValueError, "tooling authority"):
+            verify_sdk_apple_original_execution(
+                **{key: value for key, value in {
+                    **self.args, "distribution_directory": self.distribution,
+                    "execution_directory": self.execution,
+                }.items() if key not in {"product_directory", "validation_evidence_directory", "sdk_version"}}
+            )
 
 
 if __name__ == "__main__":
