@@ -194,12 +194,17 @@ process or product compiler is executed. The reviewed source remains separate.
             environ=environment, token=token, state_wave=state_wave)
         originals = capture / "original"
         selected_root = root / "selected"
+        retained_policy = _release_trust(trusted, trusted_source_sha, root / "retained-policy")
+        if retained_policy is None:
+            raise ValueError("Runtime state caller has no pinned release verification policy")
         selection = materialize_runtime_attestation_inputs(
             originals / "product-resume-inputs/plan/impact-plan.json",
             originals / "product-resume-state",
             originals / ("runtime-state" if state_wave else "product-resume-state"),
             selected_root, target=target, expected_build_key=expected_build_key,
-            repository_root=candidate, environ=environment, sdk_validation_tooling=sdk_validation_tooling)
+            repository_root=candidate, environ=environment, sdk_validation_tooling=sdk_validation_tooling,
+            retained_release_keyring=retained_policy.keyring,
+            retained_release_keys_directory=retained_policy.keys)
         if selection["producer"] != producer:
             raise ValueError("Runtime selected state differs from protected caller context")
         before = regular_file_inventory(root, allow_empty=True)
@@ -215,7 +220,8 @@ process or product compiler is executed. The reviewed source remains separate.
                 phase_receipts={phase: selected_root / path for phase, path in selection["phaseReceipts"].items()},
                 variant_payload=selected_root / selection["variantPayload"],
                 contract={name: selected_root / path for name, path in selection["contract"].items()},
-                contract_version=selection["contractVersion"], token=token, release_handoffs=release_handoffs,
+                contract_version=selection["contractVersion"], token=token,
+                release_handoffs=(*release_handoffs, *(selected_root / path for path in selection["releaseHandoffs"])),
                 expected_receipt_sha256s=selection["receiptSha256s"],
                 expected_contract_receipt_sha256=selection["contractReceiptSha256"])
             if regular_file_inventory(root, allow_empty=True) != before:

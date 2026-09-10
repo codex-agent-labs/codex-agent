@@ -1309,6 +1309,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/runtime_original_ci.py",
             "ci/runtime_aggregate_release.py",
             "ci/products/runtime_aggregate_handoff.py",
+            "ci/products/runtime_variant_handoff.py",
             "ci/products/sdk_native_metadata.py",
             "ci/products/sdk_native_metadata_admission.py",
             "ci/products/runtime_sdk_handoff.py",

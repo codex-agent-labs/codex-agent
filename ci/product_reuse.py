@@ -2513,6 +2513,8 @@ def materialize_runtime_attestation_inputs(
     destination: Path, *, target: str, expected_build_key: str,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    retained_release_keyring: Path | None = None,
+    retained_release_keys_directory: Path | None = None,
 ) -> dict[str, Any]:
     """Restore a completed native or aggregate closure, not a new build election.
 
@@ -2521,6 +2523,9 @@ the complete product semantics. This selection never grants signing authority.
 """
     if target not in (*NATIVE_TARGETS, "aggregate"):
         raise ValueError("Runtime attestation selection requires a native or aggregate target")
+    if ((retained_release_keyring is None) != (retained_release_keys_directory is None)
+            or target == "aggregate" and retained_release_keyring is not None):
+        raise ValueError("Retained native release selection requires paired caller policy")
     require_sha256(expected_build_key, "Selected Runtime metadata build key")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     discovery_root, state_root, destination = _product_materialization_paths(
@@ -2613,6 +2618,16 @@ the complete product semantics. This selection never grants signing authority.
             "phaseReceipts": phase_receipts, "runtimeStageRoot": "runtime",
             "variantPayload": payload.relative_to(prepared).as_posix(),
         }
+        if retained_release_keyring is not None:
+            from products.runtime_variant_handoff import capture_runtime_variant_handoffs
+            request = dict(state.rebased_request)
+            _merge_native_comparison_records(request, _retained_native_handoffs(state_root, root))
+            retained = capture_runtime_variant_handoffs(
+                request.get("nativeRuntimeComparisonEvidence", []), root,
+                prepared / "retained-release-handoffs", target=target,
+                phase_receipts={phase: prepared / path for phase, path in phase_receipts.items()},
+                keyring=retained_release_keyring, keys_directory=retained_release_keys_directory)
+            selection["releaseHandoffs"] = [path.relative_to(prepared).as_posix() for path in retained]
         write_canonical_json(prepared / "selection.json", selection)
         _runtime_worker_checkout(root, state.producer)
         publish_regular_tree(prepared, destination)

@@ -271,6 +271,9 @@ val appleReleaseTasks = registerIosAppleReleaseVerificationTasks(
     minimumIosVersion,
     pinnedRustToolchain,
 )
+val sharedContractStagePath = providers.gradleProperty("codexAgent.contractBinaryStage")
+val freshAppleContractStagePath = providers.gradleProperty("codexAgent.iosContractBinaryStage")
+val importedContractVersion = providers.gradleProperty("codexAgent.contractVersion")
 private val verifiedDistributionTasks = registerIosVerifiedDistributionTasks(
     appleDistributionTasks,
     appleReleaseTasks,
@@ -278,25 +281,45 @@ private val verifiedDistributionTasks = registerIosVerifiedDistributionTasks(
     appleCompilerEvidence,
     appleBindingEvidence,
 )
-verifiedDistributionTasks.importedXCFramework?.let { imported ->
-    val contractEvidence = registerIosImportedContractEvidenceTasks(
-        layout.dir(providers.gradleProperty("codexAgent.contractBinaryStage").map(::file)),
-        providers.gradleProperty("codexAgent.contractVersion"),
+val importedAppleXCFramework = verifiedDistributionTasks.importedXCFramework
+check(importedAppleXCFramework == null || !freshAppleContractStagePath.isPresent) {
+    "codexAgent.iosContractBinaryStage is only valid for fresh Apple distribution production"
+}
+val selectedContractStagePath = if (importedAppleXCFramework != null) {
+    sharedContractStagePath
+} else {
+    freshAppleContractStagePath
+}
+private val importedContractEvidence = if (selectedContractStagePath.isPresent) {
+    registerIosImportedContractEvidenceTasks(
+        layout.dir(selectedContractStagePath.map(::file)),
+        importedContractVersion,
         providers.gradleProperty("codexAgent.candidateTree"),
         invalidateAppleBindingEvidence,
     )
-    tasks.named<StageCodexAgentAppleDistributionTask>("stageCodexAgentAppleDistribution") {
-        setDependsOn(listOf(imported))
-        xcframeworkDirectory.set(imported.flatMap { it.xcframeworkDirectory })
+} else null
+if (importedAppleXCFramework != null) {
+    check(importedContractEvidence != null) {
+        "Imported Apple evidence requires codexAgent.contractBinaryStage and codexAgent.contractVersion"
     }
+    tasks.named<StageCodexAgentAppleDistributionTask>("stageCodexAgentAppleDistribution") {
+        setDependsOn(listOf(importedAppleXCFramework))
+        xcframeworkDirectory.set(importedAppleXCFramework.flatMap { it.xcframeworkDirectory })
+    }
+}
+importedContractEvidence?.let { contractEvidence ->
+    val frameworkDependency = importedAppleXCFramework ?:
+        appleDistributionTasks.prepareCodexAgentReleaseXCFramework
     appleCompilerEvidence.configure {
         setDependsOn(listOf(
             invalidateAppleBindingEvidence,
             verifyAppleToolchain,
-            imported,
+            frameworkDependency,
             contractEvidence.verify,
         ))
-        xcframeworkDirectory.set(imported.flatMap { it.xcframeworkDirectory })
+        importedAppleXCFramework?.let { imported ->
+            xcframeworkDirectory.set(imported.flatMap { it.xcframeworkDirectory })
+        }
         canonicalApiReport.set(contractEvidence.canonicalApi)
         canonicalCoverageReceipt.set(contractEvidence.canonicalCoverage)
     }
@@ -307,7 +330,9 @@ verifiedDistributionTasks.importedXCFramework?.let { imported ->
             appleDistributionTasks.verifyCodexAgentSwiftAuthenticationTests,
             contractEvidence.verify,
         ))
-        xcframeworkDirectory.set(imported.flatMap { it.xcframeworkDirectory })
+        importedAppleXCFramework?.let { imported ->
+            xcframeworkDirectory.set(imported.flatMap { it.xcframeworkDirectory })
+        }
         canonicalApiReport.set(contractEvidence.canonicalApi)
         canonicalCoverageReceipt.set(contractEvidence.canonicalCoverage)
     }

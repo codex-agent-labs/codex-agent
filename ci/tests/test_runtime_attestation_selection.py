@@ -225,9 +225,48 @@ class RuntimeAttestationSelectionTest(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_state_caller_binds_selection_to_real_retained_handoff_without_signing(self):
+        self._state_caller_reuse(automatic=False)
+
+    def test_state_caller_discovers_exact_retained_native_evidence_without_resigning(self):
+        self._state_caller_reuse(automatic=True)
+
+    def _state_caller_reuse(self, *, automatic):
         import runtime_release
         from ci.tests.test_contract_release_context import contract_context
         from ci.tests.test_contract_release_capture import ObservedEnvironment
+        if automatic:
+            from products.native_runtime_inputs import stage_native_runtime_evidence
+            from products.inventory import sha256_file
+            variants = self.chain["variants"]
+            payload = variants["variant_bundles"][TARGET]
+            def relative(path):
+                return Path(path).relative_to(self.root).as_posix()
+            record = {
+                "receiptSha256": sha256_file(self.receipts["validation"]),
+                "contractEvidence": {
+                    "stageRoot": relative(self.contract["stage"]),
+                    "phaseReceipt": relative(self.contract["receipt"]),
+                    "attestation": relative(self.contract["attestation"]),
+                    "attestationSignature": relative(self.contract["signature"]),
+                    "publicKey": relative(self.contract["public_key"]),
+                    "expectedTrustDomain": "release", "keyring": relative(self.keyring),
+                    "keysDirectory": relative(self.keys),
+                },
+                "runtimeEvidence": {
+                    "target": TARGET, "stageRoot": relative(variants["stages"]),
+                    "phaseReceipts": {phase: relative(path) for phase, path in self.receipts.items()},
+                    "payload": relative(payload),
+                    "attestation": relative(self.handoff / f"{payload.stem}.attestation.json"),
+                    "attestationSignature": relative(self.handoff / f"{payload.stem}.attestation.sig"),
+                    "publicKey": relative(self.handoff / "public-key.pub"),
+                    "keyring": relative(self.keyring), "keysDirectory": relative(self.keys),
+                },
+            }
+            retained = self.candidate / "build/original-native-evidence"
+            records = stage_native_runtime_evidence([record], self.root, retained,
+                keyring=self.keyring, keys_directory=self.keys)
+            self.state.rebased_request["nativeRuntimeComparisonEvidence"] = product_reuse._rebase_native_evidence_paths(
+                records, retained, self.candidate, comparison=True)
 
         _, event, values = contract_context()
         values["GITHUB_SHA"] = self.producer["commit"]
@@ -258,7 +297,7 @@ class RuntimeAttestationSelectionTest(unittest.TestCase):
                 artifact_id=700, artifact_sha256="sha256:" + "a" * 64, state_wave=4,
                 trusted_source_sha=self.pin, trusted_workflow_sha=self.source.pin,
                 transport_producer=self.producer, event_payload=event, environment=environment,
-                token="not-a-real-token", release_handoffs=(self.handoff,))
+                token="not-a-real-token", release_handoffs=() if automatic else (self.handoff,))
             transport.assert_called_once()
             replay.assert_called_once()
         self.assertEqual(regular_file_inventory(self.handoff), regular_file_inventory(output / "runtime-input"))

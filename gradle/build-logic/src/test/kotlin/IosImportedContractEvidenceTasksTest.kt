@@ -67,29 +67,47 @@ class IosImportedContractEvidenceTasksTest {
     }
 
     @Test
-    fun `imported branch removes core producers from both existing Apple evidence tasks`() {
+    fun `supplied Contract evidence replaces core producers in fresh and imported Apple modes`() {
         val source = File("src/main/kotlin/codexagent.ios-runtime.gradle.kts").readText()
-        val imported = source.substringAfter("verifiedDistributionTasks.importedXCFramework?.let")
+        val selection = source.substringAfter("val sharedContractStagePath")
             .substringBefore("tasks.register(\"verifyIosRuntime\")")
-        assertTrue("registerIosImportedContractEvidenceTasks(" in imported)
-        assertTrue("providers.gradleProperty(\"codexAgent.contractBinaryStage\")" in imported)
-        assertTrue("providers.gradleProperty(\"codexAgent.contractVersion\")" in imported)
-        assertFalse(":codex-agent-core:" in imported)
-        assertFalse("core/build" in imported)
-        assertFalse("prepareCodexAgentReleaseXCFramework" in imported)
-        listOf("appleCompilerEvidence.configure {", "appleBindingEvidence.configure {").forEach { marker ->
-            val task = imported.substringAfter(marker).substringBefore("\n    }")
-            assertTrue("setDependsOn(listOf(" in task, marker)
-            assertTrue("contractEvidence.verify," in task, marker)
-            assertTrue("canonicalApiReport.set(contractEvidence.canonicalApi)" in task, marker)
-            assertTrue("canonicalCoverageReceipt.set(contractEvidence.canonicalCoverage)" in task, marker)
-            assertTrue("xcframeworkDirectory.set(imported.flatMap" in task, marker)
-        }
-        assertTrue("verifyAppleToolchain," in imported)
-        assertTrue("appleDistributionTasks.verifyCodexAgentSwiftAuthenticationTests," in imported)
-        assertTrue("delete(appleCompilerEvidenceFile)" in imported)
+        assertTrue("providers.gradleProperty(\"codexAgent.contractBinaryStage\")" in selection)
+        assertTrue("providers.gradleProperty(\"codexAgent.iosContractBinaryStage\")" in selection)
+        assertTrue("providers.gradleProperty(\"codexAgent.contractVersion\")" in selection)
+        assertFalse("sharedContractStagePath.isPresent == importedContractVersion.isPresent" in selection)
+        assertFalse("sharedContractStagePath.isPresent" in selection)
+        assertFalse("importedContractVersion.isPresent" in selection)
+        assertTrue("importedAppleXCFramework == null || !freshAppleContractStagePath.isPresent" in selection)
+        assertTrue("val selectedContractStagePath = if (importedAppleXCFramework != null)" in selection)
+        assertTrue("sharedContractStagePath\n} else {\n    freshAppleContractStagePath" in selection)
+        assertTrue("if (selectedContractStagePath.isPresent)" in selection)
+        assertTrue("layout.dir(selectedContractStagePath.map(::file))" in selection)
+        assertEquals(1, selection.split("registerIosImportedContractEvidenceTasks(").size - 1)
+        assertEquals(2, selection.split("importedContractVersion").size - 1)
+        assertTrue(selection.indexOf("val selectedContractStagePath") <
+            selection.indexOf("registerIosImportedContractEvidenceTasks("))
+        assertTrue("check(importedContractEvidence != null)" in selection)
+
+        val imported = selection.substringAfter("} else null\nif (importedAppleXCFramework != null)")
+            .substringBefore("importedContractEvidence?.let")
+        assertTrue("setDependsOn(listOf(importedAppleXCFramework))" in imported)
+        assertTrue("xcframeworkDirectory.set(importedAppleXCFramework.flatMap" in imported)
+
+        val configured = selection.substringAfter("importedContractEvidence?.let")
+        assertFalse(":codex-agent-core:" in configured)
+        assertFalse("core/build" in configured)
+        assertTrue("importedAppleXCFramework ?:" in configured)
+        assertTrue("appleDistributionTasks.prepareCodexAgentReleaseXCFramework" in configured)
+        assertEquals(2, configured.split("setDependsOn(listOf(").size - 1)
+        assertEquals(2, configured.split("contractEvidence.verify,").size - 1)
+        assertEquals(2, configured.split("canonicalApiReport.set(contractEvidence.canonicalApi)").size - 1)
+        assertEquals(2, configured.split("canonicalCoverageReceipt.set(contractEvidence.canonicalCoverage)").size - 1)
+        assertEquals(2, configured.split("xcframeworkDirectory.set(imported.flatMap").size - 1)
+        assertTrue("verifyAppleToolchain," in configured)
+        assertTrue("appleDistributionTasks.verifyCodexAgentSwiftAuthenticationTests," in configured)
+        assertTrue("delete(appleCompilerEvidenceFile)" in configured)
         assertTrue(":codex-agent-core:verifyCrossLanguageApiCoverage" in source.substringBefore(
-            "verifiedDistributionTasks.importedXCFramework?.let",
+            "val sharedContractStagePath",
         ))
         // Existing semantic task implementations and output receipt types are unchanged.
         assertTrue("tasks.register<AppleCompilerEvidenceTask>" in source)
