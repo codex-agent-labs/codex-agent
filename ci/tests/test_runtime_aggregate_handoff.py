@@ -176,7 +176,7 @@ class RuntimeAggregateHandoffTest(unittest.TestCase):
             path.parent.mkdir(parents=True)
             path.write_bytes(b"explicit synthetic external transport; not state admission\n")
         (current / "capture-transport.json").write_bytes(canonical_json_bytes({
-            "captureProducer": self.source.base.producer, "stateWave": 4,
+            "captureProducer": self.source.base.producer, "stateWave": 5,
             "artifact": {"id": 700}, "observed": [{"synthetic": True}],
         }))
         before = regular_file_inventory(root, allow_empty=True)

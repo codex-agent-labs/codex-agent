@@ -261,7 +261,7 @@ class RuntimeWorkflowTest(unittest.TestCase):
         self.assertEqual(policy, route.call_args.kwargs["sdk_validation_tooling"])
 
     def test_capture_uses_caller_upload_then_current_captured_paths_for_each_wave(self):
-        for wave in (0, 1, 4):
+        for wave in (0, 1, 4, 5):
             with self.subTest(state_wave=wave):
                 destination = self.root / f"capture-{wave}"
                 value = {"include": [row(NODE)]}
@@ -358,11 +358,113 @@ class RuntimeWorkflowTest(unittest.TestCase):
         self.assertEqual("false", self.outputs()["runtime_workers_required"])
         gate.assert_not_called()
 
+    def aggregate_collection(self, *args, **kwargs):
+        value = self.collection(*args, **kwargs)
+        value["rows"] = [row(AGGREGATE, result="success", shardDirectory="good/shard")]
+        return value
+
+    def test_fifth_wave_advances_only_aggregate_and_replays_completed_payload_routing(self):
+        self.write_tree(self.input, {"runtime-state/old-state.json": b"original wave four state"})
+        before = regular_file_inventory(self.input, allow_empty=True)
+        destination = self.root / "aggregate-collected"
+        with mock.patch.object(workflow.products, "collect_runtime_workers", side_effect=self.aggregate_collection) as collect, \
+                mock.patch.object(workflow.products, "advance_products", side_effect=self.advanced) as advance, \
+                mock.patch.object(workflow.products, "inspect_products", return_value=self.final_fixture("retained")) as inspect, \
+                mock.patch.object(workflow, "continuation", wraps=workflow.continuation) as route, \
+                mock.patch.object(workflow.products, "runtime_worker_matrix", side_effect=AssertionError("no fifth worker matrix")):
+            self.collect(destination, 5)
+        plan = self.input / "product-resume-inputs/plan/impact-plan.json"
+        collect.assert_called_once_with(plan, self.input / "product-resume-state", self.input / "runtime-state",
+            destination / "collection", trusted_workflow_sha=PIN, repository_root=self.root,
+            environ=self.environment, token="synthetic-token", runtime_aggregate_only=True)
+        handoff = destination / "handoff"
+        advance.assert_called_once_with(plan, self.input / "product-resume-state", self.input / "runtime-state",
+            [destination / "collection/good/shard"], handoff / "runtime-state", self.output,
+            repository_root=self.root, environ=self.environment, failed_instances=(), runtime_aggregate_only=True)
+        route.assert_called_once_with(handoff / "product-resume-inputs/plan/impact-plan.json",
+            handoff / "product-resume-state", handoff / "runtime-state", self.output,
+            repository_root=self.root, environ=self.environment, require_completed=True)
+        inspect.assert_called_once()
+        self.assertEqual("completed", self.outputs()["aggregate_state"])
+        self.assertEqual("true", self.outputs()["aggregate_payload_complete"])
+        self.assertNotIn("runtime_matrix", self.outputs())
+        self.assertNotIn("runtime_workers_required", self.outputs())
+        self.assertEqual(before, regular_file_inventory(self.input, allow_empty=True))
+        for name, raw in self.base.items():
+            self.assertEqual(raw, (handoff / name).read_bytes())
+        self.assertTrue((destination / "collection/raw.log").is_file())
+
+    def test_fifth_wave_failure_preserves_diagnostics_and_disables_only_final_routing(self):
+        def failed(*args, **kwargs):
+            value = self.aggregate_collection(*args, **kwargs)
+            value["rows"][0].update(result="failure", shardDirectory=None)
+            return value
+        destination = self.root / "aggregate-failed"
+        with mock.patch.object(workflow.products, "collect_runtime_workers", side_effect=failed), \
+                mock.patch.object(workflow.products, "advance_products", side_effect=self.advanced) as advance, \
+                mock.patch.object(workflow, "continuation") as route, \
+                mock.patch.object(workflow.products, "runtime_worker_matrix") as matrix:
+            self.collect(destination, 5)
+        self.assertEqual([], advance.call_args.args[3])
+        self.assertEqual((AGGREGATE,), advance.call_args.kwargs["failed_instances"])
+        self.assertTrue(advance.call_args.kwargs["runtime_aggregate_only"])
+        self.assertNotIn("runtime_workers_only", advance.call_args.kwargs)
+        route.assert_not_called()
+        matrix.assert_not_called()
+        self.assertEqual({"native_attestation_matrix": '{"include":[]}', "aggregate_state": "failed",
+                          "aggregate_key": "", "aggregate_receipt_sha256": "", "aggregate_required": "false",
+                          "aggregate_payload_complete": "false"}, self.outputs())
+        self.assertEqual(b"", (destination / "collection/raw.log").read_bytes())
+        self.assertTrue((destination / "handoff/runtime-state/reused-carrier/object.zip").is_file())
+
+    def test_fifth_wave_rejects_missing_duplicate_or_nonaggregate_rows_before_advancement(self):
+        for index, rows in enumerate(([], [row(JVM)], [row(AGGREGATE), row(AGGREGATE)],
+                                      [row(AGGREGATE), row(NODE)])):
+            def wrong(*args, **kwargs):
+                result = self.aggregate_collection(*args, **kwargs)
+                result["rows"] = rows
+                return result
+            destination = self.root / f"aggregate-wrong-{index}"
+            with self.subTest(rows=rows), mock.patch.object(workflow.products, "collect_runtime_workers", side_effect=wrong), \
+                    mock.patch.object(workflow.products, "advance_products") as advance, \
+                    mock.patch.object(workflow, "continuation") as route, \
+                    self.assertRaisesRegex(ValueError, "sole elected aggregate"):
+                self.collect(destination, 5)
+            advance.assert_not_called()
+            route.assert_not_called()
+            self.assertTrue((destination / "collection/raw.log").exists())
+            self.assertFalse(self.output.exists())
+
+    def test_fifth_wave_success_cannot_publish_ready_or_rejected_payload_as_completed(self):
+        for index, error in enumerate((None, ValueError("full replay rejected"))):
+            destination = self.root / f"aggregate-incomplete-{index}"
+            with self.subTest(error=error), \
+                    mock.patch.object(workflow.products, "collect_runtime_workers", side_effect=self.aggregate_collection), \
+                    mock.patch.object(workflow.products, "advance_products", side_effect=self.advanced), \
+                    mock.patch.object(workflow.products, "inspect_products", return_value=self.final_fixture(), side_effect=error), \
+                    self.assertRaises(ValueError):
+                self.collect(destination, 5)
+            self.assertFalse(self.output.exists())
+            self.assertTrue((destination / "handoff/runtime-state/reused-carrier/object.zip").is_file())
+        with mock.patch.object(workflow.products, "inspect_products") as inspect, self.assertRaisesRegex(ValueError, "boolean"):
+            workflow.continuation(self.root / "plan", self.root / "discovery", self.root / "state", self.output,
+                                  require_completed="true")
+        inspect.assert_not_called()
+
+    def test_fifth_wave_cli_delegates_fixed_scope_without_caller_subset_flags(self):
+        with mock.patch.object(workflow, "collect") as collect, \
+                mock.patch.dict(workflow.os.environ, {"GITHUB_TOKEN": "fixture-token"}, clear=True):
+            self.assertEqual(0, workflow.main(["collect", "--input-root", str(self.input),
+                "--destination", str(self.root / "cli-five"), "--github-output", str(self.output),
+                "--wave", "5", "--trusted-workflow-sha", PIN]))
+        collect.assert_called_once_with(self.input, self.root / "cli-five", self.output,
+            wave=5, trusted_workflow_sha=PIN, token="fixture-token")
+
     def test_invalid_wave_existing_output_and_input_overlap_reject_before_collection(self):
         before = regular_file_inventory(self.input, allow_empty=True)
         existing = self.root / "existing"
         self.write_tree(existing, {"sentinel": b"previous output"})
-        for destination, wave in ((self.root / "bad-wave", 0), (self.root / "bad-wave-5", 5),
+        for destination, wave in ((self.root / "bad-wave", 0), (self.root / "bad-wave-6", 6),
                                   (self.root / "bad-bool", True), (existing, 1),
                                   (self.input / "product-resume-inputs/nested-output", 1)):
             with self.subTest(destination=destination, wave=wave), \

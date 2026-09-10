@@ -3145,12 +3145,15 @@ def collect_runtime_workers(
     trusted_workflow_sha: str, repository_root: Path | None = None,
     environ: Mapping[str, str] | None = None, token: str,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    runtime_aggregate_only: bool = False,
 ) -> dict[str, Any]:
     """Collect every elected Runtime row; failed siblings cannot erase originals.
 
     This external report is not receipt authority. advance_products verifies
     successful original shards again and enforces its exact elected partition.
     """
+    if type(runtime_aggregate_only) is not bool:
+        raise ValueError("Runtime aggregate collection scope must be boolean")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     discovery_root, state_root, destination = _product_materialization_paths(root, discovery_root, state_root, destination)
     if destination.exists() or destination.is_symlink():
@@ -3159,7 +3162,8 @@ def collect_runtime_workers(
     state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling)
     producer = state.producer
     selected = [(instance, ready) for instance, ready in sorted(state.prior_ready_plans.items())
-                if _runtime_worker_instance(instance)]
+                if (instance == PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+                    if runtime_aggregate_only else _runtime_worker_instance(instance))]
     observed, artifacts, jobs = [], [], []
     if selected:
         observed = _observe_ci_producer_jobs(
@@ -3245,6 +3249,7 @@ def advance_products(
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     failed_instances: tuple[PhaseInstanceId, ...] = (),
     runtime_workers_only: bool = False,
+    runtime_aggregate_only: bool = False,
 ) -> dict[str, Any]:
     github_output(github_output_path, {
         "full_reuse": False,
@@ -3287,11 +3292,15 @@ def advance_products(
     expected_builds = {
         _identity(phase): phase for phase in prior["phases"] if phase["state"] == "build"
     }
-    if type(runtime_workers_only) is not bool:
-        raise ValueError("Runtime worker collection scope must be boolean")
+    if (type(runtime_workers_only) is not bool or type(runtime_aggregate_only) is not bool
+            or runtime_workers_only and runtime_aggregate_only):
+        raise ValueError("Runtime collection scopes must be boolean and mutually exclusive")
     if runtime_workers_only:
         expected_builds = {instance: phase for instance, phase in expected_builds.items()
                            if _runtime_worker_instance(instance)}
+    elif runtime_aggregate_only:
+        expected_builds = {instance: phase for instance, phase in expected_builds.items()
+                           if instance == PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")}
     if (any(type(instance) is not PhaseInstanceId for instance in failed_instances)
             or len(set(failed_instances)) != len(failed_instances)
             or not set(failed_instances) <= set(expected_builds)):
@@ -3664,8 +3673,8 @@ def capture_runtime_resume_upload(
 ) -> dict[str, Any]:
     """Retain the exact resumed upload; full product replay grants admission."""
     require_integer(artifact_id, "Runtime resume artifact ID", 1)
-    if type(state_wave) is not int or not 0 <= state_wave <= 4:
-        raise ValueError("Runtime state wave must be an integer from zero through four")
+    if type(state_wave) is not int or not 0 <= state_wave <= 5:
+        raise ValueError("Runtime state wave must be an integer from zero through five")
     require_sha256(artifact_sha256, "Runtime resume artifact digest")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     if destination.exists() or destination.is_symlink():

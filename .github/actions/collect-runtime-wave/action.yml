@@ -18,7 +18,7 @@ inputs:
     description: Fixed predecessor wave.
   wave:
     required: true
-    description: Fixed current wave, one through four.
+    description: Fixed current wave, one through four for workers or five for the aggregate.
   tree:
     required: true
     description: Exact tested tree.
@@ -35,6 +35,12 @@ outputs:
     value: ${{ steps.collect.outputs.wave_failed }}
   full-reuse:
     value: ${{ steps.collect.outputs.full_reuse }}
+  aggregate-payload-complete:
+    value: ${{ steps.collect.outputs.aggregate_payload_complete }}
+  aggregate-key:
+    value: ${{ steps.collect.outputs.aggregate_key }}
+  aggregate-receipt-sha256:
+    value: ${{ steps.collect.outputs.aggregate_receipt_sha256 }}
 runs:
   using: composite
   steps:

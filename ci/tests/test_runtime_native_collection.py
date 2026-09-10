@@ -63,7 +63,8 @@ class RuntimeNativeCollectionTest(unittest.TestCase):
             plan=product_reuse._validate_plan(self.plan_path, self.root), producer=self.producer,
             prior_ready_plans=self.ready, expected_fixed={"versions": {"runtime-release": "0.2.4"}})
 
-    def collect(self, destination, *, shard_failure=None, receipt_changes=None):
+    def collect(self, destination, *, shard_failure=None, receipt_changes=None,
+                runtime_aggregate_only=False):
         prefix = "https://api.github.com/repos/codex-agent-labs/codex-agent"
         def query(url, token):
             self.assertEqual("not-a-real-token", token)
@@ -97,8 +98,41 @@ class RuntimeNativeCollectionTest(unittest.TestCase):
             result = product_reuse.collect_runtime_workers(
                 self.plan_path, self.discovery, self.state_root, destination,
                 trusted_workflow_sha=self.pin, repository_root=self.root,
-                environ=self.environment, token="not-a-real-token")
+                environ=self.environment, token="not-a-real-token",
+                runtime_aggregate_only=runtime_aggregate_only)
         return result, api, lists, download, verifier
+
+    def test_aggregate_collection_binds_exact_original_and_excludes_native_workers(self):
+        instance = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+        identity = product_reuse._identity_record(instance)
+        original = next(iter(self.receipts.values()))
+        receipt = {**original, **identity}
+        key = receipt["buildKey"]
+        self.ready[instance] = {**identity, "buildKey": key}
+        self.receipts[instance] = receipt
+        name = "runtime-aggregate-metadata-aggregate"
+        self.jobs.append({**self.jobs[1], "id": 999,
+                          "name": f"product-validation / runtime-{name}"})
+        raw = archive({"shard/phase-receipt.json": canonical_json_bytes(receipt),
+                       "execution.json": b"synthetic aggregate execution\n"})
+        self.raw[999] = raw
+        self.artifacts.append({**self.artifacts[0], "id": 999,
+            "name": f"codex-agent-runtime-worker-{name}-{key.removeprefix('sha256:')}-"
+                    f"{self.producer['tree']}-attempt-{self.producer['runAttempt']}",
+            "digest": sha256_bytes(raw), "size_in_bytes": len(raw),
+            "archive_download_url": "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/999/zip"})
+        result, _, _, download, verifier = self.collect(
+            self.root / "build/aggregate-only", runtime_aggregate_only=True)
+        self.assertEqual(1, len(result["rows"]))
+        row = result["rows"][0]
+        self.assertEqual(instance, product_reuse._identity(row))
+        self.assertEqual("success", row["result"])
+        self.assertEqual(1, download.call_count)
+        self.assertEqual(1, verifier.call_count)
+        bad, _, _, _, _ = self.collect(self.root / "build/bad-aggregate",
+            runtime_aggregate_only=True, receipt_changes={"runtime-aggregate": {"buildKey": "sha256:" + "f" * 64}})
+        self.assertEqual("failure", bad["rows"][0]["result"])
+        self.assertIsNone(bad["rows"][0]["shardDirectory"])
 
     def rows(self, result):
         self.assertEqual(5, len(result["rows"]))

@@ -148,6 +148,7 @@ class RuntimeCollectionScopeTest(unittest.TestCase):
         name: str,
         *,
         runtime_workers_only: bool = True,
+        runtime_aggregate_only: bool = False,
     ) -> tuple[dict, Path, Path]:
         shards = [self._shard(instance) for instance in successes]
         retained = set(successes)
@@ -214,8 +215,25 @@ class RuntimeCollectionScopeTest(unittest.TestCase):
                 environ={},
                 failed_instances=failures,
                 runtime_workers_only=runtime_workers_only,
+                runtime_aggregate_only=runtime_aggregate_only,
             )
         return result, destination, output
+
+    def test_aggregate_scope_preserves_unrelated_ready_rows(self):
+        result, destination, output = self._advance(
+            (AGGREGATE,), (), "aggregate-only", runtime_workers_only=False,
+            runtime_aggregate_only=True)
+        phases = {adapter._identity(phase): phase for phase in result["phases"]}
+        self.assertEqual("retained", phases[AGGREGATE]["state"])
+        for instance in (JVM, NODE, SDK):
+            self.assertEqual("build", phases[instance]["state"])
+        self.assertIn("wave_failed=false", output.read_text())
+
+    def test_aggregate_scope_rejects_unrelated_shard_and_conflicting_flags(self):
+        for index, (successes, workers) in enumerate((((JVM,), False), ((AGGREGATE,), True))):
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                self._advance(successes, (), f"bad-aggregate-{index}",
+                              runtime_workers_only=workers, runtime_aggregate_only=True)
 
     def test_runtime_scope_preserves_unrelated_ready_rows_without_reporting_failures(self):
         result, destination, output = self._advance(

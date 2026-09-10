@@ -205,7 +205,7 @@ def _verify_captured(root, keyring, keys_directory):
         keys = {"artifact", "captureProducer", "observed"}
         require_exact_keys(transport, keys | ({"stateWave"} if "stateWave" in transport else set()), "Original state transport")
         wave = transport.get("stateWave", 0)
-        if type(wave) is not int or not 0 <= wave <= 4 or transport["captureProducer"] != caller["transportProducer"]:
+        if type(wave) is not int or not 0 <= wave <= 5 or transport["captureProducer"] != caller["transportProducer"]:
             raise ValueError("Retained current transport differs from original caller")
         required = {"product-resume-inputs", "product-resume-state"} | ({"runtime-state"} if wave else set())
         if {path.name for path in (current / "original").iterdir()} != required:

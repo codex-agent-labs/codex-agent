@@ -238,7 +238,7 @@ def main(argv: list[str] | None = None) -> None:
     for name in ("expected-build-key", "artifact-sha256", "trusted-source-sha", "trusted-workflow-sha", "validation-tree"):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--artifact-id", type=int, required=True)
-    parser.add_argument("--state-wave", type=int, choices=range(5), required=True)
+    parser.add_argument("--state-wave", type=int, choices=range(6), required=True)
     parser.add_argument("--release-handoff", type=Path, action="append", default=[])
     parser.add_argument("--sdk-validation-tooling", type=Path)
     args = parser.parse_args(argv)

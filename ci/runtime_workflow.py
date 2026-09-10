@@ -27,7 +27,8 @@ def matrix(plan_path, discovery_root, state_root, github_output_path, *, reposit
 
 
 def continuation(plan_path, discovery_root, state_root, github_output_path, *,
-                 repository_root=None, environ=None, sdk_validation_tooling=None):
+                 repository_root=None, environ=None, sdk_validation_tooling=None,
+                 require_completed=False):
     """Route the final fully materialized Runtime closure, not early native fanout.
 
     The sole replay supplies every identity/key/receipt. A completed aggregate
@@ -35,6 +36,8 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
     Protected callers must independently capture/elect these same originals.
     Empty standalone worker matrices do not establish this prerequisite.
     """
+    if type(require_completed) is not bool:
+        raise ValueError("Runtime continuation completion requirement must be boolean")
     inspected = products.inspect_products(plan_path, discovery_root, state_root,
         repository_root=repository_root, environ=environ,
         sdk_validation_tooling=sdk_validation_tooling)
@@ -77,6 +80,8 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
         receipt, status = None, "ready"
     else:
         raise ValueError("Runtime aggregate lacks an exact ready plan or completed original payload")
+    if require_completed and status != "completed":
+        raise ValueError("Runtime aggregate payload remains incomplete after collection")
     native = {"include": [{"target": target,
         "buildKey": phases[PhaseInstanceId("runtime", target, "metadata", target)]["buildKey"]}
         for target in NATIVE_TARGETS]}
@@ -123,8 +128,8 @@ def capture(plan_path, destination, github_output_path, *, artifact_id, artifact
 
 def collect(input_root, destination, github_output_path, *, wave, trusted_workflow_sha,
             repository_root=None, environ=None, token):
-    if type(wave) is not int or not 1 <= wave <= 4:
-        raise ValueError("Runtime workflow wave must be one through four")
+    if type(wave) is not int or not 1 <= wave <= 5:
+        raise ValueError("Runtime workflow wave must be one through five")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     input_root, _, destination = products._product_materialization_paths(root, input_root, input_root, destination)
     plan = input_root / "product-resume-inputs/plan/impact-plan.json"
@@ -134,19 +139,35 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
         raise ValueError("Runtime workflow destination must not exist")
     collection = products.collect_runtime_workers(
         plan, discovery, state, destination / "collection", trusted_workflow_sha=trusted_workflow_sha,
-        repository_root=repository_root, environ=environ, token=token)
+        repository_root=repository_root, environ=environ, token=token,
+        **({"runtime_aggregate_only": True} if wave == 5 else {}))
+    if wave == 5 and (len(collection["rows"]) != 1 or products._identity(collection["rows"][0]) !=
+                      PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")):
+        raise ValueError("Runtime aggregate collection requires its sole elected aggregate row")
     shards = [destination / "collection" / row["shardDirectory"]
               for row in collection["rows"] if row["result"] == "success"]
     failures = tuple(products._identity(row) for row in collection["rows"] if row["result"] != "success")
     handoff = destination / "handoff"
     advanced = products.advance_products(
         plan, discovery, state, shards, handoff / "runtime-state", github_output_path,
-        repository_root=repository_root, environ=environ, failed_instances=failures, runtime_workers_only=True)
+        repository_root=repository_root, environ=environ, failed_instances=failures,
+        **({"runtime_aggregate_only": True} if wave == 5 else {"runtime_workers_only": True}))
     # Original input and receipt bytes are forwarded, not regenerated. Collection
     # diagnostics have their own upload, avoiding recursively nested wave archives.
     for name in ("product-resume-inputs", "product-resume-state"):
         snapshot_regular_tree(input_root / name, handoff / name, allow_empty=True)
-    if failures:
+    if wave == 5:
+        if failures:
+            github_output(github_output_path, {
+                "native_attestation_matrix": '{"include":[]}',
+                "aggregate_state": "failed", "aggregate_key": "", "aggregate_receipt_sha256": "",
+                "aggregate_required": False, "aggregate_payload_complete": False,
+            })
+        else:
+            continuation(handoff / "product-resume-inputs/plan/impact-plan.json",
+                         handoff / "product-resume-state", handoff / "runtime-state", github_output_path,
+                         repository_root=repository_root, environ=environ, require_completed=True)
+    elif failures:
         github_output(github_output_path, {"runtime_matrix": '{"include":[]}',
                                           "runtime_workers_required": False, "supervisor_key": ""})
     else:

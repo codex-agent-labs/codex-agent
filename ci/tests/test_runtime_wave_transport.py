@@ -55,7 +55,7 @@ class RuntimeWaveTransportTest(unittest.TestCase):
 
     def test_successor_waves_use_exact_job_artifact_attempt_and_three_roots(self):
         original_plan = self.plan_path.read_bytes()
-        for wave in (1, 4):
+        for wave in (1, 4, 5):
             destination = self.root / f"build/runtime-wave-{wave}"
             result, contents, artifact, job, query, listing, download = self.capture(
                 wave, destination,
@@ -87,10 +87,10 @@ class RuntimeWaveTransportTest(unittest.TestCase):
 
     def test_wave_range_names_attempt_and_exact_root_set_fail_closed(self):
         with mock.patch.object(product_reuse, "_observe_ci_producer_jobs") as observe:
-            for number, wave in enumerate((-1, 5, True)):
+            for number, wave in enumerate((-1, 6, True)):
                 destination = self.root / f"build/rejected-wave-{number}"
                 with self.subTest(wave=wave), self.assertRaisesRegex(
-                    ValueError, "integer from zero through four",
+                    ValueError, "integer from zero through five",
                 ):
                     product_reuse.capture_runtime_resume_upload(
                         self.plan_path, destination, artifact_id=101,
