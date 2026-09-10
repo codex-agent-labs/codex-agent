@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from ci.tests import test_runtime_release_caller as fixture
 from products.inventory import load_canonical_json_bytes, regular_file_inventory, snapshot_regular_tree
@@ -50,6 +50,30 @@ class RuntimeAttestationCliTest(unittest.TestCase):
             self.assertEqual(31, actual["transport_producer"]["pullRequest"])
             self.assertEqual("f" * 40, actual["transport_producer"]["tree"])
             self.assertEqual("sha256:" + "b" * 64, actual["expected_build_key"])
+            aggregate_args = list(args)
+            aggregate_args[aggregate_args.index("--target") + 1] = "aggregate"
+            for target in product_reuse.NATIVE_TARGETS:
+                aggregate_args.extend(("--variant-handoff", f"{target}=originals/{target}"))
+            aggregate = Mock()
+            # CLI routing only: the independently tested protected caller owns admission.
+            with patch.dict(runtime_release.os.environ, environment, clear=True), \
+                    patch.dict("sys.modules", {"runtime_aggregate_release": SimpleNamespace(
+                        attest_runtime_aggregate_state_ci=aggregate)}):
+                runtime_release.main(aggregate_args)
+            self.assertEqual({target: Path("originals") / target for target in product_reuse.NATIVE_TARGETS},
+                             aggregate.call_args.kwargs["variant_handoffs"])
+            self.assertNotIn("target", aggregate.call_args.kwargs)
+            self.assertEqual(caller.call_args.args, aggregate.call_args.args)
+            self.assertEqual(actual["transport_producer"], aggregate.call_args.kwargs["transport_producer"])
+            from contextlib import redirect_stderr
+            from io import StringIO
+            for malformed in (aggregate_args[:-2], aggregate_args + ["--variant-handoff", "linux-x64=duplicate"],
+                              args + ["--variant-handoff", "linux-x64=unexpected"],
+                              args + ["--variant-handoff", "unknown=path"]):
+                with self.subTest(arguments=malformed), redirect_stderr(StringIO()), \
+                        patch.dict(runtime_release.os.environ, {}, clear=True), self.assertRaises(SystemExit) as error:
+                    runtime_release.main(malformed)
+                self.assertEqual(2, error.exception.code)
 
 
 class RuntimeAttestationSelectionTest(unittest.TestCase):

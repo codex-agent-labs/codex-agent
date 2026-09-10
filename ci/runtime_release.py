@@ -233,7 +233,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("repository-root", "candidate-root", "plan", "destination"):
         parser.add_argument(f"--{name}", type=Path, required=True)
-    parser.add_argument("--target", choices=NATIVE_TARGETS, required=True)
+    parser.add_argument("--target", choices=(*NATIVE_TARGETS, "aggregate"), required=True)
+    parser.add_argument("--variant-handoff", action="append", default=[], metavar="TARGET=PATH")
     for name in ("expected-build-key", "artifact-sha256", "trusted-source-sha", "trusted-workflow-sha", "validation-tree"):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--artifact-id", type=int, required=True)
@@ -241,6 +242,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--release-handoff", type=Path, action="append", default=[])
     parser.add_argument("--sdk-validation-tooling", type=Path)
     args = parser.parse_args(argv)
+    variants = {}
+    for value in args.variant_handoff:
+        target, separator, path = value.partition("=")
+        if not separator or target not in NATIVE_TARGETS or not path or target in variants:
+            parser.error("variant handoffs require unique native TARGET=PATH entries")
+        variants[target] = Path(path)
+    if args.target == "aggregate":
+        if set(variants) != set(NATIVE_TARGETS):
+            parser.error("aggregate attestation requires exactly five native variant handoffs")
+    elif variants:
+        parser.error("native attestation does not accept aggregate variant handoffs")
     event_payload = load_json_bytes(read_regular_file_bytes(
         Path(os.environ["GITHUB_EVENT_PATH"]), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
     event = os.environ.get("GITHUB_EVENT_NAME")
@@ -254,8 +266,15 @@ def main(argv: list[str] | None = None) -> None:
     if args.sdk_validation_tooling is not None:
         from product_reuse import _canonical_control
         tooling = _canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")
-    attest_runtime_state_ci(
-        args.repository_root, args.candidate_root, args.plan, args.destination, target=args.target,
+    if args.target == "aggregate":
+        from runtime_aggregate_release import attest_runtime_aggregate_state_ci
+        caller = attest_runtime_aggregate_state_ci
+        component_arguments = {"variant_handoffs": variants}
+    else:
+        caller = attest_runtime_state_ci
+        component_arguments = {"target": args.target}
+    caller(
+        args.repository_root, args.candidate_root, args.plan, args.destination, **component_arguments,
         expected_build_key=args.expected_build_key, artifact_id=args.artifact_id,
         artifact_sha256=args.artifact_sha256, state_wave=args.state_wave,
         trusted_source_sha=args.trusted_source_sha, trusted_workflow_sha=args.trusted_workflow_sha,

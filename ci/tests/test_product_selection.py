@@ -1307,6 +1307,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/product_reuse.py",
             "ci/runtime_native_phase.py",
             "ci/runtime_original_ci.py",
+            "ci/runtime_aggregate_release.py",
             "ci/runtime_adapter_phase.py",
             "ci/runtime_supervisor.py",
             "ci/runtime_workflow.py",
