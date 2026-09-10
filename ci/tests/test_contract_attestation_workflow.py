@@ -144,6 +144,7 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
             "CONTRACT_ATTESTATION_ARTIFACT_ID": "700", "CONTRACT_ATTESTATION_ARTIFACT_DIGEST": "sha256:" + "a" * 64,
             "PRODUCT_RESUME_RESULT": "success", "PRODUCT_RESUME_ARTIFACT_ID": "701",
             "PRODUCT_RESUME_ARTIFACT_DIGEST": "sha256:" + "b" * 64,
+            "PRODUCT_FULL_REUSE": "true", "RUNTIME_WAVE_FAILED": "false false false false",
         }
         cases = [({}, True), ({"CONTRACT_COMPLETE": "false", "CONTRACT_ATTESTATION_RESULT": "skipped",
                                "CONTRACT_ATTESTATION_ARTIFACT_ID": "", "CONTRACT_ATTESTATION_ARTIFACT_DIGEST": ""}, True)]
