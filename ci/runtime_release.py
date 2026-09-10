@@ -249,7 +249,10 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("variant handoffs require unique native TARGET=PATH entries")
         variants[target] = Path(path)
     if args.target == "aggregate":
-        if set(variants) != set(NATIVE_TARGETS):
+        if args.release_handoff:
+            if len(args.release_handoff) != 1 or variants:
+                parser.error("aggregate reuse requires one direct release carrier and no variant handoffs")
+        elif set(variants) != set(NATIVE_TARGETS):
             parser.error("aggregate attestation requires exactly five native variant handoffs")
     elif variants:
         parser.error("native attestation does not accept aggregate variant handoffs")

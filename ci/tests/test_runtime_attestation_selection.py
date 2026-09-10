@@ -65,11 +65,22 @@ class RuntimeAttestationCliTest(unittest.TestCase):
             self.assertNotIn("target", aggregate.call_args.kwargs)
             self.assertEqual(caller.call_args.args, aggregate.call_args.args)
             self.assertEqual(actual["transport_producer"], aggregate.call_args.kwargs["transport_producer"])
+            retained_args = list(args)
+            retained_args[retained_args.index("--target") + 1] = "aggregate"
+            retained_args += ["--release-handoff", "original-release"]
+            with patch.dict(runtime_release.os.environ, environment, clear=True), \
+                    patch.dict("sys.modules", {"runtime_aggregate_release": SimpleNamespace(
+                        attest_runtime_aggregate_state_ci=aggregate)}):
+                runtime_release.main(retained_args)
+            self.assertEqual({}, aggregate.call_args.kwargs["variant_handoffs"])
+            self.assertEqual((Path("original-release"),), aggregate.call_args.kwargs["release_handoffs"])
             from contextlib import redirect_stderr
             from io import StringIO
             for malformed in (aggregate_args[:-2], aggregate_args + ["--variant-handoff", "linux-x64=duplicate"],
                               args + ["--variant-handoff", "linux-x64=unexpected"],
-                              args + ["--variant-handoff", "unknown=path"]):
+                              args + ["--variant-handoff", "unknown=path"],
+                              retained_args + ["--variant-handoff", "linux-x64=unexpected"],
+                              retained_args + ["--release-handoff", "second-release"]):
                 with self.subTest(arguments=malformed), redirect_stderr(StringIO()), \
                         patch.dict(runtime_release.os.environ, {}, clear=True), self.assertRaises(SystemExit) as error:
                     runtime_release.main(malformed)

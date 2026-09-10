@@ -282,16 +282,66 @@ class RuntimeAggregateReleaseTest(unittest.TestCase):
         args.pop("selected_root")
         args.pop("selection")
         with patch("reuse.api_request", side_effect=AssertionError("retained aggregate HTTP fallback")), \
-                self.assertRaisesRegex(ValueError, "not implemented"):
+                self.assertRaisesRegex(ValueError, "exactly one direct release carrier"):
             caller.attest_runtime_aggregate_state_ci(self.repository, self.work, self.work / "plan", self.output,
                 artifact_id=700, artifact_sha256="sha256:" + "a" * 64, state_wave=4,
-                release_handoffs=(self.work / "unsupported-retained",), **args)
+                release_handoffs=(self.work / "first", self.work / "second"), **args)
         before = regular_file_inventory(self.selected, allow_empty=True)
         with patch("reuse.api_request", side_effect=AssertionError("unsafe output HTTP")), \
                 self.assertRaisesRegex(ValueError, "overlaps"):
             caller._attest_selected_runtime_aggregate(self.repository, self.selected / "nested-output", **self.arguments())
         self.assertEqual(before, regular_file_inventory(self.selected, allow_empty=True))
         self.assertEqual(0, self.environment.secret_reads)
+
+    def test_retired_complete_release_is_forwarded_without_secret_or_original_ci(self):
+        direct_selection = self.work / "direct-selection"
+        snapshot_regular_tree(self.selected, direct_selection, allow_empty=True)
+        # The producer's direct selection has no undeclared root diagnostic.
+        # Empty original CI diagnostics remain in the exact external carrier.
+        (direct_selection / "empty-diagnostic.log").unlink()
+        with patch("reuse.api_request", side_effect=self.api):
+            self.invoke(selected_root=direct_selection)
+        original_inventory = regular_file_inventory(self.output, allow_empty=True)
+        policy_bytes = self.keyring.read_bytes()
+        self.keyring.write_bytes(canonical_json_bytes({**self.policy, "activeKey": None,
+                                                       "retiredKeys": [self.policy["activeKey"]]}))
+        subprocess.run(["git", "add", "gradle/release"], cwd=self.repository, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "retired synthetic policy"], cwd=self.repository,
+                       check=True, capture_output=True)
+        retired_pin = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repository,
+                                     check=True, capture_output=True, text=True).stdout.strip()
+        self.environment.forbid_secret = True
+        previous_reads = self.environment.secret_reads
+        try:
+            with patch("reuse.api_request", side_effect=AssertionError("original CI during retained reuse")), \
+                    patch.object(caller, "build_runtime_aggregate_attestation", side_effect=AssertionError("re-signing")):
+                result = caller._attest_selected_runtime_aggregate(
+                    self.repository, self.work / "reused", **self.arguments(
+                        trusted_source_sha=retired_pin, variant_handoffs={}, release_handoff=self.output, token=None))
+            self.assertEqual("retained-release", result["releaseDirectory"])
+            self.assertEqual(original_inventory, regular_file_inventory(
+                self.work / "reused/retained-release", allow_empty=True))
+            self.assertEqual(original_inventory, regular_file_inventory(self.output, allow_empty=True))
+            self.assertEqual(previous_reads, self.environment.secret_reads)
+            changed_selection = self.work / "changed-selection"
+            snapshot_regular_tree(self.selected, changed_selection, allow_empty=True)
+            changed_stage = changed_selection / self.selection["originals"][0]["directory"] / "stage"
+            (changed_stage / "unreceipted-file").write_bytes(b"not selected original bytes\n")
+            with patch("reuse.api_request", side_effect=AssertionError("fallback on mismatched selection")), \
+                    self.assertRaisesRegex(ValueError, "selected original stage"):
+                caller._attest_selected_runtime_aggregate(
+                    self.repository, self.work / "rejected", **self.arguments(
+                        selected_root=changed_selection, trusted_source_sha=retired_pin,
+                        variant_handoffs={}, release_handoff=self.output, token=None))
+            self.assertFalse((self.work / "rejected").exists())
+            self.assertEqual(previous_reads, self.environment.secret_reads)
+        finally:
+            self.keyring.write_bytes(policy_bytes)
+            subprocess.run(["git", "add", "gradle/release"], cwd=self.repository, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-qm", "restore synthetic policy"], cwd=self.repository,
+                           check=True, capture_output=True)
+            type(self).pin = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repository,
+                                           check=True, capture_output=True, text=True).stdout.strip()
 
     def test_public_entry_preserves_exact_current_transport_and_passes_selected_identity(self):
         candidate = self.work / "candidate"

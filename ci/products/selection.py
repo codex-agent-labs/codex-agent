@@ -221,6 +221,7 @@ _IOS_BINARY_BUILD_LOGIC = frozenset({
     "codexagent.ios-runtime.gradle.kts",
 })
 _CONTROL_ONLY_FILES = frozenset({
+    "gradle/build-logic/src/main/kotlin/AppleOriginalExecutionVerification.kt",
     "ci/cache_seed.py",
     "ci/contract_release.py",
     "ci/product_release_context.py",
@@ -254,6 +255,8 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/sdk_validation.py",
     "ci/products/sdk_validation_inputs.py",
     "ci/products/sdk_apple_content.py",
+    "ci/products/runtime_aggregate_handoff.py",
+    "ci/products/sdk_native_metadata.py",
     "ci/products/selection.py",
     "ci/products/sdk_inputs.py",
     "ci/products/sdk_native.py",

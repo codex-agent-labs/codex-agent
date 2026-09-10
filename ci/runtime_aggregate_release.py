@@ -2,8 +2,8 @@
 
 Execute only from independently pinned caller code. CI26 capture authenticates
 original uploads; existing signed Contract/native and semantic gates authenticate
-their contents. A retained aggregate needs a complete release carrier reader,
-which is not yet implemented: supplied retained aggregates fail closed.
+their contents. Retained releases use the complete signed carrier reader;
+their original bytes and provenance are forwarded without re-signing.
 """
 
 from collections.abc import Mapping
@@ -101,17 +101,19 @@ def _attest_selected_runtime_aggregate(
     repository_root: Path, destination: Path, *, selected_root: Path, selection: dict[str, Any],
     expected_build_key: str, trusted_source_sha: str, trusted_workflow_sha: str,
     transport_producer: Mapping[str, Any], event_payload: dict[str, Any], environment: Mapping[str, str],
-    token: str, variant_handoffs: dict[str, Path],
+    token: str | None, variant_handoffs: dict[str, Path], release_handoff: Path | None = None,
 ) -> dict[str, Any]:
     """Private composition seam; the public entry elects/restores the selection."""
     trusted, producer, source_tree, expected_environment, reason = verify_product_release_context(
         repository_root, trusted_source_sha=trusted_source_sha, trusted_workflow_sha=trusted_workflow_sha,
         transport_producer=transport_producer, event_payload=event_payload, environment=environment)
     require_sha256(expected_build_key, "Selected Runtime aggregate metadata build key")
-    require_exact_keys(variant_handoffs, set(NATIVE_TARGETS), "Original signed Runtime variant handoffs")
-    if type(token) is not str or not token:
+    require_exact_keys(variant_handoffs, set(NATIVE_TARGETS) if release_handoff is None else set(),
+                       "Original signed Runtime variant handoffs")
+    if release_handoff is None and (type(token) is not str or not token):
         raise ValueError("Runtime aggregate original CI capture requires an observation token")
-    output = _destination(destination, (trusted, selected_root, *variant_handoffs.values()))
+    output = _destination(destination, (trusted, selected_root, *variant_handoffs.values(),
+                                       *((release_handoff,) if release_handoff is not None else ())))
     sources = {"selected-inputs": Path(selected_root),
                **{f"variant-inputs/{target}": Path(path) for target, path in variant_handoffs.items()}}
     before = {name: regular_file_inventory(path, allow_empty=name == "selected-inputs")
@@ -129,6 +131,38 @@ def _attest_selected_runtime_aggregate(
         policy = load_keyring(trust.keyring, trust.keys)
         selected = prepared / "selected-inputs"
         originals = _selected_originals(selected, selection, producer, expected_build_key)
+
+        if release_handoff is not None:
+            from products.runtime_aggregate_handoff import verified_runtime_aggregate_handoff
+            with verified_runtime_aggregate_handoff(
+                release_handoff, keyring=trust.keyring, keys_directory=trust.keys,
+            ) as retained:
+                for identity, original in originals.items():
+                    instance = PhaseInstanceId(*identity)
+                    if read_regular_file_bytes(original["receiptPath"]) != retained["receiptBytes"][instance]:
+                        raise ValueError("Retained aggregate differs from a selected original receipt")
+                    retained_stage = retained["directory"] / "selected-inputs/predecessors" / (
+                        "-".join(identity)) / "stage"
+                    if regular_file_inventory(original["stage"]) != regular_file_inventory(retained_stage):
+                        raise ValueError("Retained aggregate differs from a selected original stage")
+                snapshot_regular_tree(retained["directory"], prepared / "retained-release", allow_empty=True)
+                if regular_file_inventory(prepared / "retained-release", allow_empty=True) != retained["inventory"]:
+                    raise ValueError("Retained aggregate changed during forwarding")
+            # The direct original carrier stays byte-identical. Current selection
+            # and consumer provenance live beside it, never inside that carrier.
+            caller = {"schemaVersion": 1, "target": "aggregate", "trustedSourceCommit": trusted_source_sha,
+                "trustedSourceTree": source_tree, "trustedWorkflowSha": trusted_workflow_sha,
+                "transportProducer": producer, "authorizationReason": reason, "event": event_payload,
+                "environment": {**expected_environment, "GITHUB_REF": environment.get("GITHUB_REF")},
+                "metadataReceiptSha256": sha256_file(originals[("runtime", "runtime-aggregate", "metadata", "aggregate")]["receiptPath"]),
+                "releaseDirectory": "retained-release"}
+            for name, source in sources.items():
+                if any(regular_file_inventory(path, allow_empty=name == "selected-inputs") != before[name]
+                       for path in (source, prepared / name)):
+                    raise ValueError("Runtime aggregate selected evidence changed during reuse")
+            write_canonical_json(prepared / "caller.json", caller)
+            publish_regular_tree(prepared, output, allow_empty=True)
+            return caller
 
         def original(component, phase, target):
             return originals[("runtime", component, phase, target)]
@@ -231,20 +265,21 @@ def attest_runtime_aggregate_state_ci(
 ) -> dict[str, Any]:
     """Capture/elect the completed aggregate and sign only its original bytes.
 
-    Retained aggregate release admission is pending a complete carrier reader;
-    it never falls back to CI or re-signs a supplied retained aggregate.
+    Retained aggregate release admission never falls back to original CI or
+    re-signs. Current selected-state transport is still authenticated separately.
     """
-    if release_handoffs:
-        raise ValueError("Retained aggregate release handoff admission is not implemented")
+    if len(release_handoffs) > 1:
+        raise ValueError("Runtime aggregate reuse requires exactly one direct release carrier")
     trusted, producer, _, _, _ = verify_product_release_context(
         repository_root, trusted_source_sha=trusted_source_sha, trusted_workflow_sha=trusted_workflow_sha,
         transport_producer=transport_producer, event_payload=event_payload, environment=environment)
     require_sha256(expected_build_key, "Selected Runtime aggregate metadata build key")
-    require_exact_keys(variant_handoffs, set(NATIVE_TARGETS), "Original signed Runtime variant handoffs")
+    require_exact_keys(variant_handoffs, set() if release_handoffs else set(NATIVE_TARGETS),
+                       "Original signed Runtime variant handoffs")
     candidate = Path(candidate_root).resolve(strict=True)
     if trusted == candidate or trusted in candidate.parents or candidate in trusted.parents:
         raise ValueError("Runtime aggregate signing requires separate trusted and candidate checkouts")
-    output = _destination(destination, (trusted, candidate, plan_path, *variant_handoffs.values()))
+    output = _destination(destination, (trusted, candidate, plan_path, *variant_handoffs.values(), *release_handoffs))
     if type(token) is not str or not token:
         raise ValueError("Runtime aggregate state capture requires an observation token")
     with tempfile.TemporaryDirectory(prefix="runtime-aggregate-selected-", dir=candidate) as temporary:
@@ -265,7 +300,8 @@ def attest_runtime_aggregate_state_ci(
             result = _attest_selected_runtime_aggregate(trusted, prepared, selected_root=selected, selection=selection,
                 expected_build_key=expected_build_key, trusted_source_sha=trusted_source_sha,
                 trusted_workflow_sha=trusted_workflow_sha, transport_producer=producer,
-                event_payload=event_payload, environment=environment, token=token, variant_handoffs=variant_handoffs)
+                event_payload=event_payload, environment=environment, token=token, variant_handoffs=variant_handoffs,
+                release_handoff=release_handoffs[0] if release_handoffs else None)
             if regular_file_inventory(root, allow_empty=True) != before:
                 raise ValueError("Runtime aggregate selected originals changed during protected verification")
             snapshot_regular_tree(capture, prepared / "selected-state-transport", allow_empty=True)
