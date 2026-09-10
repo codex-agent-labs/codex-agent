@@ -29,6 +29,23 @@ def row(instance, **extra):
 
 
 class RuntimeWorkflowTest(unittest.TestCase):
+    def test_variant_trust_cli_preserves_explicit_paths_and_rejects_duplicate_targets(self):
+        arguments = ["variant-trust", "--destination", "output", "--keyring", "policy.json",
+                     "--keys-directory", "keys"]
+        handoffs = {target: Path(f"original/{target}/runtime-input") for target in workflow.NATIVE_TARGETS}
+        selected = [value for target, path in handoffs.items()
+                    for value in ("--variant-handoff", f"{target}={path}")]
+        with mock.patch("products.runtime_variant_trust.stage_runtime_variant_trust") as stage:
+            self.assertEqual(0, workflow.main([*arguments, *selected]))
+            stage.assert_called_once_with(handoffs, Path("output"), keyring=Path("policy.json"),
+                                          keys_directory=Path("keys"))
+        for invalid in (selected[1], "unknown=path", "macos-arm64=", "macos-arm64"):
+            with self.subTest(invalid=invalid), \
+                    mock.patch("products.runtime_variant_trust.stage_runtime_variant_trust") as stage:
+                with self.assertRaises(SystemExit):
+                    workflow.main([*arguments, *selected, "--variant-handoff", invalid])
+                stage.assert_not_called()
+
     def test_fixed_workflow_collects_all_four_waves_before_final_failure(self):
         root = Path(__file__).resolve().parents[2]
         source = (root / '.github/workflows/product-validation.yml').read_text()
@@ -350,6 +367,32 @@ class RuntimeWorkflowTest(unittest.TestCase):
                                   "matrix": value}, result)
                 for name, raw in self.base.items():
                     self.assertEqual(raw, (original / name).read_bytes())
+
+    def test_aggregate_capture_requires_exact_ready_closure_not_native_worker_election(self):
+        for index, (status, key) in enumerate((("ready", KEY), ("completed", KEY),
+                                              ("ready", "sha256:" + "0" * 64))):
+            destination = self.root / f"aggregate-capture-{index}"
+            with self.subTest(state=status, key=key), \
+                    mock.patch.object(workflow.products, "capture_runtime_resume_upload", side_effect=self.captured), \
+                    mock.patch.object(workflow.products, "runtime_worker_matrix", return_value={"include": []}), \
+                    mock.patch.object(workflow, "continuation", return_value={"aggregate": {
+                        "state": status, "buildKey": key}}) as route:
+                def capture():
+                    return workflow.capture(self.root / "plan", destination, self.output,
+                        artifact_id=101, artifact_sha256=KEY, trusted_workflow_sha=PIN,
+                        state_wave=4, instance=AGGREGATE, expected_build_key=KEY,
+                        repository_root=self.root, environ=self.environment, token="synthetic")
+                if index:
+                    with self.assertRaisesRegex(ValueError, "aggregate is not elected"):
+                        capture()
+                else:
+                    result = capture()
+                    self.assertEqual(destination / "original/runtime-state/phase-plans/"
+                                     "runtime-runtime-aggregate-metadata-aggregate.json", result["phase_plan"])
+                route.assert_called_once_with(
+                    destination / "original/product-resume-inputs/plan/impact-plan.json",
+                    destination / "original/product-resume-state", destination / "original/runtime-state",
+                    self.output, repository_root=self.root, environ=self.environment)
 
     def test_capture_rejects_failed_transport_partial_identity_wrong_key_and_duplicate_row(self):
         with mock.patch.object(workflow.products, "capture_runtime_resume_upload", side_effect=ValueError("transport rejected")), \

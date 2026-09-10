@@ -125,9 +125,15 @@ def capture(plan_path, destination, github_output_path, *, artifact_id, artifact
     if (instance is None) != (expected_build_key is None):
         raise ValueError("Runtime worker identity and elected key must be supplied together")
     if instance is not None:
-        rows = [row for row in value["include"] if products._identity(row) == instance]
-        if len(rows) != 1 or rows[0]["buildKey"] != expected_build_key:
-            raise ValueError("Runtime workflow worker is not elected with the exact requested key")
+        if instance == PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"):
+            selected = continuation(paths["plan_path"], paths["discovery_root"], paths["state_root"],
+                                    github_output_path, repository_root=repository_root, environ=environ)["aggregate"]
+            if selected["state"] != "ready" or selected["buildKey"] != expected_build_key:
+                raise ValueError("Runtime aggregate is not elected with the exact requested key")
+        else:
+            rows = [row for row in value["include"] if products._identity(row) == instance]
+            if len(rows) != 1 or rows[0]["buildKey"] != expected_build_key:
+                raise ValueError("Runtime workflow worker is not elected with the exact requested key")
         paths["phase_plan"] = paths["state_root"] / "phase-plans" / (
             f"runtime-{instance.component}-{instance.phase}-{instance.target}.json")
     github_output(github_output_path, {name: str(path) for name, path in paths.items()})
@@ -219,6 +225,10 @@ def main(argv=None):
     collected.add_argument("--wave", type=int, required=True)
     collected.add_argument("--state-wave", type=int)
     collected.add_argument("--trusted-workflow-sha", required=True)
+    trust = commands.add_parser("variant-trust")
+    trust.add_argument("--variant-handoff", action="append", required=True, metavar="TARGET=PATH")
+    for name in ("destination", "keyring", "keys-directory"):
+        trust.add_argument(f"--{name}", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "matrix":
@@ -237,6 +247,16 @@ def main(argv=None):
                     trusted_workflow_sha=args.trusted_workflow_sha, state_wave=args.state_wave,
                     instance=PhaseInstanceId("runtime", *values[:3]) if all(values) else None,
                     expected_build_key=args.expected_build_key, token=os.environ.get("GITHUB_TOKEN", ""))
+        elif args.command == "variant-trust":
+            from products.runtime_variant_trust import stage_runtime_variant_trust
+            handoffs = {}
+            for value in args.variant_handoff:
+                target, separator, path = value.partition("=")
+                if not separator or target not in NATIVE_TARGETS or not path or target in handoffs:
+                    raise ValueError("Variant handoffs require unique native TARGET=PATH entries")
+                handoffs[target] = Path(path)
+            stage_runtime_variant_trust(handoffs, args.destination,
+                                        keyring=args.keyring, keys_directory=args.keys_directory)
         else:
             collect(Path(os.path.abspath(args.input_root)), Path(os.path.abspath(args.destination)), args.github_output,
                     wave=args.wave, trusted_workflow_sha=args.trusted_workflow_sha,

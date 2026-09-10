@@ -1344,6 +1344,116 @@ jobs:
           compression-level: 0
           retention-days: 90
 
+  runtime-aggregate:
+    name: runtime-runtime-aggregate-metadata-aggregate
+    needs: [plan, runtime-continuation, runtime-native-attestation]
+    if: >-
+      needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.runtime-continuation.result == 'success' &&
+      needs.runtime-continuation.outputs.aggregate_required == 'true' &&
+      needs.runtime-native-attestation.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.validation_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: captured
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.runtime-continuation.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.runtime-continuation.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          state-wave: ${{ needs.runtime-continuation.outputs.state_wave }}
+          component: runtime-aggregate
+          phase: metadata
+          target: aggregate
+          build-key: ${{ needs.runtime-continuation.outputs.aggregate_key }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codex-agent-runtime-release-handoff-*-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
+          path: build/runtime-native-handoffs
+          merge-multiple: false
+      - name: Verify and project the five original detached native trust closures
+        env:
+          TREE: ${{ needs.plan.outputs.validation_tree }}
+        run: |
+          set -euo pipefail
+          handoffs=()
+          for target in macos-arm64 macos-x64 linux-arm64 linux-x64 windows-x64; do
+            handoffs+=(--variant-handoff "$target=build/runtime-native-handoffs/codex-agent-runtime-release-handoff-$target-$TREE-attempt-$GITHUB_RUN_ATTEMPT/runtime-input")
+          done
+          python3 -B ci/runtime_workflow.py variant-trust "${handoffs[@]}" \
+            --destination build/runtime-variant-trust \
+            --keyring gradle/release/product-signing-keys.json --keys-directory gradle/release/keys
+      - uses: ./.github/actions/setup-kmp
+        with:
+          product-worker: 'true'
+          cache-read-only: 'true'
+          xcode-fingerprint: none
+      - id: identity
+        env:
+          BUILD_KEY: ${{ needs.runtime-continuation.outputs.aggregate_key }}
+        run: echo "key_hex=${BUILD_KEY#sha256:}" >> "$GITHUB_OUTPUT"
+      - name: Execute only the elected aggregate metadata phase
+        env:
+          PLAN: ${{ steps.captured.outputs.plan-path }}
+          DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+          STATE: ${{ steps.captured.outputs.state-root }}
+          BUILD_KEY: ${{ needs.runtime-continuation.outputs.aggregate_key }}
+        run: |
+          python3 -B ci/product_reuse.py execute-runtime-aggregate \
+            --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+            --expected-build-key "$BUILD_KEY" --variant-trust-root build/runtime-variant-trust \
+            --destination build/runtime-aggregate-worker
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-runtime-worker-runtime-aggregate-metadata-aggregate-${{ steps.identity.outputs.key_hex }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
+          path: build/runtime-aggregate-worker
+          if-no-files-found: warn
+          overwrite: false
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 90
+
+  runtime-collect-5:
+    name: runtime-collect-5
+    needs: [plan, runtime-continuation, runtime-aggregate]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.runtime-continuation.result == 'success' &&
+      needs.runtime-continuation.outputs.aggregate_required == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
+      wave_failed: ${{ steps.collect.outputs.wave-failed }}
+      full_reuse: ${{ steps.collect.outputs.full-reuse }}
+      aggregate_payload_complete: ${{ steps.collect.outputs.aggregate-payload-complete }}
+      aggregate_key: ${{ steps.collect.outputs.aggregate-key }}
+      aggregate_receipt_sha256: ${{ steps.collect.outputs.aggregate-receipt-sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.validation_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: collect
+        uses: ./.github/actions/collect-runtime-wave
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.runtime-continuation.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.runtime-continuation.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          state-wave: ${{ needs.runtime-continuation.outputs.state_wave }}
+          wave: '5'
+          tree: ${{ needs.plan.outputs.validation_tree }}
+
   android:
     if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_android == 'true'
     needs: [workflow-lint, plan]
@@ -1540,7 +1650,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-native-attestation, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
+    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-native-attestation, runtime-aggregate, runtime-collect-5, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -1557,8 +1667,8 @@ jobs:
           PRODUCT_RESUME_RESULT: ${{ needs.product-resume.result }}
           PRODUCT_RESUME_ARTIFACT_ID: ${{ needs.product-resume.outputs.artifact_id }}
           PRODUCT_RESUME_ARTIFACT_DIGEST: ${{ needs.product-resume.outputs.artifact_digest }}
-          RUNTIME_WAVE_FAILED: ${{ needs.runtime-collect-1.outputs.wave_failed }} ${{ needs.runtime-collect-2.outputs.wave_failed }} ${{ needs.runtime-collect-3.outputs.wave_failed }} ${{ needs.runtime-collect-4.outputs.wave_failed }}
-          PRODUCT_FULL_REUSE: ${{ needs.runtime-collect-4.outputs.full_reuse || needs.runtime-collect-3.outputs.full_reuse || needs.runtime-collect-2.outputs.full_reuse || needs.runtime-collect-1.outputs.full_reuse || needs.product-resume.outputs.full_reuse }}
+          RUNTIME_WAVE_FAILED: ${{ needs.runtime-collect-1.outputs.wave_failed }} ${{ needs.runtime-collect-2.outputs.wave_failed }} ${{ needs.runtime-collect-3.outputs.wave_failed }} ${{ needs.runtime-collect-4.outputs.wave_failed }} ${{ needs.runtime-collect-5.outputs.wave_failed }}
+          PRODUCT_FULL_REUSE: ${{ needs.runtime-collect-5.outputs.full_reuse || needs.runtime-collect-4.outputs.full_reuse || needs.runtime-collect-3.outputs.full_reuse || needs.runtime-collect-2.outputs.full_reuse || needs.runtime-collect-1.outputs.full_reuse || needs.product-resume.outputs.full_reuse }}
         run: |
           if [ "$EVENT_AUTHORIZED" != true ]; then
             echo 'The workflow-owned event gate did not authorize remote product CI.' >&2

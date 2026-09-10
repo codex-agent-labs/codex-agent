@@ -18,6 +18,40 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class RuntimeContinuationWorkflowTest(unittest.TestCase):
+    def test_aggregate_executes_only_after_election_and_collects_even_failed_metadata(self):
+        aggregate = workflow_job(self.workflow, "runtime-aggregate")
+        collector = workflow_job(self.workflow, "runtime-collect-5")
+        for value in ("name: runtime-runtime-aggregate-metadata-aggregate",
+                      "needs.runtime-continuation.outputs.aggregate_required == 'true'",
+                      "needs.runtime-native-attestation.result == 'success'",
+                      "needs.plan.outputs.remote_build_authorized == 'true'",
+                      "component: runtime-aggregate", "phase: metadata", "target: aggregate",
+                      "build-key: ${{ needs.runtime-continuation.outputs.aggregate_key }}"):
+            self.assertIn(value, aggregate)
+        self.assertLess(aggregate.index("./.github/actions/capture-runtime-state"),
+                        aggregate.index("./.github/actions/setup-kmp"))
+        self.assertLess(aggregate.index("ci/runtime_workflow.py variant-trust"),
+                        aggregate.index("./.github/actions/setup-kmp"))
+        self.assertIn("merge-multiple: false", aggregate)
+        self.assertIn("for target in macos-arm64 macos-x64 linux-arm64 linux-x64 windows-x64", aggregate)
+        self.assertIn("ci/product_reuse.py execute-runtime-aggregate", aggregate)
+        self.assertIn("--variant-trust-root build/runtime-variant-trust", aggregate)
+        self.assertIn("codex-agent-runtime-worker-runtime-aggregate-metadata-aggregate-${{ steps.identity.outputs.key_hex }}", aggregate)
+        self.assertIn("path: build/runtime-aggregate-worker", aggregate)
+        self.assertNotRegex(aggregate, r"secrets\.|PRIVATE_KEY|runtime_release.py|ssh-keygen")
+        self.assertIn("always()", collector)
+        self.assertIn("needs: [plan, runtime-continuation, runtime-aggregate]", collector)
+        self.assertNotIn("needs.runtime-aggregate.result == 'success'", collector)
+        self.assertIn("wave: '5'", collector)
+        for forwarding in ("artifact-id: ${{ needs.runtime-continuation.outputs.artifact_id }}",
+                           "artifact-sha256: ${{ needs.runtime-continuation.outputs.artifact_digest }}",
+                           "state-wave: ${{ needs.runtime-continuation.outputs.state_wave }}"):
+            self.assertIn(forwarding, aggregate)
+            self.assertIn(forwarding, collector)
+        self.assertIn("runtime-aggregate, runtime-collect-5", self.gate)
+        self.assertIn("needs.runtime-collect-5.outputs.wave_failed", self.gate)
+        self.assertIn("PRODUCT_FULL_REUSE: ${{ needs.runtime-collect-5.outputs.full_reuse ||", self.gate)
+
     @classmethod
     def setUpClass(cls):
         cls.workflow = (ROOT / ".github/workflows/product-validation.yml").read_text(encoding="utf-8")

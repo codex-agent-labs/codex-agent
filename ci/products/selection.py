@@ -259,6 +259,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/sdk_apple_source.py",
     "ci/products/runtime_aggregate_handoff.py",
     "ci/products/runtime_variant_handoff.py",
+    "ci/products/runtime_variant_trust.py",
     "ci/products/sdk_native_metadata.py",
     "ci/products/sdk_native_metadata_admission.py",
     "ci/products/runtime_sdk_handoff.py",
