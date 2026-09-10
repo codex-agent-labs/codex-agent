@@ -82,6 +82,7 @@ internal fun Project.registerIosVerifiedDistributionTasks(
         xctestProductsDirectory.set(distribution.verifyCodexAgentSwiftAuthenticationTests.flatMap {
             it.derivedDataDirectory.dir("Build/Products")
         })
+        xctestRawDirectory.set(distribution.verifyCodexAgentSwiftAuthenticationTests.flatMap { it.rawEvidenceDirectory })
         repositoryDirectory.set(rootProject.layout.projectDirectory)
         canonicalBuildDirectory.set(layout.buildDirectory)
         outputDirectory.set(layout.buildDirectory.dir("apple-verified-distribution"))

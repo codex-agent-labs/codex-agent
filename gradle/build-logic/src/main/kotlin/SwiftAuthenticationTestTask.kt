@@ -15,6 +15,7 @@ import org.gradle.api.tasks.CacheableTask
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.LocalState
 import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputDirectory
@@ -253,9 +254,30 @@ abstract class VerifySwiftAuthenticationTestsTask @Inject constructor(
     @get:OutputFile abstract val simulatorDevicesFile: RegularFileProperty
     @get:OutputDirectory abstract val resultBundleDirectory: DirectoryProperty
     @get:OutputFile abstract val summaryFile: RegularFileProperty
+    @get:OutputDirectory abstract val rawEvidenceDirectory: DirectoryProperty
+    @get:Internal abstract val ownedEvidenceDirectory: DirectoryProperty
+
+    init {
+        ownedEvidenceDirectory.convention(project.layout.buildDirectory.dir("swift-authentication-evidence-task"))
+        rawEvidenceDirectory.convention(ownedEvidenceDirectory.dir("raw"))
+    }
 
     @TaskAction fun verify() {
         val resultBundle = resultBundleDirectory.get().asFile
+        val raw = rawEvidenceDirectory.get().asFile
+        val owned = ownedEvidenceDirectory.get().asFile
+        val originalInputs = listOf(packageDirectory.get().asFile, derivedDataDirectory.get().asFile,
+            resultBundle, summaryFile.get().asFile, simulatorDevicesFile.get().asFile) +
+            listOfNotNull(compiledProductsDirectory.orNull?.asFile)
+        (originalInputs + listOf(raw, owned)).forEach {
+            requireApplePackagePathWithoutSymlinks(it, "XCTest raw evidence")
+        }
+        check(raw.canonicalFile == owned.canonicalFile.resolve("raw") && originalInputs.none {
+            val input = it.canonicalFile.toPath()
+            input.startsWith(raw.canonicalFile.toPath()) || raw.canonicalFile.toPath().startsWith(input)
+        }) { "XCTest raw evidence overlaps an input or is not task-owned" }
+        deleteReleaseTree(raw)
+        Files.createDirectories(raw.toPath())
         Files.deleteIfExists(summaryFile.get().asFile.toPath())
         val importedProducts = compiledProductsDirectory.orNull?.asFile
         if (importedProducts != null) {
@@ -298,6 +320,7 @@ abstract class VerifySwiftAuthenticationTestsTask @Inject constructor(
                         importedProducts != null,
                     ),
                     packageDirectory.get().asFile,
+                    captureDirectory = raw.resolve("attempt-$attempt/xcodebuild"),
                 )
                 if (testOutput.isNotBlank()) logger.lifecycle(testOutput.trimEnd())
                 val summaryJson = processes.captureReleaseProcess(
@@ -305,6 +328,7 @@ abstract class VerifySwiftAuthenticationTestsTask @Inject constructor(
                         "/usr/bin/xcrun", "xcresulttool", "get", "test-results", "summary",
                         "--path", resultBundle.absolutePath, "--compact",
                     ),
+                    captureDirectory = raw.resolve("attempt-$attempt/summary"),
                 )
                 val summary = parseSwiftTestSummary(summaryJson)
                 val testsJson = processes.captureReleaseProcess(
@@ -312,12 +336,17 @@ abstract class VerifySwiftAuthenticationTestsTask @Inject constructor(
                         "/usr/bin/xcrun", "xcresulttool", "get", "test-results", "tests",
                         "--path", resultBundle.absolutePath, "--compact",
                     ),
+                    captureDirectory = raw.resolve("attempt-$attempt/tests"),
                 )
                 val tests = parseSwiftTestCaseResults(testsJson)
                 verifySwiftTestCaseResults(summary, tests, expectedTestIdentifiers.get())
                 summaryFile.get().asFile.atomicWriteJson(
                     swiftTestEvidence(summary, tests, resultBundle.crossLanguageTreeDigest()),
                 )
+                raw.resolve("successful-attempt.json").atomicWriteJson(buildJsonObject {
+                    put("schemaVersion", JsonPrimitive(1))
+                    put("attempt", JsonPrimitive(attempt))
+                })
                 logger.lifecycle("Swift package tests executed: ${summary.total}")
                 return
             } catch (failure: Throwable) {

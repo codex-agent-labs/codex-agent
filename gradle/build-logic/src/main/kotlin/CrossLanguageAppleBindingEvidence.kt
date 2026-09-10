@@ -3301,7 +3301,7 @@ private fun d086ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSy
 )
 
 
-private val expectedAppleTests = listOf(
+internal val expectedAppleTests = listOf(
     swiftBufferingTest,
     swiftFailureTest,
     objectiveCFailureTest,
@@ -6505,7 +6505,7 @@ private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerRefere
     .plus(d088ExpectedObjectiveCAppleBindingReferences())
     .plus(d089ExpectedObjectiveCAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
 
-private fun JsonElement.appleSymbol(): AppleCompilerSymbol {
+internal fun JsonElement.appleSymbol(): AppleCompilerSymbol {
     val symbol = appleObject("Apple compiler symbol").also {
         it.appleKeys(
             "Apple compiler symbol", "precise", "interfaceLanguage", "kind", "path", "title", "accessLevel",
@@ -6526,7 +6526,7 @@ private fun JsonElement.appleSymbol(): AppleCompilerSymbol {
     )
 }
 
-private fun JsonElement.appleReference(): AppleCompilerReference {
+internal fun JsonElement.appleReference(): AppleCompilerReference {
     val reference = appleObject("Apple compiler reference").also {
         it.appleKeys(
             "Apple compiler reference", "precise", "kind", "name", "receiverType", "valueType", "argumentTypes",

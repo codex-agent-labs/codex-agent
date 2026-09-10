@@ -56,6 +56,7 @@ abstract class ExportAppleVerifiedDistributionTask @Inject constructor(
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE) abstract val xcresultDirectory: DirectoryProperty
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE) abstract val xctestPackageDirectory: DirectoryProperty
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE) abstract val xctestProductsDirectory: DirectoryProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE) abstract val xctestRawDirectory: DirectoryProperty
     @get:Internal abstract val repositoryDirectory: DirectoryProperty
     @get:Internal abstract val canonicalBuildDirectory: DirectoryProperty
     @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
@@ -112,6 +113,7 @@ abstract class ExportAppleVerifiedDistributionTask @Inject constructor(
             "xcresult" to xcresultDirectory.get().asFile,
             "xctest-package" to xctestPackageDirectory.get().asFile,
             "xctest-products" to xctestProductsDirectory.get().asFile,
+            "xctest-raw" to xctestRawDirectory.get().asFile,
             "native-evidence" to nativeEvidenceDirectory.get().asFile,
         )
         executionRoots.forEach { (prefix, directory) ->

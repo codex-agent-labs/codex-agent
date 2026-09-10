@@ -7,6 +7,23 @@ import kotlin.test.assertTrue
 /** CLI routing checks only; the delegated Apple verifier has its own complete synthetic closure tests. */
 class ReleaseToolingAppleClosureCliTest {
     @Test
+    fun `original Apple replay cannot omit caller authority or accept a success output`() {
+        val args = arrayOf("verify-original-apple-execution",
+            "--distribution-directory", "unused", "--execution-directory", "unused",
+            "--expected-distribution-proof", "unused", "--expected-sdk-compatibility", "unused")
+        for (missing in listOf("expected-distribution-proof", "expected-sdk-compatibility")) {
+            val error = assertFailsWith<IllegalStateException> {
+                runReleaseTooling(args.withoutOption(missing))
+            }
+            assertTrue("Unexpected release-tooling options" in error.message.orEmpty())
+        }
+        val error = assertFailsWith<IllegalStateException> {
+            runReleaseTooling(args + arrayOf("--success-output", "unused"))
+        }
+        assertTrue("Unexpected release-tooling options" in error.message.orEmpty())
+    }
+
+    @Test
     fun `caller-bound Apple command requires both expectations and rejects output options`() = fixture().use { fixture ->
         listOf("expected-sdk-compatibility", "expected-distribution-proof").forEach { missing ->
             val error = assertFailsWith<IllegalStateException>(missing) {

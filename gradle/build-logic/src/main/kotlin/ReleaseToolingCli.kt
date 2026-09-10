@@ -51,6 +51,14 @@ internal fun runReleaseTooling(arguments: Array<String>) {
             check(productionCrossLanguageCAbiScenarioMappings().sumOf { it.testIds.size } == 231)
             println("codex-agent release tooling is ready")
         }
+        "verify-original-apple-execution" -> {
+            options.requireOnly("distribution-directory", "execution-directory",
+                "expected-distribution-proof", "expected-sdk-compatibility")
+            verifyOriginalAppleExecution(
+                options.file("distribution-directory"), options.file("execution-directory"),
+                options.file("expected-distribution-proof"), options.file("expected-sdk-compatibility"),
+            )
+        }
         "verify-transported-apple-sdk-package-closure" -> {
             options.requireOnly(
                 "product-directory", "validation-evidence-directory", "version",

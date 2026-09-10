@@ -107,7 +107,7 @@ class AppleVerifiedDistributionExportTest {
         private val receipts = mapOf(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT to file(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT))
         private val native = (appleRustSliceSpecs.flatMap { listOf(it.archiveName, it.proofName) } +
             IOS_NATIVE_TESTS_PROOF).associateWith { file("native-evidence/$it") }
-        private val roots = listOf("compiler-raw", "xcframework", "xcresult", "xctest-package", "xctest-products")
+        private val roots = listOf("compiler-raw", "xcframework", "xcresult", "xctest-package", "xctest-products", "xctest-raw")
             .associateWith { prefix -> file("$prefix/original.bin", byteArrayOf(-1, 0, 10)).parentFile } +
             ("native-evidence" to source.resolve("native-evidence"))
         val execution: Map<String, File> = linkedMapOf(

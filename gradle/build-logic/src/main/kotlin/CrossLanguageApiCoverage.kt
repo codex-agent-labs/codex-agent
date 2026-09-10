@@ -165,39 +165,6 @@ internal fun verifyCrossLanguageApiCoverage(
     )
 }
 
-internal fun crossLanguageApiCoverageToken(memberKey: String): String {
-    val ownerPrefix = "common|owner="
-    val kindPrefix = "|kind="
-    val abiPrefix = "|abi="
-    check(memberKey.startsWith(ownerPrefix)) { "Compiler-derived member key has an invalid owner: $memberKey" }
-    val kindStart = memberKey.indexOf(kindPrefix, ownerPrefix.length)
-    val abiStart = memberKey.indexOf(abiPrefix, kindStart + kindPrefix.length)
-    val abiEnd = memberKey.indexOf('|', abiStart + abiPrefix.length)
-    check(kindStart > ownerPrefix.length && abiStart > kindStart && abiEnd > abiStart) {
-        "Compiler-derived member key has an invalid shape: $memberKey"
-    }
-    val owner = memberKey.substring(ownerPrefix.length, kindStart)
-    val kind = memberKey.substring(kindStart + kindPrefix.length, abiStart)
-    check(kind in setOf("constructor", "function", "property", "enum-entry", "object")) {
-        "Compiler-derived member key has an unsupported kind: $kind"
-    }
-    val abiName = memberKey.substring(abiStart + abiPrefix.length, abiEnd)
-    val memberName = if (kind == "object") {
-        check(abiName == owner && memberKey.substring(abiEnd + 1).isNotBlank()) {
-            "Compiler-derived object key has an invalid ABI identity: $memberKey"
-        }
-        owner.substringAfterLast('/').substringAfterLast('.')
-    } else {
-        abiName.removePrefix("$owner.").also { name ->
-            check(name != abiName && name.isNotBlank()) {
-                "Compiler-derived member key has an invalid ABI name: $memberKey"
-            }
-        }
-    }
-    val ownerName = owner.substringAfterLast('/')
-    check(ownerName.isNotBlank()) { "Compiler-derived member key has an invalid owner: $memberKey" }
-    return "api-v1:$ownerName#$kind:$memberName#sha256:${memberKey.byteInputStream().releaseDigest()}"
-}
 
 private fun requireExactCoverageToken(token: String, testId: String) {
     val digestMarker = "#sha256:"
