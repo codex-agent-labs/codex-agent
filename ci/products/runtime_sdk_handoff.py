@@ -15,16 +15,21 @@ from .inventory import (
 from .registry import NATIVE_TARGETS, PhaseInstanceId
 from .runtime_aggregate_handoff import _public_policy, verified_runtime_aggregate_handoff
 from .sdk_inputs import stage_sdk_inputs
+from .sdk_release_selection import require_sdk_release_selection
 
 
 def stage_runtime_sdk_handoff(handoff_root: Path, destination: Path, *,
                               sdk_version: str, compatible_release_range: str,
                               compatible_runtime_compatibility_range: str,
-                              keyring: Path, keys_directory: Path) -> dict:
+                              keyring: Path, keys_directory: Path,
+                              selection_repository_root: Path | None = None,
+                              selection_revision: str | None = None) -> dict:
     """Publish standard SDK inputs only after full original/policy rechecks."""
     handoff_root, destination = Path(handoff_root).absolute(), Path(destination).absolute()
     if keyring is None or keys_directory is None:
         raise ValueError("Runtime SDK handoff requires caller-pinned release policy")
+    if (selection_repository_root is None) != (selection_revision is None):
+        raise ValueError("SDK release selection requires both repository and exact revision")
     sources = (handoff_root, Path(keyring).absolute(), Path(keys_directory).absolute())
 
     def output_safe():
@@ -48,6 +53,9 @@ def stage_runtime_sdk_handoff(handoff_root: Path, destination: Path, *,
         policy_inventory = regular_file_inventory(policy)
         with verified_runtime_aggregate_handoff(handoff_root,
                 keyring=policy / "product-signing-keys.json", keys_directory=policy / "keys") as verified:
+            if selection_repository_root is not None:
+                require_sdk_release_selection(selection_repository_root, selection_revision,
+                    sdk_version=sdk_version, runtime_version=verified["manifest"]["runtimeVersion"])
             root = verified["directory"]
             contract_receipt = verified["receipts"][PhaseInstanceId("contract", "contract", "metadata", "common")]
             contract_stem = f"codex-agent-contract-{contract_receipt['productVersion']}"

@@ -1108,7 +1108,10 @@ def verified_zip_contents(
     max_retained_bytes: int | None = None,
     canonical_stored: bool = False,
     allow_empty_members: bool = False,
+    require_sorted: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, bytes], dict[str, Any]]:
+    if type(require_sorted) is not bool:
+        raise ValueError("ZIP member ordering policy must be boolean")
     archive = Path(archive)
     records: list[dict[str, Any]] = []
     contents_by_path: dict[str, bytes] = {}
@@ -1258,8 +1261,15 @@ def verified_zip_contents(
         raise ValueError(f"ZIP archive is malformed or unsafe: {archive}") from error
     finally:
         os.close(descriptor)
-    if [record["relativePath"] for record in records] != sorted(paths):
+    if any("/".join(path.split("/")[:index]) in paths
+           for path in paths for index in range(1, len(path.split("/")))):
+        raise ValueError("ZIP member descends from a file")
+    if (require_sorted or canonical_stored) and [record["relativePath"] for record in records] != sorted(paths):
         raise ValueError("ZIP archive members are not in canonical sorted order")
+    # Transport envelopes preserve their original bytes/digest, but expose the
+    # same sorted semantic inventory as deterministic product archives.
+    if not require_sorted:
+        records.sort(key=lambda record: record["relativePath"])
     return records, contents_by_path, {
         "bytes": archive_stat.st_size,
         "sha256": f"sha256:{archive_digest.hexdigest()}",

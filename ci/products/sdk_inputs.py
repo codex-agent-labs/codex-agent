@@ -125,14 +125,15 @@ def main(argv: list[str] | None = None) -> int:
     source.add_argument("--runtime-handoff")
     parser.add_argument("--output", required=True)
     for name in ("sdk-version", "compatible-release-range", "compatible-runtime-compatibility-range",
-                 "keyring", "keys-directory"):
+                 "keyring", "keys-directory", "selection-repository-root", "selection-revision"):
         parser.add_argument(f"--{name}")
     arguments = parser.parse_args(argv)
     policy = (arguments.sdk_version, arguments.compatible_release_range,
-              arguments.compatible_runtime_compatibility_range, arguments.keyring, arguments.keys_directory)
+              arguments.compatible_runtime_compatibility_range, arguments.keyring, arguments.keys_directory,
+              arguments.selection_repository_root, arguments.selection_revision)
     if arguments.runtime_handoff is not None:
         if not all(policy):
-            parser.error("Runtime handoff requires SDK version, both compatibility ranges and pinned keyring/keys directory")
+            parser.error("Runtime handoff requires SDK version, both compatibility ranges, pinned keyring/keys directory and exact Git release selection")
     elif any(value is not None for value in policy):
         parser.error("Request mode does not accept Runtime handoff policy overrides")
     try:
@@ -146,6 +147,8 @@ def main(argv: list[str] | None = None) -> int:
                 sdk_version=arguments.sdk_version, compatible_release_range=arguments.compatible_release_range,
                 compatible_runtime_compatibility_range=arguments.compatible_runtime_compatibility_range,
                 keyring=Path(arguments.keyring), keys_directory=Path(arguments.keys_directory),
+                selection_repository_root=Path(arguments.selection_repository_root),
+                selection_revision=arguments.selection_revision,
             )
         else:
             stage_sdk_inputs(Path(arguments.request), Path(arguments.output))

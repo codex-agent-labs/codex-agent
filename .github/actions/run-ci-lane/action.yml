@@ -44,6 +44,10 @@ inputs:
 outputs:
   artifact_name:
     value: ${{ steps.identity.outputs.artifact_name }}
+  artifact_id:
+    value: ${{ steps.upload_lane.outputs.artifact-id }}
+  artifact_digest:
+    value: ${{ steps.upload_lane.outputs.artifact-digest && format('sha256:{0}', steps.upload_lane.outputs.artifact-digest) || '' }}
   reused:
     value: ${{ steps.reuse.outputs.reused }}
   production_reused:
@@ -687,7 +691,8 @@ runs:
         else
           printf 'artifact_name=codex-agent-ci-%s-%s\npath=build/ci/lane\n' "$LANE" "$TREE" >> "$GITHUB_OUTPUT"
         fi
-    - if: >-
+    - id: upload_lane
+      if: >-
         steps.reuse.outputs.reused == 'true' ||
         (inputs.reuse-only != 'true' &&
         steps.production-execution.outcome != 'failure' &&

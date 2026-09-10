@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -35,18 +36,21 @@ def _request(arguments: dict) -> dict:
 
 class SdkInputsCliPolicyTest(unittest.TestCase):
     def test_runtime_handoff_dispatch_preserves_explicit_caller_policy(self):
-        with patch("products.runtime_sdk_handoff.stage_runtime_sdk_handoff") as stage:
+        with patch.object(sys, "path", [str(Path(__file__).resolve().parents[1]), *sys.path]), \
+                patch("products.runtime_sdk_handoff.stage_runtime_sdk_handoff") as stage:
             self.assertEqual(0, main([
                 "--runtime-handoff", "original", "--output", "sdk-inputs",
                 "--sdk-version", "0.2.4", "--compatible-release-range", ">=0.2.1 <0.3.0",
                 "--compatible-runtime-compatibility-range", ">=0.2.0 <0.3.0",
                 "--keyring", "pinned.json", "--keys-directory", "public-keys",
+                "--selection-repository-root", "repository", "--selection-revision", "a" * 40,
             ]))
             stage.assert_called_once_with(
                 Path("original"), Path("sdk-inputs"), sdk_version="0.2.4",
                 compatible_release_range=">=0.2.1 <0.3.0",
                 compatible_runtime_compatibility_range=">=0.2.0 <0.3.0",
                 keyring=Path("pinned.json"), keys_directory=Path("public-keys"),
+                selection_repository_root=Path("repository"), selection_revision="a" * 40,
             )
 
     def test_ambiguous_or_incomplete_handoff_policy_rejects_before_input_access(self):
@@ -54,6 +58,11 @@ class SdkInputsCliPolicyTest(unittest.TestCase):
             ["--runtime-handoff", "missing", "--output", "unused"],
             ["--runtime-handoff", "missing", "--request", "missing", "--output", "unused"],
             ["--request", "missing", "--output", "unused", "--sdk-version", "0.2.0"],
+            ["--request", "missing", "--output", "unused", "--selection-revision", "a" * 40],
+            ["--runtime-handoff", "missing", "--output", "unused", "--sdk-version", "0.2.0",
+             "--compatible-release-range", ">=0.2.0 <0.3.0",
+             "--compatible-runtime-compatibility-range", ">=0.2.0 <0.3.0",
+             "--keyring", "policy", "--keys-directory", "keys"],
         )
         for arguments in cases:
             with self.subTest(arguments=arguments), patch("ci.products.sdk_inputs.stage_sdk_inputs") as stage:

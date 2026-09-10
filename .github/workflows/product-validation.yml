@@ -1454,6 +1454,85 @@ jobs:
           wave: '5'
           tree: ${{ needs.plan.outputs.validation_tree }}
 
+  runtime-aggregate-continuation:
+    name: runtime-aggregate-continuation
+    needs: [plan, runtime-continuation, runtime-collect-5]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.runtime-continuation.result == 'success' &&
+      needs.runtime-continuation.outputs.aggregate_state != 'not-selected' &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-24.04
+    outputs:
+      state_wave: ${{ steps.parent.outputs.state_wave }}
+      artifact_id: ${{ steps.parent.outputs.artifact_id }}
+      artifact_digest: ${{ steps.parent.outputs.artifact_digest }}
+      aggregate_key: ${{ steps.route.outputs.aggregate_key }}
+      aggregate_receipt_sha256: ${{ steps.route.outputs.aggregate_receipt_sha256 }}
+      aggregate_payload_complete: ${{ steps.route.outputs.aggregate_payload_complete }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.validation_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select the exact completed original aggregate state
+        id: parent
+        env:
+          PREDECESSORS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          needs = json.loads(os.environ['PREDECESSORS'])
+          prior = needs['runtime-continuation']
+          collected = needs['runtime-collect-5']
+          if prior['result'] != 'success':
+              raise ValueError('Original Runtime continuation did not succeed')
+          original = prior['outputs']
+          if original['aggregate_required'] == 'true':
+              if collected['result'] != 'success' or collected['outputs'].get('wave_failed') != 'false':
+                  raise ValueError('Aggregate collection failed or is incomplete')
+              selected, wave = collected['outputs'], '5'
+          elif original['aggregate_required'] == 'false' and collected['result'] == 'skipped':
+              if original.get('aggregate_state') != 'completed':
+                  raise ValueError('Original aggregate is not completed')
+              selected, wave = original, original['state_wave']
+              if not re.fullmatch(r'[0-4]', wave):
+                  raise ValueError('Invalid original Runtime state wave')
+          else:
+              raise ValueError('Unexpected aggregate collection state')
+          if selected.get('aggregate_payload_complete') != 'true':
+              raise ValueError('Aggregate payload completion is missing')
+          key = selected['aggregate_key']
+          receipt = selected['aggregate_receipt_sha256']
+          artifact, digest = selected['artifact_id'], selected['artifact_digest']
+          if key != original['aggregate_key'] or not re.fullmatch(r'[1-9][0-9]*', artifact):
+              raise ValueError('Aggregate key or upload identity differs')
+          if any(not re.fullmatch(r'sha256:[0-9a-f]{64}', value) for value in (key, receipt, digest)):
+              raise ValueError('Aggregate original digest is missing or malformed')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'state_wave={wave}\nartifact_id={artifact}\nartifact_digest={digest}\n')
+          PY
+      - id: captured
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ steps.parent.outputs.artifact_id }}
+          artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          state-wave: ${{ steps.parent.outputs.state_wave }}
+      - name: Replay the full completed aggregate closure
+        id: route
+        env:
+          PLAN: ${{ steps.captured.outputs.plan-path }}
+          DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+          STATE: ${{ steps.captured.outputs.state-root }}
+        run: |
+          python3 -B ci/runtime_workflow.py continuation --require-completed \
+            --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+            --github-output "$GITHUB_OUTPUT"
+
   android:
     if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_android == 'true'
     needs: [workflow-lint, plan]
@@ -1650,7 +1729,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-native-attestation, runtime-aggregate, runtime-collect-5, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
+    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites

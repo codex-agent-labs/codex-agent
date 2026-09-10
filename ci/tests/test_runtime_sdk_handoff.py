@@ -41,6 +41,30 @@ class RuntimeSdkHandoffTest(unittest.TestCase):
                "compatible_runtime_compatibility_range": ">=0.2.0 <0.3.0",
                "keyring": self.keyring, "keys_directory": self.keys, **changes})
 
+    def selection(self, default="0.2.7"):
+        repository = self.work / "selection"
+        versions = repository / "gradle/release/versions"
+        versions.mkdir(parents=True)
+        (versions / "sdk.txt").write_bytes(b"0.2.9\n")
+        (versions.parent / "sdk-default-runtime.txt").write_text(default + "\n")
+        for arguments in (("init", "-q"), ("add", "gradle"),
+                          ("-c", "user.name=Synthetic", "-c", "user.email=test@example.invalid", "commit", "-qm", "policy")):
+            subprocess.run(["git", *arguments], cwd=repository, check=True, capture_output=True)
+        revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+        return repository, revision
+
+    def test_authenticated_runtime_must_match_original_sdk_default_before_writer(self):
+        repository, revision = self.selection("9.0.0")
+        with patch.object(bridge, "stage_sdk_inputs") as writer:
+            with self.assertRaisesRegex(ValueError, "SDK selected default"):
+                self.stage(selection_repository_root=repository, selection_revision=revision)
+            writer.assert_not_called()
+        self.assertFalse(self.output.exists())
+        for values in ({"selection_repository_root": repository}, {"selection_revision": revision}):
+            with self.assertRaisesRegex(ValueError, "both repository"):
+                self.stage(**values)
+
     def test_full_gate_forwards_exact_original_inputs_and_existing_s858_writer(self):
         before = regular_file_inventory(self.carrier, allow_empty=True)
         with patch("reuse.api_request", side_effect=AssertionError("forwarding contacted CI")), \
@@ -76,6 +100,7 @@ class RuntimeSdkHandoffTest(unittest.TestCase):
 
     def test_module_cli_without_pythonpath_forwards_original_signed_evidence(self):
         before = regular_file_inventory(self.carrier, allow_empty=True)
+        repository, revision = self.selection()
         environment = dict(os.environ)
         environment.pop("PYTHONPATH", None)
         result = subprocess.run([
@@ -85,6 +110,7 @@ class RuntimeSdkHandoffTest(unittest.TestCase):
             "--compatible-release-range", ">=0.2.0 <0.3.0",
             "--compatible-runtime-compatibility-range", ">=0.2.0 <0.3.0",
             "--keyring", str(self.keyring), "--keys-directory", str(self.keys),
+            "--selection-repository-root", str(repository), "--selection-revision", revision,
         ], cwd=Path(__file__).resolve().parents[2], env=environment,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
         self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", errors="replace"))

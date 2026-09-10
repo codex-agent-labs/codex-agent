@@ -339,6 +339,10 @@ class RuntimeWorkflowTest(unittest.TestCase):
             self.assertEqual(0, workflow.main([*args, "--if-selected"]))
         route.assert_called_once_with(Path("plan"), Path("discovery"), Path("state"), self.output,
                                       sdk_validation_tooling=None, if_selected=True)
+        with mock.patch.object(workflow, "continuation") as route:
+            self.assertEqual(0, workflow.main([*args, "--require-completed"]))
+        route.assert_called_once_with(Path("plan"), Path("discovery"), Path("state"), self.output,
+                                      sdk_validation_tooling=None, require_completed=True)
 
     def test_capture_uses_caller_upload_then_current_captured_paths_for_each_wave(self):
         for wave in (0, 1, 4, 5):

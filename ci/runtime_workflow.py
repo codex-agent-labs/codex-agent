@@ -210,6 +210,7 @@ def main(argv=None):
         final.add_argument(f"--{name}", type=Path, required=True)
     final.add_argument("--sdk-validation-tooling", type=Path)
     final.add_argument("--if-selected", action="store_true")
+    final.add_argument("--require-completed", action="store_true")
     captured = commands.add_parser("capture")
     for name in ("plan", "destination", "github-output"):
         captured.add_argument(f"--{name}", type=Path, required=True)
@@ -237,7 +238,8 @@ def main(argv=None):
             tooling = (None if args.sdk_validation_tooling is None else
                        products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy"))
             continuation(args.plan, args.discovery_root, args.state_root, args.github_output,
-                         sdk_validation_tooling=tooling, **({"if_selected": True} if args.if_selected else {}))
+                         sdk_validation_tooling=tooling, **({"if_selected": True} if args.if_selected else {}),
+                         **({"require_completed": True} if args.require_completed else {}))
         elif args.command == "capture":
             values = (args.component, args.phase, args.target, args.expected_build_key)
             if any(value is not None for value in values) and any(value is None for value in values):

@@ -20,6 +20,25 @@ from ci.tests import test_contract_projection as contract_fixture
 
 
 class SdkAppleSourceImportTest(unittest.TestCase):
+    def test_original_swift_upload_identity_is_forwarded_without_recreating_lane_bytes(self):
+        from ci.tests.test_contract_attestation_workflow import workflow_job
+        repository = Path(__file__).resolve().parents[2]
+        action = (repository / ".github/actions/run-ci-lane/action.yml").read_text()
+        apple = (repository / ".github/workflows/apple-runtime-evidence.yml").read_text()
+        upload = action.split("    - id: upload_lane\n", 1)[1].split("    - name:", 1)[0]
+        self.assertIn("uses: actions/upload-artifact@", upload)
+        self.assertIn("path: ${{ steps.identity.outputs.path }}", upload)
+        self.assertIn("name: ${{ steps.identity.outputs.artifact_name }}", upload)
+        self.assertIn("steps.reuse.outputs.reused == 'true'", upload)
+        outputs = action.split("outputs:\n", 1)[1].split("runs:\n", 1)[0]
+        self.assertIn("steps.upload_lane.outputs.artifact-id", outputs)
+        self.assertIn("steps.upload_lane.outputs.artifact-digest && format('sha256:{0}'", outputs)
+        job = workflow_job(apple, "swift-tests")
+        self.assertIn("artifact_id: ${{ steps.lane.outputs.artifact_id }}", job)
+        self.assertIn("artifact_digest: ${{ steps.lane.outputs.artifact_digest }}", job)
+        self.assertIn("value: ${{ jobs.swift-tests.outputs.artifact_id }}", apple)
+        self.assertIn("value: ${{ jobs.swift-tests.outputs.artifact_digest }}", apple)
+
     def test_clean_package_and_script_namespace_imports(self) -> None:
         repository = Path(__file__).resolve().parents[2]
         environment = {

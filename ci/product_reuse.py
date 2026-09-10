@@ -129,6 +129,8 @@ _OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _CATALOG_PREFIX = "codex-agent-product-catalog-v1-"
 _CATALOG_LIMIT = 4 * 1024 * 1024 * 1024
 _CATALOG_ZIP_LIMITS = {
+    # Actions uploads are external transport, not canonical product payloads.
+    "require_sorted": False,
     "max_archive_bytes": _CATALOG_LIMIT,
     "max_central_directory_bytes": 32 * 1024 * 1024,
     "max_members": 8192,
