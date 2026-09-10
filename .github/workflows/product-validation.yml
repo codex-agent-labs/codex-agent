@@ -1201,6 +1201,78 @@ jobs:
           tree: ${{ needs.plan.outputs.validation_tree }}
 
 
+  runtime-continuation:
+    name: runtime-continuation
+    needs: [plan, product-resume, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.product-resume.result == 'success' &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-24.04
+    outputs:
+      state_wave: ${{ steps.parent.outputs.state_wave }}
+      artifact_id: ${{ steps.parent.outputs.artifact_id }}
+      artifact_digest: ${{ steps.parent.outputs.artifact_digest }}
+      native_attestation_matrix: ${{ steps.route.outputs.native_attestation_matrix }}
+      aggregate_state: ${{ steps.route.outputs.aggregate_state }}
+      aggregate_key: ${{ steps.route.outputs.aggregate_key }}
+      aggregate_receipt_sha256: ${{ steps.route.outputs.aggregate_receipt_sha256 }}
+      aggregate_required: ${{ steps.route.outputs.aggregate_required }}
+      aggregate_payload_complete: ${{ steps.route.outputs.aggregate_payload_complete }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select the latest successful original state upload
+        id: parent
+        env:
+          PREDECESSORS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          needs = json.loads(os.environ['PREDECESSORS'])
+          selected = None
+          for wave in range(5):
+              name = 'product-resume' if wave == 0 else f'runtime-collect-{wave}'
+              job = needs[name]
+              if job['result'] == 'skipped' and wave:
+                  continue
+              if job['result'] != 'success' or job['outputs'].get('wave_failed') != 'false':
+                  raise ValueError('Cannot route failed or incomplete Runtime state')
+              outputs = job['outputs']
+              artifact = outputs.get('artifact_id', '')
+              digest = outputs.get('artifact_digest', '')
+              if not re.fullmatch(r'[1-9][0-9]*', artifact) or not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+                  raise ValueError('Runtime state upload identity is missing')
+              selected = wave, artifact, digest
+          if selected is None:
+              raise ValueError('No original Runtime state was selected')
+          wave, artifact, digest = selected
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'state_wave={wave}\nartifact_id={artifact}\nartifact_digest={digest}\n')
+          PY
+      - id: captured
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ steps.parent.outputs.artifact_id }}
+          artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          state-wave: ${{ steps.parent.outputs.state_wave }}
+      - name: Replay exact aggregate predecessors before routing
+        id: route
+        env:
+          PLAN: ${{ steps.captured.outputs.plan-path }}
+          DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+          STATE: ${{ steps.captured.outputs.state-root }}
+        run: |
+          python3 -B ci/runtime_workflow.py continuation --if-selected \
+            --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+            --github-output "$GITHUB_OUTPUT"
+
   android:
     if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_android == 'true'
     needs: [workflow-lint, plan]
@@ -1397,7 +1469,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
+    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites

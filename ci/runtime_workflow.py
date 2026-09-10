@@ -28,7 +28,7 @@ def matrix(plan_path, discovery_root, state_root, github_output_path, *, reposit
 
 def continuation(plan_path, discovery_root, state_root, github_output_path, *,
                  repository_root=None, environ=None, sdk_validation_tooling=None,
-                 require_completed=False):
+                 require_completed=False, if_selected=False):
     """Route the final fully materialized Runtime closure, not early native fanout.
 
     The sole replay supplies every identity/key/receipt. A completed aggregate
@@ -36,8 +36,8 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
     Protected callers must independently capture/elect these same originals.
     Empty standalone worker matrices do not establish this prerequisite.
     """
-    if type(require_completed) is not bool:
-        raise ValueError("Runtime continuation completion requirement must be boolean")
+    if type(require_completed) is not bool or type(if_selected) is not bool:
+        raise ValueError("Runtime continuation selection/completion requirements must be boolean")
     inspected = products.inspect_products(plan_path, discovery_root, state_root,
         repository_root=repository_root, environ=environ,
         sdk_validation_tooling=sdk_validation_tooling)
@@ -48,8 +48,22 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
         if instance in phases:
             raise ValueError("Duplicate replayed Runtime continuation identity")
         phases[instance] = record
+    ready = {}
+    for plan in inspected["readyPlans"]:
+        instance = products._identity(plan)
+        if instance in ready:
+            raise ValueError("Duplicate replayed Runtime continuation plan")
+        ready[instance] = plan
     if aggregate not in phases:
-        raise ValueError("Runtime continuation requires a selected aggregate")
+        if not if_selected or require_completed or aggregate in ready:
+            raise ValueError("Runtime continuation requires a selected aggregate")
+        github_output(github_output_path, {
+            "native_attestation_matrix": '{"include":[]}', "aggregate_state": "not-selected",
+            "aggregate_key": "", "aggregate_receipt_sha256": "",
+            "aggregate_required": False, "aggregate_payload_complete": False,
+        })
+        return {"nativeAttestationMatrix": {"include": []},
+                "aggregate": {"state": "not-selected", "buildKey": None, "receiptSha256": None}}
     closure = products._dependency_closure((aggregate,))
     for instance in closure:
         if instance == aggregate:
@@ -60,12 +74,6 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
         for name in ("buildKey", "receiptSha256", "objectSha256"):
             require_sha256(record[name], f"Completed Runtime predecessor {name}")
 
-    ready = {}
-    for plan in inspected["readyPlans"]:
-        instance = products._identity(plan)
-        if instance in ready:
-            raise ValueError("Duplicate replayed Runtime continuation plan")
-        ready[instance] = plan
     selected = phases[aggregate]
     key = require_sha256(selected["buildKey"], "Runtime aggregate elected key")
     if selected["state"] in {"retained", "reused"}:
@@ -127,14 +135,20 @@ def capture(plan_path, destination, github_output_path, *, artifact_id, artifact
 
 
 def collect(input_root, destination, github_output_path, *, wave, trusted_workflow_sha,
-            repository_root=None, environ=None, token):
+            repository_root=None, environ=None, token, state_wave=None):
     if type(wave) is not int or not 1 <= wave <= 5:
         raise ValueError("Runtime workflow wave must be one through five")
+    # Aggregate may already be ready in initial reuse, before any native wave.
+    # Keep fixed preceding-wave defaults for the existing four worker waves.
+    state_wave = wave - 1 if state_wave is None else state_wave
+    if (type(state_wave) is not int or not 0 <= state_wave <= 4
+            or (wave < 5 and state_wave != wave - 1)):
+        raise ValueError("Runtime collection has an invalid predecessor state wave")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     input_root, _, destination = products._product_materialization_paths(root, input_root, input_root, destination)
     plan = input_root / "product-resume-inputs/plan/impact-plan.json"
     discovery = input_root / "product-resume-state"
-    state = input_root / ("runtime-state" if wave > 1 else "product-resume-state")
+    state = input_root / ("runtime-state" if state_wave else "product-resume-state")
     if destination.exists() or destination.is_symlink():
         raise ValueError("Runtime workflow destination must not exist")
     collection = products.collect_runtime_workers(
@@ -189,6 +203,7 @@ def main(argv=None):
     for name in ("plan", "discovery-root", "state-root", "github-output"):
         final.add_argument(f"--{name}", type=Path, required=True)
     final.add_argument("--sdk-validation-tooling", type=Path)
+    final.add_argument("--if-selected", action="store_true")
     captured = commands.add_parser("capture")
     for name in ("plan", "destination", "github-output"):
         captured.add_argument(f"--{name}", type=Path, required=True)
@@ -202,6 +217,7 @@ def main(argv=None):
     for name in ("input-root", "destination", "github-output"):
         collected.add_argument(f"--{name}", type=Path, required=True)
     collected.add_argument("--wave", type=int, required=True)
+    collected.add_argument("--state-wave", type=int)
     collected.add_argument("--trusted-workflow-sha", required=True)
     args = parser.parse_args(argv)
     try:
@@ -211,7 +227,7 @@ def main(argv=None):
             tooling = (None if args.sdk_validation_tooling is None else
                        products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy"))
             continuation(args.plan, args.discovery_root, args.state_root, args.github_output,
-                         sdk_validation_tooling=tooling)
+                         sdk_validation_tooling=tooling, **({"if_selected": True} if args.if_selected else {}))
         elif args.command == "capture":
             values = (args.component, args.phase, args.target, args.expected_build_key)
             if any(value is not None for value in values) and any(value is None for value in values):
@@ -224,7 +240,8 @@ def main(argv=None):
         else:
             collect(Path(os.path.abspath(args.input_root)), Path(os.path.abspath(args.destination)), args.github_output,
                     wave=args.wave, trusted_workflow_sha=args.trusted_workflow_sha,
-                    token=os.environ.get("GITHUB_TOKEN", ""))
+                    token=os.environ.get("GITHUB_TOKEN", ""),
+                    **({"state_wave": args.state_wave} if args.state_wave is not None else {}))
     except (ValueError, OSError) as error:
         parser.error(str(error))
     return 0

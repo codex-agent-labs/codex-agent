@@ -103,10 +103,10 @@ class RuntimeWorkflowTest(unittest.TestCase):
                                       "reuse-wave-result.json": b"derived continuation control\n"})
         return {"fullReuse": False, "fixture": "actual gate is mocked"}
 
-    def collect(self, destination, wave=1):
+    def collect(self, destination, wave=1, **changes):
         return workflow.collect(self.input, destination, self.output, wave=wave,
                                 trusted_workflow_sha=PIN, repository_root=self.root,
-                                environ=self.environment, token="synthetic-token")
+                                environ=self.environment, token="synthetic-token", **changes)
 
     def test_matrix_delegates_and_emits_only_the_elected_supervisor_key(self):
         value = {"include": [row(JVM), row(SUPERVISOR)]}
@@ -141,10 +141,69 @@ class RuntimeWorkflowTest(unittest.TestCase):
             ready = [{name: selected[name] for name in ("product", "component", "phase", "target", "buildKey")}]
         return {"result": {"phases": phases, "fullReuse": state == "reused"}, "readyPlans": ready}
 
-    def final_route(self):
+    def final_route(self, **changes):
         return workflow.continuation(self.root / "plan", self.root / "discovery", self.root / "state",
                                      self.output, repository_root=self.root, environ=self.environment,
-                                     sdk_validation_tooling={"fixture": "caller policy"})
+                                     sdk_validation_tooling={"fixture": "caller policy"}, **changes)
+
+    def test_optional_final_route_reports_not_selected_only_after_full_replay(self):
+        inspected = self.final_fixture()
+        inspected["result"]["phases"] = [record for record in inspected["result"]["phases"]
+                                         if workflow.products._identity(record) != AGGREGATE]
+        inspected["readyPlans"] = []
+        with mock.patch.object(workflow.products, "inspect_products", return_value=inspected) as inspect:
+            with self.assertRaisesRegex(ValueError, "selected aggregate"):
+                self.final_route()
+            self.assertFalse(self.output.exists())
+            result = self.final_route(if_selected=True)
+        self.assertEqual(2, inspect.call_count)
+        self.assertEqual({"nativeAttestationMatrix": {"include": []},
+                          "aggregate": {"state": "not-selected", "buildKey": None, "receiptSha256": None}}, result)
+        self.assertEqual({"native_attestation_matrix": '{"include":[]}', "aggregate_state": "not-selected",
+                          "aggregate_key": "", "aggregate_receipt_sha256": "", "aggregate_required": "false",
+                          "aggregate_payload_complete": "false"}, self.outputs())
+
+    def test_optional_final_route_does_not_bypass_invalid_replay_or_duplicate_elections(self):
+        base = self.final_fixture()
+        base["result"]["phases"] = [record for record in base["result"]["phases"]
+                                    if workflow.products._identity(record) != AGGREGATE]
+        base["readyPlans"] = []
+        for mutation in ("duplicate-phase", "invalid-identity", "duplicate-plan", "orphan-aggregate-plan", "requires-completed"):
+            inspected = deepcopy(base)
+            options = {"if_selected": True}
+            if mutation == "duplicate-phase":
+                inspected["result"]["phases"].append(deepcopy(inspected["result"]["phases"][0]))
+            elif mutation == "invalid-identity":
+                inspected["result"]["phases"][0]["target"] = "unknown"
+            elif mutation == "duplicate-plan":
+                inspected["readyPlans"] = [row(JVM), row(JVM)]
+            elif mutation == "orphan-aggregate-plan":
+                inspected["readyPlans"] = [row(AGGREGATE)]
+            else:
+                options["require_completed"] = True
+            with self.subTest(mutation=mutation), \
+                    mock.patch.object(workflow.products, "inspect_products", return_value=inspected), self.assertRaises(ValueError):
+                self.final_route(**options)
+            self.assertFalse(self.output.exists())
+        with mock.patch.object(workflow.products, "inspect_products", side_effect=ValueError("original replay rejected")), \
+                self.assertRaisesRegex(ValueError, "original replay rejected"):
+            self.final_route(if_selected=True)
+        self.assertFalse(self.output.exists())
+        with mock.patch.object(workflow.products, "inspect_products") as inspect, self.assertRaisesRegex(ValueError, "boolean"):
+            self.final_route(if_selected="true")
+        inspect.assert_not_called()
+
+    def test_optional_final_route_keeps_selected_aggregate_predecessor_requirements(self):
+        inspected = self.final_fixture()
+        with mock.patch.object(workflow.products, "inspect_products", return_value=inspected):
+            self.assertEqual("ready", self.final_route(if_selected=True)["aggregate"]["state"])
+        inspected["result"]["phases"] = [record for record in inspected["result"]["phases"]
+                                         if record["component"] != "linux-x64"]
+        before = self.output.read_bytes()
+        with mock.patch.object(workflow.products, "inspect_products", return_value=inspected), \
+                self.assertRaisesRegex(ValueError, "incomplete original predecessor"):
+            self.final_route(if_selected=True)
+        self.assertEqual(before, self.output.read_bytes())
 
     def test_final_route_uses_replay_and_exact_five_native_keys_before_aggregate_build(self):
         inspected = self.final_fixture()
@@ -259,6 +318,10 @@ class RuntimeWorkflowTest(unittest.TestCase):
             self.assertEqual(0, workflow.main([*args, "--sdk-validation-tooling", "tooling.json"]))
         read.assert_called_once_with(Path("tooling.json"), "Caller SDK tooling policy")
         self.assertEqual(policy, route.call_args.kwargs["sdk_validation_tooling"])
+        with mock.patch.object(workflow, "continuation") as route:
+            self.assertEqual(0, workflow.main([*args, "--if-selected"]))
+        route.assert_called_once_with(Path("plan"), Path("discovery"), Path("state"), self.output,
+                                      sdk_validation_tooling=None, if_selected=True)
 
     def test_capture_uses_caller_upload_then_current_captured_paths_for_each_wave(self):
         for wave in (0, 1, 4, 5):
@@ -459,6 +522,40 @@ class RuntimeWorkflowTest(unittest.TestCase):
                 "--wave", "5", "--trusted-workflow-sha", PIN]))
         collect.assert_called_once_with(self.input, self.root / "cli-five", self.output,
             wave=5, trusted_workflow_sha=PIN, token="fixture-token")
+        with mock.patch.object(workflow, "collect") as collect:
+            self.assertEqual(0, workflow.main(["collect", "--input-root", str(self.input),
+                "--destination", str(self.root / "cli-five-initial"), "--github-output", str(self.output),
+                "--wave", "5", "--state-wave", "0", "--trusted-workflow-sha", PIN]))
+        self.assertEqual(0, collect.call_args.kwargs["state_wave"])
+
+    def test_fifth_wave_can_advance_initial_reuse_or_final_native_wave_without_guessing(self):
+        for state_wave in (0, 4):
+            destination = self.root / f"aggregate-after-{state_wave}"
+            if state_wave:
+                self.write_tree(self.input, {"runtime-state/previous.json": b"original wave state"})
+            before = regular_file_inventory(self.input, allow_empty=True)
+            with self.subTest(state_wave=state_wave), \
+                    mock.patch.object(workflow.products, "collect_runtime_workers", side_effect=self.aggregate_collection) as collect, \
+                    mock.patch.object(workflow.products, "advance_products", side_effect=self.advanced) as advance, \
+                    mock.patch.object(workflow.products, "inspect_products", return_value=self.final_fixture("retained")):
+                self.collect(destination, 5, state_wave=state_wave)
+            expected = self.input / ("runtime-state" if state_wave else "product-resume-state")
+            self.assertEqual(expected, collect.call_args.args[2])
+            self.assertEqual(expected, advance.call_args.args[2])
+            self.assertEqual(before, regular_file_inventory(self.input, allow_empty=True))
+            self.assertEqual("completed", self.outputs()["aggregate_state"])
+
+    def test_collection_rejects_forbidden_or_ambiguous_predecessor_wave_before_capture(self):
+        for wave, state_wave in ((1, 1), (2, 0), (3, 3), (4, 0), (5, -1), (5, 5),
+                                  (5, True), (5, "0"), (5, 0.0)):
+            with self.subTest(wave=wave, state_wave=state_wave), \
+                    mock.patch.object(workflow.products, "collect_runtime_workers") as collect, \
+                    mock.patch.object(workflow.products, "advance_products") as advance, \
+                    self.assertRaisesRegex(ValueError, "invalid predecessor state wave"):
+                self.collect(self.root / "invalid-predecessor", wave, state_wave=state_wave)
+            collect.assert_not_called()
+            advance.assert_not_called()
+        self.assertFalse((self.root / "invalid-predecessor").exists())
 
     def test_invalid_wave_existing_output_and_input_overlap_reject_before_collection(self):
         before = regular_file_inventory(self.input, allow_empty=True)
