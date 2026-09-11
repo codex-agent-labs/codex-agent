@@ -509,6 +509,12 @@ class ProductSelectionTest(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_binding_only(path, "javascript")
 
+    def test_sdk_compatibility_policy_selects_the_same_packages_as_default_runtime(self) -> None:
+        self.assertEqual(
+            identities(classify_paths(["gradle/release/sdk-default-runtime.txt"])),
+            identities(classify_paths(["gradle/release/sdk-runtime-compatibility.json"])),
+        )
+
     def test_sdk_default_runtime_selects_sdk_packages_without_runtime_rebuild(self) -> None:
         result = classify_paths(["gradle/release/sdk-default-runtime.txt"])
         selected = identities(result)
@@ -1318,6 +1324,8 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/products/sdk_native_metadata_admission.py",
             "ci/products/runtime_sdk_handoff.py",
             "ci/products/sdk_protected_runtime.py",
+            "ci/sdk_handoff.py",
+            "ci/runtime_catalog_promotion.py",
             "gradle/build-logic/src/main/kotlin/AppleOriginalExecutionVerification.kt",
             "ci/runtime_adapter_phase.py",
             "ci/runtime_supervisor.py",

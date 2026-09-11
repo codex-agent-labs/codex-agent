@@ -47,6 +47,9 @@ class RuntimeSdkHandoffTest(unittest.TestCase):
         versions.mkdir(parents=True)
         (versions / "sdk.txt").write_bytes(b"0.2.9\n")
         (versions.parent / "sdk-default-runtime.txt").write_text(default + "\n")
+        (versions.parent / "sdk-runtime-compatibility.json").write_bytes(canonical_json_bytes({
+            "compatibleReleaseRange": ">=0.2.0 <0.3.0",
+            "compatibleRuntimeCompatibilityRange": ">=0.2.0 <0.3.0"}))
         for arguments in (("init", "-q"), ("add", "gradle"),
                           ("-c", "user.name=Synthetic", "-c", "user.email=test@example.invalid", "commit", "-qm", "policy")):
             subprocess.run(["git", *arguments], cwd=repository, check=True, capture_output=True)
@@ -97,6 +100,15 @@ class RuntimeSdkHandoffTest(unittest.TestCase):
         compatibility = load_canonical_json_bytes((self.output / COMPATIBILITY_NAME).read_bytes())
         self.assertEqual("0.2.9", compatibility["sdkVersion"])
         self.assertEqual("0.2.7", compatibility["runtime"]["defaultRuntimeVersion"])
+
+    def test_original_git_ranges_cannot_be_widened_before_sdk_writer(self):
+        repository, revision = self.selection()
+        with patch.object(bridge, "stage_sdk_inputs") as writer:
+            with self.assertRaisesRegex(ValueError, "original Git compatibility policy"):
+                self.stage(selection_repository_root=repository, selection_revision=revision,
+                           compatible_release_range=">=0.2.0 <0.9.0")
+            writer.assert_not_called()
+        self.assertFalse(self.output.exists())
 
     def test_module_cli_without_pythonpath_forwards_original_signed_evidence(self):
         before = regular_file_inventory(self.carrier, allow_empty=True)

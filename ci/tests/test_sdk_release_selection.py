@@ -5,7 +5,11 @@ import subprocess
 import tempfile
 import unittest
 
-from ci.products.sdk_release_selection import read_sdk_release_selection, require_sdk_release_selection
+from ci.products.inventory import canonical_json_bytes
+from ci.products.sdk_release_selection import (
+    read_sdk_release_selection, require_sdk_release_selection,
+    read_sdk_runtime_compatibility_policy, require_sdk_runtime_compatibility_policy,
+)
 
 
 class SdkReleaseSelectionTest(unittest.TestCase):
@@ -90,6 +94,67 @@ class SdkReleaseSelectionTest(unittest.TestCase):
             tree = self.git("write-tree")
             with self.subTest(path=relative, mode="symbolic"), self.assertRaisesRegex(ValueError, "not a regular"):
                 read_sdk_release_selection(self.root, tree)
+
+    def range_policy(self, default="0.8.0", **changes):
+        policy = {"compatibleReleaseRange": ">=0.8.0 <0.9.0",
+                  "compatibleRuntimeCompatibilityRange": ">=0.8.0 <0.9.0", **changes}
+        self.default.write_text(default + "\n", encoding="ascii")
+        path = self.root / "gradle/release/sdk-runtime-compatibility.json"
+        path.write_bytes(canonical_json_bytes(policy))
+        return path, policy, self.commit()
+
+    def test_original_range_policy_accepts_stable_patch_defaults_and_ignores_checkout(self):
+        for default in ("0.8.0", "0.8.1"):
+            path, policy, revision = self.range_policy(default)
+            path.write_bytes(b"mutable checkout is not policy\n")
+            self.default.write_bytes(b"0.9.0\n")
+            with self.subTest(default=default):
+                self.assertEqual(policy, require_sdk_runtime_compatibility_policy(self.root, revision,
+                    compatible_release_range=policy["compatibleReleaseRange"],
+                    compatible_runtime_compatibility_range=policy["compatibleRuntimeCompatibilityRange"]))
+
+    def test_default_and_derived_compatibility_must_be_inside_original_ranges(self):
+        for default, changes in (("0.9.0", {}), ("0.8.0-rc.1", {}),
+                ("0.8.1", {"compatibleRuntimeCompatibilityRange": ">=0.8.1 <0.9.0"}),
+                ("0.8.1", {"compatibleRuntimeCompatibilityRange": ">=0.8.0 <0.8.1"})):
+            _, _, revision = self.range_policy(default, **changes)
+            with self.subTest(default=default, changes=changes), self.assertRaises(ValueError):
+                read_sdk_runtime_compatibility_policy(self.root, revision)
+
+    def test_ranges_cannot_be_overridden_by_the_caller(self):
+        _, policy, revision = self.range_policy()
+        for release, compatibility in ((">=0.8.0 <1.0.0", policy["compatibleRuntimeCompatibilityRange"]),
+                (policy["compatibleReleaseRange"], ">=0.8.0 <1.0.0"), (None, None)):
+            with self.subTest(release=release, compatibility=compatibility), self.assertRaisesRegex(ValueError, "differ"):
+                require_sdk_runtime_compatibility_policy(self.root, revision,
+                    compatible_release_range=release, compatible_runtime_compatibility_range=compatibility)
+
+    def test_range_policy_requires_exact_canonical_fields_and_range_grammar(self):
+        path, policy, _ = self.range_policy()
+        invalid = [b"{}\n", canonical_json_bytes({**policy, "extra": True}),
+                   canonical_json_bytes(policy) + b"\n", b'{"compatibleReleaseRange":"x","compatibleReleaseRange":"y"}\n']
+        for field in policy:
+            for value in (None, ">=0.8.0 <0.8.0", ">=0.9.0 <0.8.0", ">=0.8.0  <0.9.0",
+                          ">=0.8.0-rc.1 <0.9.0", "^0.8.0", ">=00.8.0 <0.9.0"):
+                invalid.append(canonical_json_bytes({**policy, field: value}))
+        for raw in invalid:
+            path.write_bytes(raw)
+            revision = self.commit()
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                read_sdk_runtime_compatibility_policy(self.root, revision)
+
+    def test_range_policy_missing_symbolic_or_nonexact_revision_fails_without_fallback(self):
+        with self.assertRaisesRegex(ValueError, "absent"):
+            read_sdk_runtime_compatibility_policy(self.root, self.revision)
+        path, _, revision = self.range_policy()
+        for value in ("HEAD", revision[:12], None):
+            with self.subTest(revision=value), self.assertRaisesRegex(ValueError, "exact Git revision"):
+                read_sdk_runtime_compatibility_policy(self.root, value)
+        relative = path.relative_to(self.root).as_posix()
+        blob = self.git("rev-parse", f"{revision}:{relative}")
+        self.git("update-index", "--cacheinfo", "120000", blob, relative)
+        with self.assertRaisesRegex(ValueError, "not a regular"):
+            read_sdk_runtime_compatibility_policy(self.root, self.git("write-tree"))
 
 
 if __name__ == "__main__":

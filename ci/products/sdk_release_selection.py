@@ -3,7 +3,8 @@
 from pathlib import Path
 import re
 
-from .inventory import git_regular_blob_bytes, require_semver
+from .aggregate import _compatible_range
+from .inventory import git_regular_blob_bytes, load_canonical_json_bytes, require_exact_keys, require_semver
 
 
 def read_sdk_release_selection(repository_root: Path, revision: str) -> dict[str, str]:
@@ -39,3 +40,34 @@ def require_sdk_release_selection(repository_root: Path, revision: str, *,
     if require_semver(runtime_version, "Authenticated aggregate Runtime version") != selection["defaultRuntimeVersion"]:
         raise ValueError("Authenticated aggregate Runtime version differs from the SDK selected default")
     return selection
+
+
+def read_sdk_runtime_compatibility_policy(repository_root: Path, revision: str) -> dict[str, str]:
+    """Read mandatory original range policy alongside the selected stable default."""
+    selected = read_sdk_release_selection(repository_root, revision)
+    fields = ("compatibleReleaseRange", "compatibleRuntimeCompatibilityRange")
+    policy = require_exact_keys(load_canonical_json_bytes(git_regular_blob_bytes(
+        Path(repository_root), revision, "gradle/release/sdk-runtime-compatibility.json", max_bytes=4096)),
+        set(fields), "SDK Runtime compatibility policy")
+    bounds = {field: _compatible_range(policy[field], f"SDK Runtime compatibility policy.{field}")
+              for field in fields}
+    default = tuple(int(part) for part in selected["defaultRuntimeVersion"].split("."))
+    for field in fields:
+        if not bounds[field][0] <= default < bounds[field][1]:
+            raise ValueError(f"SDK selected default Runtime is outside {field}")
+    compatibility = (*default[:2], 0)
+    lower, upper = bounds["compatibleRuntimeCompatibilityRange"]
+    if not lower <= compatibility < upper:
+        raise ValueError("SDK selected Runtime compatibility identity is outside compatibleRuntimeCompatibilityRange")
+    return policy
+
+
+def require_sdk_runtime_compatibility_policy(repository_root: Path, revision: str, *,
+                                           compatible_release_range: str,
+                                           compatible_runtime_compatibility_range: str) -> dict[str, str]:
+    """Require explicit caller ranges to equal the original Git policy, without defaults."""
+    policy = read_sdk_runtime_compatibility_policy(repository_root, revision)
+    if (compatible_release_range != policy["compatibleReleaseRange"]
+            or compatible_runtime_compatibility_range != policy["compatibleRuntimeCompatibilityRange"]):
+        raise ValueError("Caller SDK Runtime ranges differ from the original Git compatibility policy")
+    return policy

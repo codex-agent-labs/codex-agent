@@ -267,6 +267,8 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/sdk_native_metadata_admission.py",
     "ci/products/runtime_sdk_handoff.py",
     "ci/products/sdk_protected_runtime.py",
+    "ci/sdk_handoff.py",
+    "ci/runtime_catalog_promotion.py",
     "ci/products/selection.py",
     "ci/products/sdk_inputs.py",
     "ci/products/sdk_native.py",
@@ -805,7 +807,7 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
     if _is_prefix(path, "codex-agent-runtime-ios/"):
         return _from_phase("sdk", "sdk-ios", "binary")
 
-    if path == "gradle/release/sdk-default-runtime.txt":
+    if path in {"gradle/release/sdk-default-runtime.txt", "gradle/release/sdk-runtime-compatibility.json"}:
         return set().union(
             _from_phase("sdk", "sdk-core", "package"),
             _from_phase("sdk", "sdk-android", "package"),

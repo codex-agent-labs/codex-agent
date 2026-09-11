@@ -41,15 +41,20 @@ general-purpose shell.
 
 ## Coordinates
 
+The intended upcoming initial release is `0.8.0` for Contract, Runtime, and SDK:
+
 ```kotlin
-implementation("io.github.codex-agent-labs:codex-agent-core:0.2.0")
-implementation("io.github.codex-agent-labs:codex-agent:0.2.0")
-implementation("io.github.codex-agent-labs:codex-agent-runtime-android:0.2.0")
-implementation("io.github.codex-agent-labs:codex-agent-runtime-ios:0.2.0")
-implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:0.2.0")
+implementation("io.github.codex-agent-labs:codex-agent-core:0.8.0")
+implementation("io.github.codex-agent-labs:codex-agent:0.8.0")
+implementation("io.github.codex-agent-labs:codex-agent-runtime-android:0.8.0")
+implementation("io.github.codex-agent-labs:codex-agent-runtime-ios:0.8.0")
+implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:0.8.0")
 ```
 
-Version `0.2.0` has not yet been tagged or published.
+These are intended release coordinates, not a claim of tag or registry availability.
+SDK `0.8.0` embeds Runtime `0.8.0` by default and accepts compatible Runtime
+updates in `>=0.8.0 <0.9.0`, subject to the existing signature, Contract, ABI,
+target, and capability checks; the version range alone does not establish compatibility.
 
 The other implemented package surfaces are:
 

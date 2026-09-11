@@ -15,7 +15,7 @@ from .inventory import (
 from .registry import NATIVE_TARGETS, PhaseInstanceId
 from .runtime_aggregate_handoff import _public_policy, verified_runtime_aggregate_handoff
 from .sdk_inputs import stage_sdk_inputs
-from .sdk_release_selection import require_sdk_release_selection
+from .sdk_release_selection import require_sdk_release_selection, require_sdk_runtime_compatibility_policy
 
 
 def stage_runtime_sdk_handoff(handoff_root: Path, destination: Path, *,
@@ -56,6 +56,9 @@ def stage_runtime_sdk_handoff(handoff_root: Path, destination: Path, *,
             if selection_repository_root is not None:
                 require_sdk_release_selection(selection_repository_root, selection_revision,
                     sdk_version=sdk_version, runtime_version=verified["manifest"]["runtimeVersion"])
+                require_sdk_runtime_compatibility_policy(selection_repository_root, selection_revision,
+                    compatible_release_range=compatible_release_range,
+                    compatible_runtime_compatibility_range=compatible_runtime_compatibility_range)
             root = verified["directory"]
             contract_receipt = verified["receipts"][PhaseInstanceId("contract", "contract", "metadata", "common")]
             contract_stem = f"codex-agent-contract-{contract_receipt['productVersion']}"

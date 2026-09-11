@@ -38,6 +38,9 @@ class SdkProtectedRuntimeTest(unittest.TestCase):
         versions.mkdir(parents=True)
         (versions / "sdk.txt").write_bytes(b"0.2.9\n")
         (versions.parent / "sdk-default-runtime.txt").write_bytes(b"0.2.7\n")
+        (versions.parent / "sdk-runtime-compatibility.json").write_bytes(canonical_json_bytes({
+            "compatibleReleaseRange": ">=0.2.0 <0.3.0",
+            "compatibleRuntimeCompatibilityRange": ">=0.2.0 <0.3.0"}))
         for arguments in (("init", "-q"), ("add", "gradle"),
                           ("-c", "user.name=Synthetic", "-c", "user.email=test@example.invalid",
                            "commit", "-qm", "synthetic SDK selection")):
