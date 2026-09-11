@@ -3,6 +3,7 @@
 from dataclasses import replace
 import io
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -14,6 +15,7 @@ from products.index import IndexEntrySource, release_attested_runtime_aggregate_
 from products.inventory import canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory, snapshot_regular_tree
 from products.restore import object_relative_path, store_local_object
 from products.reuse import LookupSession, RemoteCatalog
+from products.registry import PhaseInstanceId
 
 
 class ReleaseCatalogAssemblyTest(unittest.TestCase):
@@ -71,6 +73,86 @@ class ReleaseCatalogAssemblyTest(unittest.TestCase):
         return transport.stage_release_catalog(self.layout if source is None else source, self.work / "emitted",
             **{"repository": self.repository, "source": "promoted-main", "keyring": self.keyring,
                "keys_directory": self.keys, **changes})
+
+    def sdk_policy(self, default="0.2.7"):
+        repository = self.work / "sdk-policy"
+        versions = repository / "gradle/release/versions"
+        versions.mkdir(parents=True)
+        (versions / "sdk.txt").write_bytes(b"0.2.9\n")
+        # A Runtime-only patch must not change the SDK's selected dependency.
+        (versions / "runtime.txt").write_bytes(b"0.2.8\n")
+        (versions.parent / "sdk-default-runtime.txt").write_text(default + "\n", encoding="ascii")
+        (versions.parent / "sdk-runtime-compatibility.json").write_bytes(canonical_json_bytes({
+            "compatibleReleaseRange": ">=0.2.0 <0.3.0",
+            "compatibleRuntimeCompatibilityRange": ">=0.2.0 <0.3.0"}))
+        def git(*arguments):
+            return subprocess.run(["git", *arguments], cwd=repository, check=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout.strip()
+        git("init", "-q")
+        git("config", "user.name", "Synthetic SDK Selection")
+        git("config", "user.email", "sdk-selection@example.invalid")
+        git("add", "-A")
+        git("commit", "-qm", "original synthetic SDK selection")
+        return repository, git("rev-parse", "HEAD")
+
+    def sdk_session(self, layout=None, *, include_carrier=True):
+        layout = self.layout if layout is None else layout
+        return LookupSession(repository=self.repository, pull_request=None,
+            promoted_main=RemoteCatalog(layout / "product-index.json", layout / "product-index.sig",
+                {self.receipt["buildKey"]: layout / self.relative}, keyring=self.keyring, keys_directory=self.keys),
+            runtime_aggregate_evidence=({transport.sha256_bytes(self.raw):
+                layout / "runtime-aggregate-release-evidence/handoffs/original"} if include_carrier else {}))
+
+    def test_sdk_default_elects_original_release_not_current_runtime_patch(self):
+        repository, revision = self.sdk_policy()
+        policy_before = regular_file_inventory(repository / "gradle")
+        session = self.sdk_session()
+        identity = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+        with patch("reuse.api_request", side_effect=AssertionError("SDK selection contacted CI")), \
+                patch("products.index.sign_manifest", side_effect=AssertionError("SDK selection signed")):
+            with session.sdk_default_runtime(repository_root=repository, repository_revision=revision,
+                                             sdk_version="0.2.9") as selected:
+                self.assertEqual(self.raw, selected["envelope"]["receiptBytes"])
+                self.assertEqual("0.2.7", selected["envelope"]["receipt"]["productVersion"])
+                self.assertEqual("promoted-main", selected["transportSource"]["kind"])
+                self.assertEqual(self.raw, selected["handoff"]["receiptBytes"][identity])
+                captured = selected["handoff"]["directory"]
+                self.assertNotEqual(self.carrier, captured)
+                self.assertEqual(regular_file_inventory(self.carrier, allow_empty=True),
+                                 regular_file_inventory(captured, allow_empty=True))
+            self.assertFalse(captured.exists())
+        self.assertEqual(policy_before, regular_file_inventory(repository / "gradle"))
+        self.assertEqual(self.before, regular_file_inventory(self.layout, allow_empty=True))
+
+    def test_sdk_default_missing_exact_release_and_wrong_sdk_version_reject(self):
+        repository, revision = self.sdk_policy(default="0.2.8")
+        session = self.sdk_session()
+        with self.assertRaisesRegex(ValueError, "Authenticated SDK default Runtime is unavailable"):
+            with session.sdk_default_runtime(repository_root=repository, repository_revision=revision,
+                                             sdk_version="0.2.9"):
+                self.fail("A different released Runtime was selected")
+        with self.assertRaisesRegex(ValueError, "original SDK version"):
+            with session.sdk_default_runtime(repository_root=repository, repository_revision=revision,
+                                             sdk_version="0.2.10"):
+                self.fail("A caller SDK version replaced original Git policy")
+        self.assertEqual(self.before, regular_file_inventory(self.layout, allow_empty=True))
+
+    def test_sdk_default_requires_full_carrier_and_untampered_original_object(self):
+        repository, revision = self.sdk_policy()
+        with self.assertRaisesRegex(ValueError, "Authenticated SDK default Runtime is unavailable"):
+            with self.sdk_session(include_carrier=False).sdk_default_runtime(
+                    repository_root=repository, repository_revision=revision, sdk_version="0.2.9"):
+                self.fail("An index and object alone substituted for full original evidence")
+        copied = self.work / "tampered-catalog"
+        snapshot_regular_tree(self.layout, copied, allow_empty=True)
+        session = self.sdk_session(copied)
+        # Tamper after the real signed catalog has been admitted, before selection.
+        (copied / self.relative).write_bytes(b"not the original immutable object\n")
+        with self.assertRaises(ValueError):
+            with session.sdk_default_runtime(repository_root=repository, repository_revision=revision,
+                                             sdk_version="0.2.9"):
+                self.fail("A signed index authorized different original object bytes")
+        self.assertEqual(self.before, regular_file_inventory(self.layout, allow_empty=True))
 
     def test_emitted_originals_round_trip_through_catalog_import_and_real_release_lookup(self):
         with patch("reuse.api_request", side_effect=AssertionError("catalog used original CI")), \

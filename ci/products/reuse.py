@@ -480,6 +480,55 @@ class LookupSession:
             candidates[build_key] = values
         return LocalCatalog(Path(local.cache_root), candidates)
 
+    @contextmanager
+    def sdk_default_runtime(self, *, repository_root: Path, repository_revision: str, sdk_version: str):
+        """Elect a released default dependency, never a current-source Runtime plan.
+
+        Consume/copy the captured handoff inside this context. Current Contract
+        compatibility and SDK packaging checks remain mandatory downstream.
+        This does not replace fresh same-PR/local Runtime handoffs. Publish any
+        copied inputs only after context exit verifies the captured originals.
+        """
+        from .runtime_aggregate_handoff import verified_runtime_aggregate_handoff
+        from .sdk_release_selection import read_sdk_release_selection, read_sdk_runtime_compatibility_policy
+
+        selected = read_sdk_release_selection(repository_root, repository_revision)
+        read_sdk_runtime_compatibility_policy(repository_root, repository_revision)
+        if sdk_version != selected["sdkVersion"]:
+            raise ValueError("SDK dependency election differs from original SDK version")
+        identity = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+        for source in ("stable", "promoted-main"):
+            for candidates in self._remote[source].values():
+                for candidate in candidates:
+                    entry = candidate.entry
+                    if _identity(entry) != identity or entry["productVersion"] != selected["defaultRuntimeVersion"]:
+                        continue
+                    carrier = self._runtime_aggregate_evidence.get(entry["receiptSha256"])
+                    if candidate.object_path is None or carrier is None:
+                        continue
+                    try:
+                        verified = verify_object(candidate.object_path, build_key=entry["buildKey"],
+                                                 receipt_sha256=entry["receiptSha256"])
+                    except FileNotFoundError:
+                        continue
+                    envelope = {"receipt": verified["receipt"], "receiptBytes": verified["receiptBytes"],
+                                "receiptSha256": entry["receiptSha256"], "objectSha256": verified["objectSha256"]}
+                    _validate_envelope(envelope)
+                    _verify_index_receipt(entry, envelope)
+                    if envelope["receipt"]["inputs"]["versionIdentity"] != selected["defaultRuntimeVersion"]:
+                        raise ValueError("SDK default aggregate has an incompatible version identity")
+                    with _captured_release_candidate(candidate) as (captured, _):
+                        with verified_runtime_aggregate_handoff(carrier, keyring=captured.catalog.keyring,
+                                keys_directory=captured.catalog.keys_directory) as handoff:
+                            if handoff["receiptBytes"][identity] != envelope["receiptBytes"]:
+                                raise ValueError("SDK default carrier differs from indexed original aggregate")
+                            yield {"envelope": envelope, "handoff": handoff, "transportSource": {
+                                "kind": source, "indexSha256": candidate.index_sha256,
+                                "artifactName": entry["artifactName"], "artifactSha256": entry["artifactSha256"],
+                            }}
+                    return
+        raise ValueError("Authenticated SDK default Runtime is unavailable")
+
     def _remote_lookup(self, source: str, plan: dict[str, Any]) -> _LookupResult:
         catalogs = self._remote[source]
         if not catalogs:

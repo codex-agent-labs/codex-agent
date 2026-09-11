@@ -9,6 +9,7 @@ from ci.tests import test_runtime_aggregate_release as fixture
 from products import runtime_aggregate_handoff as reader
 from products.inventory import canonical_json_bytes, regular_file_inventory, snapshot_regular_tree
 from products.registry import NATIVE_TARGETS, PhaseInstanceId
+from products.receipt import verify_output_manifest_identity
 from products.signatures import generate_development_key
 
 
@@ -61,6 +62,24 @@ class RuntimeAggregateHandoffTest(unittest.TestCase):
             self.assertEqual(before, verified["inventory"])
             self.assertEqual(before, regular_file_inventory(verified["directory"], allow_empty=True))
             self.assertEqual(25, len(verified["attestation"]["adapterReceipts"]))
+            phases = verified["originalPhases"]
+            expected = {PhaseInstanceId(*(record[name] for name in ("product", "component", "phase", "target")))
+                        for record in self.source.selection["originals"]}
+            self.assertEqual(50, len(phases))
+            self.assertEqual(expected, set(phases))
+            self.assertEqual(set(verified["receipts"]), set(phases))
+            for identity, original in phases.items():
+                self.assertEqual({"stage", "receiptPath", "receipt"}, set(original))
+                self.assertIs(original["receipt"], verified["receipts"][identity])
+                for name in ("stage", "receiptPath"):
+                    self.assertTrue(original[name].is_relative_to(verified["directory"]))
+                self.assertEqual(verified["receiptBytes"][identity], original["receiptPath"].read_bytes())
+                retained_path = self.carrier / original["receiptPath"].relative_to(verified["directory"])
+                self.assertEqual(retained_path.read_bytes(), original["receiptPath"].read_bytes())
+                output_manifest = verify_output_manifest_identity(original["stage"],
+                    identity.product, identity.component, identity.phase, identity.target,
+                    original["receipt"]["productVersion"])
+                self.assertEqual(original["receipt"]["outputs"], output_manifest["outputs"])
             instance = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
             self.assertEqual(self.source.chain["aggregate_receipt"].read_bytes(), verified["receiptBytes"][instance])
             private = verified["directory"]

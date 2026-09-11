@@ -217,6 +217,7 @@ def _verify_captured(root, keyring, keys_directory):
         raise ValueError("Aggregate handoff contains missing or unexpected files")
     return {"manifest": value, "attestation": _json(attestation_path), "receipts": receipts,
             "receiptBytes": receipt_bytes, "inventory": inventory,
+            "originalPhases": {PhaseInstanceId(*identity): original for identity, original in originals.items()},
             "indexInputs": {
                 "manifest": manifest, "metadata_receipt": metadata,
                 "attestation": attestation_path, "signature": signature, "public_key": public_key,
@@ -241,6 +242,9 @@ def verified_runtime_aggregate_handoff(root: Path, *, keyring: Path, keys_direct
     this private verified capture, not a new admission token. Use them inside
     this context with the existing index verifier; publish only after context
     exit has rechecked every original, private byte and captured caller policy.
+    ``originalPhases`` exposes the already verified stage, receiptPath and receipt
+    for every original PhaseInstanceId. Its paths share this context's lifetime;
+    they are not a serialized transport or an independent admission token.
     """
     root = Path(root).absolute()
     for path in (root, *root.parents):
