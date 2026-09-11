@@ -18,6 +18,7 @@ from .inventory import (
     require_exact_keys,
     require_integer,
     require_relative_path,
+    require_semver,
     require_sha256,
     require_string,
     sha256_bytes,
@@ -780,7 +781,7 @@ class LookupSession:
             raise ValueError("Authenticated Contract metadata stage was not restored") from error
 
 
-def _dependency_closure(requested: Iterable[PhaseInstanceId]) -> tuple[PhaseInstanceId, ...]:
+def _dependency_closure(requested: Iterable[PhaseInstanceId], *, sdk_runtime_external: bool = False) -> tuple[PhaseInstanceId, ...]:
     closure: set[PhaseInstanceId] = set()
 
     def add(instance: PhaseInstanceId) -> None:
@@ -790,6 +791,8 @@ def _dependency_closure(requested: Iterable[PhaseInstanceId]) -> tuple[PhaseInst
             return
         closure.add(instance)
         for dependency in phase_instance_dependencies(instance):
+            if sdk_runtime_external and instance.product == "sdk" and dependency.product == "runtime":
+                continue
             add(dependency)
 
     for instance in requested:
@@ -1424,6 +1427,8 @@ def advance_reuse(
     *,
     repository_root: Path | None = None,
     repository_revision: str | None = None,
+    sdk_runtime_receipts: Iterable[dict[str, Any]] | None = None,
+    sdk_default_runtime_version: str | None = None,
     contract_projection_provider: Callable[
         [PhaseInstanceId, dict[str, Any]], VerifiedContractProjection
     ] | None = None,
@@ -1444,7 +1449,12 @@ def advance_reuse(
     ] | None = None,
     build_plan_consumer: Callable[[PhaseInstanceId, dict[str, Any]], None] | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
-    """Resolve verified reuse and return only the next dependency-ready build wave."""
+    """Resolve verified reuse and return only the next dependency-ready build wave.
+
+    As with available_receipts, callers must authenticate SDK Runtime objects
+    before supplying their original envelopes. They are external dependencies,
+    not current-source Runtime phases or a new signature-admission mechanism.
+    """
     if not isinstance(session, LookupSession):
         raise ValueError("Reuse resolution requires a LookupSession")
     if (repository_root is None) != (repository_revision is None):
@@ -1465,7 +1475,32 @@ def advance_reuse(
     if sdk_validation_projection_provider is not None and not callable(sdk_validation_projection_provider):
         raise ValueError("SDK validation projection provider must be callable")
     resolved_repository_root = None if repository_root is None else Path(repository_root)
-    closure = _dependency_closure(requested_instances)
+    if (sdk_runtime_receipts is None) != (sdk_default_runtime_version is None):
+        raise ValueError("SDK Runtime dependencies require original receipts and selected default together")
+    closure = _dependency_closure(requested_instances, sdk_runtime_external=sdk_runtime_receipts is not None)
+    sdk_runtime: dict[PhaseInstanceId, dict[str, Any]] = {}
+    if sdk_runtime_receipts is not None:
+        default = require_semver(sdk_default_runtime_version, "SDK selected default Runtime")
+        if "-" in default:
+            raise ValueError("SDK selected default Runtime must be stable")
+        required = {dependency for instance in closure if instance.product == "sdk"
+                    for dependency in phase_instance_dependencies(instance) if dependency.product == "runtime"}
+        if not required:
+            raise ValueError("Unexpected SDK Runtime dependency selection")
+        for value in sdk_runtime_receipts:
+            identity, envelope = _validate_envelope(value)
+            if identity not in required or identity in sdk_runtime:
+                raise ValueError("SDK Runtime dependencies must be exact and unique")
+            receipt = envelope["receipt"]
+            if identity.component == "runtime-aggregate":
+                if receipt["productVersion"] != default or receipt["inputs"]["versionIdentity"] != default:
+                    raise ValueError("SDK aggregate receipt differs from selected default Runtime")
+            elif _runtime_compatibility_version(receipt["productVersion"]) != _runtime_compatibility_version(default):
+                raise ValueError("SDK Runtime receipt has an incompatible version identity")
+            sdk_runtime[identity] = envelope
+        if set(sdk_runtime) != required:
+            raise ValueError("SDK Runtime selection is missing original dependency receipts")
+        verify_build_key_output_consistency([value["receipt"] for value in sdk_runtime.values()])
     if not isinstance(phase_inputs, Mapping) or set(phase_inputs) != set(closure):
         raise ValueError("Phase inputs must exactly match the requested dependency closure")
 
@@ -1487,6 +1522,13 @@ def advance_reuse(
     verify_build_key_output_consistency([value["receipt"] for value in envelopes.values()])
 
     resolved: dict[PhaseInstanceId, dict[str, Any]] = {}
+    def dependency_envelope(
+        consumer: PhaseInstanceId, dependency: PhaseInstanceId,
+    ) -> dict[str, Any] | None:
+        if sdk_runtime_receipts is not None and consumer.product == "sdk" and dependency.product == "runtime":
+            return sdk_runtime.get(dependency)
+        return resolved.get(dependency)
+
     states: dict[PhaseInstanceId, dict[str, Any]] = {}
     build_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
     continuation_requirements: dict[PhaseInstanceId, dict[str, Any]] = {}
@@ -1496,7 +1538,8 @@ def advance_reuse(
             instance for instance in closure
             if instance not in resolved
             and instance not in build_plans
-            and all(dependency in resolved for dependency in phase_instance_dependencies(instance))
+            and all(dependency_envelope(instance, dependency) is not None
+                    for dependency in phase_instance_dependencies(instance))
         ]
         for instance in ready:
             if instance == PhaseInstanceId("contract", "contract", "package", "common"):
@@ -1528,7 +1571,7 @@ def advance_reuse(
                     if runtime_validation_projection_provider is None
                     else runtime_validation_projection_provider(
                         instance,
-                        tuple(resolved[dependency] for dependency in semantic_dependencies),
+                        tuple(dependency_envelope(instance, dependency) for dependency in semantic_dependencies),
                     )
                 )
                 if projection is None:
@@ -1551,7 +1594,7 @@ def advance_reuse(
             native_dependencies = native_runtime_validation_dependencies(instance)
             if native_dependencies:
                 native_projections = None if native_runtime_projection_provider is None else native_runtime_projection_provider(
-                    instance, tuple(resolved[dependency] for dependency in native_dependencies),
+                    instance, tuple(dependency_envelope(instance, dependency) for dependency in native_dependencies),
                     effective_inputs[instance].get("contract_projection"),
                 )
                 if native_projections is None:
@@ -1568,7 +1611,7 @@ def advance_reuse(
             if sdk_dependencies:
                 package = resolved[PhaseInstanceId("sdk", instance.component, "package", "desktop")]
                 sdk_projections = None if sdk_validation_projection_provider is None else sdk_validation_projection_provider(
-                    instance, tuple(resolved[dependency] for dependency in sdk_dependencies), package,
+                    instance, tuple(dependency_envelope(instance, dependency) for dependency in sdk_dependencies), package,
                 )
                 if sdk_projections is None:
                     continuation_requirements[instance] = {
@@ -1583,7 +1626,7 @@ def advance_reuse(
             plan = _plan(
                 instance,
                 effective_inputs,
-                [resolved[dependency]["receipt"] for dependency in phase_instance_dependencies(instance)],
+                [dependency_envelope(instance, dependency)["receipt"] for dependency in phase_instance_dependencies(instance)],
                 resolved_repository_root,
                 repository_revision,
             )

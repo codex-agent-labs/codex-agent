@@ -975,6 +975,45 @@ class ProductPlanTest(unittest.TestCase):
         self.assertIn(("runtime", "node-js", "validation", "node-js-binding"), identities)
         self.assertNotIn(("runtime", "node-js", "validation", "node-js"), identities)
 
+    def test_javascript_validation_keeps_older_selected_runtime_line_and_exact_raw_identity(self) -> None:
+        instance = PhaseInstanceId("sdk", "javascript", "validation", "node")
+        originals = upstreams(instance)
+        runtime = next(value for value in originals if value["product"] == "runtime")
+        self.assertEqual(("node-js", "validation", "node-js-binding"),
+                         tuple(runtime[name] for name in ("component", "phase", "target")))
+        runtime["productVersion"] = "2.3.3"
+        newer = {**VERSIONS, "runtime-release": "2.4.0", "runtime-compatibility": "2.4.0"}
+        before = copy.deepcopy(originals)
+        baseline = plan(instance, upstream_receipts=originals)
+        retained = plan(instance, upstream_receipts=originals, versions=newer)
+        self.assertEqual(baseline, retained)
+        self.assertEqual(before, originals)
+        original_record = next(value for value in retained["inputs"]["upstreamArtifacts"]
+                               if value["product"] == "runtime")
+        self.assertEqual(runtime["buildKey"], original_record["buildKey"])
+        self.assertEqual(output_inventory_digest(runtime["outputs"]), original_record["outputsDigest"])
+
+        changed = copy.deepcopy(originals)
+        changed_runtime = next(value for value in changed if value["product"] == "runtime")
+        changed_runtime["outputs"][0]["sha256"] = DIGEST_C
+        self.assertNotEqual(retained["buildKey"], plan(instance, upstream_receipts=changed, versions=newer)["buildKey"])
+
+        for field, value, expected_error in (
+            ("versionIdentity", "2.4.0", "Incompatible embedded Runtime version identity"),
+            ("target", "linux-x64", "Unexpected upstream receipt"),
+        ):
+            malformed = copy.deepcopy(originals)
+            member = next(value for value in malformed if value["product"] == "runtime")
+            if field == "versionIdentity":
+                member["inputs"][field] = value
+            else:
+                member[field] = value
+            member["buildKey"] = compute_build_key(
+                product=member["product"], component=member["component"], phase=member["phase"],
+                target=member["target"], inputs=member["inputs"])
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, expected_error):
+                plan(instance, upstream_receipts=malformed, versions=newer)
+
     def test_unknown_instance_and_unsupported_output_schema_fail_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unknown product phase instance"):
             plan_phase(

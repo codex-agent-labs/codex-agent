@@ -206,7 +206,7 @@ def _validate_upstream_version(
         consumer.product == "sdk"
         and (
             consumer.phase == "package" and consumer.component in SDK_COMPATIBILITY_COMPONENTS
-            or consumer.phase == "validation" and consumer.component in NATIVE_BINDINGS
+            or consumer.phase == "validation" and consumer.component in (*NATIVE_BINDINGS, "javascript")
         )
         and instance.product == "runtime"
     )

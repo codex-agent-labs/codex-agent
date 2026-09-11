@@ -1929,6 +1929,90 @@ class ProductReuseTest(unittest.TestCase):
             result["matrices"]["sdk"],
         )
 
+    def _external_sdk_runtime_fixture(self):
+        # Planner envelopes only: the production caller must authenticate these
+        # original objects/carriers before passing them to advance_reuse.
+        repository, revision, _ = self.runtime_flags_revision()
+        inputs, originals = retained_product_closure(
+            PYTHON_PACKAGE, repository_root=repository, repository_revision=revision)
+        dependencies = {instance for instance in phase_instance_dependencies(PYTHON_PACKAGE)
+                        if instance.product == "runtime"}
+        external = [originals[instance] for instance in sorted(dependencies)]
+        current_versions = {**VERSIONS, "runtime-release": "2.3.5"}
+        current_inputs = {instance: {**values, "versions": current_versions} for instance, values in inputs.items()}
+        options = dict(repository_root=repository, repository_revision=revision,
+                       sdk_runtime_receipts=external, sdk_default_runtime_version=VERSIONS["runtime-release"],
+                       runtime_validation_projection_provider=test_runtime_projection_provider)
+        return current_inputs, originals, options
+
+    def test_sdk_pinned_old_default_does_not_schedule_current_runtime_after_patch_bump(self) -> None:
+        inputs, originals, options = self._external_sdk_runtime_fixture()
+        before = copy.deepcopy(originals)
+        inputs = {instance: values for instance, values in inputs.items() if instance.product != "runtime"}
+        available = [envelope for instance, envelope in originals.items() if instance.product == "contract"]
+        plans = []
+        result, retained = advance_reuse([PYTHON_PACKAGE], inputs, available, self.session(), **options,
+            build_plan_consumer=lambda instance, plan: plans.append((instance, plan)))
+        self.assertEqual([], result["matrices"]["runtime"])
+        self.assertEqual([], result["matrices"]["contract"])
+        self.assertEqual([PYTHON_PACKAGE], [instance for instance, _ in plans])
+        self.assertFalse(any(phase["product"] == "runtime" for phase in result["phases"]))
+        self.assertEqual(plan_for(PYTHON_PACKAGE, inputs, originals), plans[0][1])
+        self.assertEqual({item["receiptSha256"] for item in available},
+                         {item["receiptSha256"] for item in retained})
+        # The unchanged SDK package is a full no-op when its original envelope
+        # is also supplied; external Runtime dependencies are not new work.
+        complete, returned = advance_reuse([PYTHON_PACKAGE], inputs,
+            [*available, originals[PYTHON_PACKAGE]], self.session(), **options)
+        self.assertTrue(complete["fullReuse"])
+        self.assertEqual({"contract": [], "runtime": [], "sdk": []}, complete["matrices"])
+        self.assertIn(originals[PYTHON_PACKAGE], returned)
+        self.assertEqual(before, originals)
+
+    def test_current_runtime_aggregate_and_sdk_old_default_remain_separate_selections(self) -> None:
+        inputs, originals, options = self._external_sdk_runtime_fixture()
+        before = copy.deepcopy(originals)
+        aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+        available = [envelope for instance, envelope in originals.items()
+                     if instance not in {aggregate, PYTHON_PACKAGE}]
+        plans = {}
+        result, retained = advance_reuse([aggregate, PYTHON_PACKAGE], inputs, available, self.session(), **options,
+            build_plan_consumer=lambda instance, plan: plans.__setitem__(instance, plan))
+        self.assertEqual({aggregate, PYTHON_PACKAGE}, set(plans))
+        self.assertEqual("2.3.5", plans[aggregate]["inputs"]["versionIdentity"])
+        self.assertNotEqual(originals[aggregate]["receipt"]["buildKey"], plans[aggregate]["buildKey"])
+        embedded = [record for record in plans[PYTHON_PACKAGE]["inputs"]["upstreamArtifacts"]
+                    if record["product"] == "runtime" and record["component"] == "runtime-aggregate"]
+        self.assertEqual(1, len(embedded))
+        self.assertEqual(originals[aggregate]["receipt"]["buildKey"], embedded[0]["buildKey"])
+        self.assertEqual(output_inventory_digest(originals[aggregate]["receipt"]["outputs"]),
+                         embedded[0]["outputsDigest"])
+        self.assertEqual(["runtime-aggregate"], [row["component"] for row in result["matrices"]["runtime"]])
+        self.assertEqual(["python"], [row["component"] for row in result["matrices"]["sdk"]])
+        self.assertEqual({item["receiptSha256"] for item in available},
+                         {item["receiptSha256"] for item in retained})
+        self.assertEqual(before, originals)
+
+    def test_sdk_external_runtime_missing_duplicate_wrong_default_and_unpaired_inputs_reject(self) -> None:
+        inputs, originals, options = self._external_sdk_runtime_fixture()
+        before = copy.deepcopy(originals)
+        inputs = {instance: values for instance, values in inputs.items() if instance.product != "runtime"}
+        available = [envelope for instance, envelope in originals.items() if instance.product == "contract"]
+        external = options["sdk_runtime_receipts"]
+        cases = (
+            {"sdk_runtime_receipts": external[:-1]},
+            {"sdk_runtime_receipts": [*external, external[0]]},
+            {"sdk_runtime_receipts": [*external, originals[CONTRACT_METADATA]]},
+            {"sdk_default_runtime_version": "2.3.5"},
+            {"sdk_default_runtime_version": "2.3.4-rc.1"},
+            {"sdk_default_runtime_version": None},
+            {"sdk_runtime_receipts": None},
+        )
+        for changes in cases:
+            with self.subTest(changes=tuple(changes)), self.assertRaises(ValueError):
+                advance_reuse([PYTHON_PACKAGE], inputs, available, self.session(), **{**options, **changes})
+        self.assertEqual(before, originals)
+
     def test_package_and_validation_only_waves_do_not_schedule_binary_work(self) -> None:
         flags_repository, flags_revision, _ = self.runtime_flags_revision()
         for requested in (RUNTIME_PACKAGE, RUNTIME_VALIDATION):
