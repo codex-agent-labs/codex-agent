@@ -114,7 +114,7 @@ class RuntimeWorkerCollectionTest(unittest.TestCase):
         self.assertFalse(
             (destination / "phase-plans/runtime-jvm-binary-jvm.json").exists()
         )
-        self.assertEqual({"result": result, "readyPlans": [node_plan]}, inspected)
+        self.assertEqual({"result": result, "readyPlans": [node_plan], "runtimeAggregateReleaseEvidence": []}, inspected)
         self.assertIn(
             "wave_failed=true",
             (self.scratch / "collected-github-output").read_text(encoding="utf-8").splitlines(),
@@ -198,7 +198,7 @@ class RuntimeWorkerCollectionTest(unittest.TestCase):
             result["matrices"]["contract"],
         )
         self.assertEqual(
-            {"result": result, "readyPlans": [binary_plan]},
+            {"result": result, "readyPlans": [binary_plan], "runtimeAggregateReleaseEvidence": []},
             inspected,
         )
         self.assertFalse((destination / "reused-carrier").exists())

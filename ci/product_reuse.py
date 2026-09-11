@@ -2500,7 +2500,10 @@ def inspect_products(
     state = _verified_product_state(
         plan_path, discovery_root, state_root, root,
         os.environ if environ is None else environ, sdk_validation_tooling)
+    request = dict(state.rebased_request)
+    _merge_native_comparison_records(request, _retained_aggregate_handoffs(state_root, root), key=_AGGREGATE_REQUEST_KEY)
     return {"result": state.prior,
+            _AGGREGATE_REQUEST_KEY: request.get(_AGGREGATE_REQUEST_KEY, []),
             "readyPlans": [state.prior_ready_plans[instance] for instance in sorted(state.prior_ready_plans)]}
 
 

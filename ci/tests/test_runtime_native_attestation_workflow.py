@@ -24,7 +24,8 @@ class RuntimeNativeAttestationWorkflowTest(unittest.TestCase):
                       "needs.plan.outputs.remote_build_authorized == 'true'",
                       "github.event_name != 'workflow_dispatch'",
                       "needs.runtime-continuation.result == 'success'",
-                      "needs.runtime-continuation.outputs.aggregate_state != 'not-selected'"):
+                      "needs.runtime-continuation.outputs.aggregate_state != 'not-selected'",
+                      "needs.runtime-continuation.outputs.native_attestation_matrix != '{\"include\":[]}'"):
             self.assertIn(guard, guards)
         self.assertIn("environment: product-attestation", self.job)
         self.assertIn("fail-fast: false", self.job)

@@ -257,6 +257,24 @@ class RuntimeWorkflowTest(unittest.TestCase):
             self.assertEqual("true", self.outputs()["aggregate_payload_complete"])
             self.assertEqual(5, len(result["nativeAttestationMatrix"]["include"]))
 
+    def test_complete_carrier_routes_without_native_resigning_only_for_exact_completed_receipt(self):
+        for state, matching, count in (("reused", True, 0), ("retained", True, 0),
+                                      ("reused", False, 5), ("build", True, 5)):
+            inspected = self.final_fixture(state)
+            selected = next(record for record in inspected["result"]["phases"]
+                            if workflow.products._identity(record) == AGGREGATE)
+            inspected["runtimeAggregateReleaseEvidence"] = [{
+                "receiptSha256": selected["receiptSha256"] if matching and selected["receiptSha256"] else "sha256:" + "f" * 64,
+                "handoffRoot": "external/original"}]
+            with self.subTest(state=state, matching=matching), \
+                    mock.patch.object(workflow.products, "inspect_products", return_value=inspected):
+                result = self.final_route()
+            self.assertEqual(count, len(result["nativeAttestationMatrix"]["include"]))
+            if not count:
+                self.assertEqual('{"include":[]}', self.outputs()["native_attestation_matrix"])
+                self.assertEqual("true", self.outputs()["aggregate_payload_complete"])
+                self.assertEqual(selected["receiptSha256"], result["aggregate"]["receiptSha256"])
+
     def test_final_route_missing_native_adapter_or_contract_original_rejects_before_outputs(self):
         identities = [workflow.PhaseInstanceId("runtime", target, "metadata", target) for target in workflow.NATIVE_TARGETS]
         identities.extend((workflow.PhaseInstanceId("runtime", "node-js", "validation", "node-js-binding"),

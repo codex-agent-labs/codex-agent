@@ -93,6 +93,11 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
     native = {"include": [{"target": target,
         "buildKey": phases[PhaseInstanceId("runtime", target, "metadata", target)]["buildKey"]}
         for target in NATIVE_TARGETS]}
+    # Routing only: the protected caller still authenticates the complete
+    # carrier and all selected originals, with no invalid-proof fallback.
+    if status == "completed" and any(record["receiptSha256"] == receipt
+            for record in inspected.get("runtimeAggregateReleaseEvidence", [])):
+        native = {"include": []}
     value = {"nativeAttestationMatrix": native,
              "aggregate": {"state": status, "buildKey": key, "receiptSha256": receipt}}
     # Publish all routing fields together only after every prerequisite passes.

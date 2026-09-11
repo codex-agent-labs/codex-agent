@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 import shutil
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -44,6 +45,7 @@ class ProductStateInspectionTest(unittest.TestCase):
         before = regular_file_inventory(resumed)
         expected = {
             "result": load_canonical_json(resumed / "reuse-wave-result.json"),
+            "runtimeAggregateReleaseEvidence": [],
             "readyPlans": [load_canonical_json(resumed / "phase-plans/runtime-jvm-binary-jvm.json")],
         }
         hidden = []
@@ -75,7 +77,8 @@ class ProductStateInspectionTest(unittest.TestCase):
             for path in (resumed, shard, advanced)
         }
 
-        self.assertEqual({"result": result, "readyPlans": []}, self.inspect(resumed, advanced))
+        self.assertEqual({"result": result, "readyPlans": [], "runtimeAggregateReleaseEvidence": []},
+                         self.inspect(resumed, advanced))
         self.assertEqual({"include": []}, self.matrix(resumed, advanced))
         selected = tuple(sorted(
             adapter._identity(phase) for phase in result["phases"]
@@ -153,6 +156,27 @@ class ProductStateInspectionTest(unittest.TestCase):
 
 class RuntimeMatrixControlTest(unittest.TestCase):
     """Control translation only; synthetic inspected rows are not admission proof."""
+
+    def test_inspection_forwards_discovery_and_advanced_carrier_records_only_after_replay(self):
+        first = {"receiptSha256": "sha256:" + "a" * 64, "handoffRoot": "discovery/original"}
+        second = {"receiptSha256": "sha256:" + "b" * 64, "handoffRoot": "state/original"}
+        state = SimpleNamespace(prior={"phases": []}, prior_ready_plans={},
+            rebased_request={"runtimeAggregateReleaseEvidence": [first]})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with mock.patch.object(adapter, "_verified_product_state", return_value=state) as replay, \
+                    mock.patch.object(adapter, "_retained_aggregate_handoffs", return_value=[second]) as retained:
+                result = adapter.inspect_products(root / "plan", root / "discovery", root / "state",
+                    repository_root=root, environ={})
+            replay.assert_called_once_with(root / "plan", root / "discovery", root / "state", root, {}, None)
+            retained.assert_called_once_with(root / "state", root)
+            self.assertEqual([first, second], result["runtimeAggregateReleaseEvidence"])
+            self.assertEqual([first], state.rebased_request["runtimeAggregateReleaseEvidence"])
+            with mock.patch.object(adapter, "_verified_product_state", side_effect=ValueError("replay rejected")), \
+                    mock.patch.object(adapter, "_retained_aggregate_handoffs") as retained, \
+                    self.assertRaisesRegex(ValueError, "replay rejected"):
+                adapter.inspect_products(root / "plan", root / "discovery", repository_root=root)
+            retained.assert_not_called()
 
     def test_worker_command_keeps_fixed_task_and_windows_arguments_out_of_a_shell(self):
         wrapper = "/fixture path/gradlew"
