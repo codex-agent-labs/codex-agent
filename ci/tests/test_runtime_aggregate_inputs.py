@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from ci.tests import test_runtime_aggregate_handoff as fixture
@@ -91,6 +92,26 @@ class RuntimeAggregateInputsTest(unittest.TestCase):
             self.assertFalse(self.output.exists())
         with self.assertRaises(ValueError):
             transport.rebase_runtime_aggregate_release_records([first], self.work, self.work / "elsewhere")
+
+    def test_aggregate_lookup_uses_complete_original_without_partial_adapter_evidence(self):
+        from products.reuse import LookupSession
+        from products import runtime_aggregate_handoff
+        raw = (self.carrier / "aggregate-input/metadata-receipt.json").read_bytes()
+        envelope = {"receiptSha256": self.digest, "receiptBytes": raw}
+        candidate = SimpleNamespace(catalog=SimpleNamespace(keyring=self.keyring, keys_directory=self.keys))
+        session = LookupSession(repository=self.source.source.context["producer"]["repository"], pull_request=None,
+                                runtime_aggregate_evidence={self.digest: self.carrier})
+        before = regular_file_inventory(self.carrier, allow_empty=True)
+        with patch("reuse.api_request", side_effect=AssertionError("lookup contacted original CI")), \
+                patch("products.reuse.release_attested_runtime_aggregate_admission",
+                      side_effect=AssertionError("lookup required duplicate partial evidence")):
+            session._verify_release_attested_runtime_aggregate(envelope, candidate)
+            with patch.object(runtime_aggregate_handoff, "verified_runtime_aggregate_handoff",
+                              side_effect=ValueError("invalid complete carrier")), self.assertRaisesRegex(ValueError, "invalid complete"):
+                session._verify_release_attested_runtime_aggregate(envelope, candidate)
+            with self.assertRaisesRegex(ValueError, "indexed original receipt"):
+                session._verify_release_attested_runtime_aggregate({**envelope, "receiptBytes": raw + b"\n"}, candidate)
+        self.assertEqual(before, regular_file_inventory(self.carrier, allow_empty=True))
 
     def test_loader_enforces_outer_inventory_and_containment_without_granting_trust(self):
         root = self.work / "structural-only"

@@ -279,6 +279,7 @@ class LookupSession:
         native_runtime_evidence=None,
         adapter_runtime_projection=None,
         adapter_runtime_evidence=None,
+        runtime_aggregate_evidence=None,
         sdk_validation_projection=None,
     ) -> None:
         self.repository = require_relative_path(repository, "lookup repository")
@@ -299,6 +300,9 @@ class LookupSession:
             raise ValueError("Adapter Runtime comparison provider must be callable")
         self._adapter_runtime_projection = adapter_runtime_projection
         self._adapter_runtime_evidence = {} if adapter_runtime_evidence is None else dict(adapter_runtime_evidence)
+        self._runtime_aggregate_evidence = {} if runtime_aggregate_evidence is None else {
+            require_sha256(digest, "Aggregate original receipt"): Path(path)
+            for digest, path in runtime_aggregate_evidence.items()}
         self._adapter_projections: dict[bytes, VerifiedAdapterRuntimeProjection] = {}
         if sdk_validation_projection is not None and not callable(sdk_validation_projection):
             raise ValueError("SDK validation comparison provider must be callable")
@@ -589,6 +593,15 @@ class LookupSession:
         catalog = candidate.catalog
         if catalog.keyring is None or catalog.keys_directory is None:
             raise ValueError("Release Runtime aggregate reuse requires caller-pinned catalog keys")
+        retained = self._runtime_aggregate_evidence.get(envelope["receiptSha256"])
+        if retained is not None:
+            from .runtime_aggregate_handoff import verified_runtime_aggregate_handoff
+            with verified_runtime_aggregate_handoff(retained, keyring=catalog.keyring,
+                                                   keys_directory=catalog.keys_directory) as verified:
+                identity = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+                if verified["receiptBytes"][identity] != envelope["receiptBytes"]:
+                    raise ValueError("Complete aggregate carrier differs from the indexed original receipt")
+            return
         matched = None
         for arguments in self._adapter_runtime_evidence.values():
             inputs = arguments["aggregate_inputs"]
@@ -1216,6 +1229,8 @@ def plan_reuse_wave(
             native_runtime_evidence=native_originals,
             adapter_runtime_projection=adapter_comparison,
             adapter_runtime_evidence=adapter_originals,
+            runtime_aggregate_evidence={record["receiptSha256"]: artifact_root / record["handoffRoot"]
+                for record in request.get("runtimeAggregateReleaseEvidence", [])},
             sdk_validation_projection=sdk_comparison,
             pull_request=pull_request,
             restore_root=restore_root / "remote",
