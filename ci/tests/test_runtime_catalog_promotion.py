@@ -3,8 +3,10 @@
 import copy
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -251,6 +253,75 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
             tracked.write_bytes(before)
         self.assertFalse(self.destination.exists())
         self.assertEqual(self.original_inventory, regular_file_inventory(self.carrier, allow_empty=True))
+
+
+class RuntimeCatalogPromotionCliTest(unittest.TestCase):
+    """CLI dispatch only; the existing signed tests exercise the sole gate."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="promotion-cli-")
+        self.addCleanup(temporary.cleanup)
+        self.work = Path(temporary.name).resolve()
+        self.event = self.work / "event.json"
+        self.event.write_text('{ "after": "synthetic", "deleted": false }\n')
+        self.arguments = ["--repository-root", str(self.work / "trusted"),
+            "--candidate-root", str(self.work / "candidate"), "--destination", str(self.work / "output"),
+            "--trusted-source-sha", "a" * 40, "--trusted-workflow-sha", "b" * 40,
+            "--trusted-promotion-workflow-sha", "c" * 40, "--final-commit", "d" * 40]
+
+    def test_dispatch_preserves_explicit_pins_event_and_environment_only_credentials(self):
+        environment = {"GITHUB_EVENT_PATH": str(self.event), "GITHUB_TOKEN": "synthetic-token",
+                       SECRET: "synthetic-secret-not-read-by-cli"}
+        with patch.dict(os.environ, environment, clear=True), \
+                patch.object(caller, "promote_runtime_aggregate_catalog") as gate:
+            caller.main(self.arguments)
+            gate.assert_called_once_with(self.work / "trusted", self.work / "candidate", self.work / "output",
+                trusted_source_sha="a" * 40, trusted_workflow_sha="b" * 40,
+                trusted_promotion_workflow_sha="c" * 40, final_commit="d" * 40,
+                event_payload={"after": "synthetic", "deleted": False},
+                environment=os.environ, token="synthetic-token")
+            self.assertIs(gate.call_args.kwargs["environment"], os.environ)
+            self.assertNotIn("private_key", gate.call_args.kwargs)
+
+    def test_every_authority_argument_is_required_and_cli_credentials_are_rejected(self):
+        with patch.object(caller, "promote_runtime_aggregate_catalog") as gate, patch("sys.stderr", new_callable=io.StringIO):
+            for offset in range(0, len(self.arguments), 2):
+                with self.subTest(flag=self.arguments[offset]), self.assertRaises(SystemExit) as error:
+                    caller.main(self.arguments[:offset] + self.arguments[offset + 2:])
+                self.assertEqual(2, error.exception.code)
+            for flag in ("--token", "--private-key"):
+                with self.subTest(flag=flag), self.assertRaises(SystemExit) as error:
+                    caller.main([*self.arguments, flag, "forbidden"])
+                self.assertEqual(2, error.exception.code)
+            gate.assert_not_called()
+
+    def test_missing_duplicate_malformed_and_symbolic_event_never_dispatch(self):
+        symbolic = self.work / "symbolic.json"
+        symbolic.symlink_to(self.event)
+        with patch.object(caller, "promote_runtime_aggregate_catalog") as gate, patch("sys.stderr", new_callable=io.StringIO):
+            for environment in ({}, {"GITHUB_EVENT_PATH": str(symbolic)},
+                                {"GITHUB_EVENT_PATH": str(self.work / "absent.json")}):
+                with self.subTest(environment=environment), patch.dict(os.environ, environment, clear=True), self.assertRaises(SystemExit) as error:
+                    caller.main(self.arguments)
+                self.assertEqual(2, error.exception.code)
+            for raw in ('{"after":1,"after":2}', '[1]', '{invalid'):
+                self.event.write_text(raw)
+                with self.subTest(raw=raw), patch.dict(os.environ, {"GITHUB_EVENT_PATH": str(self.event)}, clear=True), self.assertRaises(SystemExit) as error:
+                    caller.main(self.arguments)
+                self.assertEqual(2, error.exception.code)
+            gate.assert_not_called()
+
+    def test_clean_module_and_direct_help_import_without_pythonpath(self):
+        repository = Path(__file__).resolve().parents[2]
+        environment = dict(os.environ)
+        environment.pop("PYTHONPATH", None)
+        for invocation in (("-m", "ci.runtime_catalog_promotion"), ("ci/runtime_catalog_promotion.py",)):
+            with self.subTest(invocation=invocation):
+                result = subprocess.run([sys.executable, *invocation, "--help"], cwd=repository,
+                    env=environment, capture_output=True, text=True, check=False)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn("--trusted-promotion-workflow-sha", result.stdout)
+                self.assertNotIn("--private-key", result.stdout)
 
 
 if __name__ == "__main__":
