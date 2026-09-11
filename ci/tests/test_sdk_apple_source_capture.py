@@ -5,8 +5,10 @@ from __future__ import annotations
 from argparse import Namespace
 import io
 import json
+import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import unittest
 from unittest import mock
@@ -22,6 +24,7 @@ import sdk_apple_source  # noqa: E402
 from products.inventory import (  # noqa: E402
     load_canonical_json_bytes, regular_file_inventory, sha256_bytes,
 )
+from ci.tests import test_ci as ci_fixture  # noqa: E402
 from ci.tests import test_sdk_apple_source as source_fixture  # noqa: E402
 
 
@@ -185,7 +188,7 @@ class SdkAppleSourceCaptureTest(unittest.TestCase):
             arguments["expected_lane_receipt_sha256"],
         )
 
-    def _capture(self, *, gate=None, artifact=None, raw=None, original_run=None, **changes):
+    def _capture(self, *, gate=None, artifact=None, raw=None, original_run=None, api=None, **changes):
         arguments = {
             "plan_path": self.source.plan,
             "destination": self.output,
@@ -205,9 +208,8 @@ class SdkAppleSourceCaptureTest(unittest.TestCase):
             "environ": self.environment,
             "token": self.token,
         }
-        with mock.patch("reuse.api_request", side_effect=self._api(
-            artifact=artifact, raw=raw, original_run=original_run,
-        )), mock.patch(
+        request = api or self._api(artifact=artifact, raw=raw, original_run=original_run)
+        with mock.patch("reuse.api_request", side_effect=request), mock.patch(
             "sdk_apple_source.verify_sdk_apple_original_source",
             side_effect=gate or self._gate,
         ):
@@ -296,6 +298,210 @@ class SdkAppleSourceCaptureTest(unittest.TestCase):
         self.assertEqual(81, evidence["originalProducer"]["runId"])
         self.assertEqual([91], [value["run"]["id"] for value in evidence["observed"]])
         self.assertEqual([81], [value["run"]["id"] for value in evidence["originalObserved"]])
+
+    def test_cross_commit_transport_replays_authenticated_original_plan_and_lane(self) -> None:
+        original_plan = json.loads(self.source.plan.read_text(encoding="utf-8"))
+        original_plan_root = self.root / "original-plan-upload"
+        (original_plan_root / "inventories").mkdir(parents=True)
+        shutil.copy2(self.source.plan, original_plan_root / "impact-plan.json")
+        shutil.copytree(
+            self.source.plan.parent / "inventories",
+            original_plan_root / "inventories", dirs_exist_ok=True,
+        )
+        original_plan_raw = _archive_tree(original_plan_root)
+        lane_receipt.create_receipt(Namespace(
+            plan=original_plan_root / "impact-plan.json", lane="ios-swift-tests",
+            output=self.upload_lane, workflow_path=".github/workflows/ci.yml",
+            artifact_name=f"codex-agent-ci-ios-swift-tests-{self.source.tree}",
+            run_id=81, run_attempt=1,
+            runner=["os=macOS", "arch=ARM64"],
+            toolchain=["xcode=26.3", "swift=6.2.3", "validationActions=build,metadata,test"],
+            artifact=[], evidence=[
+                f"{path.relative_to(self.upload_lane).as_posix()}=synthetic-apple-observation"
+                for path in sorted(value for value in self.upload_lane.rglob("*") if value.is_file())
+                if path.name not in {"lane-receipt.json", *lane_receipt.INPUT_NAMES.values()}
+            ],
+        ))
+        original_lane = self.root / "original-lane-upload"
+        shutil.copytree(self.upload_lane, original_lane)
+        original_lane_raw = _archive_tree(original_lane)
+
+        current_commit = ci_fixture.GitFixture.commit(
+            self.source, "current-only/change.txt", "changed\n",
+        )
+        current_plan_path = self.source.plan
+        current_plan = ci_fixture.plan(
+            root=self.root, base=self.source.base, target=current_commit, head=current_commit,
+            event="pull_request", pull_request=7, force_full=True,
+            require_android_evidence=False, repository="codex-agent-labs/codex-agent",
+            output=current_plan_path,
+            **self.source.pull_request_authorization(
+                base=self.source.base, target=current_commit, pull_request=7,
+            ),
+        )
+        current_tree = self.source.git("rev-parse", f"{current_commit}^{{tree}}")
+        current_lane = self.root / "current-lane-upload"
+        shutil.copytree(original_lane, current_lane)
+        with mock.patch.dict(os.environ, {"GITHUB_RUN_ID": "91", "GITHUB_RUN_ATTEMPT": "2"}):
+            reuse.reissue_transport_receipt(
+                current_lane,
+                json.loads((current_lane / "lane-receipt.json").read_text(encoding="utf-8")),
+                current_plan,
+                "ios-swift-tests",
+                f"codex-agent-ci-ios-swift-tests-{self.source.tree}",
+            )
+        current_raw = _archive_tree(current_lane)
+        current_digest = sha256_bytes(current_raw)
+        current_artifact = {
+            **self.artifact,
+            "name": f"codex-agent-ci-ios-swift-tests-{current_tree}",
+            "size_in_bytes": len(current_raw),
+            "digest": current_digest,
+            "workflow_run": {"id": 91, "head_sha": current_plan["headCommit"]},
+        }
+        original_artifacts = ({
+            "id": 702,
+            "name": f"codex-agent-ci-ios-swift-tests-{self.source.tree}",
+            "size_in_bytes": len(original_lane_raw),
+            "digest": sha256_bytes(original_lane_raw),
+            "expired": False,
+            "created_at": "2026-09-10T10:15:00Z",
+            "archive_download_url":
+                "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/702/zip",
+            "workflow_run": {"id": 81, "head_sha": original_plan["headCommit"]},
+        }, {
+            "id": 703,
+            "name": f"codex-agent-ci-plan-{self.source.tree}",
+            "size_in_bytes": len(original_plan_raw),
+            "digest": sha256_bytes(original_plan_raw),
+            "expired": False,
+            "created_at": "2026-09-10T10:05:00Z",
+            "archive_download_url":
+                "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/703/zip",
+            "workflow_run": {"id": 81, "head_sha": original_plan["headCommit"]},
+        })
+        runs = {
+            91: {**self._run(), "head_sha": current_plan["headCommit"], "pull_requests": [{
+                "number": current_plan["pullRequest"],
+                "base": {"sha": current_plan["baseCommit"]},
+                "head": {"sha": current_plan["headCommit"]},
+            }]},
+            81: {**self._run(81, 1), "head_sha": original_plan["headCommit"]},
+        }
+        commits = {
+            current_commit: {
+                "sha": current_commit, "tree": {"sha": current_tree}, "parents": [
+                    {"sha": current_plan["baseCommit"]}, {"sha": current_plan["headCommit"]},
+                ],
+            },
+            self.source.commit: self._commit(),
+        }
+        jobs = {
+            91: [{**value, "head_sha": current_plan["headCommit"]}
+                 for value in self._jobs(91)],
+            81: [*self._jobs(81), {
+                "id": 982,
+                "name": sdk_apple_source._PLAN_JOB,
+                "run_id": 81,
+                "head_sha": original_plan["headCommit"],
+                "status": "completed", "conclusion": "success",
+                "started_at": "2026-09-10T10:00:00Z",
+                "completed_at": "2026-09-10T10:10:00Z",
+            }],
+        }
+        archives = {
+            current_artifact["archive_download_url"]: current_raw,
+            original_artifacts[0]["archive_download_url"]: original_lane_raw,
+            original_artifacts[1]["archive_download_url"]: original_plan_raw,
+        }
+        details = {value["id"]: value for value in (current_artifact, *original_artifacts)}
+
+        def api(url: str, token: str) -> bytes:
+            self.assertEqual(self.token, token)
+            for run_id, run in runs.items():
+                base = (f"https://api.github.com/repos/{self.plan['repository']}"
+                        f"/actions/runs/{run_id}/attempts/{run['run_attempt']}")
+                if url == base:
+                    return json.dumps(run).encode()
+                if url.startswith(base + "/jobs?"):
+                    return json.dumps({"jobs": jobs[run_id]}).encode()
+            commit_prefix = (f"https://api.github.com/repos/{self.plan['repository']}"
+                             "/git/commits/")
+            if url.startswith(commit_prefix):
+                return json.dumps(commits[url.removeprefix(commit_prefix)]).encode()
+            artifacts_url = (f"https://api.github.com/repos/{self.plan['repository']}"
+                             "/actions/runs/81/artifacts")
+            if url.startswith(artifacts_url + "?"):
+                return json.dumps({"artifacts": list(original_artifacts)}).encode()
+            detail_prefix = (f"https://api.github.com/repos/{self.plan['repository']}"
+                             "/actions/artifacts/")
+            if url.startswith(detail_prefix) and url.removeprefix(detail_prefix).isdigit():
+                return json.dumps(details[int(url.removeprefix(detail_prefix))]).encode()
+            if url in archives:
+                return archives[url]
+            raise AssertionError(f"Unexpected API request: {url}")
+
+        def gate(**arguments) -> None:
+            repository = Path(arguments["repository"])
+            self.assertNotEqual(self.root, repository)
+            self.assertEqual(self.source.commit, subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repository, check=True,
+                capture_output=True, text=True,
+            ).stdout.strip())
+            self.assertEqual(
+                regular_file_inventory(original_lane, allow_empty=True),
+                regular_file_inventory(Path(arguments["ios_swift_tests_root"]), allow_empty=True),
+            )
+            self.assertEqual(
+                (original_plan_root / "impact-plan.json").read_bytes(),
+                Path(arguments["impact_plan"]).read_bytes(),
+            )
+            self.assertEqual(self.source.commit, arguments["expected_producer_commit"])
+            self.assertEqual(self.source.tree, arguments["expected_producer_tree"])
+
+        self.plan = current_plan
+        self.artifact = current_artifact
+        self.raw = current_raw
+        self.digest = current_digest
+        self.environment = {"GITHUB_RUN_ID": "91", "GITHUB_RUN_ATTEMPT": "2"}
+        original_lane_before = regular_file_inventory(original_lane, allow_empty=True)
+        original_plan_before = regular_file_inventory(original_plan_root, allow_empty=True)
+        for label, mutate in (
+            ("lane", lambda arguments: (
+                Path(arguments["ios_swift_tests_root"]) / "lane-receipt.json"
+            ).write_bytes(b"changed private original lane\n")),
+            ("plan", lambda arguments: Path(arguments["impact_plan"]).write_bytes(
+                b"changed private original plan\n",
+            )),
+        ):
+            with self.subTest(private_mutation=label), self.assertRaisesRegex(
+                ValueError, "original plan changed during verification|source lane or original plan changed",
+            ):
+                self._capture(gate=lambda **arguments: mutate(arguments), api=api)
+            self.assertFalse(self.output.exists())
+            self.assertEqual(
+                original_lane_before, regular_file_inventory(original_lane, allow_empty=True),
+            )
+            self.assertEqual(
+                original_plan_before, regular_file_inventory(original_plan_root, allow_empty=True),
+            )
+        evidence = self._capture(api=api, gate=gate)
+        self.assertEqual(self.source.commit, evidence["originalProducer"]["commit"])
+        self.assertEqual(
+            regular_file_inventory(original_lane, allow_empty=True),
+            regular_file_inventory(self.output / "lane", allow_empty=True),
+        )
+        self.assertEqual(current_raw, (self.output / "transport/upload.zip").read_bytes())
+        self.assertEqual(
+            original_lane_raw, (self.output / "transport/original-lane-upload.zip").read_bytes(),
+        )
+        self.assertEqual(
+            original_plan_raw, (self.output / "transport/original-plan-upload.zip").read_bytes(),
+        )
+        self.assertEqual(
+            regular_file_inventory(current_lane, allow_empty=True),
+            regular_file_inventory(self.output / "transport/current-lane", allow_empty=True),
+        )
 
     def test_input_alias_rejects_before_network_and_preserves_the_input(self) -> None:
         original = self.source.plan.read_bytes()
