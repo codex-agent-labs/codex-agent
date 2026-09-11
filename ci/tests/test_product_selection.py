@@ -1317,6 +1317,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/products/sdk_native_metadata.py",
             "ci/products/sdk_native_metadata_admission.py",
             "ci/products/runtime_sdk_handoff.py",
+            "ci/products/sdk_protected_runtime.py",
             "gradle/build-logic/src/main/kotlin/AppleOriginalExecutionVerification.kt",
             "ci/runtime_adapter_phase.py",
             "ci/runtime_supervisor.py",
