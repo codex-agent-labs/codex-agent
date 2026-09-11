@@ -8,7 +8,6 @@ pass the fixed CI observer.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 import os
 from pathlib import Path
 import subprocess
@@ -127,20 +126,6 @@ def _original_transport_producer(lane: Path, current: Mapping[str, object]):
     return selected
 
 
-def _job_window(observation, name: str, artifact: Mapping[str, object]) -> None:
-    job = next(value for value in observation["jobs"] if value.get("name") == name)
-    timestamps = [
-        datetime.fromisoformat(
-            require_string(value, "Apple source upload timestamp").replace("Z", "+00:00"),
-        )
-        for value in (job.get("started_at"), artifact.get("created_at"), job.get("completed_at"))
-    ]
-    if any(value.utcoffset() != timedelta(0) for value in timestamps) or not (
-        timestamps[0] <= timestamps[1] <= timestamps[2]
-    ):
-        raise ValueError("Apple source upload is outside its original job-attempt window")
-
-
 def _private_original_repository(
     source: Path, destination: Path, revision: str, policy_revision: str,
 ) -> Path:
@@ -181,7 +166,7 @@ def _original_upload(
         candidate.get("id"), candidate.get("digest"), name,
         producer, observation["run"], token,
     )
-    _job_window(observation, job, artifact)
+    product_reuse._require_artifact_job_window(observation, job, artifact)
     return artifact, raw
 
 
@@ -270,7 +255,7 @@ def capture_sdk_apple_original_ci(
             artifact_id, artifact_sha256, expected_name,
             capture_producer, observed[0]["run"], token,
         )
-        _job_window(observed[0], _JOB, artifact)
+        product_reuse._require_artifact_job_window(observed[0], _JOB, artifact)
         archive = private / "transport.zip"
         archive.write_bytes(raw)
         verified_zip_contents(

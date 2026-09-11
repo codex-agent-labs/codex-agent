@@ -382,6 +382,18 @@ def _observe_ci_producer_jobs(
     return evidence
 
 
+def _require_artifact_job_window(observation, job_name, artifact):
+    """Bind an upload to its observed original attempt, never just its run."""
+    jobs = [job for job in observation["jobs"] if job.get("name") == job_name]
+    if len(jobs) != 1:
+        raise ValueError("Upload producer job is missing or ambiguous")
+    job = jobs[0]
+    timestamps = [datetime.fromisoformat(require_string(value, "Original upload timestamp").replace("Z", "+00:00"))
+                  for value in (job.get("started_at"), artifact.get("created_at"), job.get("completed_at"))]
+    if any(value.utcoffset() != timedelta(0) for value in timestamps) or not timestamps[0] <= timestamps[1] <= timestamps[2]:
+        raise ValueError("Upload is outside its original job-attempt window")
+
+
 def _download_contract_ci_upload(
     artifact_id: int, artifact_sha256: str, expected_name: str,
     producer: Mapping[str, Any], observed_run: Mapping[str, Any], token: str,
@@ -3979,6 +3991,75 @@ def capture_runtime_resume_upload(
         if state_wave:
             transport["stateWave"] = state_wave
         write_canonical_json(prepared / "capture-transport.json", transport)
+        publish_regular_tree(prepared, destination, allow_empty=True)
+    return transport
+
+
+def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact_id, artifact_sha256,
+        trusted_workflow_sha, expected_build_key, expected_metadata_receipt_sha256,
+        repository_root=None, environ=None, token):
+    """Capture a fixed protected job's exact upload, not its product admission.
+
+    Original signature/content authentication remains in the existing full
+    carrier/SDK gate. Nothing in current transport rewrites original provenance.
+    """
+    from products.sdk_package import _require_capability_output_separate
+    from products.sdk_protected_runtime import _original_carrier
+
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else Path(repository_root)).resolve(strict=True)
+    plan_path, destination = Path(plan_path).absolute(), Path(destination).absolute()
+    key = require_sha256(expected_build_key, "Selected aggregate key")
+    digest = require_sha256(expected_metadata_receipt_sha256, "Selected aggregate receipt")
+    require_integer(artifact_id, "Aggregate upload ID", 1)
+    require_sha256(artifact_sha256, "Aggregate upload digest")
+    if not isinstance(token, str) or not token:
+        raise ValueError("Aggregate upload capture requires an observation token")
+
+    def output_safe():
+        _require_capability_output_separate(destination, [root, plan_path])
+        if destination.exists() or destination.is_symlink():
+            raise ValueError("Aggregate upload destination must not exist")
+
+    output_safe()
+    original_plan = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    with tempfile.TemporaryDirectory(prefix="aggregate-release-upload-") as temporary:
+        private = Path(temporary).resolve()
+        prepared = private / "capture"
+        captured_plan = prepared / "plan/impact-plan.json"
+        captured_plan.parent.mkdir(parents=True)
+        captured_plan.write_bytes(original_plan)
+        plan = _validate_plan(captured_plan, root)
+        if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
+            raise ValueError("Aggregate upload capture requires an authorized PR or merge-group plan")
+        producer = validate_producer(_consumer(plan, os.environ if environ is None else environ)["producer"])
+        job = "product-validation / runtime-aggregate-attestation"
+        observed = _observe_ci_producer_jobs({"aggregate": producer}, jobs_by_phase={"aggregate": job},
+            trusted_workflow_sha=trusted_workflow_sha, token=token)
+        name = f"codex-agent-runtime-aggregate-release-handoff-{producer['tree']}-attempt-{producer['runAttempt']}"
+        artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
+        _require_artifact_job_window(observed[0], job, artifact)
+        archive = prepared / "transport.zip"
+        archive.write_bytes(raw)
+        zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+        original = prepared / "original"
+        safe_extract(archive, original)
+        if regular_file_inventory(original, allow_empty=True) != zipped:
+            raise ValueError("Aggregate upload extraction differs from its exact original archive")
+        caller = _canonical_control(original / "caller.json", "Original protected aggregate caller")
+        if (caller.get("transportProducer") != producer or caller.get("target") != "aggregate"
+                or caller.get("trustedWorkflowSha") != trusted_workflow_sha
+                or caller.get("metadataReceiptSha256") != digest):
+            raise ValueError("Aggregate protected caller differs from its observed upload or selected receipt")
+        _original_carrier(original, digest, key)  # Fixed layout and receipt/key only; never signature authority.
+        transport = {"artifact": artifact, "captureProducer": producer, "observed": observed,
+                     "aggregateBuildKey": key, "aggregateReceiptSha256": digest}
+        write_canonical_json(prepared / "capture-transport.json", transport)
+        if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != original_plan
+                or captured_plan.read_bytes() != original_plan
+                or regular_file_inventory(original, allow_empty=True) != zipped
+                or sha256_file(archive) != artifact_sha256):
+            raise ValueError("Aggregate original plan or upload changed before capture publication")
+        output_safe()
         publish_regular_tree(prepared, destination, allow_empty=True)
     return transport
 
