@@ -130,6 +130,50 @@ class ReleaseCatalogAssemblyTest(unittest.TestCase):
         self.assertFalse((self.work / "emitted").exists())
         self.assertEqual(self.before, regular_file_inventory(self.layout, allow_empty=True))
 
+    def promote(self, source, **changes):
+        index = load_canonical_json_bytes((self.layout / "product-index.json").read_bytes())
+        return transport.stage_promoted_aggregate_catalog(source, self.work / "promoted", **{
+            "expected_build_key": self.receipt["buildKey"],
+            "expected_receipt_sha256": transport.sha256_bytes(self.raw),
+            "repository": self.repository, "context": index["context"], "producer": index["producer"],
+            "keyring": self.keyring, "keys_directory": self.keys,
+            "private_key": self.source.context["private_key"], **changes})
+
+    def unsigned(self):
+        source = self.work / "unsigned"
+        snapshot_regular_tree(self.layout, source, allow_empty=True)
+        (source / "product-index.json").unlink()
+        (source / "product-index.sig").unlink()
+        return source
+
+    def test_promoted_aggregate_uses_existing_index_writer_and_preserves_all_original_bytes(self):
+        source = self.unsigned()
+        before = regular_file_inventory(source, allow_empty=True)
+        with patch("reuse.api_request", side_effect=AssertionError("promotion contacted CI")), \
+                patch("products.index.write_signed_product_index", wraps=write_signed_product_index) as writer:
+            index = self.promote(source)
+        writer.assert_called_once()
+        self.assertEqual(self.raw, writer.call_args.args[0][0].receipt_bytes)
+        emitted = self.work / "promoted"
+        self.assertEqual(load_canonical_json_bytes((self.layout / "product-index.json").read_bytes()), index)
+        for record in before:
+            self.assertEqual((source / record["relativePath"]).read_bytes(),
+                             (emitted / record["relativePath"]).read_bytes())
+        self.assertEqual(before, regular_file_inventory(source, allow_empty=True))
+        self.assertEqual(self.before, regular_file_inventory(self.layout, allow_empty=True))
+
+    def test_promoted_aggregate_rejects_wrong_election_and_extra_files_before_signing(self):
+        source = self.unsigned()
+        with patch("products.index.write_signed_product_index", side_effect=AssertionError("invalid input signed")):
+            with self.assertRaisesRegex(ValueError, "exact elected"):
+                self.promote(source, expected_receipt_sha256="sha256:" + "f" * 64)
+            with self.assertRaisesRegex(ValueError, "elected original"):
+                self.promote(source, expected_build_key="sha256:" + "f" * 64)
+            (source / "unexpected.txt").write_bytes(b"not an original catalog member\n")
+            with self.assertRaisesRegex(ValueError, "unexpected original files"):
+                self.promote(source)
+        self.assertFalse((self.work / "promoted").exists())
+
 
 class ReleaseCatalogCliTest(unittest.TestCase):
     def test_explicit_local_cli_routes_without_remote_or_signing(self):

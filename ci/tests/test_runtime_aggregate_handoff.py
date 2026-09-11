@@ -84,6 +84,59 @@ class RuntimeAggregateHandoffTest(unittest.TestCase):
         finally:
             hidden.rename(self.carrier)
 
+    def test_context_index_inputs_reuse_real_admission_and_preserve_exact_private_originals(self):
+        from products.index import IndexEntrySource, ReleaseIndexAdmission, release_attested_runtime_aggregate_admission
+
+        instance = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+        before = regular_file_inventory(self.carrier, allow_empty=True)
+        with patch("products.runtime_aggregate.sign_manifest", side_effect=AssertionError("index extraction signed")), \
+                patch("reuse.api_request", side_effect=AssertionError("index extraction contacted CI")), \
+                self.read() as verified:
+            arguments = verified["indexInputs"]
+            self.assertEqual({"manifest", "metadata_receipt", "attestation", "signature", "public_key",
+                "variant_bundles", "variant_phase_receipts", "variant_attestations", "variant_attestation_signatures",
+                "variant_public_keys", "variant_validation_evidence", "adapter_receipts", "keyring", "keys_directory",
+                "variant_keyring", "variant_keys_directory"}, set(arguments))
+            policy_fields = {"keyring", "keys_directory", "variant_keyring", "variant_keys_directory"}
+
+            def paths(value):
+                if isinstance(value, Path):
+                    yield value
+                elif isinstance(value, dict):
+                    for member in value.values():
+                        yield from paths(member)
+                elif isinstance(value, list):
+                    for member in value:
+                        yield from paths(member)
+
+            for name, value in arguments.items():
+                for path in paths(value):
+                    base = verified["directory"].parent / "policy" if name in policy_fields else verified["directory"]
+                    self.assertTrue(path.is_relative_to(base), (name, path))
+            self.assertEqual(self.keyring.read_bytes(), arguments["keyring"].read_bytes())
+            self.assertEqual(arguments["keyring"], arguments["variant_keyring"])
+            self.assertEqual(arguments["keys_directory"], arguments["variant_keys_directory"])
+            self.assertEqual(5, len(arguments["variant_bundles"]))
+            self.assertEqual(20, sum(len(value) for value in arguments["variant_phase_receipts"].values()))
+            self.assertEqual(25, len(arguments["adapter_receipts"]))
+            raw = verified["receiptBytes"][instance]
+            self.assertEqual(raw, arguments["metadata_receipt"].read_bytes())
+            self.assertEqual((self.carrier / "aggregate-input/metadata-receipt.json").read_bytes(), raw)
+            output, = (record for record in verified["receipts"][instance]["outputs"] if record["kind"] == "runtime-aggregate")
+            source = IndexEntrySource(raw, output["relativePath"])
+            admission = release_attested_runtime_aggregate_admission(source, **arguments)
+            self.assertIsInstance(admission, ReleaseIndexAdmission)
+            private = verified["directory"]
+        self.assertFalse(private.exists())
+        self.assertEqual(before, regular_file_inventory(self.carrier, allow_empty=True))
+
+        # Even after full verification, private input changes must fail the
+        # enclosing context. Callers must wait for this exit before publication.
+        with self.assertRaisesRegex(ValueError, "changed during verification"), self.read() as verified:
+            receipt = verified["indexInputs"]["metadata_receipt"]
+            receipt.write_bytes(receipt.read_bytes() + b"\n")
+        self.assertEqual(before, regular_file_inventory(self.carrier, allow_empty=True))
+
     def test_transport_policy_is_never_a_substitute_for_the_caller_pin(self):
         _, public, signing = generate_development_key(self.work / "wrong-key")
         keys = self.work / "wrong-policy/keys"

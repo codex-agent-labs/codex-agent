@@ -216,7 +216,16 @@ def _verify_captured(root, keyring, keys_directory):
     if {record["relativePath"] for record in inventory} != expected:
         raise ValueError("Aggregate handoff contains missing or unexpected files")
     return {"manifest": value, "attestation": _json(attestation_path), "receipts": receipts,
-            "receiptBytes": receipt_bytes, "inventory": inventory}
+            "receiptBytes": receipt_bytes, "inventory": inventory,
+            "indexInputs": {
+                "manifest": manifest, "metadata_receipt": metadata,
+                "attestation": attestation_path, "signature": signature, "public_key": public_key,
+                **{name: records[name] for name in ("variant_bundles", "variant_phase_receipts",
+                    "variant_validation_evidence", "adapter_receipts")},
+                **signatures,
+                "keyring": keyring, "keys_directory": keys_directory,
+                "variant_keyring": keyring, "variant_keys_directory": keys_directory,
+            }}
 
 
 @contextmanager
@@ -227,6 +236,11 @@ def verified_runtime_aggregate_handoff(root: Path, *, keyring: Path, keys_direct
     closure and copies `directory` while this context is open. Retired release
     keys are valid through the existing signature policy; transported policy is
     never substituted for the caller's pin. No signing or network is performed.
+
+    ``indexInputs`` exposes only existing index-admission keyword arguments from
+    this private verified capture, not a new admission token. Use them inside
+    this context with the existing index verifier; publish only after context
+    exit has rechecked every original, private byte and captured caller policy.
     """
     root = Path(root).absolute()
     for path in (root, *root.parents):

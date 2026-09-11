@@ -1121,6 +1121,94 @@ def stage_release_catalog(source_root, destination, *, repository, source, keyri
     return index
 
 
+def stage_promoted_aggregate_catalog(source_root, destination, *, expected_build_key,
+        expected_receipt_sha256, repository, context, producer, keyring, keys_directory, private_key):
+    """Compose an admitted aggregate index and exact catalog, never product bytes.
+
+    Promotion authorization and the elected key/receipt remain caller-owned.
+    This local primitive does not authorize a run or manufacture hosted evidence.
+    """
+    from dataclasses import replace
+    from products.index import IndexEntrySource, build_product_index, release_attested_runtime_aggregate_admission, write_signed_product_index
+    from products.runtime_aggregate_handoff import _public_policy, verified_runtime_aggregate_handoff
+    from products.signatures import load_keyring, require_active_release_key
+    from products.sdk_package import _require_capability_output_separate
+
+    if context.get("kind") != "promoted-main":
+        raise ValueError("Aggregate catalog creation requires promoted-main context")
+    key = require_sha256(expected_build_key, "Elected aggregate build key")
+    receipt_digest = require_sha256(expected_receipt_sha256, "Elected aggregate receipt")
+    source_root, destination = Path(source_root).absolute(), Path(destination).absolute()
+    originals = [source_root, Path(keyring), Path(keys_directory), Path(private_key)]
+    _require_capability_output_separate(destination, originals)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Promoted aggregate catalog destination must not exist")
+    before = regular_file_inventory(source_root, allow_empty=True)
+    with tempfile.TemporaryDirectory(prefix="promoted-aggregate-catalog-") as temporary:
+        root = Path(temporary).resolve()
+        policy = root / "policy"
+        policy_paths, policy_bytes = _public_policy(keyring, keys_directory, policy)
+        policy_inventory = regular_file_inventory(policy)
+        pinned, keys = policy / "product-signing-keys.json", policy / "keys"
+        captured = root / "originals"
+        snapshot_regular_tree(source_root, captured, allow_empty=True)
+        if regular_file_inventory(captured, allow_empty=True) != before:
+            raise ValueError("Aggregate catalog originals changed during capture")
+        evidence = captured / "runtime-aggregate-release-evidence"
+        records = load_runtime_aggregate_release_evidence(evidence)
+        if len(records) != 1 or records[0]["receiptSha256"] != receipt_digest:
+            raise ValueError("Aggregate catalog requires the exact elected original release carrier")
+        instance = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+        with verified_runtime_aggregate_handoff(evidence / records[0]["handoffRoot"],
+                keyring=pinned, keys_directory=keys) as verified:
+            raw, receipt = verified["receiptBytes"][instance], verified["receipts"][instance]
+            if sha256_bytes(raw) != receipt_digest or receipt["buildKey"] != key:
+                raise ValueError("Aggregate carrier differs from elected original receipt/key")
+            manifest = verified["indexInputs"]["manifest"]
+            outputs = [record["relativePath"] for record in receipt["outputs"]
+                       if Path(record["relativePath"]).name == manifest.name]
+            if len(outputs) != 1:
+                raise ValueError("Aggregate manifest must identify exactly one original output")
+            entry = IndexEntrySource(raw, outputs[0])
+            if receipt["trustDomain"] == "development":
+                entry = replace(entry, release_admission=release_attested_runtime_aggregate_admission(
+                    entry, **verified["indexInputs"]))
+            sources = [entry]
+            envelope = verify_object(captured / object_relative_path(key, receipt_digest),
+                build_key=key, receipt_sha256=receipt_digest)
+            if envelope["receiptBytes"] != raw:
+                raise ValueError("Aggregate object changes its original receipt")
+            expected_files = {object_relative_path(key, receipt_digest)} | {
+                (Path("runtime-aggregate-release-evidence") / record["relativePath"]).as_posix()
+                for record in regular_file_inventory(evidence, allow_empty=True)}
+            if {record["relativePath"] for record in before} != expected_files:
+                raise ValueError("Unsigned aggregate catalog has missing or unexpected original files")
+            public_policy = load_keyring(pinned, keys)
+            active, public_key = require_active_release_key(public_policy, keys)
+            signing = {name: public_policy[name] for name in ("algorithm", "namespace", "trustDomain")}
+            signing.update(active)
+            arguments = dict(repository=repository, context=context, producer=producer,
+                trust_domain="release", signing=signing, stable_history=None)
+            index = build_product_index(sources, **arguments)
+            _verify_index_receipt(index["entries"][0], {**envelope, "receiptSha256": receipt_digest})
+        # All full-reader exit checks precede signing. Only new external index
+        # bytes are written; original object and complete carrier stay unchanged.
+        if regular_file_inventory(source_root, allow_empty=True) != before:
+            raise ValueError("Aggregate catalog originals changed before index signing")
+        write_signed_product_index(sources, **arguments, private_key=Path(private_key),
+            public_key=public_key, manifest_path=captured / "product-index.json")
+        stage_release_catalog(captured, root / "ready", repository=repository,
+            source="promoted-main", keyring=pinned, keys_directory=keys)
+        if (regular_file_inventory(source_root, allow_empty=True) != before
+                or regular_file_inventory(policy) != policy_inventory
+                or any(read_regular_file_bytes(path, max_bytes=64 * 1024, reject_symlink_parents=True)
+                       != policy_bytes[name] for name, path in policy_paths.items())):
+            raise ValueError("Aggregate originals or caller policy changed before catalog publication")
+        _require_capability_output_separate(destination, originals)
+        publish_regular_tree(root / "ready", destination, allow_empty=True)
+    return index
+
+
 def _candidate_artifacts(
     artifacts: list[object], source: str, pull_request: int | None,
     versions: Mapping[str, str],
