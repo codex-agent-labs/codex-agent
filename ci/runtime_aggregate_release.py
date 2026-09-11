@@ -16,6 +16,7 @@ from product_release_context import verify_product_release_context
 from product_reuse import (
     _dependency_closure, _release_trust, capture_runtime_resume_upload,
     materialize_runtime_attestation_inputs,
+    materialize_runtime_aggregate_release_evidence,
 )
 from runtime_aggregate_phase import collect_finalized_inputs
 from runtime_original_ci import capture_runtime_aggregate_original_ci
@@ -274,7 +275,7 @@ def attest_runtime_aggregate_state_ci(
         repository_root, trusted_source_sha=trusted_source_sha, trusted_workflow_sha=trusted_workflow_sha,
         transport_producer=transport_producer, event_payload=event_payload, environment=environment)
     require_sha256(expected_build_key, "Selected Runtime aggregate metadata build key")
-    require_exact_keys(variant_handoffs, set() if release_handoffs else set(NATIVE_TARGETS),
+    require_exact_keys(variant_handoffs, set() if release_handoffs or not variant_handoffs else set(NATIVE_TARGETS),
                        "Original signed Runtime variant handoffs")
     candidate = Path(candidate_root).resolve(strict=True)
     if trusted == candidate or trusted in candidate.parents or candidate in trusted.parents:
@@ -294,14 +295,27 @@ def attest_runtime_aggregate_state_ci(
             original / "product-resume-state", original / ("runtime-state" if state_wave else "product-resume-state"),
             selected, target="aggregate", expected_build_key=expected_build_key, repository_root=candidate,
             environ=environment, sdk_validation_tooling=sdk_validation_tooling)
+        retained = release_handoffs[0] if release_handoffs else None
+        if retained is None:
+            trust = _release_trust(trusted, trusted_source_sha, root / "retained-policy")
+            if trust is None:
+                raise ValueError("Aggregate retained selection requires caller-pinned public policy")
+            retained = materialize_runtime_aggregate_release_evidence(
+                original / "product-resume-inputs/plan/impact-plan.json", original / "product-resume-state",
+                original / ("runtime-state" if state_wave else "product-resume-state"), root / "retained-aggregate",
+                expected_build_key=expected_build_key, keyring=trust.keyring, keys_directory=trust.keys,
+                repository_root=candidate, environ=environment, sdk_validation_tooling=sdk_validation_tooling)
+        selected_variants = {} if retained is not None else variant_handoffs
+        require_exact_keys(selected_variants, set() if retained is not None else set(NATIVE_TARGETS),
+                           "Selected aggregate requires complete retained release or all five original variants")
         before = regular_file_inventory(root, allow_empty=True)
         with tempfile.TemporaryDirectory(prefix="runtime-aggregate-selected-result-") as result_temporary:
             prepared = Path(result_temporary).resolve() / "result"
             result = _attest_selected_runtime_aggregate(trusted, prepared, selected_root=selected, selection=selection,
                 expected_build_key=expected_build_key, trusted_source_sha=trusted_source_sha,
                 trusted_workflow_sha=trusted_workflow_sha, transport_producer=producer,
-                event_payload=event_payload, environment=environment, token=token, variant_handoffs=variant_handoffs,
-                release_handoff=release_handoffs[0] if release_handoffs else None)
+                event_payload=event_payload, environment=environment, token=token, variant_handoffs=selected_variants,
+                release_handoff=retained)
             if regular_file_inventory(root, allow_empty=True) != before:
                 raise ValueError("Runtime aggregate selected originals changed during protected verification")
             snapshot_regular_tree(capture, prepared / "selected-state-transport", allow_empty=True)

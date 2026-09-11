@@ -1016,7 +1016,7 @@ def plan_reuse_wave(
             "availableObjects",
             "catalogs",
         } | ({key for key in ("nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence", "adapterRuntimeComparisonEvidence",
-                             "sdkValidationEvidence", "sdkValidationTooling") if key in value}
+                             "sdkValidationEvidence", "sdkValidationTooling", "runtimeAggregateReleaseEvidence") if key in value}
              if type(value) is dict else set()),
         "reuse-wave request",
     )
@@ -1026,6 +1026,11 @@ def plan_reuse_wave(
         raise ValueError("Unsupported plan requestType")
     repository_root = _absolute_path(request["repositoryRoot"], "reuse-wave request.repositoryRoot")
     artifact_root = _absolute_path(request["artifactRoot"], "reuse-wave request.artifactRoot")
+    # External transport only: validate paths without introducing producer or
+    # signing identity into phase inputs. Selected-caller admission grants trust.
+    if "runtimeAggregateReleaseEvidence" in request:
+        from .runtime_aggregate_inputs import rebase_runtime_aggregate_release_records
+        rebase_runtime_aggregate_release_records(request["runtimeAggregateReleaseEvidence"], artifact_root, artifact_root)
     native_originals = _native_comparison_records(artifact_root, request.get("nativeRuntimeComparisonEvidence", []))
     adapter_originals = decode_adapter_comparison_records(
         artifact_root, request.get("adapterRuntimeComparisonEvidence", []))

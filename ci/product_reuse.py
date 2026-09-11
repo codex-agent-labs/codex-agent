@@ -94,6 +94,10 @@ from products.reuse import (
     _native_comparison_records, _native_evidence_paths,
 )
 from products.native_runtime_inputs import load_native_runtime_evidence, stage_native_runtime_evidence
+from products.runtime_aggregate_inputs import (
+    load_runtime_aggregate_release_evidence, stage_runtime_aggregate_release_evidence,
+    rebase_runtime_aggregate_release_records,
+)
 from products.selection import classify_paths
 from products.signatures import load_keyring, public_key_for_metadata, public_key_path
 from products.toolchain import load_toolchain_profile_bytes
@@ -121,6 +125,7 @@ _WAVE_REQUEST_KEYS = {
 }
 _NATIVE_REQUEST_KEYS = {"nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence"}
 _ADAPTER_REQUEST_KEY = "adapterRuntimeComparisonEvidence"
+_AGGREGATE_REQUEST_KEY = "runtimeAggregateReleaseEvidence"
 _SDK_REQUEST_KEYS = {"sdkValidationEvidence"}
 _KEYRING_PATH = "gradle/release/product-signing-keys.json"
 _KEYS_ROOT = "gradle/release/keys"
@@ -158,6 +163,7 @@ class Catalog:
     native_runtime_evidence: tuple[dict[str, Any], ...] = ()
     adapter_runtime_evidence: tuple[dict[str, Any], ...] = ()
     sdk_validation_evidence_root: Path | None = None
+    runtime_aggregate_evidence_root: Path | None = None
 
 
 def _identity(value: Mapping[str, Any]) -> PhaseInstanceId:
@@ -840,7 +846,7 @@ def _materialize_catalog(
     root.mkdir(parents=True)
     archive = root / "transport.zip"
     archive.write_bytes(download_artifact(dict(artifact), token))
-    verified_zip_contents(archive, retained_paths=(), **_CATALOG_ZIP_LIMITS)
+    verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
     extracted = root / "contents"
     safe_extract(archive, extracted)
     index_path = extracted / "product-index.json"
@@ -949,6 +955,16 @@ def _materialize_catalog(
         controls.update(f"sdk-validation-evidence/{path}" for path in _catalog_files(sdk_root))
     else:
         sdk_root = None
+    aggregate_root = extracted / "runtime-aggregate-release-evidence"
+    if aggregate_root.exists():
+        aggregate_records = load_runtime_aggregate_release_evidence(aggregate_root)
+        indexed = {entry["receiptSha256"] for entry in index["entries"]
+                   if _identity(entry) == PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")}
+        if any(record["receiptSha256"] not in indexed for record in aggregate_records):
+            raise ValueError("Aggregate catalog evidence lacks its exact indexed original metadata receipt")
+        controls.update(f"runtime-aggregate-release-evidence/{path}" for path in _catalog_files(aggregate_root))
+    else:
+        aggregate_root = None
     if not controls.issubset(actual) or not actual.issubset(controls | set(expected_objects.values())):
         raise ValueError("Product catalog file set is incomplete or unexpected")
     contract_public_key = None
@@ -1031,6 +1047,7 @@ def _materialize_catalog(
         tuple(native_records),
         tuple(adapter_records),
         sdk_root,
+        aggregate_root,
     )
 
 
@@ -1674,12 +1691,15 @@ def _rebase_native_request(request, source_root, artifact_root):
         result[_ADAPTER_REQUEST_KEY] = rebase_adapter_comparison_records(request[_ADAPTER_REQUEST_KEY], source_root, artifact_root)
     if "sdkValidationEvidence" in request:
         result["sdkValidationEvidence"] = rebase_sdk_validation_records(request["sdkValidationEvidence"], source_root, artifact_root)
+    if _AGGREGATE_REQUEST_KEY in request:
+        result[_AGGREGATE_REQUEST_KEY] = rebase_runtime_aggregate_release_records(
+            request[_AGGREGATE_REQUEST_KEY], source_root, artifact_root)
     return result
 
 
 def _wave_control(path, label):
     value = _canonical_control(path, label)
-    return require_exact_keys(value, _WAVE_REQUEST_KEYS | (value.keys() & (_NATIVE_REQUEST_KEYS | {_ADAPTER_REQUEST_KEY} | _SDK_REQUEST_KEYS)), label)
+    return require_exact_keys(value, _WAVE_REQUEST_KEYS | (value.keys() & (_NATIVE_REQUEST_KEYS | {_ADAPTER_REQUEST_KEY, _AGGREGATE_REQUEST_KEY} | _SDK_REQUEST_KEYS)), label)
 
 
 def _relocated_wave_control(path, label, root):
@@ -1738,6 +1758,34 @@ def _verify_discovery_sdk_records(request, discovery_root):
         _retained_sdk_handoffs(discovery_root, discovery_root), key="sdkValidationEvidence")
     if request.get("sdkValidationEvidence", []) != retained.get("sdkValidationEvidence", []):
         raise ValueError("SDK discovery request differs from its complete retained evidence carrier")
+    retained = {}
+    _merge_native_comparison_records(retained,
+        _retained_aggregate_handoffs(discovery_root, discovery_root), key=_AGGREGATE_REQUEST_KEY)
+    _merge_native_comparison_records(retained,
+        _retained_aggregate_handoffs(discovery_root / "discovery", discovery_root), key=_AGGREGATE_REQUEST_KEY)
+    if request.get(_AGGREGATE_REQUEST_KEY, []) != retained.get(_AGGREGATE_REQUEST_KEY, []):
+        raise ValueError("Aggregate discovery request differs from its complete retained evidence carrier")
+
+
+def _retained_aggregate_handoffs(state_root, artifact_root):
+    path = state_root / "runtime-aggregate-release-evidence"
+    if not path.exists():
+        return []
+    return [record for child in sorted(path.iterdir())
+            for record in rebase_runtime_aggregate_release_records(
+                load_runtime_aggregate_release_evidence(child), child, artifact_root)]
+
+
+def _capture_aggregate_handoffs(evidence_roots, destination, artifact_root, trust):
+    records = []
+    offset = len(list(destination.iterdir())) if destination.exists() else 0
+    for index, source in enumerate(evidence_roots, offset):
+        target = destination / str(index)
+        captured = stage_runtime_aggregate_release_evidence(
+            load_runtime_aggregate_release_evidence(source), source, target,
+            keyring=trust.keyring if trust else None, keys_directory=trust.keys if trust else None)
+        records.extend(rebase_runtime_aggregate_release_records(captured, target, artifact_root))
+    return records
 
 
 def _merge_native_comparison_records(request, records, *, key="nativeRuntimeComparisonEvidence"):
@@ -2330,6 +2378,7 @@ def _verified_product_state(
             _merge_native_comparison_records(state_request, _retained_native_handoffs(state_root, root, adapter=True),
                                              key=_ADAPTER_REQUEST_KEY)
             _merge_native_comparison_records(state_request, _retained_sdk_handoffs(state_root, root), key="sdkValidationEvidence")
+            _merge_native_comparison_records(state_request, _retained_aggregate_handoffs(state_root, root), key=_AGGREGATE_REQUEST_KEY)
             prior_ready_plans = {}
             state_replay = _plan_with_sdk_tooling(
                 state_request, sdk_validation_tooling,
@@ -2490,6 +2539,31 @@ def materialize_product_predecessors(
         plan_path, discovery_root, state_root, root,
         os.environ if environ is None else environ, sdk_validation_tooling)
     return _materialize_product_predecessors(state, instance, destination, expected_build_key, root)
+
+
+def materialize_runtime_aggregate_release_evidence(
+    plan_path, discovery_root, state_root, destination, *, expected_build_key,
+    keyring, keys_directory, repository_root=None, environ=None, sdk_validation_tooling=None,
+):
+    """Select the complete original carrier; selected-stage equality is checked by the caller."""
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
+    discovery_root, state_root, destination = _product_materialization_paths(root, discovery_root, state_root, destination)
+    state = _verified_product_state(plan_path, discovery_root, state_root, root,
+        os.environ if environ is None else environ, sdk_validation_tooling)
+    instance = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+    selected = state.prior_by_instance.get(instance)
+    if (selected is None or instance not in state.sources or instance not in state.prior_carrier_phases
+            or selected["buildKey"] != require_sha256(expected_build_key, "Aggregate selected key")):
+        raise ValueError("Aggregate release evidence lacks its selected original metadata")
+    request = dict(state.rebased_request)
+    _merge_native_comparison_records(request, _retained_aggregate_handoffs(state_root, root), key=_AGGREGATE_REQUEST_KEY)
+    records = [record for record in request.get(_AGGREGATE_REQUEST_KEY, [])
+               if record["receiptSha256"] == selected["receiptSha256"]]
+    if not records:
+        return None
+    captured = stage_runtime_aggregate_release_evidence(records, root, destination,
+        keyring=keyring, keys_directory=keys_directory)
+    return destination / captured[0]["handoffRoot"]
 
 
 def prepare_runtime_phase(
@@ -3263,6 +3337,7 @@ def advance_products(
     native_evidence_roots: tuple[Path, ...] = (),
     adapter_evidence_roots: tuple[Path, ...] = (),
     sdk_evidence_roots: tuple[Path, ...] = (),
+    aggregate_evidence_roots: tuple[Path, ...] = (),
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     failed_instances: tuple[PhaseInstanceId, ...] = (),
     runtime_workers_only: bool = False,
@@ -3416,6 +3491,14 @@ def advance_products(
                 repository=root, policy_revision=plan["validationCommit"], tooling=sdk_validation_tooling)
         retained_sdk = _retained_sdk_handoffs(temporary_root / "result", root)
         _merge_native_comparison_records(advanced_request, retained_sdk, key="sdkValidationEvidence")
+        aggregate_destination = temporary_root / "result/runtime-aggregate-release-evidence"
+        prior_aggregate = state_root / "runtime-aggregate-release-evidence"
+        if prior_aggregate.exists():
+            snapshot_regular_tree(prior_aggregate, aggregate_destination, allow_empty=True)
+        aggregate_trust = _release_trust(root, plan["validationCommit"], temporary_root / "aggregate-trust") if aggregate_evidence_roots else None
+        _capture_aggregate_handoffs(aggregate_evidence_roots, aggregate_destination, root, aggregate_trust)
+        retained_aggregate = _retained_aggregate_handoffs(temporary_root / "result", root)
+        _merge_native_comparison_records(advanced_request, retained_aggregate, key=_AGGREGATE_REQUEST_KEY)
         ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
         advanced = _plan_with_sdk_tooling(
             advanced_request, sdk_validation_tooling,
@@ -3483,6 +3566,7 @@ def advance_products(
         _merge_native_comparison_records(staged_request, retained_native)
         _merge_native_comparison_records(staged_request, retained_adapter, key=_ADAPTER_REQUEST_KEY)
         _merge_native_comparison_records(staged_request, retained_sdk, key="sdkValidationEvidence")
+        _merge_native_comparison_records(staged_request, retained_aggregate, key=_AGGREGATE_REQUEST_KEY)
         staged_request["runtimeValidationEvidence"] = [{
             **record,
             "reports": [f"{staged_prefix}/{path}" for path in record["reports"]],
@@ -3509,7 +3593,7 @@ def advance_products(
 
         destination_prefix = destination.relative_to(root).as_posix()
         final_request = dict(staged_request)
-        if {"nativeRuntimeComparisonEvidence", _ADAPTER_REQUEST_KEY, "sdkValidationEvidence"} & final_request.keys():
+        if {"nativeRuntimeComparisonEvidence", _ADAPTER_REQUEST_KEY, _AGGREGATE_REQUEST_KEY, "sdkValidationEvidence"} & final_request.keys():
             # Move only paths inside this staged transport. Original discovery
             # catalogs remain at their separately retained discovery paths.
             def relocated_native(value):
@@ -3520,7 +3604,7 @@ def advance_products(
                 if isinstance(value, str) and value.startswith(staged_prefix + "/"):
                     return destination_prefix + value[len(staged_prefix):]
                 return value
-            for key in ("nativeRuntimeComparisonEvidence", _ADAPTER_REQUEST_KEY, "sdkValidationEvidence"):
+            for key in ("nativeRuntimeComparisonEvidence", _ADAPTER_REQUEST_KEY, _AGGREGATE_REQUEST_KEY, "sdkValidationEvidence"):
                 if key in final_request:
                     final_request[key] = relocated_native(final_request[key])
         final_request["runtimeValidationEvidence"] = [{
@@ -3550,7 +3634,7 @@ def advance_products(
         _write_ready_plans(staged_destination, ready_plans)
         if ready_plans:
             write_canonical_json(staged_destination / "producer.json", producer)
-        publish_regular_tree(staged_destination, destination)
+        publish_regular_tree(staged_destination, destination, allow_empty=True)
     github_output(github_output_path, {
         "full_reuse": advanced["fullReuse"],
         "target_jobs_required": not advanced["fullReuse"],
@@ -3779,7 +3863,7 @@ def capture_product_resume_inputs(
                 f"codex-agent-{prefix}-{producer['tree']}", producer, observed[0]["run"], token)
             archive = private / f"{name}.zip"
             archive.write_bytes(raw)
-            verified_zip_contents(archive, retained_paths=(), **_CATALOG_ZIP_LIMITS)
+            verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
             safe_extract(archive, prepared / name)
             artifacts[name] = artifact
         if read_regular_file_bytes(prepared / "plan/impact-plan.json",
@@ -3787,7 +3871,7 @@ def capture_product_resume_inputs(
             raise ValueError("Captured product plan differs from the validated original plan")
         transport = {"artifacts": artifacts, "captureProducer": producer, "observed": observed}
         write_canonical_json(prepared / "capture-transport.json", transport)
-        publish_regular_tree(prepared, destination)
+        publish_regular_tree(prepared, destination, allow_empty=True)
     return transport
 
 
@@ -3890,8 +3974,8 @@ def resume_products(
         captured_plan.write_bytes(read_regular_file_bytes(
             plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
         plan = _validate_plan(captured_plan, root)
-        snapshot_regular_tree(discovery_root, prepared / "discovery")
-        snapshot_regular_tree(state_root, prepared / "contract-state")
+        snapshot_regular_tree(discovery_root, prepared / "discovery", allow_empty=True)
+        snapshot_regular_tree(state_root, prepared / "contract-state", allow_empty=True)
         complete = advance_contract(
             captured_plan, prepared / "discovery", prepared / "contract-state", [],
             private / "replayed-contract", private / "contract-outputs",
@@ -3954,7 +4038,7 @@ def resume_products(
                          reason="verified-full-reuse" if reuse["fullReuse"] else "product-build-required", reuse=reuse)
         write_canonical_json(prepared / "request.json", _discovery_request(plan, requested))
         write_canonical_json(prepared / "result.json", result)
-        publish_regular_tree(prepared, destination)
+        publish_regular_tree(prepared, destination, allow_empty=True)
     github_output(github_output_path, {"full_reuse": result["fullReuse"],
         "target_jobs_required": result["targetJobsRequired"], "product_reuse_reason": result["reason"]})
     return result
@@ -3966,6 +4050,7 @@ def discover(
     native_evidence_roots: tuple[Path, ...] = (),
     adapter_evidence_roots: tuple[Path, ...] = (),
     sdk_evidence_roots: tuple[Path, ...] = (),
+    aggregate_evidence_roots: tuple[Path, ...] = (),
     sdk_validation_tooling: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     # A failing adapter must never make a missing output look like permission to skip work.
@@ -4009,6 +4094,11 @@ def discover(
         if catalog.sdk_validation_evidence_root is not None)
     sdk_records = _capture_sdk_handoffs((*catalog_sdk_roots, *sdk_evidence_roots), destination / "sdk-validation-evidence", destination,
         repository=root, policy_revision=plan["validationCommit"], tooling=sdk_validation_tooling)
+    catalog_aggregate_roots = tuple(catalog.runtime_aggregate_evidence_root
+        for catalog in sorted(catalogs, key=lambda value: SOURCES.index(value.source))
+        if catalog.runtime_aggregate_evidence_root is not None)
+    aggregate_records = _capture_aggregate_handoffs((*catalog_aggregate_roots, *aggregate_evidence_roots),
+        destination / "runtime-aggregate-release-evidence", destination, trust)
 
     contract_evidence = None
     contract = PhaseInstanceId("contract", "contract", "metadata", "common")
@@ -4025,6 +4115,7 @@ def discover(
         _merge_native_comparison_records(contract_request, native_records)
         _merge_native_comparison_records(contract_request, adapter_records, key=_ADAPTER_REQUEST_KEY)
         _merge_native_comparison_records(contract_request, sdk_records, key="sdkValidationEvidence")
+        _merge_native_comparison_records(contract_request, aggregate_records, key=_AGGREGATE_REQUEST_KEY)
         write_canonical_json(destination / "contract-reuse-request.json", contract_request)
         contract_ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
         contract_result = _plan_with_sdk_tooling(
@@ -4072,6 +4163,7 @@ def discover(
     _merge_native_comparison_records(wave_request, native_records)
     _merge_native_comparison_records(wave_request, adapter_records, key=_ADAPTER_REQUEST_KEY)
     _merge_native_comparison_records(wave_request, sdk_records, key="sdkValidationEvidence")
+    _merge_native_comparison_records(wave_request, aggregate_records, key=_AGGREGATE_REQUEST_KEY)
     write_canonical_json(destination / "reuse-wave-request.json", wave_request)
     ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
 
@@ -4198,6 +4290,7 @@ def parser() -> argparse.ArgumentParser:
     sdk_metadata.add_argument("--expected-build-key", required=True)
     for command in (discover_command, products_command):
         command.add_argument("--sdk-validation-evidence", type=Path, action="append", default=[])
+        command.add_argument("--runtime-aggregate-release-evidence", type=Path, action="append", default=[])
         command.add_argument("--sdk-validation-tooling", type=Path,
                              help="Current caller-owned tooling policy JSON, never a retained request field")
     materialize_command = commands.add_parser("materialize-contract")
@@ -4255,10 +4348,11 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.command == "discover":
             discover(arguments.plan, arguments.destination, arguments.github_output,
                      native_evidence_roots=tuple(arguments.native_runtime_evidence),
+                     aggregate_evidence_roots=tuple(arguments.runtime_aggregate_release_evidence),
                      adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),
                      sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling)
             if arguments.handoff is not None:
-                publish_regular_tree(arguments.destination, arguments.handoff)
+                publish_regular_tree(arguments.destination, arguments.handoff, allow_empty=True)
         elif arguments.command == "advance-contract":
             advance_contract(
                 arguments.plan,
@@ -4278,6 +4372,7 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.destination,
                 arguments.github_output,
                 native_evidence_roots=tuple(arguments.native_runtime_evidence),
+                aggregate_evidence_roots=tuple(arguments.runtime_aggregate_release_evidence),
                 adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),
                 sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling,
                 failed_instances=tuple(PhaseInstanceId(*value) for value in arguments.failed_phase),

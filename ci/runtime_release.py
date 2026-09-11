@@ -258,7 +258,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.release_handoff:
             if len(args.release_handoff) != 1 or variants:
                 parser.error("aggregate reuse requires one direct release carrier and no variant handoffs")
-        elif set(variants) != set(NATIVE_TARGETS):
+        elif variants and set(variants) != set(NATIVE_TARGETS):
             parser.error("aggregate attestation requires exactly five native variant handoffs")
     elif variants:
         parser.error("native attestation does not accept aggregate variant handoffs")

@@ -706,12 +706,24 @@ class ProductReuseTest(unittest.TestCase):
             },
         }
 
+    def test_aggregate_external_transport_never_changes_product_plan_identity(self) -> None:
+        repository, revision = self.reuse_wave_repository()
+        request = self.reuse_wave_request(repository, revision)
+        expected = plan_reuse_wave(request)
+        for digest, path in ((DIGEST_A, "producer-one/original"), (DIGEST_B, "another-run/retained")):
+            request["runtimeAggregateReleaseEvidence"] = [{"receiptSha256": digest, "handoffRoot": path}]
+            self.assertEqual(expected, plan_reuse_wave(request))
+        request["runtimeAggregateReleaseEvidence"][0]["handoffRoot"] = "../escape"
+        with self.assertRaises(ValueError):
+            plan_reuse_wave(request)
+
     def test_reuse_wave_derives_git_inventory_and_returns_advance_result_unchanged(self) -> None:
         repository, revision = self.reuse_wave_repository()
         request = self.reuse_wave_request(repository, revision)
         request["nativeRuntimeComparisonEvidence"] = []
         request["adapterRuntimeComparisonEvidence"] = []
         request["sdkValidationEvidence"] = []
+        request["runtimeAggregateReleaseEvidence"] = [{"receiptSha256": DIGEST_A, "handoffRoot": "original-aggregate"}]
         comparison_provider = mock.Mock()
         adapter_provider = mock.Mock()
         sdk_provider = mock.Mock()

@@ -209,6 +209,41 @@ class RuntimeAggregateReleaseTest(unittest.TestCase):
         self.assertFalse(any(self.context["private_key"].read_bytes() in path.read_bytes()
                              for path in self.output.rglob("*") if path.is_file()))
 
+    def test_public_entry_selects_complete_retained_carrier_without_variant_or_signer_fallback(self):
+        # Reuse the real full synthetic carrier fixture; current-state transport
+        # and election are seams, not claims of hosted execution.
+        direct = self.work / "direct-selection"
+        snapshot_regular_tree(self.selected, direct, allow_empty=True)
+        (direct / "empty-diagnostic.log").unlink()
+        with patch("reuse.api_request", side_effect=self.api):
+            self.invoke(selected_root=direct)
+        candidate = self.work / "candidate"
+        candidate.mkdir()
+        plan = candidate / "plan.json"
+        plan.write_bytes(b"synthetic current transport plan\n")
+        output = self.work / "automatic-retained"
+        args = self.arguments()
+        args.pop("selected_root")
+        args.pop("selection")
+        args["variant_handoffs"] = {}
+        def capture(_plan, destination, **arguments):
+            path = destination / "original/product-resume-inputs/plan/impact-plan.json"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(plan.read_bytes())
+        def select(_plan, _discovery, _state, destination, **arguments):
+            snapshot_regular_tree(self.selected, destination, allow_empty=True)
+            return copy.deepcopy(self.selection)
+        before = regular_file_inventory(self.output, allow_empty=True)
+        with patch.object(caller, "capture_runtime_resume_upload", side_effect=capture), \
+                patch.object(caller, "materialize_runtime_attestation_inputs", side_effect=select), \
+                patch.object(caller, "materialize_runtime_aggregate_release_evidence", return_value=self.output) as retained, \
+                patch("reuse.api_request", side_effect=AssertionError("retained aggregate queried original CI")):
+            caller.attest_runtime_aggregate_state_ci(self.repository, candidate, plan, output,
+                artifact_id=700, artifact_sha256="sha256:" + "a" * 64, state_wave=4, **args)
+        retained.assert_called_once()
+        self.assertEqual(before, regular_file_inventory(output / "retained-release", allow_empty=True))
+        self.assertEqual(1, self.environment.secret_reads)
+
     def test_missing_crosspaired_or_mutated_originals_reject_before_secret(self):
         self.environment.forbid_secret = True
         missing = {key: value for key, value in self.handoffs.items() if key != "macos-arm64"}
@@ -366,6 +401,7 @@ class RuntimeAggregateReleaseTest(unittest.TestCase):
         args.pop("selection")
         with patch.object(caller, "capture_runtime_resume_upload", side_effect=capture) as captured, \
                 patch.object(caller, "materialize_runtime_attestation_inputs", side_effect=select) as selected, \
+                patch.object(caller, "materialize_runtime_aggregate_release_evidence", return_value=None), \
                 patch("reuse.api_request", side_effect=self.api):
             caller.attest_runtime_aggregate_state_ci(self.repository, candidate, plan, self.output,
                 artifact_id=700, artifact_sha256="sha256:" + "a" * 64, state_wave=4, **args)

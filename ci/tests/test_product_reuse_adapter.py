@@ -353,6 +353,16 @@ class ProductReuseAdapterTest(unittest.TestCase):
                     "codex-agent-labs/codex-agent", 31, None,
                 )
             extract.assert_not_called()
+        # Empty external diagnostics may reach extraction; catalog allow-lists
+        # and inner object/product validation still decide their admission.
+        with zipfile.ZipFile(catalog, "w") as archive:
+            archive.writestr("runtime-aggregate-release-evidence/handoffs/original/empty.log", b"")
+        with mock.patch.object(product_reuse, "download_artifact", return_value=catalog.read_bytes()), \
+                mock.patch.object(product_reuse, "safe_extract", side_effect=RuntimeError("outer transport accepted")) as extract:
+            with self.assertRaisesRegex(RuntimeError, "outer transport accepted"):
+                product_reuse._materialize_catalog("same-pr", {"id": 2}, "unused", self.root / "empty-log",
+                    "codex-agent-labs/codex-agent", 31, None)
+            extract.assert_called_once()
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -1852,9 +1862,9 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 mock.patch.object(product_reuse, "publish_regular_tree") as publish:
             self.assertEqual(0, product_reuse.main(arguments))
         discover.assert_called_once_with(Path("plan.json"), Path("discovery"), Path("output"),
-                                         native_evidence_roots=(), adapter_evidence_roots=(),
-                                         sdk_evidence_roots=(), sdk_validation_tooling=None)
-        publish.assert_called_once_with(Path("discovery"), Path("handoff"))
+                                     native_evidence_roots=(), adapter_evidence_roots=(),
+                                     sdk_evidence_roots=(), aggregate_evidence_roots=(), sdk_validation_tooling=None)
+        publish.assert_called_once_with(Path("discovery"), Path("handoff"), allow_empty=True)
 
         materialize_arguments = [
             "materialize-contract", "--plan", "plan.json", "--state-root", "state",
@@ -1880,7 +1890,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
             Path("plan.json"), Path("discovery"), Path("state"),
             [Path("one"), Path("two")], Path("advanced"), Path("output"),
             native_evidence_roots=(), adapter_evidence_roots=(Path("adapter-originals"),),
-            sdk_evidence_roots=(), sdk_validation_tooling=None, failed_instances=(),
+                sdk_evidence_roots=(), aggregate_evidence_roots=(), sdk_validation_tooling=None, failed_instances=(),
         )
 
         tooling = self.root.resolve() / "caller-tooling.json"
@@ -1916,10 +1926,16 @@ class ProductReuseAdapterTest(unittest.TestCase):
         plan = impact_plan(changed=["codex-agent-bindings/python/src/codex_agent/_ffi.py"])
         instance = PhaseInstanceId("contract", "contract", "metadata", "common")
         catalogs = [product_reuse.Catalog(source, {}, sha256_bytes(source.encode()),
-                    {"manifest": source + "/product-index.json"}, {}, sdk_validation_evidence_root=root / source)
+                    {"manifest": source + "/product-index.json"}, {}, sdk_validation_evidence_root=root / source,
+                    runtime_aggregate_evidence_root=root / (source + "-aggregate"))
                     for source in ("same-pr", "stable", "promoted-main")]
         tooling = {"current-caller": "never-serialized"}
         records = [{"receiptSha256": "sha256:" + "a" * 64}]
+        aggregate_records = [{"receiptSha256": "sha256:" + "b" * 64, "handoffRoot": "aggregate/original"}]
+        def aggregate_capture(roots, destination, artifact_root, trust):
+            self.assertEqual(tuple(root / (name + "-aggregate") for name in
+                                   ("stable", "promoted-main", "same-pr", "explicit")), roots)
+            return aggregate_records
         def capture(roots, destination, artifact_root, **policy):
             self.assertEqual(tuple(root / name for name in ("stable", "promoted-main", "same-pr", "explicit")), roots)
             self.assertEqual(root, policy["repository"])
@@ -1928,6 +1944,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
             return records  # Routing fixture only; real carrier authentication has separate tests.
         def wave(request, **kwargs):
             self.assertEqual(records, request["sdkValidationEvidence"])
+            self.assertEqual(aggregate_records, request["runtimeAggregateReleaseEvidence"])
             self.assertIs(tooling, request["sdkValidationTooling"])
             return {"fullReuse": False, "phases": []}
         destination = root / "build/product-reuse"
@@ -1938,12 +1955,15 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 mock.patch.object(product_reuse, "_release_trust", return_value=None), \
                 mock.patch.object(product_reuse, "_discover_catalogs", return_value=catalogs), \
                 mock.patch.object(product_reuse, "_capture_sdk_handoffs", side_effect=capture), \
+                mock.patch.object(product_reuse, "_capture_aggregate_handoffs", side_effect=aggregate_capture), \
                 mock.patch.object(product_reuse, "plan_reuse_wave", side_effect=wave):
             product_reuse.discover(self.plan_path, destination, self.output, repository_root=root,
-                environ={}, sdk_evidence_roots=(root / "explicit",), sdk_validation_tooling=tooling)
+                environ={}, sdk_evidence_roots=(root / "explicit",), sdk_validation_tooling=tooling,
+                aggregate_evidence_roots=(root / "explicit-aggregate",))
         retained = product_inventory.load_canonical_json_bytes((destination / "contract-reuse-request.json").read_bytes())
         self.assertEqual(records, retained["sdkValidationEvidence"])
         self.assertNotIn("sdkValidationTooling", retained)
+        self.assertEqual(aggregate_records, retained["runtimeAggregateReleaseEvidence"])
 
     def test_contract_ready_phase_is_exactly_one_known_contract_phase(self) -> None:
         binary = PhaseInstanceId("contract", "contract", "binary", "common")

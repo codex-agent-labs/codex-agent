@@ -67,6 +67,12 @@ class RuntimeAttestationCliTest(unittest.TestCase):
             self.assertEqual(actual["transport_producer"], aggregate.call_args.kwargs["transport_producer"])
             retained_args = list(args)
             retained_args[retained_args.index("--target") + 1] = "aggregate"
+            with patch.dict(runtime_release.os.environ, environment, clear=True), \
+                    patch.dict("sys.modules", {"runtime_aggregate_release": SimpleNamespace(
+                        attest_runtime_aggregate_state_ci=aggregate)}):
+                runtime_release.main(retained_args)
+            self.assertEqual({}, aggregate.call_args.kwargs["variant_handoffs"])
+            self.assertEqual((), aggregate.call_args.kwargs["release_handoffs"])
             retained_args += ["--release-handoff", "original-release"]
             with patch.dict(runtime_release.os.environ, environment, clear=True), \
                     patch.dict("sys.modules", {"runtime_aggregate_release": SimpleNamespace(
