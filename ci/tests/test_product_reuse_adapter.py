@@ -432,6 +432,9 @@ class ProductReuseAdapterTest(unittest.TestCase):
             "gradle/release/versions/contract.txt": "0.2.0\n",
             "gradle/release/versions/runtime.txt": "0.2.0\n",
             "gradle/release/versions/sdk.txt": "0.2.0\n",
+            "gradle/release/sdk-default-runtime.txt": "0.2.0\n",
+            "gradle/release/sdk-runtime-compatibility.json":
+                '{"compatibleReleaseRange":">=0.2.0 <0.3.0","compatibleRuntimeCompatibilityRange":">=0.2.0 <0.3.0"}\n',
         }
         for relative, value in files.items():
             path = repository / relative
@@ -936,6 +939,73 @@ class ProductReuseAdapterTest(unittest.TestCase):
         )
         listed.assert_called_once()
         self.assertEqual(3, downloaded.call_count)
+
+    def test_discovery_includes_exact_git_sdk_default_without_replacing_current_runtime(self) -> None:
+        # Real Git policy, mocked transport only: discovery is not carrier admission.
+        repository, _, _ = self.contract_repository()
+        release = repository / "gradle/release"
+        for product in ("contract", "sdk"):
+            (release / f"versions/{product}.txt").write_text("0.8.0\n")
+        (release / "versions/runtime.txt").write_text("0.8.1\n")
+        (release / "sdk-default-runtime.txt").write_text("0.8.0\n")
+        (release / "sdk-runtime-compatibility.json").write_bytes(canonical_json_bytes({
+            "compatibleReleaseRange": ">=0.8.0 <0.9.0",
+            "compatibleRuntimeCompatibilityRange": ">=0.8.0 <0.9.0"}))
+        for args in (("add", "gradle"), ("commit", "-qm", "independent SDK default")):
+            subprocess.run(["git", *args], cwd=repository, check=True, capture_output=True)
+        revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository,
+                                  check=True, capture_output=True, text=True).stdout.strip()
+        plan = {**impact_plan(changed=["codex-agent-bindings/python/src/codex_agent/_ffi.py"]),
+                "validationCommit": revision}
+        versions = product_inventory.git_product_versions(repository, revision)
+        # Mutable checkout policy must never redirect the original selection.
+        (release / "sdk-default-runtime.txt").write_text("0.9.0\n")
+        prefix = "codex-agent-product-catalog-v1-stable-runtime-"
+        artifacts = [{"id": number, "name": prefix + version, "expired": False}
+                     for number, version in ((1, "0.8.0"), (2, "0.8.0"), (3, "0.8.1"), (4, "0.8.2"))]
+        environment = {"GITHUB_TOKEN": "synthetic", "GITHUB_API_URL": "https://example.invalid",
+                       "GITHUB_REPOSITORY": plan["repository"]}
+        trust = product_reuse.ReleaseTrust(self.root / "keyring", self.root / "keys")
+        with mock.patch.object(product_reuse, "paginated_items", return_value=artifacts) as listed, \
+                mock.patch.object(product_reuse, "_materialize_catalog", side_effect=lambda source, artifact, *args, **kwargs: artifact) as materialized:
+            result = product_reuse._discover_catalogs(plan, self.root / "catalogs", trust,
+                                                      environment, versions, repository)
+        self.assertEqual([2, 3], [artifact["id"] for artifact in result])
+        listed.assert_called_once()
+        self.assertEqual(2, materialized.call_count)
+        self.assertEqual("0.8.1", versions["runtime-release"])
+        self.assertEqual("0.9.0\n", (release / "sdk-default-runtime.txt").read_text())
+        self.assertEqual([2], [artifact["id"] for artifact in product_reuse._candidate_artifacts(
+            artifacts, "stable", 31, {**versions, "runtime-release": "0.8.0"},
+            sdk_default_runtime_version="0.8.0")])
+
+    def test_discovery_does_not_read_sdk_default_for_no_sdk_or_sdk_binary_only(self) -> None:
+        plan = impact_plan(changed=["known.kt"])
+        environment = {"GITHUB_TOKEN": "synthetic", "GITHUB_API_URL": "https://example.invalid",
+                       "GITHUB_REPOSITORY": plan["repository"]}
+        cases = ((), (PhaseInstanceId("runtime", "jvm", "binary", "jvm"),),
+                 (PhaseInstanceId("sdk", "sdk-core", "binary", "common"),))
+        for requested in cases:
+            with self.subTest(requested=requested), \
+                    mock.patch.object(product_reuse, "_requested", return_value=requested), \
+                    mock.patch("products.sdk_release_selection.read_sdk_release_selection", side_effect=AssertionError("Unexpected SDK policy read")), \
+                    mock.patch.object(product_reuse, "paginated_items", return_value=[]):
+                self.assertEqual([], product_reuse._discover_catalogs(plan, self.root / "catalogs", None,
+                    environment, VERSIONS, self.root / "not-a-repository"))
+
+    def test_discovery_rejects_missing_original_sdk_range_policy_before_listing(self) -> None:
+        repository, revision, _ = self.contract_repository()
+        relative = "gradle/release/sdk-runtime-compatibility.json"
+        subprocess.run(["git", "update-index", "--force-remove", relative], cwd=repository, check=True)
+        tree = subprocess.run(["git", "write-tree"], cwd=repository, check=True,
+                              capture_output=True, text=True).stdout.strip()
+        plan = {**impact_plan(changed=["codex-agent-bindings/python/src/codex_agent/_ffi.py"]),
+                "validationCommit": tree}
+        environment = {"GITHUB_TOKEN": "synthetic", "GITHUB_API_URL": "https://example.invalid",
+                       "GITHUB_REPOSITORY": plan["repository"]}
+        with mock.patch.object(product_reuse, "paginated_items") as listed, self.assertRaisesRegex(ValueError, "absent"):
+            product_reuse._discover_catalogs(plan, self.root / "catalogs", None, environment, VERSIONS, repository)
+        listed.assert_not_called()
 
     def test_same_pr_catalog_requires_actual_successful_ci_run_and_matching_claims(self) -> None:
         head, base = "b" * 40, "c" * 40

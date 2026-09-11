@@ -1223,7 +1223,7 @@ def stage_promoted_aggregate_catalog(source_root, destination, *, expected_build
 
 def _candidate_artifacts(
     artifacts: list[object], source: str, pull_request: int | None,
-    versions: Mapping[str, str],
+    versions: Mapping[str, str], *, sdk_default_runtime_version: str | None = None,
 ) -> list[dict[str, Any]]:
     suffix = {
         "stable": "stable-",
@@ -1236,6 +1236,11 @@ def _candidate_artifacts(
         f"{prefix}runtime-{versions['runtime-release']}",
         f"{prefix}sdk-{versions['sdk']}",
     }
+    if sdk_default_runtime_version is not None:
+        default = require_semver(sdk_default_runtime_version, "SDK default Runtime discovery version")
+        if "-" in default:
+            raise ValueError("SDK default Runtime discovery requires a stable release")
+        stable_names.add(f"{prefix}runtime-{default}")
     candidates = []
     for value in artifacts:
         if not isinstance(value, dict) or not isinstance(value.get("name"), str):
@@ -1261,6 +1266,7 @@ def _candidate_artifacts(
 def _discover_catalogs(
     plan: Mapping[str, Any], destination: Path, release_trust: ReleaseTrust | None,
     environ: Mapping[str, str], versions: Mapping[str, str],
+    repository_root: Path | None = None,
 ) -> list[Catalog]:
     token = environ.get("GITHUB_TOKEN")
     api = environ.get("GITHUB_API_URL")
@@ -1269,6 +1275,16 @@ def _discover_catalogs(
         return []
     if repository != plan["repository"]:
         raise ValueError("GitHub repository does not match the impact plan")
+    sdk_default = None
+    if repository_root is not None and any(
+        instance.product == "sdk"
+        and any(dependency.product == "runtime" for dependency in phase_instance_dependencies(instance))
+        for instance in _dependency_closure(_requested(plan))
+    ):
+        from products.sdk_release_selection import read_sdk_release_selection, read_sdk_runtime_compatibility_policy
+        selected = read_sdk_release_selection(repository_root, plan["validationCommit"])
+        read_sdk_runtime_compatibility_policy(repository_root, plan["validationCommit"])
+        sdk_default = selected["defaultRuntimeVersion"]
     artifacts = paginated_items(
         f"{api}/repos/{repository}/actions/artifacts", "artifacts", token,
     )
@@ -1278,7 +1294,8 @@ def _discover_catalogs(
             continue
         if source != "same-pr" and release_trust is None:
             continue
-        for artifact in _candidate_artifacts(artifacts, source, plan["pullRequest"], versions):
+        for artifact in _candidate_artifacts(artifacts, source, plan["pullRequest"], versions,
+                                            sdk_default_runtime_version=sdk_default):
             result.append(_materialize_catalog(
                 source, artifact, token, destination, repository, plan["pullRequest"], release_trust,
                 api=api,
@@ -4326,7 +4343,7 @@ def discover(
     versions = _versions(root, plan["validationCommit"])
     environment = os.environ if environ is None else environ
     trust = _release_trust(root, plan["validationCommit"], destination)
-    catalogs = _discover_catalogs(plan, destination, trust, environment, versions)
+    catalogs = _discover_catalogs(plan, destination, trust, environment, versions, root)
     native_records = _capture_native_handoffs(
         native_evidence_roots, destination / "native-runtime-evidence", destination, trust)
     adapter_records = _capture_native_handoffs(
