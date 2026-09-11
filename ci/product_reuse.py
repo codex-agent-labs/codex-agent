@@ -849,6 +849,15 @@ def _materialize_catalog(
     verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
     extracted = root / "contents"
     safe_extract(archive, extracted)
+    return _read_catalog_directory(source, extracted, destination, release_trust,
+        repository=repository, pull_request=pull_request, provenance_root=root,
+        artifact=artifact, token=token, workflow_run=workflow_run, api=api)
+
+
+def _read_catalog_directory(source, extracted, destination, release_trust, *, repository,
+                            pull_request=None, provenance_root=None, artifact=None, token=None,
+                            workflow_run=None, api=None):
+    """Shared exact catalog layout; transport observation remains caller-owned."""
     index_path = extracted / "product-index.json"
     signature_path = extracted / "product-index.sig"
     index_bytes = index_path.read_bytes()
@@ -900,7 +909,7 @@ def _materialize_catalog(
             or index["producer"]["workflowPath"] != workflow_path
         ):
             raise ValueError("Same-PR product catalog claims different workflow provenance")
-        write_canonical_json(root / "workflow-provenance.json", observed)
+        write_canonical_json(provenance_root / "workflow-provenance.json", observed)
     controls = {"product-index.json", "product-index.sig"}
     public_key: Path | None = None
     if source == "same-pr":
@@ -1049,6 +1058,67 @@ def _materialize_catalog(
         sdk_root,
         aggregate_root,
     )
+
+
+def stage_release_catalog(source_root, destination, *, repository, source, keyring, keys_directory):
+    """Emit complete original catalog bytes; never build products or sign indexes."""
+    from products.index import SignedProductIndex, verify_release_product_index
+    from products.runtime_aggregate_handoff import _public_policy, verified_runtime_aggregate_handoff
+    from products.sdk_package import _require_capability_output_separate
+
+    if source not in {"stable", "promoted-main"}:
+        raise ValueError("Release catalog assembly requires stable or promoted-main context")
+    source_root, destination = Path(source_root).absolute(), Path(destination).absolute()
+    originals = [source_root, Path(keyring), Path(keys_directory)]
+    _require_capability_output_separate(destination, originals)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Release catalog destination must not exist")
+    before = regular_file_inventory(source_root, allow_empty=True)
+    with tempfile.TemporaryDirectory(prefix="product-catalog-stage-") as temporary:
+        private = Path(temporary).resolve()
+        policy = private / "policy"
+        policy_paths, policy_bytes = _public_policy(keyring, keys_directory, policy)
+        policy_inventory = regular_file_inventory(policy)
+        trust = ReleaseTrust(policy / "product-signing-keys.json", policy / "keys")
+        captured = private / "catalog"
+        snapshot_regular_tree(source_root, captured, allow_empty=True)
+        if regular_file_inventory(captured, allow_empty=True) != before:
+            raise ValueError("Release catalog changed during capture")
+        index, _ = verify_release_product_index(
+            SignedProductIndex(captured / "product-index.json", captured / "product-index.sig"),
+            keyring_path=trust.keyring, keys_directory=trust.keys)
+        if index["trustDomain"] != "release":
+            raise ValueError("Release catalog requires release-trust index bytes")
+        catalog = _read_catalog_directory(source, captured, private, trust, repository=repository)
+        if set(catalog.objects) != {entry["buildKey"] for entry in index["entries"]}:
+            raise ValueError("Emitted catalog requires every indexed original object")
+        envelopes = {}
+        for entry in index["entries"]:
+            verified = verify_object(catalog.objects[entry["buildKey"]],
+                build_key=entry["buildKey"], receipt_sha256=entry["receiptSha256"])
+            envelope = {**verified, "receiptSha256": entry["receiptSha256"]}
+            _verify_index_receipt(entry, envelope)
+            envelopes[entry["receiptSha256"]] = envelope
+        aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+        required = {entry["receiptSha256"] for entry in index["entries"] if _identity(entry) == aggregate}
+        evidence = catalog.runtime_aggregate_evidence_root
+        records = load_runtime_aggregate_release_evidence(evidence) if evidence is not None else []
+        if {record["receiptSha256"] for record in records} != required:
+            raise ValueError("Emitted aggregate metadata requires its complete original release carrier")
+        for record in records:
+            with verified_runtime_aggregate_handoff(evidence / record["handoffRoot"],
+                    keyring=trust.keyring, keys_directory=trust.keys) as verified:
+                if verified["receiptBytes"][aggregate] != envelopes[record["receiptSha256"]]["receiptBytes"]:
+                    raise ValueError("Catalog aggregate carrier differs from its indexed original receipt")
+        if (regular_file_inventory(source_root, allow_empty=True) != before
+                or regular_file_inventory(captured, allow_empty=True) != before
+                or regular_file_inventory(policy) != policy_inventory
+                or any(read_regular_file_bytes(path, max_bytes=64 * 1024, reject_symlink_parents=True)
+                       != policy_bytes[name] for name, path in policy_paths.items())):
+            raise ValueError("Catalog originals or caller policy changed before publication")
+        _require_capability_output_separate(destination, originals)
+        publish_regular_tree(captured, destination, allow_empty=True)
+    return index
 
 
 def _candidate_artifacts(
@@ -4208,6 +4278,11 @@ def discover(
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="python3 ci/product_reuse.py")
     commands = result.add_subparsers(dest="command", required=True)
+    catalog_command = commands.add_parser("stage-release-catalog")
+    for name in ("source-root", "destination", "keyring", "keys-directory"):
+        catalog_command.add_argument(f"--{name}", type=Path, required=True)
+    catalog_command.add_argument("--repository", required=True)
+    catalog_command.add_argument("--source", choices=("stable", "promoted-main"), required=True)
     discover_command = commands.add_parser("discover")
     discover_command.add_argument("--plan", type=Path, required=True)
     discover_command.add_argument("--destination", type=Path, required=True)
@@ -4345,7 +4420,11 @@ def main(argv: list[str] | None = None) -> int:
         tooling = None
         if getattr(arguments, "sdk_validation_tooling", None) is not None:
             tooling = _canonical_control(arguments.sdk_validation_tooling, "Caller SDK tooling policy")
-        if arguments.command == "discover":
+        if arguments.command == "stage-release-catalog":
+            stage_release_catalog(arguments.source_root, arguments.destination,
+                repository=arguments.repository, source=arguments.source,
+                keyring=arguments.keyring, keys_directory=arguments.keys_directory)
+        elif arguments.command == "discover":
             discover(arguments.plan, arguments.destination, arguments.github_output,
                      native_evidence_roots=tuple(arguments.native_runtime_evidence),
                      aggregate_evidence_roots=tuple(arguments.runtime_aggregate_release_evidence),
