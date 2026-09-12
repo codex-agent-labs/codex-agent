@@ -2441,6 +2441,7 @@ class _VerifiedProductState:
 def _verified_product_state(
     plan_path: Path, discovery_root: Path, state_root: Path, root: Path,
     environment: Mapping[str, str], sdk_validation_tooling: Mapping[str, Any] | None,
+    *, sdk_runtime_consumer=None,
 ) -> _VerifiedProductState:
     plan = _validate_plan(plan_path, root)
     if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
@@ -2531,6 +2532,8 @@ def _verified_product_state(
     replay = _plan_with_sdk_tooling(
         rebased_request, sdk_validation_tooling,
         build_plan_consumer=lambda instance, value: _retain_product_plan(replay_plans, instance, value),
+        **({"sdk_runtime_consumer": sdk_runtime_consumer}
+           if sdk_runtime_consumer is not None and state_root == discovery_root else {}),
     )
     initial = _canonical_control(discovery_root / "reuse-wave-result.json", "Initial reuse result")
     if replay != initial:
@@ -2593,6 +2596,7 @@ def _verified_product_state(
                 build_plan_consumer=lambda instance, value: _retain_product_plan(
                     prior_ready_plans, instance, value,
                 ),
+                **({"sdk_runtime_consumer": sdk_runtime_consumer} if sdk_runtime_consumer is not None else {}),
             )
         state_by_instance = {_identity(phase): phase for phase in state_replay["phases"]}
         if any(state_by_instance[instance]["state"] != "retained" for instance in prior_materialized):
@@ -2713,23 +2717,64 @@ def _restore_product_objects(state, instances, destination):
         (predecessor / "phase-receipt.json").write_bytes(restored["receiptBytes"])
 
 
-def _materialize_product_predecessors(state, instance, destination, expected_build_key, root):
+def _capture_sdk_runtime_predecessors(selected, destination):
+    """Copy originals while the authenticated carrier is still privately captured."""
+    result = {}
+    for identity, original in selected["handoff"]["originalPhases"].items():
+        if identity.product != "runtime":
+            continue
+        fields = tuple(getattr(identity, field) for field in _IDENTITY_KEYS)
+        directory = destination / "-".join(fields)
+        snapshot_regular_tree(original["stage"], directory / "stage")
+        raw = selected["handoff"]["receiptBytes"][identity]
+        if read_regular_file_bytes(original["receiptPath"]) != raw:
+            raise ValueError("SDK Runtime original receipt changed during capture")
+        receipt = validate_phase_receipt(load_canonical_json_bytes(raw))
+        manifest = verify_output_manifest_identity(directory / "stage", *fields, receipt["productVersion"])
+        if tuple(receipt[field] for field in _IDENTITY_KEYS) != fields or receipt["outputs"] != manifest["outputs"]:
+            raise ValueError("SDK Runtime original stage does not match its receipt")
+        receipt_path = directory / "phase-receipt.json"
+        receipt_path.write_bytes(raw)
+        result[identity] = {"stage": directory / "stage", "receiptPath": receipt_path,
+                            "receipt": receipt, "receiptBytes": raw}
+    return result
+
+
+def _materialize_product_predecessors(state, instance, destination, expected_build_key, root, *, sdk_runtime_originals=None):
     expected_build_key = require_sha256(expected_build_key, "Expected elected build key")
     if instance not in PHASE_INSTANCE_IDS:
         raise ValueError("Unknown product phase instance")
     ready = state.prior_ready_plans.get(instance)
     if ready is None or ready["buildKey"] != expected_build_key:
         raise ValueError("Product phase is not ready with the expected elected build key")
-    dependencies = tuple(dependency for dependency in _dependency_closure((instance,))
+    external = instance.product == "sdk" and state.rebased_request.get("sdkRuntimeSource") == "released-default"
+    dependencies = tuple(dependency for dependency in _dependency_closure((instance,), sdk_runtime_external=external)
                          if dependency != instance)
+    runtime_dependencies = tuple(dependency for dependency in _dependency_closure((instance,))
+                                 if external and dependency.product == "runtime")
     if any(dependency not in state.sources for dependency in dependencies):
         raise ValueError("Elected product phase lacks an authenticated original predecessor")
+    if any(dependency not in (sdk_runtime_originals or {}) for dependency in runtime_dependencies):
+        raise ValueError("Elected SDK phase lacks an authenticated original Runtime predecessor")
     destination = _prepare_destination(destination, root)
     destination.rmdir()
     with tempfile.TemporaryDirectory(prefix="codex-agent-product-inputs-", dir=root) as temporary:
         prepared = Path(temporary).resolve() / "inputs"
         prepared.mkdir()
         _restore_product_objects(state, dependencies, prepared)
+        for dependency in runtime_dependencies:
+            original = sdk_runtime_originals[dependency]
+            fields = tuple(getattr(dependency, field) for field in _IDENTITY_KEYS)
+            predecessor = prepared / "-".join(fields)
+            snapshot_regular_tree(original["stage"], predecessor / "stage")
+            raw = read_regular_file_bytes(original["receiptPath"])
+            if raw != original["receiptBytes"]:
+                raise ValueError("Captured SDK Runtime receipt changed before publication")
+            receipt = validate_phase_receipt(load_canonical_json_bytes(raw))
+            manifest = verify_output_manifest_identity(predecessor / "stage", *fields, receipt["productVersion"])
+            if tuple(receipt[field] for field in _IDENTITY_KEYS) != fields or receipt["outputs"] != manifest["outputs"]:
+                raise ValueError("Captured SDK Runtime stage does not match its receipt")
+            (predecessor / "phase-receipt.json").write_bytes(raw)
         write_canonical_json(prepared / "phase-plan.json", ready)
         write_canonical_json(prepared / "producer.json", state.producer)
         publish_regular_tree(prepared, destination)
@@ -2746,10 +2791,15 @@ def materialize_product_predecessors(
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     discovery_root, state_root, destination = _product_materialization_paths(
         root, discovery_root, state_root, destination)
-    state = _verified_product_state(
-        plan_path, discovery_root, state_root, root,
-        os.environ if environ is None else environ, sdk_validation_tooling)
-    return _materialize_product_predecessors(state, instance, destination, expected_build_key, root)
+    with tempfile.TemporaryDirectory(prefix="codex-agent-sdk-runtime-inputs-", dir=root) as temporary:
+        originals = {}
+        state = _verified_product_state(
+            plan_path, discovery_root, state_root, root,
+            os.environ if environ is None else environ, sdk_validation_tooling,
+            sdk_runtime_consumer=lambda selected: originals.update(
+                _capture_sdk_runtime_predecessors(selected, Path(temporary) / "originals")))
+        return _materialize_product_predecessors(state, instance, destination, expected_build_key, root,
+                                                sdk_runtime_originals=originals)
 
 
 def materialize_runtime_aggregate_release_evidence(
@@ -3278,13 +3328,18 @@ def execute_sdk_metadata(
     for source in (compatibility_request, runtime_stages, staged_sdks):
         _product_materialization_paths(root, Path(source), Path(source), destination)
     environment = dict(os.environ if environ is None else environ)
-    state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling)
-    ready = state.prior_ready_plans.get(instance)
-    if ready is None or ready["buildKey"] != require_sha256(expected_build_key, "SDK metadata elected key"):
-        raise ValueError("SDK metadata is not ready with the expected elected build key")
-    _runtime_worker_checkout(root, state.producer)
-    inputs = destination / "inputs"
-    _materialize_product_predecessors(state, instance, inputs, expected_build_key, root)
+    with tempfile.TemporaryDirectory(prefix="codex-agent-sdk-runtime-inputs-", dir=root) as temporary:
+        originals = {}
+        state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
+            sdk_runtime_consumer=lambda selected: originals.update(
+                _capture_sdk_runtime_predecessors(selected, Path(temporary) / "originals")))
+        ready = state.prior_ready_plans.get(instance)
+        if ready is None or ready["buildKey"] != require_sha256(expected_build_key, "SDK metadata elected key"):
+            raise ValueError("SDK metadata is not ready with the expected elected build key")
+        _runtime_worker_checkout(root, state.producer)
+        inputs = destination / "inputs"
+        _materialize_product_predecessors(state, instance, inputs, expected_build_key, root,
+                                        **({"sdk_runtime_originals": originals} if originals else {}))
 
     def original(product, name, phase, target):
         dependency = PhaseInstanceId(product, name, phase, target)

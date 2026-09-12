@@ -194,6 +194,28 @@ class ReleaseCatalogAssemblyTest(unittest.TestCase):
         before = regular_file_inventory(artifacts, allow_empty=True)
         plans = {}
         restored = {}
+        captures = []
+        def consume_runtime(selected):
+            self.assertEqual(self.raw, selected["envelope"]["receiptBytes"])
+            self.assertEqual("promoted-main", selected["transportSource"]["kind"])
+            handoff = selected["handoff"]
+            self.assertEqual(regular_file_inventory(self.carrier, allow_empty=True),
+                             regular_file_inventory(handoff["directory"], allow_empty=True))
+            self.assertEqual(50, len(handoff["originalPhases"]))
+            for identity, original in handoff["originalPhases"].items():
+                raw = original["receiptPath"].read_bytes()
+                self.assertEqual(handoff["receiptBytes"][identity], raw)
+                self.assertEqual(original["receipt"], load_canonical_json_bytes(raw))
+                self.assertTrue(original["stage"].is_dir())
+            self.assertEqual(5, len(handoff["nativeRuntimeEvidence"]))
+            for target, record in handoff["nativeRuntimeEvidence"].items():
+                self.assertEqual(target, record["target"])
+                self.assertTrue(Path(record["payload"]).is_file())
+                self.assertEqual(self.keyring.read_bytes(), Path(record["keyring"]).read_bytes())
+                for phase, path in record["phaseReceipts"].items():
+                    identity = PhaseInstanceId("runtime", target, phase, target)
+                    self.assertEqual(handoff["receiptBytes"][identity], Path(path).read_bytes())
+            captures.append(handoff["directory"])
         def store_original(stage, receipt_path, cache):
             raw = receipt_path.read_bytes()
             receipt = load_canonical_json_bytes(raw)
@@ -203,7 +225,10 @@ class ReleaseCatalogAssemblyTest(unittest.TestCase):
         # The wrapper observes actual object creation; it never supplies evidence or verifier success.
         with patch("products.reuse.store_local_object", side_effect=store_original) as stored, \
                 patch("reuse.api_request", side_effect=AssertionError("released-default wave contacted CI")):
-            result = plan_reuse_wave(request, build_plan_consumer=lambda identity, plan: plans.update({identity: plan}))
+            result = plan_reuse_wave(request, build_plan_consumer=lambda identity, plan: plans.update({identity: plan}),
+                                     sdk_runtime_consumer=consume_runtime)
+        self.assertEqual(1, len(captures))
+        self.assertFalse(captures[0].exists())
         sdk = PhaseInstanceId("sdk", "sdk-core", "package", "common")
         dependencies = {identity for identity in phase_instance_dependencies(sdk) if identity.product == "runtime"}
         self.assertEqual(dependencies, set(restored))
@@ -222,6 +247,29 @@ class ReleaseCatalogAssemblyTest(unittest.TestCase):
                                          if all(row[name] == value for name, value in asdict(sdk).items())))
         self.assertEqual(before, regular_file_inventory(artifacts, allow_empty=True))
         self.assertEqual(self.before, regular_file_inventory(self.layout, allow_empty=True))
+
+    def test_released_default_consumer_exception_prevents_wave_return_and_cleans_capture(self):
+        request = self.sdk_wave_request()
+        artifacts = Path(request["artifactRoot"])
+        before = regular_file_inventory(artifacts, allow_empty=True)
+        captures = []
+        def reject(selected):
+            captured = selected["handoff"]["directory"]
+            self.assertTrue(captured.is_dir())
+            self.assertEqual(self.raw, selected["envelope"]["receiptBytes"])
+            captures.append(captured)
+            raise RuntimeError("consumer refused original handoff")
+        with self.assertRaisesRegex(RuntimeError, "consumer refused original handoff"):
+            plan_reuse_wave(request, sdk_runtime_consumer=reject)
+        self.assertEqual(1, len(captures))
+        self.assertFalse(captures[0].exists())
+        self.assertEqual(before, regular_file_inventory(artifacts, allow_empty=True))
+        self.assertEqual(self.before, regular_file_inventory(self.layout, allow_empty=True))
+
+    def test_released_default_noncallable_consumer_rejects_before_request_work(self):
+        # Even request parsing must not precede this caller API check.
+        with self.assertRaisesRegex(ValueError, "callable"):
+            plan_reuse_wave({}, sdk_runtime_consumer="not-a-callback")
 
     def test_released_default_wave_rejects_unknown_mode_and_nonconsuming_phase(self):
         request = self.sdk_wave_request()

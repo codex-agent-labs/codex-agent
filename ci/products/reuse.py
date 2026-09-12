@@ -1062,8 +1062,11 @@ def plan_reuse_wave(
     value: Any,
     *,
     build_plan_consumer: Callable[[PhaseInstanceId, dict[str, Any]], None] | None = None,
+    sdk_runtime_consumer: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Decode one strict control request and delegate all resolution to advance_reuse."""
+    if sdk_runtime_consumer is not None and not callable(sdk_runtime_consumer):
+        raise ValueError("SDK Runtime consumer must be callable")
     request = require_exact_keys(
         value,
         {
@@ -1441,6 +1444,10 @@ def plan_reuse_wave(
             )
         if set(native_evidence) - consumed_native_evidence:
             raise ValueError("Native Runtime evidence was supplied before its SDK phase was ready")
+        if external_sdk_runtime and sdk_runtime_consumer is not None:
+            # Invocation-only capture, never serialized authority. The caller
+            # publishes its private copy only after this context has exited.
+            sdk_runtime_consumer(selected)
         return result
 
 
