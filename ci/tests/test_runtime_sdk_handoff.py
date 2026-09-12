@@ -41,11 +41,12 @@ class RuntimeSdkHandoffTest(unittest.TestCase):
                "compatible_runtime_compatibility_range": ">=0.2.0 <0.3.0",
                "keyring": self.keyring, "keys_directory": self.keys, **changes})
 
-    def selection(self, default="0.2.7"):
+    def selection(self, default="0.2.7", contract="0.2.0"):
         repository = self.work / "selection"
         versions = repository / "gradle/release/versions"
         versions.mkdir(parents=True)
         (versions / "sdk.txt").write_bytes(b"0.2.9\n")
+        (versions / "contract.txt").write_text(contract + "\n", encoding="ascii")
         (versions.parent / "sdk-default-runtime.txt").write_text(default + "\n")
         (versions.parent / "sdk-runtime-compatibility.json").write_bytes(canonical_json_bytes({
             "compatibleReleaseRange": ">=0.2.0 <0.3.0",
@@ -68,14 +69,28 @@ class RuntimeSdkHandoffTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "both repository"):
                 self.stage(**values)
 
+    def test_authenticated_runtime_contract_must_match_sdk_git_policy_before_writer(self):
+        repository, revision = self.selection(contract="0.2.1")
+        (repository / "gradle/release/versions/contract.txt").write_bytes(b"0.2.0\n")
+        before = regular_file_inventory(self.carrier, allow_empty=True)
+        with patch.object(bridge, "stage_sdk_inputs") as writer:
+            with self.assertRaisesRegex(ValueError, "Contract"):
+                self.stage(selection_repository_root=repository, selection_revision=revision)
+            writer.assert_not_called()
+        self.assertFalse(self.output.exists())
+        self.assertEqual(before, regular_file_inventory(self.carrier, allow_empty=True))
+
     def test_full_gate_forwards_exact_original_inputs_and_existing_s858_writer(self):
         before = regular_file_inventory(self.carrier, allow_empty=True)
+        repository, revision = self.selection()
+        # The exact Git selection is authoritative, not the mutable checkout.
+        (repository / "gradle/release/versions/contract.txt").write_bytes(b"9.0.0\n")
         with patch("reuse.api_request", side_effect=AssertionError("forwarding contacted CI")), \
                 patch("products.runtime_aggregate.sign_manifest", side_effect=AssertionError("forwarding signed")), \
                 patch.object(bridge, "verified_runtime_aggregate_handoff",
                              wraps=bridge.verified_runtime_aggregate_handoff) as full, \
                 patch.object(bridge, "stage_sdk_inputs", wraps=bridge.stage_sdk_inputs) as writer:
-            result = self.stage()
+            result = self.stage(selection_repository_root=repository, selection_revision=revision)
         full.assert_called_once()
         writer.assert_called_once()
         self.assertEqual(before, regular_file_inventory(self.carrier, allow_empty=True))

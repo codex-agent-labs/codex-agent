@@ -10,7 +10,7 @@ from ci.products.registry import PhaseInstanceId
 from ci.products.sdk_release_selection import (
     read_sdk_release_selection, require_sdk_release_selection,
     read_sdk_runtime_compatibility_policy, require_sdk_runtime_compatibility_policy,
-    sdk_runtime_source,
+    sdk_runtime_source, require_sdk_contract_version,
 )
 
 
@@ -202,6 +202,43 @@ class SdkReleaseSelectionTest(unittest.TestCase):
         _, _, outside = self.range_policy("0.9.0")
         with self.assertRaisesRegex(ValueError, "outside"):
             route(outside)
+
+    def test_contract_version_check_reads_exact_original_not_dirty_checkout(self):
+        contract = self.sdk.parent / "contract.txt"
+        contract.write_bytes(b"0.8.0\n")
+        revision = self.commit()
+        contract.write_bytes(b"0.8.1\n")
+        self.assertEqual("0.8.0", require_sdk_contract_version(self.root, revision, contract_version="0.8.0"))
+        with self.assertRaisesRegex(ValueError, "original SDK Contract version"):
+            require_sdk_contract_version(self.root, revision, contract_version="0.8.1")
+        self.assertEqual(b"0.8.1\n", contract.read_bytes())
+        later = self.commit()
+        self.assertEqual("0.8.1", require_sdk_contract_version(self.root, later, contract_version="0.8.1"))
+        # The existing SDK/default public schema has not gained another required authority.
+        self.assertEqual({"sdkVersion": "0.3.0-rc.1", "defaultRuntimeVersion": "0.2.0"},
+                         read_sdk_release_selection(self.root, self.revision))
+
+    def test_contract_version_check_rejects_missing_symbolic_and_malformed_authority(self):
+        with self.assertRaisesRegex(ValueError, "absent"):
+            require_sdk_contract_version(self.root, self.revision, contract_version="0.8.0")
+        contract = self.sdk.parent / "contract.txt"
+        for raw in (b"0.8.0", b"0.8.0\r\n", b"0.8.0\n\n", b" 0.8.0\n", b"0.8.0+build\n", b"\xff\n"):
+            contract.write_bytes(raw)
+            revision = self.commit()
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                require_sdk_contract_version(self.root, revision, contract_version="0.8.0")
+        contract.write_bytes(b"0.8.0\n")
+        revision = self.commit()
+        for value in (None, "0.8", "0.8.0+build"):
+            with self.subTest(version=value), self.assertRaisesRegex(ValueError, "SemVer"):
+                require_sdk_contract_version(self.root, revision, contract_version=value)
+        with self.assertRaisesRegex(ValueError, "exact Git revision"):
+            require_sdk_contract_version(self.root, "HEAD", contract_version="0.8.0")
+        relative = contract.relative_to(self.root).as_posix()
+        blob = self.git("rev-parse", f"{revision}:{relative}")
+        self.git("update-index", "--cacheinfo", "120000", blob, relative)
+        with self.assertRaisesRegex(ValueError, "not a regular"):
+            require_sdk_contract_version(self.root, self.git("write-tree"), contract_version="0.8.0")
 
 
 if __name__ == "__main__":

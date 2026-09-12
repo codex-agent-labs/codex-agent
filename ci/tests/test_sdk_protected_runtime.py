@@ -37,6 +37,7 @@ class SdkProtectedRuntimeTest(unittest.TestCase):
         versions = cls.selection / "gradle/release/versions"
         versions.mkdir(parents=True)
         (versions / "sdk.txt").write_bytes(b"0.2.9\n")
+        (versions / "contract.txt").write_bytes(b"0.2.0\n")
         (versions.parent / "sdk-default-runtime.txt").write_bytes(b"0.2.7\n")
         (versions.parent / "sdk-runtime-compatibility.json").write_bytes(canonical_json_bytes({
             "compatibleReleaseRange": ">=0.2.0 <0.3.0",
