@@ -10,6 +10,9 @@ from products import runtime_aggregate_handoff as reader
 from products.inventory import canonical_json_bytes, regular_file_inventory, snapshot_regular_tree
 from products.registry import NATIVE_TARGETS, PhaseInstanceId
 from products.receipt import verify_output_manifest_identity
+from products.plan import NATIVE_RUNTIME_EVIDENCE_KEYS
+from products.plan import _native_runtime_projection_from_record
+from products.contract_projection import verify_contract_component_projection
 from products.signatures import generate_development_key
 
 
@@ -62,6 +65,28 @@ class RuntimeAggregateHandoffTest(unittest.TestCase):
             self.assertEqual(before, verified["inventory"])
             self.assertEqual(before, regular_file_inventory(verified["directory"], allow_empty=True))
             self.assertEqual(25, len(verified["attestation"]["adapterReceipts"]))
+            native_evidence = verified["nativeRuntimeEvidence"]
+            self.assertEqual(list(NATIVE_TARGETS), list(native_evidence))
+            for target, record in native_evidence.items():
+                self.assertEqual(NATIVE_RUNTIME_EVIDENCE_KEYS, set(record))
+                self.assertEqual(target, record["target"])
+                self.assertEqual({"binary", "package", "validation", "metadata"}, set(record["phaseReceipts"]))
+                self.assertEqual(verified["directory"] / "runtime-stages", Path(record["stageRoot"]))
+                for phase, path in record["phaseReceipts"].items():
+                    self.assertTrue(Path(path).is_relative_to(verified["directory"]))
+                    self.assertEqual(verified["receiptBytes"][PhaseInstanceId("runtime", target, phase, target)],
+                                     Path(path).read_bytes())
+                inputs = verified["indexInputs"]
+                for name, existing in (("payload", "variant_bundles"), ("attestation", "variant_attestations"),
+                                       ("attestationSignature", "variant_attestation_signatures"),
+                                       ("publicKey", "variant_public_keys")):
+                    self.assertEqual(inputs[existing][target], Path(record[name]))
+                    self.assertTrue(Path(record[name]).is_relative_to(verified["directory"]))
+                self.assertEqual(inputs["keyring"], Path(record["keyring"]))
+                self.assertEqual(inputs["keys_directory"], Path(record["keysDirectory"]))
+                self.assertTrue(Path(record["keyring"]).is_relative_to(verified["directory"].parent / "policy"))
+                self.assertEqual(self.keyring.read_bytes(), Path(record["keyring"]).read_bytes())
+                self.assertEqual(regular_file_inventory(self.keys), regular_file_inventory(Path(record["keysDirectory"])))
             phases = verified["originalPhases"]
             expected = {PhaseInstanceId(*(record[name] for name in ("product", "component", "phase", "target")))
                         for record in self.source.selection["originals"]}
@@ -100,8 +125,41 @@ class RuntimeAggregateHandoffTest(unittest.TestCase):
                     self.read(relocated, keyring=keyring, keys_directory=policy / "keys") as verified:
                 self.assertEqual("release", verified["attestation"]["signing"]["trustDomain"])
                 self.assertEqual(50, len(verified["receipts"]))
+                for record in verified["nativeRuntimeEvidence"].values():
+                    self.assertEqual(keyring.read_bytes(), Path(record["keyring"]).read_bytes())
+                    self.assertNotEqual(self.keyring.read_bytes(), Path(record["keyring"]).read_bytes())
         finally:
             hidden.rename(self.carrier)
+
+    def test_release_native_projection_accepts_separately_authenticated_development_contract(self):
+        # The chain's original development attestation and the carrier's release
+        # attestation authenticate the same Contract bytes independently. A
+        # current development consumer must not relabel its retained Runtime.
+        target = "linux-x64"
+        contract = self.source.chain["contract"]
+        stage = self.source.chain["root"] / "contract-source/metadata-stage"
+        before = regular_file_inventory(self.carrier, allow_empty=True)
+        with patch("reuse.api_request", side_effect=AssertionError("mixed-trust read contacted CI")), \
+                patch("products.runtime_aggregate.sign_manifest", side_effect=AssertionError("mixed-trust read signed")):
+            projection = verify_contract_component_projection(
+                stage, contract["receipt"], contract["attestation"], contract["signature"],
+                self.source.context["public_key"], expected_trust_domain="development",
+                expected_contract_version="0.2.0", required_components=("common", target))
+            with self.read() as verified:
+                record = verified["nativeRuntimeEvidence"][target]
+                proof = _native_runtime_projection_from_record(record, projection, contract["payload"], "release")
+                receipt = verified["receipts"][PhaseInstanceId("runtime", target, "validation", target)]
+                value = proof.receipt_value(receipt, projection)
+                from products.inventory import sha256_bytes
+                self.assertEqual(sha256_bytes(verified["receiptBytes"][PhaseInstanceId("runtime", target, "validation", target)]),
+                                 value["receiptSha256"])
+                self.assertEqual(target, proof.target)
+                self.assertEqual(str(verified["indexInputs"]["keyring"]), record["keyring"])
+                # Conversely, the current Contract's development domain is not
+                # permission to accept the release Runtime as development.
+                with self.assertRaises(ValueError):
+                    _native_runtime_projection_from_record(record, projection, contract["payload"], "development")
+        self.assertEqual(before, regular_file_inventory(self.carrier, allow_empty=True))
 
     def test_context_index_inputs_reuse_real_admission_and_preserve_exact_private_originals(self):
         from products.index import IndexEntrySource, ReleaseIndexAdmission, release_attested_runtime_aggregate_admission

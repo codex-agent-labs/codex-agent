@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 import re
@@ -73,6 +73,7 @@ from .restore import (
     object_relative_path,
     restore_local_object,
     restore_object,
+    store_local_object,
     verify_object,
 )
 from .selection import phase_git_inventory
@@ -1081,7 +1082,8 @@ def plan_reuse_wave(
             "availableObjects",
             "catalogs",
         } | ({key for key in ("nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence", "adapterRuntimeComparisonEvidence",
-                             "sdkValidationEvidence", "sdkValidationTooling", "runtimeAggregateReleaseEvidence") if key in value}
+                             "sdkValidationEvidence", "sdkValidationTooling", "runtimeAggregateReleaseEvidence",
+                             "sdkRuntimeSource") if key in value}
              if type(value) is dict else set()),
         "reuse-wave request",
     )
@@ -1106,7 +1108,14 @@ def plan_reuse_wave(
     sdk_comparison = sdk_validation_provider(artifact_root, request.get("sdkValidationEvidence", []),
         repository=repository_root, policy_revision=revision, tooling=request.get("sdkValidationTooling"))
     requested = _request_identities(request["requested"], "reuse-wave request.requested")
-    closure = _dependency_closure(requested)
+    external_sdk_runtime = "sdkRuntimeSource" in request
+    if external_sdk_runtime and request["sdkRuntimeSource"] != "released-default":
+        raise ValueError("Unsupported SDK Runtime dependency source")
+    closure = _dependency_closure(requested, sdk_runtime_external=external_sdk_runtime)
+    sdk_dependencies = {dependency for instance in closure if instance.product == "sdk"
+                        for dependency in phase_instance_dependencies(instance) if dependency.product == "runtime"}
+    if external_sdk_runtime and not sdk_dependencies:
+        raise ValueError("Released SDK Runtime selection requires a Runtime-consuming SDK phase")
     versions = _validated_versions(request["versions"])
 
     authorities: dict[PhaseInstanceId, dict[str, Any]] = {}
@@ -1176,6 +1185,8 @@ def plan_reuse_wave(
         native_evidence[target] = record
     if list(native_evidence) != sorted(native_evidence):
         raise ValueError("Reuse-wave native Runtime evidence targets must be sorted")
+    if external_sdk_runtime and native_evidence:
+        raise ValueError("Released SDK Runtime evidence must come from its selected original carrier")
     phase_inputs: dict[PhaseInstanceId, dict[str, Any]] = {}
     for instance in closure:
         authority = authorities[instance]
@@ -1273,7 +1284,7 @@ def plan_reuse_wave(
     if available_identities != sorted(set(available_identities)):
         raise ValueError("reuse-wave request.availableObjects must be sorted and unique by phase identity")
 
-    with tempfile.TemporaryDirectory(prefix="codex-agent-reuse-wave-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="codex-agent-reuse-wave-") as temporary, ExitStack() as captures:
         restore_root = Path(temporary).resolve()
         session = LookupSession(
             repository=require_string(request["repository"], "reuse-wave request.repository"),
@@ -1291,6 +1302,24 @@ def plan_reuse_wave(
             same_pr=same_pr,
             local=_local_catalog(restore_root / "local", catalogs["local"]),
         )
+        sdk_runtime_options = {}
+        sdk_native_evidence = {}
+        if external_sdk_runtime:
+            selected = captures.enter_context(session.sdk_default_runtime(
+                repository_root=repository_root, repository_revision=revision, sdk_version=versions["sdk"]))
+            originals = selected["handoff"]["originalPhases"]
+            if not sdk_dependencies <= originals.keys():
+                raise ValueError("Released SDK Runtime lacks exact original phase dependencies")
+            sdk_envelopes = []
+            for identity in sorted(sdk_dependencies):
+                original = originals[identity]
+                stored = store_local_object(original["stage"], original["receiptPath"], restore_root / "sdk-default")
+                sdk_envelopes.append({"receipt": original["receipt"],
+                    "receiptBytes": selected["handoff"]["receiptBytes"][identity],
+                    "receiptSha256": stored["receiptSha256"], "objectSha256": stored["objectSha256"]})
+            sdk_runtime_options = {"sdk_runtime_receipts": sdk_envelopes,
+                                   "sdk_default_runtime_version": selected["envelope"]["receipt"]["productVersion"]}
+            sdk_native_evidence = selected["handoff"]["nativeRuntimeEvidence"]
         available = []
         for instance, build_key, receipt_sha256, object_sha256, object_path in decoded_objects:
             verified = verify_object(
@@ -1350,15 +1379,17 @@ def plan_reuse_wave(
 
         def native_runtime_projection_provider(instance, envelopes, projection):
             targets = [dependency.target for dependency in native_runtime_validation_dependencies(instance)]
-            selected = [native_evidence.get(target) or native_originals.get(envelope["receiptSha256"], (None, None))[1]
+            selected = [(sdk_native_evidence.get(target) if external_sdk_runtime and instance.product == "sdk" else None)
+                        or native_evidence.get(target) or native_originals.get(envelope["receiptSha256"], (None, None))[1]
                         for target, envelope in zip(targets, envelopes, strict=True)]
             if any(record is None for record in selected):
                 return None
             if master_projection is None or master_contract_stage is None or contract_evidence is None:
                 raise ValueError("Native Runtime reuse lacks authenticated Contract evidence")
-            # Release Runtime evidence must use the same caller-pinned product
-            # keyring as the authenticated Contract, not a transported trust root.
-            if contract_evidence["expectedTrustDomain"] == "release":
+            # Released-default records already carry their selected catalog's
+            # captured policy. Current Contract trust does not redefine Runtime
+            # trust; other paths retain the existing caller-pinned Contract policy.
+            if not external_sdk_runtime and contract_evidence["expectedTrustDomain"] == "release":
                 selected = [{**record, "keyring": str(contract_evidence["keyring"]),
                              "keysDirectory": str(contract_evidence["keysDirectory"])} for record in selected]
             keys = [(target, envelope["receiptSha256"]) for target, envelope in zip(targets, envelopes, strict=True)]
@@ -1367,7 +1398,7 @@ def plan_reuse_wave(
                     instance, [envelope["receipt"] for envelope in envelopes],
                     selected, projection,
                     master_contract_stage / master_projection.receipt_value()["bundlePath"],
-                    contract_evidence["expectedTrustDomain"],
+                    "release" if external_sdk_runtime else contract_evidence["expectedTrustDomain"],
                 )
                 native_projection_cache.update(zip(keys, verified, strict=True))
             consumed_native_evidence.update(targets)
@@ -1393,6 +1424,7 @@ def plan_reuse_wave(
             session,
             repository_root=repository_root,
             repository_revision=revision,
+            **sdk_runtime_options,
             contract_projection_provider=(
                 contract_projection_provider if contract_components else None
             ),

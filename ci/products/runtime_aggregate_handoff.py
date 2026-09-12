@@ -218,6 +218,15 @@ def _verify_captured(root, keyring, keys_directory):
     return {"manifest": value, "attestation": _json(attestation_path), "receipts": receipts,
             "receiptBytes": receipt_bytes, "inventory": inventory,
             "originalPhases": {PhaseInstanceId(*identity): original for identity, original in originals.items()},
+            "nativeRuntimeEvidence": {target: {
+                "target": target, "stageRoot": str(root / "runtime-stages"),
+                "phaseReceipts": {phase: str(path) for phase, path in records["variant_phase_receipts"][target].items()},
+                "payload": str(records["variant_bundles"][target]),
+                "attestation": str(signatures["variant_attestations"][target]),
+                "attestationSignature": str(signatures["variant_attestation_signatures"][target]),
+                "publicKey": str(signatures["variant_public_keys"][target]),
+                "keyring": str(keyring), "keysDirectory": str(keys_directory),
+            } for target in NATIVE_TARGETS},
             "indexInputs": {
                 "manifest": manifest, "metadata_receipt": metadata,
                 "attestation": attestation_path, "signature": signature, "public_key": public_key,
@@ -245,6 +254,10 @@ def verified_runtime_aggregate_handoff(root: Path, *, keyring: Path, keys_direct
     ``originalPhases`` exposes the already verified stage, receiptPath and receipt
     for every original PhaseInstanceId. Its paths share this context's lifetime;
     they are not a serialized transport or an independent admission token.
+    ``nativeRuntimeEvidence`` supplies the existing native projection request
+    records from these same originals and the caller's captured public policy.
+    Its absolute paths are valid only inside this context; a consumer must still
+    invoke the existing projector with its own authenticated Contract projection.
     """
     root = Path(root).absolute()
     for path in (root, *root.parents):

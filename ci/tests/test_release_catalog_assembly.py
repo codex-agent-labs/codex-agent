@@ -1,12 +1,12 @@
 """Build-free catalog round trips over real signed synthetic originals."""
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 import io
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zipfile
 
 from ci.tests import test_runtime_aggregate_handoff as fixture
@@ -14,8 +14,9 @@ import product_reuse as transport
 from products.index import IndexEntrySource, release_attested_runtime_aggregate_admission, write_signed_product_index
 from products.inventory import canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory, snapshot_regular_tree
 from products.restore import object_relative_path, store_local_object
-from products.reuse import LookupSession, RemoteCatalog
-from products.registry import PhaseInstanceId
+from products.reuse import LookupSession, RemoteCatalog, _dependency_closure, plan_reuse_wave
+from products.registry import PhaseInstanceId, phase_instance_dependencies
+from products.plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST, native_runtime_validation_dependencies
 
 
 class ReleaseCatalogAssemblyTest(unittest.TestCase):
@@ -74,7 +75,7 @@ class ReleaseCatalogAssemblyTest(unittest.TestCase):
             **{"repository": self.repository, "source": "promoted-main", "keyring": self.keyring,
                "keys_directory": self.keys, **changes})
 
-    def sdk_policy(self, default="0.2.7"):
+    def sdk_policy(self, default="0.2.7", *, phase_sources=False):
         repository = self.work / "sdk-policy"
         versions = repository / "gradle/release/versions"
         versions.mkdir(parents=True)
@@ -85,6 +86,11 @@ class ReleaseCatalogAssemblyTest(unittest.TestCase):
         (versions.parent / "sdk-runtime-compatibility.json").write_bytes(canonical_json_bytes({
             "compatibleReleaseRange": ">=0.2.0 <0.3.0",
             "compatibleRuntimeCompatibilityRange": ">=0.2.0 <0.3.0"}))
+        if phase_sources:
+            for module in ("codex-agent-core", "codex-agent"):
+                source = repository / module / "src/commonMain/kotlin/example.kt"
+                source.parent.mkdir(parents=True)
+                source.write_bytes(b"package synthetic\n")
         def git(*arguments):
             return subprocess.run(["git", *arguments], cwd=repository, check=True,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout.strip()
@@ -152,6 +158,140 @@ class ReleaseCatalogAssemblyTest(unittest.TestCase):
             with session.sdk_default_runtime(repository_root=repository, repository_revision=revision,
                                              sdk_version="0.2.9"):
                 self.fail("A signed index authorized different original object bytes")
+        self.assertEqual(self.before, regular_file_inventory(self.layout, allow_empty=True))
+
+    def sdk_wave_request(self, requested=None):
+        repository, revision = self.sdk_policy(phase_sources=True)
+        artifacts = self.work / "wave-artifacts"
+        snapshot_regular_tree(self.layout, artifacts / "catalog", allow_empty=True)
+        snapshot_regular_tree(self.keys, artifacts / "policy/keys")
+        (artifacts / "policy/keyring.json").write_bytes(self.keyring.read_bytes())
+        requested = requested or PhaseInstanceId("sdk", "sdk-core", "package", "common")
+        closure = _dependency_closure((requested,), sdk_runtime_external=True)
+        return {
+            "schemaVersion": 1, "requestType": "reuse-wave", "repository": self.repository,
+            "pullRequest": None, "repositoryRoot": str(repository), "repositoryRevision": revision,
+            "artifactRoot": str(artifacts), "requested": [asdict(requested)],
+            "versions": {"contract": "0.2.0", "runtime-compatibility": "0.2.0",
+                         "runtime-release": "0.2.8", "sdk": "0.2.9"},
+            "sdkRuntimeSource": "released-default",
+            "phaseAuthorities": [{**asdict(instance), "outputSchemaVersion": 1,
+                "flagsDigest": NOT_APPLICABLE_FLAGS_DIGEST,
+                "toolchainProfileDigest": NOT_APPLICABLE_TOOLCHAIN_DIGEST} for instance in closure],
+            "contractEvidence": None, "runtimeValidationEvidence": [], "availableObjects": [],
+            "runtimeAggregateReleaseEvidence": [{"receiptSha256": transport.sha256_bytes(self.raw),
+                "handoffRoot": "catalog/runtime-aggregate-release-evidence/handoffs/original"}],
+            "catalogs": {"stable": [], "samePr": None, "local": None, "promotedMain": {
+                "manifest": "catalog/product-index.json", "signature": "catalog/product-index.sig",
+                "publicKey": None, "keyring": "policy/keyring.json", "keysDirectory": "policy/keys",
+                "contractAttestation": None, "contractAttestationSignature": None, "contractPublicKey": None,
+                "objects": [{"buildKey": self.receipt["buildKey"],
+                             "objectPath": "catalog/" + self.relative}]}}}
+
+    def test_released_default_real_wave_restores_original_dependencies_without_runtime_work(self):
+        request = self.sdk_wave_request()
+        artifacts = Path(request["artifactRoot"])
+        before = regular_file_inventory(artifacts, allow_empty=True)
+        plans = {}
+        restored = {}
+        def store_original(stage, receipt_path, cache):
+            raw = receipt_path.read_bytes()
+            receipt = load_canonical_json_bytes(raw)
+            identity = PhaseInstanceId(**{name: receipt[name] for name in ("product", "component", "phase", "target")})
+            restored[identity] = (raw, regular_file_inventory(stage))
+            return store_local_object(stage, receipt_path, cache)
+        # The wrapper observes actual object creation; it never supplies evidence or verifier success.
+        with patch("products.reuse.store_local_object", side_effect=store_original) as stored, \
+                patch("reuse.api_request", side_effect=AssertionError("released-default wave contacted CI")):
+            result = plan_reuse_wave(request, build_plan_consumer=lambda identity, plan: plans.update({identity: plan}))
+        sdk = PhaseInstanceId("sdk", "sdk-core", "package", "common")
+        dependencies = {identity for identity in phase_instance_dependencies(sdk) if identity.product == "runtime"}
+        self.assertEqual(dependencies, set(restored))
+        self.assertEqual(len(dependencies), stored.call_count)
+        for identity, (raw, inventory) in restored.items():
+            original = self.carrier / "selected-inputs/predecessors" / "-".join(asdict(identity).values())
+            self.assertEqual((original / "phase-receipt.json").read_bytes(), raw)
+            self.assertEqual(regular_file_inventory(original / "stage"), inventory)
+        self.assertEqual([], result["matrices"]["runtime"])
+        self.assertFalse(any(row["product"] == "runtime" for row in result["phases"]))
+        self.assertFalse(result["fullReuse"])
+        contract = PhaseInstanceId("contract", "contract", "binary", "common")
+        self.assertIn(contract, plans)
+        self.assertTrue(plans[contract]["buildKey"].startswith("sha256:"))
+        self.assertEqual("waiting", next(row["state"] for row in result["phases"]
+                                         if all(row[name] == value for name, value in asdict(sdk).items())))
+        self.assertEqual(before, regular_file_inventory(artifacts, allow_empty=True))
+        self.assertEqual(self.before, regular_file_inventory(self.layout, allow_empty=True))
+
+    def test_released_default_wave_rejects_unknown_mode_and_nonconsuming_phase(self):
+        request = self.sdk_wave_request()
+        request["sdkRuntimeSource"] = "newest-runtime"
+        with self.assertRaisesRegex(ValueError, "Unsupported SDK Runtime dependency source"):
+            plan_reuse_wave(request)
+        request["sdkRuntimeSource"] = "released-default"
+        request["requested"] = [asdict(PhaseInstanceId("contract", "contract", "binary", "common"))]
+        with self.assertRaisesRegex(ValueError, "Runtime-consuming SDK phase"):
+            plan_reuse_wave(request)
+
+    def test_released_default_native_provider_keeps_release_policy_with_development_contract(self):
+        """Routing only: current Contract and native projector boundaries are mocked explicitly."""
+        sdk = PhaseInstanceId("sdk", "python", "package", "desktop")
+        request = self.sdk_wave_request(sdk)
+        artifacts = Path(request["artifactRoot"])
+        request["contractEvidence"] = {
+            "attestation": "current-contract/attestation.json",
+            "attestationSignature": "current-contract/attestation.sig",
+            "publicKey": "current-contract/development.pub",
+            "expectedTrustDomain": "development", "keyring": None, "keysDirectory": None}
+        stage = artifacts / "current-contract"
+        stage.mkdir()
+        for name in ("attestation.json", "attestation.sig", "development.pub"):
+            (stage / name).write_bytes(b"explicit mocked current Contract boundary\n")
+        before = regular_file_inventory(artifacts, allow_empty=True)
+        current_projection = Mock()
+        current_projection.restrict.return_value = current_projection
+        current_projection.receipt_value.return_value = {"bundlePath": "current-contract.zip"}
+        expected_dependencies = native_runtime_validation_dependencies(sdk)
+        observations = []
+
+        def native_projection(instance, receipts, records, projection, contract_payload, domain):
+            self.assertEqual(sdk, instance)
+            self.assertIs(current_projection, projection)
+            self.assertEqual(stage / "current-contract.zip", contract_payload)
+            self.assertEqual("release", domain)
+            self.assertEqual([identity.target for identity in expected_dependencies],
+                             [record["target"] for record in records])
+            for receipt, record in zip(receipts, records, strict=True):
+                self.assertEqual(receipt, load_canonical_json_bytes(Path(record["phaseReceipts"]["validation"]).read_bytes()))
+                keyring, keys = Path(record["keyring"]), Path(record["keysDirectory"])
+                self.assertNotEqual(artifacts / "policy/keyring.json", keyring)
+                self.assertEqual(self.keyring.read_bytes(), keyring.read_bytes())
+                self.assertEqual(regular_file_inventory(self.keys), regular_file_inventory(keys))
+                observations.append((keyring, keys))
+            return tuple(object() for _ in records)
+
+        def exercise_providers(requested, inputs, available, session, **arguments):
+            self.assertEqual((sdk,), requested)
+            originals = {PhaseInstanceId(**{name: envelope["receipt"][name]
+                         for name in ("product", "component", "phase", "target")}): envelope
+                         for envelope in arguments["sdk_runtime_receipts"]}
+            # Installed only after the real signed selector/carrier gates have completed.
+            with patch.object(session, "contract_stage", return_value=stage), \
+                    patch("products.reuse.verify_contract_component_projection", return_value=current_projection) as contract_gate, \
+                    patch("products.reuse._native_runtime_projections_from_request", side_effect=native_projection) as native_gate:
+                projection = arguments["contract_projection_provider"](sdk, {"receiptBytes": b"mock current Contract"})
+                self.assertEqual("development", contract_gate.call_args.kwargs["expected_trust_domain"])
+                result = arguments["native_runtime_projection_provider"](
+                    sdk, tuple(originals[identity] for identity in expected_dependencies), projection)
+                self.assertEqual(len(expected_dependencies), len(result))
+                native_gate.assert_called_once()
+            return {"routingOnly": True}, ()
+
+        with patch("products.reuse.advance_reuse", side_effect=exercise_providers):
+            self.assertEqual({"routingOnly": True}, plan_reuse_wave(request))
+        self.assertEqual(len(expected_dependencies), len(observations))
+        self.assertTrue(all(not keyring.exists() and not keys.exists() for keyring, keys in observations))
+        self.assertEqual(before, regular_file_inventory(artifacts, allow_empty=True))
         self.assertEqual(self.before, regular_file_inventory(self.layout, allow_empty=True))
 
     def test_emitted_originals_round_trip_through_catalog_import_and_real_release_lookup(self):
