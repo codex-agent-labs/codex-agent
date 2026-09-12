@@ -69,6 +69,7 @@ from products.plan import (
 from products.runtime_flags import load_runtime_binary_flags_bytes
 from products.runtime_adapter_content import rebase_adapter_comparison_records
 from products.sdk_validation import rebase_sdk_validation_records
+from products.sdk_release_selection import sdk_runtime_source
 from products.sdk_validation_inputs import load_sdk_validation_evidence, stage_sdk_validation_evidence
 from products.adapter_runtime_inputs import load_adapter_runtime_evidence, stage_adapter_runtime_evidence
 from products.runtime_evidence import (
@@ -126,7 +127,7 @@ _WAVE_REQUEST_KEYS = {
 _NATIVE_REQUEST_KEYS = {"nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence"}
 _ADAPTER_REQUEST_KEY = "adapterRuntimeComparisonEvidence"
 _AGGREGATE_REQUEST_KEY = "runtimeAggregateReleaseEvidence"
-_SDK_REQUEST_KEYS = {"sdkValidationEvidence"}
+_SDK_REQUEST_KEYS = {"sdkValidationEvidence", "sdkRuntimeSource"}
 _KEYRING_PATH = "gradle/release/product-signing-keys.json"
 _KEYS_ROOT = "gradle/release/keys"
 _PROFILE_ROOT = "gradle/release/toolchains/runtime"
@@ -1322,7 +1323,9 @@ def _wave_request(
     authorities: list[dict[str, Any]], catalogs: list[Catalog],
     contract_evidence: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    closure = set(_dependency_closure(requested))
+    source = sdk_runtime_source(root, plan["validationCommit"], instances=_dependency_closure(requested),
+                                runtime_version=versions["runtime-release"], sdk_version=versions["sdk"])
+    closure = set(_dependency_closure(requested, sdk_runtime_external=source is not None))
     request = {
         "schemaVersion": 1,
         "requestType": "reuse-wave",
@@ -1339,6 +1342,8 @@ def _wave_request(
         "availableObjects": [],
         "catalogs": _catalog_request(catalogs),
     }
+    if source is not None:
+        request["sdkRuntimeSource"] = source
     records = {}
     for catalog in sorted(catalogs, key=lambda value: SOURCES.index(value.source)):
         for record in catalog.native_runtime_evidence:
@@ -1429,7 +1434,7 @@ def _contract_evidence(
 
 def _validate_reuse_result(
     result: Mapping[str, Any], requested: tuple[PhaseInstanceId, ...],
-    *, require_complete: bool,
+    *, require_complete: bool, sdk_runtime_external: bool = False,
 ) -> tuple[dict[str, Any], tuple[PhaseInstanceId, ...], list[dict[str, Any]]]:
     result = require_exact_keys(result, _REUSE_RESULT_KEYS, "Reuse result")
     if require_integer(result["schemaVersion"], "Reuse result.schemaVersion", 1) != 1:
@@ -1442,7 +1447,8 @@ def _validate_reuse_result(
         product: require_array(matrices[product], f"Reuse result.matrices.{product}")
         for product in ("contract", "runtime", "sdk")
     }
-    closure = _dependency_closure(requested)
+    closure = _dependency_closure(requested, sdk_runtime_external=require_boolean(
+        sdk_runtime_external, "Reuse result SDK Runtime source selection"))
     phases = require_array(result["phases"], "Reuse result.phases")
     if len(phases) != len(closure):
         raise ValueError("Reuse result does not cover its exact dependency closure")
@@ -1512,6 +1518,7 @@ def _validate_reuse_result(
         dependency not in selected_set
         for instance in selected
         for dependency in phase_instance_dependencies(instance)
+        if not (sdk_runtime_external and instance.product == "sdk" and dependency.product == "runtime")
     ):
         raise ValueError("Reused product phases are not dependency-closed")
     requirements = require_array(
@@ -1553,7 +1560,9 @@ def _validate_reuse_result(
         if phase_by_instance[instance]["state"] == "waiting"
         and (runtime_validation_dependencies(instance) or native_runtime_validation_dependencies(instance)
              or sdk_validation_dependencies(instance))
-        and all(dependency in selected_set for dependency in phase_instance_dependencies(instance))
+        and all(dependency in selected_set or (
+            sdk_runtime_external and instance.product == "sdk" and dependency.product == "runtime")
+            for dependency in phase_instance_dependencies(instance))
     ]
     if requirement_instances != expected_requirements:
         raise ValueError("Reuse continuation requirements do not match ready evidence-consuming phases")
@@ -1571,10 +1580,10 @@ def _validate_reuse_result(
 def _write_reused_carrier(
     result: Mapping[str, Any], requested: tuple[PhaseInstanceId, ...],
     catalogs: list[Catalog], destination: Path, consumer: Mapping[str, Any],
-    *, require_complete: bool,
+    *, require_complete: bool, sdk_runtime_external: bool = False,
 ) -> bool:
     result, selected_instances, selected_phases = _validate_reuse_result(
-        result, requested, require_complete=require_complete,
+        result, requested, require_complete=require_complete, sdk_runtime_external=sdk_runtime_external,
     )
     if any(phase["source"] == "local" for phase in selected_phases):
         raise ValueError("Discovery reuse result unexpectedly contains a local object")
@@ -1607,9 +1616,11 @@ def _write_reused_carrier(
 def _reverify_complete(
     result: Mapping[str, Any], requested: tuple[PhaseInstanceId, ...],
     catalogs: list[Catalog], destination: Path, consumer: Mapping[str, Any],
+    *, sdk_runtime_external: bool = False,
 ) -> None:
     _write_reused_carrier(
         result, requested, catalogs, destination / "carrier", consumer, require_complete=True,
+        sdk_runtime_external=sdk_runtime_external,
     )
 
 
@@ -1886,7 +1897,10 @@ def _rebase_native_request(request, source_root, artifact_root):
 
 def _wave_control(path, label):
     value = _canonical_control(path, label)
-    return require_exact_keys(value, _WAVE_REQUEST_KEYS | (value.keys() & (_NATIVE_REQUEST_KEYS | {_ADAPTER_REQUEST_KEY, _AGGREGATE_REQUEST_KEY} | _SDK_REQUEST_KEYS)), label)
+    value = require_exact_keys(value, _WAVE_REQUEST_KEYS | (value.keys() & (_NATIVE_REQUEST_KEYS | {_ADAPTER_REQUEST_KEY, _AGGREGATE_REQUEST_KEY} | _SDK_REQUEST_KEYS)), label)
+    if "sdkRuntimeSource" in value and value["sdkRuntimeSource"] != "released-default":
+        raise ValueError("Unsupported SDK Runtime dependency source")
+    return value
 
 
 def _relocated_wave_control(path, label, root):
@@ -2444,7 +2458,12 @@ def _verified_product_state(
     )
     if requested != tuple(sorted(set(requested))) or requested != _requested(plan):
         raise ValueError("Reuse-wave request does not match the current product selection")
-    closure = _dependency_closure(requested)
+    versions = _versions(root, plan["validationCommit"])
+    source = sdk_runtime_source(root, plan["validationCommit"], instances=_dependency_closure(requested),
+                                runtime_version=versions["runtime-release"], sdk_version=versions["sdk"])
+    if request.get("sdkRuntimeSource") != source:
+        raise ValueError("Reuse-wave SDK Runtime source differs from original Git policy")
+    closure = _dependency_closure(requested, sdk_runtime_external=source is not None)
     authorities, unavailable = _authorities(root, plan["validationCommit"], closure)
     if authorities is None:
         raise ValueError(unavailable or "Product phase authority is unavailable")
@@ -2481,11 +2500,13 @@ def _verified_product_state(
         "repositoryRoot": str(root),
         "repositoryRevision": plan["validationCommit"],
         "requested": [_identity_record(instance) for instance in requested],
-        "versions": _versions(root, plan["validationCommit"]),
+        "versions": versions,
         "phaseAuthorities": authorities,
         "runtimeValidationEvidence": [],
         "availableObjects": initial_objects,
     }
+    if source is not None:
+        expected_fixed["sdkRuntimeSource"] = source
     for field, expected in expected_fixed.items():
         if request[field] != expected:
             raise ValueError(f"Reuse-wave request disagrees with current {field}")
@@ -2517,7 +2538,7 @@ def _verified_product_state(
 
     prior = _canonical_control(state_root / "reuse-wave-result.json", "Reuse result")
     _, prior_materialized, _ = _validate_reuse_result(
-        prior, requested, require_complete=False,
+        prior, requested, require_complete=False, sdk_runtime_external=source is not None,
     )
     prior_by_instance = {_identity(phase): phase for phase in prior["phases"]}
     sources: dict[PhaseInstanceId, Path] = {}
@@ -3700,6 +3721,7 @@ def advance_products(
             raise ValueError("A supplied product object was not retained by the recomputed plan")
         advanced, selected, selected_phases = _validate_reuse_result(
             advanced, requested, require_complete=False,
+            sdk_runtime_external=advanced_request.get("sdkRuntimeSource") == "released-default",
         )
         remote_sources = _catalog_object_sources(rebased_request)
         for instance, phase in zip(selected, selected_phases, strict=True):
@@ -4251,7 +4273,11 @@ def resume_products(
         contract = PhaseInstanceId("contract", "contract", "metadata", "common")
         if contract not in _dependency_closure(requested):
             raise ValueError("Product resume selection has no Contract dependency")
-        authorities, unavailable = _authorities(root, plan["validationCommit"], _dependency_closure(requested))
+        versions = _versions(root, plan["validationCommit"])
+        source = sdk_runtime_source(root, plan["validationCommit"], instances=_dependency_closure(requested),
+                                    runtime_version=versions["runtime-release"], sdk_version=versions["sdk"])
+        authorities, unavailable = _authorities(root, plan["validationCommit"],
+            _dependency_closure(requested, sdk_runtime_external=source is not None))
         if authorities is None:
             raise ValueError(unavailable or "Product phase authority is unavailable")
         wave = _wave_request(
@@ -4270,7 +4296,8 @@ def resume_products(
             ready_plans[instance] = phase_plan
 
         reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling, build_plan_consumer=retain)
-        _, selected, phases = _validate_reuse_result(reuse, requested, require_complete=False)
+        _, selected, phases = _validate_reuse_result(reuse, requested, require_complete=False,
+            sdk_runtime_external=wave.get("sdkRuntimeSource") == "released-default")
         by_id = {_identity(phase): phase for phase in phases}
         originals = {_identity(phase): phase for phase in original_phases}
         if any(by_id.get(instance, {}).get("state") != "retained" for instance in originals):
@@ -4339,8 +4366,10 @@ def discover(
             requested, complete=False, reason="remote-build-unauthorized",
         ), github_output_path)
 
-    closure = _dependency_closure(requested)
     versions = _versions(root, plan["validationCommit"])
+    source = sdk_runtime_source(root, plan["validationCommit"], instances=_dependency_closure(requested),
+                                runtime_version=versions["runtime-release"], sdk_version=versions["sdk"])
+    closure = _dependency_closure(requested, sdk_runtime_external=source is not None)
     environment = os.environ if environ is None else environ
     trust = _release_trust(root, plan["validationCommit"], destination)
     catalogs = _discover_catalogs(plan, destination, trust, environment, versions, root)
@@ -4446,7 +4475,8 @@ def discover(
         and all(value == [] for value in matrices.values())
     )
     if complete:
-        _reverify_complete(reuse, requested, catalogs, destination, _consumer(plan, environment))
+        _reverify_complete(reuse, requested, catalogs, destination, _consumer(plan, environment),
+                           sdk_runtime_external=source is not None)
     elif any(phase.get("state") == "reused" for phase in reuse["phases"]):
         _write_reused_carrier(
             reuse,
@@ -4455,6 +4485,7 @@ def discover(
             destination / "reused-carrier",
             _consumer(plan, environment),
             require_complete=False,
+            sdk_runtime_external=source is not None,
         )
     return _finish(destination, request, _result(
         requested,

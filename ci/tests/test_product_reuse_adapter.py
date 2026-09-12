@@ -698,7 +698,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
         result = self.run_discover(
             impact_plan(changed=["known.kt"], full_requested=True),
             selection=mock.Mock(instances=(), unknown_paths=()),
-            _dependency_closure=mock.Mock(side_effect=lambda requested: (
+            sdk_runtime_source=mock.Mock(return_value=None),
+            _dependency_closure=mock.Mock(side_effect=lambda requested, **_options: (
                 contract_closure if requested == (
                     PhaseInstanceId("contract", "contract", "metadata", "common"),
                 ) else PHASE_INSTANCE_IDS
@@ -729,7 +730,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
         result = self.run_discover(
             plan,
             selection=mock.Mock(instances=PHASE_INSTANCE_IDS, unknown_paths=("unknown/new.file",)),
-            _dependency_closure=mock.Mock(side_effect=lambda requested: (
+            sdk_runtime_source=mock.Mock(return_value=None),
+            _dependency_closure=mock.Mock(side_effect=lambda requested, **_options: (
                 contract_closure if requested == (
                     PhaseInstanceId("contract", "contract", "metadata", "common"),
                 ) else PHASE_INSTANCE_IDS
@@ -2484,6 +2486,81 @@ class ProductReuseAdapterTest(unittest.TestCase):
             product_reuse._validate_reuse_result(
                 missing, (metadata,), require_complete=False,
             )
+
+    def test_released_default_controller_request_keeps_exact_git_mode_and_pruned_authorities(self):
+        repository, baseline_revision, _ = self.contract_repository()
+        (repository / "gradle/release/versions/runtime.txt").write_text("0.2.1\n")
+        subprocess.run(("git", "add", "."), cwd=repository, check=True)
+        subprocess.run(("git", "commit", "-qm", "runtime-only patch"), cwd=repository, check=True)
+        revision = subprocess.run(("git", "rev-parse", "HEAD"), cwd=repository, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+        sdk = PhaseInstanceId("sdk", "python", "package", "desktop")
+        closure = product_reuse._dependency_closure((sdk,))
+        authorities = [product_reuse._identity_record(item) for item in closure]
+        plan = {"repository": "codex-agent-labs/codex-agent", "pullRequest": 31, "validationCommit": revision}
+        destination = repository / "build/product-reuse"
+        request = product_reuse._wave_request(plan, repository, destination, (sdk,),
+            product_reuse._versions(repository, revision), authorities, [], None)
+        self.assertEqual("released-default", request["sdkRuntimeSource"])
+        self.assertEqual([product_reuse._identity_record(item) for item in
+            product_reuse._dependency_closure((sdk,), sdk_runtime_external=True)], request["phaseAuthorities"])
+        self.assertEqual("0.2.1", request["versions"]["runtime-release"])
+        path = repository / "request.json"
+        path.write_bytes(canonical_json_bytes(request))
+        self.assertEqual(request, product_reuse._wave_control(path, "saved request"))
+        relocated = product_reuse._relocated_wave_control(path, "saved request", self.root / "relocated")
+        self.assertEqual("released-default", relocated["sdkRuntimeSource"])
+        for invalid in (None, True, "newest"):
+            path.write_bytes(canonical_json_bytes({**request, "sdkRuntimeSource": invalid}))
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                product_reuse._wave_control(path, "saved request")
+        # Mutable checkout policy cannot switch the saved request's dependency route.
+        (repository / "gradle/release/sdk-default-runtime.txt").write_text("0.2.1\n")
+        self.assertEqual(request, product_reuse._wave_request(plan, repository, destination, (sdk,),
+            product_reuse._versions(repository, revision), authorities, [], None))
+        # Early replay-policy rejection only: impact admission/selection are
+        # mocked, while producer controls, saved request and Git policy are real.
+        destination.mkdir(parents=True)
+        environment = {"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"}
+        for current_revision, saved in ((revision, {key: value for key, value in request.items()
+                                                    if key != "sdkRuntimeSource"}),
+                                        (baseline_revision, request)):
+            current_plan = {**impact_plan(changed=["known.kt"]), "validationCommit": current_revision}
+            producer = product_reuse._consumer(current_plan, environment)["producer"]
+            (destination / "producer.json").write_bytes(canonical_json_bytes(producer))
+            (destination / "reuse-wave-request.json").write_bytes(canonical_json_bytes(saved))
+            with mock.patch.object(product_reuse, "_validate_plan", return_value=current_plan), \
+                    mock.patch.object(product_reuse, "_requested", return_value=(sdk,)), \
+                    mock.patch.object(product_reuse, "_authorities") as authority, \
+                    mock.patch.object(product_reuse, "_plan_with_sdk_tooling") as planner, \
+                    self.assertRaisesRegex(ValueError, "source differs from original Git policy"):
+                product_reuse._verified_product_state(self.plan_path, destination, destination,
+                                                      repository, environment, None)
+            authority.assert_not_called()
+            planner.assert_not_called()
+
+    def test_released_default_result_requires_exact_scoped_dependency_closure(self):
+        sdk = PhaseInstanceId("sdk", "python", "package", "desktop")
+        closure = product_reuse._dependency_closure((sdk,), sdk_runtime_external=True)
+        result = {"schemaVersion": 1, "result": "complete", "fullReuse": True,
+            "phases": [{**product_reuse._identity_record(item),
+                "buildKey": sha256_bytes(repr(item).encode()), "state": "retained", "source": None,
+                "transportSource": None, "misses": [],
+                "receiptSha256": sha256_bytes(f"receipt-{item}".encode()),
+                "objectSha256": sha256_bytes(f"object-{item}".encode())} for item in closure],
+            "matrices": {"contract": [], "runtime": [], "sdk": []}, "continuationRequirements": []}
+        # Structural controller check only; authenticated replay is a separate gate.
+        _, selected, _ = product_reuse._validate_reuse_result(result, (sdk,), require_complete=True,
+                                                             sdk_runtime_external=True)
+        self.assertEqual(closure, selected)
+        with self.assertRaises(ValueError):
+            product_reuse._validate_reuse_result(result, (sdk,), require_complete=True)
+        for removed in closure:
+            invalid = {**result, "phases": [row for row in result["phases"]
+                                          if product_reuse._identity(row) != removed]}
+            with self.subTest(removed=removed), self.assertRaises(ValueError):
+                product_reuse._validate_reuse_result(invalid, (sdk,), require_complete=True,
+                                                     sdk_runtime_external=True)
 
     def test_outer_native_sdk_continuation_preserves_wait_without_runtime_metadata_shortcut(self):
         instance = PhaseInstanceId("sdk", "python", "package", "desktop")

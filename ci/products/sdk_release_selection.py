@@ -2,9 +2,30 @@
 
 from pathlib import Path
 import re
+from typing import Iterable
 
 from .aggregate import _compatible_range
 from .inventory import git_regular_blob_bytes, load_canonical_json_bytes, require_exact_keys, require_semver
+from .registry import PhaseInstanceId, phase_instance_dependencies
+
+
+def sdk_runtime_source(repository_root: Path, revision: str, *, instances: Iterable[PhaseInstanceId],
+                       runtime_version: str, sdk_version: str) -> str | None:
+    """Choose the dependency route for an existing closure, without granting trust.
+
+    Nonconsuming closures need no SDK policy. A matching current Runtime keeps
+    the existing fresh/current route; a different default requires the released
+    original selection gate downstream, never a newest-version lookup.
+    """
+    if not any(instance.product == "sdk" and any(dependency.product == "runtime"
+               for dependency in phase_instance_dependencies(instance)) for instance in instances):
+        return None
+    selected = read_sdk_release_selection(repository_root, revision)
+    read_sdk_runtime_compatibility_policy(repository_root, revision)
+    if require_semver(sdk_version, "Selected SDK version") != selected["sdkVersion"]:
+        raise ValueError("Selected SDK version differs from the original SDK release selection")
+    current = require_semver(runtime_version, "Current Runtime version")
+    return "released-default" if current != selected["defaultRuntimeVersion"] else None
 
 
 def read_sdk_release_selection(repository_root: Path, revision: str) -> dict[str, str]:

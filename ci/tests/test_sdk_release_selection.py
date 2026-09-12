@@ -6,9 +6,11 @@ import tempfile
 import unittest
 
 from ci.products.inventory import canonical_json_bytes
+from ci.products.registry import PhaseInstanceId
 from ci.products.sdk_release_selection import (
     read_sdk_release_selection, require_sdk_release_selection,
     read_sdk_runtime_compatibility_policy, require_sdk_runtime_compatibility_policy,
+    sdk_runtime_source,
 )
 
 
@@ -155,6 +157,51 @@ class SdkReleaseSelectionTest(unittest.TestCase):
         self.git("update-index", "--cacheinfo", "120000", blob, relative)
         with self.assertRaisesRegex(ValueError, "not a regular"):
             read_sdk_runtime_compatibility_policy(self.root, self.git("write-tree"))
+
+    def test_source_route_uses_original_default_not_current_runtime_or_dirty_policy(self):
+        path, _, revision = self.range_policy("0.8.0")
+        self.sdk.write_bytes(b"9.0.0\n")
+        self.default.write_bytes(b"0.8.1\n")
+        path.write_bytes(b"not authoritative checkout policy\n")
+        (self.sdk.parent / "runtime.txt").write_bytes(b"99.0.0\n")
+        for instance in (PhaseInstanceId("sdk", "sdk-core", "package", "common"),
+                         PhaseInstanceId("sdk", "python", "package", "desktop"),
+                         PhaseInstanceId("sdk", "python", "validation", "linux-x64")):
+            for current, expected in (("0.8.0", None), ("0.8.1", "released-default")):
+                with self.subTest(instance=instance, current=current):
+                    self.assertEqual(expected, sdk_runtime_source(self.root, revision, instances=(instance,),
+                        runtime_version=current, sdk_version="0.3.0-rc.1"))
+        self.assertEqual(b"not authoritative checkout policy\n", path.read_bytes())
+
+    def test_source_route_nonconsuming_closure_needs_no_sdk_policy(self):
+        for instances in ((), (PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"),),
+                (PhaseInstanceId("contract", "contract", "binary", "common"),
+                 PhaseInstanceId("sdk", "sdk-core", "binary", "common"))):
+            with self.subTest(instances=instances):
+                self.assertIsNone(sdk_runtime_source(self.root / "absent", "not-a-revision", instances=instances,
+                                                    runtime_version=None, sdk_version=None))
+
+    def test_source_route_consumers_require_valid_exact_policy_and_versions(self):
+        instances = (PhaseInstanceId("sdk", "python", "package", "desktop"),)
+        def route(revision, **changes):
+            return sdk_runtime_source(self.root, revision, instances=instances,
+                **{"runtime_version": "0.8.1", "sdk_version": "0.3.0-rc.1", **changes})
+        with self.assertRaisesRegex(ValueError, "absent"):
+            route(self.revision)
+        path, _, revision = self.range_policy()
+        with self.assertRaisesRegex(ValueError, "original SDK release selection"):
+            route(revision, sdk_version="0.3.0")
+        for current in (None, "latest", "00.8.1", "0.8.1+build"):
+            with self.subTest(current=current), self.assertRaisesRegex(ValueError, "SemVer"):
+                route(revision, runtime_version=current)
+        with self.assertRaisesRegex(ValueError, "exact Git revision"):
+            route("HEAD")
+        path.write_bytes(b"{}\n")
+        with self.assertRaises(ValueError):
+            route(self.commit())
+        _, _, outside = self.range_policy("0.9.0")
+        with self.assertRaisesRegex(ValueError, "outside"):
+            route(outside)
 
 
 if __name__ == "__main__":
