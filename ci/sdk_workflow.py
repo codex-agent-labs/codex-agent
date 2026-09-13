@@ -18,7 +18,7 @@ from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
     regular_file_inventory, sha256_bytes, snapshot_regular_tree,
 )
-from products.registry import PhaseInstanceId
+from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId
 from products.runtime_aggregate_handoff import verified_runtime_aggregate_handoff
 from products.sdk_inputs_verification import verified_sdk_inputs
 from products.sdk_protected_runtime import _original_carrier
@@ -286,6 +286,89 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     return advanced
 
 
+def prepare_native(plan, discovery, state, destination, *, component, expected_build_key,
+                   artifact_id, artifact_sha256, trusted_workflow_sha, keyring, keys_directory,
+                   repository_root, environ, token):
+    """Prepare once from elected original inputs; this does not admit an upload.
+
+    The transport caller must bind these outputs and the retained original plan
+    to the observed preparation producer before any independent language job.
+    No new product phase or receipt is manufactured for shared preparation.
+    """
+    from sdk_native_prepare import execute
+
+    if component not in NATIVE_BINDINGS:
+        raise ValueError("Unsupported native SDK preparation component")
+    root = Path(repository_root).resolve(strict=True)
+    discovery, state, destination = product_reuse._product_materialization_paths(
+        root, discovery, state, destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("SDK native preparation destination must not exist")
+    instance = PhaseInstanceId("sdk", component, "package", "desktop")
+    fields = {"product": "sdk", "component": component, "phase": "package", "target": "desktop"}
+    with verified_inputs(plan, discovery, state, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
+            trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
+            repository_root=root, environ=environ, token=token) as inputs:
+        selection = inputs["selection"]
+        if fields not in selection["consumers"]:
+            raise ValueError("SDK native preparation package is not selected")
+        prepared = destination / "inputs"
+        ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
+            expected_build_key=expected_build_key, repository_root=root, environ=environ)
+        producer = product_reuse.validate_producer(product_reuse._canonical_control(
+            prepared / "producer.json", "Elected native SDK producer"))
+        contract = product_reuse.validate_phase_receipt(product_reuse._canonical_control(
+            prepared / "contract-contract-metadata-common/phase-receipt.json", "Current Contract metadata"))
+        bundles = [row for row in contract["outputs"] if row["kind"] == "contract-bundle"]
+        if (tuple(contract[name] for name in ("product", "component", "phase", "target")) !=
+                ("contract", "contract", "metadata", "common") or len(bundles) != 1
+                or bundles[0]["sha256"] != selection["contractPayloadSha256"]):
+            raise ValueError("Elected current Contract differs from verified native SDK inputs")
+        before = regular_file_inventory(prepared, allow_empty=True)
+
+        def original(product, runtime_component, phase, target):
+            identity = PhaseInstanceId(product, runtime_component, phase, target)
+            directory = prepared / "-".join((product, runtime_component, phase, target))
+            receipt_path = directory / "phase-receipt.json"
+            raw = read_regular_file_bytes(receipt_path)
+            receipt = product_reuse.validate_phase_receipt(load_canonical_json_bytes(raw))
+            if (product != "runtime" or runtime_component not in NATIVE_TARGETS or target != runtime_component
+                    or phase not in {"package", "validation"}
+                    or raw != inputs["runtime"]["receiptBytes"].get(identity)
+                    or tuple(receipt[name] for name in ("product", "component", "phase", "target")) !=
+                    (product, runtime_component, phase, target)):
+                raise ValueError("Native preparation predecessor differs from its verified original")
+            manifest = product_reuse.verify_output_manifest_identity(
+                directory / "stage", product, runtime_component, phase, target, receipt["productVersion"])
+            if manifest["outputs"] != receipt["outputs"]:
+                raise ValueError("Native preparation stage differs from its original receipt")
+            return {"stage": directory / "stage", "receiptPath": receipt_path, "receipt": receipt}
+
+        runtime_stages = destination / "runtime-stages"
+        for target in NATIVE_TARGETS:
+            for phase in ("package", "validation"):
+                record = original("runtime", target, phase, target)
+                snapshot_regular_tree(record["stage"], runtime_stages / target / phase)
+        runtime_before = regular_file_inventory(runtime_stages)
+
+        def unchanged():
+            if (regular_file_inventory(prepared, allow_empty=True) != before
+                    or regular_file_inventory(runtime_stages) != runtime_before):
+                raise ValueError("Native preparation original predecessor inputs changed")
+
+        unchanged()
+        result = execute(ready, producer=producer, sdk_version=selection["sdkVersion"],
+            repository_root=root, destination=destination / "worker", runtime_stages=runtime_stages,
+            compatibility_request=inputs["sdk"]["directory"] / REQUEST_NAME,
+            predecessor=original, environ=environ)
+        unchanged()
+    unchanged()
+    if (regular_file_inventory(result["preparedSources"]) != result["preparedSourcesInventory"]
+            or regular_file_inventory(result["stagedSdks"]) != result["stagedSdkInventory"]):
+        raise ValueError("Native SDK preparation outputs changed before handoff")
+    return result
+
+
 def execute_javascript(plan, discovery, state, destination, *, phase, expected_build_key,
                        artifact_id, artifact_sha256, trusted_workflow_sha, keyring, keys_directory,
                        repository_root, environ, token):
@@ -408,22 +491,27 @@ def main(argv=None):
         _workflow_main(argv)
         return 0
     javascript = bool(argv and argv[0] == "javascript")
-    if javascript:
+    native_prepare = bool(argv and argv[0] == "native-prepare")
+    worker = javascript or native_prepare
+    if worker:
         argv.pop(0)
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "discovery-root", "state-root", "destination", "keyring", "keys-directory", "repository-root"):
         parser.add_argument(f"--{name}", type=Path, required=True)
-    parser.add_argument("--artifact-id", type=int, required=javascript)
+    parser.add_argument("--artifact-id", type=int, required=worker)
     for name in ("trusted-workflow-sha", "artifact-sha256", "expected-build-key"):
-        parser.add_argument(f"--{name}", required=javascript)
+        parser.add_argument(f"--{name}", required=worker)
     if javascript:
         parser.add_argument("--phase", choices=("package", "validation"), required=True)
+    elif native_prepare:
+        parser.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
     else:
         parser.add_argument("--expected-metadata-receipt-sha256")
     arguments = vars(parser.parse_args(argv))
     plan, discovery, state, destination = (arguments.pop(name) for name in ("plan", "discovery_root", "state_root", "destination"))
     try:
-        (execute_javascript if javascript else stage)(plan, discovery, state, destination, **arguments,
+        action = prepare_native if native_prepare else execute_javascript if javascript else stage
+        action(plan, discovery, state, destination, **arguments,
             environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:
         parser.error(str(error))
