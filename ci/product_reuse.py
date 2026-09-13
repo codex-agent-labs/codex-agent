@@ -1268,6 +1268,7 @@ def _discover_catalogs(
     plan: Mapping[str, Any], destination: Path, release_trust: ReleaseTrust | None,
     environ: Mapping[str, str], versions: Mapping[str, str],
     repository_root: Path | None = None,
+    tooling_candidate_runs: list[int] | None = None,
 ) -> list[Catalog]:
     token = environ.get("GITHUB_TOKEN")
     api = environ.get("GITHUB_API_URL")
@@ -1289,6 +1290,9 @@ def _discover_catalogs(
     artifacts = paginated_items(
         f"{api}/repos/{repository}/actions/artifacts", "artifacts", token,
     )
+    if tooling_candidate_runs is not None:
+        from tooling_discovery import candidate_run_ids
+        tooling_candidate_runs.extend(candidate_run_ids(artifacts))
     result = []
     for source in ("stable", "promoted-main", "same-pr"):
         if source == "same-pr" and plan["pullRequest"] is None:
@@ -4799,7 +4803,13 @@ def discover(
     sdk_evidence_roots: tuple[Path, ...] = (),
     aggregate_evidence_roots: tuple[Path, ...] = (),
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    tooling_java_executable: Path | None = None,
+    tooling_workflow_sha: str | None = None,
 ) -> dict[str, Any]:
+    automatic_tooling = tooling_java_executable is not None or tooling_workflow_sha is not None
+    if automatic_tooling and (tooling_java_executable is None or tooling_workflow_sha is None
+                             or sdk_validation_tooling is not None):
+        raise ValueError("Automatic tooling requires caller Java/workflow pins and no explicit tooling policy")
     # A failing adapter must never make a missing output look like permission to skip work.
     github_output(github_output_path, {
         "full_reuse": False,
@@ -4807,6 +4817,9 @@ def discover(
         "product_reuse_reason": "not-evaluated",
         "contract_next_phase": "none",
         "contract_reconciliation_required": False,
+        "tooling_artifact_id": "",
+        "tooling_artifact_sha256": "",
+        "tooling_transport_producer": "",
     })
     supplied_root = Path(__file__).resolve().parents[1] if repository_root is None else repository_root
     destination = _prepare_destination(destination, supplied_root)
@@ -4833,7 +4846,12 @@ def discover(
     closure = _dependency_closure(requested, sdk_runtime_external=source is not None)
     environment = os.environ if environ is None else environ
     trust = _release_trust(root, plan["validationCommit"], destination)
-    catalogs = _discover_catalogs(plan, destination, trust, environment, versions, root)
+    tooling_runs: list[int] = []
+    needs_tooling = automatic_tooling and any(instance.product == "sdk" and
+        instance.component in NATIVE_BINDINGS and instance.phase in {"validation", "metadata"}
+        for instance in closure)
+    catalogs = _discover_catalogs(plan, destination, trust, environment, versions, root,
+        **({"tooling_candidate_runs": tooling_runs} if needs_tooling else {}))
     native_records = _capture_native_handoffs(
         native_evidence_roots, destination / "native-runtime-evidence", destination, trust)
     adapter_records = _capture_native_handoffs(
@@ -4841,6 +4859,40 @@ def discover(
     catalog_sdk_roots = tuple(catalog.sdk_validation_evidence_root
         for catalog in sorted(catalogs, key=lambda value: SOURCES.index(value.source))
         if catalog.sdk_validation_evidence_root is not None)
+    if automatic_tooling and not needs_tooling:
+        catalog_sdk_roots = ()  # Unrequested SDK proofs cannot require tooling setup.
+    if needs_tooling:
+        if trust is not None and environment.get("GITHUB_TOKEN"):
+            from tooling_discovery import discover_tooling_ci
+            with tempfile.TemporaryDirectory(prefix="sdk-tooling-selection-") as temporary:
+                original = Path(temporary).resolve() / "discovered"
+                selected = discover_tooling_ci(original, root,
+                    candidate_run_ids=tooling_runs, trusted_workflow_sha=tooling_workflow_sha,
+                    policy_revision=plan["validationCommit"], java_executable=tooling_java_executable,
+                    token=environment["GITHUB_TOKEN"])
+                retained = destination / "tooling-discovery"
+                if selected["toolingPolicy"] is not None:
+                    policy = dict(selected["toolingPolicy"])
+                    for field in ("evidence", "publicKey", "keyring", "keysDirectory"):
+                        policy[field] = str(retained / Path(policy[field]).relative_to(original))
+                    selected = {**selected, "toolingPolicy": policy}
+                    write_canonical_json(original / "capture/tooling-policy.json", policy)
+                write_canonical_json(original / "discovery.json", selected)
+                # Only unsigned invocation paths changed. Original signed bytes
+                # remain intact, and publication occurs after private verification.
+                publish_regular_tree(original, retained, allow_empty=True)
+            sdk_validation_tooling = selected["toolingPolicy"]
+            if selected["selected"] is not None:
+                locator = selected["selected"]
+                github_output(github_output_path, {
+                    "tooling_artifact_id": locator["artifactId"],
+                    "tooling_artifact_sha256": locator["artifactSha256"],
+                    "tooling_transport_producer": canonical_json_bytes(locator["transportProducer"]).decode().strip(),
+                })
+        if sdk_validation_tooling is None:
+            # No invocation authority means no catalog SDK proof admission. The
+            # planner still must prove every capability or select missing work.
+            catalog_sdk_roots = ()
     sdk_records = _capture_sdk_handoffs((*catalog_sdk_roots, *sdk_evidence_roots), destination / "sdk-validation-evidence", destination,
         repository=root, policy_revision=plan["validationCommit"], tooling=sdk_validation_tooling)
     catalog_aggregate_roots = tuple(catalog.runtime_aggregate_evidence_root
@@ -4971,6 +5023,8 @@ def parser() -> argparse.ArgumentParser:
     discover_command.add_argument("--native-runtime-evidence", type=Path, action="append", default=[])
     discover_command.add_argument("--adapter-runtime-evidence", type=Path, action="append", default=[])
     discover_command.add_argument("--github-output", type=Path, required=True)
+    discover_command.add_argument("--tooling-java-executable", type=Path)
+    discover_command.add_argument("--tooling-workflow-sha")
     advance_command = commands.add_parser("advance-contract")
     advance_command.add_argument("--plan", type=Path, required=True)
     advance_command.add_argument("--discovery-root", type=Path, required=True)
@@ -5110,7 +5164,10 @@ def main(argv: list[str] | None = None) -> int:
                      native_evidence_roots=tuple(arguments.native_runtime_evidence),
                      aggregate_evidence_roots=tuple(arguments.runtime_aggregate_release_evidence),
                      adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),
-                     sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling)
+                     sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling,
+                     **({"tooling_java_executable": arguments.tooling_java_executable,
+                         "tooling_workflow_sha": arguments.tooling_workflow_sha}
+                        if arguments.tooling_java_executable is not None or arguments.tooling_workflow_sha is not None else {}))
             if arguments.handoff is not None:
                 publish_regular_tree(arguments.destination, arguments.handoff, allow_empty=True)
         elif arguments.command == "advance-contract":

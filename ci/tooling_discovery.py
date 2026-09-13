@@ -24,6 +24,21 @@ _API = "https://api.github.com/repos/codex-agent-labs/codex-agent/actions"
 _NAME = re.compile(r"codex-agent-release-tooling-([0-9a-f]{40})-attempt-([1-9][0-9]*)")
 
 
+def candidate_run_ids(artifacts):
+    """Reuse the caller's global listing; hints still require full authentication."""
+    candidates = []
+    for artifact in artifacts:
+        if (type(artifact) is not dict or type(artifact.get("name")) is not str
+                or _NAME.fullmatch(artifact["name"]) is None or artifact.get("expired") is not False):
+            continue
+        identifier = artifact.get("id")
+        run = artifact.get("workflow_run")
+        run_id = run.get("id") if type(run) is dict else None
+        if type(identifier) is int and identifier > 0 and type(run_id) is int and run_id > 0:
+            candidates.append((identifier, run_id))
+    return tuple(dict.fromkeys(run_id for _, run_id in sorted(candidates, reverse=True)))
+
+
 def discover_tooling_ci(destination, repository_root, *, candidate_run_ids,
                         trusted_workflow_sha, policy_revision, java_executable, token):
     """Candidate hints cannot bypass capture's original job/signature/policy gate."""
