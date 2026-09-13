@@ -224,6 +224,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "gradle/build-logic/src/main/kotlin/AppleOriginalExecutionVerification.kt",
     "ci/cache_seed.py",
     "ci/contract_release.py",
+    "ci/tooling_release.py",
     "ci/product_release_context.py",
     "ci/runtime_release.py",
     "ci/impact.py",
