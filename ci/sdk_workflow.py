@@ -26,11 +26,12 @@ from products.sdk_inputs import REQUEST_NAME
 from reuse import github_output
 
 
-def _selection(plan, discovery, state, repository_root, environ):
+def _selection(plan, discovery, state, repository_root, environ, sdk_validation_tooling=None):
     plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     validated = product_reuse._validate_plan(plan, repository_root)
     inspected = product_reuse.inspect_products(plan, discovery, state,
-        repository_root=repository_root, environ=environ, include_sdk_selection=True)
+        repository_root=repository_root, environ=environ, include_sdk_selection=True,
+        **({"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}))
     selection = inspected.get("sdkInputSelection")
     if not isinstance(selection, dict):
         raise ValueError("SDK workflow requires selected SDK consumer work")
@@ -64,7 +65,8 @@ def stage(plan, discovery, state, destination, *, keyring, keys_directory,
 
 @contextmanager
 def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
-                    trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token):
+                    trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token,
+                    sdk_validation_tooling=None):
     """Keep upload, SDK policy and raw Runtime originals verified through consumer use.
 
     Returned paths expire on exit. Consumers must finish using them inside the
@@ -72,7 +74,8 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
     Runtime carrier's Contract receipts remain its originals, not replacements
     for the current candidate's independently selected Contract predecessors.
     """
-    validated, selection, plan_bytes = _selection(plan, discovery, state, repository_root, environ)
+    validated, selection, plan_bytes = _selection(plan, discovery, state, repository_root, environ,
+                                                sdk_validation_tooling=sdk_validation_tooling)
     with tempfile.TemporaryDirectory(prefix="sdk-consumer-inputs-") as temporary:
         capture = Path(temporary).resolve() / "capture"
         product_reuse.capture_sdk_inputs_upload(plan, capture, artifact_id=artifact_id,
@@ -549,6 +552,12 @@ def _ios_binary_main(argv):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "native-validation":
+        from sdk_native_validation_workflow import main as validation_main
+        return validation_main(argv[1:])
+    if argv and argv[0] == "native-metadata":
+        from sdk_native_metadata_workflow import main as metadata_main
+        return metadata_main(argv[1:])
     if argv and argv[0] == "javascript-metadata":
         from sdk_javascript_metadata_workflow import main as metadata_main
         return metadata_main(argv[1:])

@@ -1,6 +1,6 @@
 """SDK workflow composition only; mocked authenticated gates are not host evidence."""
 
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from copy import deepcopy
 import os
 from pathlib import Path
@@ -12,6 +12,62 @@ from ci import sdk_workflow as workflow
 
 
 class SdkWorkflowTest(unittest.TestCase):
+    def test_native_validation_dispatch_preserves_exact_cli_tail_and_result(self):
+        with patch("sdk_native_validation_workflow.main", return_value=7) as execute:
+            self.assertEqual(7, workflow.main(["native-validation", "--plan", "original plan"]))
+            execute.assert_called_once_with(["--plan", "original plan"])
+
+    def test_native_metadata_dispatch_preserves_exact_cli_tail_and_result(self):
+        with patch("sdk_native_metadata_workflow.main", return_value=7) as execute:
+            self.assertEqual(7, workflow.main(["native-metadata", "--plan", "original plan"]))
+            execute.assert_called_once_with(["--plan", "original plan"])
+
+    def test_verified_inputs_forwards_identical_caller_tooling_to_selection_not_imported_policy(self):
+        caller_policy = {"evidence": self.root / "caller-tooling", "policyRevision": self.revision}
+        imported_policy = {"evidence": self.root / "untrusted-transported-tooling", "policyRevision": "f" * 40}
+        for policy in (caller_policy, None):
+            self.inspect.reset_mock()
+            captured = {}
+
+            def capture(plan, destination, **kwargs):
+                destination.mkdir()
+                contract = destination / "contract.json"
+                runtime = destination / "runtime.json"
+                attestation = destination / "runtime.attestation.json"
+                contract.write_bytes(b'{"synthetic":"original Contract receipt boundary"}\n')
+                runtime.write_bytes(b'{"buildKey":"sha256:' + b"a" * 64 + b'"}\n')
+                attestation.write_bytes(b"synthetic exact original attestation pairing\n")
+                captured["sdk"] = {"arguments": {"contract_metadata_receipt": contract,
+                    "runtime_metadata_receipt": runtime, "runtime_attestation": attestation,
+                    "runtime_keyring": self.root / "captured-runtime-keyring",
+                    "runtime_keys_directory": self.root / "captured-runtime-keys"},
+                    "sdk_validation_tooling": imported_policy}
+                captured["runtime"] = {"indexInputs": {"attestation": attestation}, "receiptBytes": {
+                    workflow.PhaseInstanceId("contract", "contract", "metadata", "common"): contract.read_bytes(),
+                    workflow.PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"): runtime.read_bytes()}}
+
+            # These two contexts stand for existing signed-content authority;
+            # this test exercises actual selection forwarding and receipt pairing only.
+            with self.subTest(policy=policy), \
+                    patch.object(workflow, "_selection", wraps=workflow._selection) as selected, \
+                    patch.object(workflow.product_reuse, "capture_sdk_inputs_upload", side_effect=capture), \
+                    patch.object(workflow, "verified_sdk_inputs", side_effect=lambda *a, **k: nullcontext(captured["sdk"])), \
+                    patch.object(workflow, "_original_carrier", side_effect=lambda path, *args: path), \
+                    patch.object(workflow, "verified_runtime_aggregate_handoff", side_effect=lambda *a, **k: nullcontext(captured["runtime"])):
+                optional = {"sdk_validation_tooling": policy} if policy is not None else {}
+                with workflow.verified_inputs(self.plan, self.discovery, self.state, **self.arguments,
+                        **self.upload_for_capture(), **optional) as inputs:
+                    captured_path = inputs["capture"]
+                    self.assertTrue(captured_path.exists())
+                    self.assertIs(imported_policy, inputs["sdk"]["sdk_validation_tooling"])
+                    self.assertIs(policy, selected.call_args.kwargs["sdk_validation_tooling"])
+                    expected = {"repository_root": self.repository, "environ": self.arguments["environ"],
+                                "include_sdk_selection": True, **optional}
+                    self.inspect.assert_called_once_with(self.plan, self.discovery, self.state, **expected)
+                    if policy is not None:
+                        self.assertIs(caller_policy, self.inspect.call_args.kwargs["sdk_validation_tooling"])
+                self.assertFalse(captured_path.exists())
+
     def test_native_package_dispatch_preserves_exact_cli_tail_and_result(self):
         with patch("sdk_native_package_workflow.main", return_value=7) as execute:
             self.assertEqual(7, workflow.main(["native-package", "--plan", "original plan"]))
