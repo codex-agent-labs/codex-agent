@@ -272,6 +272,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/runtime_catalog_promotion.py",
     "ci/products/selection.py",
     "ci/products/sdk_inputs.py",
+    "ci/products/sdk_inputs_verification.py",
     "ci/products/sdk_native.py",
     "ci/products/sdk_package.py",
 })

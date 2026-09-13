@@ -4246,6 +4246,74 @@ def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact
     return transport
 
 
+def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_sha256,
+        trusted_workflow_sha, expected_source, repository_root=None, environ=None, token):
+    """Capture exact SDK transport; caller-policy content verification remains separate."""
+    from products.inventory import require_regular_directory
+    from products.sdk_package import _require_capability_output_separate
+    require_integer(artifact_id, "SDK input upload ID", 1)
+    require_sha256(artifact_sha256, "SDK input upload digest")
+    if not isinstance(expected_source, str) or expected_source not in {"released-default", "current-runtime"}:
+        raise ValueError("SDK input capture requires an exact selected source")
+    if not isinstance(token, str) or not token:
+        raise ValueError("SDK input capture requires an observation token")
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else Path(repository_root)).resolve(strict=True)
+    plan_path, destination = Path(plan_path).absolute(), Path(destination).absolute()
+
+    def output_safe():
+        _require_capability_output_separate(destination, [root, plan_path])
+        if destination.exists() or destination.is_symlink():
+            raise ValueError("SDK input capture destination must not exist")
+
+    output_safe()
+    plan_bytes = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    with tempfile.TemporaryDirectory(prefix="sdk-input-upload-") as temporary:
+        prepared = Path(temporary).resolve() / "capture"
+        captured_plan = prepared / "plan/impact-plan.json"
+        captured_plan.parent.mkdir(parents=True)
+        captured_plan.write_bytes(plan_bytes)
+        plan = _validate_plan(captured_plan, root)
+        if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
+            raise ValueError("SDK input capture requires an authorized PR or merge-group plan")
+        producer = validate_producer(_consumer(plan, os.environ if environ is None else environ)["producer"])
+        job = "product-validation / sdk-inputs"
+        observed = _observe_ci_producer_jobs({"sdk-inputs": producer}, jobs_by_phase={"sdk-inputs": job},
+            trusted_workflow_sha=trusted_workflow_sha, token=token)
+        name = f"codex-agent-sdk-inputs-{producer['tree']}-attempt-{producer['runAttempt']}"
+        artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
+        _require_artifact_job_window(observed[0], job, artifact)
+        archive = prepared / "transport.zip"
+        archive.write_bytes(raw)
+        zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+        original = prepared / "original"
+        safe_extract(archive, original)
+        expected = ({"runtime-original", "current-contract", "sdk-inputs", "selection.json", "transport.json"}
+                    if expected_source == "released-default" else {"runtime-capture", "sdk-inputs"})
+        if {path.name for path in original.iterdir()} != expected:
+            raise ValueError("SDK input upload differs from the selected source layout")
+        for name in expected - {"selection.json", "transport.json"}:
+            require_regular_directory(original / name, "SDK input original directory")
+        if expected_source == "released-default":
+            selection = _canonical_control(original / "selection.json", "SDK input selection")
+            transport = _canonical_control(original / "transport.json", "SDK input original transport")
+            if (selection.get("source") != expected_source or not isinstance(transport.get("consumer"), dict)
+                    or transport["consumer"].get("producer") != producer):
+                raise ValueError("SDK input original selection or consumer differs from observed upload")
+        elif read_regular_file_bytes(original / "runtime-capture/plan/impact-plan.json",
+                max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes:
+            raise ValueError("SDK input original plan differs from the selected plan")
+        transport = {"artifact": artifact, "captureProducer": producer, "observed": observed,
+                     "sdkRuntimeSource": expected_source}
+        write_canonical_json(prepared / "capture-transport.json", transport)
+        if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes
+                or captured_plan.read_bytes() != plan_bytes or sha256_file(archive) != artifact_sha256
+                or regular_file_inventory(original, allow_empty=True) != zipped):
+            raise ValueError("SDK input original plan or upload changed before capture publication")
+        output_safe()
+        publish_regular_tree(prepared, destination, allow_empty=True)
+    return transport
+
+
 def capture_product_resume_inputs(
     plan_path: Path, destination: Path, *, uploads: Mapping[str, Any],
     trusted_workflow_sha: str, repository_root: Path | None = None,

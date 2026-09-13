@@ -7,7 +7,7 @@ import unittest
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sdk_ios_phase import TASK, properties  # noqa: E402
+from sdk_ios_phase import FRESH_EXPORT_TASK, TASK, fresh_export_properties, properties  # noqa: E402
 
 
 class SdkIosPhaseTest(unittest.TestCase):
@@ -27,6 +27,8 @@ class SdkIosPhaseTest(unittest.TestCase):
         self.proof = self.root / "original-apple-proof.json"
         self.proof.write_bytes(b"caller-authenticated original proof fixture\n")
         self.calls = []
+        self.commit = "a" * 40
+        self.tree = "b" * 40
         self.record = {
             "stage": self.contract,
             "receiptPath": self.root / "contract-receipt.json",
@@ -55,6 +57,15 @@ class SdkIosPhaseTest(unittest.TestCase):
             compatibility_request=changes.get("compatibility_request", self.request),
             expected_sdk_compatibility=changes.get("expected_sdk_compatibility", self.compatibility),
             expected_distribution_proof=changes.get("expected_distribution_proof", self.proof),
+        )
+
+    def fresh_translate(self, **changes):
+        return fresh_export_properties(
+            changes.get("plan", self.plan()), predecessor=self.predecessor,
+            native_evidence=changes.get("native_evidence", self.native),
+            compatibility_request=changes.get("compatibility_request", self.request),
+            candidate_commit=changes.get("candidate_commit", self.commit),
+            candidate_tree=changes.get("candidate_tree", self.tree),
         )
 
     def test_exact_original_inputs_route_to_the_existing_transported_verifier(self):
@@ -136,6 +147,47 @@ class SdkIosPhaseTest(unittest.TestCase):
         self.record = {**self.record, "stage": contract_link}
         with self.assertRaises(ValueError):
             self.translate()
+
+    def test_fresh_original_inputs_route_only_to_the_existing_exporter(self):
+        self.assertEqual(
+            ":codex-agent-runtime-ios:exportCodexAgentIosVerifiedDistribution",
+            FRESH_EXPORT_TASK,
+        )
+        translated = self.fresh_translate()
+        self.assertEqual({
+            "codexAgent.candidateCommit": self.commit,
+            "codexAgent.candidateTree": self.tree,
+            "codexAgent.iosContractBinaryStage": str(self.contract),
+            "codexAgent.contractVersion": "0.2.0",
+            "codexAgent.iosNativeEvidenceDirectory": str(self.native),
+            "codexAgent.sdkCompatibilityRequest": str(self.request),
+        }, translated)
+        self.assertFalse(any(name.startswith("codexAgent.iosExpected") for name in translated))
+        self.assertNotIn("codexAgent.iosVerifiedDistributionDirectory", translated)
+        self.assertEqual([("contract", "contract", "binary", "common")], self.calls)
+
+    def test_fresh_identity_paths_and_contract_receipt_fail_closed(self):
+        for changes in (
+            {"plan": self.plan(component="sdk-core")},
+            {"candidate_commit": "A" * 40},
+            {"candidate_tree": "not-a-tree"},
+            {"native_evidence": Path("relative")},
+            {"compatibility_request": self.root / "missing"},
+        ):
+            self.calls.clear()
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.fresh_translate(**changes)
+            self.assertEqual([], self.calls)
+
+        original = self.record
+        for field, value in (("phase", "metadata"), ("productVersion", "invalid")):
+            self.record = {**original, "receipt": {**original["receipt"], field: value}}
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.fresh_translate()
+        self.record = {**original, "stage": self.root / "missing-contract"}
+        with self.assertRaises(ValueError):
+            self.fresh_translate()
+        self.record = original
 
 
 if __name__ == "__main__":

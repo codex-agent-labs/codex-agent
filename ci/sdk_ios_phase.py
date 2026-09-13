@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from pathlib import Path
+import re
 from typing import Any
 
 from products.inventory import read_regular_file_bytes, require_regular_directory, require_semver
@@ -15,7 +16,9 @@ from products.registry import PHASE_INSTANCE_IDS
 
 
 TASK = ":codex-agent-runtime-ios:verifyTransportedCodexAgentIosSdkPackageClosure"
+FRESH_EXPORT_TASK = ":codex-agent-runtime-ios:exportCodexAgentIosVerifiedDistribution"
 _IDENTITY = ("sdk", "sdk-ios", "package", "ios")
+_GIT_ID = re.compile(r"[0-9a-f]{40}")
 
 
 def _identity(plan: Mapping[str, Any]) -> None:
@@ -79,4 +82,40 @@ def properties(
         "codexAgent.sdkCompatibilityRequest": request,
         "codexAgent.iosExpectedSdkCompatibility": compatibility,
         "codexAgent.iosExpectedDistributionProof": proof,
+    }
+
+
+def fresh_export_properties(
+    plan: Mapping[str, Any], *,
+    predecessor: Callable[[str, str, str, str], Mapping[str, Any]],
+    native_evidence: Path,
+    compatibility_request: Path,
+    candidate_commit: str,
+    candidate_tree: str,
+) -> dict[str, str]:
+    """Route caller-authenticated originals to the existing fresh exporter.
+
+    This translation grants neither Apple host execution nor signature trust.
+    """
+    _identity(plan)
+    if any(not isinstance(value, str) or _GIT_ID.fullmatch(value) is None
+           for value in (candidate_commit, candidate_tree)):
+        raise ValueError("Fresh Apple producer commit/tree identity is invalid")
+    native = _directory(native_evidence, "Original Apple native evidence")
+    request = _request(compatibility_request)
+    original = predecessor("contract", "contract", "binary", "common")
+    receipt = original["receipt"]
+    if tuple(receipt.get(field) for field in ("product", "component", "phase", "target")) != (
+        "contract", "contract", "binary", "common",
+    ):
+        raise ValueError("iOS SDK predecessor receipt has the wrong identity")
+    version = require_semver(receipt.get("productVersion"), "Original Contract version")
+    contract = _directory(original["stage"], "Original Contract binary stage")
+    return {
+        "codexAgent.candidateCommit": candidate_commit,
+        "codexAgent.candidateTree": candidate_tree,
+        "codexAgent.iosContractBinaryStage": contract,
+        "codexAgent.contractVersion": version,
+        "codexAgent.iosNativeEvidenceDirectory": native,
+        "codexAgent.sdkCompatibilityRequest": request,
     }

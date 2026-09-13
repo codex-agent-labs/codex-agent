@@ -1323,6 +1323,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/products/sdk_native_metadata.py",
             "ci/products/sdk_native_metadata_admission.py",
             "ci/products/runtime_sdk_handoff.py",
+            "ci/products/sdk_inputs_verification.py",
             "ci/products/sdk_protected_runtime.py",
             "ci/sdk_handoff.py",
             "ci/sdk_workflow.py",
