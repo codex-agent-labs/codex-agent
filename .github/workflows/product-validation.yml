@@ -2088,6 +2088,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+      artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2114,8 +2116,14 @@ jobs:
       needs.runtime-continuation.result == 'success'
     needs: [plan, runtime-continuation, sdk-plan, sdk-collect-1, sdk-collect-2]
     runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.summary.outputs.artifact_id }}
+      artifact_digest: ${{ steps.summary.outputs.artifact_digest }}
+      state_wave: ${{ steps.summary.outputs.state_wave }}
+      sdk_state_wave: ${{ steps.summary.outputs.sdk_state_wave }}
     steps:
-      - name: Fail after collecting every elected JavaScript result
+      - id: summary
+        name: Fail after collecting every elected JavaScript result
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
@@ -2129,6 +2137,8 @@ jobs:
           elif planned['result'] != 'success':
               raise ValueError('SDK replay planning failed')
           else:
+              parent = planned['outputs']
+              sdk_wave = parent.get('sdk_state_wave', '')
               required = planned['outputs'].get('sdk_workers_required')
               if required not in ('true', 'false'):
                   raise ValueError('SDK work election is missing')
@@ -2137,17 +2147,233 @@ jobs:
                   if required == 'true':
                       if job['result'] != 'success' or job['outputs'].get('wave_failed') != 'false':
                           raise ValueError(f'SDK wave {wave} failed or was not collected')
+                      parent = job['outputs']
+                      sdk_wave = str(wave)
                       required = job['outputs'].get('sdk_workers_required') if wave == 1 else 'false'
                       if required not in ('true', 'false'):
                           raise ValueError('SDK next-wave election is missing')
                   elif job['result'] != 'skipped':
                       raise ValueError('Unelected SDK collection executed')
+              state = {name: parent[name] for name in ('artifact_id', 'artifact_digest')}
+              state['state_wave'] = '0' if parent is not planned['outputs'] else parent['state_wave']
+              state['sdk_state_wave'] = sdk_wave
+              if any(not isinstance(value, str) or '\n' in value or '\r' in value for value in state.values()):
+                  raise ValueError('Invalid SDK terminal state outputs')
+              import re
+              if (not re.fullmatch(r'[1-9][0-9]*', state['artifact_id']) or
+                      not re.fullmatch(r'sha256:[0-9a-f]{64}', state['artifact_digest']) or
+                      state['state_wave'] not in ('0', '1', '2', '3', '4', '5') or
+                      state['sdk_state_wave'] not in ('', '1', '2', '3', '4', '5', '6') or
+                      (state['sdk_state_wave'] and state['state_wave'] != '0')):
+                  raise ValueError('Invalid SDK terminal state artifact identity or wave')
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                  for name, value in state.items():
+                      output.write(name + '=' + value + '\n')
+          PY
+
+
+  sdk-native-plan:
+    needs: [plan, sdk-javascript]
+    if: >-
+      needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-javascript.result == 'success' &&
+      needs.sdk-javascript.outputs.artifact_id != ''
+    runs-on: ubuntu-24.04
+    outputs:
+      sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
+      sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
+      preparation_component: ${{ steps.preparation.outputs.component }}
+      preparation_build_key: ${{ steps.preparation.outputs.build_key }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: capture
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          product: sdk
+          sdk-family: native-package
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+      - id: preparation
+        env:
+          MATRIX: ${{ steps.capture.outputs.sdk-matrix }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          rows = json.loads(os.environ['MATRIX'])['include']
+          seen = set()
+          for row in rows:
+              component = row['component']
+              if (component not in ('python', 'csharp', 'rust', 'cpp', 'dart') or component in seen or
+                      (row['product'], row['phase'], row['target']) != ('sdk', 'package', 'desktop') or
+                      (row['runner'], row['runnerOs'], row['runnerArch']) != ('ubuntu-24.04', 'Linux', 'X64') or
+                      not re.fullmatch(r'sha256:[0-9a-f]{64}', row['buildKey'])):
+                  raise ValueError('Invalid native preparation election')
+              seen.add(component)
+          if rows:
+              selected = min(rows, key=lambda row: row['component'])
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                  output.write('component=' + selected['component'] + '\n')
+                  output.write('build_key=' + selected['buildKey'] + '\n')
+          PY
+
+  sdk-native-prepare:
+    name: sdk-native-prepare
+    needs: [plan, sdk-javascript, sdk-native-plan, sdk-inputs]
+    if: >-
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-native-plan.outputs.sdk_workers_required == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      artifact_id: ${{ steps.prepare.outputs.artifact-id }}
+      artifact_digest: ${{ steps.prepare.outputs.artifact-sha256 }}
+      preparation_component: ${{ steps.prepare.outputs.preparation-component }}
+      preparation_build_key: ${{ steps.prepare.outputs.preparation-build-key }}
+      preparation_state_id: ${{ steps.prepare.outputs.preparation-state-id }}
+      preparation_state_digest: ${{ steps.prepare.outputs.preparation-state-sha256 }}
+      preparation_state_wave: ${{ steps.prepare.outputs.preparation-state-wave }}
+      preparation_sdk_state_wave: ${{ steps.prepare.outputs.preparation-sdk-state-wave }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: prepare
+        uses: ./.github/actions/sdk-native-prepare
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
+          sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
+          tree: ${{ needs.plan.outputs.validation_tree }}
+          component: ${{ needs.sdk-native-plan.outputs.preparation_component }}
+          build-key: ${{ needs.sdk-native-plan.outputs.preparation_build_key }}
+
+  sdk-native-workers:
+    name: sdk-${{ matrix.component }}-package-desktop
+    needs: [plan, sdk-javascript, sdk-native-plan, sdk-native-prepare, sdk-inputs]
+    if: >-
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-native-plan.outputs.sdk_workers_required == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.sdk-native-plan.outputs.sdk_matrix || '{"include":[]}') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: ./.github/actions/sdk-native-package-worker
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
+          sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
+          tree: ${{ needs.plan.outputs.validation_tree }}
+          component: ${{ matrix.component }}
+          build-key: ${{ matrix.buildKey }}
+          prepared-artifact-id: ${{ needs.sdk-native-prepare.outputs.artifact_id }}
+          prepared-artifact-sha256: ${{ needs.sdk-native-prepare.outputs.artifact_digest }}
+          preparation-component: ${{ needs.sdk-native-prepare.outputs.preparation_component }}
+          preparation-build-key: ${{ needs.sdk-native-prepare.outputs.preparation_build_key }}
+          preparation-state-id: ${{ needs.sdk-native-prepare.outputs.preparation_state_id }}
+          preparation-state-sha256: ${{ needs.sdk-native-prepare.outputs.preparation_state_digest }}
+          preparation-state-wave: ${{ needs.sdk-native-prepare.outputs.preparation_state_wave }}
+          preparation-sdk-state-wave: ${{ needs.sdk-native-prepare.outputs.preparation_sdk_state_wave }}
+
+  sdk-collect-4:
+    name: sdk-collect-4
+    needs: [plan, sdk-javascript, sdk-native-plan, sdk-native-prepare, sdk-native-workers]
+    if: >-
+      always() && needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-native-plan.result == 'success' &&
+      needs.sdk-native-plan.outputs.sdk_workers_required == 'true' &&
+      needs.sdk-native-prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
+      wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: collect
+        uses: ./.github/actions/collect-runtime-wave
+        with:
+          product: sdk
+          sdk-family: native-package
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          wave: '4'
+          tree: ${{ needs.plan.outputs.validation_tree }}
+
+  sdk-native-packages:
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true'
+    needs: [plan, sdk-javascript, sdk-native-plan, sdk-native-prepare, sdk-native-workers, sdk-collect-4]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fail after collecting every elected native package result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          needs = json.loads(os.environ['RESULTS'])
+          parent = needs['sdk-javascript']
+          if parent['result'] != 'success':
+              raise ValueError('SDK predecessor gate failed')
+          planned = needs['sdk-native-plan']
+          if not parent['outputs'].get('artifact_id'):
+              if planned['result'] != 'skipped':
+                  raise ValueError('Unexpected native plan without SDK state')
+              required = 'false'
+          else:
+              if planned['result'] != 'success':
+                  raise ValueError('Native SDK planning did not complete')
+              required = planned['outputs'].get('sdk_workers_required')
+              if required not in ('true', 'false'):
+                  raise ValueError('Native SDK election is incomplete')
+          for name in ('sdk-native-prepare', 'sdk-native-workers', 'sdk-collect-4'):
+              if needs[name]['result'] != ('success' if required == 'true' else 'skipped'):
+                  raise ValueError('Native SDK result missing or failed: ' + name)
+          if required == 'true' and needs['sdk-collect-4']['outputs'].get('wave_failed') != 'false':
+              raise ValueError('Native SDK package collection failed')
           PY
 
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
+    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript, sdk-native-packages]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites

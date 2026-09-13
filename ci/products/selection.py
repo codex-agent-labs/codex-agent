@@ -248,6 +248,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_native_phase.py",
     "ci/sdk_native_package_workflow.py",
     "ci/sdk_javascript_metadata_phase.py",
+    "ci/sdk_javascript_metadata_workflow.py",
     "ci/sdk_native_prepare.py",
     "ci/sdk_apple_export.py",
     "ci/sdk_apple_native.py",
@@ -495,9 +496,13 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if _is_prefix(path, ".github/actions/sdk-ios-binary-worker/"):
         return _from_phase("sdk", "sdk-ios", "binary")
     if any(_is_prefix(path, f".github/actions/{name}/") for name in (
+        "sdk-native-prepare", "sdk-native-package-worker",
+    )):
+        return _bindings(NATIVE_BINDINGS)
+    if any(_is_prefix(path, f".github/actions/{name}/") for name in (
         "capture-runtime-state", "collect-runtime-wave",
     )):
-        return (_runtime(RUNTIME_COMPONENTS) | _from_phase("sdk", "javascript", "package") |
+        return (_runtime(RUNTIME_COMPONENTS) | _bindings(NATIVE_BINDINGS) | _from_phase("sdk", "javascript", "package") |
                 _from_phase("sdk", "sdk-ios", "binary"))
     if any(_is_prefix(path, f".github/actions/{name}/") for name in (
         "run-runtime-product-phase", "setup-runtime-archive",

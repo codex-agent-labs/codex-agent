@@ -1,0 +1,135 @@
+name: Prepare elected native SDK sources once
+description: Replay original state before setup and retain one authenticated-preparation upload for independent packages.
+inputs:
+  plan-id:
+    required: true
+    description: Exact original plan upload ID.
+  artifact-id:
+    required: true
+    description: Exact original preparation state upload ID.
+  artifact-sha256:
+    required: true
+    description: Exact original preparation state digest.
+  state-wave:
+    default: '0'
+    description: Original Runtime state wave.
+  sdk-state-wave:
+    default: ''
+    description: Original SDK state wave when applicable.
+  sdk-inputs-id:
+    required: true
+    description: Exact authenticated SDK inputs upload ID.
+  sdk-inputs-sha256:
+    required: true
+    description: Exact SDK inputs upload digest.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  component:
+    required: true
+    description: One elected native package component supplying preparation identity.
+  build-key:
+    required: true
+    description: Exact elected preparation package key.
+  tree:
+    required: true
+    description: Exact tested source tree.
+outputs:
+  artifact-id:
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-sha256:
+    value: sha256:${{ steps.upload.outputs.artifact-digest }}
+  preparation-component:
+    value: ${{ inputs.component }}
+  preparation-build-key:
+    value: ${{ inputs.build-key }}
+  preparation-state-id:
+    value: ${{ inputs.artifact-id }}
+  preparation-state-sha256:
+    value: ${{ inputs.artifact-sha256 }}
+  preparation-state-wave:
+    value: ${{ inputs.state-wave }}
+  preparation-sdk-state-wave:
+    value: ${{ inputs.sdk-state-wave }}
+runs:
+  using: composite
+  steps:
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: sdk
+        sdk-family: native-package
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        state-wave: ${{ inputs.state-wave }}
+        sdk-state-wave: ${{ inputs.sdk-state-wave }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+    - id: identity
+      shell: bash
+      env:
+        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        COMPONENT: ${{ inputs.component }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
+      run: |
+        python3 - <<'PY'
+        import json, os, re
+        key = os.environ['BUILD_KEY']
+        rows = [row for row in json.loads(os.environ['MATRIX'])['include']
+                if (row['product'], row['component'], row['phase'], row['target']) ==
+                   ('sdk', os.environ['COMPONENT'], 'package', 'desktop')]
+        if (len(rows) != 1 or rows[0]['buildKey'] != key or not re.fullmatch(r'sha256:[0-9a-f]{64}', key)
+                or (rows[0]['runnerOs'], rows[0]['runnerArch']) != ('Linux', 'X64')):
+            raise ValueError('Native preparation differs from the original replay election')
+        with open(os.environ['PLAN']) as plan:
+            if json.load(plan)['validationTree'] != os.environ['TREE']:
+                raise ValueError('Native preparation tree differs from the original plan')
+        PY
+    - uses: ./.github/actions/setup-kmp
+      with:
+        cache-read-only: 'true'
+        product-worker: 'true'
+    - id: execute
+      name: Prepare the five source and SDK trees once
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        COMPONENT: ${{ inputs.component }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B -m ci.sdk_workflow native-prepare --plan "$PLAN" --discovery-root "$DISCOVERY" \
+          --state-root "$STATE" --destination "$GITHUB_WORKSPACE/build/sdk-native-prepare" \
+          --repository-root "$GITHUB_WORKSPACE" --component "$COMPONENT" --expected-build-key "$BUILD_KEY" \
+          --artifact-id "$SDK_INPUTS_ID" --artifact-sha256 "$SDK_INPUTS_SHA256" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
+          --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys"
+    - id: upload
+      if: success() && steps.execute.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-native-prepared-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/sdk-native-prepare/upload
+        if-no-files-found: error
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90
+    - if: always() && steps.identity.outcome == 'success' && steps.execute.outcome != 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-native-preparation-diagnostics-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/sdk-native-prepare/worker
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90

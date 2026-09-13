@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import tempfile
 import textwrap
 import unittest
 from unittest.mock import patch
@@ -47,14 +48,32 @@ class SdkWorkflowWiringTest(unittest.TestCase):
 
     def summary(self, needs):
         source = self.job("sdk-javascript").split("python3 - <<'PY'\n", 1)[1].rsplit("          PY", 1)[0]
-        with patch.dict(os.environ, {"RESULTS": json.dumps(needs)}):
-            exec(compile(textwrap.dedent(source), "sdk-summary-fixture", "exec"), {})
+        with tempfile.TemporaryDirectory(prefix="sdk-summary-output-") as temporary:
+            output = Path(temporary) / "github-output"
+            output.write_bytes(b"")
+            with patch.dict(os.environ, {"RESULTS": json.dumps(needs), "GITHUB_OUTPUT": str(output)}):
+                try:
+                    exec(compile(textwrap.dedent(source), "sdk-summary-fixture", "exec"), {})
+                except Exception:
+                    self.assertEqual(b"", output.read_bytes(), "Failed summary must not publish a parent state")
+                    raise
+            rows = [line.split("=", 1) for line in output.read_text().splitlines()]
+            self.assertEqual(len(rows), len(dict(rows)), "Summary must not overwrite a selected state field")
+            return dict(rows)
+
+    @staticmethod
+    def summary_fixture():
+        return {"runtime-continuation": {"outputs": {"sdk_handoff_required": "true"}},
+            "sdk-plan": {"result": "success", "outputs": {"sdk_workers_required": "true",
+                "artifact_id": "101", "artifact_digest": "sha256:" + "a" * 64,
+                "state_wave": "5", "sdk_state_wave": ""}},
+            "sdk-collect-1": {"result": "success", "outputs": {"wave_failed": "false", "sdk_workers_required": "true",
+                "artifact_id": "102", "artifact_digest": "sha256:" + "b" * 64}},
+            "sdk-collect-2": {"result": "success", "outputs": {"wave_failed": "false",
+                "artifact_id": "103", "artifact_digest": "sha256:" + "c" * 64}}}
 
     def test_summary_requires_every_elected_collection_and_explicit_next_wave(self):
-        base = {"runtime-continuation": {"outputs": {"sdk_handoff_required": "true"}},
-            "sdk-plan": {"result": "success", "outputs": {"sdk_workers_required": "true"}},
-            "sdk-collect-1": {"result": "success", "outputs": {"wave_failed": "false", "sdk_workers_required": "true"}},
-            "sdk-collect-2": {"result": "success", "outputs": {"wave_failed": "false"}}}
+        base = self.summary_fixture()
         self.summary(base)
         cases = (("sdk-plan", "result", "failure"), ("sdk-collect-1", "result", "skipped"),
                  ("sdk-collect-2", "result", "failure"), ("sdk-collect-1", "wave_failed", "true"),
@@ -77,7 +96,59 @@ class SdkWorkflowWiringTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.summary(none)
         none["runtime-continuation"]["outputs"]["sdk_handoff_required"] = "false"
-        self.summary(none)
+        self.assertEqual({}, self.summary(none))
+
+    def test_summary_exports_exact_initial_or_last_elected_collection_state(self):
+        for waves in (0, 1, 2):
+            needs = self.summary_fixture()
+            if waves == 0:
+                needs["sdk-plan"]["outputs"]["sdk_workers_required"] = "false"
+                needs["sdk-collect-1"] = {"result": "skipped", "outputs": {}}
+            if waves < 2:
+                needs["sdk-collect-2"] = {"result": "skipped", "outputs": {}}
+            if waves == 1:
+                needs["sdk-collect-1"]["outputs"]["sdk_workers_required"] = "false"
+            selected = needs["sdk-plan" if waves == 0 else f"sdk-collect-{waves}"]["outputs"]
+            expected = {"artifact_id": selected["artifact_id"], "artifact_digest": selected["artifact_digest"],
+                        "state_wave": "5" if waves == 0 else "0", "sdk_state_wave": "" if waves == 0 else str(waves)}
+            with self.subTest(waves=waves):
+                self.assertEqual(expected, self.summary(needs))
+            if waves == 0:
+                needs["sdk-plan"]["outputs"].update(state_wave="0", sdk_state_wave="3")
+                self.assertEqual({**expected, "state_wave": "0", "sdk_state_wave": "3"}, self.summary(needs))
+
+    def test_summary_rejects_missing_malformed_or_failed_terminal_state_without_outputs(self):
+        for wave in (0, 1, 2):
+            for field, invalid in (("artifact_id", ""), ("artifact_id", "0"), ("artifact_id", "not-an-id"),
+                                   ("artifact_digest", ""), ("artifact_digest", "sha256:" + "f" * 63),
+                                   ("artifact_digest", "sha256:" + "f" * 64 + "\nartifact_id=999"),
+                                   ("artifact_id", None)):
+                needs = self.summary_fixture()
+                if wave == 0:
+                    needs["sdk-plan"]["outputs"]["sdk_workers_required"] = "false"
+                    needs["sdk-collect-1"] = {"result": "skipped", "outputs": {}}
+                if wave < 2:
+                    needs["sdk-collect-2"] = {"result": "skipped", "outputs": {}}
+                if wave == 1:
+                    needs["sdk-collect-1"]["outputs"]["sdk_workers_required"] = "false"
+                job = "sdk-plan" if wave == 0 else f"sdk-collect-{wave}"
+                needs[job]["outputs"][field] = invalid
+                with self.subTest(wave=wave, field=field, invalid=invalid), self.assertRaises(ValueError):
+                    self.summary(needs)
+        for result in ("failure", "cancelled", "skipped"):
+            needs = self.summary_fixture()
+            needs["sdk-collect-2"]["result"] = result
+            with self.subTest(result=result), self.assertRaises(ValueError):
+                self.summary(needs)
+
+    def test_initial_state_wave_identity_must_be_complete_and_coherent(self):
+        for runtime_wave, sdk_wave in (("", ""), ("6", ""), ("not-a-wave", ""), ("0", "99"), ("5", "3")):
+            needs = self.summary_fixture()
+            needs["sdk-plan"]["outputs"].update(sdk_workers_required="false", state_wave=runtime_wave, sdk_state_wave=sdk_wave)
+            for wave in (1, 2):
+                needs[f"sdk-collect-{wave}"] = {"result": "skipped", "outputs": {}}
+            with self.subTest(runtime_wave=runtime_wave, sdk_wave=sdk_wave), self.assertRaises(ValueError):
+                self.summary(needs)
 
 
 if __name__ == "__main__":

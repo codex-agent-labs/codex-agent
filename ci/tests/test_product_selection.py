@@ -1354,6 +1354,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/sdk_native_phase.py",
             "ci/sdk_native_package_workflow.py",
             "ci/sdk_javascript_metadata_phase.py",
+            "ci/sdk_javascript_metadata_workflow.py",
             "ci/sdk_native_prepare.py",
             "ci/sdk_apple_export.py",
             "ci/sdk_apple_native.py",
@@ -1385,7 +1386,7 @@ class ProductSelectionTest(unittest.TestCase):
             path = f".github/actions/{name}/action.yml"
             expected = sdk if name == "sdk-javascript-worker" else sdk | {
                 item for item in PHASE_INSTANCE_IDS if item.product == "runtime" or
-                item.product == "sdk" and item.component == "sdk-ios"}
+                item.product == "sdk" and item.component in {"sdk-ios", "python", "csharp", "rust", "cpp", "dart"}}
             result = classify_paths((path,))
             self.assertEqual(expected, identities(result))
             self.assertEqual((), result.unknown_paths)
@@ -1397,6 +1398,13 @@ class ProductSelectionTest(unittest.TestCase):
         self.assertEqual({item for item in PHASE_INSTANCE_IDS if item.product == "sdk" and item.component == "sdk-ios"},
                          identities(classify_paths((ios,))))
         self.assertEqual((), classify_paths((ios,)).inventory_paths)
+
+        for name in ("sdk-native-prepare", "sdk-native-package-worker"):
+            path = f".github/actions/{name}/action.yml"
+            self.assertEqual({item for item in PHASE_INSTANCE_IDS if item.product == "sdk" and
+                              item.component in {"python", "csharp", "rust", "cpp", "dart"}},
+                             identities(classify_paths((path,))))
+            self.assertEqual((), classify_paths((path,)).inventory_paths)
 
     def test_authenticated_native_handoff_and_metadata_join_have_exact_direct_owners(self):
         paths = ("ci/products/sdk_inputs.py", "ci/products/sdk_native.py", "ci/products/sdk_package.py")

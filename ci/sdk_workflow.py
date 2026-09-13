@@ -211,19 +211,37 @@ def execute_ios_binary(plan, discovery, state, destination, *, expected_build_ke
         producer=producer, product_version=version, trust_domain=trust, destination=destination / "shard")
 
 
-def matrix(plan, discovery, state, github_output_path, *, repository_root=None, environ=None, ios_binary=False):
+def matrix(plan, discovery, state, github_output_path, *, repository_root=None, environ=None, ios_binary=False, family=None):
     """Expose only the fixed replay-elected SDK family before platform setup."""
     from sdk_phase import route
 
     if type(ios_binary) is not bool:
         raise ValueError("SDK binary projection must be boolean")
+    if family is not None:
+        product_reuse._sdk_family_worker_instance(None, family)
+        if ios_binary:
+            raise ValueError("SDK family and binary projection are mutually exclusive")
+    def selected(instance):
+        if family is not None:
+            return product_reuse._sdk_family_worker_instance(instance, family)
+        return (product_reuse._sdk_ios_binary_worker_instance if ios_binary else
+                product_reuse._sdk_javascript_worker_instance)(instance)
+
+    def worker_route(ready):
+        if family == "native-package":
+            from sdk_native_phase import route as native_route
+            return native_route(ready)
+        if ios_binary or family == "ios-package":
+            return {"runner": "macos-26", "runnerOs": "macOS", "runnerArch": "ARM64"}
+        if family == "javascript-metadata":
+            return {"runner": "ubuntu-24.04", "runnerOs": "Linux", "runnerArch": "X64"}
+        return route(ready)
     inspected = product_reuse.inspect_products(plan, discovery, state,
         repository_root=repository_root, environ=environ)
     rows = [{**{field: ready[field] for field in ("product", "component", "phase", "target", "buildKey")},
-             **({"runner": "macos-26", "runnerOs": "macOS", "runnerArch": "ARM64"} if ios_binary else route(ready))}
+             **worker_route(ready)}
             for ready in inspected["readyPlans"]
-            if (product_reuse._sdk_ios_binary_worker_instance if ios_binary else
-                product_reuse._sdk_javascript_worker_instance)(product_reuse._identity(ready))]
+            if selected(product_reuse._identity(ready))]
     value = {"include": rows}
     github_output(github_output_path, {"sdk_matrix": canonical_json_bytes(value).decode().strip(),
                                       "sdk_workers_required": bool(rows)})
@@ -232,10 +250,14 @@ def matrix(plan, discovery, state, github_output_path, *, repository_root=None, 
 
 def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha256,
             trusted_workflow_sha, state_wave=0, sdk_state_wave=None,
-            repository_root=None, environ=None, token, ios_binary=False):
+            repository_root=None, environ=None, token, ios_binary=False, family=None):
     """Capture exact original state, then replay SDK readiness independently."""
     if type(ios_binary) is not bool:
         raise ValueError("SDK binary projection must be boolean")
+    if family is not None:
+        product_reuse._sdk_family_worker_instance(None, family)
+        if ios_binary:
+            raise ValueError("SDK family and binary projection are mutually exclusive")
     product_reuse.capture_runtime_resume_upload(plan, destination, artifact_id=artifact_id,
         artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
         state_wave=state_wave, **({"sdk_state_wave": sdk_state_wave} if sdk_state_wave is not None else {}),
@@ -246,17 +268,23 @@ def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha2
         "discovery_root": original / "product-resume-state",
         "state_root": original / ("runtime-state" if state_wave or sdk_state_wave is not None else "product-resume-state")}
     value = matrix(paths["plan_path"], paths["discovery_root"], paths["state_root"], github_output_path,
-                   repository_root=repository_root, environ=environ, **({"ios_binary": True} if ios_binary else {}))
+                   repository_root=repository_root, environ=environ, **({"ios_binary": True} if ios_binary else {}),
+                   **({"family": family} if family is not None else {}))
     github_output(github_output_path, {name: str(path) for name, path in paths.items()})
     return {**paths, "matrix": value}
 
 
 def collect(input_root, destination, github_output_path, *, wave, trusted_workflow_sha,
-            repository_root=None, environ=None, token, ios_binary=False):
+            repository_root=None, environ=None, token, ios_binary=False, family=None):
     """Advance only the exact elected SDK partition using the shared collector."""
-    if type(ios_binary) is not bool or type(wave) is not int or wave not in ((3,) if ios_binary else (1, 2)):
-        raise ValueError("SDK collection requires JavaScript wave one/two or iOS binary wave three")
-    scope = {"sdk_ios_binary_only": True} if ios_binary else {"sdk_javascript_only": True}
+    family_waves = {"native-package": 4, "ios-package": 5, "javascript-metadata": 6}
+    if family is not None:
+        product_reuse._sdk_family_worker_instance(None, family)
+    allowed = (family_waves[family],) if family is not None else (3,) if ios_binary else (1, 2)
+    if type(ios_binary) is not bool or (ios_binary and family is not None) or type(wave) is not int or wave not in allowed:
+        raise ValueError("SDK collection requires its exact family wave: JavaScript1/2, iOS binary3, native package4, iOS package5, metadata6")
+    scope = ({"sdk_family": family} if family is not None else
+             {"sdk_ios_binary_only": True} if ios_binary else {"sdk_javascript_only": True})
     root = Path(repository_root or Path(__file__).resolve().parents[1]).resolve()
     input_root, _, destination = product_reuse._product_materialization_paths(root, input_root, input_root, destination)
     if destination.exists() or destination.is_symlink():
@@ -280,8 +308,9 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     else:
         ready = matrix(handoff / "product-resume-inputs/plan/impact-plan.json", handoff / "product-resume-state",
                        handoff / "runtime-state", github_output_path, repository_root=root, environ=environ,
-                       **({"ios_binary": True} if ios_binary else {}))
-        if wave in (2, 3) and ready["include"]:
+                       **({"ios_binary": True} if ios_binary else {}),
+                       **({"family": family} if family is not None else {}))
+        if wave >= 2 and ready["include"]:
             raise ValueError("SDK workers remain after their final collection wave")
     return advanced
 
@@ -461,11 +490,13 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
 
 
 def _workflow_main(argv):
-    parser = argparse.ArgumentParser(description="Replay, capture and collect exact SDK phase work")
+    parser = argparse.ArgumentParser(description="Replay, capture and collect exact SDK phase work", allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
-    parsers = {name: commands.add_parser(name) for name in ("matrix", "capture", "collect")}
+    parsers = {name: commands.add_parser(name, allow_abbrev=False) for name in ("matrix", "capture", "collect")}
     for name, command in parsers.items():
-        command.add_argument("--ios-binary", action="store_true")
+        scope = command.add_mutually_exclusive_group()
+        scope.add_argument("--ios-binary", action="store_true")
+        scope.add_argument("--family", choices=product_reuse.SDK_WORKER_FAMILIES)
         command.add_argument("--github-output", dest="github_output_path", type=Path, required=True)
         command.add_argument("--repository-root", type=Path)
         if name == "matrix":
@@ -481,7 +512,7 @@ def _workflow_main(argv):
     captured.add_argument("--state-wave", type=int, default=0)
     captured.add_argument("--sdk-state-wave", type=int)
     parsers["collect"].add_argument("--input-root", type=Path, required=True)
-    parsers["collect"].add_argument("--wave", type=int, choices=(1, 2, 3), required=True)
+    parsers["collect"].add_argument("--wave", type=int, choices=(1, 2, 3, 4, 5, 6), required=True)
     arguments = vars(parser.parse_args(argv))
     command = arguments.pop("command")
     try:
@@ -518,6 +549,9 @@ def _ios_binary_main(argv):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "javascript-metadata":
+        from sdk_javascript_metadata_workflow import main as metadata_main
+        return metadata_main(argv[1:])
     if argv and argv[0] == "ios-package":
         from sdk_ios_package_workflow import main as ios_package_main
         return ios_package_main(argv[1:])

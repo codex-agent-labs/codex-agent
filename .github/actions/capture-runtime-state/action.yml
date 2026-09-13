@@ -22,6 +22,9 @@ inputs:
   sdk-state-wave:
     default: ''
     description: Optional exact SDK collection wave, mutually exclusive with Runtime state-wave.
+  sdk-family:
+    default: ''
+    description: Optional exact native-package, ios-package, or javascript-metadata SDK projection.
   component:
     default: ''
     description: Optional elected Runtime component.
@@ -66,6 +69,7 @@ runs:
         STATE_WAVE: ${{ inputs.state-wave }}
         STATE_PRODUCT: ${{ inputs.product }}
         SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
+        SDK_FAMILY: ${{ inputs.sdk-family }}
         COMPONENT: ${{ inputs.component }}
         PHASE: ${{ inputs.phase }}
         TARGET: ${{ inputs.target }}
@@ -76,7 +80,7 @@ runs:
         selected=()
         command=(python3 -B ci/runtime_workflow.py capture)
         case "$STATE_PRODUCT" in
-          runtime) test -z "$SDK_STATE_WAVE" ;;
+          runtime) test -z "$SDK_STATE_WAVE$SDK_FAMILY" ;;
           sdk|sdk-ios-binary)
             test -z "$COMPONENT$PHASE$TARGET$BUILD_KEY"
             command=(python3 -B -m ci.sdk_workflow capture)
@@ -84,7 +88,13 @@ runs:
               selected=(--sdk-state-wave "$SDK_STATE_WAVE")
             fi
             if [ "$STATE_PRODUCT" = sdk-ios-binary ]; then
+              test -z "$SDK_FAMILY"
               selected+=(--ios-binary)
+            elif [ -n "$SDK_FAMILY" ]; then
+              case "$SDK_FAMILY" in
+                native-package|ios-package|javascript-metadata) selected+=(--family "$SDK_FAMILY") ;;
+                *) echo 'Unknown SDK family' >&2; exit 1 ;;
+              esac
             fi ;;
           *) echo 'Unknown product state projection' >&2; exit 1 ;;
         esac
@@ -95,4 +105,4 @@ runs:
           --plan build/runtime-plan/impact-plan.json --destination build/runtime-input \
           --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
           --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --state-wave "$STATE_WAVE" \
-          --github-output "$GITHUB_OUTPUT" "${selected[@]}"
+          --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"}

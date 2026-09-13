@@ -2695,6 +2695,18 @@ def _sdk_ios_binary_worker_instance(instance):
     return instance == PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
 
 
+SDK_WORKER_FAMILIES = ("native-package", "ios-package", "javascript-metadata")
+
+
+def _sdk_family_worker_instance(instance, family):
+    if type(family) is not str or family not in SDK_WORKER_FAMILIES:
+        raise ValueError("Unsupported SDK worker family")
+    if family == "native-package":
+        return instance in {PhaseInstanceId("sdk", language, "package", "desktop") for language in NATIVE_BINDINGS}
+    return instance == (PhaseInstanceId("sdk", "sdk-ios", "package", "ios") if family == "ios-package"
+                        else PhaseInstanceId("sdk", "javascript", "metadata", "node"))
+
+
 def _runtime_worker_instance(instance):
     return instance.product == "runtime" and instance.component != "runtime-aggregate"
 
@@ -3604,6 +3616,7 @@ def collect_runtime_workers(
     runtime_aggregate_only: bool = False,
     sdk_javascript_only: bool = False,
     sdk_ios_binary_only: bool = False,
+    sdk_family: str | None = None,
 ) -> dict[str, Any]:
     """Collect elected Runtime or JavaScript SDK rows without erasing originals.
 
@@ -3611,9 +3624,11 @@ def collect_runtime_workers(
     successful original shards again and enforces its exact elected partition.
     """
     if (any(type(value) is not bool for value in (runtime_aggregate_only, sdk_javascript_only, sdk_ios_binary_only))
-            or sum((runtime_aggregate_only, sdk_javascript_only, sdk_ios_binary_only)) > 1):
+            or sum((runtime_aggregate_only, sdk_javascript_only, sdk_ios_binary_only, sdk_family is not None)) > 1):
         raise ValueError("Worker collection scopes must be boolean and mutually exclusive")
-    product = "sdk" if sdk_javascript_only or sdk_ios_binary_only else "runtime"
+    if sdk_family is not None:
+        _sdk_family_worker_instance(None, sdk_family)
+    product = "sdk" if sdk_javascript_only or sdk_ios_binary_only or sdk_family is not None else "runtime"
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     discovery_root, state_root, destination = _product_materialization_paths(root, discovery_root, state_root, destination)
     if destination.exists() or destination.is_symlink():
@@ -3622,7 +3637,8 @@ def collect_runtime_workers(
     state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling)
     producer = state.producer
     selected = [(instance, ready) for instance, ready in sorted(state.prior_ready_plans.items())
-                if (_sdk_ios_binary_worker_instance(instance) if sdk_ios_binary_only else
+                if (_sdk_family_worker_instance(instance, sdk_family) if sdk_family is not None else
+                    _sdk_ios_binary_worker_instance(instance) if sdk_ios_binary_only else
                     _sdk_javascript_worker_instance(instance) if sdk_javascript_only else
                     (instance == PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
                      if runtime_aggregate_only else _runtime_worker_instance(instance)))]
@@ -3688,7 +3704,7 @@ def collect_runtime_workers(
                 receipt = verified["receipt"]
                 if (receipt["producer"] != producer or receipt["buildKey"] != ready["buildKey"]
                         or receipt["productVersion"] != state.expected_fixed["versions"][
-                            "sdk" if sdk_javascript_only or sdk_ios_binary_only else "runtime-release"]
+                            "sdk" if product == "sdk" else "runtime-release"]
                         or receipt["trustDomain"] != ("development" if state.plan["event"] == "pull_request" else "release")):
                     raise ValueError("Runtime worker shard differs from its elected plan and producer")
                 row.update(result="success", reason="verified-original-shard",
@@ -3716,6 +3732,7 @@ def advance_products(
     runtime_aggregate_only: bool = False,
     sdk_javascript_only: bool = False,
     sdk_ios_binary_only: bool = False,
+    sdk_family: str | None = None,
 ) -> dict[str, Any]:
     github_output(github_output_path, {
         "full_reuse": False,
@@ -3759,9 +3776,14 @@ def advance_products(
         _identity(phase): phase for phase in prior["phases"] if phase["state"] == "build"
     }
     if (any(type(value) is not bool for value in (runtime_workers_only, runtime_aggregate_only, sdk_javascript_only, sdk_ios_binary_only))
-            or sum((runtime_workers_only, runtime_aggregate_only, sdk_javascript_only, sdk_ios_binary_only)) > 1):
+            or sum((runtime_workers_only, runtime_aggregate_only, sdk_javascript_only, sdk_ios_binary_only,
+                    sdk_family is not None)) > 1):
         raise ValueError("Runtime collection scopes must be boolean and mutually exclusive")
-    if sdk_ios_binary_only:
+    if sdk_family is not None:
+        _sdk_family_worker_instance(None, sdk_family)
+        expected_builds = {instance: phase for instance, phase in expected_builds.items()
+                           if _sdk_family_worker_instance(instance, sdk_family)}
+    elif sdk_ios_binary_only:
         expected_builds = {instance: phase for instance, phase in expected_builds.items()
                            if _sdk_ios_binary_worker_instance(instance)}
     elif sdk_javascript_only:
@@ -4159,8 +4181,8 @@ def capture_runtime_resume_upload(
     if type(state_wave) is not int or not 0 <= state_wave <= 5:
         raise ValueError("Runtime state wave must be an integer from zero through five")
     if sdk_state_wave is not None and (type(sdk_state_wave) is not int
-            or sdk_state_wave not in (1, 2, 3) or state_wave != 0):
-        raise ValueError("SDK state wave must be one, two or three, without a Runtime state wave")
+            or sdk_state_wave not in (1, 2, 3, 4, 5, 6) or state_wave != 0):
+        raise ValueError("SDK state wave must be one through six, without a Runtime state wave")
     require_sha256(artifact_sha256, "Runtime resume artifact digest")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     if destination.exists() or destination.is_symlink():

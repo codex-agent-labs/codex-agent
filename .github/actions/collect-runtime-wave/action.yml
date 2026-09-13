@@ -7,6 +7,9 @@ inputs:
   sdk-state-wave:
     default: ''
     description: Optional exact SDK predecessor state wave.
+  sdk-family:
+    default: ''
+    description: Optional native-package, ios-package, or javascript-metadata SDK scope.
   plan-id:
     required: true
     description: Original plan upload ID.
@@ -24,7 +27,7 @@ inputs:
     description: Fixed predecessor wave.
   wave:
     required: true
-    description: Runtime waves one through five; SDK JavaScript one/two; SDK iOS binary three.
+    description: Runtime waves one through five; SDK JavaScript one/two, iOS binary three, native package four, iOS package five, metadata six.
   tree:
     required: true
     description: Exact tested tree.
@@ -59,6 +62,7 @@ runs:
       with:
         product: ${{ inputs.product }}
         sdk-state-wave: ${{ inputs.sdk-state-wave }}
+        sdk-family: ${{ inputs.sdk-family }}
         plan-id: ${{ inputs.plan-id }}
         artifact-id: ${{ inputs.artifact-id }}
         artifact-sha256: ${{ inputs.artifact-sha256 }}
@@ -71,18 +75,26 @@ runs:
         WAVE: ${{ inputs.wave }}
         STATE_WAVE: ${{ inputs.state-wave }}
         PRODUCT: ${{ inputs.product }}
+        SDK_FAMILY: ${{ inputs.sdk-family }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
         case "$PRODUCT" in
-          runtime) command=(python3 -B ci/runtime_workflow.py collect); state=(--state-wave "$STATE_WAVE") ;;
-          sdk) command=(python3 -B -m ci.sdk_workflow collect); state=() ;;
-          sdk-ios-binary) command=(python3 -B -m ci.sdk_workflow collect); state=(--ios-binary) ;;
+          runtime) test -z "$SDK_FAMILY"; command=(python3 -B ci/runtime_workflow.py collect); state=(--state-wave "$STATE_WAVE") ;;
+          sdk)
+            command=(python3 -B -m ci.sdk_workflow collect); state=()
+            if [ -n "$SDK_FAMILY" ]; then
+              case "$SDK_FAMILY" in
+                native-package|ios-package|javascript-metadata) state=(--family "$SDK_FAMILY") ;;
+                *) echo 'Unknown SDK family' >&2; exit 1 ;;
+              esac
+            fi ;;
+          sdk-ios-binary) test -z "$SDK_FAMILY"; command=(python3 -B -m ci.sdk_workflow collect); state=(--ios-binary) ;;
           *) echo 'Unknown product collection scope' >&2; exit 1 ;;
         esac
         "${command[@]}" --input-root "$INPUT_ROOT" \
-          --destination build/runtime-next --wave "$WAVE" "${state[@]}" \
+          --destination build/runtime-next --wave "$WAVE" ${state[@]+"${state[@]}"} \
           --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT"
     - id: upload
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
