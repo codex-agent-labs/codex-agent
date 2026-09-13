@@ -188,6 +188,16 @@ internal fun runReleaseTooling(arguments: Array<String>) {
                 options.file("runtime-stages"), options.file("staged-sdks"), options.file("validation-stages"),
                 options.file("validation-receipts"), options.file("content-output"), options.required("sdk-version"))
         }
+        "write-javascript-metadata-content" -> {
+            options.requireOnly("contract-stage", "package-stage", "validation-stage", "runtime-validation-stage",
+                "original-consumer-directory", "contract-version", "sdk-version", "runtime-version", "content-output")
+            writeImportedJavaScriptMetadataContent(
+                options.file("contract-stage"), options.file("package-stage"), options.file("validation-stage"),
+                options.file("runtime-validation-stage"), options.file("original-consumer-directory"),
+                options.required("contract-version"), options.required("sdk-version"), options.required("runtime-version"),
+                options.file("content-output"),
+            )
+        }
         "assemble-native-wrapper-binding-receipt" -> {
             options.requireOnly(
                 "phase", "language", "api-report", "coverage-receipt", "c-abi-bootstrap",

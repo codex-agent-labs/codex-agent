@@ -68,6 +68,11 @@ class ProductPythonToolingReleaseJarTest {
         assertTrue("--expected-test-program" in runProductPythonModule("cpp_package", listOf("verify-evidence", "--help")))
         assertFailsWith<IllegalStateException> { runProductPythonModule("cpp_package", listOf("--help")) }
         assertFailsWith<IllegalStateException> { runProductPythonModule("arbitrary", emptyList()) }
+        assertTrue("--source" in runProductPythonModule("receipt", listOf("snapshot-tree", "--help")))
+        assertTrue("--product-version" in runProductPythonModule("receipt", listOf("verify-output-manifest", "--help")))
+        listOf("--help", "write-phase-receipt", "write-output-manifest").forEach { command ->
+            assertFailsWith<IllegalStateException> { runProductPythonModule("receipt", listOf(command)) }
+        }
     }
 
     private fun File.pythonProductResources(): Set<String> = ZipFile(this).use { archive ->

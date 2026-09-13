@@ -40,6 +40,41 @@ def route(plan: Mapping[str, Any]) -> dict[str, Any]:
             "toolchainProfile": None, "producerRole": None, "supervisor": None}
 
 
+def _runtime_originals(runtime_stages, runtime_inventory, predecessor):
+    """Check the exact ten supplied originals; return integrity records, not trust."""
+    originals, expected_runtime_files = [], set()
+    for target in NATIVE_TARGETS:
+        for phase in ("package", "validation"):
+            identity = ("runtime", target, phase, target)
+            value = predecessor(*identity)
+            receipt_path = Path(value["receiptPath"])
+            raw = read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True)
+            receipt = validate_phase_receipt(load_canonical_json_bytes(raw))
+            if receipt != value["receipt"] or tuple(receipt[name] for name in (
+                    "product", "component", "phase", "target")) != identity:
+                raise ValueError("Native SDK Runtime predecessor differs from its original receipt")
+            original = Path(value["stage"])
+            original_inventory = _inventory(original)
+            manifest = verify_output_manifest_identity(original, *identity, receipt["productVersion"])
+            imported = runtime_stages / target / phase
+            if manifest["outputs"] != receipt["outputs"] or _inventory(imported) != original_inventory:
+                raise ValueError("Native SDK Runtime stage differs from its original receipt or bytes")
+            expected_runtime_files.update(f"{target}/{phase}/{item['relativePath']}"
+                                          for item in original_inventory)
+            originals.append((original, original_inventory, receipt_path, raw))
+    if {item["relativePath"] for item in runtime_inventory} != expected_runtime_files:
+        raise ValueError("Native SDK Runtime tree must contain exactly five original package/validation pairs")
+    return originals
+
+
+def _runtime_originals_unchanged(runtime_stages, runtime_inventory, originals):
+    if (_inventory(runtime_stages) != runtime_inventory or any(
+            _inventory(original) != inventory or read_regular_file_bytes(
+                receipt, max_bytes=_LIMIT, reject_symlink_parents=True) != raw
+            for original, inventory, receipt, raw in originals)):
+        raise ValueError("Original native SDK Runtime inputs changed")
+
+
 def execute(
     plan: Mapping[str, Any], *, producer: Mapping[str, Any], sdk_version: str,
     repository_root: Path, destination: Path, runtime_stages: Path,
@@ -94,28 +129,7 @@ def execute(
     if any(path.exists() or path.is_symlink() for path in (*owned, destination)):
         raise ValueError("Native SDK worker requires fresh diagnostic and package outputs")
 
-    originals, expected_runtime_files = [], set()
-    for target in NATIVE_TARGETS:
-        for phase in ("package", "validation"):
-            identity = ("runtime", target, phase, target)
-            value = predecessor(*identity)
-            receipt_path = Path(value["receiptPath"])
-            raw = read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True)
-            receipt = validate_phase_receipt(load_canonical_json_bytes(raw))
-            if receipt != value["receipt"] or tuple(receipt[name] for name in (
-                    "product", "component", "phase", "target")) != identity:
-                raise ValueError("Native SDK Runtime predecessor differs from its original receipt")
-            original = Path(value["stage"])
-            original_inventory = _inventory(original)
-            manifest = verify_output_manifest_identity(original, *identity, receipt["productVersion"])
-            imported = runtime_stages / target / phase
-            if manifest["outputs"] != receipt["outputs"] or _inventory(imported) != original_inventory:
-                raise ValueError("Native SDK Runtime stage differs from its original receipt or bytes")
-            expected_runtime_files.update(f"{target}/{phase}/{item['relativePath']}"
-                                          for item in original_inventory)
-            originals.append((original, original_inventory, receipt_path, raw))
-    if {item["relativePath"] for item in runtime_inventory} != expected_runtime_files:
-        raise ValueError("Native SDK Runtime tree must contain exactly five original package/validation pairs")
+    originals = _runtime_originals(runtime_stages, runtime_inventory, predecessor)
     inputs = [runtime_stages, prepared_sources, sdks, request, *request_inventory,
               *(path for original, _, receipt, _ in originals for path in (original, receipt))]
     _require_capability_output_separate(destination, [*owned, *inputs])
@@ -130,11 +144,7 @@ def execute(
             raise ValueError("Native SDK private bytecode namespace was modified")
         if canonical_json_bytes(plan) != plan_bytes or canonical_json_bytes(producer) != producer_bytes:
             raise ValueError("Native SDK elected plan or producer changed")
-        if (_inventory(runtime_stages) != runtime_inventory or any(
-                _inventory(original) != inventory or read_regular_file_bytes(
-                    receipt, max_bytes=_LIMIT, reject_symlink_parents=True) != raw
-                for original, inventory, receipt, raw in originals)):
-            raise ValueError("Original native SDK Runtime inputs changed")
+        _runtime_originals_unchanged(runtime_stages, runtime_inventory, originals)
         if _inventory(prepared_sources) != source_inventory or _inventory(sdks) != sdk_inventory:
             raise ValueError("Original prepared native SDK source or staging inputs changed")
         if (read_regular_file_bytes(request, max_bytes=_LIMIT, reject_symlink_parents=True) != request_bytes

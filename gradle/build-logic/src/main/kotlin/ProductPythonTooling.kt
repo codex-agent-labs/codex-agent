@@ -9,6 +9,7 @@ private val productPythonAbiResources = listOf(
 )
 
 internal val productPythonResources = mapOf(
+    "receipt" to listOf("ci/products/receipt.py"),
     "test_results" to listOf("ci/products/test_results.py"),
     "runtime_evidence" to listOf("ci/products/runtime_evidence.py", "ci/products/test_results.py"),
     "c_abi" to (listOf("ci/products/c_abi.py") + productPythonAbiResources),
@@ -29,6 +30,9 @@ internal fun runProductPythonModule(module: String, arguments: List<String>): St
     val selected = checkNotNull(productPythonResources[module]) { "Unsupported packaged product Python module: $module" }
     check(module != "cpp_package" || arguments.firstOrNull() == "verify-evidence") {
         "Packaged C++ tooling permits only imported evidence verification"
+    }
+    check(module != "receipt" || arguments.firstOrNull() in setOf("snapshot-tree", "verify-output-manifest")) {
+        "Packaged receipt tooling permits only original snapshots and manifest verification"
     }
     val root = Files.createTempDirectory("codex-agent-product-python-").toRealPath().toFile()
     try {

@@ -11,6 +11,156 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
+    fun `staged metadata replay uses packaged exact manifest verifier and preserves originals`() = stagedMetadata { fixture ->
+        val before = fixture.root.crossLanguageTreeDigest()
+        val output = fixture.root.parentFile.resolve("${fixture.root.name}-result.json")
+        try {
+            fixture.write(output)
+            assertTrue(output.readBytes().contentEquals(fixture.expected))
+            assertEquals(before, fixture.root.crossLanguageTreeDigest())
+        } finally { output.delete() }
+    }
+
+    @Test
+    fun `staged metadata rejects changed original inventory identities and occupied outputs`() = stagedMetadata { fixture ->
+        val output = fixture.root.resolve("result.json")
+        val source = fixture.validation.resolve("outputs/test-program/smoke.cjs")
+        val original = source.readBytes()
+        source.appendText("tampered")
+        assertFailsWith<IllegalStateException> { fixture.write(output) }
+        assertTrue(!output.exists())
+        source.writeBytes(original)
+        assertFailsWith<IllegalStateException> { fixture.write(output, runtimeVersion = "0.2.8") }
+        assertTrue(!output.exists())
+        assertFailsWith<IllegalStateException> { fixture.write(output, originalConsumer = fixture.root.resolve("wrong")) }
+        assertTrue(!output.exists())
+        assertFailsWith<IllegalStateException> { fixture.write(fixture.validation.resolve("new-output.json")) }
+        assertTrue(!fixture.validation.resolve("new-output.json").exists())
+        output.writeText("original sentinel")
+        assertFailsWith<IllegalStateException> { fixture.write(output) }
+        assertEquals("original sentinel", output.readText())
+        output.delete()
+        val missing = fixture.contract.resolve("outputs/evidence/canonical-api.json")
+        missing.delete()
+        assertFailsWith<IllegalStateException> { fixture.write(output) }
+        assertTrue(!output.exists())
+    }
+
+    @Test
+    fun `standalone tooling replays staged JavaScript metadata with complete packaged closure`() = stagedMetadata { fixture ->
+        val jar = File(checkNotNull(System.getProperty("codexAgent.releaseToolingJar")))
+        val java = File(System.getProperty("java.home"), "bin/java")
+        val output = fixture.root.resolve("standalone-result.json")
+        val before = fixture.root.crossLanguageTreeDigest()
+        val process = ProcessBuilder(java.absolutePath, "-jar", jar.absolutePath,
+            "write-javascript-metadata-content",
+            "--contract-stage", fixture.contract.absolutePath,
+            "--package-stage", fixture.packages.absolutePath,
+            "--validation-stage", fixture.validation.absolutePath,
+            "--runtime-validation-stage", fixture.runtime.absolutePath,
+            "--original-consumer-directory", fixture.originalConsumer.absolutePath,
+            "--contract-version", "0.2.0", "--sdk-version", "0.1.0", "--runtime-version", "0.2.7",
+            "--content-output", output.absolutePath)
+            .directory(fixture.root).redirectErrorStream(true).start()
+        val diagnostic = process.inputStream.bufferedReader().use { it.readText() }
+        assertEquals(0, process.waitFor(), diagnostic)
+        assertTrue(output.readBytes().contentEquals(fixture.expected))
+        output.delete()
+        assertEquals(before, fixture.root.crossLanguageTreeDigest())
+    }
+
+    private data class StagedMetadataFixture(
+        val root: File, val contract: File, val packages: File, val validation: File, val runtime: File,
+        val originalConsumer: File, val expected: ByteArray,
+    ) {
+        fun write(output: File, runtimeVersion: String = "0.2.7", originalConsumer: File = this.originalConsumer) =
+            writeImportedJavaScriptMetadataContent(contract, packages, validation, runtime, originalConsumer,
+                "0.2.0", "0.1.0", runtimeVersion, output)
+    }
+
+    private fun stagedMetadata(action: (StagedMetadataFixture) -> Unit) {
+        val keys = fullReceiptKeys()
+        val symbols = fullReceiptSymbols(keys)
+        val files = receiptFiles(keys, symbols)
+        val source = files.apiReport.parentFile
+        val root = createTempDirectory("javascript-metadata-staged-").toFile().canonicalFile
+        try {
+            val artifacts = mapOf("commonJs" to files.installedPackageDirectory.resolve("index.cjs"),
+                "declaration" to files.installedPackageDirectory.resolve("index.d.ts"),
+                "esm" to files.installedPackageDirectory.resolve("index.mjs"),
+                "packageJson" to files.installedPackageDirectory.resolve("package.json"), "tarball" to files.npmTarball)
+            org.apache.commons.compress.archivers.tar.TarArchiveOutputStream(
+                java.util.zip.GZIPOutputStream(files.npmTarball.outputStream()),
+            ).use { archive ->
+                artifacts.filterKeys { it != "tarball" }.values.sortedBy(File::getName).forEach { file ->
+                    val entry = org.apache.commons.compress.archivers.tar.TarArchiveEntry("package/${file.name}")
+                    entry.size = file.length()
+                    archive.putArchiveEntry(entry)
+                    archive.write(file.readBytes())
+                    archive.closeArchiveEntry()
+                }
+            }
+            writePackedReport(files.packedPublicApiReport, 2, symbols, symbols, artifacts)
+            val parity = source.resolve("javascript-typescript-parity.json")
+            writeCrossLanguageBindingReceipt(parity, buildJavaScriptTypeScriptBindingReceipt(files))
+            val contract = root.resolve("contract")
+            val packages = root.resolve("package")
+            val validation = root.resolve("validation")
+            val runtime = root.resolve("runtime")
+            fun copy(input: File, target: File) {
+                target.parentFile.mkdirs()
+                if (input.isDirectory) input.copyRecursively(target) else input.copyTo(target)
+            }
+            copy(files.apiReport, contract.resolve("outputs/evidence/canonical-api.json"))
+            copy(files.canonicalCoverageReceipt, contract.resolve("outputs/evidence/canonical-coverage.json"))
+            copy(files.npmTarball, packages.resolve("outputs/package/codex-agent-0.1.0.tgz"))
+            copy(files.packedPublicApiReport, validation.resolve("outputs/compiler-evidence/public-api.json"))
+            copy(files.packedJUnitReport, validation.resolve("outputs/test-report/packed-tests.xml"))
+            copy(files.consumerSourceDirectory, validation.resolve("outputs/test-program"))
+            copy(parity, validation.resolve("outputs/binding-evidence/javascript-typescript-parity.json"))
+            copy(files.compiledJsNodeTestProgramDirectory, runtime.resolve("outputs/test-program"))
+            copy(files.jsNodeJUnitReport, runtime.resolve("outputs/test-report/TEST-jsNodeTest.CodexNodeApiTest.xml"))
+            val originalConsumer = root.resolve("original/codex-agent-sdk/build/npm/consumer")
+            writeMetadataExecutions(validation.resolve("outputs/execution").apply { mkdirs() }, originalConsumer)
+            writeMetadataStageManifest(contract, "contract", "contract", "binary", "common", "0.2.0")
+            writeMetadataStageManifest(packages, "sdk", "javascript", "package", "node", "0.1.0")
+            writeMetadataStageManifest(validation, "sdk", "javascript", "validation", "node", "0.1.0")
+            writeMetadataStageManifest(runtime, "runtime", "node-js", "validation", "node-js-binding", "0.2.7")
+            action(StagedMetadataFixture(root, contract, packages, validation, runtime, originalConsumer, parity.readBytes()))
+        } finally {
+            source.deleteRecursively()
+            root.deleteRecursively()
+        }
+    }
+
+    private fun writeMetadataStageManifest(
+        root: File, product: String, component: String, phase: String, target: String, version: String,
+    ) {
+        // Synthetic canonical manifest; production packaged receipt.py performs
+        // the actual schema, inventory and identity verification in these tests.
+        val value = buildJsonObject {
+            put("component", JsonPrimitive(component))
+            put("outputs", buildJsonArray {
+                verifiedRegularFiles(root).toSortedMap().forEach { (relative, file) ->
+                    add(buildJsonObject {
+                        put("bytes", JsonPrimitive(file.length()))
+                        put("kind", JsonPrimitive(relative.split('/')[1]))
+                        put("relativePath", JsonPrimitive(relative))
+                        put("sha256", JsonPrimitive("sha256:${file.releaseDigest()}"))
+                    })
+                }
+            })
+            put("phase", JsonPrimitive(phase))
+            put("product", JsonPrimitive(product))
+            put("productVersion", JsonPrimitive(version))
+            put("schemaVersion", JsonPrimitive(1))
+            put("target", JsonPrimitive(target))
+        }
+        root.resolve("output-manifest.json").writeText(kotlinx.serialization.json.Json.encodeToString(
+            kotlinx.serialization.json.JsonElement.serializer(), value) + "\n")
+    }
+
+    @Test
     fun `metadata task writes original parity and invalidates output without deleting inputs`() {
         val keys = fullReceiptKeys()
         val files = receiptFiles(keys, fullReceiptSymbols(keys))

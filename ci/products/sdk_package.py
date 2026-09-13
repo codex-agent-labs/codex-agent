@@ -149,17 +149,28 @@ def verify_sdk_package_inputs(
     validation_receipt_path: Path | None = None,
     validation_stage_root: Path | None = None, validation_target: str | None = None,
     validation_content_output: Path | None = None,
+    apple_verification: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     """Verify package semantics, original artifacts and the complete source-input plan.
 
     This proves content/input binding, not that a claimed CI run actually ran.
     Hosted execution provenance, per-language behavior receipts and protected
     release admission remain separate mandatory checks. No token is minted here.
+    Apple verification is supplied by the authenticated caller; it must retain
+    the same repository and trust domain, and never relaxes either Maven gate.
     """
     repository = Path(repository)
     stage_root = Path(stage_root)
     receipt, original = _receipt(receipt_path)
     instance = _instance(receipt)
+    if apple_verification is not None:
+        from .sdk_maven import _APPLE_VERIFICATION_KEYS
+        if (instance != PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+                or type(apple_verification) is not dict
+                or set(apple_verification) != _APPLE_VERIFICATION_KEYS):
+            raise ValueError("Apple package inputs require exact iOS identity and complete caller verification")
+        if Path(apple_verification["repository"]).resolve(strict=True) != repository.resolve(strict=True):
+            raise ValueError("Apple package verification cannot change the caller repository")
     native = instance.component in NATIVE_BINDINGS
     javascript = instance.component == "javascript"
     validation, validation_bytes = None, None
@@ -238,6 +249,8 @@ def verify_sdk_package_inputs(
             ))
             stage_sdk_inputs(captured_request, handoff, request_directory=request_directory)
         arguments = load_sdk_compatibility_request(handoff / REQUEST_NAME)
+        if apple_verification is not None and apple_verification["required_trust_domain"] != arguments["required_trust_domain"]:
+            raise ValueError("Apple package verification cannot change the authenticated trust domain")
         compatibility = load_canonical_json_bytes((handoff / COMPATIBILITY_NAME).read_bytes())
         aggregate = load_canonical_json_bytes(arguments["runtime_manifest"].read_bytes())
         versions = {
@@ -320,9 +333,13 @@ def verify_sdk_package_inputs(
             from .sdk_maven import verify_packaged_sdk_maven_phase, verify_sdk_maven_binary_predecessor
             if binary_contract_evidence.get("expectedTrustDomain") != arguments["required_trust_domain"]:
                 raise ValueError("SDK binary Contract evidence cannot change the required trust domain")
-            verified, verified_bytes = verify_packaged_sdk_maven_phase(stage, captured_receipt, handoff / REQUEST_NAME)
+            apple_options = {"apple_verification": apple_verification} if apple_verification is not None else {}
+            verified, verified_bytes = verify_packaged_sdk_maven_phase(
+                stage, captured_receipt, handoff / REQUEST_NAME, **apple_options,
+            )
             binary, _ = verify_sdk_maven_binary_predecessor(
                 binary_stage_root, binary_receipt_path, stage, captured_receipt, handoff / COMPATIBILITY_NAME,
+                **apple_options,
             )
             binary_projection = _contract_projection_from_request(_instance(binary), versions, binary_contract_evidence)
             binary_contract, _ = _receipt(Path(binary_contract_evidence["phaseReceipt"]))

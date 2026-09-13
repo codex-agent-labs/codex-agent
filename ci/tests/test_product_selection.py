@@ -1309,6 +1309,7 @@ class ProductSelectionTest(unittest.TestCase):
     def test_javascript_metadata_replay_keys_only_its_metadata_phase(self):
         selected = classify_paths([
             "gradle/build-logic/src/main/kotlin/CrossLanguageJavaScriptMetadataEvidence.kt",
+            "gradle/build-logic/src/main/kotlin/CrossLanguageJavaScriptStagedMetadata.kt",
         ])
         self.assertEqual(
             {PhaseInstanceId("sdk", "javascript", "metadata", "node")},
@@ -1347,6 +1348,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/sdk_metadata_phase.py",
             "ci/sdk_javascript_phase.py",
             "ci/sdk_native_phase.py",
+            "ci/sdk_native_prepare.py",
             "ci/sdk_apple_export.py",
             "ci/sdk_apple_native.py",
             "ci/products/sdk_apple_source.py",
