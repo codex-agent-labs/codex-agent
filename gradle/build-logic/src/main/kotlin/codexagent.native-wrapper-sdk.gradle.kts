@@ -21,6 +21,9 @@ val nativeWrapperSdkCompatibilityRequest = providers.gradleProperty(
 val importedNativeWrapperSdkPackageStage = providers.gradleProperty(
     "codexAgent.sdkPackageStageRoot",
 ).map(::file)
+val importedNativeWrapperStagedSdks = providers.gradleProperty(
+    "codexAgent.nativeWrapperStagedSdkRoot",
+).map(::file)
 val nativeWrapperRuntimeSnapshotRoot = layout.buildDirectory.dir(
     nativeWrapperCandidateTree.map { "imported-native-wrapper-runtime-stages/$it" },
 )
@@ -374,7 +377,14 @@ val nativeWrapperInstalledConsumerTasks = nativeWrapperLanguageSpecs.mapValues {
     tasks.register<NativeWrapperInstalledConsumerTask>("verify${title}NativeWrapperInstalledConsumer") {
         group = "verification"
         description = "Authenticates original package inputs and executes the matching-host $language consumer."
-        dependsOn(verify, stageNativeWrapperCAbiSdks)
+        dependsOn(verify)
+        if (importedNativeWrapperStagedSdks.isPresent) {
+            dependsOn(snapshotImportedNativeWrapperRuntimeStages)
+            stagedSdkDirectory.set(layout.dir(importedNativeWrapperStagedSdks))
+        } else {
+            dependsOn(stageNativeWrapperCAbiSdks)
+            stagedSdkDirectory.set(stageNativeWrapperCAbiSdks.flatMap { it.outputDirectory })
+        }
         this.language.set(language)
         expectedClassifier.set(providers.gradleProperty("codexAgent.target"))
         offlineMode.set(gradle.startParameter.isOffline)
@@ -383,7 +393,6 @@ val nativeWrapperInstalledConsumerTasks = nativeWrapperLanguageSpecs.mapValues {
         compatibilityRequest.set(layout.file(nativeWrapperSdkCompatibilityRequest))
         runtimeStageDirectory.set(nativeWrapperRuntimeSnapshotRoot)
         verifierSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-        stagedSdkDirectory.set(stageNativeWrapperCAbiSdks.flatMap { it.outputDirectory })
         sdkVersionFile.set(rootProject.layout.projectDirectory.file("gradle/release/versions/sdk.txt"))
         consumerScript.set(rootProject.layout.projectDirectory.file("ci/native_wrappers.py"))
         consumerSources.from(nativeWrapperBindingRoot.dir(language).asFileTree.matching { exclude(excluded) })

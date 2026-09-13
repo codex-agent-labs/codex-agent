@@ -8,6 +8,45 @@ import org.gradle.testkit.runner.GradleRunner
 
 class NativeWrapperProductPhaseArtifactGraphTest {
     @Test
+    fun `imported validation SDKs keep original verifiers without restaging producers`() {
+        val property = sdk.substringAfter("val importedNativeWrapperStagedSdks =")
+            .substringBefore("val nativeWrapperRuntimeSnapshotRoot =")
+        assertTrue("\"codexAgent.nativeWrapperStagedSdkRoot\"" in property)
+        assertTrue(".map(::file)" in property)
+        assertFalse(".orElse(" in property)
+        val installed = sdk.substringAfter("val nativeWrapperInstalledConsumerTasks =")
+            .substringBefore("val nativeWrapperCapabilityEvidenceTasks =")
+        assertTrue("dependsOn(snapshot)" in installed)
+        val consumer = installed.substringAfter("tasks.register<NativeWrapperInstalledConsumerTask>")
+        val beforeBranch = consumer.substringBefore("if (importedNativeWrapperStagedSdks.isPresent)")
+        assertTrue("dependsOn(verify)" in beforeBranch)
+        val branch = consumer.substringAfter("if (importedNativeWrapperStagedSdks.isPresent) {")
+        val imported = branch.substringBefore("} else {")
+        val default = branch.substringAfter("} else {").substringBefore("this.language.set(language)")
+        assertTrue("dependsOn(snapshotImportedNativeWrapperRuntimeStages)" in imported)
+        assertTrue("stagedSdkDirectory.set(layout.dir(importedNativeWrapperStagedSdks))" in imported)
+        assertTrue("dependsOn(stageNativeWrapperCAbiSdks)" in default)
+        assertTrue("stagedSdkDirectory.set(stageNativeWrapperCAbiSdks.flatMap { it.outputDirectory })" in default)
+        val afterBranch = consumer.substringAfter("this.language.set(language)")
+        for (forbidden in listOf("stageNativeWrapperCAbiSdks", "generateNativeWrapperSdkCompatibility")) {
+            assertFalse(forbidden in beforeBranch, forbidden)
+            assertFalse(forbidden in imported, forbidden)
+            assertFalse(forbidden in afterBranch, forbidden)
+        }
+        for (binding in listOf(
+            "packageStageDirectory.set(importedSnapshot)",
+            "packageReceipt.set(rootProject.layout.file(providers.gradleProperty(\"codexAgent.sdkPackageReceipt\").map(::file)))",
+            "compatibilityRequest.set(layout.file(nativeWrapperSdkCompatibilityRequest))",
+            "runtimeStageDirectory.set(nativeWrapperRuntimeSnapshotRoot)",
+            "expectedClassifier.set(providers.gradleProperty(\"codexAgent.target\"))",
+        )) assertTrue(binding in afterBranch, binding)
+        val capability = sdk.substringAfter("val nativeWrapperCapabilityEvidenceTasks =")
+            .substringBefore("nativeWrapperLanguageSpecs.forEach")
+        assertTrue("val authenticated = nativeWrapperInstalledConsumerTasks.getValue(language)" in capability)
+        assertTrue("dependsOn(authenticated)" in capability)
+    }
+
+    @Test
     fun `native validation stages once and writes manifest only after complete existing producers`() {
         val installed = sdk.substringAfter("val nativeWrapperInstalledConsumerTasks =")
             .substringBefore("val nativeWrapperCapabilityEvidenceTasks =")
