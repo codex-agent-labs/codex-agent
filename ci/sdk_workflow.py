@@ -15,13 +15,15 @@ if __package__:
 import product_reuse
 import sdk_handoff
 from products.inventory import (
-    load_canonical_json_bytes, read_regular_file_bytes, regular_file_inventory, sha256_bytes,
+    canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
+    regular_file_inventory, sha256_bytes, snapshot_regular_tree,
 )
 from products.registry import PhaseInstanceId
 from products.runtime_aggregate_handoff import verified_runtime_aggregate_handoff
 from products.sdk_inputs_verification import verified_sdk_inputs
 from products.sdk_protected_runtime import _original_carrier
 from products.sdk_inputs import REQUEST_NAME
+from reuse import github_output
 
 
 def _selection(plan, discovery, state, repository_root, environ):
@@ -107,6 +109,73 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
         unchanged()
 
 
+def matrix(plan, discovery, state, github_output_path, *, repository_root=None, environ=None):
+    """Expose only original replay-elected JS work before platform setup."""
+    from sdk_phase import route
+
+    inspected = product_reuse.inspect_products(plan, discovery, state,
+        repository_root=repository_root, environ=environ)
+    rows = [{**{field: ready[field] for field in ("product", "component", "phase", "target", "buildKey")},
+             **route(ready)} for ready in inspected["readyPlans"]
+            if product_reuse._sdk_javascript_worker_instance(product_reuse._identity(ready))]
+    value = {"include": rows}
+    github_output(github_output_path, {"sdk_matrix": canonical_json_bytes(value).decode().strip(),
+                                      "sdk_workers_required": bool(rows)})
+    return value
+
+
+def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha256,
+            trusted_workflow_sha, state_wave=0, sdk_state_wave=None,
+            repository_root=None, environ=None, token):
+    """Capture exact original state, then replay SDK readiness independently."""
+    product_reuse.capture_runtime_resume_upload(plan, destination, artifact_id=artifact_id,
+        artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
+        state_wave=state_wave, **({"sdk_state_wave": sdk_state_wave} if sdk_state_wave is not None else {}),
+        repository_root=repository_root, environ=environ, token=token)
+    original = destination / "original"
+    paths = {"input_root": original,
+        "plan_path": original / "product-resume-inputs/plan/impact-plan.json",
+        "discovery_root": original / "product-resume-state",
+        "state_root": original / ("runtime-state" if state_wave or sdk_state_wave is not None else "product-resume-state")}
+    value = matrix(paths["plan_path"], paths["discovery_root"], paths["state_root"], github_output_path,
+                   repository_root=repository_root, environ=environ)
+    github_output(github_output_path, {name: str(path) for name, path in paths.items()})
+    return {**paths, "matrix": value}
+
+
+def collect(input_root, destination, github_output_path, *, wave, trusted_workflow_sha,
+            repository_root=None, environ=None, token):
+    """Advance only the exact elected SDK partition using the shared collector."""
+    if type(wave) is not int or wave not in (1, 2):
+        raise ValueError("SDK JavaScript collection wave must be one or two")
+    root = Path(repository_root or Path(__file__).resolve().parents[1]).resolve()
+    input_root, _, destination = product_reuse._product_materialization_paths(root, input_root, input_root, destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("SDK collection destination must not exist")
+    plan = input_root / "product-resume-inputs/plan/impact-plan.json"
+    discovery = input_root / "product-resume-state"
+    state = input_root / "runtime-state" if (input_root / "runtime-state").exists() else discovery
+    collection = product_reuse.collect_runtime_workers(plan, discovery, state, destination / "collection",
+        trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token,
+        sdk_javascript_only=True)
+    shards = [destination / "collection" / row["shardDirectory"]
+              for row in collection["rows"] if row["result"] == "success"]
+    failed = tuple(product_reuse._identity(row) for row in collection["rows"] if row["result"] != "success")
+    handoff = destination / "handoff"
+    advanced = product_reuse.advance_products(plan, discovery, state, shards, handoff / "runtime-state",
+        github_output_path, repository_root=root, environ=environ, failed_instances=failed, sdk_javascript_only=True)
+    for name in ("product-resume-inputs", "product-resume-state"):
+        snapshot_regular_tree(input_root / name, handoff / name, allow_empty=True)
+    if failed:
+        github_output(github_output_path, {"sdk_matrix": '{"include":[]}', "sdk_workers_required": False})
+    else:
+        ready = matrix(handoff / "product-resume-inputs/plan/impact-plan.json", handoff / "product-resume-state",
+                       handoff / "runtime-state", github_output_path, repository_root=root, environ=environ)
+        if wave == 2 and ready["include"]:
+            raise ValueError("SDK JavaScript workers remain after package/validation collection")
+    return advanced
+
+
 def execute_javascript(plan, discovery, state, destination, *, phase, expected_build_key,
                        artifact_id, artifact_sha256, trusted_workflow_sha, keyring, keys_directory,
                        repository_root, environ, token):
@@ -165,8 +234,41 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
         destination=destination / "shard")
 
 
+def _workflow_main(argv):
+    parser = argparse.ArgumentParser(description="Replay, capture and collect exact SDK phase work")
+    commands = parser.add_subparsers(dest="command", required=True)
+    parsers = {name: commands.add_parser(name) for name in ("matrix", "capture", "collect")}
+    for name, command in parsers.items():
+        command.add_argument("--github-output", dest="github_output_path", type=Path, required=True)
+        command.add_argument("--repository-root", type=Path)
+        if name == "matrix":
+            for flag, dest in (("plan", "plan"), ("discovery-root", "discovery"), ("state-root", "state")):
+                command.add_argument(f"--{flag}", dest=dest, type=Path, required=True)
+        else:
+            command.add_argument("--destination", type=Path, required=True)
+            command.add_argument("--trusted-workflow-sha", required=True)
+    captured = parsers["capture"]
+    captured.add_argument("--plan", type=Path, required=True)
+    captured.add_argument("--artifact-id", type=int, required=True)
+    captured.add_argument("--artifact-sha256", required=True)
+    captured.add_argument("--state-wave", type=int, default=0)
+    captured.add_argument("--sdk-state-wave", type=int)
+    parsers["collect"].add_argument("--input-root", type=Path, required=True)
+    parsers["collect"].add_argument("--wave", type=int, choices=(1, 2), required=True)
+    arguments = vars(parser.parse_args(argv))
+    command = arguments.pop("command")
+    try:
+        return {"matrix": matrix, "capture": capture, "collect": collect}[command](**arguments,
+            environ=os.environ, **({"token": os.environ.get("GITHUB_TOKEN", "")} if command != "matrix" else {}))
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in {"matrix", "capture", "collect"}:
+        _workflow_main(argv)
+        return 0
     javascript = bool(argv and argv[0] == "javascript")
     if javascript:
         argv.pop(0)

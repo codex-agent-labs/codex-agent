@@ -1337,6 +1337,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/sdk_metadata_phase.py",
             "ci/sdk_javascript_phase.py",
             "ci/sdk_apple_export.py",
+            "ci/sdk_apple_native.py",
             "ci/products/sdk_apple_source.py",
             "ci/contract_release.py",
             "ci/product_release_context.py",

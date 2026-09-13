@@ -12,6 +12,70 @@ from ci import sdk_workflow as workflow
 
 
 class SdkWorkflowTest(unittest.TestCase):
+    def test_matrix_uses_only_replayed_javascript_package_and_validation(self):
+        identities = (("sdk", "javascript", "package", "node"), ("sdk", "javascript", "validation", "node"),
+                      ("sdk", "javascript", "metadata", "node"), ("runtime", "jvm", "binary", "jvm"))
+        plans = [dict(zip(("product", "component", "phase", "target"), identity), buildKey="sha256:" + "a" * 64)
+                 for identity in identities]
+        self.inspect.return_value = {"readyPlans": plans}
+        output = self.repository / "matrix-output"
+        result = workflow.matrix(self.plan, self.discovery, self.state, output,
+                                 repository_root=self.repository, environ={})
+        self.assertEqual(["package", "validation"], [row["phase"] for row in result["include"]])
+        self.assertTrue(all(row["runner"] == "ubuntu-24.04" for row in result["include"]))
+        self.assertIn("sdk_workers_required=true", output.read_text())
+        self.inspect.return_value = {"readyPlans": []}
+        self.assertEqual({"include": []}, workflow.matrix(self.plan, self.discovery, self.state,
+            self.repository / "empty-matrix", repository_root=self.repository, environ={}))
+
+    def test_sdk_state_capture_replays_before_exposing_paths(self):
+        destination = self.repository / "capture"
+        with patch.object(workflow.product_reuse, "capture_runtime_resume_upload") as captured, \
+                patch.object(workflow, "matrix", return_value={"include": []}) as matrix:
+            result = workflow.capture(self.plan, destination, self.repository / "capture-output",
+                **self.upload_for_capture(), sdk_state_wave=1, repository_root=self.repository, environ={}, token="fixture")
+        self.assertEqual(1, captured.call_args.kwargs["sdk_state_wave"])
+        self.assertEqual(destination / "original/runtime-state", result["state_root"])
+        self.assertEqual(destination / "original/product-resume-state", result["discovery_root"])
+        self.assertEqual(result["state_root"], matrix.call_args.args[2])
+        with patch.object(workflow.product_reuse, "capture_runtime_resume_upload"), \
+                patch.object(workflow, "matrix", side_effect=ValueError("invalid original state")):
+            failed_output = self.repository / "failed-capture-output"
+            with self.assertRaisesRegex(ValueError, "invalid original state"):
+                workflow.capture(self.plan, destination, failed_output, **self.upload_for_capture(), token="fixture")
+            self.assertFalse(failed_output.exists())
+
+    def upload_for_capture(self):
+        return {key: self.upload[key] for key in ("artifact_id", "artifact_sha256", "trusted_workflow_sha")}
+
+    def test_collection_preserves_original_roots_and_uses_exact_sdk_partition(self):
+        original = self.repository / "original"
+        for name in ("product-resume-inputs", "product-resume-state", "runtime-state"):
+            (original / name).mkdir(parents=True)
+            (original / name / "original.bin").write_bytes(name.encode())
+        identity = {"product": "sdk", "component": "javascript", "phase": "package", "target": "node"}
+        for failure in (False, True):
+            destination = self.repository / f"collected-{failure}"
+            row = {**identity, "result": "failure" if failure else "success", "shardDirectory": "rows/js/original/shard"}
+
+            def advance(*args, **kwargs):
+                self.assertTrue(kwargs["sdk_javascript_only"])
+                self.assertEqual((workflow.PhaseInstanceId(**identity),) if failure else (), kwargs["failed_instances"])
+                self.assertEqual([] if failure else [destination / "collection/rows/js/original/shard"], args[3])
+                args[4].mkdir(parents=True)
+                return {"synthetic": "advanced"}
+
+            with patch.object(workflow.product_reuse, "collect_runtime_workers", return_value={"rows": [row]}) as collect, \
+                    patch.object(workflow.product_reuse, "advance_products", side_effect=advance), \
+                    patch.object(workflow, "matrix", return_value={"include": []}) as matrix:
+                result = workflow.collect(original, destination, self.repository / f"collect-output-{failure}",
+                    wave=1, trusted_workflow_sha="c" * 40, repository_root=self.repository, environ={}, token="fixture")
+            self.assertTrue(collect.call_args.kwargs["sdk_javascript_only"])
+            self.assertEqual({"synthetic": "advanced"}, result)
+            self.assertEqual(not failure, matrix.called)
+            for name in ("product-resume-inputs", "product-resume-state"):
+                self.assertEqual(name.encode(), (destination / "handoff" / name / "original.bin").read_bytes())
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="sdk-workflow-")
         self.addCleanup(temporary.cleanup)

@@ -1821,76 +1821,208 @@ jobs:
           metadata: ${{ matrix.metadata }}
           node-version: ${{ contains(matrix.lane, 'node') && '24.18.0' || 'none' }}
 
-  sdk-javascript:
+  sdk-plan:
+    needs: [plan, runtime-continuation, runtime-aggregate-continuation, sdk-inputs]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
-      needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.plan.outputs.validation_reused != 'true' &&
-      needs.plan.outputs.lane_node_js == 'true' &&
-      needs.product.result == 'success'
-    needs: [workflow-lint, plan, product]
+      needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-inputs.result == 'success'
     runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.parent.outputs.artifact_id }}
+      artifact_digest: ${{ steps.parent.outputs.artifact_digest }}
+      state_wave: ${{ steps.parent.outputs.state_wave }}
+      sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
+      sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: parent
+        env:
+          PREDECESSORS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          needs = json.loads(os.environ['PREDECESSORS'])
+          source = json.loads(needs['runtime-continuation']['outputs']['sdk_input_selection'])['source']
+          if source not in ('released-default', 'current-runtime'):
+              raise ValueError('Unknown SDK Runtime source')
+          parent = needs['runtime-aggregate-continuation' if source == 'current-runtime' else 'runtime-continuation']
+          if parent['result'] != 'success':
+              raise ValueError('SDK predecessor state is incomplete')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for name in ('artifact_id', 'artifact_digest', 'state_wave'):
+                  output.write(name + '=' + parent['outputs'][name] + '\n')
+          PY
+      - id: capture
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          product: sdk
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ steps.parent.outputs.artifact_id }}
+          artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}
+          state-wave: ${{ steps.parent.outputs.state_wave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+
+  sdk-workers-1:
+    name: sdk-javascript-${{ matrix.phase }}-node
+    needs: [plan, sdk-plan, sdk-inputs]
+    if: >-
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-plan.outputs.sdk_workers_required == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.sdk-plan.outputs.sdk_matrix || '{"include":[]}') }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: ./.github/actions/sdk-javascript-worker
         with:
-          name: codex-agent-ci-contracts-${{ needs.plan.outputs.validation_tree }}
-          path: build/ci/sdk-contract
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-plan.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-plan.outputs.state_wave }}
+          sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
+          sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          phase: ${{ matrix.phase }}
+          build-key: ${{ matrix.buildKey }}
+          tree: ${{ needs.plan.outputs.validation_tree }}
+
+  sdk-collect-1:
+    name: sdk-collect-1
+    needs: [plan, sdk-plan, sdk-workers-1]
+    if: >-
+      always() && needs.sdk-plan.result == 'success' &&
+      needs.sdk-plan.outputs.sdk_workers_required == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
+      sdk_matrix: ${{ steps.collect.outputs.sdk-matrix }}
+      sdk_workers_required: ${{ steps.collect.outputs.sdk-workers-required }}
+      wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: codex-agent-ci-node-js-${{ needs.plan.outputs.validation_tree }}
-          path: build/ci/sdk-runtime
-      - uses: ./.github/actions/setup-kmp
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: collect
+        uses: ./.github/actions/collect-runtime-wave
         with:
-          cache-read-only: "true"
-          node-version: "24.18.0"
-      - name: Verify JavaScript and TypeScript from exact Contract and Runtime stages
+          product: sdk
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-plan.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-plan.outputs.state_wave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          wave: '1'
+          tree: ${{ needs.plan.outputs.validation_tree }}
+
+  sdk-workers-2:
+    name: sdk-javascript-${{ matrix.phase }}-node
+    needs: [plan, sdk-collect-1, sdk-inputs]
+    if: >-
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-collect-1.outputs.wave_failed == 'false' &&
+      needs.sdk-collect-1.outputs.sdk_workers_required == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.sdk-collect-1.outputs.sdk_matrix || '{"include":[]}') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: ./.github/actions/sdk-javascript-worker
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-collect-1.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-collect-1.outputs.artifact_digest }}
+          sdk-state-wave: '1'
+          sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
+          sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          phase: ${{ matrix.phase }}
+          build-key: ${{ matrix.buildKey }}
+          tree: ${{ needs.plan.outputs.validation_tree }}
+
+  sdk-collect-2:
+    name: sdk-collect-2
+    needs: [plan, sdk-collect-1, sdk-workers-2]
+    if: >-
+      always() && needs.sdk-collect-1.result == 'success' &&
+      needs.sdk-collect-1.outputs.wave_failed == 'false' &&
+      needs.sdk-collect-1.outputs.sdk_workers_required == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: collect
+        uses: ./.github/actions/collect-runtime-wave
+        with:
+          product: sdk
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-collect-1.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-collect-1.outputs.artifact_digest }}
+          state-wave: '0'
+          sdk-state-wave: '1'
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          wave: '2'
+          tree: ${{ needs.plan.outputs.validation_tree }}
+
+  sdk-javascript:
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.runtime-continuation.result == 'success'
+    needs: [plan, runtime-continuation, sdk-plan, sdk-collect-1, sdk-collect-2]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fail after collecting every elected JavaScript result
         env:
-          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
-        shell: bash
+          RESULTS: ${{ toJSON(needs) }}
         run: |
-          set -euo pipefail
-          one_directory() {
-            mapfile -t matches < <(find "$1" -type d -path "$2" -print)
-            test "${#matches[@]}" -eq 1
-            printf '%s\n' "${matches[0]}"
-          }
-          contract=$(one_directory build/ci/sdk-contract '*/payload/build/product-stage/contract/contract/binary')
-          package=$(one_directory build/ci/sdk-runtime '*/payload/codex-agent-runtime-desktop/build/product-stage/runtime/node-js/package')
-          validation=$(one_directory build/ci/sdk-runtime '*/payload/codex-agent-runtime-desktop/build/product-stage/runtime/node-js/validation/node-js-binding')
-          package_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["productVersion"])' "$package/output-manifest.json")
-          validation_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["productVersion"])' "$validation/output-manifest.json")
-          product_args=(
-            -PcodexAgent.contractBinaryStage="$PWD/$contract"
-            -PcodexAgent.runtimePackageStage="$PWD/$package"
-            -PcodexAgent.runtimePackageVersion="$package_version"
-            -PcodexAgent.runtimeBindingValidationStage="$PWD/$validation"
-            -PcodexAgent.runtimeBindingValidationVersion="$validation_version"
-            -PcodexAgent.candidateTree="$VALIDATION_TREE"
-          )
-          ./gradlew ciProductPhase \
-            -PcodexAgent.product=sdk \
-            -PcodexAgent.component=javascript \
-            -PcodexAgent.phase=package \
-            "${product_args[@]}" \
-            --stacktrace
-          ./gradlew :codex-agent-sdk:verifyJavaScriptTypeScriptBindingParity \
-            "${product_args[@]}" \
-            --stacktrace
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          if-no-files-found: error
-          overwrite: true
-          name: codex-agent-sdk-javascript-parity-${{ needs.plan.outputs.validation_tree }}
-          path: |
-            codex-agent-sdk/build/product-stage/sdk/javascript/package
-            codex-agent-sdk/build/reports/cross-language-api/bindings/javascript-typescript-parity.json
-          compression-level: 0
-          retention-days: 1
+          python3 - <<'PY'
+          import json, os
+          needs = json.loads(os.environ['RESULTS'])
+          planned = needs['sdk-plan']
+          if planned['result'] == 'skipped':
+              if needs['runtime-continuation']['outputs'].get('sdk_handoff_required') != 'false':
+                  raise ValueError('Required SDK plan did not execute')
+          elif planned['result'] != 'success':
+              raise ValueError('SDK replay planning failed')
+          else:
+              required = planned['outputs'].get('sdk_workers_required')
+              if required not in ('true', 'false'):
+                  raise ValueError('SDK work election is missing')
+              for wave in (1, 2):
+                  job = needs[f'sdk-collect-{wave}']
+                  if required == 'true':
+                      if job['result'] != 'success' or job['outputs'].get('wave_failed') != 'false':
+                          raise ValueError(f'SDK wave {wave} failed or was not collected')
+                      required = job['outputs'].get('sdk_workers_required') if wave == 1 else 'false'
+                      if required not in ('true', 'false'):
+                          raise ValueError('SDK next-wave election is missing')
+                  elif job['result'] != 'skipped':
+                      raise ValueError('Unelected SDK collection executed')
+          PY
 
   merge-gate:
     name: CI / merge-gate

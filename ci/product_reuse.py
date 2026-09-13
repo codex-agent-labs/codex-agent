@@ -2684,6 +2684,13 @@ def inspect_products(
             "readyPlans": [state.prior_ready_plans[instance] for instance in sorted(state.prior_ready_plans)]}
 
 
+def _sdk_javascript_worker_instance(instance):
+    return instance in (
+        PhaseInstanceId("sdk", "javascript", "package", "node"),
+        PhaseInstanceId("sdk", "javascript", "validation", "node"),
+    )
+
+
 def _runtime_worker_instance(instance):
     return instance.product == "runtime" and instance.component != "runtime-aggregate"
 
@@ -3591,14 +3598,17 @@ def collect_runtime_workers(
     environ: Mapping[str, str] | None = None, token: str,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     runtime_aggregate_only: bool = False,
+    sdk_javascript_only: bool = False,
 ) -> dict[str, Any]:
-    """Collect every elected Runtime row; failed siblings cannot erase originals.
+    """Collect elected Runtime or JavaScript SDK rows without erasing originals.
 
     This external report is not receipt authority. advance_products verifies
     successful original shards again and enforces its exact elected partition.
     """
-    if type(runtime_aggregate_only) is not bool:
-        raise ValueError("Runtime aggregate collection scope must be boolean")
+    if (type(runtime_aggregate_only) is not bool or type(sdk_javascript_only) is not bool
+            or runtime_aggregate_only and sdk_javascript_only):
+        raise ValueError("Worker collection scopes must be boolean and mutually exclusive")
+    product = "sdk" if sdk_javascript_only else "runtime"
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     discovery_root, state_root, destination = _product_materialization_paths(root, discovery_root, state_root, destination)
     if destination.exists() or destination.is_symlink():
@@ -3607,8 +3617,9 @@ def collect_runtime_workers(
     state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling)
     producer = state.producer
     selected = [(instance, ready) for instance, ready in sorted(state.prior_ready_plans.items())
-                if (instance == PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
-                    if runtime_aggregate_only else _runtime_worker_instance(instance))]
+                if (_sdk_javascript_worker_instance(instance) if sdk_javascript_only else
+                    (instance == PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+                     if runtime_aggregate_only else _runtime_worker_instance(instance)))]
     observed, artifacts, jobs = [], [], []
     if selected:
         observed = _observe_ci_producer_jobs(
@@ -3619,7 +3630,7 @@ def collect_runtime_workers(
             f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{producer['runId']}/artifacts",
             "artifacts", token)
     for instance, _ready in selected:
-        name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
+        name = f"product-validation / {product}-{instance.component}-{instance.phase}-{instance.target}"
         if any(job.get("name") == name and job.get("status") != "completed" for job in jobs):
             raise ValueError("An elected Runtime worker is still running; collect after all siblings finish")
     _prepare_destination(destination, root).rmdir()
@@ -3629,8 +3640,8 @@ def collect_runtime_workers(
         rows = []
         for instance, ready in selected:
             name = f"{instance.component}-{instance.phase}-{instance.target}"
-            job_name = f"product-validation / runtime-{name}"
-            artifact_name = (f"codex-agent-runtime-worker-{name}-{ready['buildKey'].removeprefix('sha256:')}-"
+            job_name = f"product-validation / {product}-{name}"
+            artifact_name = (f"codex-agent-{product}-worker-{name}-{ready['buildKey'].removeprefix('sha256:')}-"
                              f"{producer['tree']}-attempt-{producer['runAttempt']}")
             row = {**_identity_record(instance), "buildKey": ready["buildKey"],
                    "jobName": job_name, "artifactName": artifact_name, "result": "failure", "reason": None,
@@ -3670,7 +3681,8 @@ def collect_runtime_workers(
                 verified = verify_phase_shard(original / "shard", instance)
                 receipt = verified["receipt"]
                 if (receipt["producer"] != producer or receipt["buildKey"] != ready["buildKey"]
-                        or receipt["productVersion"] != state.expected_fixed["versions"]["runtime-release"]
+                        or receipt["productVersion"] != state.expected_fixed["versions"][
+                            "sdk" if sdk_javascript_only else "runtime-release"]
                         or receipt["trustDomain"] != ("development" if state.plan["event"] == "pull_request" else "release")):
                     raise ValueError("Runtime worker shard differs from its elected plan and producer")
                 row.update(result="success", reason="verified-original-shard",
@@ -3696,6 +3708,7 @@ def advance_products(
     failed_instances: tuple[PhaseInstanceId, ...] = (),
     runtime_workers_only: bool = False,
     runtime_aggregate_only: bool = False,
+    sdk_javascript_only: bool = False,
 ) -> dict[str, Any]:
     github_output(github_output_path, {
         "full_reuse": False,
@@ -3738,10 +3751,13 @@ def advance_products(
     expected_builds = {
         _identity(phase): phase for phase in prior["phases"] if phase["state"] == "build"
     }
-    if (type(runtime_workers_only) is not bool or type(runtime_aggregate_only) is not bool
-            or runtime_workers_only and runtime_aggregate_only):
+    if (any(type(value) is not bool for value in (runtime_workers_only, runtime_aggregate_only, sdk_javascript_only))
+            or sum((runtime_workers_only, runtime_aggregate_only, sdk_javascript_only)) > 1):
         raise ValueError("Runtime collection scopes must be boolean and mutually exclusive")
-    if runtime_workers_only:
+    if sdk_javascript_only:
+        expected_builds = {instance: phase for instance, phase in expected_builds.items()
+                           if _sdk_javascript_worker_instance(instance)}
+    elif runtime_workers_only:
         expected_builds = {instance: phase for instance, phase in expected_builds.items()
                            if _runtime_worker_instance(instance)}
     elif runtime_aggregate_only:
@@ -4126,11 +4142,15 @@ def capture_runtime_resume_upload(
     plan_path: Path, destination: Path, *, artifact_id: int, artifact_sha256: str,
     trusted_workflow_sha: str, repository_root: Path | None = None,
     environ: Mapping[str, str] | None = None, token: str, state_wave: int = 0,
+    sdk_state_wave: int | None = None,
 ) -> dict[str, Any]:
     """Retain the exact resumed upload; full product replay grants admission."""
     require_integer(artifact_id, "Runtime resume artifact ID", 1)
     if type(state_wave) is not int or not 0 <= state_wave <= 5:
         raise ValueError("Runtime state wave must be an integer from zero through five")
+    if sdk_state_wave is not None and (type(sdk_state_wave) is not int
+            or sdk_state_wave not in (1, 2) or state_wave != 0):
+        raise ValueError("SDK state wave must be one or two, without a Runtime state wave")
     require_sha256(artifact_sha256, "Runtime resume artifact digest")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     if destination.exists() or destination.is_symlink():
@@ -4150,19 +4170,26 @@ def capture_runtime_resume_upload(
         job_name = "product-validation / product-resume" if state_wave == 0 else f"product-validation / runtime-collect-{state_wave}"
         artifact_name = (f"codex-agent-product-resume-{producer['tree']}" if state_wave == 0 else
                          f"codex-agent-runtime-wave-{state_wave}-state-{producer['tree']}-attempt-{producer['runAttempt']}")
+        if sdk_state_wave is not None:
+            job_name = f"product-validation / sdk-collect-{sdk_state_wave}"
+            artifact_name = (f"codex-agent-sdk-wave-{sdk_state_wave}-state-{producer['tree']}-"
+                             f"attempt-{producer['runAttempt']}")
         observed = _observe_ci_producer_jobs(
             {"resume": producer}, jobs_by_phase={"resume": job_name},
             trusted_workflow_sha=trusted_workflow_sha, token=token)
         artifact, raw = _download_contract_ci_upload(
             artifact_id, artifact_sha256, artifact_name,
             producer, observed[0]["run"], token)
+        if sdk_state_wave is not None:
+            _require_artifact_job_window(observed[0], job_name, artifact)
         archive = private / "transport.zip"
         archive.write_bytes(raw)
         verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
         prepared = private / "captured"
         original = prepared / "original"
         safe_extract(archive, original)
-        expected_roots = {"product-resume-inputs", "product-resume-state"} | ({"runtime-state"} if state_wave else set())
+        expected_roots = {"product-resume-inputs", "product-resume-state"} | (
+            {"runtime-state"} if state_wave or sdk_state_wave is not None else set())
         if ({member.name for member in original.iterdir()} != expected_roots
                 or any(not member.is_dir() for member in original.iterdir())):
             raise ValueError("Runtime resume upload requires its exact original directories")
@@ -4172,6 +4199,11 @@ def capture_runtime_resume_upload(
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed}
         if state_wave:
             transport["stateWave"] = state_wave
+        if sdk_state_wave is not None:
+            transport["sdkStateWave"] = sdk_state_wave
+            if read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024,
+                                       reject_symlink_parents=True) != plan_bytes:
+                raise ValueError("Original SDK state capture plan changed during verification")
         write_canonical_json(prepared / "capture-transport.json", transport)
         publish_regular_tree(prepared, destination, allow_empty=True)
     return transport

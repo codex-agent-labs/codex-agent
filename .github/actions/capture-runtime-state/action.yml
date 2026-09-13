@@ -1,6 +1,9 @@
 name: Capture authenticated Runtime state
 description: Verify the exact parent upload and re-elect work before any platform setup.
 inputs:
+  product:
+    default: runtime
+    description: Fixed runtime or sdk readiness projection over captured product state.
   plan-id:
     required: true
     description: Caller-owned original plan artifact ID.
@@ -16,6 +19,9 @@ inputs:
   state-wave:
     default: '0'
     description: Zero for initial resume; otherwise the fixed preceding wave.
+  sdk-state-wave:
+    default: ''
+    description: Optional exact SDK collection wave, mutually exclusive with Runtime state-wave.
   component:
     default: ''
     description: Optional elected Runtime component.
@@ -29,6 +35,10 @@ inputs:
     default: ''
     description: Optional exact elected build key.
 outputs:
+  sdk-matrix:
+    value: ${{ steps.capture.outputs.sdk_matrix }}
+  sdk-workers-required:
+    value: ${{ steps.capture.outputs.sdk_workers_required }}
   plan-path:
     value: ${{ steps.capture.outputs.plan_path }}
   discovery-root:
@@ -54,6 +64,8 @@ runs:
         ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         STATE_WAVE: ${{ inputs.state-wave }}
+        STATE_PRODUCT: ${{ inputs.product }}
+        SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
         COMPONENT: ${{ inputs.component }}
         PHASE: ${{ inputs.phase }}
         TARGET: ${{ inputs.target }}
@@ -62,10 +74,21 @@ runs:
       run: |
         set -euo pipefail
         selected=()
+        command=(python3 -B ci/runtime_workflow.py capture)
+        case "$STATE_PRODUCT" in
+          runtime) test -z "$SDK_STATE_WAVE" ;;
+          sdk)
+            test -z "$COMPONENT$PHASE$TARGET$BUILD_KEY"
+            command=(python3 -B -m ci.sdk_workflow capture)
+            if [ -n "$SDK_STATE_WAVE" ]; then
+              selected=(--sdk-state-wave "$SDK_STATE_WAVE")
+            fi ;;
+          *) echo 'Unknown product state projection' >&2; exit 1 ;;
+        esac
         if [ -n "$COMPONENT$PHASE$TARGET$BUILD_KEY" ]; then
           selected=(--component "$COMPONENT" --phase "$PHASE" --target "$TARGET" --expected-build-key "$BUILD_KEY")
         fi
-        python3 -B ci/runtime_workflow.py capture \
+        "${command[@]}" \
           --plan build/runtime-plan/impact-plan.json --destination build/runtime-input \
           --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
           --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --state-wave "$STATE_WAVE" \
