@@ -188,6 +188,29 @@ def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_
     unchanged()
 
 
+def execute_ios_binary(plan, discovery, state, destination, *, expected_build_key,
+                       native_uploads, trusted_workflow_sha, repository_root, environ, token):
+    """Execute an elected binary; receipt creation follows every input exit check."""
+    from sdk_ios_binary import execute
+
+    root = Path(repository_root).resolve(strict=True)
+    discovery, state, destination = product_reuse._product_materialization_paths(root, discovery, state, destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("SDK iOS binary worker requires a fresh destination")
+    with verified_ios_binary_inputs(plan, discovery, state, destination / "inputs",
+            expected_build_key=expected_build_key, native_uploads=native_uploads,
+            trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token) as inputs:
+        ready, producer, version = inputs["ready"], inputs["producer"], inputs["sdkVersion"]
+        result = execute(ready, producer=producer, sdk_version=version,
+            contract_metadata=inputs["contract"], verified_contract_handoff=inputs["contractHandoff"],
+            native_evidence=inputs["native"], repository_root=root, destination=destination / "worker", environ=environ)
+    if regular_file_inventory(result["stage"]) != result["outputInventory"]:
+        raise ValueError("SDK iOS binary output changed before finalization")
+    trust = "development" if producer["event"] == "pull_request" else "release"
+    return product_reuse.finalize_phase_object(stage_root=result["stage"], phase_plan=ready,
+        producer=producer, product_version=version, trust_domain=trust, destination=destination / "shard")
+
+
 def matrix(plan, discovery, state, github_output_path, *, repository_root=None, environ=None):
     """Expose only original replay-elected JS work before platform setup."""
     from sdk_phase import route
@@ -343,8 +366,35 @@ def _workflow_main(argv):
         parser.error(str(error))
 
 
+def _ios_binary_main(argv):
+    parser = argparse.ArgumentParser(description="Execute only the elected SDK iOS binary phase")
+    for name in ("plan", "discovery-root", "state-root", "destination", "repository-root"):
+        parser.add_argument(f"--{name}", type=Path, required=True)
+    for name in ("trusted-workflow-sha", "expected-build-key"):
+        parser.add_argument(f"--{name}", required=True)
+    lanes = ("native-tests", "rust-device", "rust-simulator")
+    for lane in lanes:
+        parser.add_argument(f"--{lane}-artifact-id", type=int, required=True)
+        parser.add_argument(f"--{lane}-artifact-sha256", required=True)
+    arguments = vars(parser.parse_args(argv))
+    uploads = {f"ios-{lane}": {
+        "artifactId": arguments.pop(lane.replace("-", "_") + "_artifact_id"),
+        "artifactSha256": arguments.pop(lane.replace("-", "_") + "_artifact_sha256"),
+    } for lane in lanes}
+    plan, discovery, state, destination = (arguments.pop(name) for name in (
+        "plan", "discovery_root", "state_root", "destination"))
+    try:
+        execute_ios_binary(plan, discovery, state, destination, **arguments,
+            native_uploads=uploads, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    return 0
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "ios-binary":
+        return _ios_binary_main(argv[1:])
     if argv and argv[0] in {"matrix", "capture", "collect"}:
         _workflow_main(argv)
         return 0

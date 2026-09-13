@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+import subprocess
+import time
 from typing import Any
 
 from products.inventory import (
@@ -15,6 +17,7 @@ from products.inventory import (
     require_regular_directory,
     require_semver,
     require_sha256,
+    write_canonical_json,
 )
 from products.receipt import validate_phase_receipt, validate_producer, verify_output_manifest_identity
 from products.registry import PHASE_INSTANCE_IDS
@@ -126,3 +129,105 @@ def properties(
         "codexAgent.contractVersion": version,
         "codexAgent.iosNativeEvidenceDirectory": str(native),
     }
+
+
+def execute(
+    plan: Mapping[str, Any], *, producer: Mapping[str, Any], sdk_version: str,
+    contract_metadata: Mapping[str, Any], verified_contract_handoff: Path,
+    native_evidence: Path, repository_root: Path, destination: Path,
+    environ: Mapping[str, str],
+) -> dict[str, Any]:
+    """Run the fixed iOS binary phase without finalizing or admitting its output."""
+    from native_wrappers import host_classifier
+    from product_reuse import (
+        _prepare_destination, _runtime_worker_checkout, _runtime_worker_command,
+        _runtime_worker_environment,
+    )
+    from products.sdk_native_metadata import _inventory
+    from products.sdk_package import _require_capability_output_separate
+
+    version = require_semver(sdk_version, "Elected SDK version")
+    record = require_exact_keys(
+        contract_metadata, {"stage", "receiptPath", "receipt"},
+        "Authenticated Contract metadata record",
+    )
+    metadata = _directory(record["stage"], "Authenticated Contract metadata stage")
+    receipt_path = _file(record["receiptPath"], "Authenticated Contract metadata receipt")
+    handoff = _directory(verified_contract_handoff, "Verified Contract handoff")
+    native = _directory(native_evidence, "Authenticated Apple native evidence")
+    originals = {
+        "metadata": (metadata, _inventory(metadata), False),
+        "handoff": (handoff, _inventory(handoff, allow_empty=True), True),
+        "native": (native, _inventory(native), False),
+    }
+    receipt_bytes = read_regular_file_bytes(
+        receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True,
+    )
+    fields = properties(
+        plan, producer=producer, contract_metadata=contract_metadata,
+        verified_contract_handoff=verified_contract_handoff,
+        native_evidence=native_evidence,
+    )
+
+    def originals_unchanged() -> None:
+        if any(_inventory(source, allow_empty=allow_empty) != inventory
+               for source, inventory, allow_empty in originals.values()):
+            raise ValueError("Original iOS SDK binary input changed during execution")
+        if read_regular_file_bytes(
+                receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True) != receipt_bytes:
+            raise ValueError("Original iOS SDK binary metadata receipt changed during execution")
+
+    originals_unchanged()
+    if host_classifier() != "macos-arm64":
+        raise ValueError("iOS SDK binary production requires the actual macOS ARM64 host")
+    root = Path(repository_root).resolve(strict=True)
+    destination = Path(destination).absolute()
+    stage = root / "build/product-stage/sdk/sdk-ios/binary"
+    inputs = [receipt_path, *(path for path, _, _ in originals.values())]
+    _require_capability_output_separate(destination, [stage, *inputs])
+    _require_capability_output_separate(stage, inputs)
+    if destination.exists() or destination.is_symlink() or stage.exists() or stage.is_symlink():
+        raise ValueError("iOS SDK binary worker requires fresh diagnostic and product outputs")
+    _prepare_destination(stage, root).rmdir()
+    environment, wrapper = _runtime_worker_environment(root, producer, destination, environ)
+    destination = _prepare_destination(destination, root)
+
+    def unchanged() -> None:
+        _runtime_worker_checkout(root, producer)
+        bytecode = destination / "python-bytecode"
+        if bytecode.exists() or bytecode.is_symlink():
+            raise ValueError("iOS SDK binary private bytecode namespace was modified")
+        originals_unchanged()
+
+    unchanged()
+    if stage.exists() or stage.is_symlink():
+        raise ValueError("iOS SDK binary product stage appeared before execution")
+    command = _runtime_worker_command(wrapper, fields, environment, build_directory=".")
+    started = time.monotonic_ns()
+    return_code, launch_error = None, None
+    try:
+        with (destination / "gradle.log").open("xb") as log:
+            process = subprocess.run(
+                command, cwd=root, env=environment, stdout=log,
+                stderr=subprocess.STDOUT, check=False,
+            )
+            return_code = process.returncode
+    except OSError as error:
+        launch_error = str(error)
+        raise
+    finally:
+        write_canonical_json(destination / "execution.json", {
+            "schemaVersion": 1, "producer": dict(producer),
+            "buildKey": plan["buildKey"], "command": command,
+            "returnCode": return_code, "launchError": launch_error,
+            "elapsedNs": time.monotonic_ns() - started,
+        })
+        unchanged()
+    if return_code != 0:
+        raise ValueError(
+            f"iOS SDK binary phase failed with exit code {return_code}; see {destination / 'gradle.log'}",
+        )
+    verify_output_manifest_identity(stage, "sdk", "sdk-ios", "binary", "ios", version)
+    output_inventory = _inventory(stage)
+    unchanged()
+    return {"stage": stage, "diagnostics": destination, "outputInventory": output_inventory}
