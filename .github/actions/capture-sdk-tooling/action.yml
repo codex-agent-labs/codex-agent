@@ -1,0 +1,67 @@
+name: Capture exact signed SDK validation tooling
+description: Reauthenticate the caller-selected tooling upload under the consumer's Git policy and installed Java. Requires original signed-producer Git objects locally; no build, signing or JAR execution.
+inputs:
+  artifact-id:
+    required: true
+    description: Caller-selected exact original tooling upload ID.
+  artifact-sha256:
+    required: true
+    description: Caller-selected exact original tooling upload digest.
+  transport-producer:
+    required: true
+    description: Caller-selected original upload producer JSON, not obtained from the download.
+  trusted-workflow-sha:
+    required: true
+    description: Exact reviewed workflow pin for the observed original upload.
+  policy-revision:
+    required: true
+    description: Exact consumer Git revision owning the public signing and tooling policy.
+outputs:
+  tooling-policy:
+    description: Current consumer's external six-field policy path, valid for this job only.
+    value: ${{ steps.capture.outputs.tooling_policy }}
+runs:
+  using: composite
+  steps:
+    - id: capture
+      name: Capture caller-selected tooling using provisioned Java
+      shell: bash
+      env:
+        ARTIFACT_ID: ${{ inputs.artifact-id }}
+        ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
+        TRANSPORT_PRODUCER: ${{ inputs.transport-producer }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        POLICY_REVISION: ${{ inputs.policy-revision }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B - <<'PY'
+        import os, subprocess, sys, tempfile
+        from pathlib import Path
+        from ci.products.inventory import canonical_json_bytes, load_json_bytes, read_regular_file_bytes
+        repository = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        java_home = Path(os.environ['JAVA_HOME'])
+        scratch_root = Path(os.environ['RUNNER_TEMP'])
+        if not java_home.is_absolute() or not scratch_root.is_absolute():
+            raise ValueError('Tooling capture requires absolute caller Java and scratch paths')
+        java = (java_home / 'bin' / ('java.exe' if os.name == 'nt' else 'java')).resolve(strict=True)
+        read_regular_file_bytes(java, max_bytes=128 * 1024 * 1024, reject_symlink_parents=True)
+        scratch_root = scratch_root.resolve(strict=True)
+        if scratch_root.is_relative_to(repository) or repository.is_relative_to(scratch_root):
+            raise ValueError('Tooling capture scratch must be outside and separate from the checkout')
+        producer = load_json_bytes(os.environ['TRANSPORT_PRODUCER'].encode('utf-8'))
+        parent = Path(tempfile.mkdtemp(prefix='sdk-tooling-capture-', dir=scratch_root)).resolve(strict=True)
+        producer_path, destination = parent / 'transport-producer.json', parent / 'capture'
+        producer_path.write_bytes(canonical_json_bytes(producer))
+        subprocess.run([sys.executable, '-B', '-m', 'ci.tooling_capture',
+            '--destination', str(destination), '--repository-root', str(repository),
+            '--transport-producer', str(producer_path), '--java-executable', str(java),
+            '--artifact-id', os.environ['ARTIFACT_ID'], '--artifact-sha256', os.environ['ARTIFACT_SHA256'],
+            '--trusted-workflow-sha', os.environ['TRUSTED_WORKFLOW_SHA'], '--policy-revision', os.environ['POLICY_REVISION']],
+            cwd=repository, env=os.environ, check=True)
+        policy = destination / 'tooling-policy.json'
+        read_regular_file_bytes(policy, reject_symlink_parents=True)
+        if any(character in str(policy) for character in '\r\n'):
+            raise ValueError('Tooling policy output path must occupy one output line')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('tooling_policy=' + str(policy) + '\n')
+        PY

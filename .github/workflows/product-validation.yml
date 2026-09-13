@@ -285,6 +285,91 @@ jobs:
           metadata: ${{ matrix.metadata }}
           node-version: ${{ (matrix.lane == 'contracts' || contains(matrix.lane, 'node')) && '24.18.0' || 'none' }}
 
+  tooling-attestation:
+    name: tooling-attestation
+    if: >-
+      always() && !cancelled() && needs.plan.result == 'success' &&
+      needs.workflow-lint.result == 'success' &&
+      needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.plan.outputs.validation_reused != 'true' &&
+      github.event_name != 'workflow_dispatch' &&
+      needs.plan.outputs.tooling_required == 'true' &&
+      needs.plan.outputs.tooling_miss == 'true'
+    needs: [workflow-lint, plan, product]
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload_tooling.outputs.artifact-id }}
+      artifact_sha256: sha256:${{ steps.upload_tooling.outputs.artifact-digest }}
+      transport_producer: ${{ steps.identity.outputs.transport_producer }}
+    steps:
+      - name: Check out reviewed tooling signer only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: d3eb9635e71a2347a07a13a3874417df45c21403
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Import exact producer Git objects without checking out producer code
+        env:
+          VALIDATION_COMMIT: ${{ needs.plan.outputs.validation_commit }}
+          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
+        run: |
+          set -euo pipefail
+          [[ "$VALIDATION_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$VALIDATION_TREE" =~ ^[0-9a-f]{40}$ ]]
+          git -C trusted-source fetch --no-tags origin "$VALIDATION_COMMIT"
+          test "$(git -C trusted-source rev-parse "$VALIDATION_COMMIT^{tree}")" = "$VALIDATION_TREE"
+          test "$(git -C trusted-source rev-parse HEAD)" = d3eb9635e71a2347a07a13a3874417df45c21403
+      - name: Download original plan and source inventories
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.plan.outputs.plan_id }}
+          path: ${{ runner.temp }}/tooling-original-plan
+          merge-multiple: true
+      - name: Authenticate original tooling and establish detached release trust
+        env:
+          TRUSTED_SOURCE_SHA: d3eb9635e71a2347a07a13a3874417df45c21403
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/tooling_release.py \
+            --repository-root "$GITHUB_WORKSPACE/trusted-source" \
+            --plan "$RUNNER_TEMP/tooling-original-plan/impact-plan.json" \
+            --destination "$RUNNER_TEMP/tooling-release-evidence" \
+            --trusted-source-sha "$TRUSTED_SOURCE_SHA" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --validation-tree "$VALIDATION_TREE"
+      - id: identity
+        name: Expose authenticated transport locator
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          caller = json.loads((Path(os.environ['RUNNER_TEMP']) / 'tooling-release-evidence/caller.json').read_bytes())
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('transport_producer=' + json.dumps(caller['transportProducer'], sort_keys=True, separators=(',', ':')) + '\n')
+          PY
+      - id: upload_tooling
+        name: Preserve exact signed tooling and original provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-release-tooling-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tooling-release-evidence
+          compression-level: 0
+          retention-days: 90
+
   contract-continuation:
     name: contract-continuation
     if: >-
@@ -2403,7 +2488,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript, sdk-native-packages]
+    needs: [workflow-lint, plan, product, tooling-attestation, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript, sdk-native-packages]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -2413,6 +2498,10 @@ jobs:
           REMOTE_BUILD_AUTHORIZED: ${{ needs.plan.outputs.remote_build_authorized }}
           REMOTE_BUILD_AUTHORIZATION_REASON: ${{ needs.plan.outputs.remote_build_authorization_reason }}
           RESULTS: ${{ join(needs.*.result, ' ') }}
+          TOOLING_MISS: ${{ needs.plan.outputs.tooling_miss }}
+          TOOLING_ATTESTATION_RESULT: ${{ needs.tooling-attestation.result }}
+          TOOLING_ARTIFACT_ID: ${{ needs.tooling-attestation.outputs.artifact_id }}
+          TOOLING_ARTIFACT_SHA256: ${{ needs.tooling-attestation.outputs.artifact_sha256 }}
           CONTRACT_COMPLETE: ${{ needs.contract-continuation.outputs.contract_complete }}
           CONTRACT_ATTESTATION_RESULT: ${{ needs.contract-attestation.result }}
           CONTRACT_ATTESTATION_ARTIFACT_ID: ${{ needs.contract-attestation.outputs.artifact_id }}
@@ -2446,6 +2535,11 @@ jobs:
           fi
           if grep -Eq 'failure|cancelled' <<<"$RESULTS"; then
             exit 1
+          fi
+          if [ "$TOOLING_MISS" = true ]; then
+            test "$TOOLING_ATTESTATION_RESULT" = success || exit 1
+            [[ "$TOOLING_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+            [[ "$TOOLING_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           fi
           if [ -n "$AGGREGATE_STATE" ] && [ "$AGGREGATE_STATE" != not-selected ]; then
             test "$AGGREGATE_PAYLOAD_COMPLETE" = true || exit 1
