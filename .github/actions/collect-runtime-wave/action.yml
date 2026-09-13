@@ -3,7 +3,7 @@ description: Preserve every original worker result, advance the same planner, an
 inputs:
   product:
     default: runtime
-    description: Fixed runtime or sdk collection scope.
+    description: Fixed runtime, sdk JavaScript, or sdk-ios-binary collection scope.
   sdk-state-wave:
     default: ''
     description: Optional exact SDK predecessor state wave.
@@ -24,7 +24,7 @@ inputs:
     description: Fixed predecessor wave.
   wave:
     required: true
-    description: Fixed current wave, one through four for workers or five for the aggregate.
+    description: Runtime waves one through five; SDK JavaScript one/two; SDK iOS binary three.
   tree:
     required: true
     description: Exact tested tree.
@@ -78,6 +78,7 @@ runs:
         case "$PRODUCT" in
           runtime) command=(python3 -B ci/runtime_workflow.py collect); state=(--state-wave "$STATE_WAVE") ;;
           sdk) command=(python3 -B -m ci.sdk_workflow collect); state=() ;;
+          sdk-ios-binary) command=(python3 -B -m ci.sdk_workflow collect); state=(--ios-binary) ;;
           *) echo 'Unknown product collection scope' >&2; exit 1 ;;
         esac
         "${command[@]}" --input-root "$INPUT_ROOT" \
@@ -86,7 +87,7 @@ runs:
     - id: upload
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: codex-agent-${{ inputs.product }}-wave-${{ inputs.wave }}-state-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        name: codex-agent-${{ inputs.product == 'sdk-ios-binary' && 'sdk' || inputs.product }}-wave-${{ inputs.wave }}-state-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
         path: build/runtime-next/handoff
         if-no-files-found: error
         overwrite: false
@@ -96,7 +97,7 @@ runs:
     - if: always()
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: codex-agent-${{ inputs.product }}-wave-${{ inputs.wave }}-diagnostics-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        name: codex-agent-${{ inputs.product == 'sdk-ios-binary' && 'sdk' || inputs.product }}-wave-${{ inputs.wave }}-diagnostics-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
         path: |
           ${{ failure() && 'build/runtime-next' || 'build/runtime-next/collection' }}
           build/runtime-input/capture-transport.json

@@ -2691,6 +2691,10 @@ def _sdk_javascript_worker_instance(instance):
     )
 
 
+def _sdk_ios_binary_worker_instance(instance):
+    return instance == PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
+
+
 def _runtime_worker_instance(instance):
     return instance.product == "runtime" and instance.component != "runtime-aggregate"
 
@@ -3599,16 +3603,17 @@ def collect_runtime_workers(
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     runtime_aggregate_only: bool = False,
     sdk_javascript_only: bool = False,
+    sdk_ios_binary_only: bool = False,
 ) -> dict[str, Any]:
     """Collect elected Runtime or JavaScript SDK rows without erasing originals.
 
     This external report is not receipt authority. advance_products verifies
     successful original shards again and enforces its exact elected partition.
     """
-    if (type(runtime_aggregate_only) is not bool or type(sdk_javascript_only) is not bool
-            or runtime_aggregate_only and sdk_javascript_only):
+    if (any(type(value) is not bool for value in (runtime_aggregate_only, sdk_javascript_only, sdk_ios_binary_only))
+            or sum((runtime_aggregate_only, sdk_javascript_only, sdk_ios_binary_only)) > 1):
         raise ValueError("Worker collection scopes must be boolean and mutually exclusive")
-    product = "sdk" if sdk_javascript_only else "runtime"
+    product = "sdk" if sdk_javascript_only or sdk_ios_binary_only else "runtime"
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     discovery_root, state_root, destination = _product_materialization_paths(root, discovery_root, state_root, destination)
     if destination.exists() or destination.is_symlink():
@@ -3617,7 +3622,8 @@ def collect_runtime_workers(
     state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling)
     producer = state.producer
     selected = [(instance, ready) for instance, ready in sorted(state.prior_ready_plans.items())
-                if (_sdk_javascript_worker_instance(instance) if sdk_javascript_only else
+                if (_sdk_ios_binary_worker_instance(instance) if sdk_ios_binary_only else
+                    _sdk_javascript_worker_instance(instance) if sdk_javascript_only else
                     (instance == PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
                      if runtime_aggregate_only else _runtime_worker_instance(instance)))]
     observed, artifacts, jobs = [], [], []
@@ -3682,7 +3688,7 @@ def collect_runtime_workers(
                 receipt = verified["receipt"]
                 if (receipt["producer"] != producer or receipt["buildKey"] != ready["buildKey"]
                         or receipt["productVersion"] != state.expected_fixed["versions"][
-                            "sdk" if sdk_javascript_only else "runtime-release"]
+                            "sdk" if sdk_javascript_only or sdk_ios_binary_only else "runtime-release"]
                         or receipt["trustDomain"] != ("development" if state.plan["event"] == "pull_request" else "release")):
                     raise ValueError("Runtime worker shard differs from its elected plan and producer")
                 row.update(result="success", reason="verified-original-shard",
@@ -3709,6 +3715,7 @@ def advance_products(
     runtime_workers_only: bool = False,
     runtime_aggregate_only: bool = False,
     sdk_javascript_only: bool = False,
+    sdk_ios_binary_only: bool = False,
 ) -> dict[str, Any]:
     github_output(github_output_path, {
         "full_reuse": False,
@@ -3751,10 +3758,13 @@ def advance_products(
     expected_builds = {
         _identity(phase): phase for phase in prior["phases"] if phase["state"] == "build"
     }
-    if (any(type(value) is not bool for value in (runtime_workers_only, runtime_aggregate_only, sdk_javascript_only))
-            or sum((runtime_workers_only, runtime_aggregate_only, sdk_javascript_only)) > 1):
+    if (any(type(value) is not bool for value in (runtime_workers_only, runtime_aggregate_only, sdk_javascript_only, sdk_ios_binary_only))
+            or sum((runtime_workers_only, runtime_aggregate_only, sdk_javascript_only, sdk_ios_binary_only)) > 1):
         raise ValueError("Runtime collection scopes must be boolean and mutually exclusive")
-    if sdk_javascript_only:
+    if sdk_ios_binary_only:
+        expected_builds = {instance: phase for instance, phase in expected_builds.items()
+                           if _sdk_ios_binary_worker_instance(instance)}
+    elif sdk_javascript_only:
         expected_builds = {instance: phase for instance, phase in expected_builds.items()
                            if _sdk_javascript_worker_instance(instance)}
     elif runtime_workers_only:
@@ -4149,8 +4159,8 @@ def capture_runtime_resume_upload(
     if type(state_wave) is not int or not 0 <= state_wave <= 5:
         raise ValueError("Runtime state wave must be an integer from zero through five")
     if sdk_state_wave is not None and (type(sdk_state_wave) is not int
-            or sdk_state_wave not in (1, 2) or state_wave != 0):
-        raise ValueError("SDK state wave must be one or two, without a Runtime state wave")
+            or sdk_state_wave not in (1, 2, 3) or state_wave != 0):
+        raise ValueError("SDK state wave must be one, two or three, without a Runtime state wave")
     require_sha256(artifact_sha256, "Runtime resume artifact digest")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     if destination.exists() or destination.is_symlink():

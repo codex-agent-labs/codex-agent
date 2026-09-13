@@ -3,7 +3,7 @@ description: Verify the exact parent upload and re-elect work before any platfor
 inputs:
   product:
     default: runtime
-    description: Fixed runtime or sdk readiness projection over captured product state.
+    description: Fixed runtime, sdk JavaScript, or sdk-ios-binary readiness projection.
   plan-id:
     required: true
     description: Caller-owned original plan artifact ID.
@@ -77,11 +77,14 @@ runs:
         command=(python3 -B ci/runtime_workflow.py capture)
         case "$STATE_PRODUCT" in
           runtime) test -z "$SDK_STATE_WAVE" ;;
-          sdk)
+          sdk|sdk-ios-binary)
             test -z "$COMPONENT$PHASE$TARGET$BUILD_KEY"
             command=(python3 -B -m ci.sdk_workflow capture)
             if [ -n "$SDK_STATE_WAVE" ]; then
               selected=(--sdk-state-wave "$SDK_STATE_WAVE")
+            fi
+            if [ "$STATE_PRODUCT" = sdk-ios-binary ]; then
+              selected+=(--ios-binary)
             fi ;;
           *) echo 'Unknown product state projection' >&2; exit 1 ;;
         esac

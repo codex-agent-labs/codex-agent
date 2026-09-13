@@ -1821,8 +1821,113 @@ jobs:
           metadata: ${{ matrix.metadata }}
           node-version: ${{ contains(matrix.lane, 'node') && '24.18.0' || 'none' }}
 
+  sdk-ios-binary-plan:
+    needs: [plan, product-resume]
+    if: >-
+      needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' && needs.product-resume.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
+      sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: capture
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          product: sdk-ios-binary
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.product-resume.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.product-resume.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+
+  sdk-ios-binary:
+    name: sdk-sdk-ios-binary-ios
+    needs: [plan, product-resume, sdk-ios-binary-plan, apple]
+    if: >-
+      always() && needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-ios-binary-plan.result == 'success' &&
+      needs.sdk-ios-binary-plan.outputs.sdk_workers_required == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.sdk-ios-binary-plan.outputs.sdk_matrix || '{"include":[]}') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: ./.github/actions/sdk-ios-binary-worker
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.product-resume.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.product-resume.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          build-key: ${{ matrix.buildKey }}
+          tree: ${{ needs.plan.outputs.validation_tree }}
+          native-tests-artifact-id: ${{ needs.apple.outputs.native_tests_artifact_id }}
+          native-tests-artifact-sha256: ${{ needs.apple.outputs.native_tests_artifact_digest }}
+          rust-device-artifact-id: ${{ needs.apple.outputs.rust_device_artifact_id }}
+          rust-device-artifact-sha256: ${{ needs.apple.outputs.rust_device_artifact_digest }}
+          rust-simulator-artifact-id: ${{ needs.apple.outputs.rust_simulator_artifact_id }}
+          rust-simulator-artifact-sha256: ${{ needs.apple.outputs.rust_simulator_artifact_digest }}
+
+  sdk-collect-3:
+    name: sdk-collect-3
+    needs: [plan, sdk-ios-binary-plan, sdk-ios-binary, runtime-continuation, runtime-aggregate-continuation]
+    if: >-
+      always() && needs.sdk-ios-binary-plan.result == 'success' &&
+      needs.sdk-ios-binary-plan.outputs.sdk_workers_required == 'true' &&
+      needs.runtime-continuation.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
+      wave_failed: ${{ steps.collect.outputs.wave-failed }}
+      full_reuse: ${{ steps.collect.outputs.full-reuse }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: parent
+        env:
+          PREDECESSORS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          needs = json.loads(os.environ['PREDECESSORS'])
+          prior = needs['runtime-continuation']
+          selected = prior if prior['outputs'].get('aggregate_state') == 'not-selected' else needs['runtime-aggregate-continuation']
+          if selected['result'] != 'success':
+              raise ValueError('Latest Runtime state is incomplete; preserve original binary upload')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for name in ('artifact_id', 'artifact_digest', 'state_wave'):
+                  output.write(name + '=' + selected['outputs'][name] + '\n')
+          PY
+      - id: collect
+        uses: ./.github/actions/collect-runtime-wave
+        with:
+          product: sdk-ios-binary
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ steps.parent.outputs.artifact_id }}
+          artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}
+          state-wave: ${{ steps.parent.outputs.state_wave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          wave: '3'
+          tree: ${{ needs.plan.outputs.validation_tree }}
+
   sdk-plan:
-    needs: [plan, runtime-continuation, runtime-aggregate-continuation, sdk-inputs]
+    needs: [plan, runtime-continuation, runtime-aggregate-continuation, sdk-inputs, sdk-ios-binary-plan, sdk-collect-3]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-inputs.result == 'success'
@@ -1831,6 +1936,7 @@ jobs:
       artifact_id: ${{ steps.parent.outputs.artifact_id }}
       artifact_digest: ${{ steps.parent.outputs.artifact_digest }}
       state_wave: ${{ steps.parent.outputs.state_wave }}
+      sdk_state_wave: ${{ steps.parent.outputs.sdk_state_wave }}
       sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
       sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
     steps:
@@ -1850,11 +1956,22 @@ jobs:
           if source not in ('released-default', 'current-runtime'):
               raise ValueError('Unknown SDK Runtime source')
           parent = needs['runtime-aggregate-continuation' if source == 'current-runtime' else 'runtime-continuation']
+          binary_required = needs['sdk-ios-binary-plan']['outputs'].get('sdk_workers_required')
+          if binary_required not in ('true', 'false'):
+              raise ValueError('SDK iOS binary election is incomplete')
+          sdk_wave = ''
+          if binary_required == 'true':
+              parent = needs['sdk-collect-3']
+              if parent['outputs'].get('wave_failed') != 'false':
+                  raise ValueError('SDK iOS binary collection failed')
+              sdk_wave = '3'
           if parent['result'] != 'success':
               raise ValueError('SDK predecessor state is incomplete')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               for name in ('artifact_id', 'artifact_digest', 'state_wave'):
-                  output.write(name + '=' + parent['outputs'][name] + '\n')
+                  value = '0' if name == 'state_wave' and sdk_wave else parent['outputs'][name]
+                  output.write(name + '=' + value + '\n')
+              output.write('sdk_state_wave=' + sdk_wave + '\n')
           PY
       - id: capture
         uses: ./.github/actions/capture-runtime-state
@@ -1864,6 +1981,7 @@ jobs:
           artifact-id: ${{ steps.parent.outputs.artifact_id }}
           artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}
           state-wave: ${{ steps.parent.outputs.state_wave }}
+          sdk-state-wave: ${{ steps.parent.outputs.sdk_state_wave }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
 
   sdk-workers-1:
@@ -1889,6 +2007,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-plan.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-plan.outputs.sdk_state_wave }}
           sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
           sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
@@ -1923,6 +2042,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-plan.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-plan.outputs.sdk_state_wave }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           wave: '1'
           tree: ${{ needs.plan.outputs.validation_tree }}
@@ -2027,7 +2147,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-aggregate-attestation, sdk-inputs, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
+    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -2054,7 +2174,7 @@ jobs:
           SDK_INPUTS_ARTIFACT_ID: ${{ needs.sdk-inputs.outputs.artifact_id }}
           SDK_INPUTS_ARTIFACT_DIGEST: ${{ needs.sdk-inputs.outputs.artifact_digest }}
           RUNTIME_WAVE_FAILED: ${{ needs.runtime-collect-1.outputs.wave_failed }} ${{ needs.runtime-collect-2.outputs.wave_failed }} ${{ needs.runtime-collect-3.outputs.wave_failed }} ${{ needs.runtime-collect-4.outputs.wave_failed }} ${{ needs.runtime-collect-5.outputs.wave_failed }}
-          PRODUCT_FULL_REUSE: ${{ needs.runtime-collect-5.outputs.full_reuse || needs.runtime-collect-4.outputs.full_reuse || needs.runtime-collect-3.outputs.full_reuse || needs.runtime-collect-2.outputs.full_reuse || needs.runtime-collect-1.outputs.full_reuse || needs.product-resume.outputs.full_reuse }}
+          PRODUCT_FULL_REUSE: ${{ needs.sdk-collect-3.outputs.full_reuse || needs.runtime-collect-5.outputs.full_reuse || needs.runtime-collect-4.outputs.full_reuse || needs.runtime-collect-3.outputs.full_reuse || needs.runtime-collect-2.outputs.full_reuse || needs.runtime-collect-1.outputs.full_reuse || needs.product-resume.outputs.full_reuse }}
         run: |
           if [ "$EVENT_AUTHORIZED" != true ]; then
             echo 'The workflow-owned event gate did not authorize remote product CI.' >&2

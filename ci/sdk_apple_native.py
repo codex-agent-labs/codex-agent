@@ -16,6 +16,7 @@ if __package__:
     from . import product_reuse
     from .receipt import INPUT_NAMES, safe_extract, validate_receipt
     from .products.inventory import (
+        load_json_bytes,
         read_regular_file_bytes,
         regular_file_inventory,
         require_exact_keys,
@@ -26,10 +27,12 @@ if __package__:
         write_canonical_json,
     )
     from .products.receipt import validate_producer
+    from .sdk_apple_source import _original_transport_producer
 else:
     import product_reuse
     from receipt import INPUT_NAMES, safe_extract, validate_receipt
     from products.inventory import (
+        load_json_bytes,
         read_regular_file_bytes,
         regular_file_inventory,
         require_exact_keys,
@@ -40,6 +43,7 @@ else:
         write_canonical_json,
     )
     from products.receipt import validate_producer
+    from sdk_apple_source import _original_transport_producer
 
 
 LANES = ("ios-native-tests", "ios-rust-device", "ios-rust-simulator")
@@ -95,14 +99,23 @@ def _receipt_producer(receipt: Mapping[str, Any]) -> dict[str, Any]:
     }, "Apple native lane producer")
 
 
-def _require_native_records(receipt: Mapping[str, Any], lane: str) -> None:
+def _require_native_records(
+    receipt: Mapping[str, Any], lane: str, root: Path,
+) -> dict[str, Any] | None:
     records = {
         (collection, item["relativePath"], item["kind"])
         for collection in ("artifacts", "evidence")
         for item in receipt[collection]
     }
-    if records != NATIVE_RECORDS[lane]:
+    provenance = {("evidence", "transport-provenance.json", "transport-provenance")}
+    if records == NATIVE_RECORDS[lane]:
+        return None
+    if records != NATIVE_RECORDS[lane] | provenance:
         raise ValueError("Apple native lane receipt has an unexpected output inventory")
+    original = _original_transport_producer(root, receipt, lane_name=lane)
+    if original is None:
+        raise ValueError("Apple native reused lane lacks its transport provenance")
+    return original[0]
 
 
 @contextmanager
@@ -174,6 +187,7 @@ def verified_sdk_apple_native_inputs(
         receipts = {}
         raw_archives = {}
         lane_inventories = {}
+        original_producers = {}
         evidence = private / "native-evidence"
         evidence.mkdir()
         for lane in LANES:
@@ -199,7 +213,7 @@ def verified_sdk_apple_native_inputs(
             )
             if receipt["artifactName"] != expected_name or _receipt_producer(receipt) != producer:
                 raise ValueError("Apple native lane receipt differs from its current upload producer")
-            _require_native_records(receipt, lane)
+            original_producer = _require_native_records(receipt, lane, captured) or producer
             for source, destination in NATIVE_FILES[lane].items():
                 contents = read_regular_file_bytes(
                     captured / source,
@@ -208,6 +222,12 @@ def verified_sdk_apple_native_inputs(
                 )
                 if not contents:
                     raise ValueError("Apple native evidence contains an empty required file")
+                if destination.endswith(".json"):
+                    proof = load_json_bytes(contents)
+                    if (type(proof) is not dict
+                            or proof.get("candidateCommit") != original_producer["commit"]
+                            or proof.get("candidateTree") != original_producer["tree"]):
+                        raise ValueError("Apple native proof differs from its original producer")
                 (evidence / destination).write_bytes(contents)
             artifacts[lane] = artifact
             receipt_bytes[lane] = read_regular_file_bytes(
@@ -216,6 +236,7 @@ def verified_sdk_apple_native_inputs(
             receipts[lane] = receipt
             raw_archives[lane] = raw
             lane_inventories[lane] = regular_file_inventory(captured, allow_empty=True)
+            original_producers[lane] = original_producer
 
         evidence_inventory = regular_file_inventory(evidence)
         transport = {
@@ -269,6 +290,7 @@ def verified_sdk_apple_native_inputs(
                 "directory": evidence,
                 "captureRoot": private,
                 "producer": producer,
+                "originalProducers": original_producers,
                 "receipts": receipts,
                 "receiptBytes": receipt_bytes,
                 "transport": transport,

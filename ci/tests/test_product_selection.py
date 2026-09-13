@@ -1366,13 +1366,19 @@ class ProductSelectionTest(unittest.TestCase):
         for name in ("sdk-javascript-worker", "capture-runtime-state", "collect-runtime-wave"):
             path = f".github/actions/{name}/action.yml"
             expected = sdk if name == "sdk-javascript-worker" else sdk | {
-                item for item in PHASE_INSTANCE_IDS if item.product == "runtime"}
+                item for item in PHASE_INSTANCE_IDS if item.product == "runtime" or
+                item.product == "sdk" and item.component == "sdk-ios"}
             result = classify_paths((path,))
             self.assertEqual(expected, identities(result))
             self.assertEqual((), result.unknown_paths)
             self.assertEqual((), result.inventory_paths)
             for instance in PHASE_INSTANCE_IDS:
                 self.assertEqual((), phase_inventory_paths((path,), instance))
+
+        ios = ".github/actions/sdk-ios-binary-worker/action.yml"
+        self.assertEqual({item for item in PHASE_INSTANCE_IDS if item.product == "sdk" and item.component == "sdk-ios"},
+                         identities(classify_paths((ios,))))
+        self.assertEqual((), classify_paths((ios,)).inventory_paths)
 
     def test_authenticated_native_handoff_and_metadata_join_have_exact_direct_owners(self):
         paths = ("ci/products/sdk_inputs.py", "ci/products/sdk_native.py", "ci/products/sdk_package.py")

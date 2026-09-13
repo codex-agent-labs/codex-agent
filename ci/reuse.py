@@ -178,13 +178,11 @@ def promoted_artifacts(
     return result
 
 
-def reissue_transport_receipt(
+def write_transport_provenance(
     root: Path,
     receipt: dict[str, object],
-    plan: dict[str, object],
-    lane: str,
     source_transport: str,
-) -> dict[str, object]:
+) -> str:
     provenance_path = root / "transport-provenance.json"
     previous = json.loads(provenance_path.read_text(encoding="utf-8")) if provenance_path.is_file() else None
     provenance = {
@@ -200,7 +198,18 @@ def reissue_transport_receipt(
         "previous": previous,
     }
     provenance_path.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    provenance_digest = hashlib.sha256(provenance_path.read_bytes()).hexdigest()
+    return hashlib.sha256(provenance_path.read_bytes()).hexdigest()
+
+
+def reissue_transport_receipt(
+    root: Path,
+    receipt: dict[str, object],
+    plan: dict[str, object],
+    lane: str,
+    source_transport: str,
+) -> dict[str, object]:
+    provenance_path = root / "transport-provenance.json"
+    provenance_digest = write_transport_provenance(root, receipt, source_transport)
     existing = next(
         (item for item in receipt["evidence"] if item["relativePath"] == provenance_path.name),
         None,

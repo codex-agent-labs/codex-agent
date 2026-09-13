@@ -2,8 +2,10 @@
 
 from argparse import Namespace
 from copy import deepcopy
+import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import unittest
@@ -15,6 +17,7 @@ CI_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CI_ROOT))
 
 import receipt as lane_receipt  # noqa: E402
+import reuse as lane_reuse  # noqa: E402
 import sdk_apple_native  # noqa: E402
 from products.inventory import regular_file_inventory, sha256_bytes  # noqa: E402
 from ci.tests import test_ci as ci_fixture  # noqa: E402
@@ -49,16 +52,16 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
         self.contents = {
             "ios-native-tests": {
                 next(iter(sdk_apple_native.NATIVE_FILES["ios-native-tests"])):
-                    b'{"protocol":"synthetic-native-tests"}\n',
+                    self.proof("synthetic-native-tests"),
             },
             "ios-rust-device": {
                 source: (b"!<arch>\nsynthetic-device\n" if source.endswith(".a")
-                         else b'{"protocol":"synthetic-device-proof"}\n')
+                         else self.proof("synthetic-device-proof"))
                 for source in sdk_apple_native.NATIVE_FILES["ios-rust-device"]
             },
             "ios-rust-simulator": {
                 source: (b"!<arch>\nsynthetic-simulator\n" if source.endswith(".a")
-                         else b'{"protocol":"synthetic-simulator-proof"}\n')
+                         else self.proof("synthetic-simulator-proof"))
                 for source in sdk_apple_native.NATIVE_FILES["ios-rust-simulator"]
             },
         }
@@ -141,6 +144,12 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
             "completed_at": "2026-09-13T10:20:00Z",
         } for index, lane in enumerate(sdk_apple_native.LANES, 1)]
         self.plan_before = self.plan_path.read_bytes()
+
+    def proof(self, protocol, *, commit=None, tree=None):
+        return (json.dumps({"protocol": protocol,
+                            "candidateCommit": self.producer["commit"] if commit is None else commit,
+                            "candidateTree": self.producer["tree"] if tree is None else tree},
+                           sort_keys=True) + "\n").encode()
 
     def uploads(self):
         return {
@@ -229,6 +238,10 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
                         result["receiptBytes"][lane],
                     )
                 self.assertEqual(self.producer, result["transport"]["captureProducer"])
+                self.assertEqual(
+                    {lane: self.producer for lane in sdk_apple_native.LANES},
+                    result["originalProducers"],
+                )
                 self.assertEqual(set(sdk_apple_native.LANES), set(result["transport"]["artifacts"]))
                 self.assertEqual(result["inventory"], regular_file_inventory(result["directory"]))
             self.assertEqual((5, 1, 3), tuple(call.call_count for call in calls))
@@ -332,6 +345,89 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
         finally:
             self.close(patches)
         self.assertEqual(self.plan_before, self.plan_path.read_bytes())
+
+    def test_reissued_transport_retains_raw_chain_and_binds_original_proof_identity(self) -> None:
+        lane = "ios-rust-device"
+        original_commit = self.base
+        original_tree = self.git("rev-parse", f"{original_commit}^{{tree}}")
+        receipt_path = self.lanes[lane] / "lane-receipt.json"
+        receipt = json.loads(receipt_path.read_text())
+        receipt.update(validationCommit=original_commit, validationTree=original_tree,
+                       runId=41, runAttempt=1,
+                       artifactName=f"codex-agent-ci-{lane}-{original_tree}")
+        for source, destination in sdk_apple_native.NATIVE_FILES[lane].items():
+            if destination.endswith(".json"):
+                proof = self.proof("synthetic-device-proof", commit=original_commit, tree=original_tree)
+                (self.lanes[lane] / source).write_bytes(proof)
+                next(item for item in receipt["evidence"] if item["relativePath"] == source)["sha256"] = hashlib.sha256(proof).hexdigest()
+        with mock.patch.dict(os.environ, self.environment, clear=False):
+            lane_reuse.reissue_transport_receipt(
+                self.lanes[lane], receipt, json.loads(self.plan_path.read_text()), lane,
+                f"codex-agent-ci-{lane}-{original_tree}",
+            )
+        self._repack(lane)
+        raw_receipt = (self.lanes[lane] / "lane-receipt.json").read_bytes()
+        raw_provenance = (self.lanes[lane] / "transport-provenance.json").read_bytes()
+        context, _, patches = self.invoke()
+        try:
+            with context as result:
+                self.assertEqual(original_commit, result["originalProducers"][lane]["commit"])
+                self.assertEqual(original_tree, result["originalProducers"][lane]["tree"])
+                captured = result["captureRoot"] / "lanes" / lane
+                self.assertEqual(raw_receipt, result["receiptBytes"][lane])
+                self.assertEqual(raw_provenance, (captured / "transport-provenance.json").read_bytes())
+                self.assertEqual(self.raw[lane], (result["captureRoot"] / "archives" / f"{lane}.zip").read_bytes())
+        finally:
+            self.close(patches)
+
+    def test_malformed_transport_chain_and_cross_paired_proof_reject(self) -> None:
+        lane = "ios-native-tests"
+        receipt_path = self.lanes[lane] / "lane-receipt.json"
+        receipt = json.loads(receipt_path.read_text())
+        with mock.patch.dict(os.environ, self.environment, clear=False):
+            lane_reuse.reissue_transport_receipt(
+                self.lanes[lane], receipt, json.loads(self.plan_path.read_text()), lane,
+                receipt["artifactName"],
+            )
+        provenance = self.lanes[lane] / "transport-provenance.json"
+        valid_provenance = provenance.read_bytes()
+        valid_receipt = receipt_path.read_bytes()
+        value = json.loads(provenance.read_text())
+        value["sourceTransportArtifactName"] = "codex-agent-ci-ios-native-tests-" + "f" * 40
+        provenance.write_text(json.dumps(value, sort_keys=True) + "\n")
+        updated = json.loads(receipt_path.read_text())
+        next(item for item in updated["evidence"]
+             if item["relativePath"] == provenance.name)["sha256"] = hashlib.sha256(provenance.read_bytes()).hexdigest()
+        receipt_path.write_text(json.dumps(updated, sort_keys=True) + "\n")
+        self._repack(lane)
+        with self.assertRaisesRegex(ValueError, "wrong artifact identity"):
+            context, _, patches = self.invoke()
+            try:
+                with context:
+                    self.fail("malformed native transport provenance yielded inputs")
+            finally:
+                self.close(patches)
+        provenance.write_bytes(valid_provenance)
+        receipt_path.write_bytes(valid_receipt)
+        self._repack(lane)
+
+        lane = "ios-rust-simulator"
+        proof_path = next(self.lanes[lane] / source for source, destination
+                          in sdk_apple_native.NATIVE_FILES[lane].items() if destination.endswith(".json"))
+        proof = self.proof("synthetic-simulator-proof", tree="f" * 40)
+        proof_path.write_bytes(proof)
+        receipt = json.loads((self.lanes[lane] / "lane-receipt.json").read_text())
+        next(item for item in receipt["evidence"]
+             if item["relativePath"] == proof_path.relative_to(self.lanes[lane]).as_posix())["sha256"] = hashlib.sha256(proof).hexdigest()
+        (self.lanes[lane] / "lane-receipt.json").write_text(json.dumps(receipt, sort_keys=True) + "\n")
+        self._repack(lane)
+        with self.assertRaisesRegex(ValueError, "differs from its original producer"):
+            context, _, patches = self.invoke()
+            try:
+                with context:
+                    self.fail("cross-paired native proof yielded inputs")
+            finally:
+                self.close(patches)
 
     def _repack(self, lane: str) -> None:
         self.raw[lane] = archive_tree(self.lanes[lane])

@@ -484,10 +484,13 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         return set(ALL_INSTANCES)
     if _is_prefix(path, ".github/actions/sdk-javascript-worker/"):
         return _from_phase("sdk", "javascript", "package")
+    if _is_prefix(path, ".github/actions/sdk-ios-binary-worker/"):
+        return _from_phase("sdk", "sdk-ios", "binary")
     if any(_is_prefix(path, f".github/actions/{name}/") for name in (
         "capture-runtime-state", "collect-runtime-wave",
     )):
-        return _runtime(RUNTIME_COMPONENTS) | _from_phase("sdk", "javascript", "package")
+        return (_runtime(RUNTIME_COMPONENTS) | _from_phase("sdk", "javascript", "package") |
+                _from_phase("sdk", "sdk-ios", "binary"))
     if any(_is_prefix(path, f".github/actions/{name}/") for name in (
         "run-runtime-product-phase", "setup-runtime-archive",
     )):

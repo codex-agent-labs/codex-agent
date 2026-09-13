@@ -367,6 +367,17 @@ def restore_production_files(
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
             selected[relative] = kind
+    if lane in {"ios-rust-device", "ios-rust-simulator"}:
+        # Restored proof bytes retain their original producer, even when the
+        # current lane reruns validation and emits a new transport receipt.
+        from reuse import write_transport_provenance
+
+        provenance = "transport-provenance.json"
+        previous = restored / provenance
+        if previous.is_file():
+            shutil.copy2(previous, output / provenance)
+        write_transport_provenance(output, receipt, receipt["artifactName"])
+        evidence[provenance] = "transport-provenance"
     return artifacts, evidence
 
 

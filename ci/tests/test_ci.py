@@ -3121,8 +3121,17 @@ class StageProductionRestoreTest(unittest.TestCase):
             with self.subTest(lane=lane), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 source = self.source(root, [], [(relative, kind)])
+                expected = {relative: kind}
+                if lane == "ios-rust-device":
+                    receipt_path = source / "lane-receipt.json"
+                    receipt = json.loads(receipt_path.read_text())
+                    receipt.update(event="pull_request", runId=7, runAttempt=1, pullRequest=31,
+                                   validationCommit="a" * 40, validationTree="b" * 40,
+                                   artifactName=f"codex-agent-ci-{lane}-{'b' * 40}")
+                    receipt_path.write_text(json.dumps(receipt))
+                    expected["transport-provenance.json"] = "transport-provenance"
                 _, evidence = restore_production_files(source, root / "output", lane)
-                self.assertEqual({relative: kind}, evidence)
+                self.assertEqual(expected, evidence)
                 self.assertTrue((root / "output" / relative).is_file())
 
     def test_restored_production_keeps_firebase_evidence(self) -> None:

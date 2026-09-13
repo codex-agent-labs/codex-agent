@@ -56,7 +56,7 @@ class SdkStateCaptureTest(unittest.TestCase):
             self.assertFalse(self.destination.exists())
 
     def test_invalid_or_mixed_scope_rejects_before_remote_observation(self):
-        for changes in ({"sdk_state_wave": True}, {"sdk_state_wave": 0}, {"sdk_state_wave": 3},
+        for changes in ({"sdk_state_wave": True}, {"sdk_state_wave": 0}, {"sdk_state_wave": 4},
                         {"sdk_state_wave": 1, "state_wave": 5}):
             with self.subTest(changes=changes), patch.object(product_reuse, "api_json") as query, \
                     self.assertRaisesRegex(ValueError, "SDK state wave"):

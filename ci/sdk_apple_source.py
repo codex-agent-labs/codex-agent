@@ -86,7 +86,9 @@ def _producer_from_receipt(receipt: Mapping[str, object]) -> dict[str, object]:
     }, "Apple source lane producer")
 
 
-def _original_transport_producer(lane: Path, current: Mapping[str, object]):
+def _original_transport_producer(lane: Path, current: Mapping[str, object], *, lane_name="ios-swift-tests"):
+    if lane_name not in {"ios-swift-tests", "ios-native-tests", "ios-rust-device", "ios-rust-simulator"}:
+        raise ValueError("Unsupported Apple source transport lane")
     provenance = lane / "transport-provenance.json"
     if not provenance.exists():
         return None
@@ -107,7 +109,7 @@ def _original_transport_producer(lane: Path, current: Mapping[str, object]):
             value["sourceTransportArtifactName"], "Apple source transport artifact name",
         )
         if source["artifactName"] != name or name != (
-            f"codex-agent-ci-ios-swift-tests-{source['validationTree']}"
+            f"codex-agent-ci-{lane_name}-{source['validationTree']}"
         ):
             raise ValueError("Apple source transport provenance has the wrong artifact identity")
         selected = validate_producer({

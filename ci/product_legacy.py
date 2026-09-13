@@ -91,6 +91,7 @@ def project_legacy_lanes(unresolved: Iterable[PhaseInstanceId]) -> LegacyLanePro
             actions.add(("android", {"binary": "build", "package": "build", "validation": "test", "metadata": "metadata"}[phase]))
         elif product == "sdk" and component == "sdk-ios":
             if phase == "binary":
+                actions.add(("ios-native-tests", "test"))
                 actions.update((lane, "build") for lane in (
                     "ios-rust-device", "ios-rust-simulator",
                     "ios-framework-device", "ios-framework-simulator",

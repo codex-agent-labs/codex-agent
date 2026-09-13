@@ -86,6 +86,7 @@ class ProductLegacyAdapterTest(unittest.TestCase):
     def test_ios_phases_map_only_to_the_existing_exact_execution_seams(self) -> None:
         binary = project_legacy_lanes((phase("sdk", "sdk-ios", "binary", "ios"),))
         self.assertEqual({
+            ("ios-native-tests", "test"),
             ("ios-rust-device", "build"), ("ios-rust-simulator", "build"),
             ("ios-framework-device", "build"), ("ios-framework-simulator", "build"),
         }, set(binary.actions))

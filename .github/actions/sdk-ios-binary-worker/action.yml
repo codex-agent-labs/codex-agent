@@ -1,0 +1,117 @@
+name: Execute elected iOS SDK binary
+description: Capture and replay original state before Apple setup, execute once, and retain every result.
+inputs:
+  plan-id:
+    required: true
+    description: Exact original plan upload.
+  artifact-id:
+    required: true
+    description: Exact predecessor state upload.
+  artifact-sha256:
+    required: true
+    description: Exact predecessor state digest.
+  state-wave:
+    default: '0'
+    description: Original product state wave.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  build-key:
+    required: true
+    description: Exact elected iOS binary key.
+  tree:
+    required: true
+    description: Exact tested tree.
+  native-tests-artifact-id:
+    required: true
+    description: Exact current Apple native tests upload ID.
+  native-tests-artifact-sha256:
+    required: true
+    description: Exact current Apple native tests upload digest.
+  rust-device-artifact-id:
+    required: true
+    description: Exact current Apple Rust device upload ID.
+  rust-device-artifact-sha256:
+    required: true
+    description: Exact current Apple Rust device upload digest.
+  rust-simulator-artifact-id:
+    required: true
+    description: Exact current Apple Rust simulator upload ID.
+  rust-simulator-artifact-sha256:
+    required: true
+    description: Exact current Apple Rust simulator upload digest.
+runs:
+  using: composite
+  steps:
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: sdk-ios-binary
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        state-wave: ${{ inputs.state-wave }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+    - id: identity
+      shell: bash
+      env:
+        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
+        REQUIRED: ${{ steps.captured.outputs.sdk-workers-required }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
+      run: |
+        python3 - <<'PY'
+        import json, os, re
+        key = os.environ['BUILD_KEY']
+        rows = json.loads(os.environ['MATRIX'])['include']
+        expected = ('sdk', 'sdk-ios', 'binary', 'ios')
+        if (os.environ['REQUIRED'] != 'true' or len(rows) != 1 or
+                tuple(rows[0].get(field) for field in ('product', 'component', 'phase', 'target')) != expected or
+                rows[0].get('buildKey') != key or not re.fullmatch(r'sha256:[0-9a-f]{64}', key) or
+                not re.fullmatch(r'[0-9a-f]{40}', os.environ['TREE'])):
+            raise ValueError('iOS SDK worker differs from the original replay election')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
+        PY
+    - uses: ./.github/actions/setup-kmp
+      with:
+        cache-read-only: 'true'
+        product-worker: 'true'
+        xcode-fingerprint: auto
+    - name: Execute exact iOS SDK binary within verified original input lifetimes
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        NATIVE_TESTS_ID: ${{ inputs.native-tests-artifact-id }}
+        NATIVE_TESTS_SHA256: ${{ inputs.native-tests-artifact-sha256 }}
+        RUST_DEVICE_ID: ${{ inputs.rust-device-artifact-id }}
+        RUST_DEVICE_SHA256: ${{ inputs.rust-device-artifact-sha256 }}
+        RUST_SIMULATOR_ID: ${{ inputs.rust-simulator-artifact-id }}
+        RUST_SIMULATOR_SHA256: ${{ inputs.rust-simulator-artifact-sha256 }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B -m ci.sdk_workflow ios-binary \
+          --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+          --destination "$GITHUB_WORKSPACE/build/sdk-ios-worker" \
+          --repository-root "$GITHUB_WORKSPACE" --expected-build-key "$BUILD_KEY" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --native-tests-artifact-id "$NATIVE_TESTS_ID" \
+          --native-tests-artifact-sha256 "$NATIVE_TESTS_SHA256" \
+          --rust-device-artifact-id "$RUST_DEVICE_ID" \
+          --rust-device-artifact-sha256 "$RUST_DEVICE_SHA256" \
+          --rust-simulator-artifact-id "$RUST_SIMULATOR_ID" \
+          --rust-simulator-artifact-sha256 "$RUST_SIMULATOR_SHA256"
+    - if: always() && steps.identity.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-worker-sdk-ios-binary-ios-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/sdk-ios-worker
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90
