@@ -4820,6 +4820,8 @@ def discover(
         "tooling_artifact_id": "",
         "tooling_artifact_sha256": "",
         "tooling_transport_producer": "",
+        "tooling_required": False,
+        "tooling_miss": False,
     })
     supplied_root = Path(__file__).resolve().parents[1] if repository_root is None else repository_root
     destination = _prepare_destination(destination, supplied_root)
@@ -4850,6 +4852,9 @@ def discover(
     needs_tooling = automatic_tooling and any(instance.product == "sdk" and
         instance.component in NATIVE_BINDINGS and instance.phase in {"validation", "metadata"}
         for instance in closure)
+    github_output(github_output_path, {
+        "tooling_required": needs_tooling, "tooling_miss": needs_tooling,
+    })
     catalogs = _discover_catalogs(plan, destination, trust, environment, versions, root,
         **({"tooling_candidate_runs": tooling_runs} if needs_tooling else {}))
     native_records = _capture_native_handoffs(
@@ -4886,6 +4891,7 @@ def discover(
                 locator = selected["selected"]
                 github_output(github_output_path, {
                     "tooling_artifact_id": locator["artifactId"],
+                    "tooling_miss": False,
                     "tooling_artifact_sha256": locator["artifactSha256"],
                     "tooling_transport_producer": canonical_json_bytes(locator["transportProducer"]).decode().strip(),
                 })

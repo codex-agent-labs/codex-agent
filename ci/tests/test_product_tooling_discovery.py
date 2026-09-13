@@ -153,6 +153,8 @@ class ProductToolingDiscoveryTest(unittest.TestCase):
         self.assertEqual("sha256:" + "e" * 64, self.outputs()["tooling_artifact_sha256"])
         self.assertEqual(canonical_json_bytes(producer).decode().strip(),
                          self.outputs()["tooling_transport_producer"])
+        self.assertEqual("true", self.outputs()["tooling_required"])
+        self.assertEqual("false", self.outputs()["tooling_miss"])
         retained_report = json.loads(
             (destination / "tooling-discovery/discovery.json").read_bytes())
         self.assertEqual(report["selected"], retained_report["selected"])
@@ -181,6 +183,21 @@ class ProductToolingDiscoveryTest(unittest.TestCase):
         self.assertEqual("", self.outputs()["tooling_artifact_id"])
         self.assertEqual("", self.outputs()["tooling_artifact_sha256"])
         self.assertEqual("", self.outputs()["tooling_transport_producer"])
+        self.assertEqual("true", self.outputs()["tooling_required"])
+        self.assertEqual("true", self.outputs()["tooling_miss"])
+
+        roots = []
+        result, _, events, tooling = self.run_discovery(
+            instance, catalogs=(self.catalog(catalog_root),), report=None,
+            destination_name="missing-token", environment={},
+            capture_side_effect=lambda selected, _policy: roots.extend(selected) or [],
+        )
+        self.assertEqual("stop-after-tooling", result["reason"])
+        self.assertEqual(["catalogs", "capture"], events)
+        self.assertEqual([], roots)
+        tooling.assert_not_called()
+        self.assertEqual("true", self.outputs()["tooling_required"])
+        self.assertEqual("true", self.outputs()["tooling_miss"])
 
     def test_unauthorized_and_non_sdk_closures_never_auto_discover(self):
         sdk = PhaseInstanceId("sdk", "rust", "validation", "linux-x64")
@@ -192,6 +209,8 @@ class ProductToolingDiscoveryTest(unittest.TestCase):
         self.assertEqual("remote-build-unauthorized", result["reason"])
         self.assertEqual([], events)
         tooling.assert_not_called()
+        self.assertEqual("false", self.outputs()["tooling_required"])
+        self.assertEqual("false", self.outputs()["tooling_miss"])
 
         contract = PhaseInstanceId("contract", "contract", "binary", "common")
         roots = []
@@ -203,6 +222,8 @@ class ProductToolingDiscoveryTest(unittest.TestCase):
         self.assertEqual(["catalogs", "capture"], events)
         self.assertEqual([], roots)
         tooling.assert_not_called()
+        self.assertEqual("false", self.outputs()["tooling_required"])
+        self.assertEqual("false", self.outputs()["tooling_miss"])
 
     def test_automatic_and_explicit_options_are_exact_and_mutually_exclusive(self):
         plan = impact_plan(changed=["known.kt"])
