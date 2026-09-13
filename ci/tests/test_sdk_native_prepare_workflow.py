@@ -15,7 +15,7 @@ from ci import sdk_workflow as workflow
 from ci.tests import test_sdk_native_phase as package_fixture
 from ci.tests.product_chain_support import write_receipt
 import sdk_native_prepare as worker
-from products.inventory import regular_file_inventory, snapshot_regular_tree, write_canonical_json
+from products.inventory import canonical_json_bytes, regular_file_inventory, snapshot_regular_tree, write_canonical_json
 from products.receipt import write_output_manifest
 from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId
 from products.sdk_inputs import REQUEST_NAME
@@ -32,6 +32,7 @@ class SdkNativePrepareWorkflowTest(unittest.TestCase):
         self.ready = self.plan
         self.plan_path = self.root / "plan.json"
         self.plan_path.write_bytes(b'{"synthetic":"mocked elected input boundary"}\n')
+        self.original_plan_bytes = self.plan_path.read_bytes()
         self.discovery, self.state = self.root / "discovery", self.root / "state"
         self.discovery.mkdir()
         self.state.mkdir()
@@ -94,6 +95,8 @@ class SdkNativePrepareWorkflowTest(unittest.TestCase):
                 (self.destination / "inputs/producer.json").write_bytes(b"changed after worker")
             if self.failure == "late-runtime":
                 (self.destination / f"runtime-stages/{NATIVE_TARGETS[0]}/package/outputs/original").write_bytes(b"changed")
+            if self.failure == "late-plan":
+                self.plan_path.write_bytes(b'{"changed":"after preparation"}\n')
             self.events.append("exited")
         finally:
             self.live = False
@@ -143,6 +146,12 @@ class SdkNativePrepareWorkflowTest(unittest.TestCase):
         for path in (sources, sdks):
             path.mkdir(parents=True)
             (path / "synthetic").write_bytes(b"unadmitted output fixture")
+        (arguments["destination"] / "gradle.log").write_bytes(b"raw preparation log\x00\xff\n")
+        write_canonical_json(arguments["destination"] / "execution.json", {
+            "schemaVersion": 1, "producer": self.producer, "buildKey": ready["buildKey"],
+            "command": [str(self.root / "gradlew"), "--offline", worker.TASK],
+            "returnCode": 0, "launchError": None, "elapsedNs": 1,
+        })
         self.result = {"preparedSources": sources, "preparedSourcesInventory": regular_file_inventory(sources),
             "stagedSdks": sdks, "stagedSdkInventory": regular_file_inventory(sdks),
             "diagnostics": arguments["destination"]}
@@ -163,6 +172,19 @@ class SdkNativePrepareWorkflowTest(unittest.TestCase):
         self.assertFalse(self.live)
         self.assertEqual(["enter", "materialize", "worker", "exit-check", "exited"], self.events)
         self.assertFalse((self.destination / "shard").exists())
+        upload = self.destination / "upload"
+        expected = {
+            "original-plan/impact-plan.json": self.original_plan_bytes,
+            "original-plan/phase-plan.json": canonical_json_bytes(self.ready),
+            "prepared-sources/synthetic": b"unadmitted output fixture",
+            "staged-sdks/synthetic": b"unadmitted output fixture",
+            **{f"diagnostics/{name}": (result["diagnostics"] / name).read_bytes()
+               for name in ("gradle.log", "execution.json")},
+        }
+        self.assertEqual(set(expected), {row["relativePath"] for row in regular_file_inventory(upload, allow_empty=True)})
+        for relative, raw in expected.items():
+            self.assertEqual(raw, (upload / relative).read_bytes())
+        self.assertEqual(self.original_plan_bytes, self.plan_path.read_bytes())
 
     def test_unselected_or_non_native_component_never_prepares(self):
         self.selection["consumers"] = []
@@ -194,6 +216,7 @@ class SdkNativePrepareWorkflowTest(unittest.TestCase):
             self.invoke()
         self.assertNotIn("exited", self.events)
         self.assertFalse((self.destination / "shard").exists())
+        self.assertFalse((self.destination / "upload").exists())
 
     def test_late_context_failure_does_not_return_prepared_outputs(self):
         self.failure = "late-context"
@@ -202,6 +225,7 @@ class SdkNativePrepareWorkflowTest(unittest.TestCase):
         self.assertIsNotNone(self.result)
         self.assertFalse(self.live)
         self.assertNotIn("exited", self.events)
+        self.assertFalse((self.destination / "upload").exists())
 
     def test_input_and_output_mutations_do_not_return_success(self):
         for failure in ("changed-input", "changed-runtime", "late-input", "late-runtime", "late-sources", "late-sdks"):
@@ -212,6 +236,39 @@ class SdkNativePrepareWorkflowTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "changed"):
                     self.invoke()
                 self.assertFalse((self.destination / "shard").exists())
+                self.assertFalse((self.destination / "upload").exists())
+
+    def test_original_plan_mutation_after_preparation_prevents_upload(self):
+        self.failure = "late-plan"
+        try:
+            with self.assertRaisesRegex(ValueError, "changed"):
+                self.invoke()
+            self.assertFalse((self.destination / "upload").exists())
+            self.assertFalse((self.destination / "shard").exists())
+        finally:
+            self.plan_path.write_bytes(self.original_plan_bytes)
+
+    def test_source_mutation_during_upload_snapshot_prevents_publication(self):
+        for key in ("preparedSources", "stagedSdks"):
+            with self.subTest(source=key):
+                self.destination = self.root / f"build/snapshot-{key}"
+                mutated = []
+
+                def snapshot(source, destination, **kwargs):
+                    result = snapshot_regular_tree(source, destination, **kwargs)
+                    if self.result is not None and Path(source) == self.result[key]:
+                        self.assertFalse(self.live)
+                        self.assertIn("exited", self.events)
+                        (Path(source) / "synthetic").write_bytes(b"changed during upload snapshot")
+                        mutated.append(Path(destination))
+                    return result
+
+                with patch.object(workflow, "snapshot_regular_tree", side_effect=snapshot), \
+                        self.assertRaisesRegex(ValueError, "changed"):
+                    self.invoke()
+                self.assertEqual(1, len(mutated))
+                self.assertFalse((self.destination / "upload").exists())
+                self.assertFalse(mutated[0].exists(), "private incomplete upload must be removed")
 
     def test_cli_forwards_fixed_inputs_and_rejects_overrides_abbreviations_and_errors(self):
         paths = {"plan": self.plan_path, "discovery-root": self.discovery, "state-root": self.state,

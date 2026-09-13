@@ -4356,6 +4356,95 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
     return transport
 
 
+def capture_sdk_native_prepared_upload(plan_path, destination, *, expected_phase_plan,
+        artifact_id, artifact_sha256, trusted_workflow_sha, repository_root=None, environ=None, token):
+    """Capture the fixed preparation producer; receiver content admission is separate."""
+    from products.restore import PHASE_PLAN_KEYS
+    from products.inventory import require_regular_directory
+    from products.sdk_package import _require_capability_output_separate
+    from sdk_native_prepare import TASK
+
+    phase = require_exact_keys(expected_phase_plan, PHASE_PLAN_KEYS, "Elected native preparation plan")
+    if (require_integer(phase["schemaVersion"], "Native preparation plan schema", 1) != 1
+            or phase["product"] != "sdk" or phase["component"] not in NATIVE_BINDINGS
+            or phase["phase"] != "package" or phase["target"] != "desktop"):
+        raise ValueError("Native preparation capture requires an elected native package plan")
+    require_sha256(phase["buildKey"], "Native preparation elected key")
+    phase_bytes = canonical_json_bytes(phase)
+    require_integer(artifact_id, "Native preparation upload ID", 1)
+    require_sha256(artifact_sha256, "Native preparation upload digest")
+    if not isinstance(token, str) or not token:
+        raise ValueError("Native preparation capture requires an observation token")
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else Path(repository_root)).resolve(strict=True)
+    plan_path, destination = Path(plan_path).absolute(), Path(destination).absolute()
+
+    def output_safe():
+        _require_capability_output_separate(destination, [root, plan_path])
+        if destination.exists() or destination.is_symlink():
+            raise ValueError("Native preparation capture destination must not exist")
+
+    output_safe()
+    plan_bytes = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    with tempfile.TemporaryDirectory(prefix="sdk-native-upload-") as temporary:
+        prepared = Path(temporary).resolve() / "capture"
+        captured_plan = prepared / "plan/impact-plan.json"
+        captured_plan.parent.mkdir(parents=True)
+        captured_plan.write_bytes(plan_bytes)
+        plan = _validate_plan(captured_plan, root)
+        if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
+            raise ValueError("Native preparation capture requires an authorized PR or merge-group plan")
+        producer = validate_producer(_consumer(plan, os.environ if environ is None else environ)["producer"])
+        job = "product-validation / sdk-native-prepare"
+        observed = _observe_ci_producer_jobs({"native-prepared": producer},
+            jobs_by_phase={"native-prepared": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
+        name = f"codex-agent-sdk-native-prepared-{producer['tree']}-attempt-{producer['runAttempt']}"
+        artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
+        _require_artifact_job_window(observed[0], job, artifact)
+        archive = prepared / "transport.zip"
+        archive.write_bytes(raw)
+        zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+        original = prepared / "original"
+        safe_extract(archive, original)
+        if {path.name for path in original.iterdir()} != {"original-plan", "prepared-sources", "staged-sdks", "diagnostics"}:
+            raise ValueError("Native preparation upload has an unexpected layout")
+        for directory in original.iterdir():
+            require_regular_directory(directory, "Native preparation original directory")
+        for directory, names in (("original-plan", {"impact-plan.json", "phase-plan.json"}),
+                                 ("diagnostics", {"execution.json", "gradle.log"}),
+                                 ("prepared-sources", set(NATIVE_BINDINGS))):
+            if {path.name for path in (original / directory).iterdir()} != names:
+                raise ValueError("Native preparation upload has an unexpected original inventory")
+        for directory in [original / "staged-sdks", *(original / "prepared-sources" / name for name in NATIVE_BINDINGS)]:
+            require_regular_directory(directory, "Native preparation content directory")
+            if not regular_file_inventory(directory):
+                raise ValueError("Native preparation content directory is empty")
+        if (read_regular_file_bytes(original / "original-plan/impact-plan.json") != plan_bytes
+                or read_regular_file_bytes(original / "original-plan/phase-plan.json") != phase_bytes):
+            raise ValueError("Native preparation original plans differ from the caller election")
+        execution = require_exact_keys(_canonical_control(original / "diagnostics/execution.json", "Native preparation execution"),
+            {"schemaVersion", "producer", "buildKey", "command", "returnCode", "launchError", "elapsedNs"},
+            "Native preparation execution")
+        command = require_array(execution["command"], "Native preparation command")
+        if (require_integer(execution["schemaVersion"], "Native preparation execution schema", 1) != 1
+                or execution["producer"] != producer or execution["buildKey"] != phase["buildKey"]
+                or type(execution["returnCode"]) is not int or execution["returnCode"] != 0
+                or execution["launchError"] is not None
+                or any(type(argument) is not str for argument in command) or command.count(TASK) != 1):
+            raise ValueError("Native preparation execution differs from its observed successful producer")
+        require_integer(execution["elapsedNs"], "Native preparation elapsed time", 0)
+        transport = {"artifact": artifact, "captureProducer": producer, "observed": observed,
+                     "phasePlan": phase}
+        write_canonical_json(prepared / "capture-transport.json", transport)
+        if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes
+                or captured_plan.read_bytes() != plan_bytes or canonical_json_bytes(expected_phase_plan) != phase_bytes
+                or sha256_file(archive) != artifact_sha256
+                or regular_file_inventory(original, allow_empty=True) != zipped):
+            raise ValueError("Native preparation original plan or upload changed before publication")
+        output_safe()
+        publish_regular_tree(prepared, destination, allow_empty=True)
+    return transport
+
+
 def capture_product_resume_inputs(
     plan_path: Path, destination: Path, *, uploads: Mapping[str, Any],
     trusted_workflow_sha: str, repository_root: Path | None = None,

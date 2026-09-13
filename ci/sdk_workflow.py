@@ -16,7 +16,7 @@ import product_reuse
 import sdk_handoff
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
-    regular_file_inventory, sha256_bytes, snapshot_regular_tree,
+    regular_file_inventory, sha256_bytes, snapshot_regular_tree, publish_regular_tree,
 )
 from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId
 from products.runtime_aggregate_handoff import verified_runtime_aggregate_handoff
@@ -304,6 +304,7 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
         root, discovery, state, destination)
     if destination.exists() or destination.is_symlink():
         raise ValueError("SDK native preparation destination must not exist")
+    plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     instance = PhaseInstanceId("sdk", component, "package", "desktop")
     fields = {"product": "sdk", "component": component, "phase": "package", "target": "desktop"}
     with verified_inputs(plan, discovery, state, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
@@ -363,9 +364,41 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
             predecessor=original, environ=environ)
         unchanged()
     unchanged()
-    if (regular_file_inventory(result["preparedSources"]) != result["preparedSourcesInventory"]
-            or regular_file_inventory(result["stagedSdks"]) != result["stagedSdkInventory"]):
-        raise ValueError("Native SDK preparation outputs changed before handoff")
+    def outputs_unchanged():
+        if (regular_file_inventory(result["preparedSources"]) != result["preparedSourcesInventory"]
+                or regular_file_inventory(result["stagedSdks"]) != result["stagedSdkInventory"]
+                or read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024,
+                                           reject_symlink_parents=True) != plan_bytes):
+            raise ValueError("Native SDK preparation outputs or original plan changed before handoff")
+
+    outputs_unchanged()
+    diagnostics = {name: read_regular_file_bytes(result["diagnostics"] / name,
+                   reject_symlink_parents=True) for name in ("gradle.log", "execution.json")}
+    # This is an external transport envelope, not a product phase or receipt.
+    # The receiving worker must authenticate its upload owner and original plan.
+    with tempfile.TemporaryDirectory(prefix="sdk-native-prepared-") as temporary:
+        upload = Path(temporary).resolve() / "upload"
+        (upload / "original-plan").mkdir(parents=True)
+        (upload / "original-plan/impact-plan.json").write_bytes(plan_bytes)
+        phase_bytes = read_regular_file_bytes(prepared / "phase-plan.json", reject_symlink_parents=True)
+        if phase_bytes != canonical_json_bytes(ready):
+            raise ValueError("Native preparation elected phase plan changed before handoff")
+        (upload / "original-plan/phase-plan.json").write_bytes(phase_bytes)
+        for name, source, inventory in (
+                ("prepared-sources", result["preparedSources"], result["preparedSourcesInventory"]),
+                ("staged-sdks", result["stagedSdks"], result["stagedSdkInventory"])):
+            snapshot_regular_tree(source, upload / name)
+            if regular_file_inventory(upload / name) != inventory:
+                raise ValueError("Native preparation output changed during transport capture")
+        (upload / "diagnostics").mkdir()
+        for name, raw in diagnostics.items():
+            (upload / "diagnostics" / name).write_bytes(raw)
+        unchanged()
+        outputs_unchanged()
+        if any(read_regular_file_bytes(result["diagnostics"] / name, reject_symlink_parents=True) != raw
+               for name, raw in diagnostics.items()):
+            raise ValueError("Native preparation diagnostics changed during transport capture")
+        publish_regular_tree(upload, destination / "upload", allow_empty=True)
     return result
 
 
