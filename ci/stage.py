@@ -30,8 +30,9 @@ RUNTIME_ADAPTER_VALIDATION_OUTPUTS = tuple(
 OUTPUTS: dict[str, tuple[tuple[str, str, str], ...]] = {
     "contracts": (
         ("build", "gradle/build-logic/build/libs/codex-agent-release-tooling.jar", "release-tooling"),
-        ("build", "build/product-stage/contract/contract/binary/**/*", "contract-binary-stage-member"),
-        ("test", "codex-agent-core/build/reports/cross-language-api/bindings/java-parity.json", "cross-language-java-binding-receipt-evidence"),
+        ("test", "codex-agent-core/build/reports/cross-language-api/canonical-api.json", "cross-language-api-report-evidence"),
+        ("test", "codex-agent-core/build/reports/cross-language-api/canonical-coverage.json", "cross-language-coverage-receipt-evidence"),
+        ("test", "codex-agent-core/build/reports/cross-language-api/bindings/kotlin-parity.json", "cross-language-kotlin-binding-receipt-evidence"),
     ),
     "portable": (
         ("build", "codex-agent-runtime-desktop/build/distributions/codex-agent-jvm-runtime-evidence-runner.zip", "jvm-runner"),

@@ -2803,37 +2803,51 @@ class StageArchiveTest(unittest.TestCase):
                 ):
                     copy_matches(root, root / "staged", pattern)
 
-    def test_contracts_stages_the_exact_binding_parity_prerequisites(self) -> None:
-        self.assertEqual((
+    def test_contracts_stages_only_legacy_binding_inputs_not_the_independent_product(self) -> None:
+        expected = (
             ("build", "gradle/build-logic/build/libs/codex-agent-release-tooling.jar", "release-tooling"),
-            ("build", "build/product-stage/contract/contract/binary/**/*", "contract-binary-stage-member"),
-            ("test", "codex-agent-core/build/reports/cross-language-api/bindings/java-parity.json", "cross-language-java-binding-receipt-evidence"),
-        ), OUTPUTS["contracts"])
+            ("test", "codex-agent-core/build/reports/cross-language-api/canonical-api.json", "cross-language-api-report-evidence"),
+            ("test", "codex-agent-core/build/reports/cross-language-api/canonical-coverage.json", "cross-language-coverage-receipt-evidence"),
+            ("test", "codex-agent-core/build/reports/cross-language-api/bindings/kotlin-parity.json", "cross-language-kotlin-binding-receipt-evidence"),
+        )
+        self.assertEqual(expected, OUTPUTS["contracts"])
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            output = root / "staged"
             for relative in (
                 "gradle/build-logic/build/libs/codex-agent-release-tooling.jar",
+                "codex-agent-core/build/reports/cross-language-api/canonical-api.json",
+                "codex-agent-core/build/reports/cross-language-api/canonical-coverage.json",
+                "codex-agent-core/build/reports/cross-language-api/bindings/kotlin-parity.json",
+            ):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}\n", encoding="utf-8")
+            clean = root / "clean-staged"
+            for _, pattern, _ in expected:
+                copy_matches(root, clean, pattern)
+            self.assertEqual(
+                ["canonical-api.json", "canonical-coverage.json", "kotlin-parity.json"],
+                sorted(path.name for path in (clean / "payload").rglob("*.json")),
+            )
+
+            # Stale outputs must not rejoin the legacy contracts artifact.
+            for relative in (
                 "build/product-stage/contract/contract/binary/output-manifest.json",
                 "build/product-stage/contract/contract/binary/outputs/evidence/canonical-api.json",
-                "build/product-stage/contract/contract/binary/outputs/evidence/canonical-coverage.json",
-                "build/product-stage/contract/contract/binary/outputs/evidence/kotlin-parity.json",
                 "codex-agent-core/build/reports/cross-language-api/bindings/java-parity.json",
             ):
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("{}\n", encoding="utf-8")
-            for _, pattern, _ in OUTPUTS["contracts"]:
+            output = root / "staged-with-stale"
+            for _, pattern, _ in expected:
                 copy_matches(root, output, pattern)
             names = [path.name for path in (output / "payload").rglob("*.json")]
-            for name in (
-                "canonical-api.json",
-                "canonical-coverage.json",
-                "kotlin-parity.json",
-                "java-parity.json",
-            ):
+            for name in ("canonical-api.json", "canonical-coverage.json", "kotlin-parity.json"):
                 self.assertEqual(1, names.count(name), name)
+            self.assertNotIn("java-parity.json", names)
+            self.assertNotIn("output-manifest.json", names)
 
     def test_node_js_stages_exact_Runtime_binding_validation_and_rejects_missing_outputs(self) -> None:
         expected = (
