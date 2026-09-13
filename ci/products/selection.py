@@ -225,6 +225,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/cache_seed.py",
     "ci/contract_release.py",
     "ci/tooling_release.py",
+    "ci/tooling_capture.py",
     "ci/product_release_context.py",
     "ci/runtime_release.py",
     "ci/impact.py",
