@@ -20,6 +20,12 @@ data class IosAppleDistributionTasks(
     val verifyIosLicensePackaging: TaskProvider<VerifyIosLicensePackagingTask>,
 )
 
+internal fun requirePairedAppleFrameworkImports(device: Boolean, simulator: Boolean) {
+    check(device == simulator) {
+        "Imported Apple device and simulator frameworks must be supplied together"
+    }
+}
+
 fun Project.registerIosAppleDistributionTasks(
     expectedSwiftTestIdentifiers: List<String>,
     pinnedRustToolchain: String,
@@ -49,16 +55,24 @@ fun Project.registerIosAppleDistributionTasks(
         null
     }
 
-    val assembleDependency: Any = if (importedDeviceFramework != null && importedSimulatorFramework != null) {
-        tasks.register<AssembleImportedCodexAgentXCFrameworkTask>("assembleCodexAgentReleaseXCFrameworkFromImports") {
-            dependsOn(importedDeviceFramework, importedSimulatorFramework)
-            deviceFrameworkDirectory.set(importedDeviceFramework.flatMap { it.importedFrameworkDirectory })
-            simulatorFrameworkDirectory.set(importedSimulatorFramework.flatMap { it.importedFrameworkDirectory })
-            appleToolchainIdentity.set(appleFrameworkToolchainIdentity)
-            xcframeworkDirectory.set(assembledXCFrameworkDirectory)
+    val assembleDependency: Any = when {
+        importedDeviceFramework != null && importedSimulatorFramework != null ->
+            tasks.register<AssembleImportedCodexAgentXCFrameworkTask>("assembleCodexAgentReleaseXCFrameworkFromImports") {
+                dependsOn(importedDeviceFramework, importedSimulatorFramework)
+                deviceFrameworkDirectory.set(importedDeviceFramework.flatMap { it.importedFrameworkDirectory })
+                simulatorFrameworkDirectory.set(importedSimulatorFramework.flatMap { it.importedFrameworkDirectory })
+                appleToolchainIdentity.set(appleFrameworkToolchainIdentity)
+                xcframeworkDirectory.set(assembledXCFrameworkDirectory)
+            }
+        importedDeviceFramework == null && importedSimulatorFramework == null ->
+            "assembleCodexAgentReleaseXCFramework"
+        else -> providers.provider {
+            requirePairedAppleFrameworkImports(
+                importedDeviceFramework != null,
+                importedSimulatorFramework != null,
+            )
+            "assembleCodexAgentReleaseXCFramework"
         }
-    } else {
-        "assembleCodexAgentReleaseXCFramework"
     }
     val prepareCodexAgentReleaseXCFramework =
         tasks.register<PrepareCodexAgentReleaseXCFrameworkTask>("prepareCodexAgentReleaseXCFramework") {

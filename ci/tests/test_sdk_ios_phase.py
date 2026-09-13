@@ -7,7 +7,7 @@ import unittest
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sdk_ios_phase import FRESH_EXPORT_TASK, TASK, fresh_export_properties, properties  # noqa: E402
+from sdk_ios_phase import FRESH_EXPORT_TASK, TASK, fresh_export_properties, package_properties, properties  # noqa: E402
 
 
 class SdkIosPhaseTest(unittest.TestCase):
@@ -165,6 +165,62 @@ class SdkIosPhaseTest(unittest.TestCase):
         self.assertFalse(any(name.startswith("codexAgent.iosExpected") for name in translated))
         self.assertNotIn("codexAgent.iosVerifiedDistributionDirectory", translated)
         self.assertEqual([("contract", "contract", "binary", "common")], self.calls)
+
+    def test_canonical_package_requires_both_original_binary_and_apple_inputs(self):
+        binary = self.root / "sdk-binary"
+        binary.mkdir()
+        record = {
+            "stage": binary,
+            "receipt": {"product": "sdk", "component": "sdk-ios", "phase": "binary",
+                        "target": "ios", "productVersion": "0.8.0"},
+        }
+
+        def original(*identity):
+            if identity == ("contract", "contract", "binary", "common"):
+                return self.predecessor(*identity)
+            self.assertEqual(("sdk", "sdk-ios", "binary", "ios"), identity)
+            self.calls.append(identity)
+            return record
+
+        def translate(**changes):
+            return package_properties(
+                changes.get("plan", self.plan()), sdk_version=changes.get("sdk_version", "0.8.0"),
+                predecessor=original, verified_distribution=self.distribution,
+                native_evidence=self.native, compatibility_request=self.request,
+                expected_sdk_compatibility=self.compatibility, expected_distribution_proof=self.proof,
+            )
+
+        expected = self.translate()
+        self.calls.clear()
+        expected.update({
+            "codexAgent.product": "sdk", "codexAgent.component": "sdk-ios",
+            "codexAgent.phase": "package", "codexAgent.target": "ios",
+            "codexAgent.sdkIosBinaryStageRoot": str(binary),
+        })
+        self.assertEqual(expected, translate())
+        self.assertEqual([("contract", "contract", "binary", "common"),
+                          ("sdk", "sdk-ios", "binary", "ios")], self.calls)
+        # Contract and SDK are independently versioned; never relabel either.
+        self.assertEqual("0.2.0", expected["codexAgent.contractVersion"])
+        receipt = record["receipt"]
+        for field, value in (("product", "runtime"), ("component", "sdk-core"),
+                             ("phase", "package"), ("target", "common"),
+                             ("productVersion", "0.8.1"), ("productVersion", "invalid")):
+            record["receipt"] = {**receipt, field: value}
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                translate()
+        record["receipt"] = receipt
+        link = self.root / "binary-link"
+        link.symlink_to(binary, target_is_directory=True)
+        for path in (Path("relative"), self.root / "missing-binary", link):
+            record["stage"] = path
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                translate()
+        for changes in ({"sdk_version": "invalid"}, {"plan": self.plan(phase="binary")}):
+            self.calls.clear()
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                translate(**changes)
+            self.assertEqual([], self.calls)
 
     def test_fresh_identity_paths_and_contract_receipt_fail_closed(self):
         for changes in (

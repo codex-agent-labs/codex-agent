@@ -1,7 +1,8 @@
 """Translate authenticated iOS SDK package inputs to the existing Apple task.
 
-The caller owns receipt/plan admission and common candidate identity. This
-module neither maps ``ciProductPhase`` nor claims Apple host execution.
+The caller owns receipt/plan admission and common candidate identity. The
+canonical package mapping consumes both original Maven and Apple artifacts;
+none of these translations claims Apple host execution or receipt admission.
 """
 
 from __future__ import annotations
@@ -83,6 +84,48 @@ def properties(
         "codexAgent.iosExpectedSdkCompatibility": compatibility,
         "codexAgent.iosExpectedDistributionProof": proof,
     }
+
+
+def package_properties(
+    plan: Mapping[str, Any], *,
+    sdk_version: str,
+    predecessor: Callable[[str, str, str, str], Mapping[str, Any]],
+    verified_distribution: Path,
+    native_evidence: Path,
+    compatibility_request: Path,
+    expected_sdk_compatibility: Path,
+    expected_distribution_proof: Path,
+) -> dict[str, str]:
+    """Map canonical ciProductPhase to imported Maven AND Apple package inputs.
+
+    The predecessor callback must authenticate original receipt bytes and stage
+    inventories; this mapper checks identity/version, not producer authority.
+    Never invoke the fresh exporter to supply a package-only miss.
+    """
+    _identity(plan)
+    version = require_semver(sdk_version, "Elected SDK version")
+    fields = properties(
+        plan, predecessor=predecessor, verified_distribution=verified_distribution,
+        native_evidence=native_evidence, compatibility_request=compatibility_request,
+        expected_sdk_compatibility=expected_sdk_compatibility,
+        expected_distribution_proof=expected_distribution_proof,
+    )
+    original = predecessor("sdk", "sdk-ios", "binary", "ios")
+    receipt = original["receipt"]
+    if tuple(receipt.get(field) for field in ("product", "component", "phase", "target")) != (
+        "sdk", "sdk-ios", "binary", "ios",
+    ):
+        raise ValueError("iOS SDK binary predecessor receipt has the wrong identity")
+    if require_semver(receipt.get("productVersion"), "Original SDK version") != version:
+        raise ValueError("Original iOS SDK binary version differs from the elected SDK version")
+    fields.update({
+        "codexAgent.product": "sdk",
+        "codexAgent.component": "sdk-ios",
+        "codexAgent.phase": "package",
+        "codexAgent.target": "ios",
+        "codexAgent.sdkIosBinaryStageRoot": _directory(original["stage"], "Original iOS SDK binary stage"),
+    })
+    return fields
 
 
 def fresh_export_properties(

@@ -121,14 +121,16 @@ val verifyAppleToolchain = registerAppleToolchainVerificationTask(
     pinnedXcodeBuild,
     pinnedSwiftVersion,
 )
-val importedDeviceFramework = providers.gradleProperty("codexAgent.iosDeviceFrameworkDirectory").orNull?.let {
+val importedDeviceFrameworkPath = providers.gradleProperty("codexAgent.iosDeviceFrameworkDirectory")
+val importedSimulatorFrameworkPath = providers.gradleProperty("codexAgent.iosSimulatorFrameworkDirectory")
+val importedDeviceFramework = importedDeviceFrameworkPath.orNull?.let {
     tasks.register<ImportCodexAgentFrameworkTask>("importCodexAgentIosDeviceFramework") {
         frameworkDirectory.set(layout.dir(providers.provider { file(it) }))
         platformName.set("iphoneos")
         importedFrameworkDirectory.set(layout.buildDirectory.dir("imported-frameworks/device/CodexAgent.framework"))
     }
 }
-val importedSimulatorFramework = providers.gradleProperty("codexAgent.iosSimulatorFrameworkDirectory").orNull?.let {
+val importedSimulatorFramework = importedSimulatorFrameworkPath.orNull?.let {
     tasks.register<ImportCodexAgentFrameworkTask>("importCodexAgentIosSimulatorFramework") {
         frameworkDirectory.set(layout.dir(providers.provider { file(it) }))
         platformName.set("iphonesimulator")

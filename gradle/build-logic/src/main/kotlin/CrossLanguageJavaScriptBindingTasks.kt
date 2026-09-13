@@ -6,11 +6,14 @@ import kotlinx.serialization.json.JsonObject
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.Property
 import org.gradle.api.tasks.CacheableTask
 import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.LocalState
 import org.gradle.api.tasks.OutputFile
+import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
@@ -106,25 +109,59 @@ abstract class VerifyJavaScriptTypeScriptBindingParityTask : DefaultTask() {
     abstract val receiptFile: RegularFileProperty
 
     @TaskAction
-    fun verify() {
+    open fun verify() {
         val output = receiptFile.get().asFile
         Files.deleteIfExists(output.toPath())
-        val receipt = buildJavaScriptTypeScriptBindingReceipt(
-            CrossLanguageJavaScriptBindingFiles(
-                apiReport = apiReport.get().asFile,
-                canonicalCoverageReceipt = coverage.get().asFile,
-                packedPublicApiReport = packedApiReport.get().asFile,
-                npmTarball = npmTarball.get().asFile,
-                installedPackageDirectory = installedPackage.get().asFile,
-                consumerSourceDirectory = packedConsumerProgram.get().asFile,
-                compiledJsNodeTestProgramDirectory = compiledJsNodeTestProgram.get().asFile,
-                packedJUnitReport = packedJUnit.get().asFile,
-                jsNodeJUnitReport = jsNodeJUnit.get().asFile,
-            ),
-        )
+        val receipt = buildJavaScriptTypeScriptBindingReceipt(bindingFiles())
         writeCrossLanguageBindingReceipt(output, receipt)
         check(readCrossLanguageBindingReceipt(output).toJson() == receipt.toJson()) {
             "JavaScript/TypeScript binding parity receipt does not match freshly recomputed evidence"
         }
     }
+
+    internal fun bindingFiles() = CrossLanguageJavaScriptBindingFiles(
+        apiReport = apiReport.get().asFile,
+        canonicalCoverageReceipt = coverage.get().asFile,
+        packedPublicApiReport = packedApiReport.get().asFile,
+        npmTarball = npmTarball.get().asFile,
+        installedPackageDirectory = installedPackage.get().asFile,
+        consumerSourceDirectory = packedConsumerProgram.get().asFile,
+        compiledJsNodeTestProgramDirectory = compiledJsNodeTestProgram.get().asFile,
+        packedJUnitReport = packedJUnit.get().asFile,
+        jsNodeJUnitReport = jsNodeJUnit.get().asFile,
+    )
+}
+
+@DisableCachingByDefault(because = "Replays original JavaScript evidence without running a compiler or consumer")
+abstract class ReplayJavaScriptMetadataTask : VerifyJavaScriptTypeScriptBindingParityTask() {
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val executionDirectory: DirectoryProperty
+
+    @get:Input abstract val originalConsumerDirectory: Property<String>
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val originalBindingReceipt: RegularFileProperty
+
+    @TaskAction
+    override fun verify() {
+        val output = receiptFile.get().asFile
+        check(!Files.isSymbolicLink(output.toPath()) && inputs.files.files.none { input ->
+            output.canonicalFile.toPath().startsWith(input.canonicalFile.toPath())
+        }) { "JavaScript metadata output overlaps its original inputs" }
+        Files.deleteIfExists(output.toPath())
+        val receipt = replayJavaScriptMetadata(bindingFiles(), executionDirectory.get().asFile,
+            File(originalConsumerDirectory.get()), originalBindingReceipt.get().asFile)
+        writeCrossLanguageBindingReceipt(output, receipt)
+    }
+}
+
+@DisableCachingByDefault(because = "Captures only verified original npm files without installation")
+abstract class RestoreJavaScriptMetadataPackageTask : DefaultTask() {
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val archiveFile: RegularFileProperty
+    @get:OutputDirectory abstract val destinationDirectory: DirectoryProperty
+
+    @TaskAction fun restore() = restoreJavaScriptMetadataPackage(
+        archiveFile.get().asFile, destinationDirectory.get().asFile,
+    )
 }

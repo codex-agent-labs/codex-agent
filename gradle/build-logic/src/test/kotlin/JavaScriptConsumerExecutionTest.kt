@@ -7,6 +7,19 @@ import kotlinx.serialization.json.*
 
 class JavaScriptConsumerExecutionTest {
     @Test
+    fun `relocated envelopes require independently supplied exact original consumer directory`() = fixture { root ->
+        val capture = createTempDirectory("javascript-execution-capture-").toFile().canonicalFile
+        try {
+            root.listFiles()!!.forEach { it.copyTo(capture.resolve(it.name)) }
+            verifyJavaScriptConsumerExecutions(capture, root)
+            assertFails { verifyJavaScriptConsumerExecutions(capture) }
+            assertFails { verifyJavaScriptConsumerExecutions(capture, root.resolve("other")) }
+            assertFails { verifyJavaScriptConsumerExecutions(capture, File("relative/consumer")) }
+            assertFails { verifyJavaScriptConsumerExecutions(capture, root.resolve("../consumer")) }
+        } finally { capture.deleteRecursively() }
+    }
+
+    @Test
     fun `exact installed compiler and consumer records preserve binary and empty streams`() = fixture { root ->
         verifyJavaScriptConsumerExecutions(root)
         val plugin = File("src/main/kotlin/codexagent.javascript-sdk.gradle.kts").readText()

@@ -516,6 +516,8 @@ tasks.register("ciProductPhase") {
                 sdk.get().tasks.named("writeJavaScriptSdkPackageOutputManifest")
             Triple("sdk", "javascript", "validation") ->
                 sdk.get().tasks.named("writeJavaScriptSdkValidationOutputManifest")
+            Triple("sdk", "javascript", "metadata") ->
+                sdk.get().tasks.named("writeJavaScriptSdkMetadataOutputManifest")
             Triple("sdk", "python", "package") ->
                 sdk.get().tasks.named("writePythonNativeWrapperSdkPackageOutputManifest")
             Triple("sdk", "csharp", "package") ->

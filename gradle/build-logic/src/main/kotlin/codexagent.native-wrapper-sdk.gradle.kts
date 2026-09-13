@@ -277,6 +277,13 @@ val nativeWrapperSdkPackageTaskNames = linkedMapOf(
         "product-stage/sdk/dart/package",
     ),
 )
+// Independent language jobs consume the one authenticated prepared upload.
+// Supplying only half must never fall back to restaging all five native SDKs.
+val importedNativeWrapperPackageSources = providers.gradleProperty("codexAgent.nativeWrapperPackageSourcesRoot")
+val importedNativeWrapperPackageSdks = providers.gradleProperty("codexAgent.nativeWrapperPackageSdksRoot")
+check(importedNativeWrapperPackageSources.isPresent == importedNativeWrapperPackageSdks.isPresent) {
+    "Imported native wrapper package sources and SDKs must be supplied together"
+}
 val nativeWrapperSdkPackageManifestTasks = nativeWrapperSdkPackageTaskNames.mapValues { (language, names) ->
     val (stageTaskName, manifestTaskName, phasePath) = names
     val phaseRoot = layout.buildDirectory.dir(phasePath)
@@ -284,10 +291,15 @@ val nativeWrapperSdkPackageManifestTasks = nativeWrapperSdkPackageTaskNames.mapV
     val stage = tasks.register<PackageNativeWrapperSdkTask>(stageTaskName) {
         group = "distribution"
         description = "Builds the exact reproducible $language SDK package from verified Runtime inputs."
-        dependsOn(nativeWrapperPackageSourceTasks.getValue(language), stageNativeWrapperCAbiSdks)
+        if (importedNativeWrapperPackageSources.isPresent) {
+            sourcesDirectory.set(layout.dir(importedNativeWrapperPackageSources.map { file(it).resolve(language) }))
+            sdkDirectory.set(layout.dir(importedNativeWrapperPackageSdks.map(::file)))
+        } else {
+            dependsOn(nativeWrapperPackageSourceTasks.getValue(language), stageNativeWrapperCAbiSdks)
+            sourcesDirectory.set(layout.buildDirectory.dir("native-wrapper-package-sources/$language"))
+            sdkDirectory.set(stageNativeWrapperCAbiSdks.flatMap { it.outputDirectory })
+        }
         this.language.set(language)
-        sourcesDirectory.set(layout.buildDirectory.dir("native-wrapper-package-sources/$language"))
-        sdkDirectory.set(stageNativeWrapperCAbiSdks.flatMap { it.outputDirectory })
         sdkVersionFile.set(rootProject.layout.projectDirectory.file("gradle/release/versions/sdk.txt"))
         packageScript.set(rootProject.layout.projectDirectory.file("ci/native_wrappers.py"))
         outputDirectory.set(phaseOutputs)
@@ -296,7 +308,7 @@ val nativeWrapperSdkPackageManifestTasks = nativeWrapperSdkPackageTaskNames.mapV
     val evidenceTitle = manifestTaskName.removePrefix("write").removeSuffix("OutputManifest")
     val evidence = tasks.register<Sync>("stage${evidenceTitle}Evidence") {
         dependsOn(stage)
-        from(stageNativeWrapperCAbiSdks.flatMap { it.outputDirectory }) {
+        from(stage.flatMap { it.sdkDirectory }) {
             include("sdk-compatibility.json")
         }
         into(phaseOutputs.map { it.dir("evidence") })

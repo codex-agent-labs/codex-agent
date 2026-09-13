@@ -11,6 +11,198 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
+    fun `metadata task writes original parity and invalidates output without deleting inputs`() {
+        val keys = fullReceiptKeys()
+        val files = receiptFiles(keys, fullReceiptSymbols(keys))
+        val root = files.apiReport.parentFile
+        try {
+            val originalConsumer = root.resolve("original/consumer")
+            val executions = root.resolve("execution").apply { mkdirs() }
+            writeMetadataExecutions(executions, originalConsumer)
+            val originalReceipt = root.resolve("original-parity.json")
+            writeCrossLanguageBindingReceipt(originalReceipt, buildJavaScriptTypeScriptBindingReceipt(files))
+            val original = originalReceipt.readBytes()
+            val project = org.gradle.testfixtures.ProjectBuilder.builder().withProjectDir(root).build()
+            val task = project.tasks.create("replayMetadata", ReplayJavaScriptMetadataTask::class.java)
+            task.apiReport.set(files.apiReport)
+            task.coverage.set(files.canonicalCoverageReceipt)
+            task.packedApiReport.set(files.packedPublicApiReport)
+            task.npmTarball.set(files.npmTarball)
+            task.installedPackage.set(files.installedPackageDirectory)
+            task.packedConsumerProgram.set(files.consumerSourceDirectory)
+            task.compiledJsNodeTestProgram.set(files.compiledJsNodeTestProgramDirectory)
+            task.packedJUnit.set(files.packedJUnitReport)
+            task.jsNodeJUnit.set(files.jsNodeJUnitReport)
+            task.executionDirectory.set(executions)
+            task.originalConsumerDirectory.set(originalConsumer.absolutePath)
+            task.originalBindingReceipt.set(originalReceipt)
+            val output = root.resolve("metadata/parity.json")
+            task.receiptFile.set(output)
+            task.verify()
+            assertTrue(output.readBytes().contentEquals(original))
+            task.originalConsumerDirectory.set(root.resolve("wrong").absolutePath)
+            assertFailsWith<IllegalStateException> { task.verify() }
+            assertTrue(!output.exists())
+            task.receiptFile.set(originalReceipt)
+            assertFailsWith<IllegalStateException> { task.verify() }
+            assertTrue(originalReceipt.readBytes().contentEquals(original))
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test
+    fun `metadata archive capture retains exact four files and rejects unsafe members before writes`() {
+        val root = createTempDirectory("javascript-metadata-archive-").toFile().canonicalFile
+        try {
+            val primaries = listOf("index.cjs", "index.d.ts", "index.mjs", "package.json")
+            fun archive(name: String, members: List<Pair<String, ByteArray>>, symbolic: String? = null): File {
+                val file = root.resolve(name)
+                org.apache.commons.compress.archivers.tar.TarArchiveOutputStream(
+                    java.util.zip.GZIPOutputStream(file.outputStream()),
+                ).use { output ->
+                    members.forEach { (path, bytes) ->
+                        val entry = org.apache.commons.compress.archivers.tar.TarArchiveEntry(path)
+                        entry.size = bytes.size.toLong()
+                        output.putArchiveEntry(entry)
+                        output.write(bytes)
+                        output.closeArchiveEntry()
+                    }
+                    if (symbolic != null) {
+                        val entry = org.apache.commons.compress.archivers.tar.TarArchiveEntry(symbolic,
+                            org.apache.commons.compress.archivers.tar.TarConstants.LF_SYMLINK)
+                        entry.linkName = "/original/outside"
+                        output.putArchiveEntry(entry)
+                        output.closeArchiveEntry()
+                    }
+                }
+                return file
+            }
+            val members = primaries.map { "package/$it" to "exact:$it".toByteArray() }
+            val good = archive("good.tgz", members + ("package/dist/runtime.js" to byteArrayOf(1)))
+            val original = good.readBytes()
+            val captured = root.resolve("captured")
+            restoreJavaScriptMetadataPackage(good, captured)
+            assertEquals(primaries.sorted(), captured.listFiles()!!.map(File::getName).sorted())
+            primaries.forEach { assertEquals("exact:$it", captured.resolve(it).readText()) }
+            assertTrue(original.contentEquals(good.readBytes()))
+            assertFailsWith<IllegalStateException> { restoreJavaScriptMetadataPackage(good, captured) }
+            assertEquals("exact:index.cjs", captured.resolve("index.cjs").readText())
+            assertFailsWith<IllegalStateException> { restoreJavaScriptMetadataPackage(good, root) }
+            listOf(
+                archive("missing.tgz", members.drop(1)),
+                archive("duplicate.tgz", members + members.first()),
+                archive("traversal.tgz", members + ("../escape" to byteArrayOf(1))),
+                archive("symbolic.tgz", members, "package/symbolic"),
+            ).forEachIndexed { index, unsafe ->
+                val destination = root.resolve("rejected-$index")
+                assertFailsWith<IllegalStateException> { restoreJavaScriptMetadataPackage(unsafe, destination) }
+                assertTrue(!destination.exists())
+            }
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test
+    fun `metadata replays full original parity with path and timing independent bytes`() {
+        val keys = fullReceiptKeys()
+        val files = receiptFiles(keys, fullReceiptSymbols(keys))
+        val root = files.apiReport.parentFile
+        val capture = createTempDirectory("javascript-metadata-capture-").toFile()
+        try {
+            val originalConsumer = root.resolve("original/codex-agent-sdk/build/npm/consumer")
+            val executions = root.resolve("execution").apply { mkdirs() }
+            writeMetadataExecutions(executions, originalConsumer)
+            val originalReceipt = root.resolve("javascript-typescript-parity.json")
+            writeCrossLanguageBindingReceipt(originalReceipt, buildJavaScriptTypeScriptBindingReceipt(files))
+            val originalBytes = originalReceipt.readBytes()
+            root.copyRecursively(capture, overwrite = true)
+            fun relocated(file: File) = capture.resolve(file.relativeTo(root).path)
+            val captured = files.copy(
+                apiReport = relocated(files.apiReport),
+                canonicalCoverageReceipt = relocated(files.canonicalCoverageReceipt),
+                packedPublicApiReport = relocated(files.packedPublicApiReport),
+                npmTarball = relocated(files.npmTarball),
+                installedPackageDirectory = relocated(files.installedPackageDirectory),
+                consumerSourceDirectory = relocated(files.consumerSourceDirectory),
+                compiledJsNodeTestProgramDirectory = relocated(files.compiledJsNodeTestProgramDirectory),
+                packedJUnitReport = relocated(files.packedJUnitReport),
+                jsNodeJUnitReport = relocated(files.jsNodeJUnitReport),
+            )
+            captured.packedJUnitReport.writeText(captured.packedJUnitReport.readText()
+                .replace("<testsuites>", "<testsuites time=\"123.45\" timestamp=\"different-run\">"))
+            // Original binary and empty diagnostics are checked, never included
+            // in reusable metadata content or substituted for source authority.
+            writeMetadataExecutions(relocated(executions), originalConsumer, "/wANCg==")
+            val result = replayJavaScriptMetadata(captured, relocated(executions), originalConsumer,
+                relocated(originalReceipt))
+            val output = capture.resolve("replayed.json")
+            writeCrossLanguageBindingReceipt(output, result)
+            assertTrue(output.readBytes().contentEquals(originalBytes))
+            assertTrue(originalReceipt.readBytes().contentEquals(originalBytes))
+            assertEquals(556, result.projectionClaims.size)
+            assertEquals(14, result.scenarioEvidence.size)
+            assertTrue(result.hostConsumerProofs.isEmpty())
+        } finally {
+            root.deleteRecursively()
+            capture.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `metadata rejects original source report command and receipt substitution`() {
+        val keys = fullReceiptKeys()
+        val files = receiptFiles(keys, fullReceiptSymbols(keys))
+        val root = files.apiReport.parentFile
+        try {
+            val originalConsumer = root.resolve("original/codex-agent-sdk/build/npm/consumer")
+            val executions = root.resolve("execution").apply { mkdirs() }
+            writeMetadataExecutions(executions, originalConsumer)
+            val originalReceipt = root.resolve("javascript-typescript-parity.json")
+            writeCrossLanguageBindingReceipt(originalReceipt, buildJavaScriptTypeScriptBindingReceipt(files))
+            fun replay() = replayJavaScriptMetadata(files, executions, originalConsumer, originalReceipt)
+            replay() // Every negative starts from a valid full-matcher fixture.
+            listOf(files.consumerSourceDirectory.resolve("smoke.cjs"),
+                files.compiledJsNodeTestProgramDirectory.resolve("test-program.mjs"),
+                files.installedPackageDirectory.resolve("index.cjs"), originalReceipt).forEach { file ->
+                val original = file.readBytes()
+                file.appendText("tampered")
+                assertFailsWith<IllegalStateException> { replay() }
+                file.writeBytes(original)
+            }
+            val report = files.packedJUnitReport.readBytes()
+            writePackedJUnit(files.packedJUnitReport, PACKED_TEST_IDS,
+                mapOf(PACKED_TEST_IDS.first() to CanonicalTestStatus.FAILED))
+            assertFailsWith<IllegalStateException> { replay() }
+            files.packedJUnitReport.writeBytes(report)
+            assertFailsWith<IllegalStateException> {
+                replayJavaScriptMetadata(files, executions, root.resolve("another-original"), originalReceipt)
+            }
+            executions.resolve("extra.json").writeText("{}")
+            assertFailsWith<IllegalStateException> { replay() }
+            executions.resolve("extra.json").delete()
+            executions.resolve("typescript-execution.json").delete()
+            assertFailsWith<IllegalStateException> { replay() }
+        } finally { root.deleteRecursively() }
+    }
+
+    private fun writeMetadataExecutions(directory: File, originalConsumer: File, stdout: String = "") {
+        listOf("typescript-execution.json", "packed-consumer-execution.json").forEach { name ->
+            val arguments = if (name == "typescript-execution.json") {
+                listOf(originalConsumer.resolve("node_modules/typescript/bin/tsc").absolutePath, "--noEmit")
+            } else listOf("--test", "--test-reporter=junit", "--test-reporter-destination=packed-tests.xml",
+                "smoke.cjs", "smoke.mjs")
+            val value = buildJsonObject {
+                put("command", kotlinx.serialization.json.JsonArray(
+                    (listOf("/observed/node") + arguments).map(::JsonPrimitive)))
+                put("exitCode", JsonPrimitive(0))
+                put("schemaVersion", JsonPrimitive(1))
+                put("stderrBase64", JsonPrimitive(""))
+                put("stdoutBase64", JsonPrimitive(stdout))
+            }
+            directory.resolve(name).writeText(kotlinx.serialization.json.Json.encodeToString(
+                kotlinx.serialization.json.JsonElement.serializer(), value) + "\n")
+        }
+    }
+
+    @Test
     fun `current 320-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),

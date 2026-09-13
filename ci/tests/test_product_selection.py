@@ -1306,6 +1306,15 @@ class ProductSelectionTest(unittest.TestCase):
         )
         self.assertFalse(any(instance.product == "sdk" for instance in runtime.instances))
 
+    def test_javascript_metadata_replay_keys_only_its_metadata_phase(self):
+        selected = classify_paths([
+            "gradle/build-logic/src/main/kotlin/CrossLanguageJavaScriptMetadataEvidence.kt",
+        ])
+        self.assertEqual(
+            {PhaseInstanceId("sdk", "javascript", "metadata", "node")},
+            set(selected.instances),
+        )
+
     def test_current_untracked_product_authorities_are_explicit_controls(self) -> None:
         paths = (
             "ci/legacy_lanes.py",
@@ -1337,6 +1346,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/sdk_ios_binary.py",
             "ci/sdk_metadata_phase.py",
             "ci/sdk_javascript_phase.py",
+            "ci/sdk_native_phase.py",
             "ci/sdk_apple_export.py",
             "ci/sdk_apple_native.py",
             "ci/products/sdk_apple_source.py",

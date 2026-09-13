@@ -1871,3 +1871,125 @@ tasks.register<WriteProductOutputManifestTask>("writeJavaScriptSdkValidationOutp
     stageRoot.set(javascriptSdkValidationPhaseRoot)
     manifestFile.set(javascriptSdkValidationPhaseRoot.map { it.file("output-manifest.json") })
 }
+
+// Metadata consumes only originals. These snapshots deliberately do not share
+// the validation producer's invalidation/npm installation task graph.
+fun registerJavaScriptMetadataInput(
+    name: String,
+    inputProduct: String,
+    inputComponent: String,
+    inputPhase: String,
+    inputTarget: String,
+    stageProperty: String,
+    version: org.gradle.api.provider.Provider<String>,
+): Pair<org.gradle.api.provider.Provider<org.gradle.api.file.Directory>,
+    org.gradle.api.tasks.TaskProvider<VerifyImportedProductOutputManifestTask>> {
+    val snapshot = layout.buildDirectory.dir(npmCandidateTree.map {
+        "imported-sdk-product-stages/$it/javascript-metadata/$name"
+    })
+    val capture = tasks.register<SnapshotImportedProductStageTask>("snapshotJavaScriptMetadata$name") {
+        sourceDirectory.set(layout.dir(providers.gradleProperty(stageProperty).map(::file)))
+        outputDirectory.set(snapshot)
+        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+    }
+    val verify = tasks.register<VerifyImportedProductOutputManifestTask>("verifyJavaScriptMetadata$name") {
+        dependsOn(capture)
+        product.set(inputProduct)
+        component.set(inputComponent)
+        phase.set(inputPhase)
+        target.set(inputTarget)
+        productVersion.set(version)
+        stageRoot.set(snapshot)
+        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+    }
+    return snapshot to verify
+}
+
+val (javascriptMetadataContract, verifyJavaScriptMetadataContract) = registerJavaScriptMetadataInput(
+    "Contract", "contract", "contract", "binary", "common", "codexAgent.contractBinaryStage",
+    providers.provider { npmContractVersion },
+)
+val (javascriptMetadataRuntime, verifyJavaScriptMetadataRuntime) = registerJavaScriptMetadataInput(
+    "Runtime", "runtime", "node-js", "validation", "node-js-binding",
+    "codexAgent.runtimeBindingValidationStage", npmRuntimeBindingVersion,
+)
+val (javascriptMetadataPackage, verifyJavaScriptMetadataPackage) = registerJavaScriptMetadataInput(
+    "Package", "sdk", "javascript", "package", "node", "codexAgent.sdkPackageStageRoot",
+    providers.provider { npmVersion },
+)
+val (javascriptMetadataValidation, verifyJavaScriptMetadataValidation) = registerJavaScriptMetadataInput(
+    "Validation", "sdk", "javascript", "validation", "node", "codexAgent.sdkValidationStageRoot",
+    providers.provider { npmVersion },
+)
+val javascriptMetadataArchive = javascriptMetadataPackage.map {
+    it.file("outputs/package/codex-agent-$npmVersion.tgz")
+}
+val verifyJavaScriptMetadataArchive = tasks.register<VerifyNpmSdkCompatibilityArchiveTask>(
+    "verifyJavaScriptMetadataArchive",
+) {
+    dependsOn(verifyJavaScriptMetadataPackage)
+    archiveFile.set(javascriptMetadataArchive)
+    sdkVersion.set(npmVersion)
+    sdkCompatibility.set(javascriptMetadataPackage.map { it.file("outputs/evidence/sdk-compatibility.json") })
+    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(rootProject.layout.projectDirectory)
+    reportFile.set(layout.buildDirectory.file("reports/npm/metadata-sdk-compatibility-archive.json"))
+}
+val javascriptMetadataInstalledPackage = layout.buildDirectory.dir("javascript-metadata/installed-package")
+val restoreJavaScriptMetadataPackage = tasks.register<RestoreJavaScriptMetadataPackageTask>(
+    "restoreJavaScriptMetadataPackage",
+) {
+    // Validate all archive members before writing only the four matcher files.
+    dependsOn(verifyJavaScriptMetadataArchive)
+    archiveFile.set(javascriptMetadataArchive)
+    destinationDirectory.set(javascriptMetadataInstalledPackage)
+}
+val javascriptSdkMetadataPhaseRoot = layout.buildDirectory.dir("product-stage/sdk/javascript/metadata")
+val javascriptSdkMetadataOutputs = javascriptSdkMetadataPhaseRoot.map { it.dir("outputs") }
+val javascriptMetadataReceipt = layout.buildDirectory.file(
+    "reports/javascript-metadata/javascript-typescript-parity.json",
+)
+val replayJavaScriptSdkMetadata = tasks.register<ReplayJavaScriptMetadataTask>("replayJavaScriptSdkMetadata") {
+    dependsOn(verifyJavaScriptMetadataContract, verifyJavaScriptMetadataRuntime,
+        verifyJavaScriptMetadataValidation, restoreJavaScriptMetadataPackage)
+    apiReport.set(javascriptMetadataContract.map { it.file("outputs/evidence/canonical-api.json") })
+    coverage.set(javascriptMetadataContract.map { it.file("outputs/evidence/canonical-coverage.json") })
+    packedApiReport.set(javascriptMetadataValidation.map { it.file("outputs/compiler-evidence/public-api.json") })
+    npmTarball.set(javascriptMetadataArchive)
+    installedPackage.set(javascriptMetadataInstalledPackage)
+    packedConsumerProgram.set(javascriptMetadataValidation.map { it.dir("outputs/test-program") })
+    compiledJsNodeTestProgram.set(javascriptMetadataRuntime.map { it.dir("outputs/test-program") })
+    packedJUnit.set(javascriptMetadataValidation.map { it.file("outputs/test-report/packed-tests.xml") })
+    jsNodeJUnit.set(javascriptMetadataRuntime.map {
+        it.file("outputs/test-report/TEST-jsNodeTest.CodexNodeApiTest.xml")
+    })
+    executionDirectory.set(javascriptMetadataValidation.map { it.dir("outputs/execution") })
+    originalConsumerDirectory.set(providers.gradleProperty("codexAgent.sdkOriginalConsumerDirectory"))
+    originalBindingReceipt.set(javascriptMetadataValidation.map {
+        it.file("outputs/binding-evidence/javascript-typescript-parity.json")
+    })
+    receiptFile.set(javascriptMetadataReceipt)
+}
+val stageJavaScriptSdkMetadataPhase = tasks.register<Sync>("stageJavaScriptSdkMetadataPhase") {
+    dependsOn(replayJavaScriptSdkMetadata)
+    into(javascriptSdkMetadataOutputs)
+    from(javascriptMetadataReceipt) { into("binding-evidence") }
+    includeEmptyDirs = false
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+}
+tasks.register<WriteProductOutputManifestTask>("writeJavaScriptSdkMetadataOutputManifest") {
+    dependsOn(stageJavaScriptSdkMetadataPhase)
+    product.set("sdk")
+    component.set("javascript")
+    phase.set("metadata")
+    target.set("node")
+    productVersion.set(npmVersion)
+    outputRoots.set(mapOf("binding-evidence" to "outputs/binding-evidence"))
+    outputsDirectory.set(javascriptSdkMetadataOutputs)
+    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(rootProject.layout.projectDirectory)
+    stageRoot.set(javascriptSdkMetadataPhaseRoot)
+    manifestFile.set(javascriptSdkMetadataPhaseRoot.map { it.file("output-manifest.json") })
+}

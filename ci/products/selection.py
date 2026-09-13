@@ -243,6 +243,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_ios_binary.py",
     "ci/sdk_metadata_phase.py",
     "ci/sdk_javascript_phase.py",
+    "ci/sdk_native_phase.py",
     "ci/sdk_apple_export.py",
     "ci/sdk_apple_native.py",
     "ci/runtime_adapter_phase.py",
@@ -917,6 +918,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             return _from_phase("sdk", "sdk-ios", "package")
         if name in _IOS_BINARY_BUILD_LOGIC:
             return _from_phase("sdk", "sdk-ios", "binary")
+        if name == "CrossLanguageJavaScriptMetadataEvidence.kt":
+            return _from_phase("sdk", "javascript", "metadata")
         if name.startswith("CrossLanguageJavaScript"):
             return _from_phase("sdk", "javascript", "validation")
         if name in {

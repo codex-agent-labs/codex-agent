@@ -60,7 +60,16 @@ private val requiredJavaScriptConsumerProgramFiles = setOf(
 )
 
 /** Original compiler/consumer execution records; never npm product content. */
-internal fun verifyJavaScriptConsumerExecutions(directory: File) {
+internal fun verifyJavaScriptConsumerExecutions(
+    directory: File,
+    originalConsumerDirectory: File = directory,
+) {
+    // Replay receives this original location from its authenticated caller, not
+    // from the transported command. It need not exist on the receiving host.
+    check(originalConsumerDirectory.isAbsolute &&
+        originalConsumerDirectory.toPath().normalize().toString() == originalConsumerDirectory.path) {
+        "JavaScript execution requires its exact normalized original consumer directory"
+    }
     var observedNode: String? = null
     listOf("typescript-execution.json", "packed-consumer-execution.json").forEach { name ->
         val file = directory.resolve(name)
@@ -91,7 +100,7 @@ internal fun verifyJavaScriptConsumerExecutions(directory: File) {
         if (observedNode == null) observedNode = executable
         check(executable == observedNode) { "Compiler and consumer executed different Node programs" }
         val arguments = if (name == "typescript-execution.json") {
-            listOf(directory.resolve("node_modules/typescript/bin/tsc").absolutePath, "--noEmit")
+            listOf(originalConsumerDirectory.resolve("node_modules/typescript/bin/tsc").absolutePath, "--noEmit")
         } else {
             listOf("--test", "--test-reporter=junit", "--test-reporter-destination=packed-tests.xml", "smoke.cjs", "smoke.mjs")
         }
