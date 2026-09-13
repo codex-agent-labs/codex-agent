@@ -501,6 +501,9 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         "sdk-native-prepare", "sdk-native-package-worker",
     )):
         return _bindings(NATIVE_BINDINGS)
+    for phase in ("validation", "metadata"):
+        if _is_prefix(path, f".github/actions/sdk-native-{phase}-worker/"):
+            return {instance for language in NATIVE_BINDINGS for instance in _from_phase("sdk", language, phase)}
     if any(_is_prefix(path, f".github/actions/{name}/") for name in (
         "capture-runtime-state", "collect-runtime-wave",
     )):

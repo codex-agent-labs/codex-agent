@@ -24,7 +24,10 @@ inputs:
     description: Optional exact SDK collection wave, mutually exclusive with Runtime state-wave.
   sdk-family:
     default: ''
-    description: Optional exact native-package, ios-package, or javascript-metadata SDK projection.
+    description: Optional exact native-package, ios-package, javascript-metadata, native-validation, or native-metadata SDK projection.
+  sdk-validation-tooling:
+    default: ''
+    description: Caller-provisioned tooling policy path; never obtained from the captured state.
   component:
     default: ''
     description: Optional elected Runtime component.
@@ -70,6 +73,7 @@ runs:
         STATE_PRODUCT: ${{ inputs.product }}
         SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
         SDK_FAMILY: ${{ inputs.sdk-family }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         COMPONENT: ${{ inputs.component }}
         PHASE: ${{ inputs.phase }}
         TARGET: ${{ inputs.target }}
@@ -80,7 +84,7 @@ runs:
         selected=()
         command=(python3 -B ci/runtime_workflow.py capture)
         case "$STATE_PRODUCT" in
-          runtime) test -z "$SDK_STATE_WAVE$SDK_FAMILY" ;;
+          runtime) test -z "$SDK_STATE_WAVE$SDK_FAMILY${SDK_VALIDATION_TOOLING:-}" ;;
           sdk|sdk-ios-binary)
             test -z "$COMPONENT$PHASE$TARGET$BUILD_KEY"
             command=(python3 -B -m ci.sdk_workflow capture)
@@ -92,9 +96,12 @@ runs:
               selected+=(--ios-binary)
             elif [ -n "$SDK_FAMILY" ]; then
               case "$SDK_FAMILY" in
-                native-package|ios-package|javascript-metadata) selected+=(--family "$SDK_FAMILY") ;;
+                native-package|ios-package|javascript-metadata|native-validation|native-metadata) selected+=(--family "$SDK_FAMILY") ;;
                 *) echo 'Unknown SDK family' >&2; exit 1 ;;
               esac
+            fi
+            if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then
+              selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
             fi ;;
           *) echo 'Unknown product state projection' >&2; exit 1 ;;
         esac

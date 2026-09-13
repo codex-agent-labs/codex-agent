@@ -9,7 +9,10 @@ inputs:
     description: Optional exact SDK predecessor state wave.
   sdk-family:
     default: ''
-    description: Optional native-package, ios-package, or javascript-metadata SDK scope.
+    description: Optional native-package, ios-package, javascript-metadata, native-validation, or native-metadata SDK scope.
+  sdk-validation-tooling:
+    default: ''
+    description: Caller-provisioned tooling policy path, not retained-state authority.
   plan-id:
     required: true
     description: Original plan upload ID.
@@ -27,7 +30,7 @@ inputs:
     description: Fixed predecessor wave.
   wave:
     required: true
-    description: Runtime waves one through five; SDK JavaScript one/two, iOS binary three, native package four, iOS package five, metadata six.
+    description: Runtime waves one through five; SDK JavaScript one/two, iOS binary three, native package four, iOS package five, JS metadata six, native validation seven, native metadata eight.
   tree:
     required: true
     description: Exact tested tree.
@@ -63,6 +66,7 @@ runs:
         product: ${{ inputs.product }}
         sdk-state-wave: ${{ inputs.sdk-state-wave }}
         sdk-family: ${{ inputs.sdk-family }}
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
         plan-id: ${{ inputs.plan-id }}
         artifact-id: ${{ inputs.artifact-id }}
         artifact-sha256: ${{ inputs.artifact-sha256 }}
@@ -76,23 +80,27 @@ runs:
         STATE_WAVE: ${{ inputs.state-wave }}
         PRODUCT: ${{ inputs.product }}
         SDK_FAMILY: ${{ inputs.sdk-family }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
         case "$PRODUCT" in
-          runtime) test -z "$SDK_FAMILY"; command=(python3 -B ci/runtime_workflow.py collect); state=(--state-wave "$STATE_WAVE") ;;
+          runtime) test -z "$SDK_FAMILY${SDK_VALIDATION_TOOLING:-}"; command=(python3 -B ci/runtime_workflow.py collect); state=(--state-wave "$STATE_WAVE") ;;
           sdk)
             command=(python3 -B -m ci.sdk_workflow collect); state=()
             if [ -n "$SDK_FAMILY" ]; then
               case "$SDK_FAMILY" in
-                native-package|ios-package|javascript-metadata) state=(--family "$SDK_FAMILY") ;;
+                native-package|ios-package|javascript-metadata|native-validation|native-metadata) state=(--family "$SDK_FAMILY") ;;
                 *) echo 'Unknown SDK family' >&2; exit 1 ;;
               esac
             fi ;;
           sdk-ios-binary) test -z "$SDK_FAMILY"; command=(python3 -B -m ci.sdk_workflow collect); state=(--ios-binary) ;;
           *) echo 'Unknown product collection scope' >&2; exit 1 ;;
         esac
+        if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then
+          state+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
+        fi
         "${command[@]}" --input-root "$INPUT_ROOT" \
           --destination build/runtime-next --wave "$WAVE" ${state[@]+"${state[@]}"} \
           --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT"

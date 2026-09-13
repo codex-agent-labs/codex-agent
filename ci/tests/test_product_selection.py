@@ -1406,6 +1406,18 @@ class ProductSelectionTest(unittest.TestCase):
                              identities(classify_paths((path,))))
             self.assertEqual((), classify_paths((path,)).inventory_paths)
 
+    def test_native_validation_and_metadata_actions_replan_only_their_owners_without_binary_inputs(self):
+        for phase, phases in (("validation", {"validation", "metadata"}), ("metadata", {"metadata"})):
+            path = f".github/actions/sdk-native-{phase}-worker/action.yml"
+            result = classify_paths((path,))
+            self.assertEqual({item for item in PHASE_INSTANCE_IDS if item.product == "sdk" and
+                              item.component in {"python", "csharp", "rust", "cpp", "dart"} and item.phase in phases},
+                             identities(result))
+            self.assertEqual((), result.unknown_paths)
+            self.assertEqual((), result.inventory_paths)
+            for instance in PHASE_INSTANCE_IDS:
+                self.assertEqual((), phase_inventory_paths((path,), instance))
+
     def test_authenticated_native_handoff_and_metadata_join_have_exact_direct_owners(self):
         paths = ("ci/products/sdk_inputs.py", "ci/products/sdk_native.py", "ci/products/sdk_package.py")
         for instance in PHASE_INSTANCE_IDS:
