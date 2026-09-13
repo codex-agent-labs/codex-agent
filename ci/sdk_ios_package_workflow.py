@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -203,3 +205,45 @@ def execute(
             raise ValueError("SDK iOS package candidate changed after admission")
         publish_regular_tree(candidate, destination / "shard")
     return verify_phase_shard(destination / "shard", _INSTANCE)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    for name in (
+        "plan", "destination", "keyring", "keys-directory",
+        "expected-distribution-proof", "tooling-evidence", "tooling-public-key",
+        "java-executable", "repository-root",
+    ):
+        parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--discovery-root", dest="discovery", type=Path, required=True)
+    parser.add_argument("--state-root", dest="state", type=Path, required=True)
+    parser.add_argument("--expected-build-key", required=True)
+    parser.add_argument("--sdk-inputs-artifact-id", type=int, required=True)
+    parser.add_argument("--sdk-inputs-artifact-sha256", required=True)
+    parser.add_argument("--apple-artifact-id", type=int, required=True)
+    parser.add_argument("--apple-artifact-sha256", required=True)
+    parser.add_argument("--trusted-workflow-sha", required=True)
+    parser.add_argument("--policy-revision", required=True)
+    parser.add_argument("--tooling-keyring", type=Path)
+    parser.add_argument("--tooling-keys-directory", type=Path)
+    lanes = ("native-tests", "rust-device", "rust-simulator")
+    for lane in lanes:
+        parser.add_argument(f"--{lane}-artifact-id", type=int, required=True)
+        parser.add_argument(f"--{lane}-artifact-sha256", required=True)
+    arguments = vars(parser.parse_args(argv))
+    if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
+        parser.error("Apple tooling keyring and keys directory must be supplied together")
+    uploads = {f"ios-{lane}": {
+        "artifactId": arguments.pop(lane.replace("-", "_") + "_artifact_id"),
+        "artifactSha256": arguments.pop(lane.replace("-", "_") + "_artifact_sha256"),
+    } for lane in lanes}
+    try:
+        execute(**arguments, native_uploads=uploads, environ=os.environ,
+                token=os.environ.get("GITHUB_TOKEN", ""))
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

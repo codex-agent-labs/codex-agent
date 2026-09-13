@@ -12,6 +12,11 @@ from ci import sdk_workflow as workflow
 
 
 class SdkWorkflowTest(unittest.TestCase):
+    def test_native_package_dispatch_preserves_exact_cli_tail_and_result(self):
+        with patch("sdk_native_package_workflow.main", return_value=7) as execute:
+            self.assertEqual(7, workflow.main(["native-package", "--plan", "original plan"]))
+            execute.assert_called_once_with(["--plan", "original plan"])
+
     def test_matrix_uses_only_replayed_javascript_package_and_validation(self):
         identities = (("sdk", "javascript", "package", "node"), ("sdk", "javascript", "validation", "node"),
                       ("sdk", "javascript", "metadata", "node"), ("runtime", "jvm", "binary", "jvm"))

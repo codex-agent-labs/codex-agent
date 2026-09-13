@@ -58,6 +58,8 @@ def execute(
 
     def original(*identity):
         value = predecessor(*identity)
+        original_stage = Path(value["stage"])
+        original_inventory = _inventory(original_stage)
         receipt_path = Path(value["receiptPath"])
         raw = read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True)
         receipt = validate_phase_receipt(load_canonical_json_bytes(raw))
@@ -69,15 +71,22 @@ def execute(
         manifest = verify_output_manifest_identity(value["stage"], *identity, receipt["productVersion"])
         if manifest["outputs"] != receipt["outputs"]:
             raise ValueError("JavaScript SDK predecessor stage differs from its original receipt")
-        originals.append((Path(value["stage"]), _inventory(value["stage"]), receipt_path, raw))
+        if (_inventory(original_stage) != original_inventory
+                or read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True) != raw):
+            raise ValueError("Original JavaScript SDK predecessor changed during verification")
+        originals.append((original_stage, original_inventory, receipt_path, raw))
         return value
 
-    fields = properties(plan, predecessor=original, compatibility_request=compatibility_request)
     request_bytes = None
     request_inventory = {}
     if compatibility_request is not None:
         request_bytes = read_regular_file_bytes(compatibility_request, max_bytes=_LIMIT, reject_symlink_parents=True)
         request_inventory = _request_inventory(compatibility_request)
+    fields = properties(plan, predecessor=original, compatibility_request=compatibility_request)
+    if compatibility_request is not None and (read_regular_file_bytes(
+            compatibility_request, max_bytes=_LIMIT, reject_symlink_parents=True) != request_bytes
+            or _request_inventory(compatibility_request) != request_inventory):
+        raise ValueError("Original JavaScript SDK request changed during property mapping")
     inputs = [path for tree, _, receipt, _ in originals for path in (tree, receipt)]
     if compatibility_request is not None:
         inputs.extend((compatibility_request, *request_inventory))
@@ -121,6 +130,7 @@ def execute(
     finally:
         write_canonical_json(destination / "execution.json", {"schemaVersion": 1,
             "producer": dict(producer), "buildKey": plan["buildKey"], "command": command,
+            "workingDirectory": str(root),
             "returnCode": return_code, "launchError": launch_error,
             "elapsedNs": time.monotonic_ns() - started})
         unchanged()

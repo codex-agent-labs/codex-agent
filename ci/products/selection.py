@@ -246,6 +246,8 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_metadata_phase.py",
     "ci/sdk_javascript_phase.py",
     "ci/sdk_native_phase.py",
+    "ci/sdk_native_package_workflow.py",
+    "ci/sdk_javascript_metadata_phase.py",
     "ci/sdk_native_prepare.py",
     "ci/sdk_apple_export.py",
     "ci/sdk_apple_native.py",

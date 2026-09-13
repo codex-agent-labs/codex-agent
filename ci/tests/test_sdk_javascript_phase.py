@@ -115,6 +115,30 @@ class SdkJavaScriptPhaseTest(unittest.TestCase):
                                       side_effect=AssertionError("premature final admission")))
             return worker.execute(self.plan, **{**arguments, **changes})
 
+    def test_verifier_and_mapper_mutations_reject_before_execution(self):
+        for kind in ("stage", "request"):
+            with self.subTest(kind=kind):
+                self.fixture("package")
+                real_verify = worker.verify_output_manifest_identity
+                real_properties = worker.properties
+
+                def verify(stage, *arguments, **keywords):
+                    result = real_verify(stage, *arguments, **keywords)
+                    (Path(stage) / "outputs/original").write_bytes(b"changed after manifest verification")
+                    return result
+
+                def properties(*arguments, **keywords):
+                    result = real_properties(*arguments, **keywords)
+                    self.request.write_bytes(b"changed after property mapping")
+                    return result
+
+                name, replacement = (("verify_output_manifest_identity", verify) if kind == "stage"
+                                     else ("properties", properties))
+                with patch.object(worker, name, side_effect=replacement), self.assertRaisesRegex(ValueError, "changed"):
+                    self.invoke()
+                self.assertEqual([], self.calls)
+                self.assertFalse(self.destination.exists())
+
     def test_both_phases_return_only_unadmitted_stage_with_original_versions_and_raw_diagnostics(self):
         for phase in ("package", "validation"):
             with self.subTest(phase=phase):
@@ -127,6 +151,8 @@ class SdkJavaScriptPhaseTest(unittest.TestCase):
                 self.assertEqual(regular_file_inventory(self.stage), result["outputInventory"])
                 self.assertEqual(before, regular_file_inventory(self.root / "originals"))
                 self.assertEqual({"gradle.log", "execution.json"}, {path.name for path in self.destination.iterdir()})
+                trace = load_canonical_json_bytes((self.destination / "execution.json").read_bytes())
+                self.assertEqual(str(self.root), trace["workingDirectory"])
                 self.assertEqual(b"raw Gradle\xff\x00\n", (self.destination / "gradle.log").read_bytes())
                 self.assertGreaterEqual(self.checkout.call_count, 3)
                 fields = dict(value[2:].split("=", 1) for value in self.calls[0] if value.startswith("-P"))
@@ -150,6 +176,7 @@ class SdkJavaScriptPhaseTest(unittest.TestCase):
                     self.invoke()
                 self.assertEqual(b"raw Gradle\xff\x00\n", (self.destination / "gradle.log").read_bytes())
                 trace = load_canonical_json_bytes((self.destination / "execution.json").read_bytes())
+                self.assertEqual(str(self.root), trace["workingDirectory"])
                 self.assertEqual(None if launch else 7, trace["returnCode"])
                 self.assertFalse((self.destination / "shard").exists())
                 self.assertFalse(self.stage.exists())

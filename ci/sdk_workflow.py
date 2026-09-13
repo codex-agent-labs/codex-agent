@@ -518,6 +518,12 @@ def _ios_binary_main(argv):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "ios-package":
+        from sdk_ios_package_workflow import main as ios_package_main
+        return ios_package_main(argv[1:])
+    if argv and argv[0] == "native-package":
+        from sdk_native_package_workflow import main as native_package_main
+        return native_package_main(argv[1:])
     if argv and argv[0] == "ios-binary":
         return _ios_binary_main(argv[1:])
     if argv and argv[0] in {"matrix", "capture", "collect"}:
