@@ -109,6 +109,85 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
         unchanged()
 
 
+@contextmanager
+def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_build_key,
+                               native_uploads, trusted_workflow_sha, repository_root, environ, token):
+    """Keep elected iOS binary Contract/native originals verified through use.
+
+    This is not package readiness or output admission. The caller must execute
+    the binary phase inside this lifetime and finalize only after successful exit.
+    """
+    from products.contract_projection import verify_contract_component_projection
+    from sdk_apple_native import verified_sdk_apple_native_inputs
+
+    root = Path(repository_root).resolve(strict=True)
+    discovery, state, destination = product_reuse._product_materialization_paths(root, discovery, state, destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("SDK iOS binary inputs require a fresh destination")
+    plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, None)
+    instance = PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
+    elected = verified.prior_ready_plans.get(instance)
+    if elected is None or elected["buildKey"] != expected_build_key:
+        raise ValueError("SDK iOS binary is not ready with the expected elected key")
+    evidence = verified.rebased_request.get("contractEvidence")
+    if evidence is None or evidence["expectedTrustDomain"] != "release":
+        raise ValueError("SDK iOS binary requires authenticated release Contract evidence")
+    destination = product_reuse._prepare_destination(destination, root)
+    trust = product_reuse._release_trust(root, verified.plan["validationCommit"], destination / "policy")
+    if trust is None:
+        raise ValueError("SDK iOS binary requires Git-authoritative release policy")
+    predecessors = destination / "predecessors"
+    ready = product_reuse._materialize_product_predecessors(
+        verified, instance, predecessors, expected_build_key, root)
+
+    def original(product, component, phase, target):
+        if (product, component, target) != ("contract", "contract", "common"):
+            raise ValueError("SDK iOS binary requested an unrelated Contract predecessor")
+        directory = predecessors / "-".join((product, component, phase, target))
+        receipt_path = directory / "phase-receipt.json"
+        receipt = product_reuse.validate_phase_receipt(product_reuse._canonical_control(receipt_path, "Original Contract receipt"))
+        manifest = product_reuse.verify_output_manifest_identity(
+            directory / "stage", product, component, phase, target, receipt["productVersion"])
+        if manifest["outputs"] != receipt["outputs"]:
+            raise ValueError("SDK iOS Contract stage differs from its original receipt")
+        return {"stage": directory / "stage", "receiptPath": receipt_path, "receipt": receipt}
+
+    def one_output(record, kind):
+        outputs = [row for row in record["receipt"]["outputs"] if row["kind"] == kind]
+        if len(outputs) != 1:
+            raise ValueError("SDK iOS binary requires one original Contract payload")
+        return record["stage"] / outputs[0]["relativePath"]
+
+    contract, version, handoff, _ = product_reuse._capture_runtime_contract(
+        root, evidence, original, one_output, destination, trust)
+    stem = f"codex-agent-contract-{version}"
+    before = regular_file_inventory(destination, allow_empty=True)
+    verify_contract_component_projection(contract["stage"], contract["receiptPath"],
+        handoff / f"{stem}.attestation.json", handoff / f"{stem}.attestation.sig", handoff / "public-key.pub",
+        expected_trust_domain="release", expected_contract_version=version,
+        required_components=("ios-arm64", "ios-simulator-arm64"), keyring=trust.keyring, keys_directory=trust.keys)
+
+    def unchanged():
+        if (regular_file_inventory(destination, allow_empty=True) != before or
+                read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes):
+            raise ValueError("SDK iOS binary original inputs changed during use")
+
+    unchanged()
+    with verified_sdk_apple_native_inputs(plan, uploads=native_uploads,
+            trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token) as native:
+        if native["producer"] != verified.producer:
+            raise ValueError("SDK iOS native evidence differs from the elected producer")
+        unchanged()
+        try:
+            yield {"ready": ready, "producer": verified.producer,
+                   "sdkVersion": verified.expected_fixed["versions"]["sdk"], "contract": contract,
+                   "contractHandoff": handoff, "native": native["directory"], "inputs": destination}
+        finally:
+            unchanged()
+    unchanged()
+
+
 def matrix(plan, discovery, state, github_output_path, *, repository_root=None, environ=None):
     """Expose only original replay-elected JS work before platform setup."""
     from sdk_phase import route

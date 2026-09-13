@@ -1334,6 +1334,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/runtime_workflow.py",
             "ci/sdk_phase.py",
             "ci/sdk_ios_phase.py",
+            "ci/sdk_ios_binary.py",
             "ci/sdk_metadata_phase.py",
             "ci/sdk_javascript_phase.py",
             "ci/sdk_apple_export.py",
@@ -1358,6 +1359,20 @@ class ProductSelectionTest(unittest.TestCase):
         self.assertEqual((), result.inventory_paths)
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((), phase_inventory_paths(paths, instance))
+
+    def test_sdk_worker_and_shared_collection_controls_have_exact_owners(self):
+        sdk = {item for item in PHASE_INSTANCE_IDS if item.product == "sdk" and
+               item.component == "javascript" and item.phase in {"package", "validation", "metadata"}}
+        for name in ("sdk-javascript-worker", "capture-runtime-state", "collect-runtime-wave"):
+            path = f".github/actions/{name}/action.yml"
+            expected = sdk if name == "sdk-javascript-worker" else sdk | {
+                item for item in PHASE_INSTANCE_IDS if item.product == "runtime"}
+            result = classify_paths((path,))
+            self.assertEqual(expected, identities(result))
+            self.assertEqual((), result.unknown_paths)
+            self.assertEqual((), result.inventory_paths)
+            for instance in PHASE_INSTANCE_IDS:
+                self.assertEqual((), phase_inventory_paths((path,), instance))
 
     def test_authenticated_native_handoff_and_metadata_join_have_exact_direct_owners(self):
         paths = ("ci/products/sdk_inputs.py", "ci/products/sdk_native.py", "ci/products/sdk_package.py")

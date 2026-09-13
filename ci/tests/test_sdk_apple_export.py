@@ -187,6 +187,36 @@ class SdkAppleExportTest(unittest.TestCase):
                     if output.exists():
                         shutil.rmtree(output)
 
+    def test_contract_receipt_mutation_after_process_rejects(self):
+        original = self.receipt.read_bytes()
+        self.after_process = lambda fields: self.receipt.write_bytes(b"changed receipt\n")
+        try:
+            with self.assertRaisesRegex(ValueError, "Contract receipt changed"):
+                self.invoke()
+        finally:
+            self.receipt.write_bytes(original)
+
+    def test_empty_distribution_file_rejects_but_empty_raw_logs_are_valid(self):
+        self.after_process = lambda fields: (
+            self.distribution / "verified-distribution-proof.json"
+        ).write_bytes(b"")
+        with self.assertRaisesRegex(ValueError, "empty file"):
+            self.invoke()
+        self.assertEqual(b"", (
+            self.execution / "xctest-raw/attempt-0/xcodebuild/stdout.bin"
+        ).read_bytes())
+        self.assertEqual(b"", (
+            self.execution / "xctest-raw/attempt-0/xcodebuild/stderr.bin"
+        ).read_bytes())
+
+    def test_returned_inventories_expose_late_output_mutation(self):
+        result = self.invoke()
+        (self.execution / "xctest-raw/attempt-0/xcodebuild/stdout.bin").write_bytes(b"late mutation")
+        self.assertNotEqual(
+            result["inventories"]["execution"],
+            regular_file_inventory(self.execution, allow_empty=True),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

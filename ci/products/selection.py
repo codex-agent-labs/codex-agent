@@ -240,6 +240,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/runtime_workflow.py",
     "ci/sdk_phase.py",
     "ci/sdk_ios_phase.py",
+    "ci/sdk_ios_binary.py",
     "ci/sdk_metadata_phase.py",
     "ci/sdk_javascript_phase.py",
     "ci/sdk_apple_export.py",
@@ -481,8 +482,14 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         return set(ALL_INSTANCES)
     if _is_prefix(path, ".github/actions/setup-kmp/"):
         return set(ALL_INSTANCES)
+    if _is_prefix(path, ".github/actions/sdk-javascript-worker/"):
+        return _from_phase("sdk", "javascript", "package")
     if any(_is_prefix(path, f".github/actions/{name}/") for name in (
-        "capture-runtime-state", "collect-runtime-wave", "run-runtime-product-phase", "setup-runtime-archive",
+        "capture-runtime-state", "collect-runtime-wave",
+    )):
+        return _runtime(RUNTIME_COMPONENTS) | _from_phase("sdk", "javascript", "package")
+    if any(_is_prefix(path, f".github/actions/{name}/") for name in (
+        "run-runtime-product-phase", "setup-runtime-archive",
     )):
         return _runtime(RUNTIME_COMPONENTS)
     if _is_prefix(path, ".github/actions/setup-msvc/"):
