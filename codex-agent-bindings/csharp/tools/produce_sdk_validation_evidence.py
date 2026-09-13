@@ -26,11 +26,9 @@ PROJECT = SUITE_ROOT / "CodexAgent.Tests.csproj"
 TEST_SOURCE = SUITE_ROOT / "Program.cs"
 TEST_PROGRAM = "CodexAgent.Tests.dll"
 SOURCE_ROOTS = (ROOT / "src", SUITE_ROOT, ROOT / "parity")
-RESTORE_ASSETS = (
-    ROOT / "src" / "CodexAgent" / "obj" / "project.assets.json",
-    SUITE_ROOT / "obj" / "project.assets.json",
-)
-IGNORED_SOURCE_DIRECTORIES = {"bin", "artifacts", "__pycache__"}
+IGNORED_SOURCE_DIRECTORIES = {"obj", "bin", "artifacts", "__pycache__"}
+RESTORE_EXECUTION = "dotnet-restore-execution.json"
+RESTORE_CONFIG = b'<?xml version="1.0" encoding="utf-8"?>\n<configuration><packageSources><clear /></packageSources><fallbackPackageFolders><clear /></fallbackPackageFolders></configuration>\n'
 NATIVE_EVIDENCE = {
     "agent-native-tests.tsv",
     "conversation-native-tests.tsv",
@@ -49,6 +47,15 @@ def _fixture_environment(compatibility: Path) -> dict[str, str]:
     declaration = json.loads(compatibility.read_bytes())
     contract = declaration["contract"]["digest"]
     variants = declaration["runtime"]["embeddedVariants"]
+    default_runtime = declaration["runtime"].get("defaultRuntimeVersion")
+    if not isinstance(default_runtime, str) or not re.fullmatch(
+        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", default_runtime,
+    ):
+        raise ValueError("SDK compatibility default Runtime must be a stable SemVer")
+    # The authenticated aggregate fixes its compatibility identity to MAJOR.MINOR.0;
+    # neither a caller range nor the release patch is that identity.
+    major, minor, _ = default_runtime.split(".")
+    runtime_compatibility = f"{major}.{minor}.0"
     if not isinstance(contract, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", contract):
         raise ValueError("SDK compatibility Contract digest is invalid")
     if not isinstance(variants, list) or len(variants) != len(TARGETS):
@@ -65,7 +72,7 @@ def _fixture_environment(compatibility: Path) -> dict[str, str]:
             "appServerVersion": "0.149.0", "buildInputDigest": "sha256:" + "e" * 64,
             "cAbiVersion": "1.13.0", "componentId": component,
             "contractComponentDigest": "sha256:" + "f" * 64, "contractDigest": contract,
-            "runtimeCompatibilityVersion": "0.2.0", "schemaVersion": 1, "target": target,
+            "runtimeCompatibilityVersion": runtime_compatibility, "schemaVersion": 1, "target": target,
         }, sort_keys=True, separators=(",", ":"))
     return result
 
@@ -116,6 +123,45 @@ def _run_logged(command: list[str], *, cwd: Path, env: dict[str, str], log: Path
             raise
 
 
+def _restore_private_project(dotnet: Path, project: Path, *, source: Path, work: Path,
+                             environment: dict[str, str], output: Path) -> None:
+    """Resolve only installed SDK/reference packs, retaining raw diagnostics on failure."""
+    config = work / "NuGet.Config"
+    config.write_bytes(RESTORE_CONFIG)
+    packages = work / "packages"
+    packages.mkdir()
+    command = [str(dotnet), "restore", str(project), "--configfile", str(config),
+               "--packages", str(packages), "--force", "--no-cache",
+               "-p:RestoreSources=", "-p:RestoreAdditionalProjectSources=",
+               "-p:RestoreFallbackFolders=", "-p:NuGetAudit=false"]
+    exit_code, launch_error = None, None
+    with (work / "restore.stdout").open("w+b") as stdout, (work / "restore.stderr").open("w+b") as stderr:
+        try:
+            result = subprocess.run(command, cwd=source, env=environment, stdout=stdout,
+                                    stderr=stderr, check=False)
+            exit_code = result.returncode
+        except OSError as error:
+            launch_error = str(error)
+            raise
+        finally:
+            stdout.flush()
+            stderr.flush()
+            stdout.seek(0)
+            stderr.seek(0)
+            record = {"schemaVersion": 1, "command": command, "workingDirectory": str(source),
+                      "exitCode": exit_code, "launchError": launch_error,
+                      "stdoutBase64": base64.b64encode(stdout.read()).decode("ascii"),
+                      "stderrBase64": base64.b64encode(stderr.read()).decode("ascii"),
+                      "configBase64": base64.b64encode(RESTORE_CONFIG).decode("ascii")}
+            output.mkdir(exist_ok=True)
+            (output / RESTORE_EXECUTION).write_bytes(
+                (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"))
+        if config.read_bytes() != RESTORE_CONFIG:
+            raise ValueError("Private offline NuGet configuration changed during restore")
+        if exit_code != 0:
+            raise subprocess.CalledProcessError(exit_code, command)
+
+
 def _required_file(path: Path, label: str) -> Path:
     path = path.expanduser().absolute()
     if path.is_symlink() or not path.is_file():
@@ -142,10 +188,7 @@ def _source_files() -> list[Path]:
         _required_directory(root, "C# evidence source root")
         for directory, names, filenames in os.walk(root, followlinks=False):
             directory_path = Path(directory)
-            if directory_path.name == "obj":
-                names[:] = []
-            else:
-                names[:] = [name for name in names if name not in IGNORED_SOURCE_DIRECTORIES]
+            names[:] = [name for name in names if name not in IGNORED_SOURCE_DIRECTORIES]
             for name in names:
                 _required_directory(directory_path / name, "C# evidence source directory")
             for name in filenames:
@@ -262,7 +305,6 @@ def produce(
     suite_root = _required_directory(SUITE_ROOT, "C# test suite")
     project = _required_file(PROJECT, "C# test project")
     test_source = _required_file(TEST_SOURCE, "C# test program source")
-    restore_assets = tuple(_required_file(path, "C# no-restore assets") for path in RESTORE_ASSETS)
     source_files = _source_files()
     fixture_environment = _fixture_environment(sdk_compatibility)
     if sys.platform == "win32":
@@ -270,9 +312,10 @@ def produce(
     _validate_output_scope(
         output,
         (dotnet, canonical_api, c_abi_bootstrap, sdk_compatibility, c_sdk_root,
-         native_library, suite_root, project, test_source, *restore_assets, *SOURCE_ROOTS, *source_files),
+         native_library, suite_root, project, test_source, *SOURCE_ROOTS, *source_files),
     )
     _invalidate_output(output)
+    restore_diagnostic = None
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".csharp-binding-evidence-", dir=output.parent) as temporary:
@@ -295,6 +338,9 @@ def produce(
                 "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1",
                 "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE": "1",
                 "DOTNET_CLI_HOME": str(dotnet_home),
+                "NUGET_PACKAGES": str(work / "packages"),
+                "NUGET_HTTP_CACHE_PATH": str(work / "nuget-http-cache"),
+                "NUGET_PLUGINS_CACHE_PATH": str(work / "nuget-plugins-cache"),
                 "TMPDIR": str(scratch),
                 "TMP": str(scratch),
                 "TEMP": str(scratch),
@@ -305,6 +351,8 @@ def produce(
                 "complete-suite-execution.json": work / "complete-suite.log",
                 "loader-security-execution.json": work / "loader-security.log",
             }
+            _restore_private_project(dotnet, private_project, source=source, work=work,
+                                     environment=environment, output=output)
             _run_logged(
                 [
                     str(dotnet), "build", str(private_project), "--configuration", "Release",
@@ -345,15 +393,27 @@ def produce(
             # Preserve the exact runnable assembly/dependency/native-fixture tree,
             # not just its entry DLL. This is external execution evidence.
             program.rename(evidence / "program")
+            shutil.copyfile(output / RESTORE_EXECUTION, evidence / RESTORE_EXECUTION)
             if {path.name for path in evidence.iterdir()} != {
                 "compiler-evidence.tsv", "executed-tests.tsv", "test-program", "native-evidence",
                 "dotnet-build-execution.json", "native-values-execution.json",
-                "complete-suite-execution.json", "loader-security-execution.json", "program",
+                "complete-suite-execution.json", "loader-security-execution.json", "program", RESTORE_EXECUTION,
             } or {path.name for path in native_output.iterdir()} != NATIVE_EVIDENCE:
                 raise ValueError("Published C# evidence inventory is not exact")
+            restore_diagnostic = (output / RESTORE_EXECUTION).read_bytes()
+            _invalidate_output(output)
             evidence.rename(output)
     except Exception:
+        diagnostic = output / RESTORE_EXECUTION
+        raw_restore = diagnostic.read_bytes() if diagnostic.is_file() and not diagnostic.is_symlink() else restore_diagnostic
         _invalidate_output(output)
+        if raw_restore is not None:
+            output.mkdir()
+            (output / RESTORE_EXECUTION).write_bytes(raw_restore)
+            # The Gradle task removes failed output trees; its retained process
+            # diagnostics must still carry this exact lossless raw record.
+            sys.stderr.buffer.write(raw_restore)
+            sys.stderr.buffer.flush()
         raise
 
 

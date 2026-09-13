@@ -66,7 +66,7 @@ inputs:
     description: Exact original plan tree.
   dotnet-executable:
     default: ''
-    description: Optional caller-provisioned dotnet executable. C# no-restore assets and dependencies must already satisfy the strict checkout guard; this action does not restore into the checkout.
+    description: Optional caller-provisioned dotnet executable with installed SDK/reference packs. The C# producer restores with empty feeds inside its private source snapshot, never into the checkout.
   dart-executable:
     default: ''
     description: Optional caller-provisioned Dart executable.

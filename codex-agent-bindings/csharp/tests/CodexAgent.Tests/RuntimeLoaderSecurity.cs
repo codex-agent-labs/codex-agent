@@ -39,6 +39,7 @@ internal static class RuntimeLoaderSecurity
     private static JsonObject Identity(string target = "macos-arm64")
     {
         var compatibility = JsonNode.Parse(Compatibility())!;
+        var defaultRuntime = Version.Parse(compatibility["runtime"]!["defaultRuntimeVersion"]!.GetValue<string>());
         var variant = compatibility["runtime"]!["embeddedVariants"]!.AsArray()
             .Single(value => value!["target"]!.GetValue<string>() == target)!;
         return new JsonObject
@@ -49,7 +50,7 @@ internal static class RuntimeLoaderSecurity
             ["componentId"] = variant["componentId"]!.GetValue<string>(),
             ["contractComponentDigest"] = "sha256:" + new string('f', 64),
             ["contractDigest"] = compatibility["contract"]!["digest"]!.GetValue<string>(),
-            ["runtimeCompatibilityVersion"] = "0.2.0",
+            ["runtimeCompatibilityVersion"] = new Version(defaultRuntime.Major, defaultRuntime.Minor, 0).ToString(3),
             ["schemaVersion"] = 1,
             ["target"] = target,
         };
@@ -76,7 +77,11 @@ internal static class RuntimeLoaderSecurity
             value => value["cAbiVersion"] = "2.13.0",
             value => value["contractDigest"] = DifferentDigest(value["contractDigest"]!.GetValue<string>()),
             value => value["target"] = "linux-arm64",
-            value => value["runtimeCompatibilityVersion"] = "0.3.0",
+            value =>
+            {
+                var current = Version.Parse(value["runtimeCompatibilityVersion"]!.GetValue<string>());
+                value["runtimeCompatibilityVersion"] = new Version(current.Major, current.Minor + 1, 0).ToString(3);
+            },
         })
         {
             var value = Identity();
@@ -100,7 +105,11 @@ internal static class RuntimeLoaderSecurity
         foreach (var mutation in new Action<JsonObject>[]
         {
             value => value["contract"]!["digest"] = DifferentDigest(value["contract"]!["digest"]!.GetValue<string>()),
-            value => value["runtime"]!["defaultRuntimeVersion"] = "0.3.0",
+            value =>
+            {
+                var current = Version.Parse(value["runtime"]!["defaultRuntimeVersion"]!.GetValue<string>());
+                value["runtime"]!["defaultRuntimeVersion"] = new Version(current.Major, current.Minor + 1, 0).ToString(3);
+            },
             value => value["runtime"]!["embeddedVariants"]![1]!["componentId"] =
                 value["runtime"]!["embeddedVariants"]![0]!["componentId"]!.GetValue<string>(),
             value => value["runtime"]!["embeddedVariants"]![1]!["manifestSha256"] =

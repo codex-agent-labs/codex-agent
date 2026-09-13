@@ -222,12 +222,23 @@ class SdkValidationInputsTest(unittest.TestCase):
             verify_signed_product_index(SignedProductIndex(manifest, signature), public)
             obj = store_local_object(self.carrier / record["validationStage"], receipt_path, root / "cache")["path"]
             object_name = object_relative_path(receipt["buildKey"], record["receiptSha256"])
-            workflow_run = {"id": index_producer["runId"], "run_attempt": index_producer["runAttempt"],
+            # This transport-only fixture supplies the already-observed boundary;
+            # testedCommit, not the run's head metadata, binds the signed index.
+            workflow_observation = {"run": {
+                "id": index_producer["runId"], "run_attempt": index_producer["runAttempt"],
                 "head_sha": index_producer["commit"], "path": index_producer["workflowPath"],
-                "head_commit": {"tree_id": index_producer["tree"]}}
-            for case in ("valid", "unindexed", "extra", "missing-receipt"):
+            }, "testedCommit": {"sha": index_producer["commit"], "tree": {"sha": index_producer["tree"]}}}
+            for case in ("valid", "unindexed", "extra", "missing-receipt",
+                         "missing-tested-commit", "wrong-tested-commit", "wrong-tested-tree"):
                 with self.subTest(case=case):
                     value = deepcopy(index)
+                    observed = deepcopy(workflow_observation)
+                    if case == "missing-tested-commit":
+                        del observed["testedCommit"]
+                    elif case == "wrong-tested-commit":
+                        observed["testedCommit"]["sha"] = "c" * 40
+                    elif case == "wrong-tested-tree":
+                        observed["testedCommit"]["tree"]["sha"] = "d" * 40
                     if case == "unindexed":
                         value["entries"][0]["receiptSha256"] = "sha256:" + "f" * 64
                     archive = root / f"{case}.zip"
@@ -251,10 +262,10 @@ class SdkValidationInputsTest(unittest.TestCase):
                         if case != "valid":
                             with self.assertRaises((ValueError, OSError)):
                                 product_reuse._materialize_catalog("same-pr", artifact, "fixture", destination,
-                                    index_producer["repository"], 31, None, workflow_run)
+                                    index_producer["repository"], 31, None, observed)
                             continue
                         catalog = product_reuse._materialize_catalog("same-pr", artifact, "fixture", destination,
-                            index_producer["repository"], 31, None, workflow_run)
+                            index_producer["repository"], 31, None, observed)
                     self.assertEqual(self.captured, load_sdk_validation_evidence(catalog.sdk_validation_evidence_root))
                     self.assertEqual(original, (catalog.sdk_validation_evidence_root / record["validationReceipt"]).read_bytes())
                     self.assertEqual(obj.read_bytes(), catalog.objects[receipt["buildKey"]].read_bytes())

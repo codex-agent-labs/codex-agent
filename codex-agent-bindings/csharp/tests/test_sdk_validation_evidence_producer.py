@@ -31,8 +31,24 @@ class CSharpSdkValidationEvidenceProducerTest(unittest.TestCase):
             with patch.object(producer.subprocess, "run", side_effect=fixture.run) as runner:
                 produce(*fixture.inputs, fixture.output)
 
-            self.assertEqual(4, runner.call_count)
-            build, native, complete, security = [call.args[0] for call in runner.call_args_list]
+            self.assertEqual(5, runner.call_count)
+            restore, build, native, complete, security = [call.args[0] for call in runner.call_args_list]
+            self.assertEqual([str(fixture.dotnet), "restore", build[2]], restore[:3])
+            self.assertEqual(["-p:RestoreSources=", "-p:RestoreAdditionalProjectSources=",
+                              "-p:RestoreFallbackFolders=", "-p:NuGetAudit=false"], restore[-4:])
+            self.assertFalse((fixture.source_project.parent / 'obj').exists())
+            self.assertFalse((fixture.project.parent / 'obj').exists())
+            restore_record = json.loads((fixture.output / producer.RESTORE_EXECUTION).read_bytes())
+            self.assertEqual({'schemaVersion', 'command', 'workingDirectory', 'exitCode', 'launchError',
+                              'stdoutBase64', 'stderrBase64', 'configBase64'}, set(restore_record))
+            self.assertEqual(1, restore_record['schemaVersion'])
+            self.assertEqual(str(Path(restore[2]).parents[2]), restore_record['workingDirectory'])
+            self.assertEqual(restore, restore_record['command'])
+            self.assertEqual(0, restore_record['exitCode'])
+            self.assertIsNone(restore_record['launchError'])
+            self.assertEqual(producer.RESTORE_CONFIG, base64.b64decode(restore_record['configBase64']))
+            self.assertEqual(fixture.restore_stdout, base64.b64decode(restore_record['stdoutBase64']))
+            self.assertEqual(fixture.restore_stderr, base64.b64decode(restore_record['stderrBase64']))
             self.assertEqual([str(fixture.dotnet), "build"], build[:2])
             self.assertIn("--no-restore", build)
             self.assertIn("--no-incremental", build)
@@ -49,7 +65,7 @@ class CSharpSdkValidationEvidenceProducerTest(unittest.TestCase):
                 {
                     "compiler-evidence.tsv", "executed-tests.tsv", "test-program", "native-evidence",
                     "dotnet-build-execution.json", "native-values-execution.json",
-                    "complete-suite-execution.json", "loader-security-execution.json", "program",
+                    "complete-suite-execution.json", "loader-security-execution.json", "program", producer.RESTORE_EXECUTION,
                 },
                 {path.name for path in fixture.output.iterdir()},
             )
@@ -91,6 +107,36 @@ class CSharpSdkValidationEvidenceProducerTest(unittest.TestCase):
                     self.assertEqual(declaration["contract"]["digest"], identity["contractDigest"])
                     self.assertEqual(variant["componentId"], identity["componentId"])
                     self.assertEqual(variant["target"], identity["target"])
+                    self.assertEqual('0.2.0', identity['runtimeCompatibilityVersion'])
+
+    def test_fixture_compatibility_identity_tracks_default_minor_not_release_patch_or_range(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, Fixture(Path(temporary)) as fixture:
+            declaration = json.loads(fixture.compatibility.read_bytes())
+            for version, expected in (('0.2.0', '0.2.0'), ('0.8.0', '0.8.0'), ('0.8.1', '0.8.0')):
+                with self.subTest(version=version):
+                    declaration['runtime']['defaultRuntimeVersion'] = version
+                    fixture.compatibility.write_text(json.dumps(declaration))
+                    values = producer._fixture_environment(fixture.compatibility)
+                    self.assertEqual(5, len(values))
+                    for raw in values.values():
+                        identity = json.loads(raw)
+                        self.assertEqual(expected, identity['runtimeCompatibilityVersion'])
+                        self.assertEqual('1.13.0', identity['cAbiVersion'])
+            for invalid in (None, True, '00.8.0', '0.8', '0.8.1-rc.1', '>=0.8.0 <0.9.0'):
+                with self.subTest(invalid=invalid):
+                    declaration['runtime']['defaultRuntimeVersion'] = invalid
+                    fixture.compatibility.write_text(json.dumps(declaration))
+                    with patch.object(producer.subprocess, 'run') as runner, self.assertRaisesRegex(ValueError, 'stable SemVer'):
+                        produce(*fixture.inputs, fixture.output)
+                    runner.assert_not_called()
+
+    def test_loader_security_positive_uses_the_same_release_independent_fixture_identity(self) -> None:
+        # Source wiring only, not a managed compiler or loader execution claim.
+        source = (ROOT / 'tests/CodexAgent.Tests/RuntimeLoaderSecurity.cs').read_text()
+        self.assertIn('Version.Parse(compatibility["runtime"]!["defaultRuntimeVersion"]!.GetValue<string>())', source)
+        self.assertIn('["runtimeCompatibilityVersion"] = new Version(defaultRuntime.Major, defaultRuntime.Minor, 0).ToString(3)', source)
+        self.assertNotIn('["runtimeCompatibilityVersion"] = "0.2.0"', source)
+        self.assertIn('new Version(current.Major, current.Minor + 1, 0).ToString(3)', source)
 
     def test_execution_failure_or_incomplete_results_leave_no_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, Fixture(Path(temporary)) as fixture:
@@ -98,25 +144,25 @@ class CSharpSdkValidationEvidenceProducerTest(unittest.TestCase):
             with patch.object(producer.subprocess, "run", side_effect=fixture.run), \
                     self.assertRaises(subprocess.CalledProcessError):
                 produce(*fixture.inputs, fixture.output)
-            self.assertFalse(fixture.output.exists())
+            self.assertEqual({producer.RESTORE_EXECUTION}, {path.name for path in fixture.output.iterdir()})
 
             fixture.fail_at = None
             fixture.omit_test = True
             with patch.object(producer.subprocess, "run", side_effect=fixture.run), \
                     self.assertRaisesRegex(ValueError, "exactly 556 unique passed"):
                 produce(*fixture.inputs, fixture.output)
-            self.assertFalse(fixture.output.exists())
+            self.assertEqual({producer.RESTORE_EXECUTION}, {path.name for path in fixture.output.iterdir()})
 
             fixture.omit_test = False
             fixture.omit_native = True
             with patch.object(producer.subprocess, "run", side_effect=fixture.run), \
                     self.assertRaisesRegex(ValueError, "artifact inventory is not exact"):
                 produce(*fixture.inputs, fixture.output)
-            self.assertFalse(fixture.output.exists())
+            self.assertEqual({producer.RESTORE_EXECUTION}, {path.name for path in fixture.output.iterdir()})
 
     def test_each_failed_command_surfaces_exact_binary_diagnostics_before_cleanup(self) -> None:
         diagnostics = (b"build failure\xff\n", b"native failure\x00\n", b"suite failure\r\n", b"security failure\xff\x00\n")
-        for fail_at, expected in enumerate(diagnostics, 1):
+        for fail_at, expected in enumerate(diagnostics, 2):
             with self.subTest(fail_at=fail_at), tempfile.TemporaryDirectory() as temporary, \
                     Fixture(Path(temporary)) as fixture:
                 fixture.command_outputs = diagnostics
@@ -127,8 +173,9 @@ class CSharpSdkValidationEvidenceProducerTest(unittest.TestCase):
                         patch.object(producer.subprocess, "run", side_effect=fixture.run), \
                         self.assertRaises(subprocess.CalledProcessError):
                     produce(*fixture.inputs, fixture.output)
-                self.assertEqual(expected, parent_stderr.getvalue())
-                self.assertFalse(fixture.output.exists())
+                self.assertEqual(expected + (fixture.output / producer.RESTORE_EXECUTION).read_bytes(),
+                                 parent_stderr.getvalue())
+                self.assertEqual({producer.RESTORE_EXECUTION}, {path.name for path in fixture.output.iterdir()})
 
     def test_missing_native_fixture_cannot_publish_otherwise_complete_results(self) -> None:
         for missing in producer._native_program_files():
@@ -137,7 +184,52 @@ class CSharpSdkValidationEvidenceProducerTest(unittest.TestCase):
                 with patch.object(producer.subprocess, "run", side_effect=fixture.run), \
                         self.assertRaisesRegex(ValueError, "runnable/native program closure"):
                     produce(*fixture.inputs, fixture.output)
-                self.assertFalse(fixture.output.exists())
+                self.assertEqual({producer.RESTORE_EXECUTION}, {path.name for path in fixture.output.iterdir()})
+
+    def test_restore_failure_and_launch_failure_preserve_separate_binary_streams_without_build(self) -> None:
+        for launch_failure in (False, True):
+            with self.subTest(launch_failure=launch_failure), tempfile.TemporaryDirectory() as temporary, Fixture(Path(temporary)) as fixture:
+                def restore(command, *, cwd, env, stdout, stderr, check):
+                    self.assertEqual('restore', command[1])
+                    self.assertFalse(check)
+                    stdout.write(b'partial stdout\xff\x00')
+                    stderr.write(b'partial stderr\r\n\xfe')
+                    if launch_failure:
+                        raise OSError('fixture launch failure')
+                    return subprocess.CompletedProcess(command, 7)
+                error = OSError if launch_failure else subprocess.CalledProcessError
+                parent_stderr = io.BytesIO()
+                stderr = type('BinaryStderr', (), {'buffer': parent_stderr})()
+                with patch.object(producer.sys, 'stderr', stderr), \
+                        patch.object(producer.subprocess, 'run', side_effect=restore) as runner, self.assertRaises(error):
+                    produce(*fixture.inputs, fixture.output)
+                self.assertEqual(1, runner.call_count)
+                self.assertEqual({producer.RESTORE_EXECUTION}, {path.name for path in fixture.output.iterdir()})
+                record = json.loads((fixture.output / producer.RESTORE_EXECUTION).read_bytes())
+                self.assertEqual((fixture.output / producer.RESTORE_EXECUTION).read_bytes(), parent_stderr.getvalue())
+                self.assertEqual({'schemaVersion', 'command', 'workingDirectory', 'exitCode', 'launchError',
+                                  'stdoutBase64', 'stderrBase64', 'configBase64'}, set(record))
+                self.assertEqual(None if launch_failure else 7, record['exitCode'])
+                self.assertEqual('fixture launch failure' if launch_failure else None, record['launchError'])
+                self.assertEqual(b'partial stdout\xff\x00', base64.b64decode(record['stdoutBase64']))
+                self.assertEqual(b'partial stderr\r\n\xfe', base64.b64decode(record['stderrBase64']))
+                self.assertFalse((fixture.project.parent / 'obj').exists())
+
+    def test_private_restore_never_imports_checkout_obj_or_accepts_modified_feed_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, Fixture(Path(temporary)) as fixture:
+            original = fixture._file_at(fixture.source_project.parent / 'obj/injected.targets', 'untrusted checkout intermediate')
+            def restore(command, **arguments):
+                source = Path(arguments['cwd'])
+                self.assertFalse(any(path.name == 'obj' for path in source.rglob('*')))
+                config = Path(command[command.index('--configfile') + 1])
+                self.assertEqual(producer.RESTORE_CONFIG, config.read_bytes())
+                config.write_bytes(b'<configuration>changed</configuration>')
+                return subprocess.CompletedProcess(command, 0)
+            with patch.object(producer.subprocess, 'run', side_effect=restore) as runner, self.assertRaisesRegex(ValueError, 'configuration changed'):
+                produce(*fixture.inputs, fixture.output)
+            self.assertEqual(1, runner.call_count)
+            self.assertEqual('untrusted checkout intermediate', original.read_text())
+            self.assertEqual({producer.RESTORE_EXECUTION}, {path.name for path in fixture.output.iterdir()})
 
     def test_windows_requires_import_library_before_invalidating_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, Fixture(Path(temporary)) as fixture:
@@ -222,13 +314,6 @@ class CSharpSdkValidationEvidenceProducerTest(unittest.TestCase):
             self.assertEqual("preserve\n", marker.read_text())
 
             fixture._file_at(fixture.compatibility, "{}\n")
-            with patch.object(producer, "RESTORE_ASSETS", (fixture.root / "missing-assets.json",)), \
-                    patch.object(producer.subprocess, "run") as runner, \
-                    self.assertRaisesRegex(ValueError, "C# no-restore assets must be a regular file"):
-                produce(*fixture.inputs, fixture.output)
-            runner.assert_not_called()
-            self.assertEqual("preserve\n", marker.read_text())
-
             fixture.test_source.unlink()
             with patch.object(producer.subprocess, "run") as runner, \
                     self.assertRaisesRegex(ValueError, "C# test program source must be a regular file"):
@@ -292,17 +377,13 @@ class Fixture:
         )
         self._file_at(self.binding / "src" / "CodexAgent" / "CodexAgent.cs", "// fixture binding\n")
         self._file_at(self.binding / "parity" / "capability-claims.tsv", "fixture\n")
-        self.restore_assets = (
-            self._file_at(self.source_project.parent / "obj" / "project.assets.json", "{}\n"),
-            self._file_at(self.project.parent / "obj" / "project.assets.json", "{}\n"),
-        )
         self.imports = self.root / "imports"
         self.dotnet = self._file("dotnet", "fixture tool")
         self.canonical = self._file("canonical-api.json", "{}\n")
         self.bootstrap = self._file("bootstrap.json", "{}\n")
         self.compatibility = self._file("sdk-compatibility.json", json.dumps({
             "contract": {"digest": "sha256:" + "b" * 64},
-            "runtime": {"embeddedVariants": [
+            "runtime": {"defaultRuntimeVersion": "0.2.0", "embeddedVariants": [
                 {"target": target, "componentId": "sha256:" + str(index + 5) * 64}
                 for index, target in enumerate(producer.TARGETS)
             ]},
@@ -321,6 +402,7 @@ class Fixture:
         self.omit_program_file: str | None = None
         self.working_directories: list[Path] = []
         self.command_outputs = (b"build stdout\n\xffstderr\n", b"native values\x00\n", b"", b"security\xff\x00\n")
+        self.restore_stdout, self.restore_stderr = b'restore stdout\xff\x00', b''
         self._producer_scope = patch.multiple(
             producer,
             ROOT=self.binding,
@@ -329,7 +411,6 @@ class Fixture:
             PROJECT=self.project,
             TEST_SOURCE=self.test_source,
             SOURCE_ROOTS=(self.binding / "src", self.suite, self.binding / "parity"),
-            RESTORE_ASSETS=self.restore_assets,
         )
 
     def __enter__(self):
@@ -345,6 +426,21 @@ class Fixture:
     def run(self, command, *, cwd, env, stdout, stderr, check):
         self.working_directories.append(Path(cwd))
         self.calls += 1
+        if command[1] == 'restore':
+            if check or stderr is subprocess.STDOUT:
+                raise AssertionError('Restore must capture both streams and its actual exit code')
+            source = Path(cwd)
+            config = Path(command[command.index('--configfile') + 1])
+            packages = Path(command[command.index('--packages') + 1])
+            if config.parent != source.parent or packages.parent != source.parent:
+                raise AssertionError('Restore configuration/packages escaped private capture')
+            if config.read_bytes() != producer.RESTORE_CONFIG:
+                raise AssertionError('Restore feeds are not cleared')
+            if any(path.name == 'obj' for path in source.rglob('*')):
+                raise AssertionError('Checkout restore assets were imported')
+            stdout.write(self.restore_stdout)
+            stderr.write(self.restore_stderr)
+            return subprocess.CompletedProcess(command, 0)
         if stderr is not subprocess.STDOUT:
             raise AssertionError("C# evidence command stderr is not combined with stdout")
         output_index = (0 if command[1] == "build" else 1 if "--real-mcp-values" in command

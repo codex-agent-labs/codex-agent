@@ -86,6 +86,22 @@ callback-before-return, cancellation, current-value state subscriptions,
 structured failures, identity, nullability, bounded disposal, and cleanup-failure
 quarantine through `CodexNativeLibrary.CleanupIssues`:
 
+The artifact-evidence producer (`tools/produce_sdk_validation_evidence.py`)
+restores its existing private source copy before its fixed `build --no-restore`.
+It does not import checkout `obj` files or restore into the checkout. The caller
+must provision the approved .NET SDK and net8.0 reference packs: package sources
+and fallback folders are cleared, audit is disabled, and packages/caches are
+private. Missing installed dependencies fail; no external feed is used.
+
+Its external `dotnet-restore-execution.json` records exactly `schemaVersion`,
+`command`, `workingDirectory`, `exitCode`, `launchError`, `stdoutBase64`,
+`stderrBase64`, and `configBase64`. Binary streams remain separate, including
+empty streams; launch failure has a null exit code. Failed runs retain only this
+diagnostic, not successful compiler/test evidence. Full shared evidence admission
+must validate this additional record; its presence is not execution authority.
+On failure the exact canonical record is also emitted to stderr, preserving it
+in outer process diagnostics when Gradle removes the failed output directory.
+
 ```sh
 dotnet build tests/CodexAgent.Tests/CodexAgent.Tests.csproj --configuration Release \
   -p:CodexAgentCanonicalApiReport=/path/to/canonical-api.json \

@@ -1,7 +1,8 @@
 """Verify original SDK package inputs using the existing product planner."""
 
 import argparse
-from pathlib import Path
+import base64
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import subprocess
 import sys
 import tempfile
@@ -84,6 +85,53 @@ def _verify_native_validation_stage(stage: Path, receipt: dict[str, Any], target
         for record in manifest["outputs"]
     ):
         raise ValueError("Native validation stage has unexpected raw evidence kinds/roots")
+    if receipt["component"] == "csharp":
+        _verify_csharp_restore_execution(stage / "outputs/capability/dotnet-restore-execution.json", target)
+
+
+def _verify_csharp_restore_execution(path: Path, target: str) -> None:
+    """Require the fixed feed-free private restore; raw execution is not host proof."""
+    value = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(path,
+        max_bytes=_LIMIT, reject_symlink_parents=True)), {
+            "schemaVersion", "command", "workingDirectory", "exitCode", "launchError",
+            "stdoutBase64", "stderrBase64", "configBase64"}, "C# private restore execution")
+    if (type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or type(value["exitCode"]) is not int or value["exitCode"] != 0 or value["launchError"] is not None):
+        raise ValueError("C# private restore did not complete successfully")
+    decoded = {}
+    for field in ("stdoutBase64", "stderrBase64", "configBase64"):
+        encoded = value[field]
+        if type(encoded) is not str:
+            raise ValueError("C# restore raw evidence must be canonical Base64")
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except ValueError as error:
+            raise ValueError("C# restore raw evidence must be canonical Base64") from error
+        if base64.b64encode(raw).decode("ascii") != encoded:
+            raise ValueError("C# restore raw evidence must be canonical Base64")
+        decoded[field] = raw
+    expected_config = (b'<?xml version="1.0" encoding="utf-8"?>\n<configuration><packageSources><clear />'
+        b'</packageSources><fallbackPackageFolders><clear /></fallbackPackageFolders></configuration>\n')
+    if decoded["configBase64"] != expected_config:
+        raise ValueError("C# private restore must use the exact empty-source configuration")
+    path_type = PureWindowsPath if target == "windows-x64" else PurePosixPath
+    working = value["workingDirectory"]
+    command = value["command"]
+    if (type(working) is not str or type(command) is not list or not command
+            or any(type(part) is not str or not part or any(ord(char) < 32 for char in part) for part in command)):
+        raise ValueError("C# private restore command is malformed")
+    source, executable = path_type(working), path_type(command[0])
+    if (not source.is_absolute() or not executable.is_absolute() or ".." in source.parts
+            or ".." in executable.parts or source.name != "source"
+            or not source.parent.name.startswith(".csharp-binding-evidence-")
+            or str(source) != working):
+        raise ValueError("C# restore must execute in its private exact-source snapshot")
+    expected = [command[0], "restore", str(source / "tests/CodexAgent.Tests/CodexAgent.Tests.csproj"),
+        "--configfile", str(source.parent / "NuGet.Config"), "--packages", str(source.parent / "packages"),
+        "--force", "--no-cache", "-p:RestoreSources=", "-p:RestoreAdditionalProjectSources=",
+        "-p:RestoreFallbackFolders=", "-p:NuGetAudit=false"]
+    if command != expected:
+        raise ValueError("C# restore command differs from its fixed offline private recipe")
 
 
 def _capture_validation_sources(repository: Path, validation: dict[str, Any], stage: Path, output: Path) -> None:
