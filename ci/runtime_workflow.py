@@ -40,7 +40,10 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
         raise ValueError("Runtime continuation selection/completion requirements must be boolean")
     inspected = products.inspect_products(plan_path, discovery_root, state_root,
         repository_root=repository_root, environ=environ,
-        sdk_validation_tooling=sdk_validation_tooling)
+        sdk_validation_tooling=sdk_validation_tooling, include_sdk_selection=True)
+    sdk = inspected.get("sdkInputSelection")
+    sdk_outputs = {"sdk_handoff_required": sdk is not None,
+                   "sdk_input_selection": canonical_json_bytes(sdk).decode().strip()}
     aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
     phases = {}
     for record in inspected["result"]["phases"]:
@@ -58,6 +61,7 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
         if not if_selected or require_completed or aggregate in ready:
             raise ValueError("Runtime continuation requires a selected aggregate")
         github_output(github_output_path, {
+            **sdk_outputs,
             "native_attestation_matrix": '{"include":[]}', "aggregate_state": "not-selected",
             "aggregate_key": "", "aggregate_receipt_sha256": "",
             "aggregate_required": False, "aggregate_payload_complete": False,
@@ -102,6 +106,7 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
              "aggregate": {"state": status, "buildKey": key, "receiptSha256": receipt}}
     # Publish all routing fields together only after every prerequisite passes.
     github_output(github_output_path, {
+        **sdk_outputs,
         "native_attestation_matrix": canonical_json_bytes(native).decode().strip(),
         "aggregate_state": status, "aggregate_key": key,
         "aggregate_receipt_sha256": receipt or "",

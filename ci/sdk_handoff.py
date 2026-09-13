@@ -19,7 +19,7 @@ if __package__:
 import product_reuse
 from products.inventory import (
     publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
-    require_regular_directory, snapshot_regular_tree,
+    require_regular_directory, require_sha256, snapshot_regular_tree,
 )
 from products.runtime_aggregate_handoff import _public_policy
 from products.sdk_package import _require_capability_output_separate
@@ -33,8 +33,11 @@ def capture_sdk_handoff(
     sdk_version: str, compatible_release_range: str, compatible_runtime_compatibility_range: str,
     keyring: Path, keys_directory: Path, selection_repository_root: Path, selection_revision: str,
     repository_root: Path | None = None, environ=None, token: str,
+    expected_contract_payload_sha256: str | None = None,
 ) -> dict:
     """Publish original upload evidence and SDK inputs only after both gates exit."""
+    if expected_contract_payload_sha256 is not None:
+        require_sha256(expected_contract_payload_sha256, "Expected Contract payload SHA-256")
     repository = (Path(__file__).resolve().parents[1] if repository_root is None else Path(repository_root)).resolve(strict=True)
     selection = Path(selection_repository_root).absolute()
     plan, destination = Path(plan_path).absolute(), Path(destination).absolute()
@@ -78,7 +81,9 @@ def capture_sdk_handoff(
             sdk_version=sdk_version, compatible_release_range=compatible_release_range,
             compatible_runtime_compatibility_range=compatible_runtime_compatibility_range,
             keyring=policy / "product-signing-keys.json", keys_directory=policy / "keys",
-            selection_repository_root=selection, selection_revision=selection_revision)
+            selection_repository_root=selection, selection_revision=selection_revision,
+            **({"expected_contract_payload_sha256": expected_contract_payload_sha256}
+               if expected_contract_payload_sha256 is not None else {}))
         # The complete original wrapper is already retained in runtime-capture;
         # avoid duplicating its potentially large history in the final artifact.
         sdk_inventory = regular_file_inventory(forwarded / "sdk-inputs")
@@ -100,7 +105,29 @@ def capture_sdk_handoff(
     return result
 
 
+def main_released_default(argv=None):
+    parser = argparse.ArgumentParser(description="Stage SDK inputs from the authenticated released-default replay.")
+    for name in ("plan", "discovery-root", "destination", "keyring", "keys-directory", "repository-root"):
+        parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--state-root", type=Path)
+    parser.add_argument("--sdk-validation-tooling", type=Path)
+    arguments = parser.parse_args(argv)
+    try:
+        tooling = None if arguments.sdk_validation_tooling is None else product_reuse._canonical_control(
+            arguments.sdk_validation_tooling, "Caller SDK tooling policy")
+        product_reuse.materialize_sdk_default_inputs(arguments.plan, arguments.discovery_root,
+            arguments.state_root, arguments.destination, keyring=arguments.keyring,
+            keys_directory=arguments.keys_directory, repository_root=arguments.repository_root,
+            environ=os.environ, sdk_validation_tooling=tooling)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    return 0
+
+
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "released-default":
+        return main_released_default(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("plan", "destination", "repository-root", "selection-repository-root", "keyring", "keys-directory"):
         parser.add_argument(f"--{name}", type=Path, required=True)
@@ -108,6 +135,8 @@ def main(argv=None):
     for name in ("artifact-sha256", "trusted-workflow-sha", "expected-build-key", "expected-metadata-receipt-sha256",
                  "sdk-version", "compatible-release-range", "compatible-runtime-compatibility-range", "selection-revision"):
         parser.add_argument(f"--{name}", required=True)
+    parser.add_argument("--expected-contract-payload-sha256", default=argparse.SUPPRESS,
+                        type=lambda value: require_sha256(value, "Expected Contract payload SHA-256"))
     arguments = vars(parser.parse_args(argv))
     plan, destination = arguments.pop("plan"), arguments.pop("destination")
     try:

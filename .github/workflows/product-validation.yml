@@ -1220,6 +1220,8 @@ jobs:
       aggregate_receipt_sha256: ${{ steps.route.outputs.aggregate_receipt_sha256 }}
       aggregate_required: ${{ steps.route.outputs.aggregate_required }}
       aggregate_payload_complete: ${{ steps.route.outputs.aggregate_payload_complete }}
+      sdk_handoff_required: ${{ steps.route.outputs.sdk_handoff_required }}
+      sdk_input_selection: ${{ steps.route.outputs.sdk_input_selection }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1551,7 +1553,7 @@ jobs:
       contents: read
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
-      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      artifact_digest: sha256:${{ steps.upload.outputs.artifact-digest }}
       aggregate_key: ${{ needs.runtime-aggregate-continuation.outputs.aggregate_key }}
       aggregate_receipt_sha256: ${{ needs.runtime-aggregate-continuation.outputs.aggregate_receipt_sha256 }}
     steps:
@@ -1624,6 +1626,78 @@ jobs:
           path: ${{ runner.temp }}/runtime-aggregate-release-evidence
           compression-level: 0
           retention-days: 90
+
+  sdk-inputs:
+    name: sdk-inputs
+    needs: [workflow-lint, plan, runtime-continuation, runtime-aggregate-attestation]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.workflow-lint.result == 'success' &&
+      needs.runtime-continuation.result == 'success' &&
+      needs.runtime-continuation.outputs.sdk_handoff_required == 'true' &&
+      (fromJSON(needs.runtime-continuation.outputs.sdk_input_selection || '{}').source == 'released-default' ||
+       needs.runtime-aggregate-attestation.result == 'success')
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: sha256:${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: captured
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.runtime-continuation.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.runtime-continuation.outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          state-wave: ${{ needs.runtime-continuation.outputs.state_wave }}
+      - name: Stage SDK inputs from the independently verified selection
+        id: staged
+        env:
+          PLAN: ${{ steps.captured.outputs.plan-path }}
+          DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+          STATE: ${{ steps.captured.outputs.state-root }}
+          SDK_SOURCE: ${{ fromJSON(needs.runtime-continuation.outputs.sdk_input_selection).source }}
+          ARTIFACT_ID: ${{ needs.runtime-aggregate-attestation.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ needs.runtime-aggregate-attestation.outputs.artifact_digest }}
+          AGGREGATE_KEY: ${{ needs.runtime-aggregate-attestation.outputs.aggregate_key }}
+          AGGREGATE_RECEIPT: ${{ needs.runtime-aggregate-attestation.outputs.aggregate_receipt_sha256 }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          fresh=()
+          case "$SDK_SOURCE" in
+            released-default) destination="$GITHUB_WORKSPACE/build/sdk-inputs" ;;
+            current-runtime)
+              destination="$RUNNER_TEMP/sdk-inputs"
+              fresh=(--artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256"
+                --expected-build-key "$AGGREGATE_KEY" --expected-metadata-receipt-sha256 "$AGGREGATE_RECEIPT"
+                --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA") ;;
+            *) echo 'Unknown replayed SDK input source' >&2; exit 1 ;;
+          esac
+          python3 -B -m ci.sdk_workflow --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+            --destination "$destination" --repository-root "$GITHUB_WORKSPACE" \
+            --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
+            --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" "${fresh[@]}"
+          printf 'path=%s\n' "$destination" >> "$GITHUB_OUTPUT"
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-sdk-inputs-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
+          path: ${{ steps.staged.outputs.path }}
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          retention-days: 1
 
   android:
     if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_android == 'true'
@@ -1821,7 +1895,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-aggregate-attestation, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
+    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-aggregate-attestation, sdk-inputs, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -1843,6 +1917,10 @@ jobs:
           AGGREGATE_ATTESTATION_RESULT: ${{ needs.runtime-aggregate-attestation.result }}
           AGGREGATE_ATTESTATION_ARTIFACT_ID: ${{ needs.runtime-aggregate-attestation.outputs.artifact_id }}
           AGGREGATE_ATTESTATION_ARTIFACT_DIGEST: ${{ needs.runtime-aggregate-attestation.outputs.artifact_digest }}
+          SDK_INPUTS_REQUIRED: ${{ needs.runtime-continuation.outputs.sdk_handoff_required }}
+          SDK_INPUTS_RESULT: ${{ needs.sdk-inputs.result }}
+          SDK_INPUTS_ARTIFACT_ID: ${{ needs.sdk-inputs.outputs.artifact_id }}
+          SDK_INPUTS_ARTIFACT_DIGEST: ${{ needs.sdk-inputs.outputs.artifact_digest }}
           RUNTIME_WAVE_FAILED: ${{ needs.runtime-collect-1.outputs.wave_failed }} ${{ needs.runtime-collect-2.outputs.wave_failed }} ${{ needs.runtime-collect-3.outputs.wave_failed }} ${{ needs.runtime-collect-4.outputs.wave_failed }} ${{ needs.runtime-collect-5.outputs.wave_failed }}
           PRODUCT_FULL_REUSE: ${{ needs.runtime-collect-5.outputs.full_reuse || needs.runtime-collect-4.outputs.full_reuse || needs.runtime-collect-3.outputs.full_reuse || needs.runtime-collect-2.outputs.full_reuse || needs.runtime-collect-1.outputs.full_reuse || needs.product-resume.outputs.full_reuse }}
         run: |
@@ -1866,6 +1944,11 @@ jobs:
             test "$AGGREGATE_ATTESTATION_RESULT" = success || exit 1
             [[ "$AGGREGATE_ATTESTATION_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
             [[ "$AGGREGATE_ATTESTATION_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          fi
+          if [ "$SDK_INPUTS_REQUIRED" = true ]; then
+            test "$SDK_INPUTS_RESULT" = success || exit 1
+            [[ "$SDK_INPUTS_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+            [[ "$SDK_INPUTS_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           fi
           if [ "$CONTRACT_COMPLETE" = true ]; then
             if [[ "$RUNTIME_WAVE_FAILED" = *true* ]] || [ "$PRODUCT_FULL_REUSE" != true ]; then

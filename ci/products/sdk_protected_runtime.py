@@ -68,6 +68,7 @@ def stage_protected_runtime_sdk_inputs(
     expected_build_key: str, sdk_version: str, compatible_release_range: str,
     compatible_runtime_compatibility_range: str, keyring: Path, keys_directory: Path,
     selection_repository_root: Path, selection_revision: str,
+    expected_contract_payload_sha256: str | None = None,
 ) -> dict:
     """Stage SDK files separately from exact fresh or retained protected history.
 
@@ -76,6 +77,8 @@ def stage_protected_runtime_sdk_inputs(
     """
     digest = require_sha256(expected_metadata_receipt_sha256, "Caller-selected aggregate receipt")
     key = require_sha256(expected_build_key, "Caller-selected aggregate key")
+    if expected_contract_payload_sha256 is not None:
+        require_sha256(expected_contract_payload_sha256, "Expected Contract payload SHA-256")
     if any(value is None for value in (keyring, keys_directory, selection_repository_root, selection_revision)):
         raise ValueError("Protected Runtime SDK forwarding requires caller policy and exact Git selection")
     original, destination = Path(protected_output).absolute(), Path(destination).absolute()
@@ -113,7 +116,9 @@ def stage_protected_runtime_sdk_inputs(
             sdk_version=sdk_version, compatible_release_range=compatible_release_range,
             compatible_runtime_compatibility_range=compatible_runtime_compatibility_range,
             keyring=policy / "product-signing-keys.json", keys_directory=policy / "keys",
-            selection_repository_root=selection_repository_root, selection_revision=selection_revision)
+            selection_repository_root=selection_repository_root, selection_revision=selection_revision,
+            **({"expected_contract_payload_sha256": expected_contract_payload_sha256}
+               if expected_contract_payload_sha256 is not None else {}))
         # All nested verification contexts have exited before external publication.
         regular_file_inventory(prepared / "sdk-inputs")  # SDK product/input files remain nonempty.
         if (regular_file_inventory(original, allow_empty=True) != before

@@ -171,12 +171,20 @@ class RuntimeMatrixControlTest(unittest.TestCase):
             replay.assert_called_once_with(root / "plan", root / "discovery", root / "state", root, {}, None)
             retained.assert_called_once_with(root / "state", root)
             self.assertEqual([first, second], result["runtimeAggregateReleaseEvidence"])
+            self.assertNotIn("sdkInputSelection", result)
             self.assertEqual([first], state.rebased_request["runtimeAggregateReleaseEvidence"])
             with mock.patch.object(adapter, "_verified_product_state", side_effect=ValueError("replay rejected")), \
                     mock.patch.object(adapter, "_retained_aggregate_handoffs") as retained, \
                     self.assertRaisesRegex(ValueError, "replay rejected"):
                 adapter.inspect_products(root / "plan", root / "discovery", repository_root=root)
             retained.assert_not_called()
+
+    def test_sdk_inspection_flag_rejects_non_boolean_before_replay(self):
+        for value in (1, "true", None):
+            with self.subTest(value=value), mock.patch.object(adapter, "_verified_product_state") as replay:
+                with self.assertRaisesRegex(ValueError, "boolean"):
+                    adapter.inspect_products(Path("plan"), Path("discovery"), include_sdk_selection=value)
+                replay.assert_not_called()
 
     def test_worker_command_keeps_fixed_task_and_windows_arguments_out_of_a_shell(self):
         wrapper = "/fixture path/gradlew"

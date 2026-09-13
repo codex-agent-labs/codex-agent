@@ -2625,12 +2625,46 @@ def _verified_product_state(
     )
 
 
+def _sdk_input_selection(state, root):
+    """Route selected SDK content needs; this hint never grants execution trust."""
+    consumers = []
+    for record in state.prior["phases"]:
+        instance = _identity(record)
+        if (instance.product == "sdk" and instance.phase != "binary"
+                and record["state"] not in {"retained", "reused"}
+                and any(dependency.product == "runtime" for dependency in _dependency_closure((instance,)))):
+            consumers.append(_identity_record(instance))
+    contract = PhaseInstanceId("contract", "contract", "metadata", "common")
+    if not consumers or contract not in state.sources:
+        return None
+    from products.sdk_release_selection import read_sdk_release_selection, read_sdk_runtime_compatibility_policy
+    revision = state.producer["commit"]
+    policy = read_sdk_release_selection(root, revision)
+    ranges = read_sdk_runtime_compatibility_policy(root, revision)
+    record = state.prior_carrier_phases[contract]
+    original = verify_object(state.sources[contract], build_key=record["buildKey"],
+        receipt_sha256=record["receiptSha256"], object_sha256=record["objectSha256"])
+    receipt = original["receipt"]
+    outputs = receipt["outputs"]
+    version = state.expected_fixed["versions"]["contract"]
+    if (receipt["productVersion"] != version or len(outputs) != 1
+            or outputs[0]["kind"] != "contract-bundle"):
+        raise ValueError("SDK handoff requires the exact selected Contract payload")
+    return {"source": state.rebased_request.get("sdkRuntimeSource", "current-runtime"),
+            **policy, **ranges, "contractVersion": version,
+            "contractPayloadSha256": require_sha256(outputs[0]["sha256"], "Selected Contract payload digest"),
+            "consumers": sorted(consumers, key=lambda value: tuple(value[field] for field in _IDENTITY_KEYS))}
+
+
 def inspect_products(
     plan_path: Path, discovery_root: Path, state_root: Path | None = None, *,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    include_sdk_selection: bool = False,
 ) -> dict[str, Any]:
     """Re-elect ready plans before target setup without admitting new shards."""
+    if type(include_sdk_selection) is not bool:
+        raise ValueError("SDK selection inspection must be boolean")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     discovery_root = Path(os.path.abspath(discovery_root))
     state_root = discovery_root if state_root is None else Path(os.path.abspath(state_root))
@@ -2645,6 +2679,7 @@ def inspect_products(
     request = dict(state.rebased_request)
     _merge_native_comparison_records(request, _retained_aggregate_handoffs(state_root, root), key=_AGGREGATE_REQUEST_KEY)
     return {"result": state.prior,
+            **({"sdkInputSelection": _sdk_input_selection(state, root)} if include_sdk_selection else {}),
             _AGGREGATE_REQUEST_KEY: request.get(_AGGREGATE_REQUEST_KEY, []),
             "readyPlans": [state.prior_ready_plans[instance] for instance in sorted(state.prior_ready_plans)]}
 
@@ -2800,6 +2835,59 @@ def materialize_product_predecessors(
                 _capture_sdk_runtime_predecessors(selected, Path(temporary) / "originals")))
         return _materialize_product_predecessors(state, instance, destination, expected_build_key, root,
                                                 sdk_runtime_originals=originals)
+
+
+def materialize_sdk_default_inputs(
+    plan_path, discovery_root, state_root, destination, *, keyring, keys_directory,
+    repository_root=None, environ=None, sdk_validation_tooling=None,
+):
+    """Stage the elected SDK default, preserving both original provenance chains."""
+    from products.runtime_sdk_handoff import stage_runtime_sdk_handoff
+    from products.sdk_package import _require_capability_output_separate
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
+    discovery_root, state_root, destination = _product_materialization_paths(
+        root, discovery_root, state_root, destination)
+
+    def output_safe():
+        _require_capability_output_separate(destination, [Path(keyring), Path(keys_directory), discovery_root, state_root])
+        if destination.exists() or destination.is_symlink():
+            raise ValueError("SDK default destination must not exist")
+        _prepare_destination(destination, root).rmdir()  # Only the newly created, empty destination.
+
+    output_safe()
+    with tempfile.TemporaryDirectory(prefix="codex-agent-sdk-default-", dir=root) as temporary:
+        prepared = Path(temporary).resolve() / "output"
+        captured = {}
+
+        def capture(selected):
+            if captured:
+                raise ValueError("SDK default was captured more than once")
+            snapshot_regular_tree(selected["handoff"]["directory"], prepared / "runtime-original", allow_empty=True)
+            captured.update({"transportSource": selected["transportSource"],
+                             "receiptSha256": selected["envelope"]["receiptSha256"],
+                             "objectSha256": selected["envelope"]["objectSha256"]})
+
+        state = _verified_product_state(plan_path, discovery_root, state_root, root,
+            os.environ if environ is None else environ, sdk_validation_tooling,
+            sdk_runtime_consumer=capture)
+        selection = _sdk_input_selection(state, root)
+        if selection is None or selection["source"] != "released-default" or not captured:
+            raise ValueError("SDK default inputs require selected released-default consumer work")
+        contract = PhaseInstanceId("contract", "contract", "metadata", "common")
+        (prepared / "current-contract").mkdir()
+        _restore_product_objects(state, _dependency_closure((contract,)), prepared / "current-contract")
+        write_canonical_json(prepared / "selection.json", selection)
+        write_canonical_json(prepared / "transport.json", {**captured, "consumer": state.consumer})
+        stage_runtime_sdk_handoff(prepared / "runtime-original", prepared / "sdk-inputs",
+            sdk_version=selection["sdkVersion"], compatible_release_range=selection["compatibleReleaseRange"],
+            compatible_runtime_compatibility_range=selection["compatibleRuntimeCompatibilityRange"],
+            keyring=keyring, keys_directory=keys_directory,
+            selection_repository_root=root, selection_revision=state.producer["commit"],
+            expected_contract_payload_sha256=selection["contractPayloadSha256"])
+        # Both original replay and full SDK authentication have exited before publication.
+        output_safe()
+        publish_regular_tree(prepared, destination, allow_empty=True)
+    return selection
 
 
 def materialize_runtime_aggregate_release_evidence(

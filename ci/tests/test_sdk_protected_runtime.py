@@ -27,6 +27,10 @@ class SdkProtectedRuntimeTest(unittest.TestCase):
         cls.raw_receipt = (cls.carrier / "aggregate-input/metadata-receipt.json").read_bytes()
         cls.digest = sha256_bytes(cls.raw_receipt)
         cls.key = load_canonical_json_bytes(cls.raw_receipt)["buildKey"]
+        contract_receipt = load_canonical_json_bytes((cls.carrier /
+            "selected-inputs/contract-input/execution-closure/receipts/metadata.json").read_bytes())
+        cls.contract_payload_digest = next(record["sha256"] for record in contract_receipt["outputs"]
+                                           if record["kind"] == "contract-bundle")
         cls.retained = source.source.work / "sdk-protected-retained"
         args = {**source.source.arguments(), "selected_root": cls.carrier / "selected-inputs",
                 "release_handoff": cls.carrier, "variant_handoffs": {}, "token": None}
@@ -76,8 +80,13 @@ class SdkProtectedRuntimeTest(unittest.TestCase):
             with patch("reuse.api_request", side_effect=AssertionError("forwarding contacted CI")), \
                     patch("products.runtime_aggregate.sign_manifest", side_effect=AssertionError("forwarding signed")), \
                     patch.object(forwarding, "stage_runtime_sdk_handoff", wraps=forwarding.stage_runtime_sdk_handoff) as bridge:
-                result = self.stage(original)
+                options = {"expected_contract_payload_sha256": self.contract_payload_digest} if name == "fresh" else {}
+                result = self.stage(original, **options)
             bridge.assert_called_once()
+            if name == "fresh":
+                self.assertEqual(self.contract_payload_digest, bridge.call_args.kwargs["expected_contract_payload_sha256"])
+            else:
+                self.assertNotIn("expected_contract_payload_sha256", bridge.call_args.kwargs)
             self.assertEqual({"sdk-inputs", "runtime-release"}, {path.name for path in self.output.iterdir()})
             self.assertEqual(before, regular_file_inventory(self.output / "runtime-release", allow_empty=True))
             self.assertEqual(before, regular_file_inventory(original, allow_empty=True))
@@ -85,6 +94,21 @@ class SdkProtectedRuntimeTest(unittest.TestCase):
             self.assertEqual(result["inventory"], load_canonical_json_bytes(
                 (self.output / "sdk-inputs" / INVENTORY_NAME).read_bytes()))
         self.assertEqual(inventories[0], inventories[1])
+
+    def test_optional_contract_payload_mismatch_does_not_publish_protected_history(self):
+        before = regular_file_inventory(self.carrier, allow_empty=True)
+        self.assertNotEqual(self.contract_payload_digest, self.digest)
+        with self.assertRaisesRegex(ValueError, "selected Contract payload"):
+            self.stage(expected_contract_payload_sha256=self.digest)
+        self.assertFalse(self.output.exists())
+        self.assertEqual(before, regular_file_inventory(self.carrier, allow_empty=True))
+
+    def test_malformed_optional_contract_payload_rejects_before_bridge(self):
+        with patch.object(forwarding, "stage_runtime_sdk_handoff") as bridge:
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                self.stage(expected_contract_payload_sha256="not-a-digest")
+            bridge.assert_not_called()
+        self.assertFalse(self.output.exists())
 
     def test_caller_pins_and_complete_git_policy_are_required_before_bridge(self):
         for changes in ({"expected_metadata_receipt_sha256": "sha256:" + "0" * 64},

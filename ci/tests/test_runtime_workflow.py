@@ -79,6 +79,30 @@ class RuntimeWorkflowTest(unittest.TestCase):
         self.assertIn("failure() && 'build/runtime-next'", collected)
         self.assertNotIn('overwrite: true', collected)
 
+    def test_sdk_input_job_is_selected_guarded_build_free_and_required_by_gate(self):
+        source = (Path(__file__).resolve().parents[2] / '.github/workflows/product-validation.yml').read_text()
+        job = source.split('  sdk-inputs:\n', 1)[1].split('  android:\n', 1)[0]
+        for guard in ("event_authorized == 'true'", "remote_build_authorized == 'true'",
+                      "sdk_handoff_required == 'true'", "runtime-continuation.result == 'success'"):
+            self.assertIn(guard, job)
+        self.assertIn("source == 'released-default'", job)
+        self.assertIn("runtime-aggregate-attestation.result == 'success'", job)
+        self.assertIn('./.github/actions/capture-runtime-state', job)
+        self.assertIn('python3 -B -m ci.sdk_workflow', job)
+        self.assertIn('--expected-metadata-receipt-sha256 "$AGGREGATE_RECEIPT"', job)
+        self.assertIn('overwrite: false', job)
+        self.assertIn('artifact_digest: sha256:${{ steps.upload.outputs.artifact-digest }}', job)
+        self.assertIn('codex-agent-sdk-inputs-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}', job)
+        aggregate = source.split('  runtime-aggregate-attestation:\n', 1)[1].split('  sdk-inputs:\n', 1)[0]
+        self.assertIn('artifact_digest: sha256:${{ steps.upload.outputs.artifact-digest }}', aggregate)
+        for forbidden in ('setup-kmp', './gradlew', 'ssh-keygen', 'environment: product-attestation'):
+            self.assertNotIn(forbidden, job)
+        gate = source.split('  merge-gate:\n', 1)[1]
+        self.assertIn('runtime-aggregate-attestation, sdk-inputs, android', gate)
+        self.assertIn('if [ "$SDK_INPUTS_REQUIRED" = true ]; then', gate)
+        self.assertIn('test "$SDK_INPUTS_RESULT" = success || exit 1', gate)
+        self.assertIn('needs.sdk-inputs.outputs.artifact_digest', gate)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="runtime-workflow-")
         self.addCleanup(temporary.cleanup)
@@ -178,7 +202,20 @@ class RuntimeWorkflowTest(unittest.TestCase):
                           "aggregate": {"state": "not-selected", "buildKey": None, "receiptSha256": None}}, result)
         self.assertEqual({"native_attestation_matrix": '{"include":[]}', "aggregate_state": "not-selected",
                           "aggregate_key": "", "aggregate_receipt_sha256": "", "aggregate_required": "false",
-                          "aggregate_payload_complete": "false"}, self.outputs())
+                          "aggregate_payload_complete": "false", "sdk_handoff_required": "false",
+                          "sdk_input_selection": "null"}, self.outputs())
+
+    def test_sdk_default_handoff_routes_without_selecting_current_aggregate(self):
+        selection = {"source": "released-default", "sdkVersion": "0.8.0",
+                     "defaultRuntimeVersion": "0.8.0", "contractPayloadSha256": KEY}
+        inspected = {"result": {"phases": []}, "readyPlans": [], "sdkInputSelection": selection}
+        with mock.patch.object(workflow.products, "inspect_products", return_value=inspected):
+            self.final_route(if_selected=True)
+        outputs = self.outputs()
+        self.assertEqual("true", outputs["sdk_handoff_required"])
+        self.assertEqual(workflow.canonical_json_bytes(selection).decode().strip(), outputs["sdk_input_selection"])
+        self.assertEqual("false", outputs["aggregate_required"])
+        self.assertEqual('{"include":[]}', outputs["native_attestation_matrix"])
 
     def test_optional_final_route_does_not_bypass_invalid_replay_or_duplicate_elections(self):
         base = self.final_fixture()
@@ -229,7 +266,7 @@ class RuntimeWorkflowTest(unittest.TestCase):
             result = self.final_route()
         gate.assert_called_once_with(self.root / "plan", self.root / "discovery", self.root / "state",
                                     repository_root=self.root, environ=self.environment,
-                                    sdk_validation_tooling={"fixture": "caller policy"})
+                                    sdk_validation_tooling={"fixture": "caller policy"}, include_sdk_selection=True)
         phases = {workflow.products._identity(record): record for record in inspected["result"]["phases"]}
         expected = {"include": [{"target": target,
             "buildKey": phases[workflow.PhaseInstanceId("runtime", target, "metadata", target)]["buildKey"]}
@@ -239,7 +276,8 @@ class RuntimeWorkflowTest(unittest.TestCase):
                          result["aggregate"])
         outputs = self.outputs()
         self.assertEqual({"native_attestation_matrix", "aggregate_state", "aggregate_key",
-                          "aggregate_receipt_sha256", "aggregate_required", "aggregate_payload_complete"}, set(outputs))
+                          "aggregate_receipt_sha256", "aggregate_required", "aggregate_payload_complete",
+                          "sdk_handoff_required", "sdk_input_selection"}, set(outputs))
         self.assertEqual("true", outputs["aggregate_required"])
         self.assertEqual("false", outputs["aggregate_payload_complete"])
         self.assertEqual("", outputs["aggregate_receipt_sha256"])

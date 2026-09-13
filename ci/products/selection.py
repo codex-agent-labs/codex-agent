@@ -268,6 +268,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/runtime_sdk_handoff.py",
     "ci/products/sdk_protected_runtime.py",
     "ci/sdk_handoff.py",
+    "ci/sdk_workflow.py",
     "ci/runtime_catalog_promotion.py",
     "ci/products/selection.py",
     "ci/products/sdk_inputs.py",

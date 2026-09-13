@@ -80,6 +80,10 @@ class SdkHandoffTest(unittest.TestCase):
                      "compatible_release_range", "compatible_runtime_compatibility_range",
                      "selection_repository_root", "selection_revision"):
             self.assertEqual(self.options[name], arguments[name])
+        if "expected_contract_payload_sha256" in self.options:
+            self.assertEqual(self.options["expected_contract_payload_sha256"], arguments["expected_contract_payload_sha256"])
+        else:
+            self.assertNotIn("expected_contract_payload_sha256", arguments)
         self.assertNotEqual(self.keyring, arguments["keyring"])
         self.assertEqual(self.keyring.read_bytes(), arguments["keyring"].read_bytes())
         snapshot_regular_tree(original, destination / "runtime-release", allow_empty=True)
@@ -111,6 +115,18 @@ class SdkHandoffTest(unittest.TestCase):
             with self.subTest(failure=failure), self.assertRaisesRegex(ValueError, "rejected"):
                 self.invoke(**{failure: ValueError("rejected")})
             self.assertFalse(self.output.exists())
+
+    def test_optional_contract_payload_digest_forwarded_only_to_full_bridge(self):
+        self.options["expected_contract_payload_sha256"] = "sha256:" + "e" * 64
+        self.invoke()
+        self.assertEqual(["capture", "bridge"], self.calls)
+
+    def test_malformed_optional_contract_payload_rejects_before_upload_capture(self):
+        self.options["expected_contract_payload_sha256"] = "not-a-digest"
+        with self.assertRaisesRegex(ValueError, "SHA-256"):
+            self.invoke()
+        self.assertEqual([], self.calls)
+        self.assertFalse(self.output.exists())
 
     def test_caller_cannot_widen_original_git_range_before_capture(self):
         for field in ("compatible_release_range", "compatible_runtime_compatibility_range"):
@@ -169,6 +185,13 @@ class SdkHandoffTest(unittest.TestCase):
             self.assertEqual(0, caller.main(argv))
             capture.assert_called_once_with(self.plan, self.output, **options,
                                            environ=os.environ, token="caller-token")
+        digest = "sha256:" + "e" * 64
+        with patch.object(caller, "capture_sdk_handoff") as capture:
+            self.assertEqual(0, caller.main([*argv, "--expected-contract-payload-sha256", digest]))
+            self.assertEqual(digest, capture.call_args.kwargs["expected_contract_payload_sha256"])
+        with patch.object(caller, "capture_sdk_handoff") as capture, self.assertRaises(SystemExit):
+            caller.main([*argv, "--expected-contract-payload-sha256", "not-a-digest"])
+        capture.assert_not_called()
         for flag in ("--expected-metadata-receipt-sha256", "--compatible-release-range", "--selection-revision"):
             position = argv.index(flag)
             with self.subTest(flag=flag), patch.object(caller, "capture_sdk_handoff") as capture, \
@@ -204,10 +227,73 @@ class SignedSdkHandoffCompositionTest(unittest.TestCase):
                     compatible_release_range=">=0.2.0 <0.3.0", compatible_runtime_compatibility_range=">=0.2.0 <0.3.0",
                     keyring=source.keyring, keys_directory=source.keys, selection_repository_root=source.selection,
                     selection_revision=source.revision, repository_root=source.source.source.repository,
-                    environ={}, token="synthetic-token")
+                    environ={}, token="synthetic-token", expected_contract_payload_sha256=source.contract_payload_digest)
             self.assertEqual(before, regular_file_inventory(source.retained, allow_empty=True))
             self.assertEqual(before, regular_file_inventory(output / "runtime-capture/original", allow_empty=True))
             self.assertTrue((output / "sdk-inputs/sdk-compatibility-request.json").is_file())
+
+
+class ReleasedDefaultSdkHandoffCliTest(unittest.TestCase):
+    """Parser/controller composition only; authenticated replay is not mocked into a proof."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="sdk-released-default-cli-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.paths = {name: self.root / name for name in (
+            "plan", "discovery-root", "destination", "keyring", "keys-directory", "repository-root")}
+        self.argv = ["released-default"]
+        for name, path in self.paths.items():
+            self.argv.extend((f"--{name}", str(path)))
+
+    def test_released_default_dispatch_forwards_only_replay_paths_and_original_tooling(self):
+        state, tooling = self.root / "state", self.root / "tooling.json"
+        policy = {"syntheticControllerPolicy": True}
+        tooling.write_bytes(canonical_json_bytes(policy))
+        argv = [*self.argv, "--state-root", str(state), "--sdk-validation-tooling", str(tooling)]
+        with patch.object(caller.product_reuse, "materialize_sdk_default_inputs") as materialize, \
+                patch.object(caller, "capture_sdk_handoff", side_effect=AssertionError("released replay captured upload")), \
+                patch.object(caller.sys, "argv", ["sdk_handoff.py", *argv]):
+            self.assertEqual(0, caller.main())
+            materialize.assert_called_once_with(self.paths["plan"], self.paths["discovery-root"], state,
+                self.paths["destination"], keyring=self.paths["keyring"], keys_directory=self.paths["keys-directory"],
+                repository_root=self.paths["repository-root"], environ=os.environ, sdk_validation_tooling=policy)
+        self.assertEqual(canonical_json_bytes(policy), tooling.read_bytes())
+
+    def test_released_default_optional_state_and_tooling_keep_existing_controller_defaults(self):
+        with patch.object(caller.product_reuse, "materialize_sdk_default_inputs") as materialize:
+            self.assertEqual(0, caller.main(self.argv))
+            self.assertIsNone(materialize.call_args.args[2])
+            self.assertIsNone(materialize.call_args.kwargs["sdk_validation_tooling"])
+            self.assertNotIn("token", materialize.call_args.kwargs)
+
+    def test_released_default_required_paths_and_override_flags_reject_before_controller(self):
+        for name in self.paths:
+            offset = self.argv.index(f"--{name}")
+            with self.subTest(missing=name), \
+                    patch.object(caller.product_reuse, "materialize_sdk_default_inputs") as materialize, \
+                    self.assertRaises(SystemExit):
+                caller.main(self.argv[:offset] + self.argv[offset + 2:])
+            materialize.assert_not_called()
+        for flag in ("--compatible-release-range", "--sdk-version", "--expected-contract-payload-sha256", "--artifact-id"):
+            with self.subTest(override=flag), \
+                    patch.object(caller.product_reuse, "materialize_sdk_default_inputs") as materialize, \
+                    self.assertRaises(SystemExit):
+                caller.main([*self.argv, flag, "caller-override"])
+            materialize.assert_not_called()
+
+    def test_released_default_malformed_tooling_and_replay_failure_return_cli_error(self):
+        tooling = self.root / "tooling.json"
+        tooling.write_bytes(b'{"duplicate":1,"duplicate":2}\n')
+        with patch.object(caller.product_reuse, "materialize_sdk_default_inputs") as materialize, \
+                self.assertRaises(SystemExit):
+            caller.main([*self.argv, "--sdk-validation-tooling", str(tooling)])
+        materialize.assert_not_called()
+        with patch.object(caller.product_reuse, "materialize_sdk_default_inputs",
+                          side_effect=ValueError("original replay mismatch")), self.assertRaises(SystemExit) as failure:
+            caller.main(self.argv)
+        self.assertEqual(2, failure.exception.code)
+        self.assertFalse(self.paths["destination"].exists())
 
 
 if __name__ == "__main__":

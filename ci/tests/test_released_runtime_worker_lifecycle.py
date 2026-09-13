@@ -22,6 +22,10 @@ from ci.products.plan import plan_phase
 from ci.products.selection import phase_git_inventory
 from products.inventory import load_canonical_json, regular_file_inventory, snapshot_regular_tree, write_canonical_json
 from products.receipt import verify_output_manifest_identity
+from products.registry import NATIVE_TARGETS
+from products.sdk_compatibility import load_sdk_compatibility_request
+from products.sdk_inputs import COMPATIBILITY_NAME, REQUEST_NAME
+from products.signatures import generate_development_key
 
 
 adapter = contract_fixture.adapter
@@ -175,6 +179,21 @@ class ReleasedRuntimeWorkerLifecycleTest(unittest.TestCase):
         self.assertEqual("0.2.8", request["versions"]["runtime-release"])
         destination = self.repository / "build/materialized-sdk"
         with self.control_seams():
+            inspection = adapter.inspect_products(self.plan_path, self.resumed, self.resumed,
+                repository_root=self.repository, environ=self.environment, include_sdk_selection=True)
+            current_contract = load_canonical_json(self.contract_receipts["metadata"])
+            payload, = current_contract["outputs"]
+            self.assertEqual("contract-bundle", payload["kind"])
+            self.assertEqual({
+                "source": "released-default", "sdkVersion": "0.2.9", "defaultRuntimeVersion": "0.2.7",
+                "compatibleReleaseRange": ">=0.2.0 <0.3.0",
+                "compatibleRuntimeCompatibilityRange": ">=0.2.0 <0.3.0",
+                "contractVersion": "0.2.0", "contractPayloadSha256": payload["sha256"],
+                "consumers": [adapter._identity_record(SDK)],
+            }, inspection["sdkInputSelection"])
+            self.assertNotEqual(adapter.sha256_file(self.contract_receipts["metadata"]),
+                                inspection["sdkInputSelection"]["contractPayloadSha256"])
+            self.assertEqual(result, inspection["result"])
             actual = adapter.materialize_product_predecessors(self.plan_path, self.resumed, self.resumed,
                 SDK, destination, expected_build_key=self.ready["buildKey"],
                 repository_root=self.repository, environ=self.environment)
@@ -208,6 +227,86 @@ class ReleasedRuntimeWorkerLifecycleTest(unittest.TestCase):
                 repository_root=self.repository, environ=self.environment)
         self.assertFalse(destination.exists())
         self.assertFalse(list(self.repository.glob("codex-agent-sdk-runtime-inputs-*")))
+
+    def test_real_replay_materializes_authenticated_sdk_default_inputs(self):
+        original_contract = self.catalog.carrier / "selected-inputs/contract-input"
+        original_receipt = original_contract / "execution-closure/receipts/metadata.json"
+        current_output, = load_canonical_json(self.contract_receipts["metadata"])["outputs"]
+        original_output, = load_canonical_json(original_receipt)["outputs"]
+        # Equal semantic content alone would not justify this bridge: require
+        # the exact original payload bytes while retaining different receipts.
+        self.assertEqual(original_output["sha256"], current_output["sha256"])
+        self.assertEqual((original_contract / "codex-agent-contract-0.2.0.zip").read_bytes(),
+                         (self.contract_source / "metadata-stage" / current_output["relativePath"]).read_bytes())
+        self.assertNotEqual(original_receipt.read_bytes(), self.contract_receipts["metadata"].read_bytes())
+        destination = self.repository / "build/materialized-sdk-default"
+        with self.control_seams():
+            selection = adapter.materialize_sdk_default_inputs(
+                self.plan_path, self.resumed, self.resumed, destination,
+                keyring=self.catalog.keyring, keys_directory=self.catalog.keys,
+                repository_root=self.repository, environ=self.environment)
+        self.assertEqual("released-default", selection["source"])
+        self.assertEqual(current_output["sha256"], selection["contractPayloadSha256"])
+        self.assertEqual(selection, load_canonical_json(destination / "selection.json"))
+        self.assertEqual({"runtime-original", "current-contract", "sdk-inputs", "selection.json", "transport.json"},
+                         {path.name for path in destination.iterdir()})
+        # This includes all 50 original receipts and their complete stages,
+        # detached signatures and external diagnostics, without reconstruction.
+        self.assertEqual(regular_file_inventory(self.catalog.carrier, allow_empty=True),
+                         regular_file_inventory(destination / "runtime-original", allow_empty=True))
+        for phase in ("binary", "package", "validation", "metadata"):
+            current = destination / f"current-contract/contract-contract-{phase}-common"
+            self.assertEqual(self.contract_receipts[phase].read_bytes(),
+                             (current / "phase-receipt.json").read_bytes())
+            self.assertEqual(regular_file_inventory(self.contract_source / f"{phase}-stage"),
+                             regular_file_inventory(current / "stage"))
+        arguments = load_sdk_compatibility_request(destination / "sdk-inputs" / REQUEST_NAME)
+        self.assertEqual("release", arguments["required_trust_domain"])
+        self.assertEqual(original_receipt.read_bytes(), arguments["contract_metadata_receipt"].read_bytes())
+        self.assertEqual((self.catalog.carrier / "aggregate-input/metadata-receipt.json").read_bytes(),
+                         arguments["runtime_metadata_receipt"].read_bytes())
+        for target in NATIVE_TARGETS:
+            for phase in ("binary", "package", "validation", "metadata"):
+                self.assertEqual((self.catalog.carrier / f"variant-inputs/{target}/receipts/{phase}.json").read_bytes(),
+                                 arguments["variant_phase_receipts"][target][phase].read_bytes())
+        compatibility = load_canonical_json(destination / "sdk-inputs" / COMPATIBILITY_NAME)
+        self.assertEqual("0.2.9", compatibility["sdkVersion"])
+        self.assertEqual("0.2.7", compatibility["runtime"]["defaultRuntimeVersion"])
+        transport = load_canonical_json(destination / "transport.json")
+        self.assertEqual(adapter.sha256_file(self.catalog.carrier / "aggregate-input/metadata-receipt.json"),
+                         transport["receiptSha256"])
+        self.assertEqual(self.producer, transport["consumer"]["producer"])
+        self.assertFalse(list(self.repository.glob("codex-agent-sdk-default-*")))
+
+    def test_sdk_default_inputs_reject_wrong_caller_policy_without_publication(self):
+        work = self.repository / "build/wrong-sdk-default-policy"
+        _, public, signing = generate_development_key(work / "key")
+        keys = work / "policy/keys"
+        keys.mkdir(parents=True)
+        (keys / f"{signing['keyId']}.pub").write_bytes(public.read_bytes())
+        keyring = keys.parent / "product-signing-keys.json"
+        write_canonical_json(keyring, {**load_canonical_json(self.catalog.keyring), "retiredKeys": [],
+            "activeKey": {name: signing[name] for name in ("keyId", "fingerprint")}})
+        destination = work / "output"
+        with self.control_seams(), self.assertRaises(ValueError):
+            adapter.materialize_sdk_default_inputs(
+                self.plan_path, self.resumed, self.resumed, destination,
+                keyring=keyring, keys_directory=keys,
+                repository_root=self.repository, environ=self.environment)
+        self.assertFalse(destination.exists())
+        self.assertFalse(list(self.repository.glob("codex-agent-sdk-default-*")))
+
+    def test_sdk_default_inputs_reject_contract_only_discovery_before_product_resume(self):
+        destination = self.repository / "build/premature-sdk-default"
+        self.assertTrue((self.discovery / "contract-reuse-request.json").is_file())
+        self.assertFalse((self.discovery / "reuse-wave-request.json").exists())
+        with self.control_seams(), self.assertRaisesRegex(ValueError, r"missing or unsafe: .*reuse-wave-request\.json"):
+            adapter.materialize_sdk_default_inputs(
+                self.plan_path, self.discovery, self.discovery, destination,
+                keyring=self.catalog.keyring, keys_directory=self.catalog.keys,
+                repository_root=self.repository, environ=self.environment)
+        self.assertFalse(destination.exists())
+        self.assertFalse(list(self.repository.glob("codex-agent-sdk-default-*")))
 
     def test_simultaneous_current_jvm_and_sdk_keep_distinct_runtime_dependencies(self):
         # A second controller history imports the SAME existing Contract shards.
@@ -273,6 +372,31 @@ class ReleasedRuntimeWorkerLifecycleTest(unittest.TestCase):
                     self.assertEqual(raw, (directory / "phase-receipt.json").read_bytes())
                     self.assertEqual(regular_file_inventory(stage), regular_file_inventory(directory / "stage"))
         self.assertFalse(list(self.repository.glob("codex-agent-sdk-runtime-inputs-*")))
+
+
+class SdkDefaultInputDestinationTest(unittest.TestCase):
+    def test_unsafe_destination_rejects_before_replay(self):
+        # Path-preflight scope only; no product fixture or authentication claim.
+        with tempfile.TemporaryDirectory(prefix="sdk-default-destination-") as temporary:
+            root = Path(temporary).resolve()
+            repository = root / "repository"
+            discovery, state, keys = (repository / name for name in ("discovery", "state", "keys"))
+            for directory in (discovery, state, keys):
+                directory.mkdir(parents=True)
+            keyring = repository / "keyring.json"
+            keyring.write_bytes(b"original policy sentinel")
+            (keys / "original.pub").write_bytes(b"original public key sentinel")
+            before = regular_file_inventory(repository)
+            for destination in (root / "outside-repository", keys / "output"):
+                with self.subTest(destination=destination), \
+                        patch.object(adapter, "_verified_product_state") as replay, self.assertRaises(ValueError):
+                    adapter.materialize_sdk_default_inputs(
+                        repository / "plan.json", discovery, state, destination,
+                        keyring=keyring, keys_directory=keys, repository_root=repository, environ={})
+                replay.assert_not_called()
+                self.assertFalse(destination.exists())
+                self.assertEqual(before, regular_file_inventory(repository))
+            self.assertFalse(list(repository.glob("codex-agent-sdk-default-*")))
 
 
 if __name__ == "__main__":

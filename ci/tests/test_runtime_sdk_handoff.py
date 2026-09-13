@@ -12,7 +12,7 @@ from ci.tests import test_runtime_aggregate_handoff as fixture
 from products import runtime_sdk_handoff as bridge
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory,
-    snapshot_regular_tree, verify_regular_file_inventory,
+    snapshot_regular_tree, verify_regular_file_inventory, sha256_bytes,
 )
 from products.registry import NATIVE_TARGETS
 from products.sdk_compatibility import load_sdk_compatibility_request, produce_sdk_compatibility
@@ -85,12 +85,19 @@ class RuntimeSdkHandoffTest(unittest.TestCase):
         repository, revision = self.selection()
         # The exact Git selection is authoritative, not the mutable checkout.
         (repository / "gradle/release/versions/contract.txt").write_bytes(b"9.0.0\n")
+        original_contract_receipt = (self.carrier / "selected-inputs/contract-input/execution-closure/receipts/metadata.json").read_bytes()
+        payloads = [record for record in load_canonical_json_bytes(original_contract_receipt)["outputs"]
+                    if record["kind"] == "contract-bundle"]
+        self.assertEqual(1, len(payloads))
+        payload_digest = payloads[0]["sha256"]
+        self.assertNotEqual(sha256_bytes(original_contract_receipt), payload_digest)
         with patch("reuse.api_request", side_effect=AssertionError("forwarding contacted CI")), \
                 patch("products.runtime_aggregate.sign_manifest", side_effect=AssertionError("forwarding signed")), \
                 patch.object(bridge, "verified_runtime_aggregate_handoff",
                              wraps=bridge.verified_runtime_aggregate_handoff) as full, \
                 patch.object(bridge, "stage_sdk_inputs", wraps=bridge.stage_sdk_inputs) as writer:
-            result = self.stage(selection_repository_root=repository, selection_revision=revision)
+            result = self.stage(selection_repository_root=repository, selection_revision=revision,
+                                expected_contract_payload_sha256=payload_digest)
         full.assert_called_once()
         writer.assert_called_once()
         self.assertEqual(before, regular_file_inventory(self.carrier, allow_empty=True))
@@ -115,6 +122,27 @@ class RuntimeSdkHandoffTest(unittest.TestCase):
         compatibility = load_canonical_json_bytes((self.output / COMPATIBILITY_NAME).read_bytes())
         self.assertEqual("0.2.9", compatibility["sdkVersion"])
         self.assertEqual("0.2.7", compatibility["runtime"]["defaultRuntimeVersion"])
+
+    def test_contract_payload_binding_rejects_receipt_digest_before_s858_writer(self):
+        before = regular_file_inventory(self.carrier, allow_empty=True)
+        receipt = (self.carrier / "selected-inputs/contract-input/execution-closure/receipts/metadata.json").read_bytes()
+        digest = sha256_bytes(receipt)
+        self.assertNotEqual(digest, next(record["sha256"] for record in load_canonical_json_bytes(receipt)["outputs"]
+                                        if record["kind"] == "contract-bundle"))
+        with patch.object(bridge, "stage_sdk_inputs") as writer:
+            with self.assertRaisesRegex(ValueError, "selected Contract payload"):
+                self.stage(expected_contract_payload_sha256=digest)
+            writer.assert_not_called()
+        self.assertFalse(self.output.exists())
+        self.assertEqual(before, regular_file_inventory(self.carrier, allow_empty=True))
+
+    def test_malformed_expected_payload_digest_rejects_before_capture(self):
+        for value in ("", "a" * 64, "sha256:" + "A" * 64, "sha256:" + "0" * 63, 123):
+            with self.subTest(value=value), patch.object(bridge, "verified_runtime_aggregate_handoff") as reader:
+                with self.assertRaisesRegex(ValueError, "SHA-256"):
+                    self.stage(expected_contract_payload_sha256=value)
+                reader.assert_not_called()
+            self.assertFalse(self.output.exists())
 
     def test_original_git_ranges_cannot_be_widened_before_sdk_writer(self):
         repository, revision = self.selection()

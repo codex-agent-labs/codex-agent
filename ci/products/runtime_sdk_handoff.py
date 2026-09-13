@@ -10,7 +10,7 @@ import tempfile
 
 from .inventory import (
     canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
-    regular_file_inventory, require_regular_directory,
+    regular_file_inventory, require_regular_directory, require_sha256,
 )
 from .registry import NATIVE_TARGETS, PhaseInstanceId
 from .runtime_aggregate_handoff import _public_policy, verified_runtime_aggregate_handoff
@@ -25,13 +25,20 @@ def stage_runtime_sdk_handoff(handoff_root: Path, destination: Path, *,
                               compatible_runtime_compatibility_range: str,
                               keyring: Path, keys_directory: Path,
                               selection_repository_root: Path | None = None,
-                              selection_revision: str | None = None) -> dict:
-    """Publish standard SDK inputs only after full original/policy rechecks."""
+                              selection_revision: str | None = None,
+                              expected_contract_payload_sha256: str | None = None) -> dict:
+    """Publish standard SDK inputs only after full original/policy rechecks.
+
+    The optional caller digest binds Contract payload content, not receipt or
+    producer identity, and never replaces the full carrier authentication.
+    """
     handoff_root, destination = Path(handoff_root).absolute(), Path(destination).absolute()
     if keyring is None or keys_directory is None:
         raise ValueError("Runtime SDK handoff requires caller-pinned release policy")
     if (selection_repository_root is None) != (selection_revision is None):
         raise ValueError("SDK release selection requires both repository and exact revision")
+    if expected_contract_payload_sha256 is not None:
+        require_sha256(expected_contract_payload_sha256, "Expected Contract payload SHA-256")
     sources = (handoff_root, Path(keyring).absolute(), Path(keys_directory).absolute())
 
     def output_safe():
@@ -65,6 +72,10 @@ def stage_runtime_sdk_handoff(handoff_root: Path, destination: Path, *,
                     compatible_runtime_compatibility_range=compatible_runtime_compatibility_range)
             root = verified["directory"]
             contract_receipt = verified["receipts"][PhaseInstanceId("contract", "contract", "metadata", "common")]
+            if expected_contract_payload_sha256 is not None:
+                outputs = [record for record in contract_receipt["outputs"] if record["kind"] == "contract-bundle"]
+                if len(outputs) != 1 or outputs[0]["sha256"] != expected_contract_payload_sha256:
+                    raise ValueError("Authenticated Runtime Contract payload differs from the selected Contract payload")
             contract_stem = f"codex-agent-contract-{contract_receipt['productVersion']}"
             contract = root / "selected-inputs/contract-input"
             aggregate = root / "aggregate-input"
