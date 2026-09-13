@@ -599,6 +599,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             "codex-agent-bindings/cpp/tools/produce_sdk_validation_evidence.py",
             "codex-agent-bindings/cpp/tools/verify_imported_package.py",
             "codex-agent-bindings/dart/tool/produce_sdk_validation_evidence.py",
+            "codex-agent-bindings/dart/tool/provision_dependencies.py",
+            "codex-agent-bindings/dart/tool/tests/test_provision_dependencies.py",
         }:
             return _from_phase("sdk", language, "validation")
         if language == "javascript" and _binding_validation_path(path, language):

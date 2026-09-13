@@ -73,6 +73,9 @@ inputs:
   dart-package-config:
     default: ''
     description: Optional existing resolved Dart package configuration selecting the exact binding. Caller must provision dependency caches/configuration without untracked checkout writes.
+  dart-pub-cache:
+    default: ''
+    description: Existing prepopulated writable absolute pub cache outside the checkout, required for Dart when no explicit package config is supplied. Locked offline resolution may update pub metadata but never downloads dependencies.
 runs:
   using: composite
   steps:
@@ -104,6 +107,33 @@ runs:
                 raise ValueError('Caller tooling paths must be explicit absolute paths')
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('sha256=' + sha256_bytes(raw) + '\n')
+        PY
+    - id: dart-inputs
+      if: inputs.component == 'dart'
+      name: Require caller-owned Dart dependencies before capture or setup
+      shell: bash
+      env:
+        DART_PACKAGE_CONFIG: ${{ inputs.dart-package-config }}
+        DART_PUB_CACHE: ${{ inputs.dart-pub-cache }}
+      run: |
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        from ci.products.inventory import read_regular_file_bytes
+        config = os.environ['DART_PACKAGE_CONFIG']
+        selected = config or os.environ['DART_PUB_CACHE']
+        if not selected or not Path(selected).is_absolute():
+            raise ValueError('Dart requires an explicit external package config or prepopulated pub cache')
+        path = Path(selected)
+        if any(parent.is_symlink() for parent in (path, *path.parents)):
+            raise ValueError('Dart dependency input must not be symbolic')
+        resolved, checkout = path.resolve(strict=True), Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        if resolved.is_relative_to(checkout) or checkout.is_relative_to(resolved):
+            raise ValueError('Dart dependency input must be outside and separate from the checkout')
+        if config:
+            read_regular_file_bytes(path, reject_symlink_parents=True)
+        elif not path.is_dir() or not any(path.iterdir()):
+            raise ValueError('Dart requires an existing prepopulated pub cache')
         PY
     - id: captured
       uses: ./.github/actions/capture-runtime-state
@@ -225,10 +255,11 @@ runs:
         DOTNET_EXECUTABLE: ${{ inputs.dotnet-executable }}
         DART_EXECUTABLE: ${{ inputs.dart-executable }}
         DART_PACKAGE_CONFIG: ${{ inputs.dart-package-config }}
+        DART_PUB_CACHE: ${{ inputs.dart-pub-cache }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         python3 -B - <<'PY'
-        import os, shutil, subprocess, sys
+        import json, os, shutil, subprocess, sys, tempfile
         from pathlib import Path
         from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes, sha256_bytes
         raw = read_regular_file_bytes(Path(os.environ['SDK_VALIDATION_TOOLING']), reject_symlink_parents=True)
@@ -259,10 +290,55 @@ runs:
             if executable is None:
                 raise ValueError('Selected C# validation requires installed dotnet')
             fields['dotnet-executable'] = str(Path(executable).resolve(strict=True))
+        if os.environ['COMPONENT'] == 'dart':
+            executable = fields.get('dart-executable') or shutil.which('dart')
+            if not executable or not Path(executable).is_absolute():
+                raise ValueError('Selected Dart validation requires installed pinned Dart')
+            fields['dart-executable'] = str(Path(executable).resolve(strict=True))
+            if 'dart-package-config' not in fields:
+                from ci.product_reuse import _runtime_worker_checkout, _runtime_worker_environment
+                checkout = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+                plan = json.loads(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
+                original = {'commit': plan['validationCommit'], 'tree': plan['validationTree']}
+                _runtime_worker_checkout(checkout, original)
+                cache = os.environ['DART_PUB_CACHE']
+                if not cache or not Path(cache).is_absolute():
+                    raise ValueError('Dart offline provisioning requires the caller pub cache')
+                temporary = Path(os.environ['RUNNER_TEMP']).resolve(strict=True)
+                if temporary.is_relative_to(checkout) or checkout.is_relative_to(temporary):
+                    raise ValueError('Dart provisioning scratch must be outside the checkout')
+                scratch = Path(tempfile.mkdtemp(prefix='sdk-dart-dependencies-', dir=temporary))
+                output = scratch / 'provisioned'
+                environment, _ = _runtime_worker_environment(checkout, original, scratch, os.environ)
+                bytecode = scratch / 'python-bytecode'
+                if bytecode.exists() or bytecode.is_symlink():
+                    raise ValueError('Dart provisioning private Python bytecode namespace was modified')
+                with open(os.environ['GITHUB_OUTPUT'], 'a') as diagnostic_output:
+                    diagnostic_output.write('dart_diagnostics=' + str(output) + '\n')
+                try:
+                    subprocess.run([sys.executable, '-B', str(checkout / 'codex-agent-bindings/dart/tool/provision_dependencies.py'),
+                        '--dart-executable', fields['dart-executable'], '--pub-cache', cache, '--output', str(output)],
+                        cwd=checkout, env=environment, check=True)
+                finally:
+                    if bytecode.exists() or bytecode.is_symlink():
+                        raise ValueError('Dart provisioning private Python bytecode namespace was modified')
+                    _runtime_worker_checkout(checkout, original)
+                fields['dart-package-config'] = str(output / 'package_config.json')
         command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'native-validation',
                    *(value for name, item in fields.items() for value in ('--' + name, item))]
         subprocess.run(command, cwd=os.environ['GITHUB_WORKSPACE'], env=os.environ, check=True)
         PY
+    - name: Retain exact external Dart provisioning diagnostics, including failures
+      if: always() && steps.identity.outcome == 'success' && steps.execute.outputs.dart_diagnostics != ''
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-dart-dependencies-validation-${{ inputs.target }}-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: ${{ steps.execute.outputs.dart_diagnostics }}
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90
     - if: always() && steps.identity.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
