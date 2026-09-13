@@ -2695,7 +2695,7 @@ def _sdk_ios_binary_worker_instance(instance):
     return instance == PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
 
 
-SDK_WORKER_FAMILIES = ("native-package", "ios-package", "javascript-metadata")
+SDK_WORKER_FAMILIES = ("native-package", "ios-package", "javascript-metadata", "native-validation", "native-metadata")
 
 
 def _sdk_family_worker_instance(instance, family):
@@ -2703,6 +2703,11 @@ def _sdk_family_worker_instance(instance, family):
         raise ValueError("Unsupported SDK worker family")
     if family == "native-package":
         return instance in {PhaseInstanceId("sdk", language, "package", "desktop") for language in NATIVE_BINDINGS}
+    if family == "native-validation":
+        return instance in {PhaseInstanceId("sdk", language, "validation", target)
+                            for language in NATIVE_BINDINGS for target in NATIVE_TARGETS}
+    if family == "native-metadata":
+        return instance in {PhaseInstanceId("sdk", language, "metadata", "desktop") for language in NATIVE_BINDINGS}
     return instance == (PhaseInstanceId("sdk", "sdk-ios", "package", "ios") if family == "ios-package"
                         else PhaseInstanceId("sdk", "javascript", "metadata", "node"))
 
@@ -3707,6 +3712,20 @@ def collect_runtime_workers(
                             "sdk" if product == "sdk" else "runtime-release"]
                         or receipt["trustDomain"] != ("development" if state.plan["event"] == "pull_request" else "release")):
                     raise ValueError("Runtime worker shard differs from its elected plan and producer")
+                if sdk_family == "native-validation":
+                    carrier = original / "sdk-validation-evidence"
+                    records = load_sdk_validation_evidence(carrier)
+                    if (len(records) != 1 or records[0]["component"] != instance.component
+                            or records[0]["target"] != instance.target
+                            or records[0]["receiptSha256"] != sha256_bytes(canonical_json_bytes(receipt))):
+                        raise ValueError("SDK validation carrier differs from its elected original shard")
+                    authenticated = retained / "sdk-validation-evidence"
+                    stage_sdk_validation_evidence(records, carrier, authenticated,
+                        repository=root, policy_revision=state.plan["validationCommit"],
+                        tooling=sdk_validation_tooling)
+                    if verify_phase_shard(original / "shard", instance) != verified:
+                        raise ValueError("SDK validation original shard changed during evidence admission")
+                    row["sdkValidationEvidenceDirectory"] = authenticated.relative_to(prepared).as_posix()
                 row.update(result="success", reason="verified-original-shard",
                            shardDirectory=(original / "shard").relative_to(prepared).as_posix())
             except (ValueError, OSError) as error:
@@ -4181,8 +4200,8 @@ def capture_runtime_resume_upload(
     if type(state_wave) is not int or not 0 <= state_wave <= 5:
         raise ValueError("Runtime state wave must be an integer from zero through five")
     if sdk_state_wave is not None and (type(sdk_state_wave) is not int
-            or sdk_state_wave not in (1, 2, 3, 4, 5, 6) or state_wave != 0):
-        raise ValueError("SDK state wave must be one through six, without a Runtime state wave")
+            or sdk_state_wave not in (1, 2, 3, 4, 5, 6, 7, 8) or state_wave != 0):
+        raise ValueError("SDK state wave must be one through eight, without a Runtime state wave")
     require_sha256(artifact_sha256, "Runtime resume artifact digest")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     if destination.exists() or destination.is_symlink():

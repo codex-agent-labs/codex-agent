@@ -214,7 +214,8 @@ def execute_ios_binary(plan, discovery, state, destination, *, expected_build_ke
         producer=producer, product_version=version, trust_domain=trust, destination=destination / "shard")
 
 
-def matrix(plan, discovery, state, github_output_path, *, repository_root=None, environ=None, ios_binary=False, family=None):
+def matrix(plan, discovery, state, github_output_path, *, repository_root=None, environ=None, ios_binary=False, family=None,
+           sdk_validation_tooling=None):
     """Expose only the fixed replay-elected SDK family before platform setup."""
     from sdk_phase import route
 
@@ -231,6 +232,11 @@ def matrix(plan, discovery, state, github_output_path, *, repository_root=None, 
                 product_reuse._sdk_javascript_worker_instance)(instance)
 
     def worker_route(ready):
+        if family in ("native-validation", "native-metadata"):
+            from runtime_native_phase import _HOSTS
+            host = ready["target"] if family == "native-validation" else "linux-x64"
+            label, os_name, arch = _HOSTS[host]
+            return {"runner": label, "runnerOs": os_name, "runnerArch": arch}
         if family == "native-package":
             from sdk_native_phase import route as native_route
             return native_route(ready)
@@ -240,7 +246,8 @@ def matrix(plan, discovery, state, github_output_path, *, repository_root=None, 
             return {"runner": "ubuntu-24.04", "runnerOs": "Linux", "runnerArch": "X64"}
         return route(ready)
     inspected = product_reuse.inspect_products(plan, discovery, state,
-        repository_root=repository_root, environ=environ)
+        repository_root=repository_root, environ=environ,
+        **({"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}))
     rows = [{**{field: ready[field] for field in ("product", "component", "phase", "target", "buildKey")},
              **worker_route(ready)}
             for ready in inspected["readyPlans"]
@@ -253,7 +260,7 @@ def matrix(plan, discovery, state, github_output_path, *, repository_root=None, 
 
 def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha256,
             trusted_workflow_sha, state_wave=0, sdk_state_wave=None,
-            repository_root=None, environ=None, token, ios_binary=False, family=None):
+            repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None):
     """Capture exact original state, then replay SDK readiness independently."""
     if type(ios_binary) is not bool:
         raise ValueError("SDK binary projection must be boolean")
@@ -272,22 +279,25 @@ def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha2
         "state_root": original / ("runtime-state" if state_wave or sdk_state_wave is not None else "product-resume-state")}
     value = matrix(paths["plan_path"], paths["discovery_root"], paths["state_root"], github_output_path,
                    repository_root=repository_root, environ=environ, **({"ios_binary": True} if ios_binary else {}),
+                   **({"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}),
                    **({"family": family} if family is not None else {}))
     github_output(github_output_path, {name: str(path) for name, path in paths.items()})
     return {**paths, "matrix": value}
 
 
 def collect(input_root, destination, github_output_path, *, wave, trusted_workflow_sha,
-            repository_root=None, environ=None, token, ios_binary=False, family=None):
+            repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None):
     """Advance only the exact elected SDK partition using the shared collector."""
-    family_waves = {"native-package": 4, "ios-package": 5, "javascript-metadata": 6}
+    family_waves = {"native-package": 4, "ios-package": 5, "javascript-metadata": 6,
+                    "native-validation": 7, "native-metadata": 8}
     if family is not None:
         product_reuse._sdk_family_worker_instance(None, family)
     allowed = (family_waves[family],) if family is not None else (3,) if ios_binary else (1, 2)
     if type(ios_binary) is not bool or (ios_binary and family is not None) or type(wave) is not int or wave not in allowed:
-        raise ValueError("SDK collection requires its exact family wave: JavaScript1/2, iOS binary3, native package4, iOS package5, metadata6")
+        raise ValueError("SDK collection requires its exact family wave: JavaScript1/2, iOS binary3, native package4, iOS package5, JS metadata6, native validation7, native metadata8")
     scope = ({"sdk_family": family} if family is not None else
              {"sdk_ios_binary_only": True} if ios_binary else {"sdk_javascript_only": True})
+    tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
     root = Path(repository_root or Path(__file__).resolve().parents[1]).resolve()
     input_root, _, destination = product_reuse._product_materialization_paths(root, input_root, input_root, destination)
     if destination.exists() or destination.is_symlink():
@@ -297,13 +307,16 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     state = input_root / "runtime-state" if (input_root / "runtime-state").exists() else discovery
     collection = product_reuse.collect_runtime_workers(plan, discovery, state, destination / "collection",
         trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token,
-        **scope)
+        **scope, **tooling)
     shards = [destination / "collection" / row["shardDirectory"]
               for row in collection["rows"] if row["result"] == "success"]
     failed = tuple(product_reuse._identity(row) for row in collection["rows"] if row["result"] != "success")
+    evidence = tuple(destination / "collection" / row["sdkValidationEvidenceDirectory"]
+                     for row in collection["rows"] if row["result"] == "success") if family == "native-validation" else ()
     handoff = destination / "handoff"
     advanced = product_reuse.advance_products(plan, discovery, state, shards, handoff / "runtime-state",
-        github_output_path, repository_root=root, environ=environ, failed_instances=failed, **scope)
+        github_output_path, repository_root=root, environ=environ, failed_instances=failed, **scope, **tooling,
+        **({"sdk_evidence_roots": evidence} if family == "native-validation" else {}))
     for name in ("product-resume-inputs", "product-resume-state"):
         snapshot_regular_tree(input_root / name, handoff / name, allow_empty=True)
     if failed:
@@ -311,6 +324,7 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     else:
         ready = matrix(handoff / "product-resume-inputs/plan/impact-plan.json", handoff / "product-resume-state",
                        handoff / "runtime-state", github_output_path, repository_root=root, environ=environ,
+                       **tooling,
                        **({"ios_binary": True} if ios_binary else {}),
                        **({"family": family} if family is not None else {}))
         if wave >= 2 and ready["include"]:
@@ -502,6 +516,7 @@ def _workflow_main(argv):
         scope.add_argument("--family", choices=product_reuse.SDK_WORKER_FAMILIES)
         command.add_argument("--github-output", dest="github_output_path", type=Path, required=True)
         command.add_argument("--repository-root", type=Path)
+        command.add_argument("--sdk-validation-tooling", type=Path)
         if name == "matrix":
             for flag, dest in (("plan", "plan"), ("discovery-root", "discovery"), ("state-root", "state")):
                 command.add_argument(f"--{flag}", dest=dest, type=Path, required=True)
@@ -515,10 +530,13 @@ def _workflow_main(argv):
     captured.add_argument("--state-wave", type=int, default=0)
     captured.add_argument("--sdk-state-wave", type=int)
     parsers["collect"].add_argument("--input-root", type=Path, required=True)
-    parsers["collect"].add_argument("--wave", type=int, choices=(1, 2, 3, 4, 5, 6), required=True)
+    parsers["collect"].add_argument("--wave", type=int, choices=(1, 2, 3, 4, 5, 6, 7, 8), required=True)
     arguments = vars(parser.parse_args(argv))
     command = arguments.pop("command")
     try:
+        policy = arguments.pop("sdk_validation_tooling")
+        if policy is not None:
+            arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
         return {"matrix": matrix, "capture": capture, "collect": collect}[command](**arguments,
             environ=os.environ, **({"token": os.environ.get("GITHUB_TOKEN", "")} if command != "matrix" else {}))
     except (OSError, ValueError) as error:
