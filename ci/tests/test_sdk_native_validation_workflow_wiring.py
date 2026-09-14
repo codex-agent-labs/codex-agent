@@ -20,7 +20,7 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
     @staticmethod
     def needs():
         return {
-            "sdk-native-packages": {"result": "success", "outputs": {
+            "sdk-javascript-metadata-result": {"result": "success", "outputs": {
                 "artifact_id": "74", "artifact_digest": "sha256:" + "a" * 64,
                 "state_wave": "0", "sdk_state_wave": "4"}},
             "sdk-native-validation-plan": {"result": "success", "outputs": {"sdk_workers_required": "true"}},
@@ -40,8 +40,8 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
         plan = self.job("sdk-native-validation-plan")
         worker = self.job("sdk-native-validation")
         collector = self.job("sdk-collect-7")
-        self.assertIn("needs.sdk-native-packages.result == 'success'", plan)
-        self.assertIn("needs.sdk-native-packages.outputs.artifact_id != ''", plan)
+        self.assertIn("needs.sdk-javascript-metadata-result.result == 'success'", plan)
+        self.assertIn("needs.sdk-javascript-metadata-result.outputs.artifact_id != ''", plan)
         self.assertIn("sdk-family: native-validation", plan)
         self.assertNotIn("setup-kmp", plan)
         self.assertIn("name: sdk-${{ matrix.component }}-validation-${{ matrix.target }}", worker)
@@ -71,7 +71,7 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
                 self.assertIn(flag + ": ${{ needs.sdk-plan.outputs." + field + " }}", job)
             for flag, field in (("artifact-id", "artifact_id"), ("artifact-sha256", "artifact_digest"),
                                 ("state-wave", "state_wave"), ("sdk-state-wave", "sdk_state_wave")):
-                self.assertIn(flag + ": ${{ needs.sdk-native-packages.outputs." + field + " }}", job)
+                self.assertIn(flag + ": ${{ needs.sdk-javascript-metadata-result.outputs." + field + " }}", job)
 
     def test_only_elected_dart_warms_external_cache_and_retains_diagnostics_after_failure(self):
         worker = self.job("sdk-native-validation")
@@ -140,13 +140,13 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
         base["sdk-native-validation-plan"]["outputs"]["sdk_workers_required"] = "false"
         for name in ("sdk-native-validation", "sdk-collect-7"):
             base[name] = {"result": "skipped", "outputs": {}}
-        self.assertEqual(base["sdk-native-packages"]["outputs"], self.summary(base))
+        self.assertEqual(base["sdk-javascript-metadata-result"]["outputs"], self.summary(base))
         for name in ("sdk-native-validation", "sdk-collect-7"):
             needs = deepcopy(base)
             needs[name]["result"] = "success"
             with self.subTest(unexpected=name), self.assertRaises(ValueError):
                 self.summary(needs)
-        base["sdk-native-packages"]["outputs"] = {}
+        base["sdk-javascript-metadata-result"]["outputs"] = {}
         base["sdk-native-validation-plan"] = {"result": "skipped", "outputs": {}}
         self.assertEqual(dict(artifact_id="", artifact_digest="", state_wave="", sdk_state_wave=""), self.summary(base))
 

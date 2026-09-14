@@ -3248,7 +3248,7 @@ jobs:
           github_output(Path(os.environ['GITHUB_OUTPUT']), result)
           PY
 
-  sdk-native-validation-plan:
+  sdk-javascript-metadata-plan:
     needs: [plan, sdk-plan, sdk-native-packages]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
@@ -3289,7 +3289,7 @@ jobs:
         uses: ./.github/actions/capture-runtime-state
         with:
           product: sdk
-          sdk-family: native-validation
+          sdk-family: javascript-metadata
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-native-packages.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-native-packages.outputs.artifact_digest }}
@@ -3298,9 +3298,193 @@ jobs:
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
 
+  sdk-javascript-metadata:
+    name: sdk-javascript-metadata-node
+    needs: [plan, sdk-plan, sdk-native-packages, sdk-javascript-metadata-plan, sdk-inputs]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-javascript-metadata-plan.result == 'success' &&
+      needs.sdk-javascript-metadata-plan.outputs.sdk_workers_required == 'true' &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.sdk-javascript-metadata-plan.outputs.sdk_matrix || '{"include":[]}') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        run: |
+          set -euo pipefail
+          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
+          selected_java_home="${!java_home_variable}"
+          java_binary=java
+          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
+          test -f "$selected_java_home/bin/$java_binary"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+      - uses: ./.github/actions/sdk-javascript-metadata-worker
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-native-packages.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-native-packages.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-native-packages.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-native-packages.outputs.sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          build-key: ${{ matrix.buildKey }}
+          tree: ${{ needs.plan.outputs.validation_tree }}
+          sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
+          sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
+
+  sdk-collect-6:
+    name: sdk-collect-6
+    needs: [plan, sdk-plan, sdk-native-packages, sdk-javascript-metadata-plan, sdk-javascript-metadata]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-native-packages.result == 'success' &&
+      needs.sdk-javascript-metadata-plan.result == 'success' &&
+      needs.sdk-javascript-metadata-plan.outputs.sdk_workers_required == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
+      wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        run: |
+          set -euo pipefail
+          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
+          selected_java_home="${!java_home_variable}"
+          java_binary=java
+          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
+          test -f "$selected_java_home/bin/$java_binary"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+      - id: collect
+        uses: ./.github/actions/collect-runtime-wave
+        with:
+          product: sdk
+          sdk-family: javascript-metadata
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-native-packages.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-native-packages.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-native-packages.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-native-packages.outputs.sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          wave: '6'
+          tree: ${{ needs.plan.outputs.validation_tree }}
+
+  sdk-javascript-metadata-result:
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true'
+    needs: [plan, sdk-native-packages, sdk-javascript-metadata-plan, sdk-javascript-metadata, sdk-collect-6]
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.result.outputs.artifact_id }}
+      artifact_digest: ${{ steps.result.outputs.artifact_digest }}
+      state_wave: ${{ steps.result.outputs.state_wave }}
+      sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Fail after collecting every elected JavaScript metadata result
+        id: result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_native_continuation import select_native_state
+          from ci.reuse import github_output
+          result = select_native_state(json.loads(os.environ['RESULTS']), stage='javascript-metadata')
+          github_output(Path(os.environ['GITHUB_OUTPUT']), result)
+          PY
+
+  sdk-native-validation-plan:
+    needs: [plan, sdk-plan, sdk-javascript-metadata-result]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-javascript-metadata-result.result == 'success' &&
+      needs.sdk-javascript-metadata-result.outputs.artifact_id != '' &&
+      needs.sdk-plan.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
+      sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          set -euo pipefail
+          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
+          selected_java_home="${!java_home_variable}"
+          java_binary=java
+          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
+          test -f "$selected_java_home/bin/$java_binary"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+      - id: capture
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          product: sdk
+          sdk-family: native-validation
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+
   sdk-native-validation:
     name: sdk-${{ matrix.component }}-validation-${{ matrix.target }}
-    needs: [plan, sdk-plan, sdk-native-packages, sdk-native-validation-plan, sdk-native-prepare, sdk-inputs]
+    needs: [plan, sdk-plan, sdk-javascript-metadata-result, sdk-native-validation-plan, sdk-native-prepare, sdk-inputs]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -3344,10 +3528,10 @@ jobs:
       - uses: ./.github/actions/sdk-native-validation-worker
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-native-packages.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-native-packages.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-native-packages.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-native-packages.outputs.sdk_state_wave }}
+          artifact-id: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           component: ${{ matrix.component }}
@@ -3381,11 +3565,11 @@ jobs:
 
   sdk-collect-7:
     name: sdk-collect-7
-    needs: [plan, sdk-plan, sdk-native-packages, sdk-native-validation-plan, sdk-native-validation]
+    needs: [plan, sdk-plan, sdk-javascript-metadata-result, sdk-native-validation-plan, sdk-native-validation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.sdk-native-packages.result == 'success' &&
+      needs.sdk-javascript-metadata-result.result == 'success' &&
       needs.sdk-native-validation-plan.result == 'success' &&
       needs.sdk-native-validation-plan.outputs.sdk_workers_required == 'true'
     runs-on: ubuntu-24.04
@@ -3422,10 +3606,10 @@ jobs:
           product: sdk
           sdk-family: native-validation
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-native-packages.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-native-packages.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-native-packages.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-native-packages.outputs.sdk_state_wave }}
+          artifact-id: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           wave: '7'
@@ -3435,7 +3619,7 @@ jobs:
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
-    needs: [plan, sdk-native-packages, sdk-native-validation-plan, sdk-native-validation, sdk-collect-7]
+    needs: [plan, sdk-javascript-metadata-result, sdk-native-validation-plan, sdk-native-validation, sdk-collect-7]
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
@@ -3661,7 +3845,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, tooling-attestation, product-tooling, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript, sdk-native-packages, sdk-native-result]
+    needs: [workflow-lint, plan, product, tooling-attestation, product-tooling, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript, sdk-native-packages, sdk-javascript-metadata-result, sdk-native-result]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites

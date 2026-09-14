@@ -92,12 +92,12 @@ class NativeStateSelectionTest(unittest.TestCase):
     def test_ios_package_and_javascript_metadata_use_exact_fixed_parent_and_collector(self):
         routes = (
             ("ios-package", "sdk-native-packages", "sdk-ios-package-plan", "sdk-ios-package", "sdk-collect-5", "5"),
-            ("javascript-metadata", "sdk-ios-packages", "sdk-javascript-metadata-plan", "sdk-javascript-metadata", "sdk-collect-6", "6"),
+            ("javascript-metadata", "sdk-native-packages", "sdk-javascript-metadata-plan", "sdk-javascript-metadata", "sdk-collect-6", "6"),
         )
         for stage, parent, election, workers, collector, wave in routes:
             for required in (False, True):
                 with self.subTest(stage=stage, required=required):
-                    original = locator("4" if stage == "ios-package" else "5", "0")
+                    original = locator("4", "0")
                     needs = {
                         parent: job("success", **original),
                         election: job("success", sdk_workers_required=str(required).lower()),
@@ -114,7 +114,30 @@ class NativeStateSelectionTest(unittest.TestCase):
                     changed["unrelated-original-parent"] = changed.pop(parent)
                     with self.assertRaises(ValueError):
                         routing.select_native_state(changed, stage=stage)
-        self.assertEqual("sdk-native-packages", routing._STAGES["validation"][0])
+        self.assertEqual("sdk-javascript-metadata-result", routing._STAGES["validation"][0])
+
+    def test_javascript_then_native_validation_preserves_collected_or_reused_state(self):
+        for javascript_required in (False, True):
+            for validation_required in (False, True):
+                with self.subTest(javascript=javascript_required, validation=validation_required):
+                    parent = locator("4", "0")
+                    javascript = needs_for("javascript-metadata", required=javascript_required, state=parent)
+                    self.assertIn("sdk-native-packages", javascript)
+                    self.assertNotIn("sdk-ios-packages", javascript)
+                    selected = routing.select_native_state(javascript, stage="javascript-metadata")
+                    self.assertEqual("6" if javascript_required else "4", selected["sdk_state_wave"])
+                    validation = needs_for("validation", required=validation_required, state=selected)
+                    self.assertIn("sdk-javascript-metadata-result", validation)
+                    self.assertNotIn("sdk-native-packages", validation)
+                    result = routing.select_native_state(validation, stage="validation")
+                    if validation_required:
+                        self.assertEqual("7", result["sdk_state_wave"])
+                    else:
+                        self.assertEqual(selected, result)
+                    stale = deepcopy(validation)
+                    stale["sdk-native-packages"] = stale.pop("sdk-javascript-metadata-result")
+                    with self.assertRaises(ValueError):
+                        routing.select_native_state(stale, stage="validation")
 
     def test_collected_exact_stage_waves_and_unchanged_parent_on_reuse(self):
         for stage, (_, _, _, collector, wave) in routing._STAGES.items():
