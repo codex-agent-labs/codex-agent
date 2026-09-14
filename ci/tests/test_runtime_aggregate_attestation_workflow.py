@@ -10,7 +10,7 @@ from ci.tests.test_contract_attestation_workflow import workflow_job
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PIN = "0ee0b7b054606c75de00e714bad06b03b0dc2535"
+PIN = "994ff55a2eae12fbc39025bfef7b45aeb5c16bd9"
 
 
 def shell(step):
@@ -52,14 +52,15 @@ class RuntimeAggregateAttestationWorkflowTest(unittest.TestCase):
         self.assertIn("artifact-ids: ${{ needs.plan.outputs.plan_id }}", self.job)
         for setting in ("overwrite: false", "if-no-files-found: error", "include-hidden-files: true",
                         "artifact_id: ${{ steps.upload.outputs.artifact-id }}",
-                        "artifact_digest: ${{ steps.upload.outputs.artifact-digest }}"):
+                        "artifact_digest: sha256:${{ steps.upload.outputs.artifact-digest }}"):
             self.assertIn(setting, self.job)
 
     def test_shell_forwards_five_exact_handoffs_or_leaves_retained_selection_to_existing_gate(self):
         environment = {**os.environ, "GITHUB_WORKSPACE": "/candidate workspace", "RUNNER_TEMP": "/runner temp",
             "GITHUB_RUN_ATTEMPT": "2", "VALIDATION_TREE": "d" * 40, "TRUSTED_SOURCE_SHA": PIN,
             "TRUSTED_WORKFLOW_SHA": "e" * 40, "ARTIFACT_ID": "71", "ARTIFACT_SHA256": "sha256:" + "a" * 64,
-            "STATE_WAVE": "5", "BUILD_KEY": "sha256:" + "b" * 64}
+            "STATE_WAVE": "5", "BUILD_KEY": "sha256:" + "b" * 64,
+            "PREPARATION_ID": "72", "PREPARATION_SHA256": "sha256:" + "f" * 64}
         # The shell runs, but the only Python invocation is replaced before it can execute any code.
         script = 'python3() { printf "%s\\n" "$@"; }\n' + shell(self.signing_step)
         for result, count in (("success", 5), ("skipped", 0), ("failure", None), ("cancelled", None), ("", None)):
@@ -75,6 +76,9 @@ class RuntimeAggregateAttestationWorkflowTest(unittest.TestCase):
                 self.assertEqual(count, arguments.count("--variant-handoff"))
                 self.assertEqual("aggregate", arguments[arguments.index("--target") + 1])
                 self.assertEqual("5", arguments[arguments.index("--state-wave") + 1])
+                self.assertEqual("72", arguments[arguments.index("--preparation-artifact-id") + 1])
+                self.assertEqual("sha256:" + "f" * 64,
+                                 arguments[arguments.index("--preparation-artifact-sha256") + 1])
                 self.assertEqual("/candidate workspace/trusted-source", arguments[arguments.index("--repository-root") + 1])
                 if count:
                     for target in ("macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64"):
