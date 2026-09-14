@@ -260,7 +260,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--sdk-validation-tooling", type=Path)
     parser.add_argument("--prepare-only", action="store_true",
                         help="Materialize original signing inputs on a non-secret runner; never sign")
+    parser.add_argument("--preparation-artifact-id", type=int)
+    parser.add_argument("--preparation-artifact-sha256")
     args = parser.parse_args(argv)
+    prepared_mode = args.preparation_artifact_id is not None or args.preparation_artifact_sha256 is not None
+    if prepared_mode and (args.preparation_artifact_id is None or args.preparation_artifact_sha256 is None):
+        parser.error("prepared release requires paired preparation artifact ID and digest")
+    if prepared_mode and args.prepare_only:
+        parser.error("prepared release and preparation-only modes are mutually exclusive")
+    if prepared_mode and args.sdk_validation_tooling is not None:
+        parser.error("prepared release does not accept SDK tooling")
+    if prepared_mode and args.release_handoff:
+        parser.error("prepared release does not accept release handoff overrides")
     if args.prepare_only:
         require_no_signing_secret(os.environ)
         if args.variant_handoff or args.release_handoff:
@@ -292,7 +303,15 @@ def main(argv: list[str] | None = None) -> None:
     if args.sdk_validation_tooling is not None:
         from product_reuse import _canonical_control
         tooling = _canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")
-    if args.prepare_only:
+    if prepared_mode:
+        from runtime_prepared_release import attest_prepared_runtime_ci
+        caller = attest_prepared_runtime_ci
+        component_arguments = {
+            "target": args.target, "variant_handoffs": variants,
+            "preparation_artifact_id": args.preparation_artifact_id,
+            "preparation_artifact_sha256": args.preparation_artifact_sha256,
+        }
+    elif args.prepare_only:
         from runtime_signing_preparation import prepare_runtime_signing_inputs
         caller = prepare_runtime_signing_inputs
         component_arguments = {"target": args.target}
@@ -303,7 +322,7 @@ def main(argv: list[str] | None = None) -> None:
     else:
         caller = attest_runtime_state_ci
         component_arguments = {"target": args.target}
-    if not args.prepare_only:
+    if not args.prepare_only and not prepared_mode:
         component_arguments["release_handoffs"] = tuple(args.release_handoff)
     caller(
         args.repository_root, args.candidate_root, args.plan, args.destination, **component_arguments,
@@ -312,7 +331,7 @@ def main(argv: list[str] | None = None) -> None:
         trusted_source_sha=args.trusted_source_sha, trusted_workflow_sha=args.trusted_workflow_sha,
         transport_producer=producer, event_payload=event_payload, environment=os.environ,
         token=os.environ.get("GITHUB_TOKEN"),
-        sdk_validation_tooling=tooling)
+        **({} if prepared_mode else {"sdk_validation_tooling": tooling}))
 
 
 if __name__ == "__main__":
