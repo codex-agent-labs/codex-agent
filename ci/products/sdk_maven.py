@@ -529,6 +529,25 @@ def _verify_sdk_maven_stage(
     _verify_sdk_maven_stage_inventory(stage, receipt, phase)
     component = receipt["component"]
     apple_outputs = []
+    if component == "sdk-ios" and phase == "binary":
+        from .sdk_apple_framework import inspect_apple_frameworks
+
+        framework_root = stage / "outputs/apple-binary"
+        inventory = inspect_apple_frameworks({
+            target: framework_root / target / "CodexAgent.framework"
+            for target in ("ios-arm64", "ios-simulator-arm64")
+        })
+        files = sorted([
+            {**record, "relativePath": f"{entry['target']}/CodexAgent.framework/{record['relativePath']}"}
+            for entry in inventory["targets"] for record in entry["files"]
+        ], key=lambda record: record["relativePath"])
+        if files != regular_file_inventory(framework_root):
+            raise ValueError("Apple binary inventory contains files outside the exact framework pair")
+        apple_outputs = [{**record, "kind": "apple-binary",
+                          "relativePath": f"outputs/apple-binary/{record['relativePath']}"}
+                         for record in files]
+        if [record for record in receipt["outputs"] if record["kind"] == "apple-binary"] != apple_outputs:
+            raise ValueError("Apple binary files differ from exact receipt outputs")
     if apple_verification is not None:
         if ((receipt["product"], component, phase, receipt["target"]) != ("sdk", "sdk-ios", "package", "ios") or
                 type(apple_verification) is not dict or set(apple_verification) != _APPLE_VERIFICATION_KEYS):

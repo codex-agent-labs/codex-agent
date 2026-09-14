@@ -32,6 +32,8 @@ class ProductPhaseMappingContractTest {
                 "writeJavaScriptSdkPackageOutputManifest",
             Triple("sdk", "javascript", "validation") to
                 "writeJavaScriptSdkValidationOutputManifest",
+            Triple("sdk", "javascript", "metadata") to
+                "writeJavaScriptSdkMetadataOutputManifest",
             Triple("sdk", "python", "package") to
                 "writePythonNativeWrapperSdkPackageOutputManifest",
             Triple("sdk", "csharp", "package") to
@@ -721,7 +723,14 @@ class ProductPhaseMappingContractTest {
         assertTrue(freshVerification.indexOf("finalizeFreshSdkBinaryMavenRepository(") < freshVerification.indexOf("processes.exec"))
         assertTrue("\"--verify-only\"" in freshVerification)
         assertTrue(freshVerification.indexOf("processes.exec") < freshVerification.indexOf("        verifySdkBinaryMavenRepository("))
-        assertTrue("dependsOn(verify)" in binary)
+        assertTrue("dependsOn(verify, appleFrameworks)" in binary)
+        assertTrue("val appleFrameworks = if (component == \"sdk-ios\")" in binary)
+        assertTrue("tasks.register<ImportCodexAgentFrameworkTask>" in binary)
+        assertTrue("dependsOn(reset, \":codex-agent-runtime-ios:linkReleaseFramework\$targetName\")" in binary)
+        assertTrue("Triple(\"IosArm64\", \"ios-arm64\", \"iphoneos\")" in binary)
+        assertTrue("Triple(\"IosSimulatorArm64\", \"ios-simulator-arm64\", \"iphonesimulator\")" in binary)
+        assertTrue("\"apple-binary\" to \"outputs/apple-binary\"" in binary)
+        assertFalse("exportCodexAgentIosVerifiedDistribution" in binary)
         assertTrue("\"evidence\" to \"outputs/evidence\"" in binary)
         assertTrue("} else null" in binary)
         assertFalse("generateNativeWrapperSdkCompatibility" in binary)

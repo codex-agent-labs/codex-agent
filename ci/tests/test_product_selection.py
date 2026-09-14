@@ -1318,6 +1318,8 @@ class ProductSelectionTest(unittest.TestCase):
 
     def test_current_untracked_product_authorities_are_explicit_controls(self) -> None:
         paths = (
+            "ci/sdk_completion.py",
+            "ci/products/sdk_apple_framework.py",
             "ci/legacy_lanes.py",
             "ci/product_legacy.py",
             "ci/product_reuse.py",

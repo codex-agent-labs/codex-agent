@@ -425,10 +425,28 @@ fun registerSdkBinaryPhase(
         producerSources.from(layout.projectDirectory.dir("ci/products"))
         repositoryRoot.set(layout.projectDirectory)
     }
+    val appleFrameworks = if (component == "sdk-ios") {
+        val ios = project(":codex-agent-runtime-ios")
+        listOf(
+            Triple("IosArm64", "ios-arm64", "iphoneos"),
+            Triple("IosSimulatorArm64", "ios-simulator-arm64", "iphonesimulator"),
+        ).map { (targetName, targetId, platform) ->
+            tasks.register<ImportCodexAgentFrameworkTask>("stageSdk${targetName}BinaryFramework") {
+                dependsOn(reset, ":codex-agent-runtime-ios:linkReleaseFramework$targetName")
+                frameworkDirectory.set(ios.layout.buildDirectory.dir(
+                    "bin/${targetName.replaceFirstChar(Char::lowercase)}/releaseFramework/CodexAgent.framework",
+                ))
+                platformName.set(platform)
+                importedFrameworkDirectory.set(phaseOutputs.map {
+                    it.dir("apple-binary/$targetId/CodexAgent.framework")
+                })
+            }
+        }
+    } else emptyList()
     return tasks.register<WriteProductOutputManifestTask>("write${title}BinaryOutputManifest") {
         group = "publishing"
-        description = "Stages the exact Contract-only $component Maven binary outputs."
-        dependsOn(verify)
+        description = "Stages the exact Contract-only $component binary outputs."
+        dependsOn(verify, appleFrameworks)
         product.set("sdk")
         this.component.set(component)
         phase.set("binary")
@@ -437,7 +455,7 @@ fun registerSdkBinaryPhase(
         outputRoots.set(mapOf(
             "maven" to "outputs/maven",
             "evidence" to "outputs/evidence",
-        ))
+        ) + if (component == "sdk-ios") mapOf("apple-binary" to "outputs/apple-binary") else emptyMap())
         outputsDirectory.set(phaseOutputs)
         producerSources.from(layout.projectDirectory.dir("ci/products"))
         repositoryRoot.set(layout.projectDirectory)

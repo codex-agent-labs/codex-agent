@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import plistlib
 import shutil
 import stat
 import tempfile
@@ -229,6 +230,24 @@ def _write_binary_inventory(stage: Path, component: str, version: str) -> None:
         "artifactIds": sorted(COMPONENT_ARTIFACTS[component]),
         "primaryArtifactCount": len(files), "files": files,
     }, indent=2) + "\n")
+
+
+def _write_apple_binary(stage: Path) -> None:
+    for target, platform in (
+        ("ios-arm64", "iPhoneOS"),
+        ("ios-simulator-arm64", "iPhoneSimulator"),
+    ):
+        root = stage / f"outputs/apple-binary/{target}/CodexAgent.framework"
+        members = {
+            "CodexAgent": f"synthetic {target} static archive\n".encode(),
+            "Headers/CodexAgent.h": b"void codex_agent(void);\n",
+            "Modules/module.modulemap": b"framework module CodexAgent {}\n",
+            "Info.plist": plistlib.dumps({"CFBundleSupportedPlatforms": [platform]}),
+        }
+        for relative, contents in members.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(contents)
 
 
 class SdkMavenPackagingTest(unittest.TestCase):
@@ -716,6 +735,8 @@ class SdkMavenPhaseVerificationTest(unittest.TestCase):
                 _repository(cls.root / component, component, "0.2.9"), binary_stage / "outputs/maven",
             )
             _write_binary_inventory(binary_stage, component, "0.2.9")
+            if component == "sdk-ios":
+                _write_apple_binary(binary_stage)
             package_sdk_maven(
                 binary_stage / "outputs/maven",
                 stage / "outputs/maven", compatibility,
@@ -725,9 +746,12 @@ class SdkMavenPhaseVerificationTest(unittest.TestCase):
             for phase, phase_stage, destination in (
                 ("binary", binary_stage, cls.binary_stages), ("package", stage, cls.stages),
             ):
+                roots = {"maven": "outputs/maven", "evidence": "outputs/evidence"}
+                if phase == "binary" and component == "sdk-ios":
+                    roots["apple-binary"] = "outputs/apple-binary"
                 write_output_manifest(
                     phase_stage, "sdk", component, phase, target, "0.2.9",
-                    {"maven": "outputs/maven", "evidence": "outputs/evidence"},
+                    roots,
                 )
                 fixture = phase_receipt()
                 inputs = fixture["inputs"]
@@ -756,9 +780,12 @@ class SdkMavenPhaseVerificationTest(unittest.TestCase):
         value = load_canonical_json_bytes(receipt.read_bytes())
         value.update(identity)
         value["inputs"]["versionIdentity"] = value["productVersion"]
+        roots = {"maven": "outputs/maven", "evidence": "outputs/evidence"}
+        if (stage / "outputs/apple-binary").exists():
+            roots["apple-binary"] = "outputs/apple-binary"
         manifest = write_output_manifest(
             stage, value["product"], value["component"], value["phase"], value["target"],
-            value["productVersion"], {"maven": "outputs/maven", "evidence": "outputs/evidence"},
+            value["productVersion"], roots,
         )
         value["outputs"] = manifest["outputs"]
         value["buildKey"] = compute_build_key(
@@ -905,14 +932,64 @@ class SdkMavenPhaseVerificationTest(unittest.TestCase):
         self.assertEqual(encoded, receipt.read_bytes())
         self.assertEqual(request.read_bytes(), original)
 
-    def _copy_predecessor(self, root: Path) -> tuple[Path, Path, Path, Path]:
-        package, package_receipt = self._copy(root)
+    def _copy_predecessor(self, root: Path, component: str = "sdk-android") -> tuple[Path, Path, Path, Path]:
+        package, package_receipt = self._copy(root, component)
         binary = root / "binary"
-        original_stage, original_receipt = self.binary_stages["sdk-android"]
+        original_stage, original_receipt = self.binary_stages[component]
         snapshot_regular_tree(original_stage, binary)
         binary_receipt = root / "binary-receipt.json"
         binary_receipt.write_bytes(original_receipt.read_bytes())
         return binary, binary_receipt, package, package_receipt
+
+    def test_ios_binary_requires_the_exact_two_framework_output_roots(self) -> None:
+        for case in ("missing", "wrong-target", "wrong-kind", "extra-target"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                binary, binary_receipt, package, package_receipt = self._copy_predecessor(
+                    Path(temporary).resolve(), "sdk-ios",
+                )
+                apple = binary / "outputs/apple-binary"
+                if case == "missing":
+                    shutil.rmtree(apple / "ios-simulator-arm64")
+                    self._rebind(binary, binary_receipt)
+                elif case == "wrong-target":
+                    (apple / "ios-simulator-arm64").rename(apple / "ios-simulator-x64")
+                    self._rebind(binary, binary_receipt)
+                elif case == "extra-target":
+                    snapshot_regular_tree(
+                        apple / "ios-arm64/CodexAgent.framework",
+                        apple / "ios-x64/CodexAgent.framework",
+                    )
+                    self._rebind(binary, binary_receipt)
+                else:
+                    value = load_canonical_json_bytes(binary_receipt.read_bytes())
+                    for record in value["outputs"]:
+                        if record["kind"] == "apple-binary":
+                            record["kind"] = "apple"
+                    binary_receipt.write_bytes(canonical_json_bytes(value))
+                    manifest = load_canonical_json_bytes((binary / "output-manifest.json").read_bytes())
+                    manifest["outputs"] = value["outputs"]
+                    (binary / "output-manifest.json").write_bytes(canonical_json_bytes(manifest))
+                with self.assertRaises(ValueError):
+                    verify_sdk_maven_binary_predecessor(
+                        binary, binary_receipt, package, package_receipt, self.chain["compatibility"],
+                    )
+
+    def test_apple_binary_kind_is_rejected_outside_the_ios_binary_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binary, binary_receipt, package, package_receipt = self._copy_predecessor(root / "android")
+            _write_apple_binary(binary)
+            self._rebind(binary, binary_receipt)
+            with self.assertRaisesRegex(ValueError, "output kinds"):
+                verify_sdk_maven_binary_predecessor(
+                    binary, binary_receipt, package, package_receipt, self.chain["compatibility"],
+                )
+
+            ios_package, ios_receipt = self._copy(root / "ios-package", "sdk-ios")
+            _write_apple_binary(ios_package)
+            self._rebind(ios_package, ios_receipt)
+            with self.assertRaisesRegex(ValueError, "output kinds"):
+                verify_packaged_sdk_maven_phase(ios_package, ios_receipt, self.request)
 
     def test_exact_binary_predecessor_transformation_for_all_maven_families(self) -> None:
         for component in COMPONENT_CARRIERS:

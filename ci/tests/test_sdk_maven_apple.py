@@ -50,6 +50,8 @@ class SdkMavenAppleTest(unittest.TestCase):
     def rebind(self, stage, receipt, kind="apple"):
         value = load_canonical_json_bytes(receipt.read_bytes())
         roots = {"maven": "outputs/maven", "evidence": "outputs/evidence"}
+        if (stage / "outputs/apple-binary").exists():
+            roots["apple-binary"] = "outputs/apple-binary"
         if (stage / "outputs/apple").exists():
             roots[kind] = "outputs/apple"
         manifest = write_output_manifest(stage, value["product"], value["component"], value["phase"],
