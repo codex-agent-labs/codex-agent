@@ -1,5 +1,5 @@
 name: Capture exact signed SDK validation tooling
-description: Reauthenticate the caller-selected tooling upload under the consumer's Git policy and installed Java. Requires original signed-producer Git objects locally; no build, signing or JAR execution.
+description: Reauthenticate tooling under the consumer's Git policy and installed Java, importing missing signed-original Git objects without checkout. No build, signing or JAR execution.
 inputs:
   artifact-id:
     required: true

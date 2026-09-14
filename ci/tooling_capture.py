@@ -4,6 +4,7 @@ import argparse
 import os
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 
 if __package__:
@@ -19,6 +20,29 @@ from products.inventory import (
 )
 from products.signatures import load_keyring, public_key_for_metadata
 from products.tooling import ATTESTATION, verified_tooling_capture
+from products.receipt import validate_producer
+
+
+def _ensure_original_source(repository, producer):
+    producer = validate_producer(producer)
+    if (producer["repository"] != "codex-agent-labs/codex-agent"
+            or producer["workflowPath"] != ".github/workflows/ci.yml"):
+        raise ValueError("Original tooling source repository/workflow is unsupported")
+    commit = producer["commit"]
+    try:
+        head = run_git(repository, "rev-parse", "HEAD").strip()
+        try:
+            run_git(repository, "cat-file", "-e", f"{commit}^{{commit}}")
+        except subprocess.CalledProcessError:
+            run_git(repository, "fetch", "--no-tags", "--no-write-fetch-head",
+                "--no-recurse-submodules", "--no-auto-maintenance",
+                "https://github.com/codex-agent-labs/codex-agent.git", commit)
+        if (run_git(repository, "rev-parse", f"{commit}^{{commit}}").strip() != commit
+                or run_git(repository, "rev-parse", f"{commit}^{{tree}}").strip() != producer["tree"]
+                or run_git(repository, "rev-parse", "HEAD").strip() != head):
+            raise ValueError("Original tooling source identity or caller HEAD changed")
+    except subprocess.CalledProcessError as error:
+        raise ValueError("Original tooling source objects are unavailable") from error
 
 
 def capture_tooling_ci(destination, repository_root, *, artifact_id, artifact_sha256,
@@ -78,7 +102,8 @@ def capture_tooling_ci(destination, repository_root, *, artifact_id, artifact_sh
             keyring, trust.keys, allow_retired=True)
         original = regular_file_inventory(evidence, allow_empty=True)
         with verified_tooling_capture(evidence, repository, key, required_trust_domain="release",
-                keyring=trust.keyring, keys_directory=trust.keys, policy_revision=policy_revision):
+                keyring=trust.keyring, keys_directory=trust.keys, policy_revision=policy_revision,
+                ensure_original_source=lambda producer: _ensure_original_source(repository, producer)):
             snapshot_regular_tree(evidence, prepared / "evidence", allow_empty=True)
         if regular_file_inventory(prepared / "evidence", allow_empty=True) != original:
             raise ValueError("Tooling capture changed its authenticated original evidence")

@@ -40,6 +40,17 @@ def _json(path):
     return load_json_bytes(read_regular_file_bytes(path, max_bytes=_LIMIT, reject_symlink_parents=True))
 
 
+def _original_producer(receipt):
+    if type(receipt) is not dict:
+        raise ValueError("Original tooling receipt must be an object")
+    return validate_producer({
+        "repository": receipt.get("repository"), "workflowPath": receipt.get("workflowPath"),
+        "commit": receipt.get("validationCommit"), "tree": receipt.get("validationTree"),
+        "event": receipt.get("event"), "runId": receipt.get("runId"),
+        "runAttempt": receipt.get("runAttempt"), "pullRequest": receipt.get("pullRequest"),
+    }, "original tooling producer")
+
+
 def _verify_original(root: Path, repository: Path):
     plan_path = root / "plan.json"
     plan = _json(plan_path)
@@ -50,12 +61,7 @@ def _verify_original(root: Path, repository: Path):
     # Strict parsing above rejects duplicate keys; the existing full lane gate owns semantics.
     receipt = validate_receipt(lane / "lane-receipt.json", plan_path, lane, "contracts",
                                repository_root=repository)
-    producer = validate_producer({
-        "repository": receipt["repository"], "workflowPath": receipt["workflowPath"],
-        "commit": receipt["validationCommit"], "tree": receipt["validationTree"],
-        "event": receipt["event"], "runId": receipt["runId"],
-        "runAttempt": receipt["runAttempt"], "pullRequest": receipt["pullRequest"],
-    }, "original tooling producer")
+    producer = _original_producer(receipt)
     if str(run_git(repository, "rev-parse", f"{producer['commit']}^{{tree}}")).strip() != producer["tree"]:
         raise ValueError("Original tooling source commit/tree mismatch")
     if "build" not in parse_validation_actions(receipt["toolchain"]):
@@ -88,7 +94,7 @@ def _value(root: Path, signing, repository: Path):
 
 
 def _verify_capture(root: Path, repository: Path, public_key: Path, required_trust_domain: str,
-                    keyring: Path | None, keys_directory: Path | None):
+                    keyring: Path | None, keys_directory: Path | None, ensure_original_source=None):
     value = load_canonical_json_bytes(read_regular_file_bytes(root / ATTESTATION))
     schema = value.get("schemaVersion") if type(value) is dict else None
     digest_fields = {"localReceiptSha256"} if schema == 2 else {"planSha256", "laneReceiptSha256"}
@@ -116,6 +122,14 @@ def _verify_capture(root: Path, repository: Path, public_key: Path, required_tru
     verify_manifest_signature(root / ATTESTATION, root / SIGNATURE, public_key, signing)
     # Authenticate before inspecting original executable/source inventories. Never execute the JAR here.
     original = root / "original"
+    if ensure_original_source is not None:
+        if schema != 1 or required_trust_domain != "release":
+            raise ValueError("Original source import requires release-trust original tooling")
+        receipt_bytes = read_regular_file_bytes(original / "lane/lane-receipt.json",
+            max_bytes=_LIMIT, reject_symlink_parents=True)
+        if sha256_bytes(receipt_bytes) != value["laneReceiptSha256"]:
+            raise ValueError("Original source receipt differs from signed digest")
+        ensure_original_source(_original_producer(load_json_bytes(receipt_bytes)))
     if schema == 2:
         from .tooling_local import RECEIPT, verify_local_original
         expected = {"schemaVersion": 2, "kind": "release-tooling-attestation",
@@ -173,7 +187,8 @@ def _verify_tooling_policy(jar: Path, captured: Path, repository: Path, revision
 @contextmanager
 def verified_tooling_capture(evidence: Path, repository: Path, public_key: Path, *,
                              required_trust_domain: str, keyring: Path | None = None,
-                             keys_directory: Path | None = None, policy_revision: str | None = None):
+                             keys_directory: Path | None = None, policy_revision: str | None = None,
+                             ensure_original_source=None):
     """Yield only an authenticated private JAR, invalid after this context exits.
 
     The repository is the invoking trusted policy/Git context, never selected by
@@ -187,7 +202,8 @@ def verified_tooling_capture(evidence: Path, repository: Path, public_key: Path,
         snapshot_regular_tree(evidence, captured, allow_empty=True)
         key = root / "pinned.pub"
         key.write_bytes(read_regular_file_bytes(public_key, max_bytes=_LIMIT, reject_symlink_parents=True))
-        jar = _verify_capture(captured, repository, key, required_trust_domain, keyring, keys_directory)
+        jar = _verify_capture(captured, repository, key, required_trust_domain, keyring, keys_directory,
+                              ensure_original_source)
         if policy_revision is not None:
             _verify_tooling_policy(jar, captured, repository, policy_revision)
         checked = regular_file_inventory(captured, allow_empty=True)
