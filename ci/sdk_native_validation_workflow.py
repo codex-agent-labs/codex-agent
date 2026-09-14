@@ -167,7 +167,7 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
             repository_root, environ, token, tooling_evidence, tooling_public_key,
             java_executable, policy_revision, required_trust_domain, tooling_keyring=None,
             tooling_keys_directory=None, dotnet_executable=None, dart_executable=None,
-            dart_package_config=None):
+            dart_package_config=None, preparation_phase="package", preparation_target="desktop"):
     """Admit a validation and established evidence carrier, without restaging SDKs.
 
     Original preparation election is independently replayed. Only the existing
@@ -215,7 +215,12 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
 
     instance = PhaseInstanceId("sdk", component, "validation", target)
     identity = {"product": "sdk", "component": component, "phase": "validation", "target": target}
-    prep_identity = {"product": "sdk", "component": preparation_component, "phase": "package", "target": "desktop"}
+    prep_identity = {"product": "sdk", "component": preparation_component,
+                     "phase": preparation_phase, "target": preparation_target}
+    prep_instance = product_reuse._identity(prep_identity)
+    if (preparation_phase not in {"package", "validation", "metadata"}
+            or not product_reuse._sdk_family_worker_instance(prep_instance, "native-" + preparation_phase)):
+        raise ValueError("Native validation requires an exact preparation consumer anchor")
     with tempfile.TemporaryDirectory(prefix="sdk-native-validation-") as temporary:
         private = Path(temporary).resolve()
         publication, capture = private / "publication", private / "prepared-upload"
@@ -233,7 +238,7 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
                 repository_root=root, environ=environ, sdk_validation_tooling=tooling)
             elected = [row for row in inspected["readyPlans"] if all(row.get(name) == value for name, value in prep_identity.items())]
             if len(elected) != 1 or set(elected[0]) != PHASE_PLAN_KEYS or elected[0]["buildKey"] != preparation_build_key:
-                raise ValueError("Original native preparation package is not uniquely ready with its elected key")
+                raise ValueError("Original native preparation consumer is not uniquely ready with its elected key")
             prep_plan, prep_bytes = elected[0], canonical_json_bytes(elected[0])
             controls_unchanged()
             transport = product_reuse.capture_sdk_native_prepared_upload(plan, capture,
@@ -379,6 +384,8 @@ def main(argv=None) -> int:
     for name in ("component", "preparation-component"):
         parser.add_argument(f"--{name}", choices=NATIVE_BINDINGS, required=True)
     parser.add_argument("--target", choices=NATIVE_TARGETS, required=True)
+    parser.add_argument("--preparation-phase", choices=("package", "validation", "metadata"), default="package")
+    parser.add_argument("--preparation-target", default="desktop")
     parser.add_argument("--required-trust-domain", choices=("development", "release"), required=True)
     for name in ("expected-build-key", "preparation-build-key", "prepared-artifact-sha256",
                  "sdk-inputs-artifact-sha256", "trusted-workflow-sha", "policy-revision"):

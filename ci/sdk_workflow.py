@@ -339,7 +339,8 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
 
 def prepare_native(plan, discovery, state, destination, *, component, expected_build_key,
                    artifact_id, artifact_sha256, trusted_workflow_sha, keyring, keys_directory,
-                   repository_root, environ, token, sdk_validation_tooling=None):
+                   repository_root, environ, token, sdk_validation_tooling=None,
+                   preparation_phase="package", preparation_target="desktop"):
     """Prepare once from elected original inputs; this does not admit an upload.
 
     The transport caller must bind these outputs and the retained original plan
@@ -356,15 +357,18 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
     if destination.exists() or destination.is_symlink():
         raise ValueError("SDK native preparation destination must not exist")
     plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
-    instance = PhaseInstanceId("sdk", component, "package", "desktop")
-    fields = {"product": "sdk", "component": component, "phase": "package", "target": "desktop"}
+    instance = PhaseInstanceId("sdk", component, preparation_phase, preparation_target)
+    if (preparation_phase not in {"package", "validation", "metadata"}
+            or not product_reuse._sdk_family_worker_instance(instance, "native-" + preparation_phase)):
+        raise ValueError("Native preparation requires an exact native consumer anchor")
+    fields = {"product": "sdk", "component": component, "phase": preparation_phase, "target": preparation_target}
     tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
     with verified_inputs(plan, discovery, state, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
             repository_root=root, environ=environ, token=token, **tooling) as inputs:
         selection = inputs["selection"]
         if fields not in selection["consumers"]:
-            raise ValueError("SDK native preparation package is not selected")
+            raise ValueError("SDK native preparation consumer is not selected")
         prepared = destination / "inputs"
         ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
             expected_build_key=expected_build_key, repository_root=root, environ=environ, **tooling)
@@ -616,6 +620,8 @@ def main(argv=None):
         parser.add_argument("--phase", choices=("package", "validation"), required=True)
     elif native_prepare:
         parser.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
+        parser.add_argument("--preparation-phase", choices=("package", "validation", "metadata"), default="package")
+        parser.add_argument("--preparation-target", default="desktop")
     else:
         parser.add_argument("--expected-metadata-receipt-sha256")
     parser.add_argument("--sdk-validation-tooling", type=Path)

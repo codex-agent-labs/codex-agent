@@ -1,6 +1,7 @@
 """Prepare all native SDK inputs once inside the caller's verified lifetime.
 
-The elected package plan supplies diagnostic identity, not a new product phase.
+An elected native package, validation or metadata plan supplies diagnostic
+identity, not a new product phase. Preparation itself always runs on Linux X64.
 Returned trees are not an authenticated upload: the controller must successfully
 exit its input contexts, recheck inventories and bind the exact prepared source
 upload to the original producer and selected source plan before language jobs.
@@ -14,20 +15,37 @@ from typing import Any
 
 from products.inventory import (
     canonical_json_bytes, read_regular_file_bytes, require_exact_keys,
-    require_integer, require_semver, require_sha256, write_canonical_json,
+    require_integer, require_semver, require_sha256, require_string, write_canonical_json,
 )
-from products.receipt import validate_producer
-from products.registry import NATIVE_BINDINGS
+from products.receipt import compute_build_key, validate_producer
+from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PHASE_INSTANCE_IDS, PhaseInstanceId
 from products.restore import PHASE_PLAN_KEYS
 from products.sdk_native import verify_staged_native_sdk_inputs
 from products.sdk_native_metadata import _inventory
 from products.sdk_package import _require_capability_output_separate
 from products.sdk_validation_inputs import _request_inventory
-from sdk_native_phase import _runtime_originals, _runtime_originals_unchanged, route
+from sdk_native_phase import _runtime_originals, _runtime_originals_unchanged
 
 
 TASK = ":codex-agent-sdk:prepareNativeWrapperPackageSources"
 _LIMIT = 16 * 1024 * 1024
+
+
+def validate_anchor(plan: Mapping[str, Any]) -> PhaseInstanceId:
+    """Validate the unchanged ready-plan identity; never elect or forge a phase."""
+    require_exact_keys(plan, PHASE_PLAN_KEYS, "Native SDK preparation elected plan")
+    if require_integer(plan["schemaVersion"], "Native SDK preparation schema", 1) != 1:
+        raise ValueError("Unsupported native SDK preparation plan schema")
+    identity = PhaseInstanceId(*(require_string(plan[name], f"Native SDK preparation {name}")
+                                 for name in ("product", "component", "phase", "target")))
+    if (identity not in PHASE_INSTANCE_IDS or identity.product != "sdk" or identity.component not in NATIVE_BINDINGS
+            or not ((identity.phase in {"package", "metadata"} and identity.target == "desktop")
+                    or (identity.phase == "validation" and identity.target in NATIVE_TARGETS))):
+        raise ValueError("Native SDK preparation requires an exact package, validation or metadata anchor")
+    key = require_sha256(plan["buildKey"], "Native SDK preparation elected key")
+    if compute_build_key(**{name: plan[name] for name in ("product", "component", "phase", "target", "inputs")}) != key:
+        raise ValueError("Native SDK preparation identity or inputs differ from its original build key")
+    return identity
 
 
 def execute(
@@ -38,21 +56,17 @@ def execute(
     environ: Mapping[str, str],
 ) -> dict[str, Any]:
     """Execute the sole existing preparation task; never package or admit shards."""
-    from native_wrappers import HOSTS, host_classifier
+    from native_wrappers import host_classifier
     from product_reuse import (
         _prepare_destination, _runtime_worker_checkout, _runtime_worker_command,
         _runtime_worker_environment,
     )
 
-    require_exact_keys(plan, PHASE_PLAN_KEYS, "Native SDK preparation elected plan")
-    if require_integer(plan["schemaVersion"], "Native SDK preparation schema", 1) != 1:
-        raise ValueError("Unsupported native SDK preparation plan schema")
-    elected_route = route(plan)
-    require_sha256(plan["buildKey"], "Native SDK preparation elected key")
+    validate_anchor(plan)
     validate_producer(producer, "Native SDK preparation producer")
     require_semver(sdk_version, "Native SDK preparation version")
-    if HOSTS[host_classifier()][2:4] != (elected_route["runnerOs"], elected_route["runnerArch"]):
-        raise ValueError("Native SDK preparation actual host differs from its elected route")
+    if host_classifier() != "linux-x64":
+        raise ValueError("Native SDK preparation requires the actual Linux X64 host")
     root = Path(repository_root).resolve(strict=True)
     destination = Path(destination).absolute()
     runtime, request = Path(runtime_stages), Path(compatibility_request)

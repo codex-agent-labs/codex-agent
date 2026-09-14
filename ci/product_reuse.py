@@ -4485,13 +4485,10 @@ def capture_sdk_native_prepared_upload(plan_path, destination, *, expected_phase
     from products.restore import PHASE_PLAN_KEYS
     from products.inventory import require_regular_directory
     from products.sdk_package import _require_capability_output_separate
-    from sdk_native_prepare import TASK
+    from sdk_native_prepare import TASK, validate_anchor
 
     phase = require_exact_keys(expected_phase_plan, PHASE_PLAN_KEYS, "Elected native preparation plan")
-    if (require_integer(phase["schemaVersion"], "Native preparation plan schema", 1) != 1
-            or phase["product"] != "sdk" or phase["component"] not in NATIVE_BINDINGS
-            or phase["phase"] != "package" or phase["target"] != "desktop"):
-        raise ValueError("Native preparation capture requires an elected native package plan")
+    validate_anchor(phase)
     require_sha256(phase["buildKey"], "Native preparation elected key")
     phase_bytes = canonical_json_bytes(phase)
     require_integer(artifact_id, "Native preparation upload ID", 1)

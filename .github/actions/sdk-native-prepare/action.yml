@@ -1,5 +1,5 @@
 name: Prepare elected native SDK sources once
-description: Replay original state before setup and retain one authenticated-preparation upload for independent packages.
+description: Replay an exact native consumer before setup and retain one preparation upload for independent SDK phases.
 inputs:
   plan-id:
     required: true
@@ -30,10 +30,16 @@ inputs:
     description: Reviewed product workflow revision.
   component:
     required: true
-    description: One elected native package component supplying preparation identity.
+    description: One elected native consumer component supplying preparation identity.
+  preparation-phase:
+    default: 'package'
+    description: Exact elected native consumer phase supplying preparation identity.
+  preparation-target:
+    default: 'desktop'
+    description: Exact elected native consumer target; preparation itself runs on Linux X64.
   build-key:
     required: true
-    description: Exact elected preparation package key.
+    description: Exact elected preparation consumer key.
   tree:
     required: true
     description: Exact tested source tree.
@@ -44,6 +50,10 @@ outputs:
     value: sha256:${{ steps.upload.outputs.artifact-digest }}
   preparation-component:
     value: ${{ inputs.component }}
+  preparation-phase:
+    value: ${{ inputs.preparation-phase }}
+  preparation-target:
+    value: ${{ inputs.preparation-target }}
   preparation-build-key:
     value: ${{ inputs.build-key }}
   preparation-state-id:
@@ -61,7 +71,7 @@ runs:
       uses: ./.github/actions/capture-runtime-state
       with:
         product: sdk
-        sdk-family: native-package
+        sdk-family: ${{ format('native-{0}', inputs.preparation-phase) }}
         sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
         plan-id: ${{ inputs.plan-id }}
         artifact-id: ${{ inputs.artifact-id }}
@@ -75,17 +85,26 @@ runs:
         MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
         PLAN: ${{ steps.captured.outputs.plan-path }}
         COMPONENT: ${{ inputs.component }}
+        PREPARATION_PHASE: ${{ inputs.preparation-phase }}
+        PREPARATION_TARGET: ${{ inputs.preparation-target }}
         BUILD_KEY: ${{ inputs.build-key }}
         TREE: ${{ inputs.tree }}
       run: |
         python3 - <<'PY'
-        import json, os, re
+        import json, os, re, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        from runtime_native_phase import _HOSTS
+        phase, target = os.environ['PREPARATION_PHASE'], os.environ['PREPARATION_TARGET']
+        if phase not in ('package', 'validation', 'metadata') or (target not in _HOSTS if phase == 'validation' else target != 'desktop'):
+            raise ValueError('Invalid native preparation consumer identity')
+        topology = _HOSTS[target][1:] if phase == 'validation' else ('Linux', 'X64')
         key = os.environ['BUILD_KEY']
         rows = [row for row in json.loads(os.environ['MATRIX'])['include']
                 if (row['product'], row['component'], row['phase'], row['target']) ==
-                   ('sdk', os.environ['COMPONENT'], 'package', 'desktop')]
+                   ('sdk', os.environ['COMPONENT'], phase, target)]
         if (len(rows) != 1 or rows[0]['buildKey'] != key or not re.fullmatch(r'sha256:[0-9a-f]{64}', key)
-                or (rows[0]['runnerOs'], rows[0]['runnerArch']) != ('Linux', 'X64')):
+                or (rows[0]['runnerOs'], rows[0]['runnerArch']) != topology):
             raise ValueError('Native preparation differs from the original replay election')
         with open(os.environ['PLAN']) as plan:
             if json.load(plan)['validationTree'] != os.environ['TREE']:
@@ -103,6 +122,8 @@ runs:
         DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
         STATE: ${{ steps.captured.outputs.state-root }}
         COMPONENT: ${{ inputs.component }}
+        PREPARATION_PHASE: ${{ inputs.preparation-phase }}
+        PREPARATION_TARGET: ${{ inputs.preparation-target }}
         BUILD_KEY: ${{ inputs.build-key }}
         SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
         SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
@@ -116,6 +137,7 @@ runs:
         python3 -B -m ci.sdk_workflow native-prepare --plan "$PLAN" --discovery-root "$DISCOVERY" \
           --state-root "$STATE" --destination "$GITHUB_WORKSPACE/build/sdk-native-prepare" \
           --repository-root "$GITHUB_WORKSPACE" --component "$COMPONENT" --expected-build-key "$BUILD_KEY" \
+          --preparation-phase "$PREPARATION_PHASE" --preparation-target "$PREPARATION_TARGET" \
           --artifact-id "$SDK_INPUTS_ID" --artifact-sha256 "$SDK_INPUTS_SHA256" \
           --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
           --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \

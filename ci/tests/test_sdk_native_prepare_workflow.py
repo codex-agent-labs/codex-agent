@@ -282,7 +282,8 @@ class SdkNativePrepareWorkflowTest(unittest.TestCase):
                 patch.object(workflow, "prepare_native") as prepare:
             self.assertEqual(0, workflow.main(argv))
             prepare.assert_called_once_with(self.plan_path, self.discovery, self.state, self.destination,
-                **{**self.arguments, "environ": os.environ, "token": "cli-token"})
+                **{**self.arguments, "environ": os.environ, "token": "cli-token",
+                   "preparation_phase": "package", "preparation_target": "desktop"})
         invalid = {
             "missing-component": [argv[0], *argv[3:]],
             "unknown-component": [argv[0], "--component", "javascript", *argv[3:]],

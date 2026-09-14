@@ -30,10 +30,16 @@ inputs:
     description: Original preparation SDK wave when applicable.
   preparation-component:
     required: true
-    description: Original preparation's elected native package component.
+    description: Original preparation's elected native consumer component.
+  preparation-phase:
+    default: package
+    description: Exact ready native package, validation or metadata anchor phase.
+  preparation-target:
+    default: desktop
+    description: Exact ready anchor target; native validation uses its host target.
   preparation-build-key:
     required: true
-    description: Exact original preparation package key.
+    description: Exact original preparation consumer key.
   prepared-artifact-id:
     required: true
     description: Original prepared source and staged SDK upload ID.
@@ -116,14 +122,25 @@ runs:
         ARTIFACT_SHA256: ${{ inputs.preparation-state-sha256 }}
         STATE_WAVE: ${{ inputs.preparation-state-wave }}
         SDK_STATE_WAVE: ${{ inputs.preparation-sdk-state-wave }}
+        PREPARATION_PHASE: ${{ inputs.preparation-phase }}
+        PREPARATION_TARGET: ${{ inputs.preparation-target }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
+        phase="${PREPARATION_PHASE:-package}"
+        target="${PREPARATION_TARGET:-desktop}"
+        case "$phase:$target" in
+          package:desktop) family=native-package ;;
+          metadata:desktop) family=native-metadata ;;
+          validation:macos-arm64|validation:macos-x64|validation:linux-arm64|validation:linux-x64|validation:windows-x64)
+            family=native-validation ;;
+          *) echo 'Native preparation anchor phase and target are incompatible.' >&2; exit 1 ;;
+        esac
         selected=()
         if [ -n "$SDK_STATE_WAVE" ]; then selected=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
-        python3 -B -m ci.sdk_workflow capture --family native-package --plan "$PLAN" \
+        python3 -B -m ci.sdk_workflow capture --family "$family" --plan "$PLAN" \
           --destination "$GITHUB_WORKSPACE/build/native-preparation-input" \
           --repository-root "$GITHUB_WORKSPACE" --artifact-id "$ARTIFACT_ID" \
           --artifact-sha256 "$ARTIFACT_SHA256" --state-wave "$STATE_WAVE" \
@@ -139,6 +156,8 @@ runs:
         COMPONENT: ${{ inputs.component }}
         BUILD_KEY: ${{ inputs.build-key }}
         PREPARATION_COMPONENT: ${{ inputs.preparation-component }}
+        PREPARATION_PHASE: ${{ inputs.preparation-phase }}
+        PREPARATION_TARGET: ${{ inputs.preparation-target }}
         PREPARATION_BUILD_KEY: ${{ inputs.preparation-build-key }}
         TREE: ${{ inputs.tree }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
@@ -150,19 +169,25 @@ runs:
         sys.path.insert(0, str(Path.cwd() / 'ci'))
         from native_wrappers import host_classifier
         from ci.products.inventory import read_regular_file_bytes, sha256_bytes
-        from ci.products.registry import NATIVE_BINDINGS
+        from ci.products.registry import NATIVE_BINDINGS, NATIVE_TARGETS
+        from ci.runtime_native_phase import _HOSTS
         if host_classifier() != 'linux-x64':
             raise ValueError('Native metadata must execute on the elected Linux X64 host')
         if sha256_bytes(read_regular_file_bytes(Path(os.environ['SDK_VALIDATION_TOOLING']), reject_symlink_parents=True)) != os.environ['POLICY_SHA256']:
             raise ValueError('Caller tooling policy changed during state capture')
-        for prefix, phase in (('', 'metadata'), ('PREPARATION_', 'package')):
+        for prefix, phase, target in (('', 'metadata', 'desktop'),
+                ('PREPARATION_', os.environ.get('PREPARATION_PHASE') or 'package',
+                 os.environ.get('PREPARATION_TARGET') or 'desktop')):
             component, key = os.environ[prefix + 'COMPONENT'], os.environ[prefix + 'BUILD_KEY']
             rows = [row for row in json.loads(os.environ[prefix + 'MATRIX'])['include']
                     if (row['product'], row['component'], row['phase'], row['target']) ==
-                       ('sdk', component, phase, 'desktop')]
+                       ('sdk', component, phase, target)]
+            anchor = phase in ('package', 'metadata') and target == 'desktop' or \
+                     phase == 'validation' and target in NATIVE_TARGETS
+            route = _HOSTS[target if phase == 'validation' else 'linux-x64']
             if (component not in NATIVE_BINDINGS or len(rows) != 1 or rows[0]['buildKey'] != key
                     or not re.fullmatch(r'sha256:[0-9a-f]{64}', key)
-                    or (rows[0]['runnerOs'], rows[0]['runnerArch']) != ('Linux', 'X64')):
+                    or not anchor or (rows[0]['runnerOs'], rows[0]['runnerArch']) != route[1:]):
                 raise ValueError('Native metadata or preparation differs from its original replay election')
         with open(os.environ['PLAN']) as plan:
             tree = os.environ['TREE']
@@ -186,6 +211,8 @@ runs:
         COMPONENT: ${{ inputs.component }}
         BUILD_KEY: ${{ inputs.build-key }}
         PREPARATION_COMPONENT: ${{ inputs.preparation-component }}
+        PREPARATION_PHASE: ${{ inputs.preparation-phase }}
+        PREPARATION_TARGET: ${{ inputs.preparation-target }}
         PREPARATION_BUILD_KEY: ${{ inputs.preparation-build-key }}
         PREPARED_ARTIFACT_ID: ${{ inputs.prepared-artifact-id }}
         PREPARED_ARTIFACT_SHA256: ${{ inputs.prepared-artifact-sha256 }}
@@ -231,6 +258,11 @@ runs:
             '--keyring': str(root / 'gradle/release/product-signing-keys.json'),
             '--keys-directory': str(root / 'gradle/release/keys'), '--required-trust-domain': trust,
         }
+        preparation_phase = os.environ.get('PREPARATION_PHASE') or 'package'
+        preparation_target = os.environ.get('PREPARATION_TARGET') or 'desktop'
+        if (preparation_phase, preparation_target) != ('package', 'desktop'):
+            fields['--preparation-phase'] = preparation_phase
+            fields['--preparation-target'] = preparation_target
         for source, flag in (('evidence', '--tooling-evidence'), ('publicKey', '--tooling-public-key'),
                              ('javaExecutable', '--java-executable'), ('keyring', '--tooling-keyring'),
                              ('keysDirectory', '--tooling-keys-directory')):

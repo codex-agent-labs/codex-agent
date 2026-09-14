@@ -39,6 +39,7 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
             'POLICY_SHA256': sha256_bytes(self.policy_path.read_bytes()), 'GITHUB_WORKSPACE': str(self.root),
             'PLAN': str(self.plan), 'COMPONENT': 'python', 'TARGET': 'linux-x64', 'BUILD_KEY': 'sha256:' + 'a' * 64,
             'PREPARATION_COMPONENT': 'rust', 'PREPARATION_BUILD_KEY': 'sha256:' + 'd' * 64, 'TREE': 'b' * 40,
+            'PREPARATION_PHASE': 'package', 'PREPARATION_TARGET': 'desktop',
             'DISCOVERY': str(self.root / 'current/discovery'), 'STATE': str(self.root / 'current/state'),
             'PREPARATION_STATE': str(self.root / 'original-preparation/state'),
             'PREPARED_ARTIFACT_ID': '91', 'PREPARED_ARTIFACT_SHA256': 'sha256:' + 'e' * 64,

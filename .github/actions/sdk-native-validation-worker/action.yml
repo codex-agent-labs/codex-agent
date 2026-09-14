@@ -30,10 +30,16 @@ inputs:
     description: Original preparation SDK wave when applicable.
   preparation-component:
     required: true
-    description: Exact original preparation package component.
+    description: Exact original preparation consumer component.
+  preparation-phase:
+    default: 'package'
+    description: Exact original ready native consumer phase used for preparation.
+  preparation-target:
+    default: 'desktop'
+    description: Exact original ready native consumer target used for preparation.
   preparation-build-key:
     required: true
-    description: Exact original preparation package key.
+    description: Exact original preparation consumer key.
   prepared-artifact-id:
     required: true
     description: Single original prepared source and SDK upload ID.
@@ -155,6 +161,7 @@ runs:
         ARTIFACT_ID: ${{ inputs.preparation-state-id }}
         ARTIFACT_SHA256: ${{ inputs.preparation-state-sha256 }}
         STATE_WAVE: ${{ inputs.preparation-state-wave }}
+        PREPARATION_PHASE: ${{ inputs.preparation-phase }}
         SDK_STATE_WAVE: ${{ inputs.preparation-sdk-state-wave }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
@@ -163,7 +170,7 @@ runs:
         set -euo pipefail
         selected=()
         if [ -n "$SDK_STATE_WAVE" ]; then selected=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
-        python3 -B -m ci.sdk_workflow capture --family native-package --plan "$PLAN" \
+        python3 -B -m ci.sdk_workflow capture --family "native-$PREPARATION_PHASE" --plan "$PLAN" \
           --destination "$GITHUB_WORKSPACE/build/native-preparation-input" \
           --repository-root "$GITHUB_WORKSPACE" --artifact-id "$ARTIFACT_ID" \
           --artifact-sha256 "$ARTIFACT_SHA256" --state-wave "$STATE_WAVE" \
@@ -179,6 +186,8 @@ runs:
         TARGET: ${{ inputs.target }}
         BUILD_KEY: ${{ inputs.build-key }}
         PREPARATION_COMPONENT: ${{ inputs.preparation-component }}
+        PREPARATION_PHASE: ${{ inputs.preparation-phase }}
+        PREPARATION_TARGET: ${{ inputs.preparation-target }}
         PREPARATION_BUILD_KEY: ${{ inputs.preparation-build-key }}
         TREE: ${{ inputs.tree }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
@@ -189,12 +198,17 @@ runs:
         from pathlib import Path
         sys.path.insert(0, str(Path.cwd() / 'ci'))
         from native_wrappers import HOSTS, LANGUAGES, host_classifier
+        from runtime_native_phase import _HOSTS
         from products.inventory import read_regular_file_bytes, sha256_bytes
         host = host_classifier()
         if os.environ['TARGET'] != host:
             raise ValueError('Native validation must execute on its actual elected host')
+        prep_phase, prep_target = os.environ['PREPARATION_PHASE'], os.environ['PREPARATION_TARGET']
+        if prep_phase not in ('package', 'validation', 'metadata') or (prep_target not in _HOSTS if prep_phase == 'validation' else prep_target != 'desktop'):
+            raise ValueError('Invalid native preparation consumer identity')
+        prep_topology = _HOSTS[prep_target][1:] if prep_phase == 'validation' else ('Linux', 'X64')
         for prefix, phase, target, topology in (('', 'validation', host, HOSTS[host][2:4]),
-                ('PREPARATION_', 'package', 'desktop', ('Linux', 'X64'))):
+                ('PREPARATION_', prep_phase, prep_target, prep_topology)):
             component, key = os.environ[prefix + 'COMPONENT'], os.environ[prefix + 'BUILD_KEY']
             rows = [row for row in json.loads(os.environ[prefix + 'MATRIX'])['include']
                     if (row['product'], row['component'], row['phase'], row['target']) == ('sdk', component, phase, target)]
@@ -239,6 +253,8 @@ runs:
         DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
         STATE: ${{ steps.captured.outputs.state-root }}
         PREPARATION_STATE: ${{ steps.preparation.outputs.state_root }}
+        PREPARATION_PHASE: ${{ inputs.preparation-phase }}
+        PREPARATION_TARGET: ${{ inputs.preparation-target }}
         COMPONENT: ${{ inputs.component }}
         TARGET: ${{ inputs.target }}
         BUILD_KEY: ${{ inputs.build-key }}
@@ -272,6 +288,7 @@ runs:
             'repository-root': os.environ['GITHUB_WORKSPACE'], 'component': os.environ['COMPONENT'],
             'target': os.environ['TARGET'], 'expected-build-key': os.environ['BUILD_KEY'],
             'preparation-component': os.environ['PREPARATION_COMPONENT'], 'preparation-build-key': os.environ['PREPARATION_BUILD_KEY'],
+            'preparation-phase': os.environ['PREPARATION_PHASE'], 'preparation-target': os.environ['PREPARATION_TARGET'],
             'prepared-artifact-id': os.environ['PREPARED_ARTIFACT_ID'], 'prepared-artifact-sha256': os.environ['PREPARED_ARTIFACT_SHA256'],
             'sdk-inputs-artifact-id': os.environ['SDK_INPUTS_ID'], 'sdk-inputs-artifact-sha256': os.environ['SDK_INPUTS_SHA256'],
             'trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'], 'policy-revision': os.environ['POLICY_REVISION'],

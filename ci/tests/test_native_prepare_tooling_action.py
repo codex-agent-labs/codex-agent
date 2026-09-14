@@ -23,7 +23,8 @@ class NativePrepareToolingActionTest(unittest.TestCase):
         self.assertIn("  sdk-validation-tooling:\n    default: ''", inputs)
         self.assertNotIn('tooling', outputs.split('runs:\n', 1)[0])
         capture = self.action.split('    - id: captured\n', 1)[1].split('    - id: identity\n', 1)[0]
-        self.assertIn('sdk-family: native-package', capture)
+        self.assertIn("sdk-family: ${{ format('native-{0}', inputs.preparation-phase) }}", capture)
+        self.assertIn("  preparation-phase:\n    default: 'package'", inputs)
         self.assertIn('sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}', capture)
         for name in ('state-wave', 'sdk-state-wave'):
             self.assertIn(f'{name}: ${{{{ inputs.{name} }}}}', capture)
@@ -59,6 +60,7 @@ class NativePrepareToolingActionTest(unittest.TestCase):
             base = {'PATH': str(binary), 'RECORDED_ARGS': str(recorded), 'PLAN': '/original plan/impact.json',
                 'DISCOVERY': '/original discovery', 'STATE': '/original state', 'GITHUB_WORKSPACE': str(root),
                 'COMPONENT': 'csharp', 'BUILD_KEY': 'sha256:' + 'a' * 64, 'SDK_INPUTS_ID': '71',
+                'PREPARATION_PHASE': 'package', 'PREPARATION_TARGET': 'desktop',
                 'SDK_INPUTS_SHA256': 'sha256:' + 'b' * 64, 'TRUSTED_WORKFLOW_SHA': 'c' * 40}
             for policy, status in (('', 0), ('/caller policy/with spaces.json', 0), ('/caller/policy.json', 17)):
                 with self.subTest(policy=policy, status=status):
@@ -70,6 +72,7 @@ class NativePrepareToolingActionTest(unittest.TestCase):
                         '--plan', base['PLAN'], '--discovery-root', base['DISCOVERY'], '--state-root', base['STATE'],
                         '--destination', str(root / 'build/sdk-native-prepare'), '--repository-root', str(root),
                         '--component', base['COMPONENT'], '--expected-build-key', base['BUILD_KEY'],
+                        '--preparation-phase', 'package', '--preparation-target', 'desktop',
                         '--artifact-id', base['SDK_INPUTS_ID'], '--artifact-sha256', base['SDK_INPUTS_SHA256'],
                         '--trusted-workflow-sha', base['TRUSTED_WORKFLOW_SHA'],
                         '--keyring', str(root / 'gradle/release/product-signing-keys.json'),

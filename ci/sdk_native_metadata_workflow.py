@@ -27,7 +27,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
             keyring, keys_directory, repository_root, environ, token,
             tooling_evidence, tooling_public_key, java_executable,
-            required_trust_domain, tooling_keyring=None, tooling_keys_directory=None):
+            required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
+            preparation_phase="package", preparation_target="desktop"):
     """Run the existing five-host metadata caller and publish its shard last."""
     if component not in NATIVE_BINDINGS or preparation_component not in NATIVE_BINDINGS:
         raise ValueError("Native metadata execution requires fixed native language components")
@@ -65,7 +66,13 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
 
     instance = PhaseInstanceId("sdk", component, "metadata", "desktop")
     identity = {"product": "sdk", "component": component, "phase": "metadata", "target": "desktop"}
-    preparation_identity = {**identity, "component": preparation_component, "phase": "package"}
+    preparation_identity = {"product": "sdk", "component": preparation_component,
+                            "phase": preparation_phase, "target": preparation_target}
+    preparation_instance = product_reuse._identity(preparation_identity)
+    if (preparation_phase not in {"package", "validation", "metadata"}
+            or not product_reuse._sdk_family_worker_instance(
+                preparation_instance, "native-" + preparation_phase)):
+        raise ValueError("Native metadata requires an exact preparation consumer anchor")
     with tempfile.TemporaryDirectory(prefix="sdk-native-metadata-") as temporary:
         private = Path(temporary).resolve()
         capture = private / "prepared-upload"
@@ -83,7 +90,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                        if all(row.get(name) == value for name, value in preparation_identity.items())]
             if (len(elected) != 1 or set(elected[0]) != PHASE_PLAN_KEYS
                     or elected[0]["buildKey"] != preparation_build_key):
-                raise ValueError("Original native preparation is not uniquely ready with its elected key")
+                raise ValueError("Original native preparation consumer is not uniquely ready with its elected key")
             preparation_plan = elected[0]
             preparation_plan_bytes = canonical_json_bytes(preparation_plan)
             controls_unchanged()
@@ -205,6 +212,10 @@ def main(argv=None) -> int:
     for name in ("prepared-artifact-id", "sdk-inputs-artifact-id"):
         parser.add_argument(f"--{name}", type=int, required=True)
     parser.add_argument("--required-trust-domain", choices=("development", "release"), required=True)
+    parser.add_argument("--preparation-phase", choices=("package", "validation", "metadata"),
+                        default=argparse.SUPPRESS)
+    parser.add_argument("--preparation-target", choices=("desktop", *NATIVE_TARGETS),
+                        default=argparse.SUPPRESS)
     parser.add_argument("--tooling-keyring", type=Path)
     parser.add_argument("--tooling-keys-directory", type=Path)
     arguments = vars(parser.parse_args(argv))
