@@ -450,7 +450,7 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
 
 def execute_javascript(plan, discovery, state, destination, *, phase, expected_build_key,
                        artifact_id, artifact_sha256, trusted_workflow_sha, keyring, keys_directory,
-                       repository_root, environ, token):
+                       repository_root, environ, token, sdk_validation_tooling=None):
     """Execute elected SDK work; finalize only after original input contexts close."""
     from sdk_javascript_phase import execute
 
@@ -463,15 +463,16 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
         raise ValueError("SDK JavaScript worker destination must not exist")
     instance = PhaseInstanceId("sdk", "javascript", phase, "node")
     fields = {"product": "sdk", "component": "javascript", "phase": phase, "target": "node"}
+    tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
     with verified_inputs(plan, discovery, state, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-            repository_root=root, environ=environ, token=token) as inputs:
+            repository_root=root, environ=environ, token=token, **tooling) as inputs:
         selection = inputs["selection"]
         if fields not in selection["consumers"]:
             raise ValueError("SDK JavaScript worker is not selected")
         prepared = destination / "inputs"
         ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
-            expected_build_key=expected_build_key, repository_root=root, environ=environ)
+            expected_build_key=expected_build_key, repository_root=root, environ=environ, **tooling)
         producer = product_reuse.validate_producer(product_reuse._canonical_control(
             prepared / "producer.json", "Elected SDK producer"))
         contract = product_reuse.validate_phase_receipt(product_reuse._canonical_control(
@@ -603,6 +604,7 @@ def main(argv=None):
         parser.add_argument(f"--{name}", required=worker)
     if javascript:
         parser.add_argument("--phase", choices=("package", "validation"), required=True)
+        parser.add_argument("--sdk-validation-tooling", type=Path)
     elif native_prepare:
         parser.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
     else:
@@ -611,6 +613,10 @@ def main(argv=None):
     plan, discovery, state, destination = (arguments.pop(name) for name in ("plan", "discovery_root", "state_root", "destination"))
     try:
         action = prepare_native if native_prepare else execute_javascript if javascript else stage
+        if javascript:
+            policy = arguments.pop("sdk_validation_tooling")
+            if policy is not None:
+                arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
         action(plan, discovery, state, destination, **arguments,
             environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:

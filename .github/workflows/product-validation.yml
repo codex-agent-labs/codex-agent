@@ -2042,7 +2042,7 @@ jobs:
           tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-plan:
-    needs: [plan, runtime-continuation, runtime-aggregate-continuation, sdk-inputs, sdk-ios-binary-plan, sdk-collect-3]
+    needs: [plan, tooling-attestation, runtime-continuation, runtime-aggregate-continuation, sdk-inputs, sdk-ios-binary-plan, sdk-collect-3]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-inputs.result == 'success'
@@ -2054,12 +2054,57 @@ jobs:
       sdk_state_wave: ${{ steps.parent.outputs.sdk_state_wave }}
       sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
       sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
+      tooling_artifact_id: ${{ steps.tooling-locator.outputs.artifact_id }}
+      tooling_artifact_sha256: ${{ steps.tooling-locator.outputs.artifact_sha256 }}
+      tooling_transport_producer: ${{ steps.tooling-locator.outputs.transport_producer }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: tooling-locator
+        if: needs.plan.outputs.tooling_required == 'true'
+        env:
+          PREDECESSORS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          from ci.products.inventory import load_json_bytes, require_sha256
+          from ci.products.receipt import validate_producer
+          needs = json.loads(os.environ['PREDECESSORS'])
+          miss = needs['plan']['outputs']['tooling_miss']
+          if miss not in ('true', 'false'):
+              raise ValueError('Tooling selection is incomplete')
+          selected = needs['tooling-attestation' if miss == 'true' else 'plan']
+          if selected['result'] != 'success':
+              raise ValueError('Selected tooling producer is incomplete')
+          prefix = '' if miss == 'true' else 'tooling_'
+          values = {name: selected['outputs'][prefix + name] for name in
+                    ('artifact_id', 'artifact_sha256', 'transport_producer')}
+          if re.fullmatch(r'[1-9][0-9]*', values['artifact_id']) is None:
+              raise ValueError('Tooling artifact ID is invalid')
+          require_sha256(values['artifact_sha256'], 'Tooling artifact digest')
+          producer = validate_producer(load_json_bytes(values['transport_producer'].encode('utf-8')))
+          values['transport_producer'] = json.dumps(producer, sort_keys=True, separators=(',', ':'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              for name, value in values.items():
+                  output.write(name + '=' + value + '\n')
+          PY
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ steps.tooling-locator.outputs.artifact_id }}
+          artifact-sha256: ${{ steps.tooling-locator.outputs.artifact_sha256 }}
+          transport-producer: ${{ steps.tooling-locator.outputs.transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: parent
         env:
           PREDECESSORS: ${{ toJSON(needs) }}
@@ -2092,6 +2137,7 @@ jobs:
         uses: ./.github/actions/capture-runtime-state
         with:
           product: sdk
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ steps.parent.outputs.artifact_id }}
           artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}
@@ -2116,8 +2162,23 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-javascript-worker
         with:
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-plan.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.artifact_digest }}
@@ -2149,10 +2210,25 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
           product: sdk
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-plan.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.artifact_digest }}
@@ -2164,7 +2240,7 @@ jobs:
 
   sdk-workers-2:
     name: sdk-javascript-${{ matrix.phase }}-node
-    needs: [plan, sdk-collect-1, sdk-inputs]
+    needs: [plan, sdk-plan, sdk-collect-1, sdk-inputs]
     if: >-
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-collect-1.outputs.wave_failed == 'false' &&
@@ -2180,8 +2256,23 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-javascript-worker
         with:
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-collect-1.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-collect-1.outputs.artifact_digest }}
@@ -2195,7 +2286,7 @@ jobs:
 
   sdk-collect-2:
     name: sdk-collect-2
-    needs: [plan, sdk-collect-1, sdk-workers-2]
+    needs: [plan, sdk-plan, sdk-collect-1, sdk-workers-2]
     if: >-
       always() && needs.sdk-collect-1.result == 'success' &&
       needs.sdk-collect-1.outputs.wave_failed == 'false' &&
@@ -2211,10 +2302,25 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
           product: sdk
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-collect-1.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-collect-1.outputs.artifact_digest }}
