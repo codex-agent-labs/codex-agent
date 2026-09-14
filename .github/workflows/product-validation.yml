@@ -2287,8 +2287,9 @@ jobs:
           node-version: ${{ contains(matrix.lane, 'node') && '24.18.0' || 'none' }}
 
   sdk-ios-binary-plan:
-    needs: [plan, product-resume]
+    needs: [plan, product-resume, product-tooling]
     if: >-
+      always() &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' && needs.product-resume.result == 'success'
     runs-on: ubuntu-24.04
@@ -2301,9 +2302,29 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        shell: bash
+        run: |
+          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
+          selected_java_home="${!java_home_variable}"
+          java_binary=java
+          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
+          test -f "$selected_java_home/bin/$java_binary"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
+          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
         uses: ./.github/actions/capture-runtime-state
         with:
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           product: sdk-ios-binary
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.product-resume.outputs.artifact_id }}
@@ -2312,7 +2333,7 @@ jobs:
 
   sdk-ios-binary:
     name: sdk-sdk-ios-binary-ios
-    needs: [plan, product-resume, sdk-ios-binary-plan, apple]
+    needs: [plan, product-resume, sdk-ios-binary-plan, apple, product-tooling]
     if: >-
       always() && needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-ios-binary-plan.result == 'success' &&
@@ -2330,8 +2351,28 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        shell: bash
+        run: |
+          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
+          selected_java_home="${!java_home_variable}"
+          java_binary=java
+          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
+          test -f "$selected_java_home/bin/$java_binary"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
+          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-ios-binary-worker
         with:
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.product-resume.outputs.artifact_id }}
           artifact-sha256: ${{ needs.product-resume.outputs.artifact_digest }}
@@ -2347,7 +2388,7 @@ jobs:
 
   sdk-collect-3:
     name: sdk-collect-3
-    needs: [plan, sdk-ios-binary-plan, sdk-ios-binary, runtime-continuation, runtime-aggregate-continuation]
+    needs: [plan, sdk-ios-binary-plan, sdk-ios-binary, runtime-continuation, runtime-aggregate-continuation, product-tooling]
     if: >-
       always() && needs.sdk-ios-binary-plan.result == 'success' &&
       needs.sdk-ios-binary-plan.outputs.sdk_workers_required == 'true' &&
@@ -2364,6 +2405,25 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        shell: bash
+        run: |
+          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
+          selected_java_home="${!java_home_variable}"
+          java_binary=java
+          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
+          test -f "$selected_java_home/bin/$java_binary"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
+          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: parent
         env:
           PREDECESSORS: ${{ toJSON(needs) }}
@@ -2382,6 +2442,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           product: sdk-ios-binary
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ steps.parent.outputs.artifact_id }}

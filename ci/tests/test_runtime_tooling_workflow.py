@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 NAMES = ('contract-continuation', 'runtime-linux-arm64-supervisor',
          *(f'runtime-workers-{i}' for i in range(1, 5)),
          *(f'runtime-collect-{i}' for i in range(1, 6)),
-         'runtime-continuation', 'runtime-aggregate', 'runtime-aggregate-continuation')
+         'runtime-continuation', 'runtime-aggregate', 'runtime-aggregate-continuation',
+         'sdk-ios-binary-plan', 'sdk-ios-binary', 'sdk-collect-3')
 
 
 class RuntimeToolingWorkflowTest(unittest.TestCase):
@@ -42,7 +43,8 @@ class RuntimeToolingWorkflowTest(unittest.TestCase):
                 self.assertNotIn('needs.sdk-plan', job)
                 for step in re.split(r'(?=^      - )', job, flags=re.M):
                     if any('uses: ./.github/actions/' + action in step for action in (
-                            'capture-runtime-state', 'run-runtime-product-phase', 'collect-runtime-wave')):
+                            'capture-runtime-state', 'run-runtime-product-phase', 'collect-runtime-wave',
+                            'sdk-ios-binary-worker')):
                         self.assertLess(capture, job.index(step))
                         self.assertIn('sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}', step)
                     if re.search(r'ci/(product_reuse.py (advance-contract|execute-runtime-)|runtime_workflow.py continuation)', step):

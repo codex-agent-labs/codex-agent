@@ -116,7 +116,8 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
 
 @contextmanager
 def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_build_key,
-                               native_uploads, trusted_workflow_sha, repository_root, environ, token):
+                               native_uploads, trusted_workflow_sha, repository_root, environ, token,
+                               sdk_validation_tooling=None):
     """Keep elected iOS binary Contract/native originals verified through use.
 
     This is not package readiness or output admission. The caller must execute
@@ -130,7 +131,7 @@ def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_
     if destination.exists() or destination.is_symlink():
         raise ValueError("SDK iOS binary inputs require a fresh destination")
     plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
-    verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, None)
+    verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, sdk_validation_tooling)
     instance = PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
     elected = verified.prior_ready_plans.get(instance)
     if elected is None or elected["buildKey"] != expected_build_key:
@@ -194,7 +195,8 @@ def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_
 
 
 def execute_ios_binary(plan, discovery, state, destination, *, expected_build_key,
-                       native_uploads, trusted_workflow_sha, repository_root, environ, token):
+                       native_uploads, trusted_workflow_sha, repository_root, environ, token,
+                       sdk_validation_tooling=None):
     """Execute an elected binary; receipt creation follows every input exit check."""
     from sdk_ios_binary import execute
 
@@ -202,9 +204,10 @@ def execute_ios_binary(plan, discovery, state, destination, *, expected_build_ke
     discovery, state, destination = product_reuse._product_materialization_paths(root, discovery, state, destination)
     if destination.exists() or destination.is_symlink():
         raise ValueError("SDK iOS binary worker requires a fresh destination")
+    tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
     with verified_ios_binary_inputs(plan, discovery, state, destination / "inputs",
             expected_build_key=expected_build_key, native_uploads=native_uploads,
-            trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token) as inputs:
+            trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token, **tooling) as inputs:
         ready, producer, version = inputs["ready"], inputs["producer"], inputs["sdkVersion"]
         result = execute(ready, producer=producer, sdk_version=version,
             contract_metadata=inputs["contract"], verified_contract_handoff=inputs["contractHandoff"],
@@ -557,6 +560,7 @@ def _ios_binary_main(argv):
     for lane in lanes:
         parser.add_argument(f"--{lane}-artifact-id", type=int, required=True)
         parser.add_argument(f"--{lane}-artifact-sha256", required=True)
+    parser.add_argument("--sdk-validation-tooling", type=Path)
     arguments = vars(parser.parse_args(argv))
     uploads = {f"ios-{lane}": {
         "artifactId": arguments.pop(lane.replace("-", "_") + "_artifact_id"),
@@ -565,6 +569,9 @@ def _ios_binary_main(argv):
     plan, discovery, state, destination = (arguments.pop(name) for name in (
         "plan", "discovery_root", "state_root", "destination"))
     try:
+        policy = arguments.pop("sdk_validation_tooling")
+        if policy is not None:
+            arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
         execute_ios_binary(plan, discovery, state, destination, **arguments,
             native_uploads=uploads, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:

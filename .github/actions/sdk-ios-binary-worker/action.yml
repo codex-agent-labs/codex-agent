@@ -13,6 +13,9 @@ inputs:
   state-wave:
     default: '0'
     description: Original product state wave.
+  sdk-validation-tooling:
+    default: ''
+    description: Optional caller-owned local authenticated SDK tooling policy.
   trusted-workflow-sha:
     required: true
     description: Reviewed product workflow revision.
@@ -47,6 +50,7 @@ runs:
       uses: ./.github/actions/capture-runtime-state
       with:
         product: sdk-ios-binary
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
         plan-id: ${{ inputs.plan-id }}
         artifact-id: ${{ inputs.artifact-id }}
         artifact-sha256: ${{ inputs.artifact-sha256 }}
@@ -92,8 +96,12 @@ runs:
         RUST_DEVICE_SHA256: ${{ inputs.rust-device-artifact-sha256 }}
         RUST_SIMULATOR_ID: ${{ inputs.rust-simulator-artifact-id }}
         RUST_SIMULATOR_SHA256: ${{ inputs.rust-simulator-artifact-sha256 }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
+        set -euo pipefail
+        tooling=()
+        if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
         python3 -B -m ci.sdk_workflow ios-binary \
           --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
           --destination "$GITHUB_WORKSPACE/build/sdk-ios-worker" \
@@ -104,7 +112,7 @@ runs:
           --rust-device-artifact-id "$RUST_DEVICE_ID" \
           --rust-device-artifact-sha256 "$RUST_DEVICE_SHA256" \
           --rust-simulator-artifact-id "$RUST_SIMULATOR_ID" \
-          --rust-simulator-artifact-sha256 "$RUST_SIMULATOR_SHA256"
+          --rust-simulator-artifact-sha256 "$RUST_SIMULATOR_SHA256" ${tooling[@]+"${tooling[@]}"}
     - if: always() && steps.identity.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
