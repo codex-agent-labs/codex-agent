@@ -83,17 +83,21 @@ def execute(
         compatibility_request=compatibility_request,
         candidate_commit=producer["commit"], candidate_tree=producer["tree"],
     )
-    distribution = root / "codex-agent-runtime-ios/build/apple-verified-distribution"
-    execution = root / "codex-agent-runtime-ios/build/apple-verified-distribution-execution"
+    export_root = root / "build/apple-export" / producer["tree"]
+    fields["codexAgent.appleExportBuildRoot"] = str(export_root)
+    ios_build = export_root / "codex-agent-runtime-ios"
+    distribution = ios_build / "apple-verified-distribution"
+    execution = ios_build / "apple-verified-distribution-execution"
     inputs = [contract_receipt, *(path for path, _ in originals.values())]
     _require_capability_output_separate(destination, [distribution, execution, *inputs])
+    _require_capability_output_separate(export_root, [destination, *inputs])
     _require_capability_output_separate(distribution, [execution, *inputs])
     _require_capability_output_separate(execution, inputs)
-    if destination.exists() or destination.is_symlink() or any(
+    if (export_root.exists() or export_root.is_symlink()
+            or destination.exists() or destination.is_symlink()) or any(
             path.exists() or path.is_symlink() for path in (distribution, execution)):
         raise ValueError("Fresh Apple export requires fresh diagnostics and output roots")
-    for path in (distribution, execution):
-        _prepare_destination(path, root).rmdir()
+    _prepare_destination(export_root, root).rmdir()
     environment, wrapper = _runtime_worker_environment(root, producer, destination, environ)
     destination = _prepare_destination(destination, root)
 
@@ -109,7 +113,7 @@ def execute(
             raise ValueError("Fresh Apple Contract receipt changed during export")
 
     unchanged()
-    if any(path.exists() or path.is_symlink() for path in (distribution, execution)):
+    if export_root.exists() or export_root.is_symlink():
         raise ValueError("Fresh Apple output appeared before execution")
     command = [str(wrapper), *_GRADLE_ARGUMENTS, FRESH_EXPORT_TASK,
                *(f"-P{key}={value}" for key, value in sorted(fields.items()))]

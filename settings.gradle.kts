@@ -17,6 +17,48 @@ listOf(
 }
 
 val rootProjectProperties = gradle.startParameter.projectProperties
+val appleExportBuildRootProperty = "codexAgent.appleExportBuildRoot"
+if (providers.gradleProperty(appleExportBuildRootProperty).isPresent) {
+    require(System.getProperty("org.gradle.project.$appleExportBuildRootProperty") == null &&
+        System.getenv("ORG_GRADLE_PROJECT_$appleExportBuildRootProperty") == null) {
+        "Apple export build root requires an explicit -P project property"
+    }
+    require(gradle.startParameter.taskNames == listOf(
+        ":codex-agent-runtime-ios:exportCodexAgentIosVerifiedDistribution",
+    ) && gradle.startParameter.includedBuilds.isEmpty()) {
+        "Isolated Apple output layout is reserved for the single fresh export task"
+    }
+    val tree = rootProjectProperties["codexAgent.candidateTree"]
+        ?: error("Isolated Apple export requires an explicit candidate tree")
+    require(Regex("[0-9a-f]{40}").matches(tree)) { "Invalid Apple export candidate tree" }
+    val repository = settingsDir.toPath().toRealPath()
+    val expected = repository.resolve("build/apple-export/$tree")
+    val supplied = java.nio.file.Path.of(
+        rootProjectProperties[appleExportBuildRootProperty]
+            ?: error("Missing explicit Apple export build root"),
+    )
+    require(supplied.isAbsolute && supplied.normalize() == supplied && supplied == expected) {
+        "Apple export build root must be the exact repository-owned tree directory"
+    }
+    var ancestor: java.nio.file.Path? = supplied
+    while (ancestor != null && ancestor.startsWith(repository)) {
+        require(!java.nio.file.Files.isSymbolicLink(ancestor) &&
+            (!java.nio.file.Files.exists(ancestor, java.nio.file.LinkOption.NOFOLLOW_LINKS) ||
+                java.nio.file.Files.isDirectory(ancestor, java.nio.file.LinkOption.NOFOLLOW_LINKS))) {
+            "Apple export build root has an unsafe parent"
+        }
+        ancestor = ancestor.parent
+    }
+    require(!java.nio.file.Files.exists(supplied, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+        "Apple export requires a fresh isolated build root"
+    }
+    val exportRoot = supplied.toFile()
+    gradle.beforeProject(org.gradle.api.Action<org.gradle.api.Project> {
+        if (path in setOf(":codex-agent-sdk", ":codex-agent-runtime-ios")) {
+            layout.buildDirectory.set(exportRoot.resolve(name))
+        }
+    })
+}
 val sdkBinaryRequest = rootProjectProperties["codexAgent.product"] == "sdk" &&
     rootProjectProperties["codexAgent.phase"] == "binary"
 var authenticatedSdkContractRepository: java.nio.file.Path? = null

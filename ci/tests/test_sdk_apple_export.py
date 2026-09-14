@@ -53,14 +53,28 @@ class SdkAppleExportTest(unittest.TestCase):
         self.process_exit = 0
         self.process_calls = 0
         self.after_process = lambda fields: None
+        self.normal_outputs = {}
+        for module in ("codex-agent-runtime-ios", "codex-agent-sdk"):
+            normal = self.root / module / "build"
+            normal.mkdir(parents=True)
+            (normal / "original-package-sentinel.bin").write_bytes(b"already admitted normal package\x00\xff")
+            self.normal_outputs[normal] = regular_file_inventory(normal)
+
+    def tearDown(self):
+        for path, original in self.normal_outputs.items():
+            self.assertEqual(original, regular_file_inventory(path), "Fresh export must not touch normal package roots")
+
+    @property
+    def isolation(self):
+        return self.root / "build/apple-export" / self.producer["tree"]
 
     @property
     def distribution(self):
-        return self.root / "codex-agent-runtime-ios/build/apple-verified-distribution"
+        return self.isolation / "codex-agent-runtime-ios/apple-verified-distribution"
 
     @property
     def execution(self):
-        return self.root / "codex-agent-runtime-ios/build/apple-verified-distribution-execution"
+        return self.isolation / "codex-agent-runtime-ios/apple-verified-distribution-execution"
 
     def process(self, command, **kwargs):
         self.process_calls += 1
@@ -73,7 +87,10 @@ class SdkAppleExportTest(unittest.TestCase):
             "codexAgent.candidateCommit", "codexAgent.candidateTree",
             "codexAgent.iosContractBinaryStage", "codexAgent.contractVersion",
             "codexAgent.iosNativeEvidenceDirectory", "codexAgent.sdkCompatibilityRequest",
+            "codexAgent.appleExportBuildRoot",
         }, set(fields))
+        self.assertEqual(str(self.isolation), fields["codexAgent.appleExportBuildRoot"])
+        self.assertFalse(self.isolation.exists(), "Isolation root must still be fresh when Gradle starts")
         for name in ("codexAgent.iosContractBinaryStage", "codexAgent.iosNativeEvidenceDirectory",
                      "codexAgent.sdkCompatibilityRequest"):
             self.assertFalse(Path(fields[name]).is_relative_to(self.destination))
@@ -130,6 +147,8 @@ class SdkAppleExportTest(unittest.TestCase):
         self.assertEqual(originals["contract"], regular_file_inventory(self.contract))
         self.assertEqual(originals["native"], regular_file_inventory(self.native))
         self.assertEqual(originals["sdk"], regular_file_inventory(self.sdk))
+        for path, original in self.normal_outputs.items():
+            self.assertEqual(original, regular_file_inventory(path))
 
     def test_failure_keeps_raw_diagnostics_and_never_returns_outputs(self):
         self.process_exit = 7
@@ -183,9 +202,37 @@ class SdkAppleExportTest(unittest.TestCase):
                      "contract": b"current Contract\x00\xff",
                      "sdk": b'{"caller":"verified S858"}\n',
                  }[name])
-                for output in (self.distribution, self.execution):
-                    if output.exists():
-                        shutil.rmtree(output)
+                if self.isolation.exists():
+                    shutil.rmtree(self.isolation)
+
+    def test_stale_isolation_root_rejects_even_without_expected_outputs_and_preserves_originals(self):
+        self.isolation.mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError, "fresh"):
+            self.invoke()
+        self.assertEqual(0, self.process_calls)
+        self.assertFalse(self.destination.exists())
+        stale = self.isolation / "codex-agent-sdk/stale-package.bin"
+        stale.parent.mkdir()
+        stale.write_bytes(b"preexisting isolated package\x00\xfe")
+        before = regular_file_inventory(self.isolation)
+        with self.assertRaisesRegex(ValueError, "fresh"):
+            self.invoke()
+        self.assertEqual(before, regular_file_inventory(self.isolation))
+        self.assertEqual(0, self.process_calls)
+        self.assertFalse(self.destination.exists())
+
+    def test_symlinked_isolation_parent_rejects_before_process_without_outside_writes(self):
+        outside = self.root.parent / "outside-export"
+        outside.mkdir()
+        (outside / "sentinel").write_bytes(b"must stay unchanged")
+        before = regular_file_inventory(outside)
+        self.isolation.parent.parent.mkdir(exist_ok=True)
+        self.isolation.parent.symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            self.invoke()
+        self.assertEqual(0, self.process_calls)
+        self.assertEqual(before, regular_file_inventory(outside))
+        self.assertFalse(self.destination.exists())
 
     def test_contract_receipt_mutation_after_process_rejects(self):
         original = self.receipt.read_bytes()
