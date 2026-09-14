@@ -5,10 +5,16 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
 from unittest.mock import patch
+
+from ci import sdk_workflow  # Bootstrap the existing script-module namespace.
+from ci import product_reuse, sdk_native_continuation
+from ci.tests import test_sdk_native_continuation as selector_fixture
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,21 +49,23 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
             "buildKey": "sha256:" + digest * 64, "runner": "ubuntu-24.04", "runnerOs": "Linux", "runnerArch": "X64",
             "toolchainProfile": None, "producerRole": None, "supervisor": None}
 
-    def select(self, rows):
-        return self.snippet("sdk-native-plan", {"MATRIX": json.dumps({"include": rows})})
-
     def summary(self, needs):
-        return self.snippet("sdk-native-packages", {"RESULTS": json.dumps(needs)})
+        with patch.object(sdk_native_continuation, "select_native_state",
+                          wraps=sdk_native_continuation.select_native_state) as select:
+            result = self.snippet("sdk-native-packages", {"RESULTS": json.dumps(needs)})
+        select.assert_called_once_with(needs, stage="package")
+        return result
 
     @staticmethod
     def needs():
         return {"sdk-javascript": {"result": "success", "outputs": {
                     "artifact_id": "71", "artifact_digest": "sha256:" + "d" * 64,
                     "state_wave": "0", "sdk_state_wave": "2"}},
-                "sdk-native-plan": {"result": "success", "outputs": {"sdk_workers_required": "true"}},
+                "sdk-native-plan": {"result": "success", "outputs": {"sdk_workers_required": "true", "preparation_required": "true"}},
                 "sdk-native-prepare": {"result": "success", "outputs": {"artifact_id": "72"}},
                 "sdk-native-workers": {"result": "success", "outputs": {}},
-                "sdk-collect-4": {"result": "success", "outputs": {"wave_failed": "false"}}}
+                "sdk-collect-4": {"result": "success", "outputs": {"wave_failed": "false",
+                    "artifact_id": "73", "artifact_digest": "sha256:" + "e" * 64}}}
 
     def test_original_terminal_state_is_recaptured_before_one_preparation_and_parallel_packages(self):
         planned = self.job("sdk-native-plan")
@@ -74,6 +82,9 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         self.assertEqual(1, prepare.count("uses: ./.github/actions/sdk-native-prepare"))
         self.assertIn("component: ${{ needs.sdk-native-plan.outputs.preparation_component }}", prepare)
         self.assertIn("build-key: ${{ needs.sdk-native-plan.outputs.preparation_build_key }}", prepare)
+        self.assertIn("needs.sdk-native-plan.outputs.preparation_required == 'true'", prepare)
+        for field in ("phase", "target"):
+            self.assertIn("preparation-" + field + ": ${{ needs.sdk-native-plan.outputs.preparation_" + field + " }}", prepare)
         workers = self.job("sdk-native-workers")
         self.assertIn("name: sdk-${{ matrix.component }}-package-desktop", workers)
         self.assertIn("fail-fast: false", workers)
@@ -110,30 +121,63 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         gate = self.job("merge-gate").split("    runs-on:", 1)[0]
         self.assertIn("sdk-native-packages", gate)
 
-    def test_preparation_chooses_one_sorted_exact_row_or_noop(self):
-        rows = [self.row("rust", "e"), self.row("python", "d"), self.row("dart", "c"),
-                self.row("csharp", "b"), self.row("cpp", "a")]
-        expected = {"component": "cpp", "build_key": rows[-1]["buildKey"]}
-        self.assertEqual(expected, self.select(rows))
-        self.assertEqual(expected, self.select(list(reversed(rows))))
-        self.assertEqual({"component": "rust", "build_key": rows[0]["buildKey"]}, self.select(rows[:1]))
-        self.assertEqual({}, self.select([]))
+    def test_preparation_passes_full_ready_plans_and_caller_policy_to_existing_selector(self):
+        # Selector semantics have dedicated real-plan tests; these are explicit
+        # inspection/selector seams proving the workflow never forges a package.
+        rows = [{"synthetic": "unchanged authenticated ready-plan boundary"}]
+        for phase, target in (("package", "desktop"), ("validation", "macos-arm64"), ("metadata", "desktop")):
+            selected = dict(preparation_required=True, component="rust", phase=phase, target=target, build_key="sha256:" + "a" * 64)
+            policy = {"synthetic": "caller-owned policy boundary"}
+            with self.subTest(phase=phase), patch.object(product_reuse, "inspect_products", return_value={"readyPlans": rows}) as inspect, \
+                    patch.object(product_reuse, "_canonical_control", return_value=policy), \
+                    patch.object(sdk_native_continuation, "select_preparation_anchor", return_value=selected) as select:
+                output = self.snippet("sdk-native-plan", {"PLAN": "/original/plan", "DISCOVERY": "/original/discovery",
+                    "STATE": "/original/state", "SDK_VALIDATION_TOOLING": "/caller/policy"})
+                select.assert_called_once_with(rows)
+                self.assertIs(rows, select.call_args.args[0])
+                self.assertEqual((Path("/original/plan"), Path("/original/discovery"), Path("/original/state")), inspect.call_args.args)
+                self.assertIs(policy, inspect.call_args.kwargs["sdk_validation_tooling"])
+                self.assertEqual({**selected, "preparation_required": "true"}, output)
 
-    def test_selector_rejects_any_invalid_or_duplicate_row_before_outputs(self):
-        changes = (("component", "javascript"), ("product", "runtime"), ("phase", "validation"),
-                   ("target", "linux-x64"), ("runner", "caller-runner"), ("runnerOs", "macOS"),
-                   ("runnerArch", "ARM64"), ("buildKey", "sha256:" + "a" * 63),
-                   ("buildKey", "sha256:" + "A" * 64))
-        for field, value in changes:
-            invalid = {**self.row("rust"), field: value}
-            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
-                self.select([self.row("cpp"), invalid])
-        with self.assertRaises(ValueError):
-            self.select([self.row("rust"), self.row("rust", "b")])
+    def test_selector_failure_and_noop_do_not_manufacture_preparation(self):
+        environment = {"PLAN": "/plan", "DISCOVERY": "/discovery", "STATE": "/state", "SDK_VALIDATION_TOOLING": ""}
+        empty = dict(preparation_required=False, component="", phase="", target="", build_key="")
+        with patch.object(product_reuse, "inspect_products", return_value={"readyPlans": []}) as inspect, \
+                patch.object(sdk_native_continuation, "select_preparation_anchor", return_value=empty) as select:
+            self.assertEqual({**empty, "preparation_required": "false"}, self.snippet("sdk-native-plan", environment))
+            self.assertNotIn("sdk_validation_tooling", inspect.call_args.kwargs)
+            select.side_effect = ValueError("invalid original ready plans")
+            with self.assertRaises(ValueError):
+                self.snippet("sdk-native-plan", environment)
+
+    def test_saved_plan_imports_in_fresh_process_before_inspection_seam(self):
+        match = re.search(r"(?ms)^          python3 - <<'PY'\n(.*?)^          PY$", self.job("sdk-native-plan"))
+        code = textwrap.dedent(match[1])
+        # Execute the exact production import prefix first. No fixture/bootstrap
+        # imports in the child may mask missing script-module path setup.
+        prefix, suffix = code.split("policy = os.environ['SDK_VALIDATION_TOOLING']", 1)
+        seam = "\nimport json\nfrom unittest.mock import Mock\ninspect_products = Mock(return_value={'readyPlans': json.loads(os.environ['READY_PLANS'])})\n"
+        code = prefix + seam + "policy = os.environ['SDK_VALIDATION_TOOLING']" + suffix
+        anchor = selector_fixture.ready("python", "validation", "macos-arm64")
+        for rows in ([], [anchor]):
+            with self.subTest(ready=bool(rows)), tempfile.TemporaryDirectory(prefix="native-plan-import-") as temporary:
+                output = Path(temporary) / "output"
+                env = {key: value for key, value in os.environ.items() if not key.startswith("PYTHON")}
+                env.update(PLAN="/original/plan", DISCOVERY="/original/discovery", STATE="/original/state",
+                           SDK_VALIDATION_TOOLING="", GITHUB_OUTPUT=str(output), READY_PLANS=json.dumps(rows))
+                result = subprocess.run([sys.executable, "-B", "-c", code], cwd=ROOT, env=env,
+                                        capture_output=True, text=True)
+                self.assertEqual(0, result.returncode, result.stderr)
+                expected = dict(preparation_required="false", component="", phase="", target="", build_key="")
+                if rows:
+                    expected.update(preparation_required="true", component="python", phase="validation",
+                                    target="macos-arm64", build_key=anchor["buildKey"])
+                self.assertEqual(expected, dict(line.split("=", 1) for line in output.read_text().splitlines()))
 
     def test_summary_requires_planning_and_every_elected_result(self):
         base = self.needs()
-        self.assertEqual({}, self.summary(base))
+        self.assertEqual({"artifact_id": "73", "artifact_digest": "sha256:" + "e" * 64,
+                          "state_wave": "0", "sdk_state_wave": "4"}, self.summary(base))
         for name in ("sdk-javascript", "sdk-native-plan", "sdk-native-prepare", "sdk-native-workers", "sdk-collect-4"):
             for result in ("failure", "cancelled", "skipped"):
                 needs = deepcopy(base)
@@ -152,12 +196,14 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         for no_handoff in (False, True):
             base = self.needs()
             base["sdk-native-plan"]["outputs"]["sdk_workers_required"] = "false"
+            base["sdk-native-plan"]["outputs"]["preparation_required"] = "false"
             if no_handoff:
                 base["sdk-javascript"]["outputs"] = {}
                 base["sdk-native-plan"] = {"result": "skipped", "outputs": {}}
             for name in ("sdk-native-prepare", "sdk-native-workers", "sdk-collect-4"):
                 base[name] = {"result": "skipped", "outputs": {}}
-            self.assertEqual({}, self.summary(base))
+            expected = base["sdk-javascript"]["outputs"] if not no_handoff else dict(artifact_id="", artifact_digest="", state_wave="", sdk_state_wave="")
+            self.assertEqual(expected, self.summary(base))
             for name in ("sdk-native-prepare", "sdk-native-workers", "sdk-collect-4"):
                 needs = deepcopy(base)
                 needs[name]["result"] = "success"
@@ -166,6 +212,16 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
             if no_handoff:
                 base["sdk-native-plan"]["result"] = "success"
                 with self.assertRaises(ValueError): self.summary(base)
+
+    def test_preparation_can_run_for_later_anchor_without_package_work(self):
+        needs = self.needs()
+        needs["sdk-native-plan"]["outputs"].update(sdk_workers_required="false", preparation_required="true")
+        for name in ("sdk-native-workers", "sdk-collect-4"):
+            needs[name] = {"result": "skipped", "outputs": {}}
+        self.assertEqual(needs["sdk-javascript"]["outputs"], self.summary(needs))
+        needs["sdk-native-prepare"]["result"] = "skipped"
+        with self.assertRaises(ValueError):
+            self.summary(needs)
 
 
 if __name__ == "__main__":
