@@ -18,7 +18,7 @@ from product_reuse import (
 )
 from products.contract_projection import verify_contract_component_projection
 from products.inventory import (
-    load_json_bytes, publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
+    load_canonical_json_bytes, load_json_bytes, publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
     require_exact_keys, require_semver, require_sha256, sha256_file, snapshot_regular_tree, write_canonical_json,
 )
 from products.runtime_attestation import build_runtime_variant_attestation, read_runtime_variant_handoff
@@ -27,6 +27,7 @@ from products.sdk_runtime_content import (
     _native_desktop_report, _native_runtime_capture, verify_native_runtime_presigning_content,
 )
 from products.signatures import load_keyring, require_active_release_key
+from products.signing_isolation import require_no_signing_secret
 
 
 def attest_runtime_variant_ci(
@@ -39,6 +40,7 @@ def attest_runtime_variant_ci(
     token: str | None = None, release_handoffs: tuple[Path, ...] = (),
     expected_receipt_sha256s: Mapping[str, str] | None = None,
     expected_contract_receipt_sha256: str | None = None,
+    expected_build_key: str | None = None,
 ) -> dict[str, Any]:
     """Admit exact originals before key access; retain full external proof once.
 
@@ -90,6 +92,12 @@ state before aggregate/SDK continuation. A success here does not elect a plan.
         with _native_runtime_capture(target, runtime_stage_root, phase_receipts,
                                      variant_payload, Path(contract["payload"])) as captured:
             runtime, receipts, payload, contract_payload = captured
+            if expected_build_key is not None:
+                expected = require_sha256(expected_build_key, "Selected Runtime metadata build key")
+                metadata = load_canonical_json_bytes(read_regular_file_bytes(
+                    receipts["metadata"], max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
+                if metadata["buildKey"] != expected:
+                    raise ValueError("Runtime metadata receipt differs from the caller's selected build key")
             if expected_receipt_sha256s is not None:
                 require_exact_keys(expected_receipt_sha256s, set(receipts), "Selected Runtime receipt digests")
                 if any(sha256_file(path) != require_sha256(expected_receipt_sha256s[phase], "Selected Runtime receipt digest")
@@ -166,6 +174,8 @@ def attest_runtime_state_ci(
 Candidate source is data for Git inventory only; no candidate script, Gradle
 process or product compiler is executed. The reviewed source remains separate.
 """
+    if sdk_validation_tooling is not None:
+        require_no_signing_secret(environment)
     trusted, producer, _, _, _ = verify_product_release_context(
         repository_root, trusted_source_sha=trusted_source_sha, trusted_workflow_sha=trusted_workflow_sha,
         transport_producer=transport_producer, event_payload=event_payload, environment=environment)
@@ -223,7 +233,8 @@ process or product compiler is executed. The reviewed source remains separate.
                 contract_version=selection["contractVersion"], token=token,
                 release_handoffs=(*release_handoffs, *(selected_root / path for path in selection["releaseHandoffs"])),
                 expected_receipt_sha256s=selection["receiptSha256s"],
-                expected_contract_receipt_sha256=selection["contractReceiptSha256"])
+                expected_contract_receipt_sha256=selection["contractReceiptSha256"],
+                expected_build_key=expected_build_key)
             if regular_file_inventory(root, allow_empty=True) != before:
                 raise ValueError("Runtime selected originals changed during protected verification")
             snapshot_regular_tree(capture, prepared / "selected-state-transport", allow_empty=True)
@@ -247,7 +258,13 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--state-wave", type=int, choices=range(6), required=True)
     parser.add_argument("--release-handoff", type=Path, action="append", default=[])
     parser.add_argument("--sdk-validation-tooling", type=Path)
+    parser.add_argument("--prepare-only", action="store_true",
+                        help="Materialize original signing inputs on a non-secret runner; never sign")
     args = parser.parse_args(argv)
+    if args.prepare_only:
+        require_no_signing_secret(os.environ)
+        if args.variant_handoff or args.release_handoff:
+            parser.error("preparation selects retained evidence from original state, not handoff overrides")
     variants = {}
     for value in args.variant_handoff:
         target, separator, path = value.partition("=")
@@ -275,20 +292,26 @@ def main(argv: list[str] | None = None) -> None:
     if args.sdk_validation_tooling is not None:
         from product_reuse import _canonical_control
         tooling = _canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")
-    if args.target == "aggregate":
+    if args.prepare_only:
+        from runtime_signing_preparation import prepare_runtime_signing_inputs
+        caller = prepare_runtime_signing_inputs
+        component_arguments = {"target": args.target}
+    elif args.target == "aggregate":
         from runtime_aggregate_release import attest_runtime_aggregate_state_ci
         caller = attest_runtime_aggregate_state_ci
         component_arguments = {"variant_handoffs": variants}
     else:
         caller = attest_runtime_state_ci
         component_arguments = {"target": args.target}
+    if not args.prepare_only:
+        component_arguments["release_handoffs"] = tuple(args.release_handoff)
     caller(
         args.repository_root, args.candidate_root, args.plan, args.destination, **component_arguments,
         expected_build_key=args.expected_build_key, artifact_id=args.artifact_id,
         artifact_sha256=args.artifact_sha256, state_wave=args.state_wave,
         trusted_source_sha=args.trusted_source_sha, trusted_workflow_sha=args.trusted_workflow_sha,
         transport_producer=producer, event_payload=event_payload, environment=os.environ,
-        token=os.environ.get("GITHUB_TOKEN"), release_handoffs=tuple(args.release_handoff),
+        token=os.environ.get("GITHUB_TOKEN"),
         sdk_validation_tooling=tooling)
 
 

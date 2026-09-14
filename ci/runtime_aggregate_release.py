@@ -33,6 +33,7 @@ from products.runtime_aggregate import (
 )
 from products.runtime_attestation import read_runtime_variant_handoff
 from products.sdk_runtime_content import verify_native_runtime_presigning_content
+from products.signing_isolation import require_no_signing_secret
 from products.signatures import load_keyring, require_active_release_key
 
 
@@ -269,6 +270,8 @@ def attest_runtime_aggregate_state_ci(
     Retained aggregate release admission never falls back to original CI or
     re-signs. Current selected-state transport is still authenticated separately.
     """
+    if sdk_validation_tooling is not None:
+        require_no_signing_secret(environment)
     if len(release_handoffs) > 1:
         raise ValueError("Runtime aggregate reuse requires exactly one direct release carrier")
     trusted, producer, _, _, _ = verify_product_release_context(
