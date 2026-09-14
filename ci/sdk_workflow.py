@@ -334,7 +334,7 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
 
 def prepare_native(plan, discovery, state, destination, *, component, expected_build_key,
                    artifact_id, artifact_sha256, trusted_workflow_sha, keyring, keys_directory,
-                   repository_root, environ, token):
+                   repository_root, environ, token, sdk_validation_tooling=None):
     """Prepare once from elected original inputs; this does not admit an upload.
 
     The transport caller must bind these outputs and the retained original plan
@@ -353,15 +353,16 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
     plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     instance = PhaseInstanceId("sdk", component, "package", "desktop")
     fields = {"product": "sdk", "component": component, "phase": "package", "target": "desktop"}
+    tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
     with verified_inputs(plan, discovery, state, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-            repository_root=root, environ=environ, token=token) as inputs:
+            repository_root=root, environ=environ, token=token, **tooling) as inputs:
         selection = inputs["selection"]
         if fields not in selection["consumers"]:
             raise ValueError("SDK native preparation package is not selected")
         prepared = destination / "inputs"
         ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
-            expected_build_key=expected_build_key, repository_root=root, environ=environ)
+            expected_build_key=expected_build_key, repository_root=root, environ=environ, **tooling)
         producer = product_reuse.validate_producer(product_reuse._canonical_control(
             prepared / "producer.json", "Elected native SDK producer"))
         contract = product_reuse.validate_phase_receipt(product_reuse._canonical_control(
@@ -604,16 +605,17 @@ def main(argv=None):
         parser.add_argument(f"--{name}", required=worker)
     if javascript:
         parser.add_argument("--phase", choices=("package", "validation"), required=True)
-        parser.add_argument("--sdk-validation-tooling", type=Path)
     elif native_prepare:
         parser.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
     else:
         parser.add_argument("--expected-metadata-receipt-sha256")
+    if worker:
+        parser.add_argument("--sdk-validation-tooling", type=Path)
     arguments = vars(parser.parse_args(argv))
     plan, discovery, state, destination = (arguments.pop(name) for name in ("plan", "discovery_root", "state_root", "destination"))
     try:
         action = prepare_native if native_prepare else execute_javascript if javascript else stage
-        if javascript:
+        if worker:
             policy = arguments.pop("sdk_validation_tooling")
             if policy is not None:
                 arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")

@@ -146,6 +146,10 @@ class SdkToolingLocatorTest(unittest.TestCase):
             ("sdk-collect-1", "sdk-workers-2", "      - id: collect\n"),
             ("sdk-workers-2", "sdk-collect-2", "      - uses: ./.github/actions/sdk-javascript-worker\n"),
             ("sdk-collect-2", "sdk-javascript", "      - id: collect\n"),
+            ("sdk-native-plan", "sdk-native-prepare", "      - id: capture\n"),
+            ("sdk-native-prepare", "sdk-native-workers", "      - id: prepare\n"),
+            ("sdk-native-workers", "sdk-collect-4", "      - uses: ./.github/actions/sdk-native-package-worker\n"),
+            ("sdk-collect-4", "sdk-native-packages", "      - id: collect\n"),
         )
         for name, following, consumer_marker in jobs:
             job = self.source_text.split(f"\n  {name}:\n", 1)[1].split(

@@ -26,7 +26,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             preparation_component, preparation_build_key, preparation_state,
             prepared_artifact_id, prepared_artifact_sha256,
             sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
-            keyring, keys_directory, repository_root, environ, token):
+            keyring, keys_directory, repository_root, environ, token, sdk_validation_tooling=None):
     """Admit one package inside full S858/original Runtime input verification.
 
     Preparation identity comes from replaying its original control state, never
@@ -60,19 +60,20 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
     instance = PhaseInstanceId("sdk", component, "package", "desktop")
     identity = {"product": "sdk", "component": component, "phase": "package", "target": "desktop"}
     preparation_identity = {**identity, "component": preparation_component}
+    tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
     with tempfile.TemporaryDirectory(prefix="sdk-native-package-") as temporary:
         private = Path(temporary).resolve()
         candidate, capture = private / "shard", private / "prepared-upload"
         with sdk_workflow.verified_inputs(plan, discovery, state,
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-                repository_root=root, environ=environ, token=token) as inputs:
+                repository_root=root, environ=environ, token=token, **tooling) as inputs:
             controls_unchanged()
             selection = inputs["selection"]
             if identity not in selection["consumers"]:
                 raise ValueError("Native SDK package is not selected")
             inspected = product_reuse.inspect_products(plan, discovery, preparation_state,
-                repository_root=root, environ=environ)
+                repository_root=root, environ=environ, **tooling)
             elected = [row for row in inspected["readyPlans"]
                        if all(row.get(name) == value for name, value in preparation_identity.items())]
             if (len(elected) != 1 or set(elected[0]) != PHASE_PLAN_KEYS
@@ -88,7 +89,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             capture_inventory = regular_file_inventory(capture, allow_empty=True)
             prepared = destination / "inputs"
             ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
-                expected_build_key=expected_build_key, repository_root=root, environ=environ)
+                expected_build_key=expected_build_key, repository_root=root, environ=environ, **tooling)
             prepared_inventory = regular_file_inventory(prepared, allow_empty=True)
             producer = product_reuse.validate_producer(product_reuse._canonical_control(
                 prepared / "producer.json", "Elected native package producer"))
@@ -191,8 +192,12 @@ def main(argv=None) -> int:
         parser.add_argument(f"--{name}", required=True)
     for name in ("prepared-artifact-id", "sdk-inputs-artifact-id"):
         parser.add_argument(f"--{name}", type=int, required=True)
+    parser.add_argument("--sdk-validation-tooling", type=Path)
     arguments = vars(parser.parse_args(argv))
     try:
+        policy = arguments.pop("sdk_validation_tooling")
+        if policy is not None:
+            arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
         execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:
         parser.error(str(error))

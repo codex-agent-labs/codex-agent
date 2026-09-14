@@ -58,6 +58,9 @@ inputs:
   tree:
     required: true
     description: Exact tested source tree.
+  sdk-validation-tooling:
+    default: ''
+    description: Optional current-job caller-owned tooling policy path, already authenticated and provisioned before capture. Never selected from worker or state uploads.
 runs:
   using: composite
   steps:
@@ -66,6 +69,7 @@ runs:
       with:
         product: sdk
         sdk-family: native-package
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
         plan-id: ${{ inputs.plan-id }}
         artifact-id: ${{ inputs.artifact-id }}
         artifact-sha256: ${{ inputs.artifact-sha256 }}
@@ -81,12 +85,14 @@ runs:
         ARTIFACT_SHA256: ${{ inputs.preparation-state-sha256 }}
         STATE_WAVE: ${{ inputs.preparation-state-wave }}
         SDK_STATE_WAVE: ${{ inputs.preparation-sdk-state-wave }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
         selected=()
         if [ -n "$SDK_STATE_WAVE" ]; then selected=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
+        if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
         python3 -B -m ci.sdk_workflow capture --family native-package --plan "$PLAN" \
           --destination "$GITHUB_WORKSPACE/build/native-preparation-input" \
           --repository-root "$GITHUB_WORKSPACE" --artifact-id "$ARTIFACT_ID" \
@@ -160,9 +166,13 @@ runs:
         PREPARED_ARTIFACT_SHA256: ${{ inputs.prepared-artifact-sha256 }}
         SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
         SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
+        set -euo pipefail
+        tooling=()
+        if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
         python3 -B -m ci.sdk_workflow native-package --plan "$PLAN" --discovery-root "$DISCOVERY" \
           --state-root "$STATE" --preparation-state-root "$PREPARATION_STATE" \
           --destination "$GITHUB_WORKSPACE/build/sdk-worker" --repository-root "$GITHUB_WORKSPACE" \
@@ -172,7 +182,7 @@ runs:
           --sdk-inputs-artifact-id "$SDK_INPUTS_ID" --sdk-inputs-artifact-sha256 "$SDK_INPUTS_SHA256" \
           --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
           --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
-          --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys"
+          --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" ${tooling[@]+"${tooling[@]}"}
     - if: always() && steps.identity.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:

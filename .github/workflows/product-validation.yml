@@ -2394,7 +2394,7 @@ jobs:
 
 
   sdk-native-plan:
-    needs: [plan, sdk-javascript]
+    needs: [plan, sdk-plan, sdk-javascript]
     if: >-
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -2412,11 +2412,26 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
         uses: ./.github/actions/capture-runtime-state
         with:
           product: sdk
           sdk-family: native-package
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
@@ -2448,7 +2463,7 @@ jobs:
 
   sdk-native-prepare:
     name: sdk-native-prepare
-    needs: [plan, sdk-javascript, sdk-native-plan, sdk-inputs]
+    needs: [plan, sdk-plan, sdk-javascript, sdk-native-plan, sdk-inputs]
     if: >-
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-plan.outputs.sdk_workers_required == 'true'
@@ -2469,9 +2484,24 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: prepare
         uses: ./.github/actions/sdk-native-prepare
         with:
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
@@ -2486,7 +2516,7 @@ jobs:
 
   sdk-native-workers:
     name: sdk-${{ matrix.component }}-package-desktop
-    needs: [plan, sdk-javascript, sdk-native-plan, sdk-native-prepare, sdk-inputs]
+    needs: [plan, sdk-plan, sdk-javascript, sdk-native-plan, sdk-native-prepare, sdk-inputs]
     if: >-
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-plan.outputs.sdk_workers_required == 'true'
@@ -2501,8 +2531,23 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-native-package-worker
         with:
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
@@ -2525,7 +2570,7 @@ jobs:
 
   sdk-collect-4:
     name: sdk-collect-4
-    needs: [plan, sdk-javascript, sdk-native-plan, sdk-native-prepare, sdk-native-workers]
+    needs: [plan, sdk-plan, sdk-javascript, sdk-native-plan, sdk-native-prepare, sdk-native-workers]
     if: >-
       always() && needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-plan.result == 'success' &&
@@ -2542,11 +2587,26 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
           product: sdk
           sdk-family: native-package
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
