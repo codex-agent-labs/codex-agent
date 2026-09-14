@@ -29,9 +29,8 @@ class SdkToolingLocatorTest(unittest.TestCase):
     def setUpClass(cls):
         cls.source_text = WORKFLOW.read_text(encoding="utf-8")
         cls.job = cls.source_text.split("\n  sdk-plan:\n", 1)[1].split("\n  sdk-workers-1:\n", 1)[0]
-        locator = cls.job.split("      - id: tooling-locator\n", 1)[1].split(
-            "      - name: Select installed caller Java for SDK tooling\n", 1,
-        )[0]
+        cls.locator_job = cls.source_text.split("\n  product-tooling:\n", 1)[1].split("\n  sdk-plan:\n", 1)[0]
+        locator = cls.locator_job.split("      - id: tooling-locator\n", 1)[1]
         embedded = locator.split("          python3 - <<'PY'\n", 1)[1].rsplit("          PY", 1)[0]
         cls.script = textwrap.dedent(embedded)
 
@@ -120,19 +119,20 @@ class SdkToolingLocatorTest(unittest.TestCase):
                 self.assertIsNone(values)
 
     def test_tooling_capture_precedes_state_capture_and_forwards_only_its_policy(self):
-        self.assertIn("needs: [plan, tooling-attestation,", self.job)
-        locator = self.job.index("      - id: tooling-locator\n")
+        self.assertIn("needs: [plan, product-tooling,", self.job)
+        self.assertIn("needs: [plan, tooling-attestation]", self.locator_job)
+        self.assertNotIn("runtime-continuation", self.locator_job)
+        self.assertNotIn("sdk-inputs", self.locator_job)
         tooling = self.job.index("      - id: tooling\n")
         parent = self.job.index("      - id: parent\n")
         capture = self.job.index("      - id: capture\n")
-        self.assertLess(locator, tooling)
         self.assertLess(tooling, parent)
         self.assertLess(parent, capture)
-        self.assertIn("if: needs.plan.outputs.tooling_required == 'true'", self.job[locator:tooling])
+        self.assertIn("needs.plan.outputs.tooling_required == 'true'", self.locator_job)
         for binding in (
-            "artifact-id: ${{ steps.tooling-locator.outputs.artifact_id }}",
-            "artifact-sha256: ${{ steps.tooling-locator.outputs.artifact_sha256 }}",
-            "transport-producer: ${{ steps.tooling-locator.outputs.transport_producer }}",
+            "artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}",
+            "artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}",
+            "transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}",
         ):
             self.assertIn(binding, self.job[tooling:parent])
         self.assertIn(
@@ -182,6 +182,24 @@ class SdkToolingLocatorTest(unittest.TestCase):
                 outputs = job.split("    steps:\n", 1)[0]
                 self.assertNotIn("tooling-policy", outputs)
                 self.assertNotIn("tooling_artifact", outputs)
+
+    def test_upstream_resume_and_sdk_input_jobs_capture_before_semantic_replay(self):
+        gate = self.source_text.split('\n  merge-gate:\n', 1)[1]
+        self.assertIn('product-tooling', gate.split('    steps:', 1)[0])
+        for name, end, marker in (
+            ('product-resume', 'runtime-linux-arm64-supervisor', 'ci/product_reuse.py resume-products'),
+            ('sdk-inputs', 'android', 'uses: ./.github/actions/capture-runtime-state'),
+        ):
+            job = self.source_text.split(f'\n  {name}:\n', 1)[1].split(f'\n  {end}:\n', 1)[0]
+            with self.subTest(job=name):
+                header = job.split('    steps:', 1)[0]
+                self.assertIn('product-tooling', header)
+                self.assertIn('always()', header)
+                self.assertLess(job.index('uses: ./.github/actions/capture-sdk-tooling'), job.index(marker))
+                self.assertIn('artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}', job)
+                self.assertIn('SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}', job)
+                self.assertIn('--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"', job)
+                self.assertNotIn('tooling-policy', header)
 
 
 if __name__ == "__main__":

@@ -98,7 +98,9 @@ class RuntimeWorkflowTest(unittest.TestCase):
         for forbidden in ('setup-kmp', './gradlew', 'ssh-keygen', 'environment: product-attestation'):
             self.assertNotIn(forbidden, job)
         gate = source.split('  merge-gate:\n', 1)[1]
-        self.assertIn('runtime-aggregate-attestation, sdk-inputs, android', gate)
+        dependencies = gate.split('needs: [', 1)[1].split(']', 1)[0].split(', ')
+        for required in ('runtime-aggregate-attestation', 'sdk-inputs', 'android'):
+            self.assertIn(required, dependencies)
         self.assertIn('if [ "$SDK_INPUTS_REQUIRED" = true ]; then', gate)
         self.assertIn('test "$SDK_INPUTS_RESULT" = success || exit 1', gate)
         self.assertIn('needs.sdk-inputs.outputs.artifact_digest', gate)

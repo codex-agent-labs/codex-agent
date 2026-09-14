@@ -84,7 +84,7 @@ runs:
         selected=()
         command=(python3 -B ci/runtime_workflow.py capture)
         case "$STATE_PRODUCT" in
-          runtime) test -z "$SDK_STATE_WAVE$SDK_FAMILY${SDK_VALIDATION_TOOLING:-}" ;;
+          runtime) test -z "$SDK_STATE_WAVE$SDK_FAMILY" ;;
           sdk|sdk-ios-binary)
             test -z "$COMPONENT$PHASE$TARGET$BUILD_KEY"
             command=(python3 -B -m ci.sdk_workflow capture)
@@ -100,13 +100,14 @@ runs:
                 *) echo 'Unknown SDK family' >&2; exit 1 ;;
               esac
             fi
-            if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then
-              selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
-            fi ;;
+            ;;
           *) echo 'Unknown product state projection' >&2; exit 1 ;;
         esac
         if [ -n "$COMPONENT$PHASE$TARGET$BUILD_KEY" ]; then
           selected=(--component "$COMPONENT" --phase "$PHASE" --target "$TARGET" --expected-build-key "$BUILD_KEY")
+        fi
+        if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then
+          selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
         fi
         "${command[@]}" \
           --plan build/runtime-plan/impact-plan.json --destination build/runtime-input \

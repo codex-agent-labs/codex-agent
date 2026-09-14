@@ -42,12 +42,14 @@ def _selection(plan, discovery, state, repository_root, environ, sdk_validation_
 
 def stage(plan, discovery, state, destination, *, keyring, keys_directory,
           repository_root, environ, token, trusted_workflow_sha=None, artifact_id=None,
-          artifact_sha256=None, expected_build_key=None, expected_metadata_receipt_sha256=None):
+          artifact_sha256=None, expected_build_key=None, expected_metadata_receipt_sha256=None,
+          sdk_validation_tooling=None):
     """Delegate source selection and both destination policies, never grant trust."""
-    validated, selection, _ = _selection(plan, discovery, state, repository_root, environ)
+    tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
+    validated, selection, _ = _selection(plan, discovery, state, repository_root, environ, **tooling)
     if selection.get("source") == "released-default":
         return product_reuse.materialize_sdk_default_inputs(plan, discovery, state, destination,
-            keyring=keyring, keys_directory=keys_directory, repository_root=repository_root, environ=environ)
+            keyring=keyring, keys_directory=keys_directory, repository_root=repository_root, environ=environ, **tooling)
     if selection.get("source") != "current-runtime":
         raise ValueError("SDK workflow has an unsupported replayed Runtime source")
     if any(value is None for value in (trusted_workflow_sha, artifact_id, artifact_sha256,
@@ -609,16 +611,14 @@ def main(argv=None):
         parser.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
     else:
         parser.add_argument("--expected-metadata-receipt-sha256")
-    if worker:
-        parser.add_argument("--sdk-validation-tooling", type=Path)
+    parser.add_argument("--sdk-validation-tooling", type=Path)
     arguments = vars(parser.parse_args(argv))
     plan, discovery, state, destination = (arguments.pop(name) for name in ("plan", "discovery_root", "state_root", "destination"))
     try:
         action = prepare_native if native_prepare else execute_javascript if javascript else stage
-        if worker:
-            policy = arguments.pop("sdk_validation_tooling")
-            if policy is not None:
-                arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
+        policy = arguments.pop("sdk_validation_tooling")
+        if policy is not None:
+            arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
         action(plan, discovery, state, destination, **arguments,
             environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:

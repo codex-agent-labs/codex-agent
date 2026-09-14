@@ -11,9 +11,11 @@ from products.registry import NATIVE_TARGETS, PhaseInstanceId
 from reuse import github_output
 
 
-def matrix(plan_path, discovery_root, state_root, github_output_path, *, repository_root=None, environ=None):
+def matrix(plan_path, discovery_root, state_root, github_output_path, *, repository_root=None, environ=None,
+           sdk_validation_tooling=None):
     value = products.runtime_worker_matrix(
-        plan_path, discovery_root, state_root, repository_root=repository_root, environ=environ)
+        plan_path, discovery_root, state_root, repository_root=repository_root, environ=environ,
+        **({"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}))
     supervisors = [row["buildKey"] for row in value["include"]
                    if products._identity(row) == PhaseInstanceId("runtime", "linux-arm64", "binary", "linux-arm64")]
     if len(supervisors) > 1:
@@ -118,7 +120,8 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
 
 def capture(plan_path, destination, github_output_path, *, artifact_id, artifact_sha256,
             trusted_workflow_sha, state_wave=0, instance=None, expected_build_key=None,
-            repository_root=None, environ=None, token):
+            repository_root=None, environ=None, token, sdk_validation_tooling=None):
+    tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
     products.capture_runtime_resume_upload(
         plan_path, destination, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
         trusted_workflow_sha=trusted_workflow_sha, state_wave=state_wave,
@@ -131,13 +134,13 @@ def capture(plan_path, destination, github_output_path, *, artifact_id, artifact
         "state_root": original / ("runtime-state" if state_wave else "product-resume-state"),
     }
     value = matrix(paths["plan_path"], paths["discovery_root"], paths["state_root"], github_output_path,
-                   repository_root=repository_root, environ=environ)
+                   repository_root=repository_root, environ=environ, **tooling)
     if (instance is None) != (expected_build_key is None):
         raise ValueError("Runtime worker identity and elected key must be supplied together")
     if instance is not None:
         if instance == PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"):
             selected = continuation(paths["plan_path"], paths["discovery_root"], paths["state_root"],
-                                    github_output_path, repository_root=repository_root, environ=environ)["aggregate"]
+                                    github_output_path, repository_root=repository_root, environ=environ, **tooling)["aggregate"]
             if selected["state"] != "ready" or selected["buildKey"] != expected_build_key:
                 raise ValueError("Runtime aggregate is not elected with the exact requested key")
         else:
@@ -215,6 +218,7 @@ def main(argv=None):
     show = commands.add_parser("matrix")
     for name in ("plan", "discovery-root", "state-root", "github-output"):
         show.add_argument(f"--{name}", type=Path, required=True)
+    show.add_argument("--sdk-validation-tooling", type=Path)
     final = commands.add_parser("continuation")
     for name in ("plan", "discovery-root", "state-root", "github-output"):
         final.add_argument(f"--{name}", type=Path, required=True)
@@ -228,6 +232,7 @@ def main(argv=None):
     captured.add_argument("--artifact-sha256", required=True)
     captured.add_argument("--trusted-workflow-sha", required=True)
     captured.add_argument("--state-wave", type=int, default=0)
+    captured.add_argument("--sdk-validation-tooling", type=Path)
     for name in ("component", "phase", "target", "expected-build-key"):
         captured.add_argument(f"--{name}")
     collected = commands.add_parser("collect")
@@ -243,7 +248,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == "matrix":
-            matrix(args.plan, args.discovery_root, args.state_root, args.github_output)
+            tooling = ({} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
+                products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")})
+            matrix(args.plan, args.discovery_root, args.state_root, args.github_output, **tooling)
         elif args.command == "continuation":
             tooling = (None if args.sdk_validation_tooling is None else
                        products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy"))
@@ -251,6 +258,8 @@ def main(argv=None):
                          sdk_validation_tooling=tooling, **({"if_selected": True} if args.if_selected else {}),
                          **({"require_completed": True} if args.require_completed else {}))
         elif args.command == "capture":
+            tooling = ({} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
+                products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")})
             values = (args.component, args.phase, args.target, args.expected_build_key)
             if any(value is not None for value in values) and any(value is None for value in values):
                 raise ValueError("All four elected worker arguments are required")
@@ -258,7 +267,7 @@ def main(argv=None):
                     artifact_id=args.artifact_id, artifact_sha256=args.artifact_sha256,
                     trusted_workflow_sha=args.trusted_workflow_sha, state_wave=args.state_wave,
                     instance=PhaseInstanceId("runtime", *values[:3]) if all(values) else None,
-                    expected_build_key=args.expected_build_key, token=os.environ.get("GITHUB_TOKEN", ""))
+                    expected_build_key=args.expected_build_key, token=os.environ.get("GITHUB_TOKEN", ""), **tooling)
         elif args.command == "variant-trust":
             from products.runtime_variant_trust import stage_runtime_variant_trust
             handoffs = {}

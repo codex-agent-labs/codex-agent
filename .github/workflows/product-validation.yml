@@ -800,14 +800,14 @@ jobs:
   product-resume:
     name: product-resume
     if: >-
-      needs.plan.outputs.event_authorized == 'true' &&
+      always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&
       github.event_name != 'workflow_dispatch' &&
       needs.contract-continuation.result == 'success' &&
       needs.contract-continuation.outputs.contract_complete == 'true' &&
       needs.contract-attestation.result == 'success'
-    needs: [workflow-lint, plan, contract-continuation, contract-attestation]
+    needs: [workflow-lint, plan, product-tooling, contract-continuation, contract-attestation]
     runs-on: ubuntu-24.04
     outputs:
       artifact_name: codex-agent-product-resume-${{ needs.plan.outputs.validation_tree }}
@@ -830,6 +830,20 @@ jobs:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
           path: build/product-resume-plan
           merge-multiple: true
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
+          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - name: Capture exact original plan, completed state and signed external evidence
         env:
           PLAN_ARTIFACT_ID: ${{ needs.plan.outputs.plan_id }}
@@ -850,21 +864,29 @@ jobs:
             --destination build/product-resume-inputs
       - name: Resume the existing product planner from authenticated Contract bytes
         id: resume
+        env:
+          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
         run: |
+          tooling=()
+          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
           python3 ci/product_reuse.py resume-products \
             --plan build/product-resume-inputs/plan/impact-plan.json \
             --discovery-root build/product-resume-inputs/plan/product-reuse \
             --state-root build/product-resume-inputs/state \
             --contract-handoff build/product-resume-inputs/release/contract-input \
             --destination build/product-resume-state \
-            --github-output "$GITHUB_OUTPUT"
+            --github-output "$GITHUB_OUTPUT" ${tooling[@]+"${tooling[@]}"}
       - name: Elect Runtime workers from the verified resumed state
         id: runtime_matrix
+        env:
+          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
         run: |
+          tooling=()
+          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
           python3 -B ci/runtime_workflow.py matrix \
             --plan build/product-resume-inputs/plan/impact-plan.json \
             --discovery-root build/product-resume-state --state-root build/product-resume-state \
-            --github-output "$GITHUB_OUTPUT"
+            --github-output "$GITHUB_OUTPUT" ${tooling[@]+"${tooling[@]}"}
       - name: Preserve the resumed state and all original transport evidence
         id: upload_resume
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1744,7 +1766,7 @@ jobs:
 
   sdk-inputs:
     name: sdk-inputs
-    needs: [workflow-lint, plan, runtime-continuation, runtime-aggregate-attestation]
+    needs: [workflow-lint, plan, product-tooling, runtime-continuation, runtime-aggregate-attestation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -1765,6 +1787,21 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ needs.plan.outputs.validation_commit }}
+          fetch-depth: 0
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
+          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: captured
         uses: ./.github/actions/capture-runtime-state
         with:
@@ -1773,10 +1810,12 @@ jobs:
           artifact-sha256: ${{ needs.runtime-continuation.outputs.artifact_digest }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           state-wave: ${{ needs.runtime-continuation.outputs.state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
       - name: Stage SDK inputs from the independently verified selection
         id: staged
         env:
           PLAN: ${{ steps.captured.outputs.plan-path }}
+          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
           DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
           STATE: ${{ steps.captured.outputs.state-root }}
           SDK_SOURCE: ${{ fromJSON(needs.runtime-continuation.outputs.sdk_input_selection).source }}
@@ -1790,6 +1829,8 @@ jobs:
         run: |
           set -euo pipefail
           fresh=()
+          tooling=()
+          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
           case "$SDK_SOURCE" in
             released-default) destination="$GITHUB_WORKSPACE/build/sdk-inputs" ;;
             current-runtime)
@@ -1802,7 +1843,7 @@ jobs:
           python3 -B -m ci.sdk_workflow --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
             --destination "$destination" --repository-root "$GITHUB_WORKSPACE" \
             --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
-            --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" "${fresh[@]}"
+            --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" "${fresh[@]}" ${tooling[@]+"${tooling[@]}"}
           printf 'path=%s\n' "$destination" >> "$GITHUB_OUTPUT"
       - id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -2041,22 +2082,18 @@ jobs:
           wave: '3'
           tree: ${{ needs.plan.outputs.validation_tree }}
 
-  sdk-plan:
-    needs: [plan, tooling-attestation, runtime-continuation, runtime-aggregate-continuation, sdk-inputs, sdk-ios-binary-plan, sdk-collect-3]
+  product-tooling:
+    needs: [plan, tooling-attestation]
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
-      needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-inputs.result == 'success'
+      always() && needs.plan.result == 'success' &&
+      needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.plan.outputs.tooling_required == 'true'
     runs-on: ubuntu-24.04
     outputs:
-      artifact_id: ${{ steps.parent.outputs.artifact_id }}
-      artifact_digest: ${{ steps.parent.outputs.artifact_digest }}
-      state_wave: ${{ steps.parent.outputs.state_wave }}
-      sdk_state_wave: ${{ steps.parent.outputs.sdk_state_wave }}
-      sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
-      sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
-      tooling_artifact_id: ${{ steps.tooling-locator.outputs.artifact_id }}
-      tooling_artifact_sha256: ${{ steps.tooling-locator.outputs.artifact_sha256 }}
-      tooling_transport_producer: ${{ steps.tooling-locator.outputs.transport_producer }}
+      artifact_id: ${{ steps.tooling-locator.outputs.artifact_id }}
+      artifact_sha256: ${{ steps.tooling-locator.outputs.artifact_sha256 }}
+      transport_producer: ${{ steps.tooling-locator.outputs.transport_producer }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2091,6 +2128,29 @@ jobs:
               for name, value in values.items():
                   output.write(name + '=' + value + '\n')
           PY
+
+  sdk-plan:
+    needs: [plan, product-tooling, runtime-continuation, runtime-aggregate-continuation, sdk-inputs, sdk-ios-binary-plan, sdk-collect-3]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-inputs.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.parent.outputs.artifact_id }}
+      artifact_digest: ${{ steps.parent.outputs.artifact_digest }}
+      state_wave: ${{ steps.parent.outputs.state_wave }}
+      sdk_state_wave: ${{ steps.parent.outputs.sdk_state_wave }}
+      sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
+      sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
+      tooling_artifact_id: ${{ needs.product-tooling.outputs.artifact_id }}
+      tooling_artifact_sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
+      tooling_transport_producer: ${{ needs.product-tooling.outputs.transport_producer }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2100,9 +2160,9 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         uses: ./.github/actions/capture-sdk-tooling
         with:
-          artifact-id: ${{ steps.tooling-locator.outputs.artifact_id }}
-          artifact-sha256: ${{ steps.tooling-locator.outputs.artifact_sha256 }}
-          transport-producer: ${{ steps.tooling-locator.outputs.transport_producer }}
+          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
+          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: parent
@@ -2654,7 +2714,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, tooling-attestation, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript, sdk-native-packages]
+    needs: [workflow-lint, plan, product, tooling-attestation, product-tooling, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript, sdk-native-packages]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites

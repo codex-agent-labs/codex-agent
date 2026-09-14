@@ -36,7 +36,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertLess(condition.start(), self.job.index("    runs-on:"))
         needs = re.search(r"^    needs: \[(.*?)\]$", self.job, re.MULTILINE)
         self.assertIsNotNone(needs)
-        self.assertEqual({"workflow-lint", "plan", "contract-continuation", "contract-attestation"},
+        self.assertEqual({"workflow-lint", "plan", "product-tooling", "contract-continuation", "contract-attestation"},
                          {value.strip() for value in needs.group(1).split(",")})
 
     def test_exact_original_uploads_are_authenticated_before_resuming(self):
@@ -74,7 +74,11 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertNotIn("ci/contract_release.py", self.job)
         self.assertNotIn("ssh-keygen", self.job)
         self.assertNotRegex(self.job, r"ci/product_reuse\.py\s+(?:discover|advance-products|advance-contract)\b")
-        self.assertNotRegex(self.job, r"uses: (?:\./|actions/cache(?:/|@)|actions/setup-)")
+        self.assertNotRegex(self.job, r"uses: (?:actions/cache(?:/|@)|actions/setup-)")
+        self.assertEqual(["./.github/actions/capture-sdk-tooling"],
+                         re.findall(r"uses: (\./\S+)", self.job))
+        self.assertLess(self.job.index("uses: ./.github/actions/capture-sdk-tooling"),
+                        self.job.index("ci/product_reuse.py resume-products"))
         self.assertNotRegex(self.job, r"(?:\./gradlew|\bcargo\s+(?:build|test)|\bcmake\s|\bxcodebuild\b|\bnpm\s+(?:ci|install|run)|\bpip\s+install)")
 
     def test_entire_inputs_and_resumed_state_are_uploaded_immutably(self):

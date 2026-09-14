@@ -42,6 +42,20 @@ class SdkJavascriptToolingForwardingTest(unittest.TestCase):
                 self.assertEqual(self.harness.capture_arguments(output, selected, sdk=True), arguments)
                 self.assertEqual('synthetic environment-only token', token)
 
+    def test_runtime_capture_forwards_policy_after_elected_component_arguments(self):
+        policy = '/caller policy/tooling.json'
+        for component in ('', 'jvm'):
+            with self.subTest(component=component):
+                selected = (['--component', component, '--phase', 'binary', '--target', 'jvm',
+                             '--expected-build-key', 'sha256:' + 'a' * 64] if component else [])
+                result, arguments, token, output = self.harness.run_action('capture',
+                    STATE_PRODUCT='runtime', SDK_VALIDATION_TOOLING=policy, COMPONENT=component,
+                    PHASE='binary' if component else '', TARGET='jvm' if component else '',
+                    BUILD_KEY='sha256:' + 'a' * 64 if component else '')
+                self.assertEqual(0, result.returncode, result.stderr)
+                selected += ['--sdk-validation-tooling', policy]
+                self.assertEqual(self.harness.capture_arguments(output, selected, sdk=False), arguments)
+
     def test_actual_execution_shell_preserves_both_phases_and_optional_policy_without_word_splitting(self):
         block = self.action.split('    - name: Execute exact SDK phase within verified original input lifetimes\n', 1)[1].split('\n    - ', 1)[0]
         self.assertIn('SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}', block)
