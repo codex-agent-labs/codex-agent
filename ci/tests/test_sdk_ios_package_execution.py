@@ -72,6 +72,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
 
     @contextmanager
     def verified_inputs(self, *args, **kwargs):
+        self.assertEqual(self.tooling_policy, kwargs["sdk_validation_tooling"])
         self.events.append("sdk-enter")
         try:
             yield self.sdk_inputs
@@ -86,6 +87,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
             self.events.append("sdk-closed")
 
     def materialize(self, *args, **kwargs):
+        self.assertEqual(self.tooling_policy, kwargs["sdk_validation_tooling"])
         self.events.append("materialize")
         prepared = args[4]
         prepared.mkdir(parents=True)
@@ -116,6 +118,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
 
     def capture_apple(self, plan, destination, **arguments):
         self.events.append("apple-source")
+        self.assertEqual("development", arguments["required_trust_domain"])
         self.assertEqual(self.expected_proof, arguments["expected_distribution_proof"])
         self.assertEqual(
             self.sdk_directory / "sdk-compatibility.json",
@@ -172,13 +175,16 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         self.assertNotIn("native-exit", self.events)
         apple = arguments["apple_verification"]
         self.assertEqual(self.result["validationEvidence"], apple["validation_evidence_directory"])
-        self.assertEqual("release", apple["required_trust_domain"])
+        self.assertEqual("development", apple["required_trust_domain"])
         self.assertEqual(self.sdk_directory / "sdk-compatibility.json",
                          apple["expected_sdk_compatibility"])
         raw = receipt.read_bytes()
         return self.finalized["receipt"], raw
 
     def invoke(self):
+        self.tooling_policy = {"evidence": str(self.tooling), "publicKey": str(self.tooling_key),
+            "javaExecutable": str(self.java), "requiredTrustDomain": "development",
+            "keyring": None, "keysDirectory": None}
         arguments = dict(
             expected_build_key=self.expected_key,
             sdk_inputs_artifact_id=11, sdk_inputs_artifact_sha256="sha256:" + "1" * 64,
@@ -187,7 +193,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
             keyring=self.arguments["contract_keyring"], keys_directory=self.arguments["contract_keys_directory"],
             expected_distribution_proof=self.expected_proof,
             tooling_evidence=self.tooling, tooling_public_key=self.tooling_key,
-            java_executable=self.java, policy_revision="9" * 40,
+            java_executable=self.java, policy_revision="9" * 40, required_trust_domain="development",
             repository_root=self.root, environ={"SAFE": "environment"}, token="token",
         )
         with ExitStack() as stack:

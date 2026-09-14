@@ -1,6 +1,8 @@
 """Exact CLI forwarding tests; no product or Apple execution occurs."""
 
 import os
+from contextlib import redirect_stderr
+import io
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -10,6 +12,16 @@ from ci import sdk_workflow as dispatcher
 
 
 class SdkIosPackageCliTest(unittest.TestCase):
+    def test_tooling_trust_is_required_and_cannot_be_inferred(self):
+        arguments = self.arguments()
+        index = arguments.index("--required-trust-domain")
+        for candidate in (arguments[:index] + arguments[index + 2:],
+                          arguments[:index + 1] + ["inferred"] + arguments[index + 2:]):
+            with self.subTest(candidate=candidate), redirect_stderr(io.StringIO()), \
+                    patch.object(command, "execute") as execute, self.assertRaises(SystemExit):
+                command.main(candidate)
+            execute.assert_not_called()
+
     def arguments(self):
         values = [
             "--plan", "/work/plan.json",
@@ -29,6 +41,7 @@ class SdkIosPackageCliTest(unittest.TestCase):
             "--tooling-public-key", "/work/tooling.pub",
             "--java-executable", "/jdk/bin/java",
             "--policy-revision", "e" * 40,
+            "--required-trust-domain", "release",
             "--repository-root", "/work/repository",
         ]
         for index, lane in enumerate(("native-tests", "rust-device", "rust-simulator"), 21):
@@ -57,7 +70,7 @@ class SdkIosPackageCliTest(unittest.TestCase):
             keyring=Path("/work/product-signing-keys.json"), keys_directory=Path("/work/keys"),
             expected_distribution_proof=Path("/work/expected-proof.json"),
             tooling_evidence=Path("/work/tooling"), tooling_public_key=Path("/work/tooling.pub"),
-            java_executable=Path("/jdk/bin/java"), policy_revision="e" * 40,
+            java_executable=Path("/jdk/bin/java"), policy_revision="e" * 40, required_trust_domain="release",
             repository_root=Path("/work/repository"), tooling_keyring=None,
             tooling_keys_directory=None,
             native_uploads={

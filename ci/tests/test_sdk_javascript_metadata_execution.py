@@ -70,6 +70,11 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
         for name in ("keyring", "tooling_public_key", "java_executable", "tooling_keyring"):
             self.arguments[name].write_bytes(b"caller authority boundary")
         self.consumer = Path("/observed/original/codex-agent-sdk/build/npm/consumer")
+        self.tooling_policy = {"evidence": str(self.arguments["tooling_evidence"]),
+            "publicKey": str(self.arguments["tooling_public_key"]),
+            "javaExecutable": str(self.arguments["java_executable"]),
+            "requiredTrustDomain": "release", "keyring": str(self.arguments["tooling_keyring"]),
+            "keysDirectory": str(self.arguments["tooling_keys_directory"])}
         self.capture_path = self.candidate_path = None
 
     @contextmanager
@@ -77,7 +82,8 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
         self.assertEqual((self.plan, self.discovery, self.state), args)
         self.assertEqual({"artifact_id": 71, "artifact_sha256": self.arguments["sdk_inputs_artifact_sha256"],
             **{name: self.arguments[name] for name in ("trusted_workflow_sha", "keyring", "keys_directory",
-                                                     "repository_root", "environ", "token")}}, kwargs)
+                                                     "repository_root", "environ", "token")},
+            "sdk_validation_tooling": self.tooling_policy}, kwargs)
         self.events.append("enter")
         self.live = True
         try:
@@ -103,7 +109,8 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
         self.assertEqual((self.plan, self.discovery, self.state), (plan, discovery, state))
         self.assertEqual(self.destination / "inputs", destination)
         self.assertEqual({"expected_build_key": self.ready["buildKey"], "repository_root": self.repository,
-                          "environ": self.arguments["environ"]}, kwargs)
+                          "environ": self.arguments["environ"],
+                          "sdk_validation_tooling": self.tooling_policy}, kwargs)
         snapshot_regular_tree(self.originals, destination)
         write_canonical_json(destination / "producer.json", self.producer)
         write_canonical_json(destination / "phase-plan.json", self.ready)

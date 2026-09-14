@@ -57,6 +57,12 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
                     reject_symlink_parents=True) != raw for path, raw in raw_controls.items())):
             raise ValueError("JavaScript metadata original plan, state or caller policy changed")
 
+    tooling = {"evidence": str(Path(tooling_evidence).absolute()),
+        "publicKey": str(Path(tooling_public_key).absolute()),
+        "javaExecutable": str(Path(java_executable).absolute()),
+        "requiredTrustDomain": required_trust_domain,
+        "keyring": str(Path(tooling_keyring).absolute()) if tooling_keyring is not None else None,
+        "keysDirectory": str(Path(tooling_keys_directory).absolute()) if tooling_keys_directory is not None else None}
     instance = PhaseInstanceId("sdk", "javascript", "metadata", "node")
     identity = dict(product="sdk", component="javascript", phase="metadata", target="node")
     with tempfile.TemporaryDirectory(prefix="sdk-javascript-metadata-") as temporary:
@@ -66,14 +72,15 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         with sdk_workflow.verified_inputs(plan, discovery, state,
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-                repository_root=root, environ=environ, token=token) as inputs:
+                repository_root=root, environ=environ, token=token, sdk_validation_tooling=tooling) as inputs:
             controls_unchanged()
             selection = inputs["selection"]
             if identity not in selection["consumers"]:
                 raise ValueError("JavaScript metadata is not selected")
             prepared = destination / "inputs"
             ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
-                expected_build_key=expected_build_key, repository_root=root, environ=environ)
+                expected_build_key=expected_build_key, repository_root=root, environ=environ,
+                sdk_validation_tooling=tooling)
             before = _inventory(prepared, allow_empty=True)
             ready_bytes = canonical_json_bytes(ready)
             producer = product_reuse.validate_producer(product_reuse._canonical_control(

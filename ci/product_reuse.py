@@ -4846,8 +4846,10 @@ def discover(
     environment = os.environ if environ is None else environ
     trust = _release_trust(root, plan["validationCommit"], destination)
     tooling_runs: list[int] = []
-    needs_tooling = automatic_tooling and any(instance.product == "sdk" and
+    needs_tooling = automatic_tooling and any(instance.product == "sdk" and (
         instance.component in NATIVE_BINDINGS and instance.phase in {"validation", "metadata"}
+        or instance == PhaseInstanceId("sdk", "javascript", "metadata", "node")
+        or instance == PhaseInstanceId("sdk", "sdk-ios", "package", "ios"))
         for instance in closure)
     github_output(github_output_path, {
         "tooling_required": needs_tooling, "tooling_miss": needs_tooling,

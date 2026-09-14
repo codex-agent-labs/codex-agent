@@ -39,6 +39,7 @@ def execute(
     keyring: Path, keys_directory: Path, expected_distribution_proof: Path,
     tooling_evidence: Path, tooling_public_key: Path, java_executable: Path,
     policy_revision: str, repository_root: Path, environ: dict, token: str,
+    required_trust_domain: str,
     tooling_keyring: Path | None = None, tooling_keys_directory: Path | None = None,
 ) -> dict:
     """Build and admit one elected package; publish only after all contexts close."""
@@ -49,6 +50,12 @@ def execute(
     if destination.exists() or destination.is_symlink():
         raise ValueError("SDK iOS package destination must not exist")
 
+    tooling = {"evidence": str(Path(tooling_evidence).absolute()),
+        "publicKey": str(Path(tooling_public_key).absolute()),
+        "javaExecutable": str(Path(java_executable).absolute()),
+        "requiredTrustDomain": required_trust_domain,
+        "keyring": str(Path(tooling_keyring).absolute()) if tooling_keyring is not None else None,
+        "keysDirectory": str(Path(tooling_keys_directory).absolute()) if tooling_keys_directory is not None else None}
     with tempfile.TemporaryDirectory(prefix="sdk-ios-package-candidate-") as temporary:
         candidate = Path(temporary).resolve() / "shard"
         with sdk_workflow.verified_inputs(
@@ -56,7 +63,7 @@ def execute(
             artifact_sha256=sdk_inputs_artifact_sha256,
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
             keys_directory=keys_directory, repository_root=root,
-            environ=environ, token=token,
+            environ=environ, token=token, sdk_validation_tooling=tooling,
         ) as sdk_inputs:
             selection = sdk_inputs["selection"]
             selected = {"product": "sdk", "component": "sdk-ios", "phase": "package", "target": "ios"}
@@ -66,7 +73,7 @@ def execute(
             ready = product_reuse.materialize_product_predecessors(
                 plan, discovery, state, _INSTANCE, prepared,
                 expected_build_key=expected_build_key,
-                repository_root=root, environ=environ,
+                repository_root=root, environ=environ, sdk_validation_tooling=tooling,
             )
             prepared_inventory = regular_file_inventory(prepared, allow_empty=True)
             producer = product_reuse.validate_producer(product_reuse._canonical_control(
@@ -133,7 +140,7 @@ def execute(
                 expected_sdk_compatibility=compatibility,
                 tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
                 java_executable=java_executable, policy_revision=policy_revision,
-                required_trust_domain=arguments["required_trust_domain"],
+                required_trust_domain=required_trust_domain,
                 repository_root=root, environ=environ, token=token,
                 tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
             )
@@ -175,7 +182,7 @@ def execute(
                     "tooling_public_key": Path(tooling_public_key),
                     "java_executable": Path(java_executable),
                     "policy_revision": policy_revision,
-                    "required_trust_domain": arguments["required_trust_domain"],
+                    "required_trust_domain": required_trust_domain,
                     "tooling_keyring": tooling_keyring,
                     "tooling_keys_directory": tooling_keys_directory,
                 }
@@ -224,6 +231,7 @@ def main(argv=None) -> int:
     parser.add_argument("--apple-artifact-sha256", required=True)
     parser.add_argument("--trusted-workflow-sha", required=True)
     parser.add_argument("--policy-revision", required=True)
+    parser.add_argument("--required-trust-domain", choices=("development", "release"), required=True)
     parser.add_argument("--tooling-keyring", type=Path)
     parser.add_argument("--tooling-keys-directory", type=Path)
     lanes = ("native-tests", "rust-device", "rust-simulator")
