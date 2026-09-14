@@ -108,6 +108,20 @@ class SdkJavaScriptMetadataActionTest(unittest.TestCase):
                 self.assertEqual(None if trust == 'development' else f.root / 'keyring.json', arguments['tooling_keyring'])
                 self.assertNotIn('original_consumer_directory', arguments)
 
+    def test_absent_locator_requests_original_discovery_and_unpaired_locator_rejects(self):
+        self.f.environment.update(VALIDATION_ARTIFACT_ID='', VALIDATION_ARTIFACT_SHA256='')
+        with patch('subprocess.run') as run:
+            self.f.execute('execute')
+        command = run.call_args.args[0]
+        with patch.object(controller, 'execute') as execute:
+            self.assertEqual(0, controller.main(command[5:]))
+        self.assertIsNone(execute.call_args.kwargs['validation_artifact_id'])
+        self.assertIsNone(execute.call_args.kwargs['validation_artifact_sha256'])
+        self.f.environment['VALIDATION_ARTIFACT_ID'] = '93'
+        with patch('subprocess.run') as run, self.assertRaisesRegex(ValueError, 'supplied together'):
+            self.f.execute('execute')
+        run.assert_not_called()
+
     def test_process_failure_propagates_without_claiming_success(self):
         with patch('subprocess.run', side_effect=subprocess.CalledProcessError(17, ['fixed-controller'])), \
                 self.assertRaises(subprocess.CalledProcessError):

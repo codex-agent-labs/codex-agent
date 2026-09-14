@@ -123,7 +123,7 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
         self.assertEqual(self.receipts[SDK_VALIDATION], kwargs["validation_receipt_path"].read_bytes())
         self.assertEqual(self.destination / "inputs" / self.name(SDK_VALIDATION) / "phase-receipt.json",
                          kwargs["validation_receipt_path"])
-        self.assertEqual({"artifact_id": 72, "artifact_sha256": self.arguments["validation_artifact_sha256"],
+        self.assertEqual({"artifact_id": 72, "artifact_sha256": "sha256:" + "d" * 64,
             **{name: self.arguments[name] for name in ("trusted_workflow_sha", "repository_root", "environ", "token")}},
             {name: value for name, value in kwargs.items() if name != "validation_receipt_path"})
         self.assertFalse(destination.is_relative_to(self.repository))
@@ -220,6 +220,29 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
         self.assertEqual(b"", (self.destination / "validation-upload/original/worker/gradle.log").read_bytes())
         self.assertFalse(self.capture_path.exists())
         self.assertFalse(self.candidate_path.exists())
+
+    def test_missing_locator_uses_only_selected_original_then_runs_unchanged_capture(self):
+        self.arguments.pop("validation_artifact_id")
+        self.arguments.pop("validation_artifact_sha256")
+
+        def locate(receipt, **kwargs):
+            self.assertTrue(self.live)
+            self.assertEqual(self.receipts[SDK_VALIDATION], receipt.read_bytes())
+            self.assertEqual({"trusted_workflow_sha": self.arguments["trusted_workflow_sha"],
+                              "token": self.arguments["token"]}, kwargs)
+            self.assertNotIn("capture", self.events)
+            return {"artifact_id": 72, "artifact_sha256": "sha256:" + "d" * 64}
+
+        with patch("sdk_javascript_validation_locator.locate_javascript_validation_upload", side_effect=locate) as discover:
+            self.invoke()
+        discover.assert_called_once()
+        self.assertIn("capture", self.events)
+
+    def test_unpaired_explicit_locator_rejects_without_discovery(self):
+        self.arguments.pop("validation_artifact_sha256")
+        with self.assertRaisesRegex(ValueError, "supplied together"):
+            self.invoke()
+        self.assertEqual([], self.events)
 
     def test_wrong_selection_current_contract_or_each_retained_runtime_receipt_rejects(self):
         for kind in ("selection", "contract", "runtime-package", "runtime-validation"):

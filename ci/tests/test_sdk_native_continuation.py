@@ -89,6 +89,33 @@ class NativePreparationAnchorSelectionTest(unittest.TestCase):
 
 
 class NativeStateSelectionTest(unittest.TestCase):
+    def test_ios_package_and_javascript_metadata_use_exact_fixed_parent_and_collector(self):
+        routes = (
+            ("ios-package", "sdk-native-packages", "sdk-ios-package-plan", "sdk-ios-package", "sdk-collect-5", "5"),
+            ("javascript-metadata", "sdk-ios-packages", "sdk-javascript-metadata-plan", "sdk-javascript-metadata", "sdk-collect-6", "6"),
+        )
+        for stage, parent, election, workers, collector, wave in routes:
+            for required in (False, True):
+                with self.subTest(stage=stage, required=required):
+                    original = locator("4" if stage == "ios-package" else "5", "0")
+                    needs = {
+                        parent: job("success", **original),
+                        election: job("success", sdk_workers_required=str(required).lower()),
+                        workers: job("success" if required else "skipped"),
+                        collector: job("success" if required else "skipped", artifact_id="987",
+                            artifact_digest="sha256:" + "c" * 64, wave_failed="false"),
+                    }
+                    before = deepcopy(needs)
+                    expected = dict(artifact_id="987", artifact_digest="sha256:" + "c" * 64,
+                                    state_wave="0", sdk_state_wave=wave) if required else original
+                    self.assertEqual(expected, routing.select_native_state(needs, stage=stage))
+                    self.assertEqual(before, needs)
+                    changed = deepcopy(needs)
+                    changed["unrelated-original-parent"] = changed.pop(parent)
+                    with self.assertRaises(ValueError):
+                        routing.select_native_state(changed, stage=stage)
+        self.assertEqual("sdk-native-packages", routing._STAGES["validation"][0])
+
     def test_collected_exact_stage_waves_and_unchanged_parent_on_reuse(self):
         for stage, (_, _, _, collector, wave) in routing._STAGES.items():
             for required in (False, True):

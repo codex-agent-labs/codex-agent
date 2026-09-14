@@ -23,10 +23,10 @@ inputs:
     required: true
     description: Exact SDK inputs upload digest.
   validation-artifact-id:
-    required: true
-    description: Original JavaScript validation execution upload ID; authenticated by the existing controller.
+    default: ''
+    description: Optional exact original validation upload ID; when both locator fields are empty, locate from the authenticated original receipt.
   validation-artifact-sha256:
-    required: true
+    default: ''
     description: Exact original validation upload digest.
   trusted-workflow-sha:
     required: true
@@ -156,11 +156,16 @@ runs:
             '--destination': str(root / 'build/sdk-worker'), '--repository-root': str(root),
             '--expected-build-key': os.environ['BUILD_KEY'],
             '--sdk-inputs-artifact-id': os.environ['SDK_INPUTS_ID'], '--sdk-inputs-artifact-sha256': os.environ['SDK_INPUTS_SHA256'],
-            '--validation-artifact-id': os.environ['VALIDATION_ARTIFACT_ID'], '--validation-artifact-sha256': os.environ['VALIDATION_ARTIFACT_SHA256'],
             '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'], '--policy-revision': os.environ['POLICY_REVISION'],
             '--keyring': str(root / 'gradle/release/product-signing-keys.json'), '--keys-directory': str(root / 'gradle/release/keys'),
             '--required-trust-domain': policy['requiredTrustDomain'],
         }
+        validation_id, validation_digest = os.environ['VALIDATION_ARTIFACT_ID'], os.environ['VALIDATION_ARTIFACT_SHA256']
+        if bool(validation_id) != bool(validation_digest):
+            raise ValueError('Original validation upload ID and digest must be supplied together')
+        if validation_id:
+            fields['--validation-artifact-id'] = validation_id
+            fields['--validation-artifact-sha256'] = validation_digest
         for name, flag in (('evidence', '--tooling-evidence'), ('publicKey', '--tooling-public-key'),
                            ('javaExecutable', '--java-executable'), ('keyring', '--tooling-keyring'), ('keysDirectory', '--tooling-keys-directory')):
             if policy[name] is not None:

@@ -49,6 +49,15 @@ class SdkJavaScriptMetadataCliTest(unittest.TestCase):
             self.assertEqual(2, failure.exception.code)
             execute.assert_not_called()
 
+    def test_absent_locator_pair_selects_original_receipt_discovery(self):
+        fields = {name: value for name, value in self.fields.items()
+                  if name not in ("validation-artifact-id", "validation-artifact-sha256")}
+        with patch.object(workflow, "execute") as execute:
+            self.assertEqual(0, workflow.main([part for name, value in fields.items()
+                                              for part in ("--" + name, value)]))
+        self.assertIsNone(execute.call_args.kwargs["validation_artifact_id"])
+        self.assertIsNone(execute.call_args.kwargs["validation_artifact_sha256"])
+
     def test_malformed_ids_unpaired_keys_and_source_command_overrides_reject(self):
         cases = [self.argv(replace={name: "not-an-integer"})
                  for name in ("sdk-inputs-artifact-id", "validation-artifact-id")]

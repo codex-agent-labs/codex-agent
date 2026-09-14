@@ -26,16 +26,20 @@ from sdk_javascript_metadata_phase import execute as execute_metadata
 
 def execute(plan, discovery, state, destination, *, expected_build_key,
             sdk_inputs_artifact_id, sdk_inputs_artifact_sha256,
-            validation_artifact_id, validation_artifact_sha256, trusted_workflow_sha,
+            trusted_workflow_sha,
             keyring, keys_directory, repository_root, environ, token,
             tooling_evidence, tooling_public_key, java_executable, policy_revision,
-            required_trust_domain, tooling_keyring=None, tooling_keys_directory=None):
+            required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
+            validation_artifact_id=None, validation_artifact_sha256=None):
     """Finalize once privately; publish only after full input and content gates.
 
     The observed original validation upload supplies the consumer directory.
     Current Contract payload equality does not relabel retained Runtime receipts.
-    No caller-selected command, unsigned content fallback, or CLI is provided.
+    When no explicit locator pair is supplied, locate only the selected original
+    validation receipt's upload. An invalid explicit pair never falls back.
     """
+    if (validation_artifact_id is None) != (validation_artifact_sha256 is None):
+        raise ValueError("JavaScript validation upload ID and digest must be supplied together")
     root = Path(repository_root).resolve(strict=True)
     plan = Path(plan).absolute()
     discovery, state, destination = product_reuse._product_materialization_paths(root, discovery, state, destination)
@@ -128,6 +132,13 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             validation = original("sdk", "javascript", "validation", "node")
             runtime_package = original("runtime", "node-js", "package", "node-js")
             runtime_validation = original("runtime", "node-js", "validation", "node-js-binding")
+            if validation_artifact_id is None:
+                from sdk_javascript_validation_locator import locate_javascript_validation_upload
+                locator = locate_javascript_validation_upload(validation["receiptPath"],
+                    trusted_workflow_sha=trusted_workflow_sha, token=token)
+                validation_artifact_id = locator["artifact_id"]
+                validation_artifact_sha256 = locator["artifact_sha256"]
+                inputs_unchanged()
             transport = product_reuse.capture_sdk_javascript_validation_upload(plan, capture,
                 validation_receipt_path=validation["receiptPath"], artifact_id=validation_artifact_id,
                 artifact_sha256=validation_artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
@@ -195,15 +206,18 @@ def main(argv=None) -> int:
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--discovery-root", dest="discovery", type=Path, required=True)
     parser.add_argument("--state-root", dest="state", type=Path, required=True)
-    for name in ("expected-build-key", "sdk-inputs-artifact-sha256", "validation-artifact-sha256",
+    for name in ("expected-build-key", "sdk-inputs-artifact-sha256",
                  "trusted-workflow-sha", "policy-revision"):
         parser.add_argument(f"--{name}", required=True)
-    for name in ("sdk-inputs-artifact-id", "validation-artifact-id"):
-        parser.add_argument(f"--{name}", type=int, required=True)
+    parser.add_argument("--sdk-inputs-artifact-id", type=int, required=True)
+    parser.add_argument("--validation-artifact-id", type=int)
+    parser.add_argument("--validation-artifact-sha256")
     parser.add_argument("--required-trust-domain", choices=("development", "release"), required=True)
     parser.add_argument("--tooling-keyring", type=Path)
     parser.add_argument("--tooling-keys-directory", type=Path)
     arguments = vars(parser.parse_args(argv))
+    if (arguments["validation_artifact_id"] is None) != (arguments["validation_artifact_sha256"] is None):
+        parser.error("JavaScript validation upload ID and digest must be supplied together")
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
         parser.error("JavaScript tooling keyring and keys directory must be supplied together")
     try:
