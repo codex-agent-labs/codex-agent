@@ -40,7 +40,7 @@ class RuntimeContinuationWorkflowTest(unittest.TestCase):
         self.assertIn("path: build/runtime-aggregate-worker", aggregate)
         self.assertNotRegex(aggregate, r"secrets\.|PRIVATE_KEY|runtime_release.py|ssh-keygen")
         self.assertIn("always()", collector)
-        self.assertIn("needs: [plan, runtime-continuation, runtime-aggregate]", collector)
+        self.assertIn("needs: [plan, runtime-continuation, runtime-aggregate, product-tooling]", collector)
         self.assertNotIn("needs.runtime-aggregate.result == 'success'", collector)
         self.assertIn("wave: '5'", collector)
         for forwarding in ("artifact-id: ${{ needs.runtime-continuation.outputs.artifact_id }}",
@@ -50,7 +50,9 @@ class RuntimeContinuationWorkflowTest(unittest.TestCase):
             self.assertIn(forwarding, collector)
         self.assertIn("runtime-aggregate, runtime-collect-5", self.gate)
         self.assertIn("needs.runtime-collect-5.outputs.wave_failed", self.gate)
-        self.assertIn("PRODUCT_FULL_REUSE: ${{ needs.runtime-collect-5.outputs.full_reuse ||", self.gate)
+        full_reuse = self.gate.split('PRODUCT_FULL_REUSE: ', 1)[1].split('\n', 1)[0]
+        self.assertIn('needs.runtime-collect-5.outputs.full_reuse ||', full_reuse)
+        self.assertLess(full_reuse.index('needs.runtime-collect-5'), full_reuse.index('needs.runtime-collect-4'))
 
     @classmethod
     def setUpClass(cls):
@@ -163,7 +165,7 @@ class RuntimeContinuationWorkflowTest(unittest.TestCase):
         self.assertLess(condition.start(), self.job.index("    runs-on:"))
         needs = re.search(r"(?m)^    needs: \[(.*?)\]$", self.job)
         self.assertIsNotNone(needs)
-        self.assertEqual({"plan", "product-resume", *(f"runtime-workers-{wave}" for wave in range(1, 5)),
+        self.assertEqual({"plan", "product-resume", "product-tooling", *(f"runtime-workers-{wave}" for wave in range(1, 5)),
                           *(f"runtime-collect-{wave}" for wave in range(1, 5))},
                          {name.strip() for name in needs.group(1).split(",")})
 

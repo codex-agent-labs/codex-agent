@@ -154,7 +154,8 @@ def capture(plan_path, destination, github_output_path, *, artifact_id, artifact
 
 
 def collect(input_root, destination, github_output_path, *, wave, trusted_workflow_sha,
-            repository_root=None, environ=None, token, state_wave=None):
+            repository_root=None, environ=None, token, state_wave=None, sdk_validation_tooling=None):
+    tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
     if type(wave) is not int or not 1 <= wave <= 5:
         raise ValueError("Runtime workflow wave must be one through five")
     # Aggregate may already be ready in initial reuse, before any native wave.
@@ -173,7 +174,7 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     collection = products.collect_runtime_workers(
         plan, discovery, state, destination / "collection", trusted_workflow_sha=trusted_workflow_sha,
         repository_root=repository_root, environ=environ, token=token,
-        **({"runtime_aggregate_only": True} if wave == 5 else {}))
+        **({"runtime_aggregate_only": True} if wave == 5 else {}), **tooling)
     if wave == 5 and (len(collection["rows"]) != 1 or products._identity(collection["rows"][0]) !=
                       PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")):
         raise ValueError("Runtime aggregate collection requires its sole elected aggregate row")
@@ -184,7 +185,7 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     advanced = products.advance_products(
         plan, discovery, state, shards, handoff / "runtime-state", github_output_path,
         repository_root=repository_root, environ=environ, failed_instances=failures,
-        **({"runtime_aggregate_only": True} if wave == 5 else {"runtime_workers_only": True}))
+        **({"runtime_aggregate_only": True} if wave == 5 else {"runtime_workers_only": True}), **tooling)
     # Original input and receipt bytes are forwarded, not regenerated. Collection
     # diagnostics have their own upload, avoiding recursively nested wave archives.
     for name in ("product-resume-inputs", "product-resume-state"):
@@ -199,14 +200,14 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
         else:
             continuation(handoff / "product-resume-inputs/plan/impact-plan.json",
                          handoff / "product-resume-state", handoff / "runtime-state", github_output_path,
-                         repository_root=repository_root, environ=environ, require_completed=True)
+                         repository_root=repository_root, environ=environ, require_completed=True, **tooling)
     elif failures:
         github_output(github_output_path, {"runtime_matrix": '{"include":[]}',
                                           "runtime_workers_required": False, "supervisor_key": ""})
     else:
         next_matrix = matrix(handoff / "product-resume-inputs/plan/impact-plan.json",
                              handoff / "product-resume-state", handoff / "runtime-state", github_output_path,
-                             repository_root=repository_root, environ=environ)
+                             repository_root=repository_root, environ=environ, **tooling)
         if wave == 4 and next_matrix["include"]:
             raise ValueError("Runtime workers remain after four dependency-ordered waves")
     return advanced
@@ -241,6 +242,7 @@ def main(argv=None):
     collected.add_argument("--wave", type=int, required=True)
     collected.add_argument("--state-wave", type=int)
     collected.add_argument("--trusted-workflow-sha", required=True)
+    collected.add_argument("--sdk-validation-tooling", type=Path)
     trust = commands.add_parser("variant-trust")
     trust.add_argument("--variant-handoff", action="append", required=True, metavar="TARGET=PATH")
     for name in ("destination", "keyring", "keys-directory"):
@@ -279,10 +281,12 @@ def main(argv=None):
             stage_runtime_variant_trust(handoffs, args.destination,
                                         keyring=args.keyring, keys_directory=args.keys_directory)
         else:
+            tooling = ({} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
+                products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")})
             collect(Path(os.path.abspath(args.input_root)), Path(os.path.abspath(args.destination)), args.github_output,
                     wave=args.wave, trusted_workflow_sha=args.trusted_workflow_sha,
                     token=os.environ.get("GITHUB_TOKEN", ""),
-                    **({"state_wave": args.state_wave} if args.state_wave is not None else {}))
+                    **({"state_wave": args.state_wave} if args.state_wave is not None else {}), **tooling)
     except (ValueError, OSError) as error:
         parser.error(str(error))
     return 0

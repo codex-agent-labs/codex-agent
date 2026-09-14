@@ -53,7 +53,8 @@ class RuntimeWorkflowTest(unittest.TestCase):
             worker = source.split(f'  runtime-workers-{wave}:\n', 1)[1].split(f'  runtime-collect-{wave}:\n', 1)[0]
             collector = source.split(f'  runtime-collect-{wave}:\n', 1)[1].split('\n\n', 1)[0]
             self.assertIn('always()', collector)
-            self.assertIn(f'runtime-workers-{wave}]', collector)
+            dependencies = collector.split('needs: [', 1)[1].split(']', 1)[0].split(', ')
+            self.assertIn(f'runtime-workers-{wave}', dependencies)
             self.assertNotIn(f"needs.runtime-workers-{wave}.result == 'success'", collector)
             self.assertIn(f"wave: '{wave}'", collector)
             self.assertIn('fail-fast: false', worker)

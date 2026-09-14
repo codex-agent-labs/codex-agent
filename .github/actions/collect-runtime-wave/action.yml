@@ -86,7 +86,7 @@ runs:
       run: |
         set -euo pipefail
         case "$PRODUCT" in
-          runtime) test -z "$SDK_FAMILY${SDK_VALIDATION_TOOLING:-}"; command=(python3 -B ci/runtime_workflow.py collect); state=(--state-wave "$STATE_WAVE") ;;
+          runtime) test -z "$SDK_FAMILY"; command=(python3 -B ci/runtime_workflow.py collect); state=(--state-wave "$STATE_WAVE") ;;
           sdk)
             command=(python3 -B -m ci.sdk_workflow collect); state=()
             if [ -n "$SDK_FAMILY" ]; then
