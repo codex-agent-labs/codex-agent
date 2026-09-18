@@ -22,7 +22,8 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
 
     Existing inspection authenticates the exact result schema, requested closure,
     original receipts and phase states. Global ``result`` may be build-required
-    for unrelated products; this gate reports only the selected SDK phases.
+    for unrelated products; SDK completion stays scoped while fullReuse forwards
+    the same authenticated replay's global result for the final merge gate.
     No SDK selection is a successful no-op, not evidence of a produced SDK.
     """
     inspected = products.inspect_products(plan_path, discovery_root, state_root,
@@ -53,7 +54,7 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
                 require_sha256(phase[field], "Completed SDK phase " + field)
     if unresolved:
         raise ValueError("Selected SDK phases remain unresolved: " + ", ".join(unresolved))
-    return {"complete": True, "phaseCount": count}
+    return {"complete": True, "phaseCount": count, "fullReuse": result["fullReuse"]}
 
 
 def main(argv=None):

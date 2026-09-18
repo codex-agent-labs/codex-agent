@@ -1,0 +1,141 @@
+"""Pure workflow-output routing, not upload authentication or SDK acceptance."""
+
+from copy import deepcopy
+import unittest
+
+from ci import sdk_completion_state as state
+
+
+def job(result="skipped", **outputs):
+    return {"result": result, "outputs": outputs}
+
+
+def locator(artifact="71", runtime="0", sdk=""):
+    return {"artifact_id": artifact, "artifact_digest": "sha256:" + "a" * 64,
+            "state_wave": runtime, "sdk_state_wave": sdk}
+
+
+def needs():
+    result = {name: job() for name in state._JOBS}
+    result["product-resume"] = job("success", artifact_id="71", artifact_digest="sha256:" + "a" * 64,
+                                  wave_failed="false", full_reuse="false")
+    result["runtime-continuation"] = job("success", **locator(), sdk_handoff_required="false",
+                                         aggregate_state="not-selected", aggregate_required="false")
+    result["sdk-ios-binary-plan"] = job("success", sdk_workers_required="false")
+    result["sdk-native-result"] = job("success")
+    return result
+
+
+def handoff():
+    value = needs()
+    value["runtime-continuation"]["outputs"]["sdk_handoff_required"] = "true"
+    value["sdk-plan"] = job("success", **locator(), sdk_workers_required="false")
+    value["sdk-native-result"] = job("success", **locator("88", sdk="8"))
+    return value
+
+
+class SdkCompletionStateTest(unittest.TestCase):
+    def test_final_native_state_is_preserved_without_mutating_any_original_outputs(self):
+        for runtime, sdk in (("0", "8"), ("0", "7"), ("0", "6"), ("0", "4"), ("0", "3"), ("2", "")):
+            value = handoff()
+            value["sdk-native-result"]["outputs"] = locator("88", runtime, sdk)
+            before = deepcopy(value)
+            with self.subTest(runtime=runtime, sdk=sdk):
+                self.assertEqual(value["sdk-native-result"]["outputs"], state.select_sdk_completion_state(value))
+                self.assertEqual(before, value)
+
+    def test_full_reuse_initial_and_normal_empty_sdk_branch_preserve_original_resume(self):
+        value = needs()
+        value["product-resume"]["outputs"]["full_reuse"] = "true"
+        self.assertEqual(locator(), state.select_sdk_completion_state(value))
+        for name in state._JOBS[1:]:
+            value[name] = job()
+        self.assertEqual(locator(), state.select_sdk_completion_state(value))
+        value["product-resume"]["outputs"]["full_reuse"] = "false"
+        with self.assertRaisesRegex(ValueError, "explicit original full reuse"):
+            state.select_sdk_completion_state(value)
+
+    def test_binary_only_collection_wins_over_its_runtime_parent(self):
+        value = needs()
+        value["runtime-continuation"]["outputs"].update(locator("74", "4"), aggregate_state="ready", aggregate_required="true")
+        value["runtime-aggregate-continuation"] = job("success", **locator("75", "5"), aggregate_payload_complete="true")
+        value["sdk-ios-binary-plan"] = job("success", sdk_workers_required="true")
+        value["sdk-ios-binary"] = job("success")
+        value["sdk-collect-3"] = job("success", artifact_id="83", artifact_digest="sha256:" + "b" * 64, wave_failed="false")
+        self.assertEqual({**locator("83", sdk="3"), "artifact_digest": "sha256:" + "b" * 64}, state.select_sdk_completion_state(value))
+        for name in ("sdk-ios-binary", "sdk-collect-3"):
+            bad = deepcopy(value)
+            bad[name] = job()
+            with self.subTest(skipped=name), self.assertRaises(ValueError):
+                state.select_sdk_completion_state(bad)
+        value["sdk-collect-3"]["outputs"]["wave_failed"] = "true"
+        with self.assertRaises(ValueError): state.select_sdk_completion_state(value)
+
+    def test_runtime_latest_state_when_sdk_branch_absent(self):
+        for wave in ("0", "1", "2", "3", "4"):
+            value = needs()
+            selected = locator("71" if wave == "0" else "74", wave)
+            value["runtime-continuation"]["outputs"].update(selected)
+            with self.subTest(wave=wave):
+                self.assertEqual(selected, state.select_sdk_completion_state(value))
+                value["runtime-continuation"]["outputs"].update(aggregate_state="completed", aggregate_required="false")
+                value["runtime-aggregate-continuation"] = job("success", **selected, aggregate_payload_complete="true")
+                self.assertEqual(selected, state.select_sdk_completion_state(value))
+        value["runtime-continuation"]["outputs"].update(aggregate_state="ready", aggregate_required="true")
+        value["runtime-aggregate-continuation"] = job("success", **locator("75", "5"), aggregate_payload_complete="true")
+        self.assertEqual(locator("75", "5"), state.select_sdk_completion_state(value))
+
+    def test_any_failed_cancelled_missing_or_nonterminal_branch_rejects_before_fallback(self):
+        for baseline in (needs(), handoff()):
+            for name in state._JOBS:
+                for status in ("failure", "cancelled", "in_progress", "queued", None):
+                    value = deepcopy(baseline)
+                    value[name]["result"] = status
+                    with self.subTest(name=name, status=status), self.assertRaises(ValueError):
+                        state.select_sdk_completion_state(value)
+                value = deepcopy(baseline)
+                del value[name]
+                with self.subTest(missing=name), self.assertRaises(ValueError):
+                    state.select_sdk_completion_state(value)
+
+    def test_contradictory_elections_and_missing_success_locators_fail_closed(self):
+        mutations = (
+            ("product-resume", "full_reuse", "unknown"), ("product-resume", "wave_failed", "true"),
+            ("runtime-continuation", "sdk_handoff_required", None), ("runtime-continuation", "aggregate_state", "unknown"),
+            ("runtime-continuation", "aggregate_required", "true"),
+            ("runtime-continuation", "state_wave", "5"), ("runtime-continuation", "artifact_id", "72"),
+            ("sdk-ios-binary-plan", "sdk_workers_required", True), ("sdk-native-result", "artifact_id", "88"),
+        )
+        for name, field, content in mutations:
+            value = needs()
+            value[name]["outputs"][field] = content
+            with self.subTest(name=name, field=field), self.assertRaises(ValueError):
+                state.select_sdk_completion_state(value)
+        for name in ("product-resume", "runtime-continuation", "sdk-plan", "sdk-native-result"):
+            value = handoff()
+            value[name]["outputs"].pop("artifact_id")
+            with self.subTest(missing_locator=name), self.assertRaises(ValueError):
+                state.select_sdk_completion_state(value)
+        for field, content in (("artifact_id", True), ("artifact_digest", "bad"),
+                               ("state_wave", "4"), ("sdk_state_wave", "9")):
+            value = handoff()
+            value["sdk-native-result"]["outputs"][field] = content
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                state.select_sdk_completion_state(value)
+
+    def test_skipped_or_unelected_branches_cannot_hide_stale_state(self):
+        value = needs()
+        value["runtime-aggregate-continuation"] = job("success", **locator("75", "5"), aggregate_payload_complete="true")
+        with self.assertRaises(ValueError): state.select_sdk_completion_state(value)
+        for name in ("runtime-aggregate-continuation", "sdk-ios-binary", "sdk-collect-3", "sdk-plan"):
+            value = needs()
+            value[name]["outputs"].update(locator("99", sdk="3"))
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                state.select_sdk_completion_state(value)
+        value = handoff()
+        value["sdk-plan"] = job()
+        with self.assertRaises(ValueError): state.select_sdk_completion_state(value)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -51,7 +51,7 @@ class SdkCompletionTest(unittest.TestCase):
     def test_all_registered_sdk_phases_must_be_retained_or_reused_and_originals_stay_unchanged(self):
         value = inspected([phase(identity, "retained" if index % 2 else "reused") for index, identity in enumerate(self.sdk)])
         original = deepcopy(value)
-        self.assertEqual({"complete": True, "phaseCount": len(self.sdk)}, self.call(value))
+        self.assertEqual({"complete": True, "phaseCount": len(self.sdk), "fullReuse": True}, self.call(value))
         self.assertEqual(original, value)
         self.inspect.assert_called_once_with(*self.paths, repository_root=self.root, environ=self.environment)
 
@@ -66,10 +66,10 @@ class SdkCompletionTest(unittest.TestCase):
 
     def test_other_product_misses_and_zero_sdk_selection_do_not_claim_sdk_production(self):
         other = next(identity for identity in PHASE_INSTANCE_IDS if identity.product == "runtime")
-        self.assertEqual({"complete": True, "phaseCount": 0}, self.call(inspected([phase(other, "build")])))
-        self.assertEqual({"complete": True, "phaseCount": 1}, self.call(inspected([
+        self.assertEqual({"complete": True, "phaseCount": 0, "fullReuse": False}, self.call(inspected([phase(other, "build")])))
+        self.assertEqual({"complete": True, "phaseCount": 1, "fullReuse": False}, self.call(inspected([
             phase(other, "waiting"), phase(self.sdk[0])])))
-        self.assertEqual({"complete": True, "phaseCount": 0}, self.call(inspected([])))
+        self.assertEqual({"complete": True, "phaseCount": 0, "fullReuse": True}, self.call(inspected([])))
 
     def test_exact_caller_tooling_is_forwarded_and_replay_error_cannot_be_overridden(self):
         policy = {"synthetic": "caller-owned policy boundary"}
@@ -103,10 +103,10 @@ class SdkCompletionTest(unittest.TestCase):
             argv = ["--plan", str(self.paths[0]), "--discovery-root", str(self.paths[1]),
                 "--state-root", str(self.paths[2]), "--repository-root", str(self.root),
                 "--sdk-validation-tooling", str(policy_path), "--github-output", str(output)]
-            with patch.object(completion, "require_sdk_completion", return_value={"complete": True, "phaseCount": 2}) as gate:
+            with patch.object(completion, "require_sdk_completion", return_value={"complete": True, "phaseCount": 2, "fullReuse": False}) as gate:
                 self.assertEqual(0, completion.main(argv))
             gate.assert_called_once_with(*self.paths, repository_root=self.root, environ=os.environ, sdk_validation_tooling=policy)
-            self.assertEqual("complete=true\nphaseCount=2\n", output.read_text())
+            self.assertEqual("complete=true\nphaseCount=2\nfullReuse=false\n", output.read_text())
             output.unlink()
             with patch.object(completion, "require_sdk_completion", side_effect=ValueError("unresolved")), \
                     redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -121,10 +121,10 @@ class SdkCompletionTest(unittest.TestCase):
     def test_cli_omitted_policy_preserves_legacy_shape_and_prints_concise_summary(self):
         argv = ["--plan", str(self.paths[0]), "--discovery-root", str(self.paths[1]), "--repository-root", str(self.root)]
         stdout = io.StringIO()
-        with patch.object(completion, "require_sdk_completion", return_value={"complete": True, "phaseCount": 0}) as gate, redirect_stdout(stdout):
+        with patch.object(completion, "require_sdk_completion", return_value={"complete": True, "phaseCount": 0, "fullReuse": True}) as gate, redirect_stdout(stdout):
             self.assertEqual(0, completion.main(argv))
         gate.assert_called_once_with(*self.paths[:2], None, repository_root=self.root, environ=os.environ)
-        self.assertEqual('{"complete":true,"phaseCount":0}\n', stdout.getvalue())
+        self.assertEqual('{"complete":true,"fullReuse":true,"phaseCount":0}\n', stdout.getvalue())
 
 
 if __name__ == "__main__":

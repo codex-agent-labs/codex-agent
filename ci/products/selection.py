@@ -243,6 +243,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/runtime_workflow.py",
     "ci/sdk_phase.py",
     "ci/sdk_completion.py",
+    "ci/sdk_completion_state.py",
     "ci/sdk_ios_phase.py",
     "ci/sdk_ios_package.py",
     "ci/sdk_ios_package_workflow.py",

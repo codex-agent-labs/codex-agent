@@ -143,6 +143,7 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
             "CONTRACT_COMPLETE": "true", "CONTRACT_ATTESTATION_RESULT": "success",
             "CONTRACT_ATTESTATION_ARTIFACT_ID": "700", "CONTRACT_ATTESTATION_ARTIFACT_DIGEST": "sha256:" + "a" * 64,
             "PRODUCT_RESUME_RESULT": "success", "PRODUCT_RESUME_ARTIFACT_ID": "701",
+            "SDK_COMPLETION_RESULT": "success", "SDK_COMPLETE": "true",
             "PRODUCT_RESUME_ARTIFACT_DIGEST": "sha256:" + "b" * 64,
             "PRODUCT_FULL_REUSE": "true", "RUNTIME_WAVE_FAILED": "false false false false",
         }

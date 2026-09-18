@@ -32,7 +32,7 @@ class SdkWorkflowWiringTest(unittest.TestCase):
         self.assertIn("attempt-${{ github.run_attempt }}", action)
         plan = self.job("sdk-plan")
         self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", plan)
-        self.assertIn("runtime-aggregate-continuation' if source == 'current-runtime'", plan)
+        self.assertIn("runtime-continuation' if aggregate_state == 'not-selected' else 'runtime-aggregate-continuation'", plan)
         self.assertNotIn("setup-kmp", plan)
         for wave in (1, 2):
             worker = self.job(f"sdk-workers-{wave}")

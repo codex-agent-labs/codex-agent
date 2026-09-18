@@ -2703,7 +2703,15 @@ jobs:
           source = json.loads(needs['runtime-continuation']['outputs']['sdk_input_selection'])['source']
           if source not in ('released-default', 'current-runtime'):
               raise ValueError('Unknown SDK Runtime source')
-          parent = needs['runtime-aggregate-continuation' if source == 'current-runtime' else 'runtime-continuation']
+          aggregate_state = needs['runtime-continuation']['outputs'].get('aggregate_state')
+          if aggregate_state not in ('not-selected', 'ready', 'completed'):
+              raise ValueError('Runtime aggregate election is incomplete')
+          if source == 'current-runtime' and aggregate_state == 'not-selected':
+              raise ValueError('Current Runtime SDK input has no selected aggregate')
+          # State history includes current Runtime work even when SDK bytes use an older default.
+          parent = needs['runtime-continuation' if aggregate_state == 'not-selected' else 'runtime-aggregate-continuation']
+          if parent['result'] != 'success':
+              raise ValueError('Latest Runtime predecessor state is incomplete')
           binary_required = needs['sdk-ios-binary-plan']['outputs'].get('sdk_workers_required')
           if binary_required not in ('true', 'false'):
               raise ValueError('SDK iOS binary election is incomplete')
@@ -2715,11 +2723,16 @@ jobs:
               sdk_wave = '3'
           if parent['result'] != 'success':
               raise ValueError('SDK predecessor state is incomplete')
+          from ci.sdk_native_continuation import _locator
+          values = {name: parent['outputs'][name] for name in ('artifact_id', 'artifact_digest')}
+          values['state_wave'] = '0' if sdk_wave else parent['outputs']['state_wave']
+          values['sdk_state_wave'] = sdk_wave
+          values = _locator(values)
+          if not values['artifact_id']:
+              raise ValueError('SDK predecessor upload locator is missing')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              for name in ('artifact_id', 'artifact_digest', 'state_wave'):
-                  value = '0' if name == 'state_wave' and sdk_wave else parent['outputs'][name]
+              for name, value in values.items():
                   output.write(name + '=' + value + '\n')
-              output.write('sdk_state_wave=' + sdk_wave + '\n')
           PY
       - id: capture
         uses: ./.github/actions/capture-runtime-state
@@ -3842,10 +3855,86 @@ jobs:
           github_output(Path(os.environ['GITHUB_OUTPUT']), result)
           PY
 
+  sdk-completion:
+    needs: [plan, product-tooling, product-resume, runtime-continuation, runtime-aggregate-continuation, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, sdk-plan, sdk-native-result]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.product-resume.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      complete: ${{ steps.completion.outputs.complete }}
+      phase_count: ${{ steps.completion.outputs.phaseCount }}
+      full_reuse: ${{ steps.completion.outputs.fullReuse }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: parent
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_completion_state import select_sdk_completion_state
+          from ci.reuse import github_output
+          state = select_sdk_completion_state(json.loads(os.environ['RESULTS']))
+          github_output(Path(os.environ['GITHUB_OUTPUT']), state)
+          PY
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          set -euo pipefail
+          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
+          selected_java_home="${!java_home_variable}"
+          test -f "$selected_java_home/bin/java"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
+          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+      - id: capture
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          product: sdk
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ steps.parent.outputs.artifact_id }}
+          artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}
+          state-wave: ${{ steps.parent.outputs.state_wave }}
+          sdk-state-wave: ${{ steps.parent.outputs.sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+      - name: Require every selected SDK phase to be complete
+        id: completion
+        env:
+          PLAN: ${{ steps.capture.outputs.plan-path }}
+          DISCOVERY_ROOT: ${{ steps.capture.outputs.discovery-root }}
+          STATE_ROOT: ${{ steps.capture.outputs.state-root }}
+          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tooling=()
+          if [ -n "$SDK_VALIDATION_TOOLING" ]; then
+            tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
+          fi
+          python3 -B -m ci.sdk_completion --plan "$PLAN" \
+            --discovery-root "$DISCOVERY_ROOT" --state-root "$STATE_ROOT" \
+            --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
+            ${tooling[@]+"${tooling[@]}"}
+
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, tooling-attestation, product-tooling, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript, sdk-native-packages, sdk-javascript-metadata-result, sdk-native-result]
+    needs: [workflow-lint, plan, product, tooling-attestation, product-tooling, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript, sdk-native-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-completion]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -3864,6 +3953,8 @@ jobs:
           CONTRACT_ATTESTATION_ARTIFACT_ID: ${{ needs.contract-attestation.outputs.artifact_id }}
           CONTRACT_ATTESTATION_ARTIFACT_DIGEST: ${{ needs.contract-attestation.outputs.artifact_digest }}
           PRODUCT_RESUME_RESULT: ${{ needs.product-resume.result }}
+          SDK_COMPLETION_RESULT: ${{ needs.sdk-completion.result }}
+          SDK_COMPLETE: ${{ needs.sdk-completion.outputs.complete }}
           PRODUCT_RESUME_ARTIFACT_ID: ${{ needs.product-resume.outputs.artifact_id }}
           PRODUCT_RESUME_ARTIFACT_DIGEST: ${{ needs.product-resume.outputs.artifact_digest }}
           AGGREGATE_STATE: ${{ needs.runtime-continuation.outputs.aggregate_state }}
@@ -3876,7 +3967,7 @@ jobs:
           SDK_INPUTS_ARTIFACT_ID: ${{ needs.sdk-inputs.outputs.artifact_id }}
           SDK_INPUTS_ARTIFACT_DIGEST: ${{ needs.sdk-inputs.outputs.artifact_digest }}
           RUNTIME_WAVE_FAILED: ${{ needs.runtime-collect-1.outputs.wave_failed }} ${{ needs.runtime-collect-2.outputs.wave_failed }} ${{ needs.runtime-collect-3.outputs.wave_failed }} ${{ needs.runtime-collect-4.outputs.wave_failed }} ${{ needs.runtime-collect-5.outputs.wave_failed }}
-          PRODUCT_FULL_REUSE: ${{ needs.sdk-collect-3.outputs.full_reuse || needs.runtime-collect-5.outputs.full_reuse || needs.runtime-collect-4.outputs.full_reuse || needs.runtime-collect-3.outputs.full_reuse || needs.runtime-collect-2.outputs.full_reuse || needs.runtime-collect-1.outputs.full_reuse || needs.product-resume.outputs.full_reuse }}
+          PRODUCT_FULL_REUSE: ${{ needs.sdk-completion.outputs.full_reuse }}
         run: |
           if [ "$EVENT_AUTHORIZED" != true ]; then
             echo 'The workflow-owned event gate did not authorize remote product CI.' >&2
@@ -3897,6 +3988,10 @@ jobs:
             test "$TOOLING_ATTESTATION_RESULT" = success || exit 1
             [[ "$TOOLING_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
             [[ "$TOOLING_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          fi
+          if [ "$PRODUCT_RESUME_RESULT" = success ]; then
+            test "$SDK_COMPLETION_RESULT" = success || exit 1
+            test "$SDK_COMPLETE" = true || exit 1
           fi
           if [ -n "$AGGREGATE_STATE" ] && [ "$AGGREGATE_STATE" != not-selected ]; then
             test "$AGGREGATE_PAYLOAD_COMPLETE" = true || exit 1
