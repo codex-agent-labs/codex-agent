@@ -18,6 +18,66 @@ import org.gradle.testfixtures.ProjectBuilder
 
 class CrossLanguageAppleBindingEvidenceTest {
     @Test
+    fun `compiler evidence validates independently of XCTest evidence`() {
+        val fixture = fixture()
+
+        fixture.validateCompiler()
+
+        val malformedXCTest = JsonObject(emptyMap())
+        assertFailsWith<IllegalStateException> { fixture.derive(xctest = malformedXCTest) }
+        fixture.validateCompiler()
+    }
+
+    @Test
+    fun `compiler-only validation rejects canonical claim reference and target drift`() {
+        val fixture = fixture()
+        val compiler = fixture.compiler
+        val claims = compiler.releaseArray("claims")
+        val missingClaim = compiler.withArray("claims", JsonArray(claims.dropLast(1)))
+        val references = compiler.releaseObject("references")
+        val reducedSwiftReferences = JsonArray(references.releaseArray("swift").dropLast(1))
+        val missingReference = compiler.withObject(
+            "references",
+            JsonObject(references + mapOf(
+                "swift" to reducedSwiftReferences,
+                "swiftSha256" to JsonPrimitive(appleCompilerJsonDigest(reducedSwiftReferences)),
+            )),
+        )
+        val changedTargets = fixture.digests.targets.toMutableMap().also { targets ->
+            targets["ios-arm64"] = targets.getValue("ios-arm64").copy(headerSha256 = SHA_F)
+        }
+        val changedCanonical = fixture.canonical.copy(
+            canonical = fixture.canonical.canonical.copy(apiReportSha256 = SHA_F),
+        )
+
+        listOf(missingClaim, missingReference).forEach { drift ->
+            assertFailsWith<IllegalStateException> { fixture.validateCompiler(compiler = drift) }
+        }
+        assertFailsWith<IllegalStateException> {
+            fixture.validateCompiler(targets = changedTargets)
+        }
+        assertFailsWith<IllegalStateException> {
+            fixture.validateCompiler(canonical = changedCanonical)
+        }
+    }
+
+    @Test
+    fun `full derivation retains exact output and owns XCTest validation`() {
+        val fixture = fixture()
+        val expected = fixture.derive()
+        val wrongXCTest = JsonObject(
+            fixture.xctest + ("xcresultSha256" to JsonPrimitive(SHA_A)),
+        )
+
+        fixture.validateCompiler()
+        assertFailsWith<IllegalStateException> {
+            fixture.derive(xctest = JsonObject(emptyMap()))
+        }
+        assertFailsWith<IllegalStateException> { fixture.derive(xctest = wrongXCTest) }
+        assertEquals(expected, fixture.derive())
+    }
+
+    @Test
     fun `observes 556 independent claims and zero gaps per Apple language`() {
         val fixture = fixture()
         val report = fixture.derive()
@@ -1414,6 +1474,22 @@ class CrossLanguageAppleBindingEvidenceTest {
             xctest: JsonObject = this.xctest,
             digests: AppleBindingInputDigests = this.digests,
         ) = deriveCrossLanguageAppleBindingEvidence(canonical, compiler, xctest, digests)
+
+        fun validateCompiler(
+            canonical: CrossLanguageCanonicalApiEvidence = this.canonical,
+            compiler: JsonObject = this.compiler,
+            xcframeworkSha256: String = digests.xcframeworkSha256,
+            swiftConsumerSha256: String = digests.swiftConsumerSha256,
+            objectiveCConsumerSha256: String = digests.objectiveCConsumerSha256,
+            targets: Map<String, AppleBindingTargetDigests> = digests.targets,
+        ) = validateAppleCompilerEvidence(
+            canonical,
+            compiler,
+            xcframeworkSha256,
+            swiftConsumerSha256,
+            objectiveCConsumerSha256,
+            targets,
+        )
     }
 
     private fun fixture(): Fixture {

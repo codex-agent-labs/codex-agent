@@ -157,8 +157,11 @@ private fun verifyOriginalAppleSnapshot(
     )
     val compilerFile = distribution.resolve("reports/cross-language-api/apple/compiler-evidence.json")
     val compiler = compilerFile.readCanonicalOriginalAppleObject("Original Apple compiler evidence")
-    val rawSlices = verifyOriginalAppleCompilerRaw(execution.resolve("compiler-raw"), compiler)
-    verifyCompilerReportDomains(compiler, rawSlices)
+    verifyOriginalAppleCompilerEvidence(
+        canonical, compilerFile, execution.resolve("compiler-raw"), execution.resolve("xcframework"),
+        execution.resolve("consumer/CodexFailureSwiftConsumer.swift"),
+        execution.resolve("consumer/CodexFailureObjectiveCConsumer.m"),
+    )
 
     val xctestFile = distribution.resolve("reports/swift-authentication-tests-summary.json")
     val xctest = xctestFile.readCanonicalOriginalAppleObject("Original Apple XCTest evidence")
@@ -196,6 +199,29 @@ private fun verifyOriginalAppleSnapshot(
             "${language.id} original Apple parity receipt differs from replayed observations"
         }
     }
+}
+
+/**
+ * Compiler-only replay over a caller-owned immutable private snapshot.
+ * No distribution, compatibility, XCTest, producer or transport admission is implied.
+ */
+internal fun verifyOriginalAppleCompilerEvidence(
+    canonical: CrossLanguageCanonicalApiEvidence,
+    compilerFile: File,
+    rawDirectory: File,
+    xcframework: File,
+    swiftConsumer: File,
+    objectiveCConsumer: File,
+) {
+    val compiler = compilerFile.readCanonicalOriginalAppleObject("Original Apple compiler evidence")
+    val rawSlices = verifyOriginalAppleCompilerRaw(rawDirectory, compiler)
+    verifyCompilerReportDomains(compiler, rawSlices)
+    validateAppleCompilerEvidence(
+        canonical, compiler, xcframework.crossLanguageTreeDigest(),
+        swiftConsumer.requiredOriginalAppleFileDigest("Swift compiler consumer"),
+        objectiveCConsumer.requiredOriginalAppleFileDigest("Objective-C compiler consumer"),
+        originalAppleBindingTargetDigests(xcframework),
+    )
 }
 
 private fun verifyOriginalAppleCompilerRaw(

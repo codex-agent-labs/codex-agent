@@ -4,6 +4,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlinx.serialization.json.JsonObject
@@ -12,6 +14,49 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 
 class AppleVerifiedDistributionTest {
+    @Test
+    fun `decoration compatibility uses current bytes without old proof or XCTest evidence`() = fixture().use {
+        // Compatibility matching only: these minimal declarations are not S858 admission proof.
+        it.writeCompatibility("{\"schemaVersion\":1,\"sdkVersion\":\"0.8.0\"}\n".toByteArray())
+        val expectedDigest = it.compatibilitySha256
+        val artifacts = it.decorationArtifacts("0.8.0")
+        val originalBytes = artifacts.mapValues { (_, file) -> file.readBytes().toList() }
+        assertTrue(it.distribution.deleteRecursively())
+        assertTrue(it.nativeEvidence.deleteRecursively())
+        assertFalse(it.distribution.exists())
+        assertEquals(
+            setOf("CodexAgentPackage-0.8.0.zip", "CodexAgent-0.8.0.xcframework.zip"),
+            artifacts.values.first().parentFile.listFiles()!!.map { file -> file.name }.toSet(),
+        )
+
+        verifyAppleSdkCompatibility(artifacts, "0.8.0", expectedDigest)
+
+        assertEquals(originalBytes, artifacts.mapValues { (_, file) -> file.readBytes().toList() })
+        assertFalse(it.distribution.exists(), "Compatibility verification must not reconstruct an old proof")
+    }
+
+    @Test
+    fun `decoration compatibility rejects stale version digest and declaration placement`() {
+        listOf("version", "digest", "source-path", "missing-simulator", "extra-declaration").forEach { failure ->
+            fixture().use { current ->
+                val declaredVersion = if (failure == "version") "0.2.0" else "0.8.0"
+                current.writeCompatibility("{\"schemaVersion\":1,\"sdkVersion\":\"$declaredVersion\"}\n".toByteArray())
+                val sourcePaths = if (failure == "source-path") arrayOf("wrong/sdk-compatibility.json")
+                    else arrayOf("META-INF/codex-agent/sdk-compatibility.json")
+                val swiftPaths = when (failure) {
+                    "missing-simulator" -> arrayOf(swiftCompatibilityPaths.first())
+                    "extra-declaration" -> swiftCompatibilityPaths + "extra/sdk-compatibility.json"
+                    else -> swiftCompatibilityPaths
+                }
+                val artifacts = current.decorationArtifacts("0.8.0", sourcePaths, swiftPaths)
+                val expectedDigest = if (failure == "digest") "f".repeat(64) else current.compatibilitySha256
+                assertFailsWith<IllegalStateException>(failure) {
+                    verifyAppleSdkCompatibility(artifacts, "0.8.0", expectedDigest)
+                }
+            }
+        }
+    }
+
     @Test
     fun `exact verified distribution and transported native evidence validate`() = fixture().use {
         val inventory = it.verify()
@@ -147,6 +192,7 @@ private class VerifiedDistributionFixture : AutoCloseable {
     private val packageSwift = root.resolve("Package.swift").apply { writeText("// package") }
     private val nativeReceipt = root.resolve("native-receipt.json").apply { writeText("{}") }
     private var sdkCompatibility = "{\"schemaVersion\":1,\"sdkVersion\":\"0.2.0\"}\n".toByteArray()
+    val compatibilitySha256 get() = sdkCompatibility.sha256()
     private val identity get() = AppleVerifiedDistributionIdentity(
         "1".repeat(40), "2".repeat(40), "0.2.0", provenance.releaseDigest(),
         packageSwift.releaseDigest(), nativeReceipt.releaseDigest(), sdkCompatibility.sha256(),
@@ -197,6 +243,18 @@ private class VerifiedDistributionFixture : AutoCloseable {
     }
 
     fun verify() = verifyAppleVerifiedDistribution(distribution, nativeEvidence, identity)
+
+    fun decorationArtifacts(
+        version: String,
+        sourcePaths: Array<String> = arrayOf("META-INF/codex-agent/sdk-compatibility.json"),
+        swiftPaths: Array<String> = swiftCompatibilityPaths,
+    ): Map<String, File> {
+        val directory = root.resolve("decoration").apply { mkdirs() }
+        return linkedMapOf(
+            "CodexAgentPackage-$version.zip" to sourcePaths,
+            "CodexAgent-$version.xcframework.zip" to swiftPaths,
+        ).mapValues { (name, paths) -> directory.resolve(name).apply { zip(*paths) } }
+    }
 
     fun writeSource(vararg paths: String, payload: ByteArray = sdkCompatibility) {
         distribution.resolve("CodexAgentPackage-0.2.0.zip").zip(*paths, payload = payload)

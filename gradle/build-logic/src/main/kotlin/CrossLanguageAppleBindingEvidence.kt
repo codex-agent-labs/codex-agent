@@ -4443,21 +4443,21 @@ private fun Map<String, ExpectedAppleCompilerSymbol>.appleSymbols(interfaceLangu
         )
     }
 
-internal fun deriveCrossLanguageAppleBindingEvidence(
+/** Compiler observations only; this does not grant XCTest or language-parity acceptance. */
+internal fun validateAppleCompilerEvidence(
     canonical: CrossLanguageCanonicalApiEvidence,
     compilerEvidence: JsonObject,
-    xctestEvidence: JsonObject,
-    digests: AppleBindingInputDigests,
-): JsonObject {
+    xcframeworkSha256: String,
+    swiftConsumerSha256: String,
+    objectiveCConsumerSha256: String,
+    targets: Map<String, AppleBindingTargetDigests>,
+) {
     listOf(
-        "compiler evidence" to digests.compilerEvidenceSha256,
-        "XCFramework" to digests.xcframeworkSha256,
-        "Swift consumer" to digests.swiftConsumerSha256,
-        "Objective-C consumer" to digests.objectiveCConsumerSha256,
-        "XCTest evidence" to digests.xctestEvidenceSha256,
-        "xcresult" to digests.xcresultSha256,
+        "XCFramework" to xcframeworkSha256,
+        "Swift consumer" to swiftConsumerSha256,
+        "Objective-C consumer" to objectiveCConsumerSha256,
     ).forEach { (label, digest) -> digest.appleSha256(label) }
-    digests.targets.forEach { (target, values) ->
+    targets.forEach { (target, values) ->
         listOf(
             "framework" to values.frameworkSha256,
             "binary" to values.binarySha256,
@@ -4515,12 +4515,12 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
             "Apple compiler artifacts", "xcframeworkSha256", "swiftConsumerSha256", "objectiveCConsumerSha256",
         )
     }
-    check(compilerArtifacts.appleSha256("xcframeworkSha256") == digests.xcframeworkSha256 &&
-        compilerArtifacts.appleSha256("swiftConsumerSha256") == digests.swiftConsumerSha256 &&
-        compilerArtifacts.appleSha256("objectiveCConsumerSha256") == digests.objectiveCConsumerSha256
+    check(compilerArtifacts.appleSha256("xcframeworkSha256") == xcframeworkSha256 &&
+        compilerArtifacts.appleSha256("swiftConsumerSha256") == swiftConsumerSha256 &&
+        compilerArtifacts.appleSha256("objectiveCConsumerSha256") == objectiveCConsumerSha256
     ) { "Apple compiler artifact identity changed" }
 
-    validateAppleTargets(compilerEvidence.appleArray("targets"), digests.targets)
+    validateAppleTargets(compilerEvidence.appleArray("targets"), targets)
     val surfaces = compilerEvidence.appleObject("surface").also {
         it.appleKeys("Apple compiler surfaces", "swiftSha256", "objectiveCSha256", "swift", "objectiveC")
     }
@@ -4567,10 +4567,34 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
         AppleCompilerClaim(capability, usrByCapability.getValue(capability), usrByCapability.getValue(capability))
     }
     check(compilerClaims == expectedClaims) { "Apple compiler claims changed" }
+}
 
+internal fun deriveCrossLanguageAppleBindingEvidence(
+    canonical: CrossLanguageCanonicalApiEvidence,
+    compilerEvidence: JsonObject,
+    xctestEvidence: JsonObject,
+    digests: AppleBindingInputDigests,
+): JsonObject {
+    listOf(
+        "compiler evidence" to digests.compilerEvidenceSha256,
+        "XCTest evidence" to digests.xctestEvidenceSha256,
+        "xcresult" to digests.xcresultSha256,
+    ).forEach { (label, digest) -> digest.appleSha256(label) }
+    validateAppleCompilerEvidence(
+        canonical, compilerEvidence, digests.xcframeworkSha256,
+        digests.swiftConsumerSha256, digests.objectiveCConsumerSha256, digests.targets,
+    )
     validateAppleXCTestEvidence(xctestEvidence, digests.xcresultSha256)
+    val capabilities = appleBindingCapabilityKeys(canonical.memberKeys)
+    val usrByCapability = capabilities.associateWith(::appleBindingUsr)
     val missing = (canonical.memberKeys.toSet() - capabilities.toSet()).sorted()
     check(missing.isEmpty()) { "Apple binding gap count changed: ${missing.size}" }
+    val surfaces = compilerEvidence.appleObject("surface")
+    val swiftSurface = surfaces.appleArray("swift").map { it.appleSymbol() }
+    val objectiveCSurface = surfaces.appleArray("objectiveC").map { it.appleSymbol() }
+    val references = compilerEvidence.appleObject("references")
+    val swiftReferences = references.appleArray("swift").map { it.appleReference() }
+    val objectiveCReferences = references.appleArray("objectiveC").map { it.appleReference() }
     val swiftSymbols = swiftSurface.map(AppleCompilerSymbol::precise).sorted()
     val objectiveCSymbols = objectiveCSurface.map(AppleCompilerSymbol::precise).sorted()
     val swiftReferenced = swiftReferences.map(AppleCompilerReference::precise).sorted()

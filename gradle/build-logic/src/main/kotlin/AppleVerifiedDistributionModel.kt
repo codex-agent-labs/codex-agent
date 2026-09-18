@@ -158,23 +158,25 @@ internal fun verifyAppleVerifiedDistribution(
     val expectedFiles = artifacts.keys + reports.keys + toolchain.keys + receipts.keys + IOS_VERIFIED_DISTRIBUTION_PROOF
     check(files.keys == expectedFiles) { "Verified Apple distribution contains missing or extra files" }
     val swiftArchive = artifacts.getValue("CodexAgent-${identity.version}.xcframework.zip")
-    verifyAppleSdkCompatibility(artifacts, identity)
+    verifyAppleSdkCompatibility(artifacts, identity.version, identity.sdkCompatibilitySha256)
     val checksum = artifacts.getValue("CodexAgent-${identity.version}.xcframework.zip.sha256").readText().trim()
     check(checksum == swiftArchive.releaseDigest()) { "Verified Apple distribution Swift checksum mismatch" }
     return AppleVerifiedDistributionInventory(artifacts, reports, toolchain, receipts, proofFile)
 }
 
-private fun verifyAppleSdkCompatibility(
+/** Exact decoration check; archive safety and caller input authentication remain separate gates. */
+internal fun verifyAppleSdkCompatibility(
     artifacts: Map<String, File>,
-    identity: AppleVerifiedDistributionIdentity,
+    version: String,
+    expectedCompatibilitySha256: String,
 ) {
     val sourcePath = "META-INF/codex-agent/sdk-compatibility.json"
     val swiftPaths = listOf("ios-arm64", "ios-arm64-simulator").map { slice ->
         "CodexAgent.xcframework/$slice/CodexAgent.framework/$sourcePath"
     }
     val expected = linkedMapOf(
-        artifacts.getValue("CodexAgentPackage-${identity.version}.zip") to listOf(sourcePath),
-        artifacts.getValue("CodexAgent-${identity.version}.xcframework.zip") to swiftPaths,
+        artifacts.getValue("CodexAgentPackage-$version.zip") to listOf(sourcePath),
+        artifacts.getValue("CodexAgent-$version.xcframework.zip") to swiftPaths,
     )
     val payloads = expected.flatMap { (archiveFile, expectedPaths) ->
         ZipFile(archiveFile).use { archive ->
@@ -189,7 +191,7 @@ private fun verifyAppleSdkCompatibility(
     check(payloads.isNotEmpty() && payloads.all { it.contentEquals(payloads.first()) }) {
         "Apple SDK compatibility bytes differ between distributions"
     }
-    check(payloads.first().sha256Hex() == identity.sdkCompatibilitySha256) {
+    check(payloads.first().sha256Hex() == expectedCompatibilitySha256) {
         "Apple SDK compatibility digest mismatch"
     }
     val contents = payloads.first().decodeToString()
@@ -200,7 +202,7 @@ private fun verifyAppleSdkCompatibility(
         "Apple SDK compatibility declaration is not canonically encoded"
     }
     val sdkVersion = declaration["sdkVersion"] as? JsonPrimitive
-    check(sdkVersion?.isString == true && sdkVersion.content == identity.version) {
+    check(sdkVersion?.isString == true && sdkVersion.content == version) {
         "Apple SDK compatibility version mismatch"
     }
 }

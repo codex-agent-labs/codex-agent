@@ -15,6 +15,66 @@ import kotlinx.serialization.json.buildJsonObject
 
 class AppleOriginalExecutionVerificationTest {
     @Test
+    fun `compiler replay needs no distribution compatibility proof or XCTest inputs`() =
+        OriginalAppleExecutionFixture().use { fixture ->
+            val compiler = fixture.root.resolve("compiler-only-evidence.json")
+            fixture.compilerEvidence.copyTo(compiler)
+            fixture.distribution.deleteRecursively()
+            fixture.expectedProof.parentFile.deleteRecursively()
+            listOf("sdk-compatibility.json", "source", "xcresult", "xctest-package", "xctest-products", "xctest-raw")
+                .forEach { fixture.execution.resolve(it).deleteRecursively() }
+            assertTrue(!fixture.distribution.exists())
+            assertTrue(!fixture.expectedProof.exists())
+            assertTrue(!fixture.execution.resolve("xctest-raw").exists())
+            val before = fixture.compilerInputDigests(compiler)
+            fixture.verifyCompiler(compiler)
+            assertEquals(before, fixture.compilerInputDigests(compiler))
+        }
+
+    @Test
+    fun `compiler only replay rejects raw report header and consumer drift without rewriting inputs`() =
+        OriginalAppleExecutionFixture().use { fixture ->
+            fixture.verifyCompiler()
+            val before = fixture.compilerInputDigests()
+            val mutations: List<Pair<File, (File) -> Unit>> = listOf(
+                fixture.swiftSymbolGraph to { file ->
+                    file.writeText(file.readText().replaceFirst("\"swift.init\"", "\"swift.method\""))
+                },
+                fixture.compilerCommand to { file ->
+                    val report = file.readReleaseObject()
+                    file.atomicWriteJson(JsonObject(report + (
+                        "command" to JsonArray(report.releaseArray("command") + JsonPrimitive("--unexpected"))
+                    )))
+                },
+                fixture.compilerEvidence to { file ->
+                    val report = file.readReleaseObject()
+                    val canonical = report["canonical"] as JsonObject
+                    file.atomicWriteJson(JsonObject(report + ("canonical" to JsonObject(
+                        canonical + ("apiReportSha256" to JsonPrimitive("0".repeat(64))),
+                    ))))
+                },
+                fixture.execution.resolve("xcframework/ios-arm64/CodexAgent.framework/Headers/CodexAgent.h") to
+                    { file -> file.appendText("// changed header\n") },
+                fixture.execution.resolve("consumer/CodexFailureSwiftConsumer.swift") to
+                    { file -> file.appendText("// changed Swift consumer\n") },
+                fixture.execution.resolve("consumer/CodexFailureObjectiveCConsumer.m") to
+                    { file -> file.appendText("// changed Objective-C consumer\n") },
+            )
+            mutations.forEach { (file, mutate) ->
+                val original = file.readBytes()
+                try {
+                    mutate(file)
+                    val changed = fixture.compilerInputDigests()
+                    assertFailsWith<IllegalStateException>(file.path) { fixture.verifyCompiler() }
+                    assertEquals(changed, fixture.compilerInputDigests(), file.path)
+                } finally {
+                    file.writeBytes(original)
+                }
+                assertEquals(before, fixture.compilerInputDigests())
+            }
+        }
+
+    @Test
     fun `replays original raw compiler and XCTest observations through the full matcher`() =
         OriginalAppleExecutionFixture().use { fixture ->
             val before = fixture.inputDigests()
@@ -125,6 +185,7 @@ private class OriginalAppleExecutionFixture : AutoCloseable {
         execution.resolve("compiler-raw/ios-arm64/objective-c-extract-api/execution.json")
     val priorXCTestCommand get() = execution.resolve("xctest-raw/attempt-0/xcodebuild/execution.json")
     val priorXCTestSummaryCommand get() = execution.resolve("xctest-raw/attempt-0/summary/execution.json")
+    val compilerEvidence get() = distribution.resolve("reports/cross-language-api/apple/compiler-evidence.json")
 
     init {
         expectedCompatibility.parentFile.mkdirs()
@@ -152,6 +213,20 @@ private class OriginalAppleExecutionFixture : AutoCloseable {
     fun verify() = verifyOriginalAppleExecution(
         distribution, execution, expectedProof, expectedCompatibility,
     )
+
+    fun verifyCompiler(compiler: File = compilerEvidence) = verifyOriginalAppleCompilerEvidence(
+        readCrossLanguageCanonicalApiEvidence(
+            execution.resolve("canonical/canonical-api.json"), execution.resolve("canonical/canonical-coverage.json"),
+        ),
+        compiler, execution.resolve("compiler-raw"), execution.resolve("xcframework"),
+        execution.resolve("consumer/CodexFailureSwiftConsumer.swift"),
+        execution.resolve("consumer/CodexFailureObjectiveCConsumer.m"),
+    )
+
+    fun compilerInputDigests(compiler: File = compilerEvidence): Map<String, String> = buildMap {
+        verifiedRegularFiles(execution).forEach { (path, file) -> put("execution/$path", file.releaseDigest()) }
+        put("compiler-evidence", compiler.releaseDigest())
+    }
 
     fun verifyUsingPackagedTool() {
         val java = File(
