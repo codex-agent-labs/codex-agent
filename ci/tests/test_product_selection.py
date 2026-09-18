@@ -75,6 +75,13 @@ class ProductSelectionTest(unittest.TestCase):
                           if item.product == "sdk" and item.component == "sdk-ios"
                           and item.phase in {"package", "validation", "metadata"}}, selected)
 
+    def test_fresh_apple_package_stage_selects_no_binary_work(self) -> None:
+        path = "gradle/build-logic/src/main/kotlin/AppleBinaryPackageStageTask.kt"
+        selected = identities(classify_paths([path]))
+        self.assertEqual({item for item in PHASE_INSTANCE_IDS
+                          if item.product == "sdk" and item.component == "sdk-ios"
+                          and item.phase in {"package", "validation", "metadata"}}, selected)
+
     def test_shared_capture_owns_adapter_and_native_host_validation_keys(self) -> None:
         self._assert_adapter_host_validation_keys("runtime/build-logic/src/main/kotlin/RuntimeEvidenceExecutionCapture.kt", native=True)
 

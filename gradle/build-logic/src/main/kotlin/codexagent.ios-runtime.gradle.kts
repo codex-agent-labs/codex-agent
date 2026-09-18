@@ -121,10 +121,19 @@ val verifyAppleToolchain = registerAppleToolchainVerificationTask(
     pinnedXcodeBuild,
     pinnedSwiftVersion,
 )
-val importedDeviceFrameworkPath = providers.gradleProperty("codexAgent.iosDeviceFrameworkDirectory")
-val importedSimulatorFrameworkPath = providers.gradleProperty("codexAgent.iosSimulatorFrameworkDirectory")
+val binaryPackageMode = usesAppleBinaryPackageInputs()
+val packageBinarySnapshot = if (binaryPackageMode) project(":codex-agent-sdk").layout.buildDirectory.dir(
+    providers.gradleProperty("codexAgent.candidateTree").map { "imported-sdk-binary-stages/$it/sdk-ios" },
+) else null
+val importedDeviceFrameworkPath = if (binaryPackageMode) checkNotNull(packageBinarySnapshot).map {
+    it.dir("outputs/apple-binary/ios-arm64/CodexAgent.framework").asFile.path
+} else providers.gradleProperty("codexAgent.iosDeviceFrameworkDirectory")
+val importedSimulatorFrameworkPath = if (binaryPackageMode) checkNotNull(packageBinarySnapshot).map {
+    it.dir("outputs/apple-binary/ios-simulator-arm64/CodexAgent.framework").asFile.path
+} else providers.gradleProperty("codexAgent.iosSimulatorFrameworkDirectory")
 val importedDeviceFramework = importedDeviceFrameworkPath.orNull?.let {
     tasks.register<ImportCodexAgentFrameworkTask>("importCodexAgentIosDeviceFramework") {
+        if (binaryPackageMode) dependsOn(":codex-agent-sdk:verifyImportedSdkIosBinaryStage")
         frameworkDirectory.set(layout.dir(providers.provider { file(it) }))
         platformName.set("iphoneos")
         importedFrameworkDirectory.set(layout.buildDirectory.dir("imported-frameworks/device/CodexAgent.framework"))
@@ -132,6 +141,7 @@ val importedDeviceFramework = importedDeviceFrameworkPath.orNull?.let {
 }
 val importedSimulatorFramework = importedSimulatorFrameworkPath.orNull?.let {
     tasks.register<ImportCodexAgentFrameworkTask>("importCodexAgentIosSimulatorFramework") {
+        if (binaryPackageMode) dependsOn(":codex-agent-sdk:verifyImportedSdkIosBinaryStage")
         frameworkDirectory.set(layout.dir(providers.provider { file(it) }))
         platformName.set("iphonesimulator")
         importedFrameworkDirectory.set(layout.buildDirectory.dir("imported-frameworks/simulator/CodexAgent.framework"))

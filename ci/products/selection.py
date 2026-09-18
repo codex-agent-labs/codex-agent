@@ -199,6 +199,7 @@ _IOS_VALIDATION_BUILD_LOGIC = frozenset({
     "SwiftPackageProofTask.kt",
 })
 _IOS_PACKAGE_BUILD_LOGIC = frozenset({
+    "AppleBinaryPackageStageTask.kt",
     "AppleDistributionFileTasks.kt",
     "AppleVerifiedDistributionVerification.kt",
     "IosAppleDistributionTasks.kt",

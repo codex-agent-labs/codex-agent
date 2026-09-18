@@ -128,6 +128,40 @@ def package_properties(
     return fields
 
 
+def binary_package_properties(
+    plan: Mapping[str, Any], *,
+    sdk_version: str,
+    predecessor: Callable[[str, str, str, str], Mapping[str, Any]],
+    compatibility_request: Path,
+) -> dict[str, str]:
+    """Package authenticated raw binary inputs; compiler/host admission is separate.
+
+    Gradle derives the framework paths from its private binary-stage snapshot.
+    The predecessor callback authenticates original receipts and inventories.
+    """
+    _identity(plan)
+    version = require_semver(sdk_version, "Elected SDK version")
+    binary = predecessor("sdk", "sdk-ios", "binary", "ios")
+    contract = predecessor("contract", "contract", "binary", "common")
+    for original, identity in ((binary, ("sdk", "sdk-ios", "binary", "ios")),
+                               (contract, ("contract", "contract", "binary", "common"))):
+        if tuple(original["receipt"].get(field) for field in ("product", "component", "phase", "target")) != identity:
+            raise ValueError("iOS package predecessor receipt has the wrong identity")
+    if require_semver(binary["receipt"].get("productVersion"), "Original SDK version") != version:
+        raise ValueError("Original iOS SDK binary version differs from the elected SDK version")
+    return {
+        "codexAgent.product": "sdk",
+        "codexAgent.component": "sdk-ios",
+        "codexAgent.phase": "package",
+        "codexAgent.target": "ios",
+        "codexAgent.iosPackageFromBinary": "true",
+        "codexAgent.sdkIosBinaryStageRoot": _directory(binary["stage"], "Original iOS SDK binary stage"),
+        "codexAgent.contractBinaryStage": _directory(contract["stage"], "Original Contract binary stage"),
+        "codexAgent.contractVersion": require_semver(contract["receipt"].get("productVersion"), "Original Contract version"),
+        "codexAgent.sdkCompatibilityRequest": _request(compatibility_request),
+    }
+
+
 def fresh_export_properties(
     plan: Mapping[str, Any], *,
     predecessor: Callable[[str, str, str, str], Mapping[str, Any]],

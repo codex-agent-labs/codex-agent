@@ -26,6 +26,31 @@ internal fun requirePairedAppleFrameworkImports(device: Boolean, simulator: Bool
     }
 }
 
+internal fun Project.usesAppleBinaryPackageInputs(): Boolean {
+    val mode = providers.gradleProperty("codexAgent.iosPackageFromBinary").orNull ?: return false
+    check(mode == "true" &&
+        providers.gradleProperty("codexAgent.product").orNull == "sdk" &&
+        providers.gradleProperty("codexAgent.component").orNull == "sdk-ios" &&
+        providers.gradleProperty("codexAgent.phase").orNull == "package" &&
+        providers.gradleProperty("codexAgent.target").orNull == "ios") {
+        "Apple binary package mode requires the exact SDK iOS package phase"
+    }
+    listOf("codexAgent.sdkIosBinaryStageRoot", "codexAgent.sdkCompatibilityRequest").forEach {
+        check(!providers.gradleProperty(it).orNull.isNullOrBlank()) { "Apple binary package mode requires $it" }
+    }
+    listOf(
+        IOS_VERIFIED_DISTRIBUTION_PROPERTY, "codexAgent.iosExpectedDistributionProof",
+        "codexAgent.iosExpectedSdkCompatibility", "codexAgent.iosNativeEvidenceDirectory",
+        "codexAgent.iosDeviceFrameworkDirectory", "codexAgent.iosSimulatorFrameworkDirectory",
+    ).forEach {
+        check(!providers.gradleProperty(it).isPresent) { "Apple binary package mode rejects override $it" }
+    }
+    check(!providers.environmentVariable("CODEX_AGENT_IMPORTED_SWIFT_ZIP").isPresent) {
+        "Apple binary package mode rejects imported Swift ZIP override"
+    }
+    return true
+}
+
 fun Project.registerIosAppleDistributionTasks(
     expectedSwiftTestIdentifiers: List<String>,
     pinnedRustToolchain: String,

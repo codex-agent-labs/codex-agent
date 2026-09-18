@@ -144,19 +144,47 @@ val sdkMavenPackageManifestTasks = sdkMavenPackageSpecs.mapValues { (component, 
                 properties["codexAgent.component"] == "sdk-ios" &&
                 properties["codexAgent.phase"] == "package"
         }
-        if (canonicalRequest) {
+        val binaryPackageMode = usesAppleBinaryPackageInputs()
+        if (canonicalRequest && !binaryPackageMode) {
             check(importedApple.isPresent && expectedCompatibility.isPresent && expectedProof.isPresent) {
                 "Canonical SDK iOS package production requires imported Apple artifacts and caller expectations"
             }
         }
         manifest.configure {
             doFirst {
-                check(importedApple.isPresent && expectedCompatibility.isPresent && expectedProof.isPresent) {
+                check(binaryPackageMode || (importedApple.isPresent && expectedCompatibility.isPresent && expectedProof.isPresent)) {
                     "SDK iOS package output requires imported Apple artifacts and caller expectations"
                 }
             }
         }
-        if (importedApple.isPresent) {
+        if (binaryPackageMode) {
+            val iosRuntime = project(":codex-agent-runtime-ios")
+            iosRuntime.pluginManager.withPlugin("codexagent.ios-runtime") {
+                val appleStage = iosRuntime.tasks.register<StageAppleBinaryPackageArtifactsTask>(
+                    "stageBinaryCodexAgentIosSdkPackageArtifacts",
+                ) {
+                    dependsOn(verify, generateNativeWrapperSdkCompatibility)
+                    version.set(nativeWrapperSdkVersion)
+                    applePackageArchive.set(iosRuntime.tasks.named<org.gradle.api.tasks.bundling.Zip>(
+                        "packageCodexAgentAppleDistribution",
+                    ).flatMap { it.archiveFile })
+                    swiftPackageArchive.set(iosRuntime.tasks.named<org.gradle.api.tasks.bundling.Zip>(
+                        "packageCodexAgentSwiftPackageBinary",
+                    ).flatMap { it.archiveFile })
+                    swiftPackageChecksum.set(iosRuntime.tasks.named<GenerateSha256Task>(
+                        "generateCodexAgentSwiftPackageChecksum",
+                    ).flatMap { it.outputFile })
+                    sdkCompatibility.set(generateNativeWrapperSdkCompatibility.flatMap { it.outputFile })
+                    ownedBuildDirectory.set(layout.buildDirectory)
+                    workDirectory.set(appleScratch.map { it.dir("binary-stage-work") })
+                    outputDirectory.set(phaseOutputs.map { it.dir("apple") })
+                }
+                manifest.configure {
+                    dependsOn(appleStage)
+                    outputRoots.put("apple", "outputs/apple")
+                }
+            }
+        } else if (importedApple.isPresent) {
             val iosRuntime = project(":codex-agent-runtime-ios")
             iosRuntime.pluginManager.withPlugin("codexagent.ios-runtime") {
                 val appleStage = iosRuntime.tasks.named<StageImportedAppleSdkPackageArtifactsTask>(
