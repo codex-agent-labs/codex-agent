@@ -153,6 +153,54 @@ private fun moveReleaseFile(source: File, target: File) {
     }
 }
 
+/** Caller owns private input/output isolation and trusted toolchain identity; this is only the shared transform. */
+internal fun prepareAppleReleaseXCFramework(
+    assembled: File,
+    release: File,
+    privacyManifest: File,
+    forbiddenAbsolutePathPrefixes: List<String>,
+    capture: (List<String>) -> String,
+    scan: (List<String>) -> Pair<Int, String>,
+) {
+    deleteReleaseTree(release)
+    copyReleaseTree(assembled, release)
+    listOf("ios-arm64", "ios-arm64-simulator").forEach { slice ->
+        val framework = release.resolve("$slice/CodexAgent.framework")
+        copyReleaseFile(privacyManifest, framework.resolve("PrivacyInfo.xcprivacy"))
+        val archive = framework.resolve("CodexAgent")
+        val stripped = framework.resolve("CodexAgent.stripped")
+        val normalized = framework.resolve("CodexAgent.normalized")
+        Files.deleteIfExists(stripped.toPath())
+        Files.deleteIfExists(normalized.toPath())
+        try {
+            capture(stripReleaseArchiveCommand(archive, stripped))
+            capture(libtoolNormalizeCommand(stripped, normalized))
+            moveReleaseFile(normalized, archive)
+            val (exitValue, stderr) = scan(pathPrefixScanCommand(archive, forbiddenAbsolutePathPrefixes))
+            verifyPathPrefixScan(
+                exitValue,
+                archive,
+                forbiddenAbsolutePathPrefixes,
+                stderr,
+            )
+        } finally {
+            Files.deleteIfExists(stripped.toPath())
+            Files.deleteIfExists(normalized.toPath())
+        }
+    }
+    verifyPrivacyPlacement(release, privacyManifest)
+    val infoPlist = release.resolve("Info.plist")
+    val libraries = capture(
+        listOf("/usr/bin/plutil", "-extract", "AvailableLibraries", "json", "-o", "-", infoPlist.absolutePath),
+    )
+    capture(
+        listOf(
+            "/usr/bin/plutil", "-replace", "AvailableLibraries", "-json",
+            sortedAvailableLibraries(libraries), infoPlist.absolutePath,
+        ),
+    )
+}
+
 @CacheableTask
 abstract class PrepareCodexAgentReleaseXCFrameworkTask @Inject constructor(
     private val processes: ExecOperations,
@@ -164,54 +212,24 @@ abstract class PrepareCodexAgentReleaseXCFrameworkTask @Inject constructor(
     @get:org.gradle.api.tasks.Input abstract val appleToolchainIdentity: Property<String>
     @get:OutputDirectory abstract val releaseXCFrameworkDirectory: DirectoryProperty
 
-    @TaskAction fun prepare() {
-        val assembled = assembledXCFrameworkDirectory.get().asFile
-        val release = releaseXCFrameworkDirectory.get().asFile
-        deleteReleaseTree(release)
-        copyReleaseTree(assembled, release)
-        listOf("ios-arm64", "ios-arm64-simulator").forEach { slice ->
-            val framework = release.resolve("$slice/CodexAgent.framework")
-            copyReleaseFile(privacyManifest.get().asFile, framework.resolve("PrivacyInfo.xcprivacy"))
-            val archive = framework.resolve("CodexAgent")
-            val stripped = framework.resolve("CodexAgent.stripped")
-            val normalized = framework.resolve("CodexAgent.normalized")
-            Files.deleteIfExists(stripped.toPath())
-            Files.deleteIfExists(normalized.toPath())
-            try {
-                processes.captureReleaseProcess(stripReleaseArchiveCommand(archive, stripped))
-                processes.captureReleaseProcess(libtoolNormalizeCommand(stripped, normalized))
-                moveReleaseFile(normalized, archive)
-                val stderr = java.io.ByteArrayOutputStream()
-                val scan = processes.exec {
-                    commandLine(pathPrefixScanCommand(archive, forbiddenAbsolutePathPrefixes.get()))
-                    environment("LC_ALL", "C")
-                    standardOutput = java.io.ByteArrayOutputStream()
-                    errorOutput = stderr
-                    isIgnoreExitValue = true
-                }
-                verifyPathPrefixScan(
-                    scan.exitValue,
-                    archive,
-                    forbiddenAbsolutePathPrefixes.get(),
-                    stderr.toString(),
-                )
-            } finally {
-                Files.deleteIfExists(stripped.toPath())
-                Files.deleteIfExists(normalized.toPath())
+    @TaskAction fun prepare() = prepareAppleReleaseXCFramework(
+        assembledXCFrameworkDirectory.get().asFile,
+        releaseXCFrameworkDirectory.get().asFile,
+        privacyManifest.get().asFile,
+        forbiddenAbsolutePathPrefixes.get(),
+        capture = { processes.captureReleaseProcess(it) },
+        scan = { command ->
+            val stderr = java.io.ByteArrayOutputStream()
+            val result = processes.exec {
+                commandLine(command)
+                environment("LC_ALL", "C")
+                standardOutput = java.io.ByteArrayOutputStream()
+                errorOutput = stderr
+                isIgnoreExitValue = true
             }
-        }
-        verifyPrivacyPlacement(release, privacyManifest.get().asFile)
-        val infoPlist = release.resolve("Info.plist")
-        val libraries = processes.captureReleaseProcess(
-            listOf("/usr/bin/plutil", "-extract", "AvailableLibraries", "json", "-o", "-", infoPlist.absolutePath),
-        )
-        processes.captureReleaseProcess(
-            listOf(
-                "/usr/bin/plutil", "-replace", "AvailableLibraries", "-json",
-                sortedAvailableLibraries(libraries), infoPlist.absolutePath,
-            ),
-        )
-    }
+            result.exitValue to stderr.toString()
+        },
+    )
 }
 
 @CacheableTask
