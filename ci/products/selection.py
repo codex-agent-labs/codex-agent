@@ -299,6 +299,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/sdk_apple_package_source.py",
     "ci/products/sdk_apple_validation_source.py",
     "ci/products/sdk_apple_validation_evidence.py",
+    "ci/products/sdk_apple_device_evidence.py",
     "ci/products/sdk_apple_framework.py",
     "ci/products/sdk_apple_source.py",
     "ci/products/runtime_aggregate_handoff.py",
@@ -518,6 +519,8 @@ def _native_metadata_owners(path: str) -> set[PhaseInstanceId]:
 
 
 def _control_selection(path: str) -> set[PhaseInstanceId] | None:
+    if path == "ci/products/sdk_apple_validation_content.py":
+        return _from_phase("sdk", "sdk-ios", "validation")
     if path in _CONTROL_ONLY_FILES:
         return set(ALL_INSTANCES)
     if _is_prefix(path, ".github/actions/capture-sdk-tooling/"):
@@ -608,6 +611,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _is_control_only(path: str) -> bool:
+    if path == "ci/products/sdk_apple_validation_content.py":
+        return False  # Defines deterministic Apple validation product bytes.
     if path == "ci/products/sdk_runtime_content.py":
         return False  # Produces the native Mac bootstrap content sidecar.
     if path in {"ci/products/sdk_inputs.py", "ci/products/sdk_native.py", "ci/products/sdk_package.py"}:
@@ -1050,6 +1055,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstanceId]:
+    if path == "ci/products/sdk_apple_validation_content.py":
+        return {instance for instance in selected if instance.phase == "validation"}
     if path in {"gradle/build-logic/build.gradle.kts", "gradle/build-logic/settings.gradle.kts",
                 "gradle/build-logic/src/main/kotlin/ProductPythonTooling.kt"}:
         # Standalone Runtime includes only runtime/build-logic; still plan broad reuse.

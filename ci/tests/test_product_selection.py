@@ -120,6 +120,7 @@ class ProductSelectionTest(unittest.TestCase):
         for path in ("ci/products/sdk_apple_content.py", "ci/products/sdk_apple_package_source.py",
                      "ci/products/sdk_apple_validation_source.py",
                      "ci/products/sdk_apple_validation_evidence.py",
+                     "ci/products/sdk_apple_device_evidence.py",
                      "gradle/build-logic/src/main/kotlin/AppleBinaryPackageContent.kt",
                      "gradle/build-logic/src/main/kotlin/AppleBinaryPackageReplay.kt"):
             with self.subTest(path=path):
@@ -129,6 +130,18 @@ class ProductSelectionTest(unittest.TestCase):
                 self.assertEqual((), result.unknown_paths)
                 for instance in PHASE_INSTANCE_IDS:
                     self.assertEqual((), phase_inventory_paths([path], instance))
+
+    def test_apple_validation_projection_owns_only_validation_content(self) -> None:
+        path = "ci/products/sdk_apple_validation_content.py"
+        expected = {item for item in PHASE_INSTANCE_IDS
+                    if item.product == "sdk" and item.component == "sdk-ios"
+                    and item.phase in {"validation", "metadata"}}
+        result = classify_paths([path])
+        self.assertEqual(expected, identities(result))
+        self.assertEqual((), result.unknown_paths)
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((path,) if instance in expected and instance.phase == "validation" else (),
+                             phase_inventory_paths([path], instance))
 
     def test_pure_apple_package_verifier_selects_no_compilation(self) -> None:
         path = "gradle/build-logic/src/main/kotlin/AppleVerifiedDistributionVerification.kt"

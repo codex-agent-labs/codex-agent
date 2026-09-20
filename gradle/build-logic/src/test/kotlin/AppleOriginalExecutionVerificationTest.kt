@@ -75,6 +75,61 @@ class AppleOriginalExecutionVerificationTest {
         }
 
     @Test
+    fun `binding replay needs no distribution compatibility native or unrelated XCTest inputs`() =
+        OriginalAppleExecutionFixture().use { fixture ->
+            fixture.verify()
+            val reports = fixture.copyBindingReports()
+            fixture.distribution.deleteRecursively()
+            fixture.expectedProof.parentFile.deleteRecursively()
+            listOf("sdk-compatibility.json", "source", "native-evidence", "xctest-products").forEach {
+                fixture.execution.resolve(it).deleteRecursively()
+            }
+            assertTrue(!fixture.distribution.exists())
+            assertTrue(!fixture.expectedProof.exists())
+            assertTrue(!fixture.execution.resolve("native-evidence").exists())
+            val before = fixture.bindingInputDigests(reports)
+
+            fixture.verifyBinding(reports)
+
+            assertEquals(before, fixture.bindingInputDigests(reports))
+        }
+
+    @Test
+    fun `binding replay rejects raw XCTest digest report and parity drift without rewriting inputs`() =
+        OriginalAppleExecutionFixture().use { fixture ->
+            val reports = fixture.copyBindingReports()
+            fixture.verifyBinding(reports)
+            val mutations: List<Pair<File, (File) -> Unit>> = listOf(
+                fixture.xctestTestsOutput to { file ->
+                    file.writeText(file.readText().replaceFirst("Passed", "Failed"))
+                },
+                fixture.priorXCTestSummaryCommand to { file ->
+                    val execution = file.readReleaseObject()
+                    file.atomicWriteJson(JsonObject(execution + (
+                        "command" to JsonArray(execution.releaseArray("command") + JsonPrimitive("--changed"))
+                    )))
+                },
+                fixture.execution.resolve("xcresult/result") to { file -> file.appendText("changed\n") },
+                fixture.execution.resolve("xctest-package/Package.swift") to { file -> file.appendText("// changed\n") },
+                reports.resolve("xctest.json") to { file -> file.atomicWriteJson(JsonObject(emptyMap())) },
+                reports.resolve("binding.json") to { file -> file.atomicWriteJson(JsonObject(emptyMap())) },
+                reports.resolve("swift-parity.json") to { file -> file.atomicWriteJson(JsonObject(emptyMap())) },
+                reports.resolve("objective-c-parity.json") to { file -> file.atomicWriteJson(JsonObject(emptyMap())) },
+            )
+            mutations.forEach { (file, mutate) ->
+                val original = file.readBytes()
+                try {
+                    mutate(file)
+                    val changed = fixture.bindingInputDigests(reports)
+                    assertFailsWith<IllegalStateException>(file.path) { fixture.verifyBinding(reports) }
+                    assertEquals(changed, fixture.bindingInputDigests(reports), file.path)
+                } finally {
+                    file.writeBytes(original)
+                }
+            }
+        }
+
+    @Test
     fun `replays original raw compiler and XCTest observations through the full matcher`() =
         OriginalAppleExecutionFixture().use { fixture ->
             val before = fixture.inputDigests()
@@ -226,6 +281,35 @@ private class OriginalAppleExecutionFixture : AutoCloseable {
     fun compilerInputDigests(compiler: File = compilerEvidence): Map<String, String> = buildMap {
         verifiedRegularFiles(execution).forEach { (path, file) -> put("execution/$path", file.releaseDigest()) }
         put("compiler-evidence", compiler.releaseDigest())
+    }
+
+    fun copyBindingReports(): File = root.resolve("retained-binding-reports").also { reports ->
+        reports.mkdirs()
+        mapOf(
+            compilerEvidence to "compiler.json",
+            distribution.resolve("reports/swift-authentication-tests-summary.json") to "xctest.json",
+            distribution.resolve("reports/cross-language-api/apple/binding-evidence.json") to "binding.json",
+            distribution.resolve("reports/cross-language-api/bindings/swift-parity.json") to "swift-parity.json",
+            distribution.resolve("reports/cross-language-api/bindings/objective-c-parity.json") to
+                "objective-c-parity.json",
+        ).forEach { (source, name) -> source.copyTo(reports.resolve(name)) }
+    }
+
+    fun verifyBinding(reports: File) = verifyOriginalAppleBindingEvidence(
+        readCrossLanguageCanonicalApiEvidence(
+            execution.resolve("canonical/canonical-api.json"), execution.resolve("canonical/canonical-coverage.json"),
+        ),
+        execution,
+        reports.resolve("compiler.json"),
+        reports.resolve("xctest.json"),
+        reports.resolve("binding.json"),
+        reports.resolve("swift-parity.json"),
+        reports.resolve("objective-c-parity.json"),
+    )
+
+    fun bindingInputDigests(reports: File): Map<String, String> = buildMap {
+        verifiedRegularFiles(execution).forEach { (path, file) -> put("execution/$path", file.releaseDigest()) }
+        verifiedRegularFiles(reports).forEach { (path, file) -> put("reports/$path", file.releaseDigest()) }
     }
 
     fun verifyUsingPackagedTool() {

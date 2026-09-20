@@ -155,46 +155,68 @@ private fun verifyOriginalAppleSnapshot(
         execution.resolve("canonical/canonical-api.json"),
         execution.resolve("canonical/canonical-coverage.json"),
     )
-    val compilerFile = distribution.resolve("reports/cross-language-api/apple/compiler-evidence.json")
-    val compiler = compilerFile.readCanonicalOriginalAppleObject("Original Apple compiler evidence")
+    verifyOriginalAppleBindingEvidence(
+        canonical,
+        execution,
+        distribution.resolve("reports/cross-language-api/apple/compiler-evidence.json"),
+        distribution.resolve("reports/swift-authentication-tests-summary.json"),
+        distribution.resolve("reports/cross-language-api/apple/binding-evidence.json"),
+        distribution.resolve("reports/cross-language-api/bindings/swift-parity.json"),
+        distribution.resolve("reports/cross-language-api/bindings/objective-c-parity.json"),
+    )
+}
+
+/**
+ * Replays retained Apple compiler, XCTest, binding, and parity evidence from an immutable private snapshot.
+ * Distribution, compatibility, producer, transport, and host admission remain the caller's responsibility.
+ */
+internal fun verifyOriginalAppleBindingEvidence(
+    canonical: CrossLanguageCanonicalApiEvidence,
+    executionDirectory: File,
+    compilerEvidence: File,
+    xctestEvidence: File,
+    bindingEvidence: File,
+    swiftParityEvidence: File,
+    objectiveCParityEvidence: File,
+) {
+    val compiler = compilerEvidence.readCanonicalOriginalAppleObject("Original Apple compiler evidence")
     verifyOriginalAppleCompilerEvidence(
-        canonical, compilerFile, execution.resolve("compiler-raw"), execution.resolve("xcframework"),
-        execution.resolve("consumer/CodexFailureSwiftConsumer.swift"),
-        execution.resolve("consumer/CodexFailureObjectiveCConsumer.m"),
+        canonical, compilerEvidence,
+        executionDirectory.resolve("compiler-raw"), executionDirectory.resolve("xcframework"),
+        executionDirectory.resolve("consumer/CodexFailureSwiftConsumer.swift"),
+        executionDirectory.resolve("consumer/CodexFailureObjectiveCConsumer.m"),
     )
 
-    val xctestFile = distribution.resolve("reports/swift-authentication-tests-summary.json")
-    val xctest = xctestFile.readCanonicalOriginalAppleObject("Original Apple XCTest evidence")
-    verifyOriginalAppleXCTestRaw(execution.resolve("xctest-raw"), execution, xctest)
+    val xctest = xctestEvidence.readCanonicalOriginalAppleObject("Original Apple XCTest evidence")
+    verifyOriginalAppleXCTestRaw(executionDirectory.resolve("xctest-raw"), executionDirectory, xctest)
 
-    val xcframework = execution.resolve("xcframework")
-    val xcresult = execution.resolve("xcresult")
-    val xctestPackage = execution.resolve("xctest-package")
+    val xcframework = executionDirectory.resolve("xcframework")
+    val xcresult = executionDirectory.resolve("xcresult")
+    val xctestPackage = executionDirectory.resolve("xctest-package")
     val digests = AppleBindingInputDigests(
-        compilerFile.releaseDigest(),
+        compilerEvidence.releaseDigest(),
         xcframework.crossLanguageTreeDigest(),
-        execution.resolve("consumer/CodexFailureSwiftConsumer.swift").requiredOriginalAppleFileDigest(
+        executionDirectory.resolve("consumer/CodexFailureSwiftConsumer.swift").requiredOriginalAppleFileDigest(
             "Swift compiler consumer",
         ),
-        execution.resolve("consumer/CodexFailureObjectiveCConsumer.m").requiredOriginalAppleFileDigest(
+        executionDirectory.resolve("consumer/CodexFailureObjectiveCConsumer.m").requiredOriginalAppleFileDigest(
             "Objective-C compiler consumer",
         ),
-        xctestFile.releaseDigest(),
+        xctestEvidence.releaseDigest(),
         xcresult.crossLanguageTreeDigest(),
         xctestPackage.crossLanguageTreeDigest(),
         originalAppleBindingTargetDigests(xcframework),
     )
     val derived = deriveCrossLanguageAppleBindingEvidence(canonical, compiler, xctest, digests)
-    val bindingFile = distribution.resolve("reports/cross-language-api/apple/binding-evidence.json")
-    val retained = bindingFile.readCanonicalOriginalAppleObject("Original Apple binding evidence")
+    val retained = bindingEvidence.readCanonicalOriginalAppleObject("Original Apple binding evidence")
     check(derived == retained) { "Original Apple binding evidence differs from replayed observations" }
-    val bindingDigest = bindingFile.releaseDigest()
+    val bindingDigest = bindingEvidence.releaseDigest()
     mapOf(
-        CrossLanguageBinding.SWIFT to "reports/cross-language-api/bindings/swift-parity.json",
-        CrossLanguageBinding.OBJECTIVE_C to "reports/cross-language-api/bindings/objective-c-parity.json",
-    ).forEach { (language, path) ->
+        CrossLanguageBinding.SWIFT to swiftParityEvidence,
+        CrossLanguageBinding.OBJECTIVE_C to objectiveCParityEvidence,
+    ).forEach { (language, parityEvidence) ->
         val expected = buildAppleBindingParityReceipt(derived, language, digests, bindingDigest)
-        val actual = readCrossLanguageBindingReceipt(distribution.resolve(path))
+        val actual = readCrossLanguageBindingReceipt(parityEvidence)
         check(actual.toJson() == expected.toJson()) {
             "${language.id} original Apple parity receipt differs from replayed observations"
         }
