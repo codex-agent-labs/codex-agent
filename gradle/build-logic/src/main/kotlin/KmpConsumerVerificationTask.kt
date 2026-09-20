@@ -72,6 +72,7 @@ internal fun stagedConsumerArguments(
     outcomeInitScript: File? = null,
 ): List<String> = listOf(
     "-p", consumer.absolutePath,
+    "--offline",
     "--no-daemon",
     "--no-configuration-cache",
     "-PCENTRAL_STAGING=${repository.absolutePath}",

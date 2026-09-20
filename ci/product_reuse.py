@@ -3328,13 +3328,16 @@ def _runtime_worker_checkout(root, producer):
         raise ValueError("Runtime worker rejects untracked source or build policy")
 
 
-def _runtime_worker_command(wrapper, properties, environment, *, build_directory="runtime"):
+def _runtime_worker_command(wrapper, properties, environment, *, build_directory="runtime", platform_name=None):
+    platform_name = os.name if platform_name is None else platform_name
+    if platform_name not in {"posix", "nt"}:
+        raise ValueError("Product worker requires an exact supported command platform")
     if build_directory not in {"runtime", "."}:
         raise ValueError("Product worker requires the fixed Runtime or root SDK build")
     command = [str(wrapper), "--offline", "--no-daemon", "--configuration-cache",
                "--configuration-cache-problems=fail", "-p", build_directory, "ciProductPhase",
                *(f"-P{key}={value}" for key, value in sorted(properties.items()))]
-    if os.name == "nt":
+    if platform_name == "nt":
         java_home = environment.get("JAVA_HOME", "")
         if not ntpath.isabs(java_home):
             raise ValueError("Windows Runtime worker requires absolute JAVA_HOME")

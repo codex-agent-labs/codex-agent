@@ -172,7 +172,7 @@ def verify_facade_consumer_evidence(
                     "runtimeVersion": runtime_version, "repository": "CENTRAL_STAGING-only",
                     "mavenGroup": MAVEN_GROUPS["sdk-core"], "target": target, "tasks": tasks}):
             raise ValueError("Facade consumer report does not match its original inputs and fixed task")
-        command = [*launcher, "-p", context["consumerDirectory"], "--no-daemon",
+        command = [*launcher, "-p", context["consumerDirectory"], "--offline", "--no-daemon",
             "--no-configuration-cache", "-PCENTRAL_STAGING=" + context["repositoryDirectory"],
             "-PcodexAgent.sdkVersion=" + sdk_version, "-PcodexAgent.runtimeVersion=" + runtime_version,
             "-PcodexAgent.consumerTarget=" + target, "--init-script", context["outcomeInitScript"],

@@ -74,6 +74,7 @@ class KmpConsumerVerificationTaskTest {
         assertFalse("compileAndroidMain" in arguments)
         assertEquals(tasks, arguments.takeLast(tasks.size))
         assertTrue("--no-configuration-cache" in arguments)
+        assertEquals(1, arguments.count { it == "--offline" })
         val verifiedArguments = stagedConsumerArguments(
             java.io.File("/consumer"), java.io.File("/staging"), "0.2.0", "1.2.3", "node-js", tasks,
             java.io.File("/outcomes.init.gradle.kts"),

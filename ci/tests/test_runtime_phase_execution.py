@@ -408,6 +408,24 @@ class RuntimePhaseExecutionTest(unittest.TestCase):
 
 
 class ProductWorkerCheckoutTest(unittest.TestCase):
+    def test_original_command_platform_is_independent_of_replay_host(self):
+        properties = {"codexAgent.target": "windows-x64", "codexAgent.product": "sdk"}
+        with mock.patch.object(adapter.os, "name", "posix"):
+            command = adapter._runtime_worker_command(
+                r"C:\original checkout\gradlew.bat", properties, {"JAVA_HOME": r"C:\Java17"},
+                build_directory=".", platform_name="nt")
+        self.assertEqual([r"C:\Java17\bin\java.exe", "-Xmx64m", "-Xms64m",
+                          "-Dorg.gradle.appname=gradlew", "-jar",
+                          r"C:\original checkout\gradle\wrapper\gradle-wrapper.jar"], command[:6])
+        self.assertEqual(["--offline", "--no-daemon", "--configuration-cache",
+                          "--configuration-cache-problems=fail", "-p", ".", "ciProductPhase",
+                          "-PcodexAgent.product=sdk", "-PcodexAgent.target=windows-x64"], command[6:])
+        with mock.patch.object(adapter.os, "name", "nt"):
+            self.assertEqual("/original/gradlew", adapter._runtime_worker_command(
+                "/original/gradlew", {}, {}, platform_name="posix")[0])
+        with self.assertRaisesRegex(ValueError, "supported command platform"):
+            adapter._runtime_worker_command("/gradlew", {}, {}, platform_name="linux")
+
     def test_shared_command_only_selects_fixed_runtime_or_sdk_build(self):
         with mock.patch.object(adapter.os, "name", "posix"):
             for directory in ("runtime", "."):

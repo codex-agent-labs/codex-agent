@@ -65,7 +65,7 @@ class FacadeValidationTest(unittest.TestCase):
             "runtimeVersion": "0.8.9", "repository": "CENTRAL_STAGING-only",
             "mavenGroup": "io.github.codex-agent-labs", "target": target, "tasks": [task]}
         self.execution = {"schemaVersion": 1, "command": [self.context["gradleWrapper"], "-p",
-            self.context["consumerDirectory"], "--no-daemon", "--no-configuration-cache",
+            self.context["consumerDirectory"], "--offline", "--no-daemon", "--no-configuration-cache",
             "-PCENTRAL_STAGING=" + self.context["repositoryDirectory"], "-PcodexAgent.sdkVersion=0.8.7",
             "-PcodexAgent.runtimeVersion=0.8.9", "-PcodexAgent.consumerTarget=" + target,
             "--init-script", self.context["outcomeInitScript"], task, "verifyCodexStagedConsumerTaskOutcomes"],
@@ -135,6 +135,7 @@ class FacadeValidationTest(unittest.TestCase):
             ("process/execution.json", lambda v: v.update(exitCode=1)),
             ("process/execution.json", lambda v: v.update(exitCode=False)),
             ("process/execution.json", lambda v: v["command"].append("--offline")),
+            ("process/execution.json", lambda v: v["command"].remove("--offline")),
             ("process/execution.json", lambda v: v.update(workingDirectory="/other")),
             ("process/execution.json", lambda v: v.update(environment={"JAVA_HOME": "/other"})),
             ("task-outcomes.json", lambda v: v.update(tasks=[])),
