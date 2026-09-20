@@ -10,7 +10,7 @@ import tempfile
 
 from .inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
-    require_exact_keys, require_integer, require_sha256, sha256_bytes, snapshot_regular_tree,
+    require_exact_keys, require_integer, require_sha256, sha256_bytes, sha256_file, snapshot_regular_tree,
 )
 from .receipt import validate_phase_receipt
 from .runtime_aggregate_handoff import _public_policy
@@ -23,6 +23,70 @@ from .signatures import (
 ATTESTATION_NAME = "apple-validation-attestation.json"
 SIGNATURE_NAME = "apple-validation-attestation.sig"
 _LIMIT = 16 * 1024 * 1024
+
+
+@contextmanager
+def verified_prepared_apple_validation(prepared_root, original_capture, *, plan, receipt_path,
+        target, expected_receipt_sha256, artifact_id, artifact_sha256):
+    """Bind two independently authenticated captures without executable replay.
+
+    Caller MUST authenticate the fixed preparation upload and original validation
+    upload first. Neither a local directory nor the unsigned preparation record
+    grants that authority. Original observation records may differ across reads;
+    the exact original ZIP and extracted original bytes must not.
+    """
+    if target not in ("ios-arm64", "ios-simulator-arm64"):
+        raise ValueError("Prepared Apple validation requires an exact target")
+    require_sha256(expected_receipt_sha256, "Selected Apple receipt digest")
+    require_integer(artifact_id, "Original Apple artifact ID", 1)
+    require_sha256(artifact_sha256, "Original Apple artifact digest")
+    prepared_root, original_capture = Path(prepared_root), Path(original_capture)
+    files = {"plan": Path(plan), "receipt": Path(receipt_path)}
+    raw = {name: read_regular_file_bytes(path, max_bytes=_LIMIT, reject_symlink_parents=True)
+           for name, path in files.items()}
+    receipt = validate_phase_receipt(load_canonical_json_bytes(raw["receipt"]))
+    if (sha256_bytes(raw["receipt"]) != expected_receipt_sha256
+            or (receipt["product"], receipt["component"], receipt["phase"], receipt["target"]) !=
+               ("sdk", "sdk-ios", "validation", target)):
+        raise ValueError("Prepared Apple validation differs from selected receipt")
+    baselines = {path: _input_inventory(path, allow_empty=True) for path in (prepared_root, original_capture)}
+    if {path.name for path in prepared_root.iterdir()} != {"capture", "preparation.json"}:
+        raise ValueError("Prepared Apple validation has an unexpected root layout")
+    capture = prepared_root / "capture"
+    inventory = _input_inventory(capture, allow_empty=True)
+    expected = {"schemaVersion": 1, "target": target, "receiptSha256": expected_receipt_sha256,
+        "captureDigest": sha256_bytes(canonical_json_bytes(inventory)),
+        "planSha256": sha256_bytes(raw["plan"]), "producer": receipt["producer"],
+        "originalArtifact": {"artifactId": artifact_id, "artifactSha256": artifact_sha256}}
+    record_bytes = read_regular_file_bytes(prepared_root / "preparation.json",
+                                          max_bytes=_LIMIT, reject_symlink_parents=True)
+    if record_bytes != canonical_json_bytes(expected):
+        raise ValueError("Apple preparation record differs from exact selected originals")
+    for root in (capture, original_capture):
+        if (read_regular_file_bytes(root / "original/shard/phase-receipt.json",
+                max_bytes=_LIMIT, reject_symlink_parents=True) != raw["receipt"]
+                or read_regular_file_bytes(root / "plan/impact-plan.json",
+                    max_bytes=_LIMIT, reject_symlink_parents=True) != raw["plan"]
+                or sha256_file(root / "transport.zip") != artifact_sha256):
+            raise ValueError("Apple preparation differs from independently captured validation upload")
+    if _input_inventory(capture / "original", allow_empty=True) != \
+            _input_inventory(original_capture / "original", allow_empty=True):
+        raise ValueError("Prepared Apple originals differ from independent upload contents")
+    with tempfile.TemporaryDirectory(prefix="prepared-apple-validation-") as temporary:
+        private = Path(temporary).resolve() / "capture"
+        snapshot_regular_tree(capture, private, allow_empty=True)
+
+        def unchanged():
+            if (any(_input_inventory(path, allow_empty=True) != before for path, before in baselines.items())
+                    or _input_inventory(private, allow_empty=True) != inventory
+                    or any(read_regular_file_bytes(path, max_bytes=_LIMIT, reject_symlink_parents=True) != raw[name]
+                           for name, path in files.items())):
+                raise ValueError("Prepared Apple originals changed during signing-only use")
+        unchanged()
+        try:
+            yield {"capture": private, "receiptBytes": raw["receipt"], "preparationBytes": record_bytes}
+        finally:
+            unchanged()
 
 
 def validate_apple_validation_attestation(value):
