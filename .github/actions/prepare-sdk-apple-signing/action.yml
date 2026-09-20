@@ -1,0 +1,140 @@
+name: Prepare original Apple validation signing inputs
+description: Recover the exact observed worker receipt and fully replay originals without a signing secret; preserve the complete preparation for a separate protected signer.
+inputs:
+  plan-path:
+    required: true
+    description: Absolute path to the original plan downloaded by this job.
+  target:
+    required: true
+    description: Exact elected ios-arm64 or ios-simulator-arm64 target.
+  build-key:
+    required: true
+    description: Exact elected validation build key.
+  tree:
+    required: true
+    description: Exact current validation tree for the preparation upload.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed original producer workflow revision.
+  policy-revision:
+    required: true
+    description: Immutable caller Git revision owning the tooling policy.
+  tooling-policy:
+    required: true
+    description: Absolute current-job authenticated six-field release tooling policy path.
+outputs:
+  preparation-path:
+    description: External complete preparation directory, valid for this job only.
+    value: ${{ steps.prepare.outputs.preparation_path }}
+  artifact-id:
+    description: Exact preparation upload ID.
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-sha256:
+    description: Exact preparation upload digest, prefixed sha256.
+    value: sha256:${{ steps.upload.outputs.artifact-digest }}
+runs:
+  using: composite
+  steps:
+    - id: prepare
+      name: Recover and replay original validation outside the checkout
+      shell: bash
+      env:
+        PLAN_PATH: ${{ inputs.plan-path }}
+        TARGET: ${{ inputs.target }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        POLICY_REVISION: ${{ inputs.policy-revision }}
+        TOOLING_POLICY: ${{ inputs.tooling-policy }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B - <<'PY'
+        import os, re, subprocess, sys, tempfile
+        from pathlib import Path
+        from ci.products.inventory import (
+            load_canonical_json_bytes, read_regular_file_bytes, regular_file_inventory,
+            require_exact_keys, require_integer, require_regular_directory, require_sha256, sha256_bytes,
+        )
+        from ci.products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        repository, scratch, plan_path, policy_path = (Path(os.environ[name]) for name in
+            ('GITHUB_WORKSPACE', 'RUNNER_TEMP', 'PLAN_PATH', 'TOOLING_POLICY'))
+        if any(not path.is_absolute() or any(character in str(path) for character in '\r\n')
+               for path in (repository, scratch, plan_path, policy_path)):
+            raise ValueError('Apple preparation requires absolute single-line input and scratch paths')
+        repository, scratch = repository.resolve(strict=True), scratch.resolve(strict=True)
+        require_regular_directory(repository, 'Caller checkout')
+        require_regular_directory(scratch, 'Caller scratch')
+        if scratch.is_relative_to(repository) or repository.is_relative_to(scratch):
+            raise ValueError('Apple preparation scratch must be outside and separate from the checkout')
+        target, tree = os.environ['TARGET'], os.environ['TREE']
+        if target not in ('ios-arm64', 'ios-simulator-arm64') or not re.fullmatch(r'[0-9a-f]{40}', tree):
+            raise ValueError('Apple preparation requires an exact validation target and tree')
+        require_sha256(os.environ['BUILD_KEY'], 'Elected Apple validation build key')
+        plan_raw = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+        if load_canonical_json_bytes(plan_raw)['validationTree'] != tree:
+            raise ValueError('Preparation upload tree differs from the original plan')
+        policy_raw = read_regular_file_bytes(policy_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+        policy = require_exact_keys(load_canonical_json_bytes(policy_raw),
+            {'evidence', 'publicKey', 'javaExecutable', 'requiredTrustDomain', 'keyring', 'keysDirectory'},
+            'Caller SDK tooling policy')
+        if policy['requiredTrustDomain'] != 'release':
+            raise ValueError('Apple signing preparation requires release tooling')
+        for name in ('evidence', 'publicKey', 'javaExecutable', 'keyring', 'keysDirectory'):
+            if type(policy[name]) is not str or not Path(policy[name]).is_absolute():
+                raise ValueError('Release tooling requires explicit absolute policy paths')
+        parent = Path(tempfile.mkdtemp(prefix='sdk-apple-signing-preparation-', dir=scratch)).resolve(strict=True)
+        worker, prepared = parent / 'worker-capture', parent / 'preparation'
+        def unchanged():
+            require_no_signing_secret(os.environ)
+            if (read_regular_file_bytes(plan_path, reject_symlink_parents=True) != plan_raw or
+                    read_regular_file_bytes(policy_path, reject_symlink_parents=True) != policy_raw):
+                raise ValueError('Caller plan or tooling policy changed during Apple preparation')
+        recovered = subprocess.run([sys.executable, '-B', '-m', 'ci.sdk_apple_worker_capture',
+            '--plan', str(plan_path), '--candidate-root', str(repository), '--destination', str(worker),
+            '--target', target, '--expected-build-key', os.environ['BUILD_KEY'],
+            '--trusted-workflow-sha', os.environ['TRUSTED_WORKFLOW_SHA']],
+            cwd=repository, env=os.environ, check=True, stdout=subprocess.PIPE)
+        unchanged()
+        selected = require_exact_keys(load_canonical_json_bytes(recovered.stdout),
+            {'artifact_id', 'artifact_sha256', 'receipt_path', 'receipt_sha256'}, 'Recovered Apple worker receipt')
+        require_integer(selected['artifact_id'], 'Original validation upload', 1)
+        require_sha256(selected['artifact_sha256'], 'Original validation upload digest')
+        require_sha256(selected['receipt_sha256'], 'Original validation receipt digest')
+        receipt = worker / 'original/shard/phase-receipt.json'
+        if selected['receipt_path'] != str(receipt) or sha256_bytes(read_regular_file_bytes(
+                receipt, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)) != selected['receipt_sha256']:
+            raise ValueError('Recovered Apple receipt differs from the exact captured bytes')
+        fields = {
+            '--plan': str(plan_path), '--validation-receipt': str(receipt), '--destination': str(prepared),
+            '--repository-root': str(repository), '--target': target,
+            '--expected-receipt-sha256': selected['receipt_sha256'], '--artifact-id': str(selected['artifact_id']),
+            '--artifact-sha256': selected['artifact_sha256'], '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
+            '--keyring': str(repository / 'gradle/release/product-signing-keys.json'),
+            '--keys-directory': str(repository / 'gradle/release/keys'),
+            '--tooling-evidence': policy['evidence'], '--tooling-public-key': policy['publicKey'],
+            '--java-executable': policy['javaExecutable'], '--policy-revision': os.environ['POLICY_REVISION'],
+            '--tooling-keyring': policy['keyring'], '--tooling-keys-directory': policy['keysDirectory'],
+        }
+        subprocess.run([sys.executable, '-B', '-m', 'ci.sdk_apple_release_cli', 'prepare',
+            *(part for flag, value in fields.items() for part in (flag, value))],
+            cwd=repository, env=os.environ, check=True)
+        unchanged()
+        if {path.name for path in prepared.iterdir()} != {'capture', 'preparation.json'}:
+            raise ValueError('Apple preparation must retain its exact complete result')
+        require_regular_directory(prepared / 'capture', 'Original preparation capture')
+        read_regular_file_bytes(prepared / 'preparation.json', reject_symlink_parents=True)
+        regular_file_inventory(prepared, allow_empty=True)
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('preparation_path=' + str(prepared) + '\n')
+        PY
+    - id: upload
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-apple-signing-preparation-${{ inputs.target }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: ${{ steps.prepare.outputs.preparation_path }}
+        if-no-files-found: error
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90

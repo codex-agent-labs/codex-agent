@@ -563,7 +563,9 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         return _from_phase("sdk", "dart", "validation")
     if _is_prefix(path, ".github/actions/sdk-ios-package-worker/"):
         return _from_phase("sdk", "sdk-ios", "package")
-    if _is_prefix(path, ".github/actions/sdk-ios-validation-worker/"):
+    if any(_is_prefix(path, f".github/actions/{name}/") for name in (
+        "sdk-ios-validation-worker", "prepare-sdk-apple-signing", "attest-sdk-apple-validation",
+    )):
         return _from_phase("sdk", "sdk-ios", "validation")
     if _is_prefix(path, ".github/actions/sdk-javascript-metadata-worker/"):
         return _from_phase("sdk", "javascript", "metadata")

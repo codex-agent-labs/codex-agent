@@ -113,6 +113,12 @@ class ProductSelectionTest(unittest.TestCase):
             "sdk-ios-validation-worker": {item for item in PHASE_INSTANCE_IDS
                 if item.product == "sdk" and item.component == "sdk-ios"
                 and item.phase in {"validation", "metadata"}},
+            "prepare-sdk-apple-signing": {item for item in PHASE_INSTANCE_IDS
+                if item.product == "sdk" and item.component == "sdk-ios"
+                and item.phase in {"validation", "metadata"}},
+            "attest-sdk-apple-validation": {item for item in PHASE_INSTANCE_IDS
+                if item.product == "sdk" and item.component == "sdk-ios"
+                and item.phase in {"validation", "metadata"}},
             "sdk-javascript-metadata-worker": {item for item in PHASE_INSTANCE_IDS
                 if item.product == "sdk" and item.component == "javascript" and item.phase == "metadata"},
         }
