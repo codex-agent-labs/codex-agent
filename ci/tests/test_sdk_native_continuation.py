@@ -40,6 +40,9 @@ def needs_for(stage, *, required=False, preparation=False, state=None):
     if stage == "package":
         needs[election]["outputs"]["preparation_required"] = str(preparation).lower()
         needs["sdk-native-prepare"] = job("success" if preparation else "skipped")
+    if stage == "ios-validation":
+        for name in ("sdk-apple-signing-prepare", "sdk-apple-validation-attestation"):
+            needs[name] = job("success" if required else "skipped")
     return needs
 
 
@@ -89,6 +92,32 @@ class NativePreparationAnchorSelectionTest(unittest.TestCase):
 
 
 class NativeStateSelectionTest(unittest.TestCase):
+    def test_ios_validation_exact_terminal_route_and_all_preparation_signer_gates(self):
+        self.assertEqual(("sdk-native-result", "sdk-ios-validation-plan", "sdk-ios-validation", "sdk-collect-9", "9"),
+                         routing._STAGES["ios-validation"])
+        parent = locator("8", "0")
+        for required in (False, True):
+            needs = needs_for("ios-validation", required=required, state=parent)
+            before = deepcopy(needs)
+            result = routing.select_native_state(needs, stage="ios-validation")
+            self.assertEqual(dict(artifact_id="456", artifact_digest="sha256:" + "b" * 64,
+                                  state_wave="0", sdk_state_wave="9") if required else parent, result)
+            self.assertEqual(before, needs)
+            for name in ("sdk-apple-signing-prepare", "sdk-apple-validation-attestation"):
+                for status in ("failure", "cancelled", "in_progress", "skipped" if required else "success"):
+                    changed = deepcopy(needs)
+                    changed[name]["result"] = status
+                    with self.subTest(required=required, name=name, status=status), self.assertRaises(ValueError):
+                        routing.select_native_state(changed, stage="ios-validation")
+                changed = deepcopy(needs)
+                del changed[name]
+                with self.assertRaises(ValueError):
+                    routing.select_native_state(changed, stage="ios-validation")
+        changed = needs_for("ios-validation", required=True, state=parent)
+        changed["sdk-native-validation-result"] = changed.pop("sdk-native-result")
+        with self.assertRaises(ValueError):
+            routing.select_native_state(changed, stage="ios-validation")
+
     def test_ios_package_and_javascript_metadata_use_exact_fixed_parent_and_collector(self):
         routes = (
             ("ios-package", "sdk-native-packages", "sdk-ios-package-plan", "sdk-ios-package", "sdk-collect-5", "5"),
@@ -152,7 +181,7 @@ class NativeStateSelectionTest(unittest.TestCase):
                         state_wave="0", sdk_state_wave=wave)
                     self.assertEqual(expected, selected)
                     self.assertEqual(before, needs)
-        for state in (locator("4", "0"), locator("7", "0"), locator("", "5")):
+        for state in (locator("4", "0"), locator("7", "0"), locator("9", "0"), locator("", "5")):
             self.assertEqual(state, routing.select_native_state(needs_for("metadata", state=state), stage="metadata"))
 
     def test_reused_packages_still_require_independent_preparation_when_elected(self):
@@ -214,7 +243,7 @@ class NativeStateSelectionTest(unittest.TestCase):
                     needs[name]["outputs"][field] = value
                     with self.subTest(stage=stage, name=name, field=field), self.assertRaises(ValueError):
                         routing.select_native_state(needs, stage=stage)
-            for state in (locator("0", "0"), locator("7", "1"), locator("9", "0"), locator("", "6")):
+            for state in (locator("0", "0"), locator("7", "1"), locator("10", "0"), locator("", "6")):
                 with self.assertRaises(ValueError):
                     routing.select_native_state(needs_for(stage, state=state), stage=stage)
             for name in (workers, collector):

@@ -30,6 +30,7 @@ _STAGES = {
     "javascript-metadata": ("sdk-ios-packages", "sdk-javascript-metadata-plan", "sdk-javascript-metadata", "sdk-collect-6", "6"),
     "validation": ("sdk-javascript-metadata-result", "sdk-native-validation-plan", "sdk-native-validation", "sdk-collect-7", "7"),
     "metadata": ("sdk-native-validation-result", "sdk-native-metadata-plan", "sdk-native-metadata", "sdk-collect-8", "8"),
+    "ios-validation": ("sdk-native-result", "sdk-ios-validation-plan", "sdk-ios-validation", "sdk-collect-9", "9"),
 }
 
 
@@ -76,7 +77,7 @@ def _locator(outputs):
     if (not re.fullmatch(r"[1-9][0-9]*", result["artifact_id"])
             or not re.fullmatch(r"sha256:[0-9a-f]{64}", result["artifact_digest"])
             or result["state_wave"] not in ("0", "1", "2", "3", "4", "5")
-            or result["sdk_state_wave"] not in ("", "1", "2", "3", "4", "5", "6", "7", "8")
+            or result["sdk_state_wave"] not in ("", "1", "2", "3", "4", "5", "6", "7", "8", "9")
             or (result["sdk_state_wave"] and result["state_wave"] != "0")):
         raise ValueError("Invalid native state artifact identity or wave")
     return result
@@ -98,9 +99,11 @@ def select_native_state(needs, *, stage):
         raise ValueError("Native predecessor gate failed")
     state = _locator(parent["outputs"])
     preparation = _job(needs, "sdk-native-prepare") if stage == "package" else None
+    apple_signing = tuple(_job(needs, name) for name in
+        ("sdk-apple-signing-prepare", "sdk-apple-validation-attestation")) if stage == "ios-validation" else ()
     if not state["artifact_id"]:
         if any(job["result"] != "skipped" for job in
-               (election, workers, collector, *((preparation,) if preparation is not None else ()))):
+               (election, workers, collector, *apple_signing, *((preparation,) if preparation is not None else ()))):
             raise ValueError("Unexpected native jobs without parent state")
         return state
     if election["result"] != "success":
@@ -115,6 +118,8 @@ def select_native_state(needs, *, stage):
         if preparation["result"] != ("success" if prepare == "true" else "skipped"):
             raise ValueError("Native preparation did not match its election")
     expected = "success" if required == "true" else "skipped"
+    if any(job["result"] != expected for job in apple_signing):
+        raise ValueError("Apple preparation or attestation failed or differed from election")
     if workers["result"] != expected or collector["result"] != expected:
         raise ValueError("Native workers or collection failed or differed from election")
     if required == "false":

@@ -4042,8 +4042,319 @@ jobs:
           github_output(Path(os.environ['GITHUB_OUTPUT']), result)
           PY
 
+  sdk-ios-validation-plan:
+    needs: [plan, sdk-plan, sdk-native-result]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-native-result.result == 'success' &&
+      needs.sdk-native-result.outputs.artifact_id != '' && needs.sdk-plan.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
+      sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          set -euo pipefail
+          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
+          selected_java_home="${!java_home_variable}"
+          test -f "$selected_java_home/bin/java"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: needs.plan.outputs.tooling_required == 'true'
+        with:
+          artifact-ids: ${{ needs.plan.outputs.plan_id }}
+          path: ${{ runner.temp }}/sdk-apple-plan
+          merge-multiple: true
+      - id: apple-policy
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/prepare-sdk-apple-policy
+        with:
+          plan-path: ${{ runner.temp }}/sdk-apple-plan/impact-plan.json
+          tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
+      - id: capture
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          product: sdk
+          sdk-family: ios-validation
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-native-result.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-native-result.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-native-result.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-native-result.outputs.sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+
+  sdk-ios-validation:
+    name: sdk-sdk-ios-validation-${{ matrix.target }}
+    needs: [plan, sdk-plan, sdk-native-result, sdk-ios-validation-plan]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-native-result.result == 'success' && needs.sdk-plan.result == 'success' &&
+      needs.sdk-ios-validation-plan.result == 'success' &&
+      needs.sdk-ios-validation-plan.outputs.sdk_workers_required == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.sdk-ios-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java
+        run: |
+          set -euo pipefail
+          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
+          selected_java_home="${!java_home_variable}"
+          test -f "$selected_java_home/bin/java"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.plan.outputs.plan_id }}
+          path: ${{ runner.temp }}/sdk-apple-plan
+          merge-multiple: true
+      - id: apple-policy
+        uses: ./.github/actions/prepare-sdk-apple-policy
+        with:
+          plan-path: ${{ runner.temp }}/sdk-apple-plan/impact-plan.json
+          tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
+      - uses: ./.github/actions/sdk-ios-validation-worker
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-native-result.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-native-result.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-native-result.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-native-result.outputs.sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          target: ${{ matrix.target }}
+          build-key: ${{ matrix.buildKey }}
+          tree: ${{ needs.plan.outputs.validation_tree }}
+          developer-directory: /Applications/Xcode_26.6.app/Contents/Developer
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+
+  sdk-apple-signing-prepare:
+    name: sdk-apple-signing-prepare-${{ matrix.target }}
+    needs: [plan, sdk-plan, sdk-ios-validation-plan, sdk-ios-validation]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      github.event_name != 'workflow_dispatch' && needs.sdk-plan.result == 'success' &&
+      needs.sdk-ios-validation-plan.result == 'success' &&
+      needs.sdk-ios-validation-plan.outputs.sdk_workers_required == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.sdk-ios-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java
+        run: |
+          set -euo pipefail
+          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
+          selected_java_home="${!java_home_variable}"
+          test -f "$selected_java_home/bin/java"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.plan.outputs.plan_id }}
+          path: ${{ runner.temp }}/sdk-apple-plan
+          merge-multiple: true
+      - uses: ./.github/actions/prepare-sdk-apple-signing
+        with:
+          plan-path: ${{ runner.temp }}/sdk-apple-plan/impact-plan.json
+          target: ${{ matrix.target }}
+          build-key: ${{ matrix.buildKey }}
+          tree: ${{ needs.plan.outputs.validation_tree }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+          tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
+
+  sdk-apple-validation-attestation:
+    name: sdk-apple-validation-attestation-${{ matrix.target }}
+    needs: [workflow-lint, plan, sdk-ios-validation-plan, sdk-ios-validation, sdk-apple-signing-prepare]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      github.event_name != 'workflow_dispatch' && needs.workflow-lint.result == 'success' &&
+      needs.sdk-ios-validation-plan.result == 'success' &&
+      needs.sdk-ios-validation-plan.outputs.sdk_workers_required == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: product-attestation
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.sdk-ios-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
+    steps:
+      - name: Check out reviewed Apple signer code only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: 5a3c70c9874c7c2e377973df629a4e9ea424421c
+          path: trusted-source
+          persist-credentials: false
+      - name: Check out candidate as inventory data only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.validation_commit }}
+          path: candidate-source
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.plan.outputs.plan_id }}
+          path: ${{ runner.temp }}/sdk-apple-plan
+          merge-multiple: true
+      - uses: ./trusted-source/.github/actions/attest-sdk-apple-validation
+        with:
+          plan-path: ${{ runner.temp }}/sdk-apple-plan/impact-plan.json
+          candidate-root: ${{ github.workspace }}/candidate-source
+          target: ${{ matrix.target }}
+          build-key: ${{ matrix.buildKey }}
+          tree: ${{ needs.plan.outputs.validation_tree }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-source-sha: 5a3c70c9874c7c2e377973df629a4e9ea424421c
+          private-key: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
+
+  sdk-collect-9:
+    needs: [plan, sdk-plan, sdk-native-result, sdk-ios-validation-plan, sdk-ios-validation, sdk-apple-signing-prepare, sdk-apple-validation-attestation]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-native-result.result == 'success' && needs.sdk-plan.result == 'success' &&
+      needs.sdk-ios-validation-plan.result == 'success' &&
+      needs.sdk-ios-validation-plan.outputs.sdk_workers_required == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
+      wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java
+        run: |
+          set -euo pipefail
+          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
+          selected_java_home="${!java_home_variable}"
+          test -f "$selected_java_home/bin/java"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.plan.outputs.plan_id }}
+          path: ${{ runner.temp }}/sdk-apple-plan
+          merge-multiple: true
+      - id: apple-policy
+        uses: ./.github/actions/prepare-sdk-apple-policy
+        with:
+          plan-path: ${{ runner.temp }}/sdk-apple-plan/impact-plan.json
+          tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
+      - id: collect
+        uses: ./.github/actions/collect-runtime-wave
+        with:
+          product: sdk
+          sdk-family: ios-validation
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-native-result.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-native-result.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-native-result.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-native-result.outputs.sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          wave: '9'
+          tree: ${{ needs.plan.outputs.validation_tree }}
+
+  sdk-ios-validation-result:
+    needs: [plan, sdk-native-result, sdk-ios-validation-plan, sdk-ios-validation, sdk-apple-signing-prepare, sdk-apple-validation-attestation, sdk-collect-9]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.result.outputs.artifact_id }}
+      artifact_digest: ${{ steps.result.outputs.artifact_digest }}
+      state_wave: ${{ steps.result.outputs.state_wave }}
+      sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: result
+        name: Fail only after collecting all Apple validation results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_native_continuation import select_native_state
+          from ci.reuse import github_output
+          result = select_native_state(json.loads(os.environ['RESULTS']), stage='ios-validation')
+          github_output(Path(os.environ['GITHUB_OUTPUT']), result)
+          PY
+
   sdk-completion:
-    needs: [plan, product-tooling, product-resume, runtime-continuation, runtime-aggregate-continuation, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, sdk-plan, sdk-native-result]
+    needs: [plan, product-tooling, product-resume, runtime-continuation, runtime-aggregate-continuation, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, sdk-plan, sdk-native-result, sdk-ios-validation-result]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -4088,6 +4399,18 @@ jobs:
           transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: needs.plan.outputs.tooling_required == 'true'
+        with:
+          artifact-ids: ${{ needs.plan.outputs.plan_id }}
+          path: ${{ runner.temp }}/sdk-apple-plan
+          merge-multiple: true
+      - id: apple-policy
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/prepare-sdk-apple-policy
+        with:
+          plan-path: ${{ runner.temp }}/sdk-apple-plan/impact-plan.json
+          tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
       - id: capture
         uses: ./.github/actions/capture-runtime-state
         with:
@@ -4098,6 +4421,7 @@ jobs:
           state-wave: ${{ steps.parent.outputs.state_wave }}
           sdk-state-wave: ${{ steps.parent.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
       - name: Require every selected SDK phase to be complete
         id: completion
@@ -4106,12 +4430,16 @@ jobs:
           DISCOVERY_ROOT: ${{ steps.capture.outputs.discovery-root }}
           STATE_ROOT: ${{ steps.capture.outputs.state-root }}
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
+          SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tooling=()
           if [ -n "$SDK_VALIDATION_TOOLING" ]; then
             tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
+          fi
+          if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
+            tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
           fi
           python3 -B -m ci.sdk_completion --plan "$PLAN" \
             --discovery-root "$DISCOVERY_ROOT" --state-root "$STATE_ROOT" \

@@ -5,6 +5,7 @@ state/source authentication remains covered by the completion and replay suites.
 """
 
 import importlib
+from itertools import product
 from copy import deepcopy
 import json
 import os
@@ -22,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SELECTOR_JOBS = {
     "product-resume", "runtime-continuation", "runtime-aggregate-continuation",
     "sdk-ios-binary-plan", "sdk-ios-binary", "sdk-collect-3", "sdk-plan", "sdk-native-result",
+    "sdk-ios-validation-result",
 }
 
 
@@ -140,6 +142,26 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertLess(job.index("select_sdk_completion_state"), job.index("./.github/actions/capture-sdk-tooling"))
         self.assertLess(job.index("./.github/actions/capture-sdk-tooling"), job.index("./.github/actions/capture-runtime-state"))
 
+    def test_apple_policy_uses_original_plan_and_captured_tooling_only_when_required(self):
+        job = self.job("sdk-completion")
+        steps = re.split(r"\n      - ", job)
+        download = next(step for step in steps if "uses: actions/download-artifact@" in step)
+        policy = next(step for step in steps if "id: apple-policy\n" in step)
+        tooling = next(step for step in steps if "id: tooling\n" in step)
+        for step in (download, policy, tooling):
+            self.assertIn("if: needs.plan.outputs.tooling_required == 'true'", step)
+        self.assertIn("artifact-ids: ${{ needs.plan.outputs.plan_id }}", download)
+        self.assertIn("path: ${{ runner.temp }}/sdk-apple-plan", download)
+        self.assertIn("merge-multiple: true", download)
+        self.assertIn("uses: ./.github/actions/prepare-sdk-apple-policy", policy)
+        self.assertIn("plan-path: ${{ runner.temp }}/sdk-apple-plan/impact-plan.json", policy)
+        self.assertIn("tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}", policy)
+        self.assertNotIn("needs.sdk-plan.outputs", policy)
+        self.assertNotIn("steps.capture.outputs", policy)
+        for earlier, later in ((tooling, download), (download, policy)):
+            self.assertLess(job.index(earlier), job.index(later))
+        self.assertLess(job.index(policy), job.index("uses: ./.github/actions/capture-runtime-state"))
+
     def test_parent_snippet_forwards_selector_tuple_and_never_outputs_on_failure(self):
         job = self.job("sdk-completion")
         match = re.search(r"(?ms)^          python3 - <<'PY'\n(.*?)^          PY$", job)
@@ -152,7 +174,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertIsNotNone(environment_name)
         needs = {name: {"result": "skipped", "outputs": {}} for name in SELECTOR_JOBS}
         locator = {"artifact_id": "91", "artifact_digest": "sha256:" + "a" * 64,
-                   "state_wave": "0", "sdk_state_wave": "8"}
+                   "state_wave": "0", "sdk_state_wave": "9"}
         for failure in (False, True):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory(prefix="sdk-completion-wiring-") as temporary:
                 output = Path(temporary) / "output"
@@ -178,11 +200,13 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                             ("state-wave", "state_wave"), ("sdk-state-wave", "sdk_state_wave")):
             self.assertIn(flag + ": ${{ steps.parent.outputs." + field + " }}", capture)
         self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", capture)
+        self.assertIn("sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}", capture)
         self.assertIn("trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}", capture)
         completion = job.split("        id: completion\n", 1)[1]
         for name, output in (("PLAN", "plan-path"), ("DISCOVERY_ROOT", "discovery-root"), ("STATE_ROOT", "state-root")):
             self.assertIn(name + ": ${{ steps.capture.outputs." + output + " }}", completion)
         self.assertIn("SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}", completion)
+        self.assertIn("SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}", completion)
         self.assertIn("GITHUB_TOKEN: ${{ github.token }}", completion)
         for name, output in (("complete", "complete"), ("phase_count", "phaseCount"), ("full_reuse", "fullReuse")):
             self.assertIn(name + ": ${{ steps.completion.outputs." + output + " }}", job)
@@ -199,9 +223,10 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                 "pathlib.Path(os.environ['ARGV_CAPTURE']).write_text(json.dumps(sys.argv[1:]))\n"
                 "sys.exit(int(os.environ['MOCK_EXIT']))\n")
             executable.chmod(0o755)
-            for policy in ("", "/caller policy/tooling.json"):
+            for policy, apple_policy in product(("", "/caller policy/tooling.json"),
+                                                (None, "", "/caller policy/apple.json")):
                 for status in (0, 7):
-                    with self.subTest(policy=policy, status=status):
+                    with self.subTest(policy=policy, apple_policy=apple_policy, status=status):
                         arguments = root / "arguments.json"
                         output = root / "output"
                         env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ.get("PATH", ""),
@@ -209,6 +234,9 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                             "STATE_ROOT": "/captured state", "SDK_VALIDATION_TOOLING": policy,
                             "GITHUB_WORKSPACE": "/candidate repository", "GITHUB_OUTPUT": str(output),
                             "GITHUB_TOKEN": "not-a-command-argument", "ARGV_CAPTURE": str(arguments), "MOCK_EXIT": str(status)}
+                        env.pop("SDK_APPLE_VALIDATION_POLICY", None)
+                        if apple_policy is not None:
+                            env["SDK_APPLE_VALIDATION_POLICY"] = apple_policy
                         process = subprocess.run(["bash", "-c", script], env=env, cwd=ROOT,
                                                  capture_output=True, text=True)
                         self.assertEqual(status, process.returncode, process.stderr)
@@ -217,6 +245,8 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                             "--repository-root", env["GITHUB_WORKSPACE"], "--github-output", str(output)]
                         if policy:
                             expected.extend(("--sdk-validation-tooling", policy))
+                        if apple_policy:
+                            expected.extend(("--sdk-apple-validation-policy", apple_policy))
                         self.assertEqual(expected, json.loads(arguments.read_text()))
                         self.assertFalse(output.exists(), "The wrapper must not manufacture completion output")
 
