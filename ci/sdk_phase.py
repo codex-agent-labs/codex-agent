@@ -1,6 +1,6 @@
 """Translate authenticated SDK predecessors into existing artifact-only inputs.
 
-Only JavaScript package/validation currently have routes here. The caller owns
+JavaScript package/validation and Core validation have routes here. The caller owns
 full original receipt/plan/Contract/Runtime authentication and common versions.
 This module does not turn an embedded compatibility declaration into trust.
 """
@@ -12,12 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from products.inventory import read_regular_file_bytes, require_regular_directory, require_semver
-from products.registry import PHASE_INSTANCE_IDS
+from products.registry import NATIVE_TARGETS, PHASE_INSTANCE_IDS, SDK_FACADE_TARGETS
 
 
 def _identity(plan: Mapping[str, Any]) -> tuple[str, str, str, str]:
     identity = tuple(plan.get(field) for field in ("product", "component", "phase", "target"))
-    if identity not in (("sdk", "javascript", "package", "node"), ("sdk", "javascript", "validation", "node")) or not any(
+    supported = (("sdk", "javascript", "package", "node"), ("sdk", "javascript", "validation", "node"),
+                 *(("sdk", "sdk-core", "validation", target) for target in SDK_FACADE_TARGETS))
+    if identity not in supported or not any(
         identity == (item.product, item.component, item.phase, item.target) for item in PHASE_INSTANCE_IDS
     ):
         raise ValueError("Unsupported implemented SDK phase identity")
@@ -26,7 +28,11 @@ def _identity(plan: Mapping[str, Any]) -> tuple[str, str, str, str]:
 
 def route(plan: Mapping[str, Any]) -> dict[str, Any]:
     """Return the existing portable runner, not an observed host or toolchain."""
-    _identity(plan)
+    _, component, _, target = _identity(plan)
+    if component == "sdk-core":
+        from runtime_adapter_phase import route as adapter_route
+        host = "macos-arm64" if target.startswith("ios-") else target if target in NATIVE_TARGETS else "linux-x64"
+        return adapter_route({"product": "runtime", "component": "jvm", "phase": "validation", "target": host})
     return {"runner": "ubuntu-24.04", "runnerOs": "Linux", "runnerArch": "X64",
             "toolchainProfile": None, "producerRole": None, "supervisor": None}
 
@@ -52,7 +58,9 @@ receipt. Identity checks here catch misrouting; no second receipt gate exists.
 Only package executes the compatibility request producer. Imported validation
 consumes its original SDK archive and embedded policy after caller admission.
 """
-    _, _, phase, _ = _identity(plan)
+    _, component, phase, _ = _identity(plan)
+    if component != "javascript":
+        raise ValueError("Core validation requires its authenticated facade request, not JavaScript properties")
     if phase == "package":
         path = compatibility_request
         if not isinstance(path, Path) or not path.is_absolute():

@@ -26,15 +26,6 @@ import org.gradle.kotlin.dsl.register
 import org.gradle.process.ExecOperations
 import org.gradle.work.DisableCachingByDefault
 
-internal val sdkFacadeConsumerCompileTasks = linkedMapOf(
-    "android" to "compileAndroidMain", "jvm" to "compileKotlinJvm",
-    "ios-arm64" to "compileKotlinIosArm64", "ios-simulator-arm64" to "compileKotlinIosSimulatorArm64",
-    "macos-arm64" to "compileKotlinMacosArm64", "macos-x64" to "compileKotlinMacosX64",
-    "linux-arm64" to "compileKotlinLinuxArm64", "linux-x64" to "compileKotlinLinuxX64",
-    "windows-x64" to "compileKotlinMingwX64", "node-js" to "compileKotlinJs",
-    "node-wasm" to "compileKotlinWasmJs",
-)
-
 private fun requireFacadeRequestIdentity(request: File, target: String, sdk: String, runtime: String, contract: String) {
     requireApplePackagePathWithoutSymlinks(request, "facade caller request")
     val value = request.readReleaseObject()

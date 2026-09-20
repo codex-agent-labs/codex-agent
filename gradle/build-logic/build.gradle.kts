@@ -59,6 +59,7 @@ dependencies.add(releaseToolingRuntime.name, configurations["implementation"].de
 })
 val releaseToolingClasses = listOf(
     "ImportedSdkFacadePublicationVerificationKt",
+    "SdkFacadeOriginalExecutionKt",
     "FacadePublicationContractKt",
     "FacadePublicationSpec",
     "PublicationDependency",

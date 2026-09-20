@@ -16,8 +16,15 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 class FirebaseAndroidOriginalEvidenceTest {
+    private val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
+        .first { it.resolve("ci/receipt.py").isFile }
+    private val laneReceiptSchemaVersion = Regex(
+        "(?m)^LANE_RECEIPT_SCHEMA_VERSION = ([1-9][0-9]*)$",
+    ).findAll(repository.resolve("ci/receipt.py").readText()).single().groupValues[1].toInt()
+
     @Test
     fun `protected binding and full existing Firebase gate accept exact original bytes`() = withFixture { fixture ->
+        assertEquals(laneReceiptSchemaVersion, FIREBASE_ANDROID_LANE_RECEIPT_SCHEMA_VERSION)
         val result = fixture.verify()
 
         assertEquals(fixture.app.releaseDigest(), result.applicationApkSha256)
@@ -74,6 +81,7 @@ class FirebaseAndroidOriginalEvidenceTest {
             { it.observation.resolve("matrix.json").appendText(" ") },
             { it.observation.resolve("results/result.xml").appendText(" ") },
             { it.changeLaneReceipt("validationCommit", JsonPrimitive("f".repeat(40))) },
+            { it.changeLaneReceipt("schemaVersion", JsonPrimitive(1)) },
             { it.observation.resolve("lane-receipt.json").appendText(" ") },
         ).forEach { mutate ->
             withFixture { fixture ->
@@ -103,13 +111,13 @@ class FirebaseAndroidOriginalEvidenceTest {
     private fun withFixture(block: (Fixture) -> Unit) {
         val root = createTempDirectory("firebase-original-evidence").toFile().canonicalFile
         try {
-            block(Fixture(root))
+            block(Fixture(root, laneReceiptSchemaVersion))
         } finally {
             root.deleteRecursively()
         }
     }
 
-    private class Fixture(root: File) {
+    private class Fixture(root: File, private val laneReceiptSchemaVersion: Int) {
         val evidence = root.resolve("final-evidence").apply { mkdirs() }
         val observation = root.resolve("protected-observation").apply { mkdirs() }
         val runtime = root.resolve("runtime.so").apply { writeText("pinned runtime") }
@@ -219,7 +227,7 @@ class FirebaseAndroidOriginalEvidenceTest {
         }
 
         private fun laneReceipt() = buildJsonObject {
-            put("schemaVersion", 1)
+            put("schemaVersion", laneReceiptSchemaVersion)
             put("repository", CodexAgentBuild.REPOSITORY)
             put("workflowPath", ".github/workflows/ci.yml")
             put("event", "pull_request")

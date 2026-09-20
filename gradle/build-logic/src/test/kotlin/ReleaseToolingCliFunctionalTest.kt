@@ -34,6 +34,21 @@ class ReleaseToolingCliFunctionalTest {
                 "--kotlin-version", "2.2.20", "--forbidden-path", root.absolutePath)
             assertEquals(0, exit, output)
             assertEquals(before, verifiedRegularFiles(stage).mapValues { it.value.releaseDigest() })
+            val source = root.resolve("source")
+            val template = source.resolve("gradle/release/sdk-facade-consumer-template")
+            repository.resolve("gradle/release/sdk-facade-consumer-template").copyRecursively(template)
+            val consumer = root.resolve("consumer-inputs")
+            prepareStagedConsumer(template, consumer, "")
+            consumer.resolve(".codex-consumer-task-outcomes.init.gradle.kts").writeText(
+                stagedConsumerOutcomeInitScript(listOf("compileKotlinJvm")) +
+                    stagedConsumerExecutionCaptureScript("/original/execution/task-outcomes.json"))
+            val (replayExit, replayOutput) = runTool(root, "verify-original-sdk-facade-consumer-inputs",
+                "--source-snapshot", source.absolutePath, "--consumer-inputs", consumer.absolutePath,
+                "--package-stage", stage.absolutePath, "--target", "jvm",
+                "--contract-version", "1.2.3", "--runtime-version", "2.3.4", "--sdk-version", "3.4.5",
+                "--kotlin-version", "2.2.20", "--original-execution-directory", "/original/execution",
+                "--android-sdk-directory", "", "--forbidden-path", root.absolutePath)
+            assertEquals(0, replayExit, replayOutput)
         } finally {
             root.deleteRecursively()
         }

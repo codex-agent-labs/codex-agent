@@ -61,7 +61,7 @@ class SdkPhaseTest(unittest.TestCase):
                           ("runtime", "node-js", "validation", "node-js-binding"),
                           ("sdk", "javascript", "package", "node")], self.calls)
 
-    def test_only_two_implemented_routes_exist_and_neither_creates_a_toolchain_profile(self):
+    def test_javascript_routes_do_not_create_a_toolchain_profile(self):
         expected = {"runner": "ubuntu-24.04", "runnerOs": "Linux", "runnerArch": "X64",
                     "toolchainProfile": None, "producerRole": None, "supervisor": None}
         for phase in ("package", "validation"):
@@ -71,6 +71,20 @@ class SdkPhaseTest(unittest.TestCase):
                         {"target": "linux-x64"}, {"product": "runtime"}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 route({**self.plan("package"), **changes})
+
+    def test_all_eleven_core_targets_use_existing_host_routes_without_javascript_properties(self):
+        from products.registry import SDK_FACADE_TARGETS
+        from runtime_adapter_phase import route as runtime_route
+        for target in SDK_FACADE_TARGETS:
+            plan = {"product": "sdk", "component": "sdk-core", "phase": "validation", "target": target}
+            host = ("macos-arm64" if target.startswith("ios-") else
+                    target if target.startswith(("linux-", "macos-", "windows-")) else "linux-x64")
+            with self.subTest(target=target):
+                self.assertEqual(runtime_route({"product": "runtime", "component": "jvm",
+                                                "phase": "validation", "target": host}), route(plan))
+                with self.assertRaisesRegex(ValueError, "facade request"):
+                    properties(plan, predecessor=self.predecessor)
+        self.assertEqual([], self.calls)
 
     def test_missing_unsafe_or_unused_compatibility_request_is_rejected(self):
         link = self.root / "request-link"

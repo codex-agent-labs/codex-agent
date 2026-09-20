@@ -18,6 +18,7 @@ private class ReleaseToolingArguments(values: Array<String>) {
         ?: error("Missing release-tooling option: --$name")
 
     fun file(name: String): File = File(required(name))
+    fun supplied(name: String): String = values[name] ?: error("Missing release-tooling option: --$name")
     fun long(name: String): Long = required(name).toLong()
     fun int(name: String): Int = required(name).toInt()
     fun requireOnly(vararg names: String) {
@@ -33,6 +34,18 @@ internal fun runReleaseTooling(arguments: Array<String>) {
     val command = arguments.firstOrNull() ?: error("Release-tooling command is required")
     val options = ReleaseToolingArguments(arguments.drop(1).toTypedArray())
     when (command) {
+        "verify-original-sdk-facade-consumer-inputs" -> {
+            options.requireOnly("source-snapshot", "consumer-inputs", "package-stage", "target",
+                "contract-version", "runtime-version", "sdk-version", "kotlin-version",
+                "original-execution-directory", "android-sdk-directory", "forbidden-path")
+            verifyOriginalSdkFacadeConsumerInputs(
+                options.file("source-snapshot"), options.file("consumer-inputs"), options.file("package-stage"),
+                options.required("target"), options.required("contract-version"), options.required("runtime-version"),
+                options.required("sdk-version"), options.required("kotlin-version"),
+                options.required("original-execution-directory"), options.supplied("android-sdk-directory"),
+                options.required("forbidden-path"),
+            )
+        }
         "verify-imported-sdk-facade-publications" -> {
             options.requireOnly("package-stage", "contract-version", "runtime-version", "sdk-version",
                 "kotlin-version", "forbidden-path")

@@ -7,6 +7,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
+internal const val FIREBASE_ANDROID_LANE_RECEIPT_SCHEMA_VERSION = 2
+
 /**
  * Replays the complete Firebase Android evidence gate against a protected input
  * binding.  The caller must authenticate the intermediate Firebase transport,
@@ -109,7 +111,7 @@ internal fun verifyOriginalFirebaseAndroidEvidence(
         }
 
         val laneReceipt = observation.resolve("lane-receipt.json").readReleaseObject()
-        check(laneReceipt.releaseInt("schemaVersion") == 1 &&
+        check(laneReceipt.releaseInt("schemaVersion") == FIREBASE_ANDROID_LANE_RECEIPT_SCHEMA_VERSION &&
             laneReceipt.releaseString("repository") == CodexAgentBuild.REPOSITORY &&
             laneReceipt.releaseString("workflowPath") == ".github/workflows/ci.yml" &&
             laneReceipt.releaseString("event") in setOf("pull_request", "merge_group") &&
