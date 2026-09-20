@@ -9,7 +9,7 @@ inputs:
     description: Optional exact SDK predecessor state wave.
   sdk-family:
     default: ''
-    description: Optional native-package, ios-package, javascript-metadata, native-validation, native-metadata, or ios-validation SDK scope.
+    description: Optional native-package, ios-package, javascript-metadata, native-validation, native-metadata, ios-validation, or ios-metadata SDK scope.
   sdk-validation-tooling:
     default: ''
     description: Caller-provisioned tooling policy path, not retained-state authority.
@@ -33,7 +33,7 @@ inputs:
     description: Fixed predecessor wave.
   wave:
     required: true
-    description: Runtime waves one through five; SDK JavaScript one/two, iOS binary three, native package four, iOS package five, JS metadata six, native validation seven, native metadata eight, iOS validation nine.
+    description: Runtime waves one through five; SDK JavaScript one/two, iOS binary three, native package four, iOS package five, JS metadata six, native validation seven, native metadata eight, iOS validation nine, iOS metadata ten.
   tree:
     required: true
     description: Exact tested tree.
@@ -96,7 +96,7 @@ runs:
             command=(python3 -B -m ci.sdk_workflow collect); state=()
             if [ -n "$SDK_FAMILY" ]; then
               case "$SDK_FAMILY" in
-                native-package|ios-package|javascript-metadata|native-validation|native-metadata|ios-validation) state=(--family "$SDK_FAMILY") ;;
+                native-package|ios-package|javascript-metadata|native-validation|native-metadata|ios-validation|ios-metadata) state=(--family "$SDK_FAMILY") ;;
                 *) echo 'Unknown SDK family' >&2; exit 1 ;;
               esac
             fi ;;

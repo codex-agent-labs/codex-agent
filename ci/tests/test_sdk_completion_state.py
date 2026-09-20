@@ -24,6 +24,7 @@ def needs():
     result["sdk-ios-binary-plan"] = job("success", sdk_workers_required="false")
     result["sdk-native-result"] = job("success")
     result["sdk-ios-validation-result"] = job("success")
+    result["sdk-ios-metadata-result"] = job("success")
     return result
 
 
@@ -33,6 +34,7 @@ def handoff():
     value["sdk-plan"] = job("success", **locator(), sdk_workers_required="false")
     value["sdk-native-result"] = job("success", **locator("88", sdk="8"))
     value["sdk-ios-validation-result"] = job("success", **locator("88", sdk="8"))
+    value["sdk-ios-metadata-result"] = job("success", **locator("88", sdk="8"))
     return value
 
 
@@ -42,6 +44,7 @@ class SdkCompletionStateTest(unittest.TestCase):
             value = handoff()
             value["sdk-native-result"]["outputs"] = locator("88", runtime, sdk)
             value["sdk-ios-validation-result"]["outputs"] = locator("88", runtime, sdk)
+            value["sdk-ios-metadata-result"]["outputs"] = locator("88", runtime, sdk)
             before = deepcopy(value)
             with self.subTest(runtime=runtime, sdk=sdk):
                 self.assertEqual(value["sdk-native-result"]["outputs"], state.select_sdk_completion_state(value))
@@ -50,10 +53,11 @@ class SdkCompletionStateTest(unittest.TestCase):
     def test_completed_apple_wave_nine_wins_only_after_native_and_apple_terminal_success(self):
         value = handoff()
         value["sdk-ios-validation-result"] = job("success", **locator("99", sdk="9"))
+        value["sdk-ios-metadata-result"] = job("success", **locator("99", sdk="9"))
         before = deepcopy(value)
         self.assertEqual(locator("99", sdk="9"), state.select_sdk_completion_state(value))
         self.assertEqual(before, value)
-        for name in ("sdk-native-result", "sdk-ios-validation-result"):
+        for name in ("sdk-native-result", "sdk-ios-validation-result", "sdk-ios-metadata-result"):
             for status in ("failure", "cancelled", "skipped", "in_progress"):
                 changed = deepcopy(value)
                 changed[name]["result"] = status
@@ -64,6 +68,31 @@ class SdkCompletionStateTest(unittest.TestCase):
             changed["sdk-ios-validation-result"]["outputs"] = final
             with self.subTest(final=final), self.assertRaises(ValueError):
                 state.select_sdk_completion_state(changed)
+
+    def test_metadata_wave_ten_is_final_only_after_every_preceding_terminal_gate(self):
+        value = handoff()
+        value["sdk-ios-validation-result"] = job("success", **locator("99", sdk="9"))
+        value["sdk-ios-metadata-result"] = job("success", **locator("110", sdk="10"))
+        before = deepcopy(value)
+        self.assertEqual(locator("110", sdk="10"), state.select_sdk_completion_state(value))
+        self.assertEqual(before, value)
+        for name in ("sdk-native-result", "sdk-ios-validation-result", "sdk-ios-metadata-result"):
+            for status in ("failure", "cancelled", "skipped", "in_progress"):
+                changed = deepcopy(value)
+                changed[name]["result"] = status
+                with self.subTest(name=name, status=status), self.assertRaises(ValueError):
+                    state.select_sdk_completion_state(changed)
+        for name, invalid in (("sdk-ios-metadata-result", locator("111", sdk="9")),
+                              ("sdk-ios-metadata-result", locator("111", sdk="8")),
+                              ("sdk-ios-validation-result", locator("110", sdk="10")),
+                              ("sdk-native-result", locator("110", sdk="10")),
+                              ("sdk-ios-metadata-result", locator("110", sdk="11"))):
+            changed = deepcopy(value)
+            changed[name]["outputs"] = invalid
+            with self.subTest(name=name, invalid=invalid), self.assertRaises(ValueError):
+                state.select_sdk_completion_state(changed)
+        value["sdk-ios-validation-result"]["outputs"] = locator("88", sdk="8")
+        self.assertEqual(locator("110", sdk="10"), state.select_sdk_completion_state(value))
 
     def test_full_reuse_initial_and_normal_empty_sdk_branch_preserve_original_resume(self):
         value = needs()
@@ -127,13 +156,15 @@ class SdkCompletionStateTest(unittest.TestCase):
             ("runtime-continuation", "state_wave", "5"), ("runtime-continuation", "artifact_id", "72"),
             ("sdk-ios-binary-plan", "sdk_workers_required", True), ("sdk-native-result", "artifact_id", "88"),
             ("sdk-ios-validation-result", "artifact_id", "99"),
+            ("sdk-ios-metadata-result", "artifact_id", "110"),
         )
         for name, field, content in mutations:
             value = needs()
             value[name]["outputs"][field] = content
             with self.subTest(name=name, field=field), self.assertRaises(ValueError):
                 state.select_sdk_completion_state(value)
-        for name in ("product-resume", "runtime-continuation", "sdk-plan", "sdk-native-result", "sdk-ios-validation-result"):
+        for name in ("product-resume", "runtime-continuation", "sdk-plan", "sdk-native-result", "sdk-ios-validation-result",
+                     "sdk-ios-metadata-result"):
             value = handoff()
             value[name]["outputs"].pop("artifact_id")
             with self.subTest(missing_locator=name), self.assertRaises(ValueError):

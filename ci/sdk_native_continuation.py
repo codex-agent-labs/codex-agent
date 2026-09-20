@@ -31,6 +31,7 @@ _STAGES = {
     "validation": ("sdk-javascript-metadata-result", "sdk-native-validation-plan", "sdk-native-validation", "sdk-collect-7", "7"),
     "metadata": ("sdk-native-validation-result", "sdk-native-metadata-plan", "sdk-native-metadata", "sdk-collect-8", "8"),
     "ios-validation": ("sdk-native-result", "sdk-ios-validation-plan", "sdk-ios-validation", "sdk-collect-9", "9"),
+    "ios-metadata": ("sdk-ios-validation-result", "sdk-ios-metadata-plan", "sdk-ios-metadata", "sdk-collect-10", "10"),
 }
 
 
@@ -77,7 +78,7 @@ def _locator(outputs):
     if (not re.fullmatch(r"[1-9][0-9]*", result["artifact_id"])
             or not re.fullmatch(r"sha256:[0-9a-f]{64}", result["artifact_digest"])
             or result["state_wave"] not in ("0", "1", "2", "3", "4", "5")
-            or result["sdk_state_wave"] not in ("", "1", "2", "3", "4", "5", "6", "7", "8", "9")
+            or result["sdk_state_wave"] not in ("", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10")
             or (result["sdk_state_wave"] and result["state_wave"] != "0")):
         raise ValueError("Invalid native state artifact identity or wave")
     return result

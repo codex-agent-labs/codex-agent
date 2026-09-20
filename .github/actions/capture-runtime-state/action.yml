@@ -24,7 +24,7 @@ inputs:
     description: Optional exact SDK collection wave, mutually exclusive with Runtime state-wave.
   sdk-family:
     default: ''
-    description: Optional exact native-package, ios-package, javascript-metadata, native-validation, native-metadata, or ios-validation SDK projection.
+    description: Optional exact native-package, ios-package, javascript-metadata, native-validation, native-metadata, ios-validation, or ios-metadata SDK projection.
   sdk-validation-tooling:
     default: ''
     description: Caller-provisioned tooling policy path; never obtained from the captured state.
@@ -100,7 +100,7 @@ runs:
               selected+=(--ios-binary)
             elif [ -n "$SDK_FAMILY" ]; then
               case "$SDK_FAMILY" in
-                native-package|ios-package|javascript-metadata|native-validation|native-metadata|ios-validation) selected+=(--family "$SDK_FAMILY") ;;
+                native-package|ios-package|javascript-metadata|native-validation|native-metadata|ios-validation|ios-metadata) selected+=(--family "$SDK_FAMILY") ;;
                 *) echo 'Unknown SDK family' >&2; exit 1 ;;
               esac
             fi

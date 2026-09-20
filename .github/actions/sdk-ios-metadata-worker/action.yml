@@ -1,0 +1,180 @@
+name: Execute elected iOS SDK metadata
+description: Replay both signed original validations and join artifact-only metadata without a compiler producer or signing secret.
+inputs:
+  plan-id:
+    required: true
+    description: Exact original plan upload ID.
+  artifact-id:
+    required: true
+    description: Current predecessor state upload ID.
+  artifact-sha256:
+    required: true
+    description: Exact current predecessor state digest.
+  state-wave:
+    default: '0'
+    description: Current Runtime state wave.
+  sdk-state-wave:
+    default: ''
+    description: Current SDK state wave, through wave 10 when applicable.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  build-key:
+    required: true
+    description: Exact elected sdk-ios metadata build key.
+  tree:
+    required: true
+    description: Exact tested source tree.
+  sdk-validation-tooling:
+    required: true
+    description: Caller-owned canonical tooling policy; its Java executable and evidence must already be available before capture.
+  sdk-apple-validation-policy:
+    required: true
+    description: Caller-owned canonical Apple policy for both full original validation handoffs; never obtained from retained state.
+runs:
+  using: composite
+  steps:
+    - id: policy
+      name: Pin matching caller policies before state capture
+      shell: bash
+      env:
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+      run: |
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes
+        from ci.products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        from ci.products.sdk_apple_validation_admission import apple_validation_policy_arguments
+        raw = {}
+        for name in ('SDK_VALIDATION_TOOLING', 'SDK_APPLE_VALIDATION_POLICY'):
+            path = Path(os.environ[name])
+            if not path.is_absolute():
+                raise ValueError('iOS metadata requires explicit absolute caller policy paths')
+            raw[name] = read_regular_file_bytes(path, reject_symlink_parents=True)
+        tooling = require_exact_keys(load_canonical_json_bytes(raw['SDK_VALIDATION_TOOLING']),
+            {'evidence', 'publicKey', 'javaExecutable', 'requiredTrustDomain', 'keyring', 'keysDirectory'},
+            'Caller SDK tooling policy')
+        apple = load_canonical_json_bytes(raw['SDK_APPLE_VALIDATION_POLICY'])
+        apple_validation_policy_arguments(apple)
+        expected = {name: apple[field] for name, field in (
+            ('evidence', 'toolingEvidence'), ('publicKey', 'toolingPublicKey'),
+            ('javaExecutable', 'javaExecutable'), ('requiredTrustDomain', 'toolingTrustDomain'),
+            ('keyring', 'toolingKeyring'), ('keysDirectory', 'toolingKeysDirectory'))}
+        if tooling != expected:
+            raise ValueError('iOS metadata caller tooling differs from its Apple policy')
+        require_no_signing_secret(os.environ)
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('policy_sha256=' + sha256_bytes(raw['SDK_VALIDATION_TOOLING']) + '\n')
+            output.write('apple_policy_sha256=' + sha256_bytes(raw['SDK_APPLE_VALIDATION_POLICY']) + '\n')
+        PY
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: sdk
+        sdk-family: ios-metadata
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        state-wave: ${{ inputs.state-wave }}
+        sdk-state-wave: ${{ inputs.sdk-state-wave }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+    - id: identity
+      name: Require exact metadata election before setup
+      shell: bash
+      env:
+        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
+        REQUIRED: ${{ steps.captured.outputs.sdk-workers-required }}
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
+        APPLE_POLICY_SHA256: ${{ steps.policy.outputs.apple_policy_sha256 }}
+      run: |
+        python3 -B - <<'PY'
+        import json, os, re, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        from native_wrappers import host_classifier
+        from products.inventory import read_regular_file_bytes, sha256_bytes
+        from products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        for name, digest in (('SDK_VALIDATION_TOOLING', 'POLICY_SHA256'),
+                             ('SDK_APPLE_VALIDATION_POLICY', 'APPLE_POLICY_SHA256')):
+            if sha256_bytes(read_regular_file_bytes(Path(os.environ[name]), reject_symlink_parents=True)) != os.environ[digest]:
+                raise ValueError('iOS metadata caller policy changed after pinning')
+        key, tree = os.environ['BUILD_KEY'], os.environ['TREE']
+        rows = json.loads(os.environ['MATRIX'])['include']
+        if (host_classifier() != 'macos-arm64' or os.environ['REQUIRED'] != 'true'
+                or type(rows) is not list or len(rows) != 1 or type(rows[0]) is not dict
+                or tuple(rows[0].get(name) for name in ('product', 'component', 'phase', 'target')) !=
+                   ('sdk', 'sdk-ios', 'metadata', 'ios')
+                or tuple(rows[0].get(name) for name in ('runner', 'runnerOs', 'runnerArch')) !=
+                   ('macos-26', 'macOS', 'ARM64')
+                or rows[0].get('buildKey') != key
+                or not re.fullmatch(r'sha256:[0-9a-f]{64}', key)
+                or not re.fullmatch(r'[0-9a-f]{40}', tree)):
+            raise ValueError('iOS metadata differs from its original replay election or host')
+        with open(os.environ['PLAN']) as plan:
+            if json.load(plan)['validationTree'] != tree:
+                raise ValueError('iOS metadata tree differs from its original plan')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
+        PY
+    - uses: ./.github/actions/setup-kmp
+      with:
+        cache-read-only: 'true'
+        product-worker: 'true'
+        xcode-fingerprint: none
+    - id: execute
+      name: Join metadata inside both complete original validation lifetimes
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
+        APPLE_POLICY_SHA256: ${{ steps.policy.outputs.apple_policy_sha256 }}
+      run: |
+        python3 -B - <<'PY'
+        import os, subprocess, sys
+        from pathlib import Path
+        root = Path(os.environ['GITHUB_WORKSPACE'])
+        sys.path.insert(0, str(root / 'ci'))
+        from products.inventory import read_regular_file_bytes, sha256_bytes
+        from products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        for name, digest in (('SDK_VALIDATION_TOOLING', 'POLICY_SHA256'),
+                             ('SDK_APPLE_VALIDATION_POLICY', 'APPLE_POLICY_SHA256')):
+            if sha256_bytes(read_regular_file_bytes(Path(os.environ[name]), reject_symlink_parents=True)) != os.environ[digest]:
+                raise ValueError('iOS metadata caller policy changed after pinning')
+        fields = {
+            '--plan': os.environ['PLAN'], '--discovery-root': os.environ['DISCOVERY'],
+            '--state-root': os.environ['STATE'], '--destination': str(root / 'build/sdk-ios-metadata-worker'),
+            '--repository-root': str(root), '--expected-build-key': os.environ['BUILD_KEY'],
+            '--sdk-apple-validation-policy': os.environ['SDK_APPLE_VALIDATION_POLICY'],
+        }
+        command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'ios-metadata']
+        command += [part for flag, value in fields.items() for part in (flag, value)]
+        subprocess.run(command, cwd=root, check=True)
+        require_no_signing_secret(os.environ)
+        PY
+    - if: always() && steps.identity.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-worker-sdk-ios-metadata-ios-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/sdk-ios-metadata-worker
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90

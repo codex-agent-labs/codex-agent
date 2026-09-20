@@ -249,7 +249,7 @@ def matrix(plan, discovery, state, github_output_path, *, repository_root=None, 
         if family == "native-package":
             from sdk_native_phase import route as native_route
             return native_route(ready)
-        if ios_binary or family in ("ios-package", "ios-validation"):
+        if ios_binary or family in ("ios-package", "ios-validation", "ios-metadata"):
             return {"runner": "macos-26", "runnerOs": "macOS", "runnerArch": "ARM64"}
         if family == "javascript-metadata":
             return {"runner": "ubuntu-24.04", "runnerOs": "Linux", "runnerArch": "X64"}
@@ -300,12 +300,12 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
             sdk_apple_validation_policy=None):
     """Advance only the exact elected SDK partition using the shared collector."""
     family_waves = {"native-package": 4, "ios-package": 5, "javascript-metadata": 6,
-                    "native-validation": 7, "native-metadata": 8, "ios-validation": 9}
+                    "native-validation": 7, "native-metadata": 8, "ios-validation": 9, "ios-metadata": 10}
     if family is not None:
         product_reuse._sdk_family_worker_instance(None, family)
     allowed = (family_waves[family],) if family is not None else (3,) if ios_binary else (1, 2)
     if type(ios_binary) is not bool or (ios_binary and family is not None) or type(wave) is not int or wave not in allowed:
-        raise ValueError("SDK collection requires its exact family wave: JavaScript1/2, iOS binary3, native package4, iOS package5, JS metadata6, native validation7, native metadata8, iOS validation9")
+        raise ValueError("SDK collection requires its exact family wave: JavaScript1/2, iOS binary3, native package4, iOS package5, JS metadata6, native validation7, native metadata8, iOS validation9, iOS metadata10")
     scope = ({"sdk_family": family} if family is not None else
              {"sdk_ios_binary_only": True} if ios_binary else {"sdk_javascript_only": True})
     tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy)
@@ -551,7 +551,7 @@ def _workflow_main(argv):
     captured.add_argument("--state-wave", type=int, default=0)
     captured.add_argument("--sdk-state-wave", type=int)
     parsers["collect"].add_argument("--input-root", type=Path, required=True)
-    parsers["collect"].add_argument("--wave", type=int, choices=(1, 2, 3, 4, 5, 6, 7, 8, 9), required=True)
+    parsers["collect"].add_argument("--wave", type=int, choices=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10), required=True)
     arguments = vars(parser.parse_args(argv))
     command = arguments.pop("command")
     try:

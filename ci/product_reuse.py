@@ -2769,7 +2769,7 @@ def _sdk_ios_binary_worker_instance(instance):
     return instance == PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
 
 
-SDK_WORKER_FAMILIES = ("native-package", "ios-package", "javascript-metadata", "native-validation", "native-metadata", "ios-validation")
+SDK_WORKER_FAMILIES = ("native-package", "ios-package", "javascript-metadata", "native-validation", "native-metadata", "ios-validation", "ios-metadata")
 
 
 def _sdk_family_worker_instance(instance, family):
@@ -2785,6 +2785,8 @@ def _sdk_family_worker_instance(instance, family):
     if family == "ios-validation":
         return instance in {PhaseInstanceId("sdk", "sdk-ios", "validation", target)
                             for target in ("ios-arm64", "ios-simulator-arm64")}
+    if family == "ios-metadata":
+        return instance == PhaseInstanceId("sdk", "sdk-ios", "metadata", "ios")
     return instance == (PhaseInstanceId("sdk", "sdk-ios", "package", "ios") if family == "ios-package"
                         else PhaseInstanceId("sdk", "javascript", "metadata", "node"))
 
@@ -3874,6 +3876,34 @@ def collect_runtime_workers(
                             or regular_file_inventory(signed_capture, allow_empty=True) != signed_inventory):
                         raise ValueError("Apple original shard or signer evidence changed during collection")
                     row["sdkAppleValidationEvidenceDirectory"] = authenticated.relative_to(prepared).as_posix()
+                if sdk_family == "ios-metadata":
+                    from products.sdk_apple_validation_admission import AppleValidationAdmission
+
+                    if sdk_apple_validation_policy is None:
+                        raise ValueError("Apple metadata collection requires independent caller admission policy")
+                    original_inventory = regular_file_inventory(original, allow_empty=True)
+                    records = {"sdkAppleValidationEvidence": list(
+                        state.rebased_request.get("sdkAppleValidationEvidence", []))}
+                    _merge_native_comparison_records(records, _retained_apple_handoffs(state_root, root),
+                                                     key="sdkAppleValidationEvidence")
+                    predecessors = []
+                    for target in ("ios-arm64", "ios-simulator-arm64"):
+                        identity = PhaseInstanceId("sdk", "sdk-ios", "validation", target)
+                        if identity not in state.sources or identity not in state.prior_carrier_phases:
+                            raise ValueError("Apple metadata collection lacks both original validation predecessors")
+                        record = state.prior_carrier_phases[identity]
+                        predecessor = verify_object(state.sources[identity], build_key=record["buildKey"],
+                            receipt_sha256=record["receiptSha256"], object_sha256=record["objectSha256"])
+                        predecessors.append({"receipt": predecessor["receipt"],
+                            "receiptBytes": predecessor["receiptBytes"],
+                            "receiptSha256": record["receiptSha256"], "objectSha256": record["objectSha256"]})
+                    AppleValidationAdmission(root, records["sdkAppleValidationEvidence"], repository=root,
+                        policy_revision=state.plan["validationCommit"], policy=sdk_apple_validation_policy).verify_metadata(
+                            {name: verified[name] for name in
+                                ("receipt", "receiptBytes", "receiptSha256", "objectSha256")}, tuple(predecessors))
+                    if (verify_phase_shard(original / "shard", instance) != verified
+                            or regular_file_inventory(original, allow_empty=True) != original_inventory):
+                        raise ValueError("Apple metadata original shard or diagnostics changed during collection")
                 row.update(result="success", reason="verified-original-shard",
                            shardDirectory=(original / "shard").relative_to(prepared).as_posix())
             except (ValueError, OSError) as error:
@@ -4361,8 +4391,8 @@ def capture_runtime_resume_upload(
     if type(state_wave) is not int or not 0 <= state_wave <= 5:
         raise ValueError("Runtime state wave must be an integer from zero through five")
     if sdk_state_wave is not None and (type(sdk_state_wave) is not int
-            or sdk_state_wave not in (1, 2, 3, 4, 5, 6, 7, 8, 9) or state_wave != 0):
-        raise ValueError("SDK state wave must be one through nine, without a Runtime state wave")
+            or sdk_state_wave not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10) or state_wave != 0):
+        raise ValueError("SDK state wave must be one through ten, without a Runtime state wave")
     require_sha256(artifact_sha256, "Runtime resume artifact digest")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     if destination.exists() or destination.is_symlink():

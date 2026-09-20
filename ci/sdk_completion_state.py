@@ -7,7 +7,7 @@ from .products.inventory import require_object
 _JOBS = (
     "product-resume", "runtime-continuation", "runtime-aggregate-continuation",
     "sdk-ios-binary-plan", "sdk-ios-binary", "sdk-collect-3", "sdk-plan", "sdk-native-result",
-    "sdk-ios-validation-result",
+    "sdk-ios-validation-result", "sdk-ios-metadata-result",
 )
 
 
@@ -27,7 +27,7 @@ def _state(outputs, *, runtime_wave=None, sdk_wave=None):
 def select_sdk_completion_state(needs):
     """Choose one exact successful original state, never fall back past failure.
 
-    Caller supplies these nine terminal workflow jobs. Their outputs select
+    Caller supplies these ten terminal workflow jobs. Their outputs select
     transport only: the caller must recapture the upload and run sdk_completion
     against its full authenticated requested SDK closure before acceptance.
     """
@@ -87,24 +87,31 @@ def select_sdk_completion_state(needs):
             raise ValueError("SDK completion iOS binary collection retained failures")
         parent = _state(collected["outputs"], runtime_wave="0", sdk_wave="3")
 
-    planned, native, final = (jobs[name] for name in
-        ("sdk-plan", "sdk-native-result", "sdk-ios-validation-result"))
+    planned, native, validation, final = (jobs[name] for name in
+        ("sdk-plan", "sdk-native-result", "sdk-ios-validation-result", "sdk-ios-metadata-result"))
     if native["result"] != "success":
         raise ValueError("SDK completion final native gate did not succeed")
-    if final["result"] != "success":
+    if validation["result"] != "success":
         raise ValueError("SDK completion final iOS validation gate did not succeed")
+    if final["result"] != "success":
+        raise ValueError("SDK completion final iOS metadata gate did not succeed")
     if handoff == "true":
         if (planned["result"] != "success"
                 or planned["outputs"].get("sdk_workers_required") not in ("true", "false")):
             raise ValueError("Required SDK handoff planning did not succeed")
         _state(planned["outputs"])
         native_state = _state(native["outputs"])
+        validation_state = _state(validation["outputs"])
         final_state = _state(final["outputs"])
-        if (native_state["sdk_state_wave"] == "9"
-                or (final_state != native_state and final_state["sdk_state_wave"] != "9")):
+        if (native_state["sdk_state_wave"] in ("9", "10")
+                or validation_state["sdk_state_wave"] == "10"
+                or (validation_state != native_state and validation_state["sdk_state_wave"] != "9")):
             raise ValueError("Final iOS validation state differs from its original native parent or wave")
+        if final_state != validation_state and final_state["sdk_state_wave"] != "10":
+            raise ValueError("Final iOS metadata state differs from its original validation parent or wave")
         return final_state
     if (planned["result"] != "skipped" or any(_locator(native["outputs"]).values())
+            or any(_locator(validation["outputs"]).values())
             or any(_locator(final["outputs"]).values())):
         raise ValueError("Unexpected SDK handoff state without its election")
     return parent

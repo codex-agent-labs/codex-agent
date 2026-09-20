@@ -121,6 +121,7 @@ class ProductSelectionTest(unittest.TestCase):
 
     def test_scoped_product_actions_select_only_their_existing_consumers(self) -> None:
         owners = {
+            "sdk-ios-metadata-worker": {PhaseInstanceId("sdk", "sdk-ios", "metadata", "ios")},
             "prepare-runtime-signing": {item for item in PHASE_INSTANCE_IDS
                 if item.product == "runtime" and item.phase == "metadata"
                 and item.component in {*NATIVE_TARGETS, "runtime-aggregate"}},

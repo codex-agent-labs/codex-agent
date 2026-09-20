@@ -20,6 +20,8 @@ class SdkApplePolicyActionsTest(unittest.TestCase):
             ({}, False, []),
             ({"STATE_PRODUCT": "sdk", "SDK_FAMILY": "ios-validation", "SDK_STATE_WAVE": "8"}, True,
              ["--sdk-state-wave", "8", "--family", "ios-validation"]),
+            ({"STATE_PRODUCT": "sdk", "SDK_FAMILY": "ios-metadata", "SDK_STATE_WAVE": "10"}, True,
+             ["--sdk-state-wave", "10", "--family", "ios-metadata"]),
             ({"STATE_PRODUCT": "sdk-ios-binary", "SDK_STATE_WAVE": "2"}, True,
              ["--sdk-state-wave", "2", "--ios-binary"]),
         )
@@ -39,6 +41,8 @@ class SdkApplePolicyActionsTest(unittest.TestCase):
             ({}, False, ["--state-wave", "0"], "1"),
             ({"PRODUCT": "sdk", "SDK_FAMILY": "ios-validation", "WAVE": "9"}, True,
              ["--family", "ios-validation"], "9"),
+            ({"PRODUCT": "sdk", "SDK_FAMILY": "ios-metadata", "WAVE": "10"}, True,
+             ["--family", "ios-metadata"], "10"),
             ({"PRODUCT": "sdk-ios-binary", "WAVE": "3"}, True, ["--ios-binary"], "3"),
         )
         for environment, sdk, selected, wave in cases:

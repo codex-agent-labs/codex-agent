@@ -125,7 +125,7 @@ class AppleCollectionForwardingTest(unittest.TestCase):
                                     "--artifact-sha256", "sha256:" + "a" * 64, "--sdk-state-wave", "9"])
         self.assertEqual(9, capture.call_args.kwargs["sdk_state_wave"])
         with patch.object(workflow, "collect") as collect, redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            workflow._workflow_main(["collect", *common, "--input-root", "/work/input", "--wave", "10"])
+            workflow._workflow_main(["collect", *common, "--input-root", "/work/input", "--wave", "11"])
         collect.assert_not_called()
 
 

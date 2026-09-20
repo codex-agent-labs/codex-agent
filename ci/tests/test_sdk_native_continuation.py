@@ -92,6 +92,23 @@ class NativePreparationAnchorSelectionTest(unittest.TestCase):
 
 
 class NativeStateSelectionTest(unittest.TestCase):
+    def test_ios_metadata_exact_terminal_route_and_unchanged_validation_parent(self):
+        self.assertEqual(("sdk-ios-validation-result", "sdk-ios-metadata-plan", "sdk-ios-metadata", "sdk-collect-10", "10"),
+                         routing._STAGES["ios-metadata"])
+        for parent in (locator("9", "0"), locator("8", "0"), locator("", "3")):
+            for required in (False, True):
+                needs = needs_for("ios-metadata", required=required, state=parent)
+                before = deepcopy(needs)
+                with self.subTest(parent=parent, required=required):
+                    self.assertEqual(dict(artifact_id="456", artifact_digest="sha256:" + "b" * 64,
+                                          state_wave="0", sdk_state_wave="10") if required else parent,
+                                     routing.select_native_state(needs, stage="ios-metadata"))
+                    self.assertEqual(before, needs)
+                    changed = deepcopy(needs)
+                    changed["sdk-native-result"] = changed.pop("sdk-ios-validation-result")
+                    with self.assertRaises(ValueError):
+                        routing.select_native_state(changed, stage="ios-metadata")
+
     def test_ios_validation_exact_terminal_route_and_all_preparation_signer_gates(self):
         self.assertEqual(("sdk-native-result", "sdk-ios-validation-plan", "sdk-ios-validation", "sdk-collect-9", "9"),
                          routing._STAGES["ios-validation"])
@@ -181,7 +198,7 @@ class NativeStateSelectionTest(unittest.TestCase):
                         state_wave="0", sdk_state_wave=wave)
                     self.assertEqual(expected, selected)
                     self.assertEqual(before, needs)
-        for state in (locator("4", "0"), locator("7", "0"), locator("9", "0"), locator("", "5")):
+        for state in (locator("4", "0"), locator("7", "0"), locator("9", "0"), locator("10", "0"), locator("", "5")):
             self.assertEqual(state, routing.select_native_state(needs_for("metadata", state=state), stage="metadata"))
 
     def test_reused_packages_still_require_independent_preparation_when_elected(self):
@@ -243,7 +260,7 @@ class NativeStateSelectionTest(unittest.TestCase):
                     needs[name]["outputs"][field] = value
                     with self.subTest(stage=stage, name=name, field=field), self.assertRaises(ValueError):
                         routing.select_native_state(needs, stage=stage)
-            for state in (locator("0", "0"), locator("7", "1"), locator("10", "0"), locator("", "6")):
+            for state in (locator("0", "0"), locator("7", "1"), locator("11", "0"), locator("", "6")):
                 with self.assertRaises(ValueError):
                     routing.select_native_state(needs_for(stage, state=state), stage=stage)
             for name in (workers, collector):
