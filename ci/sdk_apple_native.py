@@ -89,6 +89,17 @@ NATIVE_RECORDS = {
     } | {("evidence", "lane-result.txt", "lane-result")},
 }
 
+# Receipt-bound execution observations stay in the original lane capture, not
+# in the five-file directory consumed by the native archive importer.
+NATIVE_TOOLCHAINS = {
+    lane: next(path for path in NATIVE_FILES[lane] if path.endswith("-proof.json"))
+        .replace("/apple-slice-exports/", "/apple-toolchain-exports/")
+        .removesuffix("-proof.json") + "-toolchain.json"
+    for lane in ("ios-rust-device", "ios-rust-simulator")
+}
+for _lane, _path in NATIVE_TOOLCHAINS.items():
+    NATIVE_RECORDS[_lane].add(("evidence", _path, "rust-toolchain-evidence"))
+
 
 def _receipt_producer(receipt: Mapping[str, Any]) -> dict[str, Any]:
     return validate_producer({

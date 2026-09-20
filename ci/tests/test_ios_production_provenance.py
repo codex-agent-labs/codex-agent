@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import reuse  # noqa: E402
 import stage  # noqa: E402
 from products.inventory import regular_file_inventory, sha256_bytes  # noqa: E402
-from sdk_apple_native import NATIVE_FILES  # noqa: E402
+from sdk_apple_native import NATIVE_FILES, NATIVE_TOOLCHAINS  # noqa: E402
 from sdk_apple_source import _original_transport_producer  # noqa: E402
 
 
@@ -66,6 +66,9 @@ class IosProductionProvenanceTest(unittest.TestCase):
                     for relative in NATIVE_FILES[lane]
                 }
                 contents["lane-result.txt"] = ("lane-result", b"original lane result\n")
+                contents[NATIVE_TOOLCHAINS[lane]] = (
+                    "rust-toolchain-evidence", b'{"scope":"original toolchain observations"}\n',
+                )
                 self.write_files(source, receipt, contents)
                 previous = None
                 if nested:
@@ -91,7 +94,8 @@ class IosProductionProvenanceTest(unittest.TestCase):
                     path: kind for path, (kind, _) in contents.items() if kind == "rust-archive"
                 })
                 self.assertEqual(evidence, {
-                    **{path: kind for path, (kind, _) in contents.items() if kind == "rust-proof"},
+                    **{path: kind for path, (kind, _) in contents.items()
+                       if kind in {"rust-proof", "rust-toolchain-evidence"}},
                     "transport-provenance.json": "transport-provenance",
                 })
                 self.assertEqual(

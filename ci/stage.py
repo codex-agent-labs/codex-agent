@@ -128,10 +128,12 @@ OUTPUTS: dict[str, tuple[tuple[str, str, str], ...]] = {
     "ios-rust-device": (
         ("build", "codex-agent-runtime-ios/build/apple-slice-exports/codex-agent-ios-arm64.a", "rust-archive"),
         ("build", "codex-agent-runtime-ios/build/apple-slice-exports/codex-agent-ios-arm64-proof.json", "rust-proof"),
+        ("build", "codex-agent-runtime-ios/build/apple-toolchain-exports/codex-agent-ios-arm64-toolchain.json", "rust-toolchain-evidence"),
     ),
     "ios-rust-simulator": (
         ("build", "codex-agent-runtime-ios/build/apple-slice-exports/codex-agent-ios-simulator-arm64.a", "rust-archive"),
         ("build", "codex-agent-runtime-ios/build/apple-slice-exports/codex-agent-ios-simulator-arm64-proof.json", "rust-proof"),
+        ("build", "codex-agent-runtime-ios/build/apple-toolchain-exports/codex-agent-ios-simulator-arm64-toolchain.json", "rust-toolchain-evidence"),
     ),
     "ios-framework-device": (("build", "codex-agent-runtime-ios/build/bin/iosArm64/releaseFramework/CodexAgent.framework/**/*", "framework-member"),),
     "ios-framework-simulator": (("build", "codex-agent-runtime-ios/build/bin/iosSimulatorArm64/releaseFramework/CodexAgent.framework/**/*", "framework-member"),),

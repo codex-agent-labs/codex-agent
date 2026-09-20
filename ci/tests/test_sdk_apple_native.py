@@ -33,6 +33,16 @@ def archive_tree(root: Path) -> bytes:
 
 
 class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
+    def test_missing_original_toolchain_observations_are_rejected(self):
+        for lane, path in sdk_apple_native.NATIVE_TOOLCHAINS.items():
+            with self.subTest(lane=lane):
+                receipt = json.loads((self.lanes[lane] / "lane-receipt.json").read_text())
+                receipt["evidence"] = [
+                    item for item in receipt["evidence"] if item["relativePath"] != path
+                ]
+                with self.assertRaisesRegex(ValueError, "unexpected output inventory"):
+                    sdk_apple_native._require_native_records(receipt, lane, self.lanes[lane])
+
     def setUp(self) -> None:
         super().setUp()
         self.root = self.root.resolve()
@@ -66,6 +76,8 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
                 for source in sdk_apple_native.NATIVE_FILES["ios-rust-simulator"]
             },
         }
+        for lane, path in sdk_apple_native.NATIVE_TOOLCHAINS.items():
+            self.contents[lane][path] = b'{"scope":"synthetic transport-only observations"}\n'
         for index, lane in enumerate(sdk_apple_native.LANES, 1):
             root = self.root / "uploads" / lane
             for relative, contents in self.contents[lane].items():
@@ -79,7 +91,7 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
                 if relative.endswith(".a")
             ]
             evidence = [
-                f"{relative}={'native-test-proof' if lane == 'ios-native-tests' else 'rust-proof'}"
+                f"{relative}={'rust-toolchain-evidence' if relative.endswith('-toolchain.json') else 'native-test-proof' if lane == 'ios-native-tests' else 'rust-proof'}"
                 for relative in self.contents[lane]
                 if not relative.endswith(".a")
             ] + ["lane-result.txt=lane-result"]

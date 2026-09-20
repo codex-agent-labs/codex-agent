@@ -79,6 +79,7 @@ abstract class ExportAppleRustSliceTask @Inject constructor(private val exec: Ex
     @get:Internal abstract val repositoryDirectory: DirectoryProperty
     @get:OutputFile abstract val exportedArchive: RegularFileProperty
     @get:OutputFile abstract val sliceProof: RegularFileProperty
+    @get:OutputFile abstract val toolchainEvidence: RegularFileProperty
 
     init { outputs.upToDateWhen { false } }
 
@@ -97,7 +98,28 @@ abstract class ExportAppleRustSliceTask @Inject constructor(private val exec: Ex
             rustCompilerIdentity.get(), appleToolchainIdentity.get(),
             xcodeVersionFile.get().asFile, swiftVersionFile.get().asFile,
         )
+        val observations = mapOf(
+            "rustCompilerIdentity" to rustCompilerIdentity.get(),
+            "appleToolchainIdentity" to appleToolchainIdentity.get(),
+            "xcodeVersion" to xcodeVersionFile.get().asFile.readText(UTF_8),
+            "swiftVersion" to swiftVersionFile.get().asFile.readText(UTF_8),
+        )
+        val expectedHashes = listOf(
+            identity.rustCompilerIdentitySha256, identity.appleToolchainIdentitySha256,
+            identity.xcodeVersionSha256, identity.swiftVersionSha256,
+        )
+        check(observations.values.map { it.byteInputStream(UTF_8).releaseDigest() } == expectedHashes) {
+            "Apple Rust toolchain observations changed during export"
+        }
         sliceProof.get().asFile.atomicWriteJson(buildAppleRustSliceProof(spec, destination, identity))
+        // Execution evidence stays beside the proof, outside the reusable archive.
+        toolchainEvidence.get().asFile.atomicWriteJson(buildJsonObject {
+            put("schemaVersion", JsonPrimitive(1))
+            put("candidateCommit", JsonPrimitive(commit))
+            put("candidateTree", JsonPrimitive(tree))
+            put("target", JsonPrimitive(spec.target))
+            observations.forEach { (name, value) -> put(name, JsonPrimitive(value)) }
+        })
     }
 }
 

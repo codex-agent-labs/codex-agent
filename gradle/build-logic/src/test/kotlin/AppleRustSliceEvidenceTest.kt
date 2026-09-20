@@ -136,6 +136,25 @@ class AppleRustSliceEvidenceTest {
     }
 
     @Test
+    fun `slice exports declare external target-specific toolchain evidence`() {
+        registrationFixture(imported = false).use { fixture ->
+            listOf("IosArm64", "IosSimulatorArm64").zip(appleRustSliceSpecs).forEach { (title, spec) ->
+                val task = fixture.registeredTask("exportCodexAgent${title}RustSlice").get()
+                    as ExportAppleRustSliceTask
+                val observations = task.toolchainEvidence.get().asFile
+                assertEquals(
+                    spec.proofName.removeSuffix("-proof.json") + "-toolchain.json",
+                    observations.name,
+                )
+                assertEquals("apple-toolchain-exports", observations.parentFile.name)
+                assertFalse(task.sliceProof.get().asFile.parentFile == observations.parentFile)
+                assertTrue(observations in task.outputs.files.files)
+                assertFalse(observations == task.exportedArchive.get().asFile)
+            }
+        }
+    }
+
+    @Test
     fun `evidence tasks always execute live checkout validation`() {
         val source = File("src/main/kotlin/AppleRustSliceTasks.kt").readText()
         assertEquals(4, Regex("init \\{ outputs\\.upToDateWhen \\{ false } }").findAll(source).count())
