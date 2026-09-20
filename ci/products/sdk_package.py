@@ -200,6 +200,7 @@ def verify_sdk_package_inputs(
     apple_verification: dict[str, Any] | None = None,
     apple_binary_verification: dict[str, Any] | None = None,
     apple_execution_capture_directory: Path | None = None,
+    apple_original_verification: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     """Verify package semantics, original artifacts and the complete source-input plan.
 
@@ -213,7 +214,7 @@ def verify_sdk_package_inputs(
     stage_root = Path(stage_root)
     receipt, original = _receipt(receipt_path)
     instance = _instance(receipt)
-    if apple_verification is not None and apple_binary_verification is not None:
+    if sum(value is not None for value in (apple_verification, apple_binary_verification, apple_original_verification)) > 1:
         raise ValueError("Apple package verification modes are mutually exclusive")
     if apple_execution_capture_directory is not None:
         if apple_binary_verification is None:
@@ -229,10 +230,12 @@ def verify_sdk_package_inputs(
         from .contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
         _require_capability_output_separate(Path(apple_execution_capture_directory),
             original_apple_arguments["contract_attestation"].parent / CONTRACT_EXECUTION_CLOSURE_DIRECTORY)
-    apple_policy = apple_verification if apple_verification is not None else apple_binary_verification
+    apple_policy = (apple_original_verification if apple_original_verification is not None else
+                    apple_verification if apple_verification is not None else apple_binary_verification)
     if apple_policy is not None:
-        from .sdk_maven import _APPLE_VERIFICATION_KEYS, _APPLE_BINARY_VERIFICATION_KEYS
-        expected_keys = _APPLE_VERIFICATION_KEYS if apple_verification is not None else _APPLE_BINARY_VERIFICATION_KEYS
+        from .sdk_maven import _APPLE_VERIFICATION_KEYS, _APPLE_BINARY_VERIFICATION_KEYS, _APPLE_ORIGINAL_VERIFICATION_KEYS
+        expected_keys = (_APPLE_ORIGINAL_VERIFICATION_KEYS if apple_original_verification is not None else
+                         _APPLE_VERIFICATION_KEYS if apple_verification is not None else _APPLE_BINARY_VERIFICATION_KEYS)
         if (instance != PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
                 or type(apple_policy) is not dict
                 or set(apple_policy) != expected_keys):
@@ -411,13 +414,14 @@ def verify_sdk_package_inputs(
                 raise ValueError("SDK binary original Contract components differ from package-selected Contract")
             upstream[_instance(binary)] = binary
             apple_options = {"apple_verification": apple_verification} if apple_verification is not None else {}
-            if apple_binary_verification is not None:
+            if apple_binary_verification is not None or apple_original_verification is not None:
                 # Authenticate elected package source identity before executing native parsers.
                 _verify_plan(repository, receipt, versions,
                              [upstream[identity] for identity in phase_instance_dependencies(instance)], projection, native_projections)
                 captured_binary_receipt = root / "sdk-binary-receipt.json"
                 captured_binary_receipt.write_bytes(binary_bytes)
-                apple_options = {"apple_binary_verification": apple_binary_verification,
+                policy_name = "apple_original_verification" if apple_original_verification is not None else "apple_binary_verification"
+                apple_options = {policy_name: apple_policy,
                                  "binary_stage_root": binary_stage_root, "binary_receipt_path": captured_binary_receipt}
                 if apple_execution_capture_directory is not None:
                     _require_capability_output_separate(Path(apple_execution_capture_directory),
@@ -426,7 +430,7 @@ def verify_sdk_package_inputs(
             verified, verified_bytes = verify_packaged_sdk_maven_phase(
                 stage, captured_receipt, handoff / REQUEST_NAME, **apple_options,
             )
-            if apple_binary_verification is None:
+            if apple_binary_verification is None and apple_original_verification is None:
                 verified_binary, verified_binary_bytes = verify_sdk_maven_binary_predecessor(
                     binary_stage_root, binary_receipt_path, stage, captured_receipt, handoff / COMPATIBILITY_NAME,
                     **apple_options,

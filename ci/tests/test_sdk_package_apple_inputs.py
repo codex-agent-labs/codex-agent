@@ -168,6 +168,64 @@ class SdkPackageAppleInputsTest(unittest.TestCase):
         self.assertEqual(1, len(self.calls))
         self.assertEqual(before, regular_file_inventory(self.root / "apple-forwarding"))
 
+    def original_policy(self):
+        return {**{key: value for key, value in self.binary_policy().items() if key != "developer_directory"},
+                "evidence_directory": self.work / "original-events",
+                "execution_binding_file": self.work / "original-binding.json",
+                "expected_binding_sha256": "sha256:" + "a" * 64,
+                "expected_execution_files": self.work / "original-events.json"}
+
+    def verify_original(self, **changes):
+        return verify_sdk_package_inputs(
+            self.repository, self.ios_package, self.ios_receipt, self.request,
+            binary_stage_root=self.ios_binary, binary_receipt_path=self.ios_binary_receipt,
+            binary_contract_evidence=self.older_evidence,
+            **{"apple_original_verification": self.original_policy(), **changes},
+        )
+
+    def test_original_replay_keeps_signed_source_contract_and_maven_gates_once(self):
+        before = regular_file_inventory(self.root / "apple-forwarding")
+        def gate(**arguments):
+            self.calls.append(arguments)
+            self.assertEqual(load_canonical_json_bytes(self.ios_receipt.read_bytes())["producer"]["commit"],
+                             arguments["source_revision"])
+            self.assertEqual(self.original_policy(), {key: arguments[key] for key in self.original_policy()})
+            self.assertEqual(regular_file_inventory(self.ios_binary / "outputs/apple-binary"),
+                             regular_file_inventory(arguments["binary_frameworks"]))
+            self.assertEqual(self.chain["compatibility"].read_bytes(), arguments["expected_sdk_compatibility"].read_bytes())
+            return regular_file_inventory(arguments["product_directory"])
+        with patch("ci.products.sdk_apple_package_replay.verify_sdk_apple_original_package_content", side_effect=gate), \
+                patch("ci.products.sdk_apple_content.verify_sdk_apple_binary_package_content",
+                      side_effect=AssertionError("original replay must not launch native tools")):
+            value, raw = self.verify_original()
+        self.assertEqual(self.ios_receipt.read_bytes(), raw)
+        self.assertEqual(load_canonical_json_bytes(raw), value)
+        self.assertEqual(1, len(self.calls))
+        self.assertEqual(before, regular_file_inventory(self.root / "apple-forwarding"))
+
+    def test_original_replay_rejects_override_mixing_and_bad_source_plan(self):
+        with patch("ci.products.sdk_apple_package_replay.verify_sdk_apple_original_package_content",
+                   side_effect=AssertionError("unauthenticated original replay")):
+            for policy in ({}, {**self.original_policy(), "source_revision": "f" * 40},
+                           {**self.original_policy(), "repository": self.work},
+                           {**self.original_policy(), "required_trust_domain": "release"}):
+                with self.subTest(policy=policy), self.assertRaises(ValueError):
+                    self.verify_original(apple_original_verification=policy)
+            for changes in ({"apple_binary_verification": self.binary_policy()},
+                            {"apple_verification": self.options},
+                            {"apple_execution_capture_directory": self.work / "capture"}):
+                with self.subTest(changes=changes), self.assertRaises(ValueError):
+                    self.verify_original(**changes)
+            original = self.ios_receipt.read_bytes()
+            changed = load_canonical_json_bytes(original)
+            changed["producer"]["tree"] = "f" * 40
+            self.ios_receipt.write_bytes(canonical_json_bytes(changed))
+            try:
+                with self.assertRaisesRegex(ValueError, "commit|authenticated plan"):
+                    self.verify_original()
+            finally:
+                self.ios_receipt.write_bytes(original)
+
     def test_binary_replay_rejects_policy_crosspair_and_source_plan_before_tools(self):
         with patch("ci.products.sdk_apple_content.verify_sdk_apple_binary_package_content",
                    side_effect=AssertionError("unverified native replay")):

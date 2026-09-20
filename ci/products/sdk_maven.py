@@ -502,6 +502,9 @@ _APPLE_VERIFICATION_KEYS = {
 _APPLE_BINARY_VERIFICATION_KEYS = (_APPLE_VERIFICATION_KEYS - {
     "validation_evidence_directory", "expected_sdk_compatibility", "expected_distribution_proof",
 }) | {"developer_directory"}
+_APPLE_ORIGINAL_VERIFICATION_KEYS = (_APPLE_BINARY_VERIFICATION_KEYS - {"developer_directory"}) | {
+    "evidence_directory", "execution_binding_file", "expected_binding_sha256", "expected_execution_files",
+}
 
 
 def _verify_sdk_maven_stage_inventory(stage: Path, receipt: dict[str, Any], phase: str) -> None:
@@ -530,6 +533,7 @@ def _verify_sdk_maven_stage(
     apple_verification: dict[str, Any] | None = None, authenticated_compatibility: bytes | None = None,
     apple_binary_verification: dict[str, Any] | None = None, binary_stage: Path | None = None,
     apple_execution_capture_directory: Path | None = None,
+    apple_original_verification: dict[str, Any] | None = None,
 ) -> None:
     _verify_sdk_maven_stage_inventory(stage, receipt, phase)
     component = receipt["component"]
@@ -555,11 +559,13 @@ def _verify_sdk_maven_stage(
                          for record in files]
         if [record for record in receipt["outputs"] if record["kind"] == "apple-binary"] != apple_outputs:
             raise ValueError("Apple binary files differ from exact receipt outputs")
-    if apple_verification is not None and apple_binary_verification is not None:
+    if sum(value is not None for value in (apple_verification, apple_binary_verification, apple_original_verification)) > 1:
         raise ValueError("Apple package verification modes are mutually exclusive")
-    if apple_verification is not None or apple_binary_verification is not None:
-        options = apple_verification if apple_verification is not None else apple_binary_verification
-        expected_keys = _APPLE_VERIFICATION_KEYS if apple_verification is not None else _APPLE_BINARY_VERIFICATION_KEYS
+    if any(value is not None for value in (apple_verification, apple_binary_verification, apple_original_verification)):
+        options = (apple_original_verification if apple_original_verification is not None else
+                   apple_verification if apple_verification is not None else apple_binary_verification)
+        expected_keys = (_APPLE_ORIGINAL_VERIFICATION_KEYS if apple_original_verification is not None else
+                         _APPLE_VERIFICATION_KEYS if apple_verification is not None else _APPLE_BINARY_VERIFICATION_KEYS)
         if ((receipt["product"], component, phase, receipt["target"]) != ("sdk", "sdk-ios", "package", "ios") or
                 type(options) is not dict or set(options) != expected_keys):
             raise ValueError("Apple verification requires exact sdk-ios package identity and complete caller inputs")
@@ -577,16 +583,20 @@ def _verify_sdk_maven_stage(
         with tempfile.TemporaryDirectory(prefix="sdk-apple-compatibility-") as temporary:
             captured_compatibility = Path(temporary).resolve() / "sdk-compatibility.json"
             captured_compatibility.write_bytes(expected_bytes)
-            if apple_binary_verification is not None:
+            if apple_binary_verification is not None or apple_original_verification is not None:
                 if binary_stage is None:
                     raise ValueError("Apple binary package verification requires its original binary predecessor")
-                inventory = verify_sdk_apple_binary_package_content(
+                gate = verify_sdk_apple_binary_package_content
+                if apple_original_verification is not None:
+                    from .sdk_apple_package_replay import verify_sdk_apple_original_package_content
+                    gate = verify_sdk_apple_original_package_content
+                inventory = gate(
                     product_directory=stage / "outputs/apple", sdk_version=receipt["productVersion"],
                     binary_frameworks=binary_stage / "outputs/apple-binary",
                     source_revision=receipt["producer"]["commit"], expected_sdk_compatibility=captured_compatibility,
                     **({"execution_capture_directory": apple_execution_capture_directory}
                        if apple_execution_capture_directory is not None else {}),
-                    **apple_binary_verification,
+                    **options,
                 )
             else:
                 inventory = verify_sdk_apple_package_content(
@@ -621,6 +631,7 @@ def verify_packaged_sdk_maven_phase(
     apple_binary_verification: dict[str, Any] | None = None,
     binary_stage_root: Path | None = None, binary_receipt_path: Path | None = None,
     apple_execution_capture_directory: Path | None = None,
+    apple_original_verification: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     """Verify final-stage semantics; not upstream execution or release admission.
 
@@ -634,7 +645,9 @@ def verify_packaged_sdk_maven_phase(
     # The compatibility producer imports Maven-independent archive authorities.
     from .sdk_compatibility import load_sdk_compatibility_request, produce_sdk_compatibility
 
-    if apple_binary_verification is not None:
+    if sum(value is not None for value in (apple_verification, apple_binary_verification, apple_original_verification)) > 1:
+        raise ValueError("Apple package verification modes are mutually exclusive")
+    if apple_binary_verification is not None or apple_original_verification is not None:
         if apple_verification is not None or binary_stage_root is None or binary_receipt_path is None:
             raise ValueError("Apple binary verification requires only its complete original binary inputs")
     elif binary_stage_root is not None or binary_receipt_path is not None:
@@ -680,10 +693,11 @@ def verify_packaged_sdk_maven_phase(
             raise ValueError("Authenticated SDK compatibility version differs from package receipt")
         if authenticated.read_bytes() != (stage / evidence_path).read_bytes():
             raise ValueError("SDK Maven evidence differs from authenticated compatibility")
-        if apple_binary_verification is not None:
+        if apple_binary_verification is not None or apple_original_verification is not None:
             verify_sdk_maven_binary_predecessor(
                 binary_stage_root, binary_receipt_path, stage, private / "phase-receipt.json", authenticated,
                 apple_binary_verification=apple_binary_verification,
+                apple_original_verification=apple_original_verification,
                 **({"apple_execution_capture_directory": apple_execution_capture_directory}
                    if apple_execution_capture_directory is not None else {}),
             )
@@ -713,6 +727,7 @@ def verify_sdk_maven_binary_predecessor(
     *, apple_verification: dict[str, Any] | None = None,
     apple_binary_verification: dict[str, Any] | None = None,
     apple_execution_capture_directory: Path | None = None,
+    apple_original_verification: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     """Prove exact Maven transformation plus optional imported Apple closure.
 
@@ -759,6 +774,7 @@ def verify_sdk_maven_binary_predecessor(
         _verify_sdk_maven_stage(private / "package", package, "package",
                                apple_verification=apple_verification, authenticated_compatibility=compatibility,
                                apple_binary_verification=apple_binary_verification, binary_stage=private / "binary",
+                               apple_original_verification=apple_original_verification,
                                apple_execution_capture_directory=apple_execution_capture_directory)
         raw_maven = private / "binary/outputs/maven"
         verify_sdk_maven_repository(raw_maven, MAVEN_GROUPS[component], version, component)
