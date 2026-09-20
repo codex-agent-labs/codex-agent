@@ -5,8 +5,10 @@ import unittest
 from unittest.mock import patch
 
 from ci.tests.product_chain_support import output, write_receipt
-from ci.products.inventory import regular_file_inventory, sha256_bytes
-from ci.products.sdk_apple_package_execution import build_apple_package_execution_context
+from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory, sha256_bytes
+from ci.products.sdk_apple_package_execution import (
+    build_apple_package_execution_context, verify_apple_package_execution_context,
+)
 
 
 EVENTS = tuple(
@@ -71,8 +73,8 @@ class SdkApplePackageExecutionTest(unittest.TestCase):
         )
         return path
 
-    def invoke(self, **changes):
-        arguments = {
+    def arguments(self):
+        return {
             "capture_directory": self.capture,
             "package_receipt": self.receipts["package"],
             "binary_receipt": self.receipts["binary"],
@@ -83,7 +85,95 @@ class SdkApplePackageExecutionTest(unittest.TestCase):
             "sdk_inputs_artifact_id": 11,
             "sdk_inputs_artifact_sha256": "sha256:" + "1" * 64,
         }
-        return build_apple_package_execution_context(**{**arguments, **changes})
+
+    def invoke(self, **changes):
+        return build_apple_package_execution_context(**{**self.arguments(), **changes})
+
+    def retained_descriptor(self):
+        path = self.root / "apple-package-execution.json"
+        path.write_bytes(canonical_json_bytes(self.invoke()))
+        return path
+
+    def test_retained_descriptor_verification_preserves_exact_original_bytes(self):
+        descriptor = self.retained_descriptor()
+        before = regular_file_inventory(self.root, allow_empty=True)
+        result = verify_apple_package_execution_context(descriptor, **self.arguments())
+        self.assertEqual(result, self.invoke())
+        self.assertEqual(canonical_json_bytes(result), descriptor.read_bytes())
+        self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
+
+    def test_retained_descriptor_rejects_altered_missing_and_unknown_fields(self):
+        descriptor = self.retained_descriptor()
+        original = descriptor.read_bytes()
+        for mutation in ("altered", "missing", "unknown", "nested-unknown"):
+            with self.subTest(mutation=mutation):
+                descriptor.write_bytes(original)
+                verify_apple_package_execution_context(descriptor, **self.arguments())
+                value = load_canonical_json_bytes(original)
+                if mutation == "altered":
+                    value["sdkInputsArtifact"]["artifactId"] += 1
+                elif mutation == "missing":
+                    del value["receiptSha256"]
+                elif mutation == "unknown":
+                    value["admitted"] = True
+                else:
+                    value["sdkInputsArtifact"]["admitted"] = True
+                descriptor.write_bytes(canonical_json_bytes(value))
+                with self.assertRaisesRegex(ValueError, "differs from caller inputs"):
+                    verify_apple_package_execution_context(descriptor, **self.arguments())
+
+    def test_retained_descriptor_rejects_duplicate_noncanonical_and_symbolic_bytes(self):
+        descriptor = self.retained_descriptor()
+        original = descriptor.read_bytes()
+        verify_apple_package_execution_context(descriptor, **self.arguments())
+        for changed in (original + b" ", b'{"schemaVersion":1,' + original[1:]):
+            with self.subTest(changed=changed[:40]):
+                descriptor.write_bytes(changed)
+                with self.assertRaises(ValueError):
+                    verify_apple_package_execution_context(descriptor, **self.arguments())
+        descriptor.write_bytes(original)
+        alias = self.root / "descriptor-alias.json"
+        alias.symlink_to(descriptor)
+        with self.assertRaises(ValueError):
+            verify_apple_package_execution_context(alias, **self.arguments())
+
+    def test_retained_descriptor_rejects_current_capture_receipt_and_compatibility_mismatch(self):
+        descriptor = self.retained_descriptor()
+        paths = (self.capture / "events" / EVENTS[0] / "combined.bin", self.compatibility,
+                 self.receipts["binary"])
+        for path in paths:
+            with self.subTest(path=path.name):
+                original = path.read_bytes()
+                verify_apple_package_execution_context(descriptor, **self.arguments())
+                try:
+                    if path == self.receipts["binary"]:
+                        value = load_canonical_json_bytes(original)
+                        value["producer"]["runId"] += 1
+                        path.write_bytes(canonical_json_bytes(value))
+                    else:
+                        path.write_bytes(original + b" ")
+                    with self.assertRaisesRegex(ValueError, "differs from caller inputs"):
+                        verify_apple_package_execution_context(descriptor, **self.arguments())
+                finally:
+                    path.write_bytes(original)
+        for change in ({"sdk_inputs_artifact_id": 12},
+                       {"sdk_inputs_artifact_sha256": "sha256:" + "2" * 64}):
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "differs from caller inputs"):
+                verify_apple_package_execution_context(descriptor, **{**self.arguments(), **change})
+
+    def test_retained_descriptor_rechecks_original_after_real_builder_returns(self):
+        descriptor = self.retained_descriptor()
+        original = descriptor.read_bytes()
+        verify_apple_package_execution_context(descriptor, **self.arguments())
+
+        def mutate(**arguments):
+            result = build_apple_package_execution_context(**arguments)
+            descriptor.write_bytes(original + b" ")
+            return result
+
+        with patch("ci.products.sdk_apple_package_execution.build_apple_package_execution_context", side_effect=mutate):
+            with self.assertRaisesRegex(ValueError, "descriptor changed during verification"):
+                verify_apple_package_execution_context(descriptor, **self.arguments())
 
     def test_binds_exact_receipts_compatibility_and_complete_capture_without_verdict(self):
         before = regular_file_inventory(self.capture, allow_empty=True)

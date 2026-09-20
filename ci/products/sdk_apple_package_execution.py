@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .inventory import (
+    canonical_json_bytes,
     load_canonical_json_bytes,
     read_regular_file_bytes,
     regular_file_inventory,
@@ -135,6 +136,47 @@ def build_apple_package_execution_context(
     if validate_producer(producer, "Apple package execution producer") != validated_producer:
         raise ValueError("Apple package execution producer changed while binding")
     return descriptor
+
+
+def verify_apple_package_execution_context(
+    descriptor_path: Path,
+    *,
+    capture_directory: Path,
+    package_receipt: Path,
+    binary_receipt: Path,
+    contract_binary_receipt: Path,
+    contract_metadata_receipt: Path,
+    producer: dict[str, Any],
+    sdk_compatibility: Path,
+    sdk_inputs_artifact_id: int,
+    sdk_inputs_artifact_sha256: str,
+) -> dict[str, Any]:
+    """Check retained descriptor bytes against independent caller inputs only.
+
+    Never derive these arguments from the descriptor itself. The caller must
+    authenticate the same original transport/receipts/source closure separately.
+    This reuses the builder's schema and mutation checks, but performs no native
+    replay and grants no receipt, source, tool, host or phase admission authority.
+    """
+    path = Path(descriptor_path)
+    original = read_regular_file_bytes(path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    load_canonical_json_bytes(original)
+    expected = build_apple_package_execution_context(
+        capture_directory=capture_directory,
+        package_receipt=package_receipt,
+        binary_receipt=binary_receipt,
+        contract_binary_receipt=contract_binary_receipt,
+        contract_metadata_receipt=contract_metadata_receipt,
+        producer=producer,
+        sdk_compatibility=sdk_compatibility,
+        sdk_inputs_artifact_id=sdk_inputs_artifact_id,
+        sdk_inputs_artifact_sha256=sdk_inputs_artifact_sha256,
+    )
+    if canonical_json_bytes(expected) != original:
+        raise ValueError("Retained Apple package execution descriptor differs from caller inputs")
+    if read_regular_file_bytes(path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != original:
+        raise ValueError("Retained Apple package execution descriptor changed during verification")
+    return expected
 
 
 def _require_capture_layout(capture: Path) -> None:
