@@ -723,6 +723,8 @@ class ProductReuseTest(unittest.TestCase):
         request["nativeRuntimeComparisonEvidence"] = []
         request["adapterRuntimeComparisonEvidence"] = []
         request["sdkValidationEvidence"] = []
+        request["sdkAppleValidationEvidence"] = []
+        request["sdkAppleValidationPolicy"] = {"fixture": "explicit caller policy"}
         request["runtimeAggregateReleaseEvidence"] = [{"receiptSha256": DIGEST_A, "handoffRoot": "original-aggregate"}]
         comparison_provider = mock.Mock()
         adapter_provider = mock.Mock()
@@ -741,7 +743,8 @@ class ProductReuseTest(unittest.TestCase):
         with mock.patch("ci.products.reuse.advance_reuse", return_value=(expected, ())) as delegated, \
                 mock.patch("ci.products.reuse._native_comparison_provider", return_value=comparison_provider) as proof_factory, \
                 mock.patch("ci.products.reuse.adapter_comparison_provider", return_value=adapter_provider) as adapter_factory, \
-                mock.patch("ci.products.reuse.sdk_validation_provider", return_value=sdk_provider) as sdk_factory:
+                mock.patch("ci.products.reuse.sdk_validation_provider", return_value=sdk_provider) as sdk_factory, \
+                mock.patch("ci.products.reuse.AppleValidationAdmission") as apple_factory:
             result = plan_reuse_wave(request)
         self.assertIs(expected, result)
         args, kwargs = delegated.call_args
@@ -758,10 +761,21 @@ class ProductReuseTest(unittest.TestCase):
         self.assertIs(adapter_provider, args[3]._adapter_runtime_projection)
         self.assertIs(sdk_provider, args[3]._sdk_validation_projection)
         self.assertTrue(callable(kwargs["sdk_validation_projection_provider"]))
+        self.assertIs(apple_factory.return_value, kwargs["sdk_apple_validation_admission"])
+        apple_factory.assert_called_once_with(Path(request["artifactRoot"]), [], repository=repository,
+            policy_revision=revision, policy=request["sdkAppleValidationPolicy"])
         proof_factory.assert_called_once_with(Path(request["artifactRoot"]), [])
         adapter_factory.assert_called_once_with(Path(request["artifactRoot"]), [])
         sdk_factory.assert_called_once_with(Path(request["artifactRoot"]), [], repository=repository,
                                             policy_revision=revision, tooling=None)
+
+    def test_reuse_wave_rejects_unpaired_apple_evidence_and_caller_policy(self) -> None:
+        repository, revision = self.reuse_wave_repository()
+        for field, value in (("sdkAppleValidationEvidence", []), ("sdkAppleValidationPolicy", {})):
+            request = self.reuse_wave_request(repository, revision)
+            request[field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "explicit caller policy"):
+                plan_reuse_wave(request)
 
     def test_reuse_wave_rejects_nonexact_authorities_and_unsafe_paths_before_planning(self) -> None:
         repository, revision = self.reuse_wave_repository()

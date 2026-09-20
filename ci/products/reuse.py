@@ -60,6 +60,7 @@ from .runtime_adapter_content import (
 )
 from .receipt import build_key_payload
 from .sdk_validation import VerifiedSdkValidationProjection, decode_sdk_validation_records, sdk_validation_provider
+from .sdk_apple_validation_admission import AppleValidationAdmission
 from .registry import (
     NATIVE_TARGETS,
     PHASE_INSTANCE_IDS,
@@ -1086,6 +1087,7 @@ def plan_reuse_wave(
             "catalogs",
         } | ({key for key in ("nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence", "adapterRuntimeComparisonEvidence",
                              "sdkValidationEvidence", "sdkValidationTooling", "runtimeAggregateReleaseEvidence",
+                             "sdkAppleValidationEvidence", "sdkAppleValidationPolicy",
                              "sdkRuntimeSource") if key in value}
              if type(value) is dict else set()),
         "reuse-wave request",
@@ -1110,6 +1112,12 @@ def plan_reuse_wave(
     sdk_originals = decode_sdk_validation_records(artifact_root, request.get("sdkValidationEvidence", []))
     sdk_comparison = sdk_validation_provider(artifact_root, request.get("sdkValidationEvidence", []),
         repository=repository_root, policy_revision=revision, tooling=request.get("sdkValidationTooling"))
+    if ("sdkAppleValidationEvidence" in request) != ("sdkAppleValidationPolicy" in request):
+        raise ValueError("Apple validation evidence requires explicit caller policy")
+    apple_admission = None
+    if "sdkAppleValidationEvidence" in request:
+        apple_admission = AppleValidationAdmission(artifact_root, request["sdkAppleValidationEvidence"],
+            repository=repository_root, policy_revision=revision, policy=request["sdkAppleValidationPolicy"])
     requested = _request_identities(request["requested"], "reuse-wave request.requested")
     external_sdk_runtime = "sdkRuntimeSource" in request
     if external_sdk_runtime and request["sdkRuntimeSource"] != "released-default":
@@ -1434,6 +1442,7 @@ def plan_reuse_wave(
             runtime_validation_projection_provider=runtime_validation_projection_provider,
             native_runtime_projection_provider=native_runtime_projection_provider,
             sdk_validation_projection_provider=sdk_projection_provider,
+            sdk_apple_validation_admission=apple_admission,
             build_plan_consumer=build_plan_consumer,
         )
         unused_evidence = set(runtime_validation_evidence) - consumed_runtime_validation_evidence
@@ -1536,6 +1545,7 @@ def advance_reuse(
         tuple[VerifiedSdkValidationProjection, ...] | None,
     ] | None = None,
     build_plan_consumer: Callable[[PhaseInstanceId, dict[str, Any]], None] | None = None,
+    sdk_apple_validation_admission: AppleValidationAdmission | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
     """Resolve verified reuse and return only the next dependency-ready build wave.
 
@@ -1545,6 +1555,14 @@ def advance_reuse(
     """
     if not isinstance(session, LookupSession):
         raise ValueError("Reuse resolution requires a LookupSession")
+    if sdk_apple_validation_admission is not None and type(sdk_apple_validation_admission) is not AppleValidationAdmission:
+        raise ValueError("Apple validation admission requires the concrete full verifier")
+
+    def admit_apple(instance, envelope):
+        if (instance.product, instance.component, instance.phase) == ("sdk", "sdk-ios", "validation"):
+            if sdk_apple_validation_admission is None:
+                raise ValueError("Apple validation reuse lacks authenticated original evidence")
+            sdk_apple_validation_admission.verify(envelope)
     if (repository_root is None) != (repository_revision is None):
         raise ValueError("Reuse repository root and revision must be supplied together")
     if contract_projection_provider is not None and not callable(contract_projection_provider):
@@ -1724,6 +1742,7 @@ def advance_reuse(
                 except ValueError:
                     del envelopes[instance]
                 else:
+                    admit_apple(instance, envelope)
                     resolved[instance] = envelope
                     states[instance] = {
                         "plan": plan,
@@ -1741,6 +1760,7 @@ def advance_reuse(
                 if outcome.envelope is None:
                     misses.append({"source": source, "reason": outcome.reason})
                     continue
+                admit_apple(instance, outcome.envelope)
                 envelopes[instance] = outcome.envelope
                 resolved[instance] = outcome.envelope
                 states[instance] = {

@@ -1891,7 +1891,7 @@ def _rebase_native_evidence_paths(value, source_root: Path, repository_root: Pat
 
 
 def _rebase_native_request(request, source_root, artifact_root):
-    if "sdkValidationTooling" in request:
+    if {"sdkValidationTooling", "sdkAppleValidationPolicy"} & request.keys():
         raise ValueError("Retained SDK evidence cannot supply current-invocation tooling authority")
     result = {key: _rebase_native_evidence_paths(request[key], source_root, artifact_root,
                                              comparison=key == "nativeRuntimeComparisonEvidence")
@@ -1938,7 +1938,7 @@ def _relocated_wave_control(path, label, root):
 
 def _plan_with_sdk_tooling(request, tooling, **kwargs):
     # Never serialize invocation authority into retained control or evidence.
-    if "sdkValidationTooling" in request:
+    if {"sdkValidationTooling", "sdkAppleValidationPolicy"} & request.keys():
         raise ValueError("Retained SDK evidence cannot supply current-invocation tooling authority")
     invocation = dict(request)
     if tooling is not None:
