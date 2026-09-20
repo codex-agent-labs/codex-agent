@@ -24,12 +24,19 @@ from products.sdk_inputs import REQUEST_NAME
 from reuse import github_output
 
 
-def _selection(plan, discovery, state, repository_root, environ, sdk_validation_tooling=None):
+def _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy):
+    return {name: value for name, value in (
+        ("sdk_validation_tooling", sdk_validation_tooling),
+        ("sdk_apple_validation_policy", sdk_apple_validation_policy)) if value is not None}
+
+
+def _selection(plan, discovery, state, repository_root, environ, sdk_validation_tooling=None,
+               sdk_apple_validation_policy=None):
     plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     validated = product_reuse._validate_plan(plan, repository_root)
     inspected = product_reuse.inspect_products(plan, discovery, state,
         repository_root=repository_root, environ=environ, include_sdk_selection=True,
-        **({"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}))
+        **_caller_policies(sdk_validation_tooling, sdk_apple_validation_policy))
     selection = inspected.get("sdkInputSelection")
     if not isinstance(selection, dict):
         raise ValueError("SDK workflow requires selected SDK consumer work")
@@ -41,9 +48,9 @@ def _selection(plan, discovery, state, repository_root, environ, sdk_validation_
 def stage(plan, discovery, state, destination, *, keyring, keys_directory,
           repository_root, environ, token, trusted_workflow_sha=None, artifact_id=None,
           artifact_sha256=None, expected_build_key=None, expected_metadata_receipt_sha256=None,
-          sdk_validation_tooling=None):
+          sdk_validation_tooling=None, sdk_apple_validation_policy=None):
     """Delegate source selection and both destination policies, never grant trust."""
-    tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
+    tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy)
     validated, selection, _ = _selection(plan, discovery, state, repository_root, environ, **tooling)
     if selection.get("source") == "released-default":
         return product_reuse.materialize_sdk_default_inputs(plan, discovery, state, destination,
@@ -66,7 +73,7 @@ def stage(plan, discovery, state, destination, *, keyring, keys_directory,
 @contextmanager
 def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
                     trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token,
-                    sdk_validation_tooling=None):
+                    sdk_validation_tooling=None, sdk_apple_validation_policy=None):
     """Keep upload, SDK policy and raw Runtime originals verified through consumer use.
 
     Returned paths expire on exit. Consumers must finish using them inside the
@@ -75,7 +82,8 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
     for the current candidate's independently selected Contract predecessors.
     """
     validated, selection, plan_bytes = _selection(plan, discovery, state, repository_root, environ,
-                                                sdk_validation_tooling=sdk_validation_tooling)
+                                                sdk_validation_tooling=sdk_validation_tooling,
+                                                **_caller_policies(None, sdk_apple_validation_policy))
     with tempfile.TemporaryDirectory(prefix="sdk-consumer-inputs-") as temporary:
         capture = Path(temporary).resolve() / "capture"
         product_reuse.capture_sdk_inputs_upload(plan, capture, artifact_id=artifact_id,
@@ -100,7 +108,7 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
 @contextmanager
 def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_build_key,
                                native_uploads, trusted_workflow_sha, repository_root, environ, token,
-                               sdk_validation_tooling=None):
+                               sdk_validation_tooling=None, sdk_apple_validation_policy=None):
     """Keep elected iOS binary Contract/native originals verified through use.
 
     This is not package readiness or output admission. The caller must execute
@@ -114,7 +122,8 @@ def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_
     if destination.exists() or destination.is_symlink():
         raise ValueError("SDK iOS binary inputs require a fresh destination")
     plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
-    verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, sdk_validation_tooling)
+    verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, sdk_validation_tooling,
+        **_caller_policies(None, sdk_apple_validation_policy))
     instance = PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
     elected = verified.prior_ready_plans.get(instance)
     if elected is None or elected["buildKey"] != expected_build_key:
@@ -180,7 +189,7 @@ def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_
 
 def execute_ios_binary(plan, discovery, state, destination, *, expected_build_key,
                        native_uploads, trusted_workflow_sha, repository_root, environ, token,
-                       sdk_validation_tooling=None):
+                       sdk_validation_tooling=None, sdk_apple_validation_policy=None):
     """Execute an elected binary; receipt creation follows every input exit check."""
     from sdk_ios_binary import execute
 
@@ -188,7 +197,7 @@ def execute_ios_binary(plan, discovery, state, destination, *, expected_build_ke
     discovery, state, destination = product_reuse._product_materialization_paths(root, discovery, state, destination)
     if destination.exists() or destination.is_symlink():
         raise ValueError("SDK iOS binary worker requires a fresh destination")
-    tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
+    tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy)
     with verified_ios_binary_inputs(plan, discovery, state, destination / "inputs",
             expected_build_key=expected_build_key, native_uploads=native_uploads,
             trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token, **tooling) as inputs:
@@ -215,7 +224,7 @@ def execute_ios_binary(plan, discovery, state, destination, *, expected_build_ke
 
 
 def matrix(plan, discovery, state, github_output_path, *, repository_root=None, environ=None, ios_binary=False, family=None,
-           sdk_validation_tooling=None):
+           sdk_validation_tooling=None, sdk_apple_validation_policy=None):
     """Expose only the fixed replay-elected SDK family before platform setup."""
     from sdk_phase import route
 
@@ -247,7 +256,7 @@ def matrix(plan, discovery, state, github_output_path, *, repository_root=None, 
         return route(ready)
     inspected = product_reuse.inspect_products(plan, discovery, state,
         repository_root=repository_root, environ=environ,
-        **({"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}))
+        **_caller_policies(sdk_validation_tooling, sdk_apple_validation_policy))
     rows = [{**{field: ready[field] for field in ("product", "component", "phase", "target", "buildKey")},
              **worker_route(ready)}
             for ready in inspected["readyPlans"]
@@ -260,7 +269,8 @@ def matrix(plan, discovery, state, github_output_path, *, repository_root=None, 
 
 def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha256,
             trusted_workflow_sha, state_wave=0, sdk_state_wave=None,
-            repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None):
+            repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None,
+            sdk_apple_validation_policy=None):
     """Capture exact original state, then replay SDK readiness independently."""
     if type(ios_binary) is not bool:
         raise ValueError("SDK binary projection must be boolean")
@@ -279,14 +289,15 @@ def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha2
         "state_root": original / ("runtime-state" if state_wave or sdk_state_wave is not None else "product-resume-state")}
     value = matrix(paths["plan_path"], paths["discovery_root"], paths["state_root"], github_output_path,
                    repository_root=repository_root, environ=environ, **({"ios_binary": True} if ios_binary else {}),
-                   **({"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}),
+                   **_caller_policies(sdk_validation_tooling, sdk_apple_validation_policy),
                    **({"family": family} if family is not None else {}))
     github_output(github_output_path, {name: str(path) for name, path in paths.items()})
     return {**paths, "matrix": value}
 
 
 def collect(input_root, destination, github_output_path, *, wave, trusted_workflow_sha,
-            repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None):
+            repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None,
+            sdk_apple_validation_policy=None):
     """Advance only the exact elected SDK partition using the shared collector."""
     family_waves = {"native-package": 4, "ios-package": 5, "javascript-metadata": 6,
                     "native-validation": 7, "native-metadata": 8}
@@ -297,7 +308,7 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
         raise ValueError("SDK collection requires its exact family wave: JavaScript1/2, iOS binary3, native package4, iOS package5, JS metadata6, native validation7, native metadata8")
     scope = ({"sdk_family": family} if family is not None else
              {"sdk_ios_binary_only": True} if ios_binary else {"sdk_javascript_only": True})
-    tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
+    tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy)
     root = Path(repository_root or Path(__file__).resolve().parents[1]).resolve()
     input_root, _, destination = product_reuse._product_materialization_paths(root, input_root, input_root, destination)
     if destination.exists() or destination.is_symlink():
@@ -334,7 +345,7 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
 
 def prepare_native(plan, discovery, state, destination, *, component, expected_build_key,
                    artifact_id, artifact_sha256, trusted_workflow_sha, keyring, keys_directory,
-                   repository_root, environ, token, sdk_validation_tooling=None,
+                   repository_root, environ, token, sdk_validation_tooling=None, sdk_apple_validation_policy=None,
                    preparation_phase="package", preparation_target="desktop"):
     """Prepare once from elected original inputs; this does not admit an upload.
 
@@ -357,7 +368,7 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
             or not product_reuse._sdk_family_worker_instance(instance, "native-" + preparation_phase)):
         raise ValueError("Native preparation requires an exact native consumer anchor")
     fields = {"product": "sdk", "component": component, "phase": preparation_phase, "target": preparation_target}
-    tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
+    tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy)
     with verified_inputs(plan, discovery, state, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
             repository_root=root, environ=environ, token=token, **tooling) as inputs:
@@ -455,7 +466,7 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
 
 def execute_javascript(plan, discovery, state, destination, *, phase, expected_build_key,
                        artifact_id, artifact_sha256, trusted_workflow_sha, keyring, keys_directory,
-                       repository_root, environ, token, sdk_validation_tooling=None):
+                       repository_root, environ, token, sdk_validation_tooling=None, sdk_apple_validation_policy=None):
     """Execute elected SDK work; finalize only after original input contexts close."""
     from sdk_javascript_phase import execute
 
@@ -468,7 +479,7 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
         raise ValueError("SDK JavaScript worker destination must not exist")
     instance = PhaseInstanceId("sdk", "javascript", phase, "node")
     fields = {"product": "sdk", "component": "javascript", "phase": phase, "target": "node"}
-    tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
+    tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy)
     with verified_inputs(plan, discovery, state, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
             repository_root=root, environ=environ, token=token, **tooling) as inputs:
@@ -523,6 +534,7 @@ def _workflow_main(argv):
         command.add_argument("--github-output", dest="github_output_path", type=Path, required=True)
         command.add_argument("--repository-root", type=Path)
         command.add_argument("--sdk-validation-tooling", type=Path)
+        command.add_argument("--sdk-apple-validation-policy", type=Path)
         if name == "matrix":
             for flag, dest in (("plan", "plan"), ("discovery-root", "discovery"), ("state-root", "state")):
                 command.add_argument(f"--{flag}", dest=dest, type=Path, required=True)
@@ -543,6 +555,9 @@ def _workflow_main(argv):
         policy = arguments.pop("sdk_validation_tooling")
         if policy is not None:
             arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
+        apple_policy = arguments.pop("sdk_apple_validation_policy")
+        if apple_policy is not None:
+            arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(apple_policy, "Caller Apple validation policy")
         return {"matrix": matrix, "capture": capture, "collect": collect}[command](**arguments,
             environ=os.environ, **({"token": os.environ.get("GITHUB_TOKEN", "")} if command != "matrix" else {}))
     except (OSError, ValueError) as error:
@@ -560,6 +575,7 @@ def _ios_binary_main(argv):
         parser.add_argument(f"--{lane}-artifact-id", type=int, required=True)
         parser.add_argument(f"--{lane}-artifact-sha256", required=True)
     parser.add_argument("--sdk-validation-tooling", type=Path)
+    parser.add_argument("--sdk-apple-validation-policy", type=Path)
     arguments = vars(parser.parse_args(argv))
     uploads = {f"ios-{lane}": {
         "artifactId": arguments.pop(lane.replace("-", "_") + "_artifact_id"),
@@ -571,6 +587,9 @@ def _ios_binary_main(argv):
         policy = arguments.pop("sdk_validation_tooling")
         if policy is not None:
             arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
+        apple_policy = arguments.pop("sdk_apple_validation_policy")
+        if apple_policy is not None:
+            arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(apple_policy, "Caller Apple validation policy")
         execute_ios_binary(plan, discovery, state, destination, **arguments,
             native_uploads=uploads, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:
@@ -623,6 +642,7 @@ def main(argv=None):
     else:
         parser.add_argument("--expected-metadata-receipt-sha256")
     parser.add_argument("--sdk-validation-tooling", type=Path)
+    parser.add_argument("--sdk-apple-validation-policy", type=Path)
     arguments = vars(parser.parse_args(argv))
     plan, discovery, state, destination = (arguments.pop(name) for name in ("plan", "discovery_root", "state_root", "destination"))
     try:
@@ -630,6 +650,9 @@ def main(argv=None):
         policy = arguments.pop("sdk_validation_tooling")
         if policy is not None:
             arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
+        apple_policy = arguments.pop("sdk_apple_validation_policy")
+        if apple_policy is not None:
+            arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(apple_policy, "Caller Apple validation policy")
         action(plan, discovery, state, destination, **arguments,
             environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:

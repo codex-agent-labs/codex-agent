@@ -76,6 +76,13 @@ class AppleTransportTest(TestCase):
         with self.assertRaises(ValueError):
             adapter._verify_discovery_sdk_records({"sdkAppleValidationEvidence": records}, empty)
 
+    def test_resumed_nested_discovery_retains_exact_references(self):
+        enclosing = self.discovery.parent
+        records = adapter._retained_apple_handoffs(self.discovery, enclosing)
+        adapter._verify_discovery_sdk_records({"sdkAppleValidationEvidence": records}, enclosing)
+        with self.assertRaises(ValueError):
+            adapter._verify_discovery_sdk_records({}, enclosing)
+
     def test_symlink_carrier_ancestry_and_dangling_collection_reject(self):
         alias = self.root / "alias-discovery"
         alias.symlink_to(self.discovery, target_is_directory=True)

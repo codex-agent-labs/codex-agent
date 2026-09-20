@@ -190,7 +190,7 @@ class ContractProductResumeTest(unittest.TestCase):
                 target = source.with_name(source.name + "-hidden")
                 source.rename(target)
                 hidden.append((source, target))
-            with self.control_seams(), self.assertRaisesRegex(ValueError, "shards do not exactly match"):
+            with self.control_seams(), self.assertRaisesRegex(ValueError, "shards and failures do not exactly partition"):
                 # A JVM build remains genuinely required; do not synthesize a success receipt.
                 adapter.advance_products(self.plan_path, resumed, None, [], self.scratch / "advanced",
                                          self.scratch / "advance-output", repository_root=self.repository,

@@ -170,6 +170,7 @@ class Catalog:
     adapter_runtime_evidence: tuple[dict[str, Any], ...] = ()
     sdk_validation_evidence_root: Path | None = None
     runtime_aggregate_evidence_root: Path | None = None
+    sdk_apple_validation_evidence_root: Path | None = None
 
 
 def _identity(value: Mapping[str, Any]) -> PhaseInstanceId:
@@ -988,6 +989,16 @@ def _read_catalog_directory(source, extracted, destination, release_trust, *, re
         controls.update(f"sdk-validation-evidence/{path}" for path in _catalog_files(sdk_root))
     else:
         sdk_root = None
+    apple_root = extracted / "sdk-apple-validation-evidence"
+    if apple_root.exists() or apple_root.is_symlink():
+        apple_records = load_sdk_apple_validation_evidence(apple_root)
+        indexed = {(entry["receiptSha256"], entry["target"]) for entry in index["entries"]
+                   if (entry["product"], entry["component"], entry["phase"]) == ("sdk", "sdk-ios", "validation")}
+        if any((record["receiptSha256"], record["target"]) not in indexed for record in apple_records):
+            raise ValueError("Apple catalog evidence lacks its exact indexed original validation receipt")
+        controls.update(f"sdk-apple-validation-evidence/{path}" for path in _catalog_files(apple_root))
+    else:
+        apple_root = None
     aggregate_root = extracted / "runtime-aggregate-release-evidence"
     if aggregate_root.exists():
         aggregate_records = load_runtime_aggregate_release_evidence(aggregate_root)
@@ -1081,6 +1092,7 @@ def _read_catalog_directory(source, extracted, destination, release_trust, *, re
         tuple(adapter_records),
         sdk_root,
         aggregate_root,
+        apple_root,
     )
 
 
@@ -2003,6 +2015,8 @@ def _verify_discovery_sdk_records(request, discovery_root):
     apple = {}
     _merge_native_comparison_records(apple,
         _retained_apple_handoffs(discovery_root, discovery_root), key="sdkAppleValidationEvidence")
+    _merge_native_comparison_records(apple,
+        _retained_apple_handoffs(discovery_root / "discovery", discovery_root), key="sdkAppleValidationEvidence")
     if request.get("sdkAppleValidationEvidence", []) != apple.get("sdkAppleValidationEvidence", []):
         raise ValueError("Apple discovery request differs from its complete retained evidence carrier")
     retained = {}
@@ -2211,6 +2225,7 @@ def advance_contract(
     github_output_path: Path, *, repository_root: Path | None = None,
     environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    sdk_apple_validation_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     github_output(github_output_path, {
         "contract_complete": False,
@@ -2283,6 +2298,7 @@ def advance_contract(
 
     replay = _plan_with_sdk_tooling(
         rebased_request, sdk_validation_tooling,
+        apple_policy=sdk_apple_validation_policy,
         build_plan_consumer=lambda instance, value: retain(replay_plans, instance, value),
     )
     initial = _canonical_control(
@@ -2331,6 +2347,7 @@ def advance_contract(
         replay_plans = {}
         state_replay = _plan_with_sdk_tooling(
             state_request, sdk_validation_tooling,
+            apple_policy=sdk_apple_validation_policy,
             build_plan_consumer=lambda instance, value: retain(replay_plans, instance, value),
         )
         state_by_instance = {_identity(phase): phase for phase in state_replay["phases"]}
@@ -2397,6 +2414,7 @@ def advance_contract(
     ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
     advanced = _plan_with_sdk_tooling(
         advanced_request, sdk_validation_tooling,
+        apple_policy=sdk_apple_validation_policy,
         build_plan_consumer=lambda instance, value: retain(ready_plans, instance, value),
     )
     supplied = set(sources)
@@ -2714,6 +2732,7 @@ def inspect_products(
     plan_path: Path, discovery_root: Path, state_root: Path | None = None, *,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     include_sdk_selection: bool = False,
 ) -> dict[str, Any]:
     """Re-elect ready plans before target setup without admitting new shards."""
@@ -2729,7 +2748,8 @@ def inspect_products(
         raise ValueError("Product inspection inputs must remain inside the repository") from error
     state = _verified_product_state(
         plan_path, discovery_root, state_root, root,
-        os.environ if environ is None else environ, sdk_validation_tooling)
+        os.environ if environ is None else environ, sdk_validation_tooling,
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
     request = dict(state.rebased_request)
     _merge_native_comparison_records(request, _retained_aggregate_handoffs(state_root, root), key=_AGGREGATE_REQUEST_KEY)
     return {"result": state.prior,
@@ -2903,6 +2923,7 @@ def materialize_product_predecessors(
     instance: PhaseInstanceId, destination: Path, *, expected_build_key: str,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    sdk_apple_validation_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Restore the full original closure, not new evidence or execution authority."""
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
@@ -2913,6 +2934,7 @@ def materialize_product_predecessors(
         state = _verified_product_state(
             plan_path, discovery_root, state_root, root,
             os.environ if environ is None else environ, sdk_validation_tooling,
+            **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
             sdk_runtime_consumer=lambda selected: originals.update(
                 _capture_sdk_runtime_predecessors(selected, Path(temporary) / "originals")))
         return _materialize_product_predecessors(state, instance, destination, expected_build_key, root,
@@ -2922,6 +2944,7 @@ def materialize_product_predecessors(
 def materialize_sdk_default_inputs(
     plan_path, discovery_root, state_root, destination, *, keyring, keys_directory,
     repository_root=None, environ=None, sdk_validation_tooling=None,
+    sdk_apple_validation_policy=None,
 ):
     """Stage the elected SDK default, preserving both original provenance chains."""
     from products.runtime_sdk_handoff import stage_runtime_sdk_handoff
@@ -2951,6 +2974,7 @@ def materialize_sdk_default_inputs(
 
         state = _verified_product_state(plan_path, discovery_root, state_root, root,
             os.environ if environ is None else environ, sdk_validation_tooling,
+            **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
             sdk_runtime_consumer=capture)
         selection = _sdk_input_selection(state, root)
         if selection is None or selection["source"] != "released-default" or not captured:
@@ -3483,6 +3507,7 @@ def execute_sdk_metadata(
     component: str, expected_build_key: str, compatibility_request: Path,
     runtime_stages: Path, staged_sdks: Path, sdk_validation_tooling: Mapping[str, Any],
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
+    sdk_apple_validation_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute only an exact metadata election after replaying its original SDK hosts."""
     from sdk_metadata_phase import execute
@@ -3501,6 +3526,7 @@ def execute_sdk_metadata(
     with tempfile.TemporaryDirectory(prefix="codex-agent-sdk-runtime-inputs-", dir=root) as temporary:
         originals = {}
         state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
+            **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
             sdk_runtime_consumer=lambda selected: originals.update(
                 _capture_sdk_runtime_predecessors(selected, Path(temporary) / "originals")))
         ready = state.prior_ready_plans.get(instance)
@@ -3672,6 +3698,7 @@ def collect_runtime_workers(
     trusted_workflow_sha: str, repository_root: Path | None = None,
     environ: Mapping[str, str] | None = None, token: str,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     runtime_aggregate_only: bool = False,
     sdk_javascript_only: bool = False,
     sdk_ios_binary_only: bool = False,
@@ -3693,7 +3720,8 @@ def collect_runtime_workers(
     if destination.exists() or destination.is_symlink():
         raise ValueError("Runtime collection destination must not exist")
     environment = os.environ if environ is None else environ
-    state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling)
+    state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
     producer = state.producer
     selected = [(instance, ready) for instance, ready in sorted(state.prior_ready_plans.items())
                 if (_sdk_family_worker_instance(instance, sdk_family) if sdk_family is not None else
@@ -4928,6 +4956,7 @@ def resume_products(
     destination: Path, github_output_path: Path, *, repository_root: Path | None = None,
     environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    sdk_apple_validation_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Resume the original discovery after Contract signing, with no new lookup."""
     github_output(github_output_path, {"full_reuse": False, "target_jobs_required": True,
@@ -4954,7 +4983,8 @@ def resume_products(
         complete = advance_contract(
             captured_plan, prepared / "discovery", prepared / "contract-state", [],
             private / "replayed-contract", private / "contract-outputs",
-            repository_root=root, environ=environment, sdk_validation_tooling=sdk_validation_tooling)
+            repository_root=root, environ=environment, sdk_validation_tooling=sdk_validation_tooling,
+            **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
         if complete["fullReuse"] is not True:
             raise ValueError("Product resume requires complete original Contract phases")
         evidence_root = prepared / "authenticated-contract"
@@ -4989,7 +5019,8 @@ def resume_products(
                 raise ValueError("Product resume elected a duplicate ready phase")
             ready_plans[instance] = phase_plan
 
-        reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling, build_plan_consumer=retain)
+        reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling, apple_policy=sdk_apple_validation_policy,
+            build_plan_consumer=retain)
         _, selected, phases = _validate_reuse_result(reuse, requested, require_complete=False,
             sdk_runtime_external=wave.get("sdkRuntimeSource") == "released-default")
         by_id = {_identity(phase): phase for phase in phases}
@@ -5030,6 +5061,8 @@ def discover(
     native_evidence_roots: tuple[Path, ...] = (),
     adapter_evidence_roots: tuple[Path, ...] = (),
     sdk_evidence_roots: tuple[Path, ...] = (),
+    sdk_apple_evidence_roots: tuple[Path, ...] = (),
+    sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     aggregate_evidence_roots: tuple[Path, ...] = (),
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     tooling_java_executable: Path | None = None,
@@ -5132,6 +5165,13 @@ def discover(
             catalog_sdk_roots = ()
     sdk_records = _capture_sdk_handoffs((*catalog_sdk_roots, *sdk_evidence_roots), destination / "sdk-validation-evidence", destination,
         repository=root, policy_revision=plan["validationCommit"], tooling=sdk_validation_tooling)
+    catalog_apple_roots = tuple(catalog.sdk_apple_validation_evidence_root
+        for catalog in sorted(catalogs, key=lambda value: SOURCES.index(value.source))
+        if catalog.sdk_apple_validation_evidence_root is not None and any(
+            (instance.product, instance.component, instance.phase) == ("sdk", "sdk-ios", "validation")
+            for instance in closure))
+    apple_records = _capture_apple_handoffs((*catalog_apple_roots, *sdk_apple_evidence_roots),
+        destination / "sdk-apple-validation-evidence", destination)
     catalog_aggregate_roots = tuple(catalog.runtime_aggregate_evidence_root
         for catalog in sorted(catalogs, key=lambda value: SOURCES.index(value.source))
         if catalog.runtime_aggregate_evidence_root is not None)
@@ -5153,11 +5193,13 @@ def discover(
         _merge_native_comparison_records(contract_request, native_records)
         _merge_native_comparison_records(contract_request, adapter_records, key=_ADAPTER_REQUEST_KEY)
         _merge_native_comparison_records(contract_request, sdk_records, key="sdkValidationEvidence")
+        _merge_native_comparison_records(contract_request, apple_records, key="sdkAppleValidationEvidence")
         _merge_native_comparison_records(contract_request, aggregate_records, key=_AGGREGATE_REQUEST_KEY)
         write_canonical_json(destination / "contract-reuse-request.json", contract_request)
         contract_ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
         contract_result = _plan_with_sdk_tooling(
             contract_request, sdk_validation_tooling,
+            apple_policy=sdk_apple_validation_policy,
             build_plan_consumer=lambda instance, phase_plan: contract_ready_plans.setdefault(
                 instance, phase_plan,
             ),
@@ -5201,6 +5243,7 @@ def discover(
     _merge_native_comparison_records(wave_request, native_records)
     _merge_native_comparison_records(wave_request, adapter_records, key=_ADAPTER_REQUEST_KEY)
     _merge_native_comparison_records(wave_request, sdk_records, key="sdkValidationEvidence")
+    _merge_native_comparison_records(wave_request, apple_records, key="sdkAppleValidationEvidence")
     _merge_native_comparison_records(wave_request, aggregate_records, key=_AGGREGATE_REQUEST_KEY)
     write_canonical_json(destination / "reuse-wave-request.json", wave_request)
     ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
@@ -5210,7 +5253,8 @@ def discover(
             raise ValueError(f"Duplicate ready phase plan: {instance}")
         ready_plans[instance] = phase_plan
 
-    reuse = _plan_with_sdk_tooling(wave_request, sdk_validation_tooling, build_plan_consumer=retain_ready_plan)
+    reuse = _plan_with_sdk_tooling(wave_request, sdk_validation_tooling, apple_policy=sdk_apple_validation_policy,
+        build_plan_consumer=retain_ready_plan)
     _write_ready_plans(destination, ready_plans)
     # Evidence-only waits still need original workflow control provenance when
     # advance-products resumes them; an empty build matrix must not lose it.
@@ -5337,9 +5381,13 @@ def parser() -> argparse.ArgumentParser:
     sdk_metadata.add_argument("--expected-build-key", required=True)
     for command in (discover_command, products_command):
         command.add_argument("--sdk-validation-evidence", type=Path, action="append", default=[])
+        command.add_argument("--sdk-apple-validation-evidence", type=Path, action="append", default=[])
         command.add_argument("--runtime-aggregate-release-evidence", type=Path, action="append", default=[])
         command.add_argument("--sdk-validation-tooling", type=Path,
                              help="Current caller-owned tooling policy JSON, never a retained request field")
+    for command in (discover_command, products_command, advance_command, resume_command, runtime_collection, sdk_metadata):
+        command.add_argument("--sdk-apple-validation-policy", type=Path,
+                             help="Current caller-owned Apple policy JSON, never retained artifact authority")
     materialize_command = commands.add_parser("materialize-contract")
     materialize_command.add_argument("--plan", type=Path, required=True)
     materialize_command.add_argument("--state-root", type=Path, required=True)
@@ -5392,6 +5440,10 @@ def main(argv: list[str] | None = None) -> int:
         tooling = None
         if getattr(arguments, "sdk_validation_tooling", None) is not None:
             tooling = _canonical_control(arguments.sdk_validation_tooling, "Caller SDK tooling policy")
+        apple_options = {}
+        if getattr(arguments, "sdk_apple_validation_policy", None) is not None:
+            apple_options["sdk_apple_validation_policy"] = _canonical_control(
+                arguments.sdk_apple_validation_policy, "Caller Apple validation policy")
         if arguments.command == "stage-release-catalog":
             stage_release_catalog(arguments.source_root, arguments.destination,
                 repository=arguments.repository, source=arguments.source,
@@ -5402,6 +5454,9 @@ def main(argv: list[str] | None = None) -> int:
                      aggregate_evidence_roots=tuple(arguments.runtime_aggregate_release_evidence),
                      adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),
                      sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling,
+                     **apple_options,
+                     **({"sdk_apple_evidence_roots": tuple(arguments.sdk_apple_validation_evidence)}
+                        if arguments.sdk_apple_validation_evidence else {}),
                      **({"tooling_java_executable": arguments.tooling_java_executable,
                          "tooling_workflow_sha": arguments.tooling_workflow_sha}
                         if arguments.tooling_java_executable is not None or arguments.tooling_workflow_sha is not None else {}))
@@ -5416,6 +5471,7 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.destination,
                 arguments.github_output,
                 sdk_validation_tooling=tooling,
+                **apple_options,
             )
         elif arguments.command == "advance-products":
             advance_products(
@@ -5429,6 +5485,9 @@ def main(argv: list[str] | None = None) -> int:
                 aggregate_evidence_roots=tuple(arguments.runtime_aggregate_release_evidence),
                 adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),
                 sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling,
+                **apple_options,
+                **({"sdk_apple_evidence_roots": tuple(arguments.sdk_apple_validation_evidence)}
+                   if arguments.sdk_apple_validation_evidence else {}),
                 failed_instances=tuple(PhaseInstanceId(*value) for value in arguments.failed_phase),
                 **({"runtime_workers_only": True} if arguments.runtime_workers_only else {}),
             )
@@ -5436,7 +5495,7 @@ def main(argv: list[str] | None = None) -> int:
             collect_runtime_workers(
                 arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,
                 trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""),
-                sdk_validation_tooling=tooling)
+                sdk_validation_tooling=tooling, **apple_options)
         elif arguments.command == "runtime-worker-matrix":
             github_output(arguments.github_output, {"runtime_matrix": '{"include":[]}', "runtime_workers_required": False})
             matrix = runtime_worker_matrix(
@@ -5477,13 +5536,13 @@ def main(argv: list[str] | None = None) -> int:
             resume_products(
                 arguments.plan, arguments.discovery_root, arguments.state_root,
                 arguments.contract_handoff, arguments.destination, arguments.github_output,
-                sdk_validation_tooling=tooling)
+                sdk_validation_tooling=tooling, **apple_options)
         elif arguments.command == "execute-sdk-metadata":
             execute_sdk_metadata(
                 arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,
                 component=arguments.component, expected_build_key=arguments.expected_build_key,
                 compatibility_request=arguments.compatibility_request, runtime_stages=arguments.runtime_stages,
-                staged_sdks=arguments.staged_sdks, sdk_validation_tooling=tooling)
+                staged_sdks=arguments.staged_sdks, sdk_validation_tooling=tooling, **apple_options)
         elif arguments.command == "execute-runtime-aggregate":
             execute_runtime_aggregate(
                 arguments.plan, arguments.discovery_root, arguments.state_root,
