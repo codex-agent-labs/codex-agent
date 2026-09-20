@@ -51,6 +51,17 @@ internal fun runReleaseTooling(arguments: Array<String>) {
             check(productionCrossLanguageCAbiScenarioMappings().sumOf { it.testIds.size } == 231)
             println("codex-agent release tooling is ready")
         }
+        "verify-apple-binary-package" -> {
+            options.requireOnly("product-directory", "version", "binary-frameworks", "source-snapshot",
+                "sdk-compatibility", "work-directory", "developer-directory",
+                "xcode-version", "xcode-build", "swift-version")
+            verifyAppleBinaryPackageWithTools(
+                options.file("product-directory"), options.required("version"), options.file("binary-frameworks"),
+                options.file("source-snapshot"), options.file("sdk-compatibility"), options.file("work-directory"),
+                options.file("developer-directory"), options.required("xcode-version"), options.required("xcode-build"),
+                options.required("swift-version"),
+            )
+        }
         "verify-original-apple-execution" -> {
             options.requireOnly("distribution-directory", "execution-directory",
                 "expected-distribution-proof", "expected-sdk-compatibility")

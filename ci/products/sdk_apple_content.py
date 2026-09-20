@@ -16,6 +16,7 @@ from .inventory import (
     snapshot_regular_tree,
 )
 from .tooling import verified_tooling_capture
+from .sdk_apple_package_source import capture_apple_package_sources
 
 
 def _input_inventory(path: Path, *, allow_empty: bool):
@@ -168,3 +169,46 @@ def verify_sdk_apple_original_execution(
         policy_revision=policy_revision, required_trust_domain=required_trust_domain,
         tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
     )
+
+
+def verify_sdk_apple_binary_package_content(
+    *, product_directory: Path, binary_frameworks: Path, sdk_version: str,
+    expected_sdk_compatibility: Path, source_revision: str, developer_directory: Path,
+    repository: Path, tooling_evidence: Path, tooling_public_key: Path,
+    java_executable: Path, policy_revision: str, required_trust_domain: str,
+    tooling_keyring: Path | None = None, tooling_keys_directory: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Replay on a matching Apple host; caller authenticates original receipts and source election.
+
+    Source bytes and toolchain expectations come from immutable Git, never the
+    mutable checkout. This returns content inventory, not compiler/test proof.
+    """
+    require_semver(sdk_version, "Apple SDK version")
+    developer = Path(developer_directory)
+    if not developer.is_absolute() or developer.resolve(strict=True) != developer:
+        raise ValueError("Apple replay requires an explicit normalized developer directory")
+    for ancestor in (developer, *developer.parents):
+        require_regular_directory(ancestor, "Apple developer directory ancestry")
+    with tempfile.TemporaryDirectory(prefix="sdk-apple-package-source-") as temporary:
+        source = Path(temporary).resolve() / "source"
+        toolchain = capture_apple_package_sources(Path(repository), source_revision, source)
+        before = _verify_sdk_apple_with_tooling(
+            sources={"product": (Path(product_directory), False),
+                     "binary": (Path(binary_frameworks), False), "source": (source, False)},
+            expected_paths={"sdk-compatibility.json": Path(expected_sdk_compatibility)},
+            command_name="verify-apple-binary-package",
+            argument_builder=lambda private, expected, root: {
+                "product-directory": private["product"], "version": sdk_version,
+                "binary-frameworks": private["binary"], "source-snapshot": private["source"],
+                "sdk-compatibility": expected["sdk-compatibility.json"],
+                "work-directory": root / "replay", "developer-directory": developer,
+                "xcode-version": toolchain["xcodeVersion"], "xcode-build": toolchain["xcodeBuild"],
+                "swift-version": toolchain["swiftVersion"],
+            },
+            repository=repository, tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
+            java_executable=java_executable, policy_revision=policy_revision, required_trust_domain=required_trust_domain,
+            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
+        )
+    for ancestor in (developer, *developer.parents):
+        require_regular_directory(ancestor, "Apple developer directory recheck")
+    return before["product"]

@@ -7,6 +7,37 @@ import kotlin.test.assertTrue
 /** CLI routing checks only; the delegated Apple verifier has its own complete synthetic closure tests. */
 class ReleaseToolingAppleClosureCliTest {
     @Test
+    fun `binary replay requires complete caller inputs and packaged command fails before native tools`() {
+        val root = createTempDirectory("apple-binary-cli-").toFile().canonicalFile
+        try {
+            val values = linkedMapOf("product-directory" to root.resolve("missing-product").path,
+                "version" to "0.8.0", "binary-frameworks" to root.resolve("missing-binary").path,
+                "source-snapshot" to root.resolve("missing-source").path,
+                "sdk-compatibility" to root.resolve("missing-compatibility").path,
+                "work-directory" to root.resolve("work").path,
+                "developer-directory" to root.resolve("missing-developer").path,
+                "xcode-version" to "26.6", "xcode-build" to "17F113", "swift-version" to "6.3.3")
+            val args = arrayOf("verify-apple-binary-package", *values.flatMap { (key, value) -> listOf("--$key", value) }.toTypedArray())
+            values.keys.forEach { missing ->
+                val failure = assertFailsWith<IllegalStateException> { runReleaseTooling(args.withoutOption(missing)) }
+                assertTrue("Unexpected release-tooling options" in failure.message.orEmpty())
+            }
+            assertFailsWith<IllegalStateException> { runReleaseTooling(args + arrayOf("--success-output", "unused")) }
+            val java = java.io.File(System.getProperty("java.home"), "bin/java")
+            val jar = checkNotNull(System.getProperty("codexAgent.releaseToolingJar"))
+            val process = ProcessBuilder(listOf(java.path, "-jar", jar) + args).directory(root)
+                .redirectErrorStream(true).start()
+            process.outputStream.close()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            assertTrue(process.waitFor() != 0, output)
+            assertTrue("Apple binary package tooling input is missing" in output, output)
+            assertEquals(emptyList(), root.listFiles()!!.toList())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `original Apple replay cannot omit caller authority or accept a success output`() {
         val args = arrayOf("verify-original-apple-execution",
             "--distribution-directory", "unused", "--execution-directory", "unused",

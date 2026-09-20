@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from ci.products.inventory import regular_file_inventory
 from ci.products.sdk_apple_content import (
-    verify_sdk_apple_original_execution, verify_sdk_apple_package_content,
+    verify_sdk_apple_original_execution, verify_sdk_apple_package_content, verify_sdk_apple_binary_package_content,
 )
 
 
@@ -50,6 +50,11 @@ class SdkAppleContentTest(unittest.TestCase):
             java_executable=self.java, policy_revision="a" * 40, required_trust_domain="development")
         self.calls = []
         self.mutate = lambda fields: None
+        self.binary = self.root / "binary"
+        self.binary.mkdir()
+        (self.binary / "synthetic-framework").write_bytes(b"original binary\n")
+        self.developer = self.root / "Developer"
+        self.developer.mkdir()
 
     @contextmanager
     def capture(self, evidence, repository, public_key, **policy):
@@ -63,6 +68,24 @@ class SdkAppleContentTest(unittest.TestCase):
         self.calls.append(command)
         self.assertEqual([str(self.java), "-jar", str(self.jar)], command[:3])
         fields = dict(zip(command[4::2], command[5::2], strict=True))
+        if command[3] == "verify-apple-binary-package":
+            self.assertEqual("0.2.0", fields.pop("--version"))
+            self.assertEqual("26.6", fields.pop("--xcode-version"))
+            self.assertEqual("17F113", fields.pop("--xcode-build"))
+            self.assertEqual("6.3.3", fields.pop("--swift-version"))
+            self.assertEqual({"--product-directory", "--binary-frameworks", "--source-snapshot",
+                              "--sdk-compatibility", "--work-directory", "--developer-directory"}, set(fields))
+            fields = {name: Path(value) for name, value in fields.items()}
+            self.assertEqual(self.developer, fields["--developer-directory"])
+            self.assertFalse(fields["--work-directory"].exists())
+            for option, original in (("--product-directory", self.product), ("--binary-frameworks", self.binary)):
+                self.assertNotEqual(original, fields[option])
+                self.assertEqual(regular_file_inventory(original), regular_file_inventory(fields[option]))
+            self.assertEqual(b"immutable source\n", (fields["--source-snapshot"] / "source.txt").read_bytes())
+            self.assertEqual(self.compatibility.read_bytes(), fields["--sdk-compatibility"].read_bytes())
+            self.assertNotIn("JAVA_TOOL_OPTIONS", kwargs["env"])
+            self.mutate(fields)
+            return subprocess.CompletedProcess(command, 0)
         if command[3] == "verify-original-apple-execution":
             self.assertEqual({"--distribution-directory", "--execution-directory",
                               "--expected-sdk-compatibility", "--expected-distribution-proof"}, set(fields))
@@ -123,6 +146,42 @@ class SdkAppleContentTest(unittest.TestCase):
         with patch("ci.products.sdk_apple_content.verified_tooling_capture", self.capture), \
                 patch("ci.products.sdk_apple_content.subprocess.run", side_effect=self.execute):
             return verify_sdk_apple_original_execution(**{**arguments, **changes})
+
+    def verify_binary(self, **changes):
+        arguments = {key: value for key, value in self.args.items()
+                     if key not in {"validation_evidence_directory", "expected_distribution_proof"}}
+        arguments.update(binary_frameworks=self.binary, source_revision="b" * 40, developer_directory=self.developer)
+
+        def sources(repository, revision, output):
+            self.assertEqual(self.root, repository)
+            self.assertEqual("b" * 40, revision)
+            output.mkdir()
+            (output / "source.txt").write_bytes(b"immutable source\n")
+            return {"xcodeVersion": "26.6", "xcodeBuild": "17F113", "swiftVersion": "6.3.3"}
+
+        with patch("ci.products.sdk_apple_content.capture_apple_package_sources", side_effect=sources), \
+                patch("ci.products.sdk_apple_content.verified_tooling_capture", self.capture), \
+                patch("ci.products.sdk_apple_content.subprocess.run", side_effect=self.execute):
+            return verify_sdk_apple_binary_package_content(**{**arguments, **changes})
+
+    def test_binary_replay_uses_git_source_pins_private_inputs_and_fixed_command(self):
+        before = regular_file_inventory(self.root, allow_empty=True)
+        with patch.dict("os.environ", {"JAVA_TOOL_OPTIONS": "injected"}):
+            self.assertEqual(regular_file_inventory(self.product), self.verify_binary())
+        self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
+        self.assertEqual(1, len(self.calls))
+
+    def test_binary_replay_rejects_private_mutation_and_process_failure(self):
+        for option, member in (("--binary-frameworks", "synthetic-framework"), ("--source-snapshot", "source.txt")):
+            with self.subTest(option=option):
+                self.mutate = lambda fields: (fields[option] / member).write_bytes(b"mutated")
+                with self.assertRaisesRegex(ValueError, "changed during verification"):
+                    self.verify_binary()
+        def fail(_fields):
+            raise subprocess.CalledProcessError(1, "verifier")
+        self.mutate = fail
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.verify_binary()
 
     def test_fixed_verified_tool_command_private_bytes_empty_diagnostics_and_no_publication(self):
         before = regular_file_inventory(self.root, allow_empty=True)

@@ -62,6 +62,8 @@ val releaseToolingClasses = listOf(
     "AndroidRuntimeEvidenceSupportKt",
     "AppleArtifactMetrics",
     "AppleOriginalExecutionVerificationKt",
+    "AppleBinaryPackageContentKt",
+    "AppleBinaryPackageReplayKt",
     "OriginalAppleCompilerSliceReplay",
     "AppleCompilerEvidenceTaskKt",
     "AppleCompilerSymbol",

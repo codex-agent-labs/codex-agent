@@ -26,6 +26,17 @@ import kotlinx.serialization.json.longOrNull
 
 internal val releaseJson = Json { prettyPrint = true }
 
+internal fun requireSuccessfulReleaseProcess(
+    command: List<String>,
+    exitCode: Int,
+    output: String,
+    errors: String,
+): String {
+    val details = listOf(output.trim(), errors.trim()).filter(String::isNotEmpty).joinToString("\n")
+    check(exitCode == 0) { "${command.joinToString(" ")} failed ($exitCode): $details" }
+    return output
+}
+
 internal fun secureDocumentBuilderFactory(
     namespaceAware: Boolean = false,
     allowDoctype: Boolean = false,

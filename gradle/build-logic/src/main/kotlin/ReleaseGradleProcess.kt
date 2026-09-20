@@ -8,17 +8,6 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import org.gradle.process.ExecOperations
 
-internal fun requireSuccessfulReleaseProcess(
-    command: List<String>,
-    exitCode: Int,
-    output: String,
-    errors: String,
-): String {
-    val details = listOf(output.trim(), errors.trim()).filter(String::isNotEmpty).joinToString("\n")
-    check(exitCode == 0) { "${command.joinToString(" ")} failed ($exitCode): $details" }
-    return output
-}
-
 internal fun ExecOperations.captureReleaseProcess(
     command: List<String>,
     workingDirectory: File? = null,

@@ -2,6 +2,57 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.LinkOption
 
+/** Fixed CLI bridge; all artifact/source authority is established by the authenticated caller. */
+internal fun verifyAppleBinaryPackageWithTools(
+    productDirectory: File, version: String, binaryFrameworks: File, sourceSnapshot: File,
+    sdkCompatibility: File, workDirectory: File, developerDirectory: File,
+    expectedXcodeVersion: String, expectedXcodeBuild: String, expectedSwiftVersion: String,
+) {
+    check(PRODUCT_SEMVER.matches(version)) { "Apple binary package version is invalid" }
+    val inputs = listOf(productDirectory, binaryFrameworks, sourceSnapshot, sdkCompatibility, developerDirectory)
+    (inputs + workDirectory).forEach { requireApplePackagePathWithoutSymlinks(it, "binary package tooling") }
+    check(listOf(productDirectory, binaryFrameworks, sourceSnapshot, developerDirectory).all { it.isDirectory } &&
+        sdkCompatibility.isFile && sdkCompatibility.length() > 0) { "Apple binary package tooling input is missing" }
+    requireOriginalAppleSnapshotDisjoint(workDirectory, inputs)
+    check(!Files.exists(workDirectory.toPath(), LinkOption.NOFOLLOW_LINKS)) { "Apple replay work must be fresh" }
+    check(expectedXcodeVersion.matches(Regex("[0-9]+(?:\\.[0-9]+)*")) &&
+        expectedXcodeBuild.matches(Regex("[A-Za-z0-9]+")) &&
+        expectedSwiftVersion.matches(Regex("[0-9]+(?:\\.[0-9]+)*"))) { "Invalid expected Apple toolchain" }
+    val scratch = Files.createTempDirectory("codex-agent-apple-package-tools-").toFile().canonicalFile
+    try {
+        requireOriginalAppleSnapshotDisjoint(scratch, inputs + workDirectory)
+        fun run(command: List<String>): Pair<Int, String> {
+            check(command.firstOrNull() in setOf("/usr/bin/xcodebuild", "/usr/bin/xcrun", "/usr/bin/plutil", "/usr/bin/grep")) {
+                "Unsupported Apple package tool"
+            }
+            val output = scratch.resolve("process-output.txt")
+            val process = ProcessBuilder(command).directory(scratch).redirectErrorStream(true)
+                .redirectOutput(output).apply {
+                    environment().clear()
+                    environment().putAll(mapOf("PATH" to "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL" to "C", "LANG" to "C",
+                        "HOME" to scratch.path, "TMPDIR" to scratch.path, "DEVELOPER_DIR" to developerDirectory.canonicalPath))
+                }.start()
+            process.outputStream.close()
+            return process.waitFor() to output.readText()
+        }
+        fun capture(command: List<String>): String {
+            val (code, output) = run(command)
+            return requireSuccessfulReleaseProcess(command, code, output, "")
+        }
+        fun verifyToolchain() = verifyAppleToolchainOutput(
+            capture(listOf("/usr/bin/xcodebuild", "-version")),
+            capture(listOf("/usr/bin/xcrun", "swift", "--version")),
+            expectedXcodeVersion, expectedXcodeBuild, expectedSwiftVersion,
+        )
+        verifyToolchain()
+        verifyAppleBinaryPackageReplay(productDirectory, version, binaryFrameworks, sourceSnapshot, sdkCompatibility,
+            workDirectory, listOf(scratch.path, workDirectory.canonicalPath, sourceSnapshot.canonicalPath), ::capture, ::run)
+        verifyToolchain()
+    } finally {
+        deleteReleaseTree(scratch)
+    }
+}
+
 /**
  * Exact package replay over caller-private authenticated inputs. The caller binds source policy,
  * original binary receipts, compatibility and actual toolchain identity; this grants no host/test trust.
