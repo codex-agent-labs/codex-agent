@@ -110,6 +110,24 @@ class ProductSelectionTest(unittest.TestCase):
                 for instance in PHASE_INSTANCE_IDS:
                     self.assertEqual((path,) if instance in expected else (), phase_inventory_paths([path], instance))
 
+    def test_facade_content_and_android_transport_have_separate_owners(self) -> None:
+        for path, component_name, owns_bytes in (
+            ("ci/products/sdk_facade_validation.py", "sdk-core", True),
+            ("ci/sdk_android_upload_locator.py", "sdk-android", False),
+        ):
+            with self.subTest(path=path):
+                expected = {item for item in PHASE_INSTANCE_IDS
+                            if item.product == "sdk" and item.component == component_name
+                            and item.phase in {"validation", "metadata"}}
+                result = classify_paths([path])
+                self.assertEqual(expected, identities(result))
+                self.assertEqual((), result.unknown_paths)
+                for instance in PHASE_INSTANCE_IDS:
+                    self.assertEqual(
+                        (path,) if owns_bytes and instance in expected and instance.phase == "validation" else (),
+                        phase_inventory_paths([path], instance),
+                    )
+
     def test_apple_metadata_admission_and_controller_are_control_not_payload_inputs(self) -> None:
         for path in ("ci/products/sdk_apple_metadata_admission.py", "ci/sdk_ios_metadata_workflow.py"):
             with self.subTest(path=path):

@@ -367,35 +367,132 @@ abstract class VerifyStagedKmpConsumerTask @Inject constructor(
     @get:Input abstract val buildTasks: ListProperty<String>
     @get:LocalState abstract val consumerDirectory: DirectoryProperty
     @get:OutputFile abstract val resultFile: RegularFileProperty
+    /** Optional raw execution transport, never part of the schema-6 content report. */
+    @get:Optional @get:OutputDirectory abstract val executionCaptureDirectory: DirectoryProperty
+
+    init { outputs.upToDateWhen { !executionCaptureDirectory.isPresent } }
 
     @TaskAction
     fun verify() {
         val consumer = consumerDirectory.get().asFile
         val repository = repositoryDirectory.get().asFile
-        prepareStagedConsumer(templateDirectory.get().asFile, consumer, androidSdkDirectory.get())
-        val requestedTasks = buildTasks.get()
-        val outcomeInitScript = consumer.resolve(".codex-consumer-task-outcomes.init.gradle.kts").apply {
-            writeText(stagedConsumerOutcomeInitScript(requestedTasks))
+        val capture = executionCaptureDirectory.orNull?.asFile
+        val report = resultFile.get().asFile
+        val sources = listOf(repository, templateDirectory.get().asFile,
+            mavenInventory.get().asFile, gradleWrapper.get().asFile)
+        var originals: List<Map<String, String>>? = null
+        fun inputInventory() = sources.map { source ->
+            requireApplePackagePathWithoutSymlinks(source, "KMP consumer input")
+            if (source.isDirectory) verifiedRegularFiles(source).mapValues { (_, file) -> file.releaseDigest() }
+            else {
+                check(source.isFile) { "KMP consumer input is missing" }
+                mapOf(source.name to source.releaseDigest())
+            }
         }
-        val arguments = stagedConsumerArguments(
-            consumer, repository, sdkVersion.get(), runtimeVersion.get(), targetName.get(), requestedTasks,
-            outcomeInitScript,
-        )
-        exec.exec {
-            workingDir(consumer)
-            executable(gradleWrapper.get().asFile.absolutePath)
-            args(arguments)
-        }.assertNormalExitValue()
-        resultFile.get().asFile.atomicWriteJson(buildJsonObject {
-            val inventory = mavenInventory.get().asFile.readReleaseObject()
-            put("schemaVersion", JsonPrimitive(6))
-            put("result", JsonPrimitive("passed"))
-            put("sdkVersion", JsonPrimitive(sdkVersion.get()))
-            put("runtimeVersion", JsonPrimitive(runtimeVersion.get()))
-            put("repository", JsonPrimitive("CENTRAL_STAGING-only"))
-            put("mavenGroup", JsonPrimitive(inventory.releaseString("groupId")))
-            put("target", JsonPrimitive(targetName.get()))
-            put("tasks", buildJsonArray { requestedTasks.forEach { add(JsonPrimitive(it)) } })
-        })
+        if (capture != null) {
+            val owned = listOf(capture, consumer, report)
+            (owned + sources).forEach { requireApplePackagePathWithoutSymlinks(it, "KMP consumer capture") }
+            owned.forEachIndexed { index, output ->
+                requireOriginalAppleSnapshotDisjoint(output, sources + owned.filterIndexed { other, _ -> other != index })
+            }
+            check(!Files.exists(capture.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                "KMP consumer execution capture must be fresh"
+            }
+            originals = inputInventory()
+            Files.deleteIfExists(report.toPath())
+            Files.createDirectories(capture.toPath())
+            capture.resolve("task-outcomes.json").atomicWriteJson(buildJsonObject {
+                put("schemaVersion", JsonPrimitive(1))
+                put("tasks", buildJsonArray {})
+            })
+        }
+        fun unchanged() {
+            if (capture != null) {
+                requireApplePackagePathWithoutSymlinks(capture, "KMP consumer capture")
+                requireApplePackagePathWithoutSymlinks(report, "KMP consumer result")
+                check(inputInventory() == originals) { "KMP consumer original inputs changed during execution" }
+            }
+        }
+        try {
+            prepareStagedConsumer(templateDirectory.get().asFile, consumer, androidSdkDirectory.get())
+            val requestedTasks = buildTasks.get()
+            val outcomeInitScript = consumer.resolve(".codex-consumer-task-outcomes.init.gradle.kts").apply {
+                writeText(stagedConsumerOutcomeInitScript(requestedTasks) +
+                    capture?.let { stagedConsumerExecutionCaptureScript(it.resolve("task-outcomes.json")) }.orEmpty())
+            }
+            val arguments = stagedConsumerArguments(
+                consumer, repository, sdkVersion.get(), runtimeVersion.get(), targetName.get(), requestedTasks,
+                outcomeInitScript,
+            )
+            if (capture == null) {
+                exec.exec {
+                    workingDir(consumer)
+                    executable(gradleWrapper.get().asFile.absolutePath)
+                    args(arguments)
+                }.assertNormalExitValue()
+            } else {
+                try {
+                    exec.captureReleaseProcess(listOf(gradleWrapper.get().asFile.absolutePath) + arguments,
+                        workingDirectory = consumer, environmentVariables = emptyMap(),
+                        captureDirectory = capture.resolve("process"))
+                } finally { unchanged() }
+            }
+            report.atomicWriteJson(buildJsonObject {
+                val inventory = mavenInventory.get().asFile.readReleaseObject()
+                put("schemaVersion", JsonPrimitive(6))
+                put("result", JsonPrimitive("passed"))
+                put("sdkVersion", JsonPrimitive(sdkVersion.get()))
+                put("runtimeVersion", JsonPrimitive(runtimeVersion.get()))
+                put("repository", JsonPrimitive("CENTRAL_STAGING-only"))
+                put("mavenGroup", JsonPrimitive(inventory.releaseString("groupId")))
+                put("target", JsonPrimitive(targetName.get()))
+                put("tasks", buildJsonArray { requestedTasks.forEach { add(JsonPrimitive(it)) } })
+            })
+            unchanged()
+            capture?.resolve("report.json")?.let { destination -> Files.copy(report.toPath(), destination.toPath()) }
+            unchanged()
+        } catch (failure: Throwable) {
+            // A previous or partially written success report cannot describe this failed captured run.
+            if (capture != null) {
+                requireApplePackagePathWithoutSymlinks(report, "KMP consumer result")
+                Files.deleteIfExists(report.toPath())
+                requireApplePackagePathWithoutSymlinks(capture, "KMP consumer capture")
+                Files.deleteIfExists(capture.resolve("report.json").toPath())
+            }
+            throw failure
+        } finally { unchanged() }
     }
 }
+
+/** Appends observations to the existing outcome check; it does not redefine success. */
+internal fun stagedConsumerExecutionCaptureScript(outcomes: File): String = """
+    val codexCapturedOutcomes = linkedMapOf<String, Map<String, Any?>>()
+    val codexOutcomeFile = java.io.File(${JsonPrimitive(outcomes.absolutePath).toString().replace("$", "\\$")})
+    gradle.taskGraph.afterTask(object : org.gradle.api.Action<org.gradle.api.Task> {
+        override fun execute(task: org.gradle.api.Task) {
+            val state = task.state
+            if (task.project == gradle.rootProject && task.name in requiredCodexConsumerTasks) {
+                codexCapturedOutcomes[task.name] = linkedMapOf(
+                    "task" to task.name, "didWork" to state.didWork, "upToDate" to state.upToDate,
+                    "skipped" to state.skipped, "skipMessage" to state.skipMessage,
+                    "failure" to state.failure?.toString(),
+                )
+                val content = groovy.json.JsonOutput.toJson(linkedMapOf(
+                    "schemaVersion" to 1,
+                    "tasks" to requiredCodexConsumerTasks.mapNotNull { codexCapturedOutcomes[it] },
+                )) + "\n"
+                var current: java.io.File? = codexOutcomeFile
+                while (current != null) {
+                    check(!java.nio.file.Files.isSymbolicLink(current.toPath())) { "KMP outcome capture became symbolic" }
+                    current = current.parentFile
+                }
+                java.nio.file.Files.newByteChannel(codexOutcomeFile.toPath(),
+                    java.nio.file.StandardOpenOption.WRITE, java.nio.file.StandardOpenOption.TRUNCATE_EXISTING,
+                    java.nio.file.LinkOption.NOFOLLOW_LINKS).use { channel ->
+                    val bytes = java.nio.ByteBuffer.wrap(content.toByteArray(Charsets.UTF_8))
+                    while (bytes.hasRemaining()) channel.write(bytes)
+                }
+            }
+        }
+    })
+""".trimIndent() + "\n"

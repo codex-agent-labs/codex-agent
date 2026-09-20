@@ -551,6 +551,10 @@ def _native_metadata_owners(path: str) -> set[PhaseInstanceId]:
 
 
 def _control_selection(path: str) -> set[PhaseInstanceId] | None:
+    if path == "ci/products/sdk_facade_validation.py":
+        return _from_phase("sdk", "sdk-core", "validation")
+    if path == "ci/sdk_android_upload_locator.py":
+        return _from_phase("sdk", "sdk-android", "validation")
     if path == "ci/products/sdk_apple_metadata.py":
         return _from_phase("sdk", "sdk-ios", "metadata")
     if path == "ci/products/sdk_apple_validation_content.py":
@@ -653,6 +657,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _is_control_only(path: str) -> bool:
+    if path == "ci/sdk_android_upload_locator.py":
+        return True  # Original transport lookup never defines product bytes.
     if path == "ci/products/sdk_apple_metadata.py":
         return False  # Defines deterministic two-target Apple metadata bytes.
     if path == "ci/products/sdk_apple_validation_content.py":
@@ -1101,6 +1107,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstanceId]:
+    if path == "ci/products/sdk_facade_validation.py":
+        return {instance for instance in selected if instance.phase == "validation"}
     if path == "ci/products/sdk_apple_metadata.py":
         return {instance for instance in selected if instance.phase == "metadata"}
     if path == "ci/products/sdk_apple_validation_content.py":
