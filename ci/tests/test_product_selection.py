@@ -59,6 +59,58 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_original_transport_and_signing_controls_do_not_change_payload_keys(self) -> None:
+        paths = (
+            "ci/products/signing_isolation.py", "ci/runtime_preparation_capture.py",
+            "ci/runtime_preparation_locator.py", "ci/runtime_prepared_aggregate.py",
+            "ci/runtime_prepared_native.py", "ci/runtime_prepared_release.py",
+            "ci/runtime_prepared_state.py", "ci/runtime_signing_preparation.py",
+            "ci/sdk_javascript_validation_locator.py", "ci/sdk_native_continuation.py",
+            ".github/actions/capture-sdk-tooling/action.yml",
+            ".github/actions/prepare-runtime-signing/action.yml",
+            ".github/actions/provision-sdk-dart-cache/action.yml",
+            ".github/actions/sdk-ios-package-worker/action.yml",
+            ".github/actions/sdk-javascript-metadata-worker/action.yml",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                result = classify_paths([path])
+                self.assertEqual((), result.unknown_paths)
+                self.assertTrue(result.instances)
+                self.assertEqual((), result.inventory_paths)
+                for instance in PHASE_INSTANCE_IDS:
+                    self.assertEqual((), phase_inventory_paths([path], instance))
+
+    def test_apple_validation_package_inputs_do_not_invalidate_binary_or_package(self) -> None:
+        path = "gradle/build-logic/src/main/kotlin/AppleValidationPackageInputs.kt"
+        result = classify_paths([path])
+        expected = {item for item in PHASE_INSTANCE_IDS
+                    if item.product == "sdk" and item.component == "sdk-ios"
+                    and item.phase in {"validation", "metadata"}}
+        self.assertEqual(expected, identities(result))
+        self.assertEqual((), result.unknown_paths)
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((path,) if instance in expected and instance.phase == "validation" else (),
+                             phase_inventory_paths([path], instance))
+
+    def test_scoped_product_actions_select_only_their_existing_consumers(self) -> None:
+        owners = {
+            "prepare-runtime-signing": {item for item in PHASE_INSTANCE_IDS
+                if item.product == "runtime" and item.phase == "metadata"
+                and item.component in {*NATIVE_TARGETS, "runtime-aggregate"}},
+            "provision-sdk-dart-cache": {item for item in PHASE_INSTANCE_IDS
+                if item.product == "sdk" and item.component == "dart"
+                and item.phase in {"validation", "metadata"}},
+            "sdk-ios-package-worker": {item for item in PHASE_INSTANCE_IDS
+                if item.product == "sdk" and item.component == "sdk-ios"
+                and item.phase in {"package", "validation", "metadata"}},
+            "sdk-javascript-metadata-worker": {item for item in PHASE_INSTANCE_IDS
+                if item.product == "sdk" and item.component == "javascript" and item.phase == "metadata"},
+        }
+        for action, expected in owners.items():
+            with self.subTest(action=action):
+                self.assertEqual(expected, identities(classify_paths([f".github/actions/{action}/action.yml"])))
+
     def test_apple_authenticated_tooling_adapter_is_control_only(self) -> None:
         for path in ("ci/products/sdk_apple_content.py", "ci/products/sdk_apple_package_source.py",
                      "gradle/build-logic/src/main/kotlin/AppleBinaryPackageContent.kt",

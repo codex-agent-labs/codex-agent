@@ -179,6 +179,7 @@ _ANDROID_VALIDATION_BUILD_LOGIC = frozenset({
     "codexagent.android-runtime-evidence.gradle.kts",
 })
 _IOS_VALIDATION_BUILD_LOGIC = frozenset({
+    "AppleValidationPackageInputs.kt",
     "AppleCompilerEvidenceTask.kt",
     "AppleReleaseCheckTasks.kt",
     "AppleVerifiedDistributionModel.kt",
@@ -222,6 +223,16 @@ _IOS_BINARY_BUILD_LOGIC = frozenset({
     "codexagent.ios-runtime.gradle.kts",
 })
 _CONTROL_ONLY_FILES = frozenset({
+    "ci/products/signing_isolation.py",
+    "ci/runtime_preparation_capture.py",
+    "ci/runtime_preparation_locator.py",
+    "ci/runtime_prepared_aggregate.py",
+    "ci/runtime_prepared_native.py",
+    "ci/runtime_prepared_release.py",
+    "ci/runtime_prepared_state.py",
+    "ci/runtime_signing_preparation.py",
+    "ci/sdk_javascript_validation_locator.py",
+    "ci/sdk_native_continuation.py",
     "gradle/build-logic/src/main/kotlin/AppleBinaryPackageContent.kt",
     "gradle/build-logic/src/main/kotlin/AppleBinaryPackageReplay.kt",
     "gradle/build-logic/src/main/kotlin/AppleOriginalExecutionVerification.kt",
@@ -499,6 +510,16 @@ def _native_metadata_owners(path: str) -> set[PhaseInstanceId]:
 def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path in _CONTROL_ONLY_FILES:
         return set(ALL_INSTANCES)
+    if _is_prefix(path, ".github/actions/capture-sdk-tooling/"):
+        return set(ALL_INSTANCES)
+    if _is_prefix(path, ".github/actions/prepare-runtime-signing/"):
+        return _runtime(NATIVE_TARGETS, "metadata")
+    if _is_prefix(path, ".github/actions/provision-sdk-dart-cache/"):
+        return _from_phase("sdk", "dart", "validation")
+    if _is_prefix(path, ".github/actions/sdk-ios-package-worker/"):
+        return _from_phase("sdk", "sdk-ios", "package")
+    if _is_prefix(path, ".github/actions/sdk-javascript-metadata-worker/"):
+        return _from_phase("sdk", "javascript", "metadata")
     if _is_prefix(path, ".github/actions/run-ci-lane/") or path == ".github/workflows/ci.yml":
         return set(ALL_INSTANCES)
     if _is_prefix(path, ".github/actions/setup-kmp/"):
