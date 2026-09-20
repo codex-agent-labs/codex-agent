@@ -27,22 +27,29 @@ class SdkIosPackageActionTest(unittest.TestCase):
         self.assertIsNotNone(match, step)
         return match[0]
 
-    def identity(self, *, rows, required="true", component="sdk-ios", host="macos-arm64"):
+    def identity(self, *, rows, required="true", component="sdk-ios", host="macos-arm64",
+                 apple_digest_valid=True, apple_supplied=True):
         block = self.block("identity")
         source = textwrap.dedent(block.split("        python3 -B - <<'PY'\n", 1)[1].split("\n        PY", 1)[0])
         with tempfile.TemporaryDirectory(prefix="sdk-ios-package-action-") as temporary:
             root = Path(temporary).resolve()
-            plan, policy, output = (root / name for name in ("plan", "policy", "output"))
+            plan, policy, apple, output = (root / name for name in ("plan", "policy", "apple", "output"))
             plan.write_text(json.dumps({"validationTree": TREE}))
             policy.write_bytes(b"policy\n")
+            apple.write_bytes(b"apple policy\n")
             environment = {"MATRIX": json.dumps({"include": rows}), "REQUIRED": required,
                 "PLAN": str(plan), "COMPONENT": component, "BUILD_KEY": KEY, "TREE": TREE,
                 "SDK_VALIDATION_TOOLING": str(policy),
+                "SDK_APPLE_VALIDATION_POLICY": str(apple) if apple_supplied else "",
                 "POLICY_SHA256": "sha256:" + __import__("hashlib").sha256(policy.read_bytes()).hexdigest(),
+                "APPLE_POLICY_SHA256": (("sha256:" + __import__("hashlib").sha256(apple.read_bytes()).hexdigest())
+                                          if apple_supplied and apple_digest_valid else
+                                          ("sha256:" + "0" * 64) if apple_supplied else ""),
                 "GITHUB_OUTPUT": str(output)}
             with patch.dict(os.environ, environment, clear=True), \
                     patch("native_wrappers.host_classifier", return_value=host):
-                valid = (required, component, host) == ("true", "sdk-ios", "macos-arm64") and len(rows) == 1 and rows[0] == {
+                valid = (required, component, host, apple_digest_valid) == (
+                    "true", "sdk-ios", "macos-arm64", True) and len(rows) == 1 and rows[0] == {
                     "product": "sdk", "component": "sdk-ios", "phase": "package", "target": "ios",
                     "buildKey": KEY, "runnerOs": "macOS", "runnerArch": "ARM64",
                 }
@@ -68,11 +75,14 @@ class SdkIosPackageActionTest(unittest.TestCase):
         row = {"product": "sdk", "component": "sdk-ios", "phase": "package", "target": "ios",
                "buildKey": KEY, "runnerOs": "macOS", "runnerArch": "ARM64"}
         self.identity(rows=[row])
+        self.identity(rows=[row], apple_supplied=False)
         for changes in ({"required": "false"}, {"component": "other"}, {"host": "macos-x64"},
-                        {"rows": []}, {"rows": [{**row, "runnerArch": "X64"}]}):
+                        {"rows": []}, {"rows": [{**row, "runnerArch": "X64"}]},
+                        {"apple_digest_valid": False}):
             with self.subTest(changes=changes):
                 self.identity(rows=changes.get("rows", [row]), required=changes.get("required", "true"),
-                              component=changes.get("component", "sdk-ios"), host=changes.get("host", "macos-arm64"))
+                              component=changes.get("component", "sdk-ios"), host=changes.get("host", "macos-arm64"),
+                              apple_digest_valid=changes.get("apple_digest_valid", True))
 
     def test_fixed_cli_forwards_every_authenticated_locator_and_policy_input(self):
         self.assertIn("'-m', 'ci.sdk_workflow', 'ios-package'", self.action)
@@ -86,6 +96,7 @@ class SdkIosPackageActionTest(unittest.TestCase):
             self.assertIn(f"'{flag}'", self.action)
         self.assertIn("fields['--tooling-keyring']", self.action)
         self.assertIn("fields['--tooling-keys-directory']", self.action)
+        self.assertIn("fields['--sdk-apple-validation-policy']", self.action)
         for forbidden in ("secrets.", "PRIVATE_KEY", "ssh-keygen", "xcodebuild", "gradlew "):
             self.assertNotIn(forbidden, self.action)
         for forbidden in ("apple-artifact", "native-tests-artifact", "rust-device-artifact",
@@ -103,6 +114,13 @@ class SdkIosPackageActionTest(unittest.TestCase):
         self.assertIn("POLICY_SHA256", identity)
         self.assertIn("POLICY_SHA256", execute)
         self.assertIn("policy_revision", execute.replace("-", "_"))
+        self.assertIn("apple_validation_policy_arguments", policy)
+        self.assertIn("apple_policy_sha256=", policy)
+        self.assertIn("sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}",
+                      self.block("captured"))
+        for block in (identity, execute):
+            self.assertIn("APPLE_POLICY_SHA256", block)
+            self.assertIn("Caller Apple policy changed after pinning", block)
         for block in (policy, identity, execute):
             source = textwrap.dedent(block.split("        python3 -B - <<'PY'\n", 1)[1].split("\n        PY", 1)[0])
             compile(source, "ios-package-action", "exec")

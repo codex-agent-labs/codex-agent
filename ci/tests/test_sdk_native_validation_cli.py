@@ -4,10 +4,13 @@ from contextlib import redirect_stderr
 import io
 import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
 from ci import sdk_native_validation_workflow as workflow
+from ci.tests.test_sdk_native_package_execution import caller_apple_policy
+from products.inventory import canonical_json_bytes
 
 
 class SdkNativeValidationCliTest(unittest.TestCase):
@@ -25,6 +28,7 @@ class SdkNativeValidationCliTest(unittest.TestCase):
                      for part in ("--" + names.get(name, name.replace("_", "-")), str(value))]
         self.optional = {name: None for name in ("tooling_keyring", "tooling_keys_directory",
             "dotnet_executable", "dart_executable", "dart_package_config")}
+        self.optional.update(preparation_phase="package", preparation_target="desktop")
 
     def test_exact_original_state_upload_target_and_tooling_forward_with_environment_only_token(self):
         with patch.dict(os.environ, {"GITHUB_TOKEN": "synthetic token"}, clear=True), \
@@ -32,6 +36,27 @@ class SdkNativeValidationCliTest(unittest.TestCase):
             self.assertEqual(0, workflow.main(self.argv))
             execute.assert_called_once_with(**self.arguments, **self.optional,
                                             environ=os.environ, token="synthetic token")
+
+    def test_cli_canonical_apple_policy_forwarding_and_malformed_rejection(self):
+        with tempfile.TemporaryDirectory(prefix="native-validation-apple-cli-") as temporary:
+            root = Path(temporary).resolve()
+            path = root / "apple policy.json"
+            policy = caller_apple_policy(root)
+            raw = canonical_json_bytes(policy)
+            path.write_bytes(raw)
+            with patch.dict(os.environ, {"GITHUB_TOKEN": "caller token"}, clear=True), \
+                    patch.object(workflow, "execute") as execute:
+                self.assertEqual(0, workflow.main([*self.argv, "--sdk-apple-validation-policy", str(path)]))
+                execute.assert_called_once_with(**self.arguments, **self.optional,
+                    environ=os.environ, token="caller token", sdk_apple_validation_policy=policy)
+                self.assertEqual(raw, path.read_bytes())
+            for invalid in (b"{", b"[]\n", b"null\n", b'{ "plan": "noncanonical" }\n'):
+                with self.subTest(invalid=invalid), patch.object(workflow, "execute") as execute, \
+                        redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failure:
+                    path.write_bytes(invalid)
+                    workflow.main([*self.argv, "--sdk-apple-validation-policy", str(path)])
+                self.assertEqual(2, failure.exception.code)
+                execute.assert_not_called()
 
     def test_optional_release_policy_and_language_executable_paths_forward_without_defaults(self):
         for component, extra in (("csharp", {"dotnet_executable": Path("/trusted tools/dotnet")}),

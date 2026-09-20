@@ -28,7 +28,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             keyring, keys_directory, repository_root, environ, token,
             tooling_evidence, tooling_public_key, java_executable,
             required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
-            preparation_phase="package", preparation_target="desktop"):
+            preparation_phase="package", preparation_target="desktop", sdk_apple_validation_policy=None):
     """Run the existing five-host metadata caller and publish its shard last."""
     if component not in NATIVE_BINDINGS or preparation_component not in NATIVE_BINDINGS:
         raise ValueError("Native metadata execution requires fixed native language components")
@@ -64,6 +64,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
         "keyring": str(Path(tooling_keyring).absolute()) if tooling_keyring is not None else None,
         "keysDirectory": str(Path(tooling_keys_directory).absolute()) if tooling_keys_directory is not None else None}
 
+    apple = {} if sdk_apple_validation_policy is None else {"sdk_apple_validation_policy": sdk_apple_validation_policy}
     instance = PhaseInstanceId("sdk", component, "metadata", "desktop")
     identity = {"product": "sdk", "component": component, "phase": "metadata", "target": "desktop"}
     preparation_identity = {"product": "sdk", "component": preparation_component,
@@ -79,13 +80,13 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
         with sdk_workflow.verified_inputs(plan, discovery, state,
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-                repository_root=root, environ=environ, token=token, sdk_validation_tooling=tooling) as inputs:
+                repository_root=root, environ=environ, token=token, sdk_validation_tooling=tooling, **apple) as inputs:
             controls_unchanged()
             selection = inputs["selection"]
             if identity not in selection["consumers"]:
                 raise ValueError("Native SDK metadata is not selected")
             inspected = product_reuse.inspect_products(plan, discovery, preparation_state,
-                repository_root=root, environ=environ, sdk_validation_tooling=tooling)
+                repository_root=root, environ=environ, sdk_validation_tooling=tooling, **apple)
             elected = [row for row in inspected["readyPlans"]
                        if all(row.get(name) == value for name, value in preparation_identity.items())]
             if (len(elected) != 1 or set(elected[0]) != PHASE_PLAN_KEYS
@@ -103,7 +104,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             prepared = destination / "inputs"
             ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
                 expected_build_key=expected_build_key, repository_root=root, environ=environ,
-                sdk_validation_tooling=tooling)
+                sdk_validation_tooling=tooling, **apple)
             ready_bytes = canonical_json_bytes(ready)
             prepared_inventory = regular_file_inventory(prepared, allow_empty=True)
             producer = product_reuse.validate_producer(product_reuse._canonical_control(
@@ -167,7 +168,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 component=component, expected_build_key=expected_build_key,
                 compatibility_request=sdk_inputs / REQUEST_NAME,
                 runtime_stages=runtime_stages, staged_sdks=staged_sdks,
-                sdk_validation_tooling=tooling, repository_root=root, environ=environ)
+                sdk_validation_tooling=tooling, repository_root=root, environ=environ, **apple)
             candidate_shard = candidate / "worker/shard"
             receipt = result["receipt"]
             trust_domain = "development" if producer["event"] == "pull_request" else "release"
@@ -218,10 +219,15 @@ def main(argv=None) -> int:
                         default=argparse.SUPPRESS)
     parser.add_argument("--tooling-keyring", type=Path)
     parser.add_argument("--tooling-keys-directory", type=Path)
+    parser.add_argument("--sdk-apple-validation-policy", type=Path)
     arguments = vars(parser.parse_args(argv))
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
         parser.error("Native metadata tooling keyring and keys directory must be supplied together")
     try:
+        apple_policy = arguments.pop("sdk_apple_validation_policy")
+        if apple_policy is not None:
+            arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
+                apple_policy, "Caller Apple validation policy")
         execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:
         parser.error(str(error))

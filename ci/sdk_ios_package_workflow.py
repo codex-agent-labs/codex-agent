@@ -37,6 +37,7 @@ def execute(
     policy_revision: str, repository_root: Path, environ: dict, token: str,
     required_trust_domain: str,
     tooling_keyring: Path | None = None, tooling_keys_directory: Path | None = None,
+    sdk_apple_validation_policy=None,
 ) -> dict:
     """Build and admit one elected package; publish only after all contexts close."""
     root = Path(repository_root).resolve(strict=True)
@@ -57,6 +58,8 @@ def execute(
         "requiredTrustDomain": required_trust_domain,
         "keyring": str(Path(tooling_keyring).absolute()) if tooling_keyring is not None else None,
         "keysDirectory": str(Path(tooling_keys_directory).absolute()) if tooling_keys_directory is not None else None}
+    apple = ({} if sdk_apple_validation_policy is None else
+             {"sdk_apple_validation_policy": sdk_apple_validation_policy})
     with tempfile.TemporaryDirectory(prefix="sdk-ios-package-candidate-") as temporary:
         candidate = Path(temporary).resolve() / "shard"
         with sdk_workflow.verified_inputs(
@@ -64,7 +67,7 @@ def execute(
             artifact_sha256=sdk_inputs_artifact_sha256,
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
             keys_directory=keys_directory, repository_root=root,
-            environ=environ, token=token, sdk_validation_tooling=tooling,
+            environ=environ, token=token, sdk_validation_tooling=tooling, **apple,
         ) as sdk_inputs:
             selection = sdk_inputs["selection"]
             selected = {"product": "sdk", "component": "sdk-ios", "phase": "package", "target": "ios"}
@@ -74,7 +77,7 @@ def execute(
             ready = product_reuse.materialize_product_predecessors(
                 plan, discovery, state, _INSTANCE, prepared,
                 expected_build_key=expected_build_key,
-                repository_root=root, environ=environ, sdk_validation_tooling=tooling,
+                repository_root=root, environ=environ, sdk_validation_tooling=tooling, **apple,
             )
             prepared_inventory = regular_file_inventory(prepared, allow_empty=True)
             producer = product_reuse.validate_producer(product_reuse._canonical_control(
@@ -218,10 +221,15 @@ def main(argv=None) -> int:
     parser.add_argument("--required-trust-domain", choices=("development", "release"), required=True)
     parser.add_argument("--tooling-keyring", type=Path)
     parser.add_argument("--tooling-keys-directory", type=Path)
+    parser.add_argument("--sdk-apple-validation-policy", type=Path)
     arguments = vars(parser.parse_args(argv))
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
         parser.error("Apple tooling keyring and keys directory must be supplied together")
     try:
+        apple_policy = arguments.pop("sdk_apple_validation_policy")
+        if apple_policy is not None:
+            arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
+                apple_policy, "Caller Apple validation policy")
         execute(**arguments, environ=os.environ,
                 token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:

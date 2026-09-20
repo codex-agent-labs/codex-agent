@@ -155,9 +155,11 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
         stub.write_text('#!/bin/sh\nprintf \'%s\\0\' "$@" > "$RECORDED_ARGS"\n')
         stub.chmod(0o700)
         recorded = self.root / 'argv'
-        for wave in ('', '4'):
+        for wave, apple_policy in ((wave, policy) for wave in ('', '4')
+                                   for policy in ('', '/caller policies/apple validation.json')):
             environment = dict(self.environment, PATH=str(binary), ARTIFACT_ID='78', ARTIFACT_SHA256='sha256:' + '8' * 64,
-                STATE_WAVE='0', SDK_STATE_WAVE=wave, RECORDED_ARGS=str(recorded))
+                STATE_WAVE='0', SDK_STATE_WAVE=wave, SDK_APPLE_VALIDATION_POLICY=apple_policy,
+                RECORDED_ARGS=str(recorded))
             completed = subprocess.run([shutil.which('bash'), '-c', script], env=environment, capture_output=True, text=True)
             self.assertEqual(0, completed.returncode, completed.stderr)
             arguments = recorded.read_bytes().decode().split('\0')[:-1]
@@ -167,6 +169,7 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
             self.assertEqual('78', flags['--artifact-id'])
             self.assertEqual(str(self.policy_path), flags['--sdk-validation-tooling'])
             self.assertEqual(wave or None, flags.get('--sdk-state-wave'))
+            self.assertEqual(apple_policy or None, flags.get('--sdk-apple-validation-policy'))
             self.assertEqual(str(self.root / 'build/native-preparation-input'), flags['--destination'])
 
     def test_dart_preflight_requires_external_existing_config_or_populated_cache(self):
@@ -309,6 +312,7 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
         self.assertLess(action.index('- id: identity'), action.index('./.github/actions/setup-kmp'))
         self.assertIn('sdk-family: native-validation', self.block('captured'))
         self.assertIn('sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}', self.block('captured'))
+        self.assertIn('sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}', self.block('captured'))
         self.assertIn("product-worker: 'true'", action)
         self.assertIn("cache-read-only: 'true'", action)
         self.assertIn('path: build/sdk-worker\n', action)
@@ -317,6 +321,19 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
         self.assertIn('overwrite: false', action)
         for forbidden in ('dotnet restore', 'dart pub get', 'native-prepare --', 'actions/download-artifact', 'run: ./gradlew'):
             self.assertNotIn(forbidden, action)
+
+    def test_optional_apple_policy_is_forwarded_only_when_supplied(self):
+        self.assertIn("  sdk-apple-validation-policy:\n    default: ''", self.action)
+        for step in ('preparation', 'execute'):
+            self.assertIn('SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}', self.block(step))
+        for policy in ('', '/caller policies/apple validation.json'):
+            with self.subTest(policy=policy), patch('subprocess.run') as run:
+                self.environment['SDK_APPLE_VALIDATION_POLICY'] = policy
+                self.execute('execute')
+            command = run.call_args.args[0]
+            fields = dict(zip(command[5::2], command[6::2]))
+            self.assertEqual(policy or None, fields.get('--sdk-apple-validation-policy'))
+            self.assertEqual(self.environment['PREPARATION_STATE'], fields['--preparation-state-root'])
 
 
 if __name__ == '__main__':

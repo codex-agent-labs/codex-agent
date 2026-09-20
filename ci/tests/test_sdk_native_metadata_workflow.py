@@ -186,6 +186,29 @@ class SdkNativeMetadataWorkflowTest(unittest.TestCase):
         self.assertFalse(self.capture_path.exists())
         self.metadata_mock.assert_called_once()
 
+    def test_same_apple_policy_reaches_all_replays_and_existing_metadata_controller(self):
+        policy = fixture.caller_apple_policy(self.root / "caller")
+        before = dict(policy)
+
+        def forwarded(delegate):
+            def invoke(*args, **kwargs):
+                self.assertIs(policy, kwargs.pop("sdk_apple_validation_policy"))
+                return delegate(*args, **kwargs)
+            return invoke
+
+        with patch.object(self, "verified", side_effect=forwarded(self.verified)) as verified, \
+                patch.object(self, "inspect", side_effect=forwarded(self.inspect)) as inspect, \
+                patch.object(self, "materialize", side_effect=forwarded(self.materialize)) as materialize, \
+                patch.object(self, "metadata", side_effect=forwarded(self.metadata)) as metadata:
+            result = self.invoke(sdk_apple_validation_policy=policy)
+        for replay in (verified, inspect, materialize, metadata):
+            replay.assert_called_once()
+            self.assertIs(policy, replay.call_args.kwargs["sdk_apple_validation_policy"])
+        self.assertEqual(before, policy)
+        self.assertNotIn("sdkAppleValidationPolicy", result["receipt"])
+        self.assertNotIn("sdk_apple_validation_policy", result["receipt"])
+        self.assertEqual(["enter", "inspect", "capture", "materialize", "metadata", "exit-check", "exited"], self.events)
+
     def test_selection_preparation_producer_contract_and_runtime_pairing_fail_before_metadata(self):
         for failure in ("unselected", "missing-preparation", "wrong-preparation-producer", "contract", "runtime"):
             with self.subTest(case=failure):
@@ -263,6 +286,27 @@ class SdkNativeMetadataCliTest(unittest.TestCase):
             self.assertEqual(0, workflow.main(self.argv))
             execute.assert_called_once_with(**self.values, tooling_keyring=None, tooling_keys_directory=None,
                                             environ=os.environ, token="synthetic token")
+
+    def test_cli_canonical_apple_policy_forwarding_and_malformed_rejection(self):
+        with tempfile.TemporaryDirectory(prefix="native-metadata-apple-cli-") as temporary:
+            root = Path(temporary).resolve()
+            path = root / "apple policy.json"
+            policy = fixture.caller_apple_policy(root)
+            raw = canonical_json_bytes(policy)
+            path.write_bytes(raw)
+            with patch.dict(os.environ, {"GITHUB_TOKEN": "caller token"}, clear=True), \
+                    patch.object(workflow, "execute") as execute:
+                self.assertEqual(0, workflow.main([*self.argv, "--sdk-apple-validation-policy", str(path)]))
+                execute.assert_called_once_with(**self.values, tooling_keyring=None, tooling_keys_directory=None,
+                    environ=os.environ, token="caller token", sdk_apple_validation_policy=policy)
+                self.assertEqual(raw, path.read_bytes())
+            for invalid in (b"{", b"[]\n", b"null\n", b'{ "plan": "noncanonical" }\n'):
+                with self.subTest(invalid=invalid), patch.object(workflow, "execute") as execute, \
+                        redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failure:
+                    path.write_bytes(invalid)
+                    workflow.main([*self.argv, "--sdk-apple-validation-policy", str(path)])
+                self.assertEqual(2, failure.exception.code)
+                execute.assert_not_called()
 
     def test_cli_rejects_partial_tooling_policy_and_unknown_flags(self):
         for argv in (self.argv + ["--tooling-keyring", "/keyring"], self.argv + ["--command", "anything"]):

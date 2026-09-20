@@ -91,6 +91,43 @@ class CaptureSdkToolingActionTest(unittest.TestCase):
         with patch('subprocess.run', side_effect=self.capture):
             self.execute()
 
+    def test_optional_plan_directory_is_fresh_external_and_shares_capture_parent(self):
+        self.environment['PLAN_ID'] = '123'
+        previous = None
+        for _ in range(2):
+            self.output.unlink(missing_ok=True)
+            with patch('subprocess.run', side_effect=self.capture) as run:
+                self.execute()
+            run.assert_called_once()
+            outputs = dict(line.split('=', 1) for line in self.output.read_text().splitlines())
+            self.assertEqual({'tooling_policy', 'plan_directory'}, set(outputs))
+            plan = Path(outputs['plan_directory'])
+            self.assertEqual(self.destination.parent / 'plan', plan)
+            self.assertTrue(plan.is_relative_to(self.scratch))
+            self.assertFalse(plan.is_relative_to(self.repository))
+            self.assertFalse(plan.exists())
+            self.assertNotEqual(previous, plan)
+            previous = plan
+        self.assertEqual(b'original checkout bytes', self.original.read_bytes())
+
+    def test_optional_plan_download_and_policy_reuse_are_guarded_and_exact(self):
+        self.assertIn("  plan-id:\n    default: ''", self.action)
+        self.assertIn('PLAN_ID: ${{ inputs.plan-id }}', self.action)
+        self.assertIn('value: ${{ steps.apple-policy.outputs.apple-policy }}', self.action)
+        download = self.action.split('    - name: Download the exact original plan outside the checkout\n', 1)[1]
+        download, policy = download.split('    - id: apple-policy\n', 1)
+        self.assertIn("if: inputs.plan-id != ''", download)
+        self.assertIn('uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c', download)
+        self.assertIn('artifact-ids: ${{ inputs.plan-id }}', download)
+        self.assertIn('path: ${{ steps.capture.outputs.plan_directory }}', download)
+        self.assertIn('merge-multiple: true', download)
+        self.assertIn("if: inputs.plan-id != ''", policy)
+        self.assertIn('uses: ./.github/actions/prepare-sdk-apple-policy', policy)
+        self.assertIn('plan-path: ${{ steps.capture.outputs.plan_directory }}/impact-plan.json', policy)
+        self.assertIn('tooling-policy: ${{ steps.capture.outputs.tooling_policy }}', policy)
+        self.assertNotIn('always()', download + policy)
+        self.assertNotIn('ci.sdk_apple_policy', self.action)
+
     def test_invalid_java_scratch_and_duplicate_producer_fail_before_capture(self):
         original = dict(self.environment)
         for changes in ({'JAVA_HOME': 'relative'}, {'JAVA_HOME': str(self.root / 'missing-java')},
@@ -105,6 +142,7 @@ class CaptureSdkToolingActionTest(unittest.TestCase):
                 self.assertEqual(b'original checkout bytes', self.original.read_bytes())
 
     def test_capture_failure_or_missing_policy_never_exposes_a_policy_output(self):
+        self.environment['PLAN_ID'] = '123'
         for failure in (True, False):
             def capture(command, **kwargs):
                 if failure:
@@ -120,10 +158,10 @@ class CaptureSdkToolingActionTest(unittest.TestCase):
         self.assertEqual(1, self.action.count('GITHUB_TOKEN: ${{ github.token }}'))
         inputs = self.action.split('inputs:\n', 1)[1].split('outputs:\n', 1)[0]
         import re
-        self.assertEqual({'artifact-id', 'artifact-sha256', 'transport-producer', 'trusted-workflow-sha', 'policy-revision'},
+        self.assertEqual({'artifact-id', 'artifact-sha256', 'transport-producer', 'trusted-workflow-sha', 'policy-revision', 'plan-id'},
                          set(re.findall(r'^  ([a-z0-9-]+):$', inputs, re.MULTILINE)))
         for forbidden in ('--keyring', '--public-key', '--evidence', 'secrets.', 'setup-java', 'setup-kmp',
-                          'java -jar', './gradlew', 'actions/download-artifact', 'ci.tooling_release'):
+                          'java -jar', './gradlew', 'ci.tooling_release'):
             self.assertNotIn(forbidden, self.action)
 
 

@@ -167,7 +167,8 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
             repository_root, environ, token, tooling_evidence, tooling_public_key,
             java_executable, policy_revision, required_trust_domain, tooling_keyring=None,
             tooling_keys_directory=None, dotnet_executable=None, dart_executable=None,
-            dart_package_config=None, preparation_phase="package", preparation_target="desktop"):
+            dart_package_config=None, preparation_phase="package", preparation_target="desktop",
+            sdk_apple_validation_policy=None):
     """Admit a validation and established evidence carrier, without restaging SDKs.
 
     Original preparation election is independently replayed. Only the existing
@@ -184,6 +185,7 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
         "javaExecutable": str(java_executable), "requiredTrustDomain": required_trust_domain,
         "keyring": str(tooling_keyring) if tooling_keyring is not None else None,
         "keysDirectory": str(tooling_keys_directory) if tooling_keys_directory is not None else None}
+    apple = {} if sdk_apple_validation_policy is None else {"sdk_apple_validation_policy": sdk_apple_validation_policy}
     protected = [plan, discovery, state, preparation_state, Path(keyring), Path(keys_directory),
         Path(tooling_evidence), Path(tooling_public_key), Path(java_executable),
         *(Path(value) for value in (tooling_keyring, tooling_keys_directory,
@@ -228,14 +230,14 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
         with sdk_workflow.verified_inputs(plan, discovery, state,
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-                repository_root=root, environ=environ, token=token, sdk_validation_tooling=tooling) as inputs:
+                repository_root=root, environ=environ, token=token, sdk_validation_tooling=tooling, **apple) as inputs:
             controls_unchanged()
             selection = inputs["selection"]
             sdk_inventory = _inventory(inputs["sdk"]["directory"], allow_empty=True)
             if identity not in selection["consumers"]:
                 raise ValueError("Native SDK validation is not selected")
             inspected = product_reuse.inspect_products(plan, discovery, preparation_state,
-                repository_root=root, environ=environ, sdk_validation_tooling=tooling)
+                repository_root=root, environ=environ, sdk_validation_tooling=tooling, **apple)
             elected = [row for row in inspected["readyPlans"] if all(row.get(name) == value for name, value in prep_identity.items())]
             if len(elected) != 1 or set(elected[0]) != PHASE_PLAN_KEYS or elected[0]["buildKey"] != preparation_build_key:
                 raise ValueError("Original native preparation consumer is not uniquely ready with its elected key")
@@ -249,7 +251,7 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
             prepared = destination / "inputs"
             ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
                 expected_build_key=expected_build_key, repository_root=root, environ=environ,
-                sdk_validation_tooling=tooling)
+                sdk_validation_tooling=tooling, **apple)
             prepared_inventory = _inventory(prepared, allow_empty=True)
             producer = product_reuse.validate_producer(product_reuse._canonical_control(prepared / "producer.json", "Native validation producer"))
             ready_bytes, producer_bytes = canonical_json_bytes(ready), canonical_json_bytes(producer)
@@ -395,8 +397,13 @@ def main(argv=None) -> int:
     for name in ("tooling-keyring", "tooling-keys-directory", "dotnet-executable",
                  "dart-executable", "dart-package-config"):
         parser.add_argument(f"--{name}", type=Path)
+    parser.add_argument("--sdk-apple-validation-policy", type=Path)
     arguments = vars(parser.parse_args(argv))
     try:
+        apple_policy = arguments.pop("sdk_apple_validation_policy")
+        if apple_policy is not None:
+            arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
+                apple_policy, "Caller Apple validation policy")
         execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:
         parser.error(str(error))

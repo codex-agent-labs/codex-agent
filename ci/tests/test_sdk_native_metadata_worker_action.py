@@ -39,6 +39,7 @@ class SdkNativeMetadataWorkerActionTest(unittest.TestCase):
     def test_fixed_capture_election_setup_execution_and_attempt_upload_order(self):
         self.assertIn("product: sdk\n        sdk-family: native-metadata", self.action)
         self.assertIn("sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}", self.action)
+        self.assertIn("sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}", self.block("captured"))
         self.assertEqual(1, self.action.count("uses: ./.github/actions/capture-runtime-state"))
         self.assertLess(self.action.index("id: policy"), self.action.index("id: captured"))
         self.assertLess(self.action.index("id: captured"), self.action.index("id: preparation"))
@@ -73,17 +74,20 @@ class SdkNativeMetadataWorkerActionTest(unittest.TestCase):
             "SDK_VALIDATION_TOOLING": "/caller policy/tooling.json", "GITHUB_OUTPUT": str(self.root / "output")}
         shell = shutil.which("bash")
         self.assertIsNotNone(shell)
-        for wave in ("", "4"):
-            with self.subTest(wave=wave):
+        for wave, apple_policy in ((wave, policy) for wave in ("", "4")
+                                   for policy in ("", "/caller policies/apple validation.json")):
+            with self.subTest(wave=wave, apple_policy=apple_policy):
                 result = subprocess.run([shell, "--noprofile", "--norc", "-c", script], cwd=self.root,
-                    env={**environment, "SDK_STATE_WAVE": wave}, capture_output=True, text=True, check=False)
+                    env={**environment, "SDK_STATE_WAVE": wave, "SDK_APPLE_VALIDATION_POLICY": apple_policy},
+                    capture_output=True, text=True, check=False)
                 self.assertEqual(0, result.returncode, result.stderr)
                 expected = ["-B", "-m", "ci.sdk_workflow", "capture", "--family", "native-package",
                     "--plan", environment["PLAN"], "--destination", str(self.root / "build/native-preparation-input"),
                     "--repository-root", str(self.root), "--artifact-id", "71", "--artifact-sha256", environment["ARTIFACT_SHA256"],
                     "--state-wave", "4", "--sdk-validation-tooling", environment["SDK_VALIDATION_TOOLING"],
                     "--trusted-workflow-sha", environment["TRUSTED_WORKFLOW_SHA"], "--github-output", environment["GITHUB_OUTPUT"],
-                    *(["--sdk-state-wave", wave] if wave else [])]
+                    *(["--sdk-state-wave", wave] if wave else []),
+                    *(["--sdk-apple-validation-policy", apple_policy] if apple_policy else [])]
                 self.assertEqual(expected, recorded.read_bytes().decode().split("\0")[:-1])
 
     def test_both_exact_replayed_elections_and_tree_are_required(self):
@@ -188,6 +192,23 @@ class SdkNativeMetadataWorkerActionTest(unittest.TestCase):
         with patch.object(subprocess, "run") as run, self.assertRaises(ValueError):
             self.python("execute", {**environment, "SDK_VALIDATION_TOOLING": "relative.json"})
         run.assert_not_called()
+
+    def test_optional_apple_policy_is_forwarded_only_when_supplied(self):
+        self.assertIn("  sdk-apple-validation-policy:\n    default: ''", self.action)
+        for step in ("preparation", "execute"):
+            self.assertIn("SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}", self.block(step))
+        policy_path, policy, environment = self.execution_fixture()
+        raw = canonical_json_bytes(policy)
+        policy_path.write_bytes(raw)
+        environment["POLICY_SHA256"] = sha256_bytes(raw)
+        for apple_policy in ("", "/caller policies/apple validation.json"):
+            environment["SDK_APPLE_VALIDATION_POLICY"] = apple_policy
+            with self.subTest(apple_policy=apple_policy), patch.object(subprocess, "run") as run:
+                self.python("execute", environment)
+            command = run.call_args.args[0]
+            fields = dict(zip(command[5::2], command[6::2]))
+            self.assertEqual(apple_policy or None, fields.get("--sdk-apple-validation-policy"))
+            self.assertEqual(environment["PREPARATION_STATE"], fields["--preparation-state"])
 
     def test_policy_is_pinned_before_capture_and_mutation_rejects_identity_and_controller(self):
         policy_path, policy, environment = self.execution_fixture()

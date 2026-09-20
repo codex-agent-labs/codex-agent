@@ -72,8 +72,12 @@ class ApplePolicyTest(unittest.TestCase):
     def test_exact_release_schema_final_paths_and_originals_preserved_without_execution(self):
         original = regular_file_inventory(self.tooling)
         plan_bytes, tooling_bytes = self.plan.read_bytes(), self.tooling_policy.read_bytes()
-        with patch("subprocess.run", side_effect=AssertionError("policy construction must not execute tooling")):
+        with patch("subprocess.run", side_effect=AssertionError("policy construction must not execute tooling")), \
+                patch.object(policy, "caller_apple_validation_policy", wraps=policy.caller_apple_validation_policy) as mapping:
             result = self.call()
+        mapping.assert_called_once_with(self.plan, self.value,
+            keyring=self.destination / "trust/product-signing-keys.json",
+            keys_directory=self.destination / "trust/keys", environ=self.environment)
         self.assertEqual({"plan": str(self.plan), "attestationPublicKey": None, "attestationTrustDomain": "release",
             "keyring": str(self.destination / "trust/product-signing-keys.json"),
             "keysDirectory": str(self.destination / "trust/keys"),
@@ -93,6 +97,57 @@ class ApplePolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must not exist"):
             self.call()
         self.assertEqual(before, regular_file_inventory(self.destination))
+
+    def test_pure_mapping_uses_explicit_paths_without_io_and_detaches_caller_dictionary(self):
+        tooling = dict(self.value)
+        with patch("builtins.open", side_effect=AssertionError("mapping must not read or write")), \
+                patch.object(policy, "read_regular_file_bytes", side_effect=AssertionError("mapping must not read")), \
+                patch.object(policy, "regular_file_inventory", side_effect=AssertionError("mapping must not inventory")), \
+                patch("subprocess.run", side_effect=AssertionError("mapping must not execute")):
+            result = policy.caller_apple_validation_policy("/absent/original-plan.json", tooling,
+                keyring=Path("/absent/current-policy.json"), keys_directory=Path("/absent/current-keys"), environ={})
+        self.validate.assert_not_called()
+        self.trust.assert_not_called()
+        self.git.assert_not_called()
+        arguments = apple_validation_policy_arguments(result)
+        self.assertEqual(Path("/absent/original-plan.json"), arguments["plan"])
+        self.assertEqual(Path("/absent/current-policy.json"), arguments["keyring"])
+        self.assertEqual(Path("/absent/current-keys"), arguments["keys_directory"])
+        self.assertIsNone(arguments["attestation_public_key"])
+        self.assertEqual("release", arguments["attestation_trust_domain"])
+        self.assertEqual("release", arguments["required_trust_domain"])
+        self.assertEqual(self.value["evidence"], result["toolingEvidence"])
+        original_result = canonical_json_bytes(result)
+        tooling.update(evidence="/changed/caller/evidence", extra={"untrusted": "state"})
+        self.assertEqual(original_result, canonical_json_bytes(result))
+        result["toolingEvidence"] = "/changed/result"
+        self.assertEqual("/changed/caller/evidence", tooling["evidence"])
+
+    def test_pure_mapping_rejects_nonrelease_wrong_shape_paths_and_any_signing_secret(self):
+        arguments = {"plan_path": self.plan, "tooling": self.value,
+                     "keyring": self.root / "current-policy.json", "keys_directory": self.root / "current-keys",
+                     "environ": self.environment}
+        invalid = [None, [], {**self.value, "extra": "retained authority"},
+                   {name: value for name, value in self.value.items() if name != "keyring"},
+                   {**self.value, "requiredTrustDomain": "development"}]
+        invalid += [{**self.value, name: value} for name in self.value if name != "requiredTrustDomain"
+                    for value in (None, "relative", 1)]
+        for value in invalid:
+            with self.subTest(tooling=value), self.assertRaises(ValueError):
+                policy.caller_apple_validation_policy(**{**arguments, "tooling": value})
+        for name in ("plan_path", "keyring", "keys_directory"):
+            with self.subTest(path=name), self.assertRaises(ValueError):
+                policy.caller_apple_validation_policy(**{**arguments, name: Path("relative")})
+        for live in (False, True):
+            selected = os.environ if live else self.environment
+            selected["CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY"] = ""
+            try:
+                with self.subTest(live=live), patch.object(policy, "require_exact_keys") as parse, \
+                        self.assertRaisesRegex(ValueError, "signing-secret context"):
+                    policy.caller_apple_validation_policy(**arguments)
+                parse.assert_not_called()
+            finally:
+                del selected["CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY"]
 
     def test_malformed_nonrelease_null_relative_and_noncanonical_tooling_fail_before_git(self):
         mutations = [lambda value: value.update(extra="state-selected policy"), lambda value: value.pop("keyring"),

@@ -221,6 +221,29 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
         self.assertFalse(self.capture_path.exists())
         self.assertEqual(self.package_before, regular_file_inventory(self.package_stage.parent))
 
+    def test_explicit_apple_policy_reaches_current_and_preparation_replays(self):
+        policy = fixture.caller_apple_policy(self.root / "caller")
+        before = dict(policy)
+
+        def forwarded(delegate):
+            def invoke(*args, **kwargs):
+                self.assertIs(policy, kwargs.pop("sdk_apple_validation_policy"))
+                return delegate(*args, **kwargs)
+            return invoke
+
+        with patch.object(self, "verified", side_effect=forwarded(self.verified)) as verified, \
+                patch.object(self, "inspect", side_effect=forwarded(self.inspect)) as inspect, \
+                patch.object(self, "materialize", side_effect=forwarded(self.materialize)) as materialize:
+            result = self.invoke(sdk_apple_validation_policy=policy)
+        for replay in (verified, inspect, materialize):
+            replay.assert_called_once()
+            self.assertIs(policy, replay.call_args.kwargs["sdk_apple_validation_policy"])
+        self.assertEqual(before, policy)
+        self.assertNotIn("sdkAppleValidationPolicy", result["receipt"])
+        self.assertNotIn("sdk_apple_validation_policy", result["receipt"])
+        self.assertEqual(["enter", "inspect", "capture", "materialize", "package-gate", "worker",
+                          "validation-gate", "exit-check", "exited"], self.events)
+
     def test_wrong_original_preparation_or_host_prevents_capture(self):
         for failure in ("missing-preparation", "duplicate-preparation", "wrong-key", "wrong-host"):
             with self.subTest(failure=failure):

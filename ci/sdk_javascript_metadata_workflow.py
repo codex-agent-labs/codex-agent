@@ -30,7 +30,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             keyring, keys_directory, repository_root, environ, token,
             tooling_evidence, tooling_public_key, java_executable, policy_revision,
             required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
-            validation_artifact_id=None, validation_artifact_sha256=None):
+            validation_artifact_id=None, validation_artifact_sha256=None,
+            sdk_apple_validation_policy=None):
     """Finalize once privately; publish only after full input and content gates.
 
     The observed original validation upload supplies the consumer directory.
@@ -67,6 +68,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         "requiredTrustDomain": required_trust_domain,
         "keyring": str(Path(tooling_keyring).absolute()) if tooling_keyring is not None else None,
         "keysDirectory": str(Path(tooling_keys_directory).absolute()) if tooling_keys_directory is not None else None}
+    apple = {} if sdk_apple_validation_policy is None else {"sdk_apple_validation_policy": sdk_apple_validation_policy}
     instance = PhaseInstanceId("sdk", "javascript", "metadata", "node")
     identity = dict(product="sdk", component="javascript", phase="metadata", target="node")
     with tempfile.TemporaryDirectory(prefix="sdk-javascript-metadata-") as temporary:
@@ -76,7 +78,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         with sdk_workflow.verified_inputs(plan, discovery, state,
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-                repository_root=root, environ=environ, token=token, sdk_validation_tooling=tooling) as inputs:
+                repository_root=root, environ=environ, token=token, sdk_validation_tooling=tooling, **apple) as inputs:
             controls_unchanged()
             selection = inputs["selection"]
             if identity not in selection["consumers"]:
@@ -84,7 +86,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             prepared = destination / "inputs"
             ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
                 expected_build_key=expected_build_key, repository_root=root, environ=environ,
-                sdk_validation_tooling=tooling)
+                sdk_validation_tooling=tooling, **apple)
             before = _inventory(prepared, allow_empty=True)
             ready_bytes = canonical_json_bytes(ready)
             producer = product_reuse.validate_producer(product_reuse._canonical_control(
@@ -215,12 +217,17 @@ def main(argv=None) -> int:
     parser.add_argument("--required-trust-domain", choices=("development", "release"), required=True)
     parser.add_argument("--tooling-keyring", type=Path)
     parser.add_argument("--tooling-keys-directory", type=Path)
+    parser.add_argument("--sdk-apple-validation-policy", type=Path)
     arguments = vars(parser.parse_args(argv))
     if (arguments["validation_artifact_id"] is None) != (arguments["validation_artifact_sha256"] is None):
         parser.error("JavaScript validation upload ID and digest must be supplied together")
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
         parser.error("JavaScript tooling keyring and keys directory must be supplied together")
     try:
+        apple_policy = arguments.pop("sdk_apple_validation_policy")
+        if apple_policy is not None:
+            arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
+                apple_policy, "Caller Apple validation policy")
         execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:
         parser.error(str(error))

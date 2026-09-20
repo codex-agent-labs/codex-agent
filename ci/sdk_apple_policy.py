@@ -35,6 +35,25 @@ _TOOLING_FIELDS = {
 }
 
 
+def caller_apple_validation_policy(plan_path, tooling, *, keyring, keys_directory, environ=None):
+    """Map independently authenticated caller inputs; perform no I/O or admission.
+
+    The caller owns the original plan, current Git release keys and authenticated
+    tooling policy. This detached mapping neither selects nor verifies authority.
+    """
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    tooling = require_exact_keys(tooling, set(_TOOLING_FIELDS), "Caller SDK tooling policy")
+    if tooling["requiredTrustDomain"] != "release":
+        raise ValueError("Apple policy construction requires release tooling trust")
+    policy = {"plan": str(plan_path), "attestationPublicKey": None, "attestationTrustDomain": "release",
+              "keyring": str(keyring), "keysDirectory": str(keys_directory),
+              **{target: tooling[source] for source, target in _TOOLING_FIELDS.items()}}
+    apple_validation_policy_arguments(policy)
+    require_no_signing_secret(environment)
+    return policy
+
+
 def create_apple_validation_policy(plan_path, tooling_policy_path, destination, *, repository_root, environ=None):
     """Publish current Git public keys plus the existing canonical policy schema."""
     environment = os.environ if environ is None else environ
@@ -44,13 +63,8 @@ def create_apple_validation_policy(plan_path, tooling_policy_path, destination, 
     output = Path(destination).absolute()
     originals = {"plan": read_regular_file_bytes(plan_path, max_bytes=_LIMIT, reject_symlink_parents=True),
                  "tooling-policy": read_regular_file_bytes(tooling_policy_path, max_bytes=_LIMIT, reject_symlink_parents=True)}
-    tooling = require_exact_keys(load_canonical_json_bytes(originals["tooling-policy"]),
-                                 set(_TOOLING_FIELDS), "Caller SDK tooling policy")
-    if tooling["requiredTrustDomain"] != "release":
-        raise ValueError("Apple policy construction requires release tooling trust")
-    policy = {"plan": str(plan_path), "attestationPublicKey": None, "attestationTrustDomain": "release",
-              "keyring": str(output / "trust/product-signing-keys.json"), "keysDirectory": str(output / "trust/keys"),
-              **{target: tooling[source] for source, target in _TOOLING_FIELDS.items()}}
+    policy = caller_apple_validation_policy(plan_path, load_canonical_json_bytes(originals["tooling-policy"]),
+        keyring=output / "trust/product-signing-keys.json", keys_directory=output / "trust/keys", environ=environment)
     arguments = apple_validation_policy_arguments(policy)
     files = {"plan": plan_path, "tooling-policy": tooling_policy_path,
              "tooling-public-key": arguments["tooling_public_key"], "java": arguments["java_executable"],

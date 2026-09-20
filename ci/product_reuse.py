@@ -5277,6 +5277,18 @@ def discover(
         if catalog.sdk_apple_validation_evidence_root is not None and any(
             (instance.product, instance.component, instance.phase) == ("sdk", "sdk-ios", "validation")
             for instance in closure))
+    if automatic_tooling and sdk_apple_validation_policy is None:
+        if sdk_validation_tooling is None:
+            # Catalog proofs cannot supply missing current-invocation authority.
+            # Explicit proof inputs still fail closed below instead of disappearing.
+            catalog_apple_roots = ()
+        elif catalog_apple_roots or sdk_apple_evidence_roots:
+            if trust is None:
+                raise ValueError("Automatic Apple discovery requires current Git release trust")
+            from sdk_apple_policy import caller_apple_validation_policy
+            sdk_apple_validation_policy = caller_apple_validation_policy(
+                Path(plan_path).absolute(), sdk_validation_tooling,
+                keyring=trust.keyring, keys_directory=trust.keys, environ=environment)
     apple_records = _capture_apple_handoffs((*catalog_apple_roots, *sdk_apple_evidence_roots),
         destination / "sdk-apple-validation-evidence", destination)
     catalog_aggregate_roots = tuple(catalog.runtime_aggregate_evidence_root

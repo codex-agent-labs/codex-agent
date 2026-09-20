@@ -4,10 +4,13 @@ from contextlib import redirect_stderr
 import io
 import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
 from ci import sdk_javascript_metadata_workflow as workflow
+from ci.tests.test_sdk_native_package_execution import caller_apple_policy
+from products.inventory import canonical_json_bytes
 
 
 class SdkJavaScriptMetadataCliTest(unittest.TestCase):
@@ -48,6 +51,30 @@ class SdkJavaScriptMetadataCliTest(unittest.TestCase):
                 workflow.main(self.argv(omit=name))
             self.assertEqual(2, failure.exception.code)
             execute.assert_not_called()
+
+    def test_cli_canonical_apple_policy_adds_only_explicit_mapping_and_rejects_malformed_bytes(self):
+        with tempfile.TemporaryDirectory(prefix="javascript-metadata-apple-cli-") as temporary:
+            root = Path(temporary).resolve()
+            path = root / "apple policy.json"
+            policy = caller_apple_policy(root)
+            raw = canonical_json_bytes(policy)
+            path.write_bytes(raw)
+            with patch.dict(os.environ, {"GITHUB_TOKEN": "caller token"}, clear=True), \
+                    patch.object(workflow, "execute") as execute:
+                self.assertEqual(0, workflow.main(self.argv()))
+                omitted = dict(execute.call_args.kwargs)
+                self.assertNotIn("sdk_apple_validation_policy", omitted)
+                execute.reset_mock()
+                self.assertEqual(0, workflow.main([*self.argv(), "--sdk-apple-validation-policy", str(path)]))
+                execute.assert_called_once_with(**omitted, sdk_apple_validation_policy=policy)
+                self.assertEqual(raw, path.read_bytes())
+            for invalid in (b"{", b"[]\n", b"null\n", b'{ "plan": "noncanonical" }\n'):
+                with self.subTest(invalid=invalid), patch.object(workflow, "execute") as execute, \
+                        redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failure:
+                    path.write_bytes(invalid)
+                    workflow.main([*self.argv(), "--sdk-apple-validation-policy", str(path)])
+                self.assertEqual(2, failure.exception.code)
+                execute.assert_not_called()
 
     def test_absent_locator_pair_selects_original_receipt_discovery(self):
         fields = {name: value for name, value in self.fields.items()

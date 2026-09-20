@@ -91,6 +91,16 @@ class SdkIosPackageCliTest(unittest.TestCase):
         self.assertEqual(Path("/work/tooling-keyring.json"), execute.call_args.kwargs["tooling_keyring"])
         self.assertEqual(Path("/work/tooling-keys"), execute.call_args.kwargs["tooling_keys_directory"])
 
+    def test_optional_apple_policy_is_parsed_and_forwarded_without_alternative_authority(self):
+        policy = {"caller": "Apple validation policy"}
+        path = Path("/work/apple-policy.json")
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "token"}, clear=True), \
+                patch.object(command.product_reuse, "_canonical_control", return_value=policy) as canonical, \
+                patch.object(command, "execute") as execute:
+            self.assertEqual(0, command.main(self.arguments() + ["--sdk-apple-validation-policy", str(path)]))
+        canonical.assert_called_once_with(path, "Caller Apple validation policy")
+        self.assertIs(policy, execute.call_args.kwargs["sdk_apple_validation_policy"])
+
     def test_removed_legacy_apple_native_and_proof_flags_are_rejected(self):
         removed = (
             ("--apple-artifact-id", "12"),

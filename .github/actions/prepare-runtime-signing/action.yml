@@ -125,7 +125,15 @@ runs:
                 cwd=trusted, env=os.environ, check=True)
             policy = capture / 'tooling-policy.json'
             read_regular_file_bytes(policy, reject_symlink_parents=True)
-            optional = ['--sdk-validation-tooling', str(policy)]
+            require_no_signing_secret(os.environ)
+            apple_destination = parent / 'apple-policy'
+            subprocess.run([sys.executable, '-B', str(trusted / 'ci/sdk_apple_policy.py'),
+                '--plan', str(plan_path), '--tooling-policy', str(policy),
+                '--destination', str(apple_destination), '--repository-root', str(candidate)],
+                cwd=trusted, env=os.environ, check=True)
+            apple_policy = apple_destination / 'apple-validation-policy.json'
+            read_regular_file_bytes(apple_policy, reject_symlink_parents=True)
+            optional = ['--sdk-validation-tooling', str(policy), '--sdk-apple-validation-policy', str(apple_policy)]
         require_no_signing_secret(os.environ)
         if read_regular_file_bytes(plan_path, reject_symlink_parents=True) != plan_bytes:
             raise ValueError('Original preparation plan changed before execution')

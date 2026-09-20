@@ -16,6 +16,9 @@ inputs:
   sdk-validation-tooling:
     default: ''
     description: Optional caller-owned local authenticated SDK tooling policy.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional caller-owned local Apple policy for replaying retained validation state.
   trusted-workflow-sha:
     required: true
     description: Reviewed product workflow revision.
@@ -51,6 +54,7 @@ runs:
       with:
         product: sdk-ios-binary
         sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
         plan-id: ${{ inputs.plan-id }}
         artifact-id: ${{ inputs.artifact-id }}
         artifact-sha256: ${{ inputs.artifact-sha256 }}
@@ -97,11 +101,13 @@ runs:
         RUST_SIMULATOR_ID: ${{ inputs.rust-simulator-artifact-id }}
         RUST_SIMULATOR_SHA256: ${{ inputs.rust-simulator-artifact-sha256 }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
         tooling=()
         if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+        if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
         python3 -B -m ci.sdk_workflow ios-binary \
           --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
           --destination "$GITHUB_WORKSPACE/build/sdk-ios-worker" \

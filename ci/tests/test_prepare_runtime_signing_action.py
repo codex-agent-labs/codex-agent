@@ -1,6 +1,7 @@
 """Preparation action composition; no remote, tooling or signing process runs."""
 
 import os
+from itertools import product
 from pathlib import Path
 import re
 import subprocess
@@ -76,34 +77,73 @@ class PrepareRuntimeSigningActionTest(unittest.TestCase):
             self.assertTrue(self.policy.is_relative_to(self.scratch))
             self.policy.parent.mkdir()
             self.policy.write_bytes(b'{"synthetic":"authenticated capture seam"}\n')
+        elif script.name == 'sdk_apple_policy.py':
+            fields = dict(zip(command[3::2], command[4::2]))
+            destination = self.policy.parent.parent / 'apple-policy'
+            self.assertEqual({'--plan': str(self.plan_path), '--tooling-policy': str(self.policy),
+                '--destination': str(destination), '--repository-root': str(self.candidate)}, fields)
+            self.assertTrue(destination.is_relative_to(self.scratch))
+            self.assertFalse(destination.is_relative_to(self.destination))
+            self.assertFalse(destination.exists())
+            self.assertNotIn('CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY', kwargs['env'])
+            destination.mkdir()
+            self.apple_policy = destination / 'apple-validation-policy.json'
+            self.apple_policy.write_bytes(b'{"synthetic":"caller Apple policy seam"}\n')
         else:
             self.assertEqual('runtime_release.py', script.name)
             self.assertEqual('--prepare-only', command[3])
             fields = dict(zip(command[4::2], command[5::2]))
             expected = {'--repository-root': str(self.trusted), '--candidate-root': str(self.candidate),
-                '--plan': str(self.plan_path), '--destination': str(self.destination), '--target': 'linux-x64',
+                '--plan': str(self.plan_path), '--destination': str(self.destination), '--target': self.environment['TARGET'],
                 '--expected-build-key': self.environment['BUILD_KEY'], '--artifact-id': '71',
                 '--artifact-sha256': self.environment['ARTIFACT_SHA256'], '--state-wave': '4',
                 '--trusted-source-sha': self.environment['SOURCE_SHA'], '--trusted-workflow-sha': self.environment['WORKFLOW_SHA'],
                 '--validation-tree': self.environment['VALIDATION_TREE']}
             if self.environment['TOOLING_ARTIFACT_ID']:
                 expected['--sdk-validation-tooling'] = str(self.policy)
+                expected['--sdk-apple-validation-policy'] = str(self.apple_policy)
             self.assertEqual(expected, fields)
             self.destination.mkdir()
             (self.destination / 'preparation.json').write_bytes(b'{"synthetic":"preparation boundary"}\n')
         return subprocess.CompletedProcess(command, 0)
 
     def test_optional_tooling_uses_trusted_scripts_and_candidate_git_policy(self):
-        for supplied in (False, True):
-            self.destination = self.scratch / f'prepared-{supplied}'
+        for target, supplied in product(('linux-x64', 'aggregate'), (False, True)):
+            self.destination = self.scratch / f'prepared-{target}-{supplied}'
             self.environment['DESTINATION'] = str(self.destination)
+            self.environment.update(TARGET=target, TOOLING_ARTIFACT_ID='', TOOLING_ARTIFACT_SHA256='',
+                                    TOOLING_TRANSPORT_PRODUCER='')
             if supplied:
                 self.environment.update(TOOLING_ARTIFACT_ID='72', TOOLING_ARTIFACT_SHA256='sha256:' + '1' * 64,
                     TOOLING_TRANSPORT_PRODUCER=canonical_json_bytes(self.producer).decode())
-            with self.subTest(supplied=supplied), patch('subprocess.run', side_effect=self.process) as run:
+            with self.subTest(target=target, supplied=supplied), patch('subprocess.run', side_effect=self.process) as run:
                 self.execute()
-                self.assertEqual(2 if supplied else 1, run.call_count)
+                self.assertEqual(['tooling_capture.py', 'sdk_apple_policy.py', 'runtime_release.py'] if supplied else
+                                 ['runtime_release.py'], [Path(call.args[0][2]).name for call in run.call_args_list])
             self.assertIn('preparation_path=' + str(self.destination) + '\n', self.output.read_text())
+
+    def test_apple_policy_failure_or_late_plan_secret_mutation_prevents_preparation(self):
+        self.environment.update(TOOLING_ARTIFACT_ID='72', TOOLING_ARTIFACT_SHA256='sha256:' + '1' * 64,
+            TOOLING_TRANSPORT_PRODUCER=canonical_json_bytes(self.producer).decode())
+        for failure in ('policy-process', 'plan', 'secret'):
+            self.plan_path.write_bytes(canonical_json_bytes(self.plan))
+            def process(command, **kwargs):
+                if Path(command[2]).name == 'sdk_apple_policy.py' and failure == 'policy-process':
+                    raise subprocess.CalledProcessError(17, command)
+                result = self.process(command, **kwargs)
+                if Path(command[2]).name == 'sdk_apple_policy.py':
+                    if failure == 'plan':
+                        self.plan_path.write_bytes(b'changed original plan')
+                    else:
+                        kwargs['env']['CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY'] = ''
+                return result
+            with self.subTest(failure=failure), patch('subprocess.run', side_effect=process) as run, \
+                    self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                self.execute()
+            self.assertEqual(['tooling_capture.py', 'sdk_apple_policy.py'],
+                             [Path(call.args[0][2]).name for call in run.call_args_list])
+            self.assertFalse(self.destination.exists())
+            self.assertFalse(self.output.exists())
 
     def test_partial_tuple_secret_overlap_and_failure_never_emit_output(self):
         baseline = dict(self.environment)
@@ -123,6 +163,7 @@ class PrepareRuntimeSigningActionTest(unittest.TestCase):
     def test_static_only_trusted_fixed_commands_no_signing_or_candidate_action(self):
         self.assertIn('cd "$GITHUB_ACTION_PATH/../../.."', self.source)
         self.assertIn("trusted / 'ci/tooling_capture.py'", self.source)
+        self.assertIn("trusted / 'ci/sdk_apple_policy.py'", self.source)
         self.assertIn("trusted / 'ci/runtime_release.py'", self.source)
         self.assertIn("'--prepare-only'", self.source)
         self.assertIn("'JAVA_HOME_17_' + os.environ['RUNNER_ARCH']", self.source)

@@ -67,6 +67,9 @@ inputs:
   sdk-validation-tooling:
     required: true
     description: Explicit caller-owned canonical six-field tooling policy file; caller provisions its evidence, public key and Java before this action.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional caller-owned local Apple policy for replaying retained validation state.
 runs:
   using: composite
   steps:
@@ -107,6 +110,7 @@ runs:
         product: sdk
         sdk-family: native-metadata
         sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
         plan-id: ${{ inputs.plan-id }}
         artifact-id: ${{ inputs.artifact-id }}
         artifact-sha256: ${{ inputs.artifact-sha256 }}
@@ -125,6 +129,7 @@ runs:
         PREPARATION_PHASE: ${{ inputs.preparation-phase }}
         PREPARATION_TARGET: ${{ inputs.preparation-target }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
@@ -140,6 +145,7 @@ runs:
         esac
         selected=()
         if [ -n "$SDK_STATE_WAVE" ]; then selected=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
+        if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
         python3 -B -m ci.sdk_workflow capture --family "$family" --plan "$PLAN" \
           --destination "$GITHUB_WORKSPACE/build/native-preparation-input" \
           --repository-root "$GITHUB_WORKSPACE" --artifact-id "$ARTIFACT_ID" \
@@ -219,6 +225,7 @@ runs:
         SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
         SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         POLICY_SHA256: ${{ steps.policy.outputs.sha256 }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
@@ -259,6 +266,8 @@ runs:
             '--keys-directory': str(root / 'gradle/release/keys'), '--required-trust-domain': trust,
         }
         preparation_phase = os.environ.get('PREPARATION_PHASE') or 'package'
+        if os.environ.get('SDK_APPLE_VALIDATION_POLICY'):
+            fields['--sdk-apple-validation-policy'] = os.environ['SDK_APPLE_VALIDATION_POLICY']
         preparation_target = os.environ.get('PREPARATION_TARGET') or 'desktop'
         if (preparation_phase, preparation_target) != ('package', 'desktop'):
             fields['--preparation-phase'] = preparation_phase

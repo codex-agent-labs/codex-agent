@@ -88,6 +88,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
     @contextmanager
     def verified_inputs(self, *args, **kwargs):
         self.assertEqual(self.tooling_policy, kwargs["sdk_validation_tooling"])
+        self.assert_apple_policy(kwargs)
         self.events.append("sdk-enter")
         try:
             yield self.sdk_inputs
@@ -111,6 +112,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
 
     def materialize(self, *args, **kwargs):
         self.assertEqual(self.tooling_policy, kwargs["sdk_validation_tooling"])
+        self.assert_apple_policy(kwargs)
         self.events.append("materialize")
         prepared = args[4]
         prepared.mkdir(parents=True)
@@ -148,10 +150,17 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
             self.arguments["contract_metadata_receipt"].write_bytes(b"different Contract receipt\n")
         return self.ready
 
+    def assert_apple_policy(self, arguments):
+        if self.apple_policy is None:
+            self.assertNotIn("sdk_apple_validation_policy", arguments)
+        else:
+            self.assertIs(self.apple_policy, arguments["sdk_apple_validation_policy"])
+
     def worker(self, ready, **arguments):
         self.events.append("worker")
         self.assertEqual(self.ready, ready)
         self.assertEqual(self.producer, arguments["producer"])
+        self.assertNotIn("sdk_apple_validation_policy", arguments)
         self.assertEqual(
             {"SAFE": "environment", "DEVELOPER_DIR": str(self.developer)},
             arguments["environ"],
@@ -193,6 +202,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         self.assertIn("sdk-enter", self.events)
         self.assertNotIn("sdk-exit", self.events)
         self.assertEqual(self.result["stage"], stage)
+        self.assertNotIn("sdk_apple_validation_policy", arguments)
         self.assertEqual(self.sdk_directory / "sdk-compatibility-request.json", request)
         self.assertEqual(self.destination / "inputs/sdk-sdk-ios-binary-ios/stage",
                          arguments["binary_stage_root"])
@@ -239,6 +249,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
             "keyring": None,
             "keysDirectory": None,
         }
+        self.apple_policy = changes.get("sdk_apple_validation_policy")
         arguments = dict(
             expected_build_key=self.expected_key,
             sdk_inputs_artifact_id=11,
@@ -302,6 +313,12 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         retained_plan = self.destination / "original-plan/impact-plan.json"
         self.assertEqual(self.plan_bytes, retained_plan.read_bytes())
         self.assertFalse((self.destination / "shard/original-plan").exists())
+
+    def test_optional_apple_policy_reaches_both_state_replay_seams_only(self):
+        policy = {"caller": "external Apple policy"}
+        result = self.invoke(sdk_apple_validation_policy=policy)
+        self.assertEqual(self.finalized, result)
+        self.assertNotIn("sdkAppleValidationPolicy", (self.destination / "original-plan/impact-plan.json").read_text())
 
     def test_current_contract_receipt_must_match_authenticated_sdk_inputs(self):
         self.contract_mismatch = True

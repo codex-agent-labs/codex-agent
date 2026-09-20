@@ -55,6 +55,9 @@ inputs:
   sdk-validation-tooling:
     required: true
     description: Absolute caller-owned canonical six-field tooling policy path; evidence, public key and Java must already exist. Never sourced from downloaded worker/state content.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional caller-owned local Apple policy for replaying retained validation state.
   trusted-workflow-sha:
     required: true
     description: Caller-pinned reviewed product workflow revision.
@@ -152,6 +155,7 @@ runs:
         state-wave: ${{ inputs.state-wave }}
         sdk-state-wave: ${{ inputs.sdk-state-wave }}
         sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
         trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
     - id: preparation
       name: Capture original preparation state independently
@@ -164,12 +168,14 @@ runs:
         PREPARATION_PHASE: ${{ inputs.preparation-phase }}
         SDK_STATE_WAVE: ${{ inputs.preparation-sdk-state-wave }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
         selected=()
         if [ -n "$SDK_STATE_WAVE" ]; then selected=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
+        if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
         python3 -B -m ci.sdk_workflow capture --family "native-$PREPARATION_PHASE" --plan "$PLAN" \
           --destination "$GITHUB_WORKSPACE/build/native-preparation-input" \
           --repository-root "$GITHUB_WORKSPACE" --artifact-id "$ARTIFACT_ID" \
@@ -265,6 +271,7 @@ runs:
         SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
         SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         POLICY_SHA256: ${{ steps.policy.outputs.sha256 }}
         POLICY_REVISION: ${{ steps.identity.outputs.policy_revision }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
@@ -298,6 +305,8 @@ runs:
             'java-executable': policy['javaExecutable'], 'required-trust-domain': policy['requiredTrustDomain']}
         if policy['keyring'] is not None:
             fields.update({'tooling-keyring': policy['keyring'], 'tooling-keys-directory': policy['keysDirectory']})
+        if os.environ.get('SDK_APPLE_VALIDATION_POLICY'):
+            fields['sdk-apple-validation-policy'] = os.environ['SDK_APPLE_VALIDATION_POLICY']
         for name, variable in (('dotnet-executable', 'DOTNET_EXECUTABLE'), ('dart-executable', 'DART_EXECUTABLE'),
                                ('dart-package-config', 'DART_PACKAGE_CONFIG')):
             if os.environ[variable]:

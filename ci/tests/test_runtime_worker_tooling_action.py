@@ -1,5 +1,6 @@
 """Runtime worker caller-policy routing, not tooling or product admission."""
 
+from itertools import product
 from pathlib import Path
 import shutil
 import subprocess
@@ -20,8 +21,9 @@ class RuntimeWorkerToolingActionTest(unittest.TestCase):
     def test_policy_is_optional_local_and_capture_precedes_all_setup(self):
         inputs = self.action.split("inputs:\n", 1)[1].split("runs:\n", 1)[0]
         self.assertIn("  sdk-validation-tooling:\n    default: ''", inputs)
+        self.assertIn("  sdk-apple-validation-policy:\n    default: ''", inputs)
         capture = self.action.split("    - id: captured\n", 1)[1].split("    - if:", 1)[0]
-        for name in ("component", "phase", "target", "build-key", "sdk-validation-tooling"):
+        for name in ("component", "phase", "target", "build-key", "sdk-validation-tooling", "sdk-apple-validation-policy"):
             self.assertIn(f"{name}: ${{{{ inputs.{name} }}}}", capture)
         capture_index = self.action.index("    - id: captured")
         for setup in ("./.github/actions/setup-msvc", "./.github/actions/setup-kmp",
@@ -34,6 +36,7 @@ class RuntimeWorkerToolingActionTest(unittest.TestCase):
         block = self.action.split("    - name: Execute the exact elected phase\n", 1)[1]
         script = textwrap.dedent(block.split("      run: |\n", 1)[1])
         self.assertIn("SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}", block)
+        self.assertIn("SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}", block)
         self.assertIn('${extra[@]+"${extra[@]}"}', script)
         with tempfile.TemporaryDirectory(prefix="runtime-worker-tooling-") as temporary:
             root = Path(temporary)
@@ -52,12 +55,16 @@ class RuntimeWorkerToolingActionTest(unittest.TestCase):
                 "SUPERVISOR_ID": "", "SUPERVISOR_SHA256": "",
                 "TRUSTED_WORKFLOW_SHA": "b" * 40,
             }
-            for policy, status in (("", 0), ("/caller policy/with spaces.json", 0),
-                                   ("/caller/policy.json", 17)):
-                with self.subTest(policy=policy, status=status):
+            for (policy, status), apple in product((("", 0), ("/caller policy/with spaces.json", 0),
+                                                    ("/caller/policy.json", 17)),
+                                                   (None, "", "/caller policy/apple with spaces.json")):
+                with self.subTest(policy=policy, status=status, apple=apple):
+                    environment = dict(base, SDK_VALIDATION_TOOLING=policy, PYTHON_EXIT=str(status))
+                    if apple is not None:
+                        environment["SDK_APPLE_VALIDATION_POLICY"] = apple
                     result = subprocess.run(
                         [self.shell, "--noprofile", "--norc", "-c", script], cwd=root,
-                        env=dict(base, SDK_VALIDATION_TOOLING=policy, PYTHON_EXIT=str(status)),
+                        env=environment,
                         capture_output=True, text=True, check=False)
                     self.assertEqual(status, result.returncode, result.stderr)
                     expected = [
@@ -70,6 +77,8 @@ class RuntimeWorkerToolingActionTest(unittest.TestCase):
                     ]
                     if policy:
                         expected += ["--sdk-validation-tooling", policy]
+                    if apple:
+                        expected += ["--sdk-apple-validation-policy", apple]
                     self.assertEqual(expected, recorded.read_bytes().decode().split("\0")[:-1])
 
 

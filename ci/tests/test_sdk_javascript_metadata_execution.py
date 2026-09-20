@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from ci import sdk_javascript_metadata_workflow as workflow
 from ci.tests import test_sdk_javascript_workflow as fixture
+from ci.tests.test_sdk_native_package_execution import caller_apple_policy
 from ci.tests.product_chain_support import write_receipt
 from products.inventory import (
     load_canonical_json_bytes, regular_file_inventory,
@@ -220,6 +221,28 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
         self.assertEqual(b"", (self.destination / "validation-upload/original/worker/gradle.log").read_bytes())
         self.assertFalse(self.capture_path.exists())
         self.assertFalse(self.candidate_path.exists())
+
+    def test_explicit_apple_policy_reaches_both_replays_without_replacing_existing_gates(self):
+        policy = caller_apple_policy(self.root / "caller")
+        before = dict(policy)
+        self.arguments["sdk_apple_validation_policy"] = policy
+
+        def forwarded(delegate):
+            def invoke(*args, **kwargs):
+                self.assertIs(policy, kwargs.pop("sdk_apple_validation_policy"))
+                return delegate(*args, **kwargs)
+            return invoke
+
+        with patch.object(self, "verified", side_effect=forwarded(self.verified)) as verified, \
+                patch.object(self, "materialize", side_effect=forwarded(self.materialize)) as materialize:
+            result = self.invoke()
+        for replay in (verified, materialize):
+            replay.assert_called_once()
+            self.assertIs(policy, replay.call_args.kwargs["sdk_apple_validation_policy"])
+        self.assertEqual(before, policy)
+        self.assertNotIn("sdkAppleValidationPolicy", result["receipt"])
+        self.assertNotIn("sdk_apple_validation_policy", result["receipt"])
+        self.assertEqual(["enter", "materialize", "capture", "package", "worker", "admission", "exit-check", "exited"], self.events)
 
     def test_missing_locator_uses_only_selected_original_then_runs_unchanged_capture(self):
         self.arguments.pop("validation_artifact_id")

@@ -40,6 +40,9 @@ inputs:
   sdk-validation-tooling:
     required: true
     description: Caller-owned canonical six-field policy; caller provisions authenticated evidence, public policy and Java before invocation.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional caller-owned local Apple policy for replaying retained validation state.
 runs:
   using: composite
   steps:
@@ -84,6 +87,7 @@ runs:
         state-wave: ${{ inputs.state-wave }}
         sdk-state-wave: ${{ inputs.sdk-state-wave }}
         sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
         trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
     - id: identity
       shell: bash
@@ -140,6 +144,7 @@ runs:
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         POLICY_SHA256: ${{ steps.policy.outputs.sha256 }}
         POLICY_REVISION: ${{ steps.identity.outputs.policy_revision }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         python3 -B - <<'PY'
@@ -161,6 +166,8 @@ runs:
             '--required-trust-domain': policy['requiredTrustDomain'],
         }
         validation_id, validation_digest = os.environ['VALIDATION_ARTIFACT_ID'], os.environ['VALIDATION_ARTIFACT_SHA256']
+        if os.environ.get('SDK_APPLE_VALIDATION_POLICY'):
+            fields['--sdk-apple-validation-policy'] = os.environ['SDK_APPLE_VALIDATION_POLICY']
         if bool(validation_id) != bool(validation_digest):
             raise ValueError('Original validation upload ID and digest must be supplied together')
         if validation_id:

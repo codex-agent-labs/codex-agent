@@ -30,7 +30,7 @@ class SdkJavaScriptMetadataActionTest(unittest.TestCase):
         capture = self.f.block('captured')
         self.assertIn('sdk-family: javascript-metadata', capture)
         for field in ('plan-id', 'artifact-id', 'artifact-sha256', 'state-wave', 'sdk-state-wave',
-                      'trusted-workflow-sha', 'sdk-validation-tooling'):
+                      'trusted-workflow-sha', 'sdk-validation-tooling', 'sdk-apple-validation-policy'):
             self.assertIn(field + ': ${{ inputs.' + field + ' }}', capture)
         self.assertIn("product-worker: 'true'", action)
         self.assertIn("if: always() && steps.identity.outcome == 'success'", action)
@@ -127,6 +127,19 @@ class SdkJavaScriptMetadataActionTest(unittest.TestCase):
                 self.assertRaises(subprocess.CalledProcessError):
             self.f.execute('execute')
         self.assertFalse(self.f.output.exists())
+
+    def test_optional_apple_policy_is_forwarded_only_when_supplied(self):
+        self.assertIn("  sdk-apple-validation-policy:\n    default: ''", self.f.action)
+        self.assertIn('SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}',
+                      self.f.block('execute'))
+        for policy in ('', '/caller policies/apple validation.json'):
+            with self.subTest(policy=policy), patch('subprocess.run') as run:
+                self.f.environment['SDK_APPLE_VALIDATION_POLICY'] = policy
+                self.f.execute('execute')
+            command = run.call_args.args[0]
+            fields = dict(zip(command[5::2], command[6::2]))
+            self.assertEqual(policy or None, fields.get('--sdk-apple-validation-policy'))
+            self.assertEqual(self.f.environment['VALIDATION_ARTIFACT_ID'], fields['--validation-artifact-id'])
 
 
 if __name__ == '__main__':
