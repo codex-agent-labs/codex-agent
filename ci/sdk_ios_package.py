@@ -19,7 +19,7 @@ from products.inventory import (
 )
 from products.receipt import validate_phase_receipt, validate_producer, verify_output_manifest_identity
 from products.restore import PHASE_PLAN_KEYS
-from sdk_ios_phase import package_properties
+from sdk_ios_phase import binary_package_properties, package_properties
 
 
 _IDENTITY = ("sdk", "sdk-ios", "package", "ios")
@@ -56,11 +56,17 @@ def _record(value: Mapping[str, Any], identity: tuple[str, str, str, str], label
 def execute(
     plan: Mapping[str, Any], *, producer: Mapping[str, Any], sdk_version: str,
     current_contract: Mapping[str, Any], sdk_binary: Mapping[str, Any],
-    verified_distribution: Path, native_evidence: Path, compatibility_request: Path,
-    expected_sdk_compatibility: Path, expected_distribution_proof: Path,
+    compatibility_request: Path,
     repository_root: Path, destination: Path, environ: Mapping[str, str],
+    verified_distribution: Path | None = None, native_evidence: Path | None = None,
+    expected_sdk_compatibility: Path | None = None, expected_distribution_proof: Path | None = None,
 ) -> dict[str, Any]:
-    """Run canonical ``ciProductPhase`` over caller-authenticated originals."""
+    """Run canonical ``ciProductPhase`` over caller-authenticated originals.
+
+    Omitting all legacy distribution inputs packages raw binary predecessors.
+    That path produces no validation evidence and grants no compiler/host trust;
+    the caller must separately admit its package content and final validation.
+    """
     from native_wrappers import host_classifier
     from product_reuse import (
         _prepare_destination, _runtime_worker_checkout, _runtime_worker_command,
@@ -90,7 +96,12 @@ def execute(
     if binary[-1]["productVersion"] != version:
         raise ValueError("Authenticated iOS SDK binary version differs from the elected SDK version")
 
-    directories = {
+    legacy_inputs = (verified_distribution, native_evidence, expected_sdk_compatibility,
+                     expected_distribution_proof)
+    binary_only = all(value is None for value in legacy_inputs)
+    if not binary_only and any(value is None for value in legacy_inputs):
+        raise ValueError("iOS SDK package legacy inputs must be supplied together")
+    directories = {} if binary_only else {
         "distribution": Path(verified_distribution),
         "native": Path(native_evidence),
     }
@@ -104,9 +115,9 @@ def execute(
         directory_inventories[name] = inventory
     files = {
         "request": Path(compatibility_request),
-        "compatibility": Path(expected_sdk_compatibility),
-        "proof": Path(expected_distribution_proof),
     }
+    if not binary_only:
+        files.update(compatibility=Path(expected_sdk_compatibility), proof=Path(expected_distribution_proof))
     file_bytes = {}
     for name, source in files.items():
         if not source.is_absolute() or source.resolve(strict=True) != source:
@@ -129,12 +140,19 @@ def execute(
         sdk_build / f"imported-sdk-binary-stages/{tree}/sdk-ios",
         sdk_build / f"sdk-compatibility/{tree}",
         sdk_build / f"apple-sdk-package-tasks/{tree}",
+    ) + ((
+        ios_build / "imported-frameworks",
+        ios_build / "XCFrameworks/release",
+        ios_build / "release-xcframework",
+        ios_build / "apple-distribution",
+        ios_build / "distributions",
+    ) if binary_only else (
         ios_build / "imported-rust",
         ios_build / "imported-verified-apple",
         ios_build / "distributions",
         ios_build / "reports",
-    )
-    owned_files = (ios_build / "swift-authentication-tests-summary.json",)
+    ))
+    owned_files = () if binary_only else (ios_build / "swift-authentication-tests-summary.json",)
     original_paths = (
         contract[1], contract[2], binary[1], binary[2],
         *directories.values(), *files.values(), *request_inventory,
@@ -177,12 +195,18 @@ def execute(
         raise ValueError("iOS SDK package requested an unauthenticated predecessor")
 
     originals_unchanged()
-    fields = package_properties(
-        selected, sdk_version=version, predecessor=predecessor,
-        verified_distribution=directories["distribution"], native_evidence=directories["native"],
-        compatibility_request=files["request"], expected_sdk_compatibility=files["compatibility"],
-        expected_distribution_proof=files["proof"],
-    )
+    if binary_only:
+        fields = binary_package_properties(
+            selected, sdk_version=version, predecessor=predecessor,
+            compatibility_request=files["request"],
+        )
+    else:
+        fields = package_properties(
+            selected, sdk_version=version, predecessor=predecessor,
+            verified_distribution=directories["distribution"], native_evidence=directories["native"],
+            compatibility_request=files["request"], expected_sdk_compatibility=files["compatibility"],
+            expected_distribution_proof=files["proof"],
+        )
     fields.update({
         "codexAgent.candidateCommit": current_producer["commit"],
         "codexAgent.candidateTree": current_producer["tree"],
@@ -232,12 +256,16 @@ def execute(
     if {output["kind"] for output in manifest["outputs"]} != {"apple", "evidence", "maven"}:
         raise ValueError("iOS SDK package output is missing a canonical output family")
     output_inventory = _inventory(stage, allow_empty=True)
-    validation_inventory = _inventory(validation, allow_empty=True)
-    if not output_inventory or not validation_inventory:
-        raise ValueError("iOS SDK package output or external validation evidence is empty")
+    if not output_inventory:
+        raise ValueError("iOS SDK package output is empty")
     unchanged()
-    return {
+    result = {
         "stage": stage, "diagnostics": destination, "outputInventory": output_inventory,
-        "validationEvidence": validation,
-        "validationEvidenceInventory": validation_inventory,
     }
+    if not binary_only:
+        validation_inventory = _inventory(validation, allow_empty=True)
+        if not validation_inventory:
+            raise ValueError("iOS SDK package external validation evidence is empty")
+        unchanged()
+        result.update(validationEvidence=validation, validationEvidenceInventory=validation_inventory)
+    return result
