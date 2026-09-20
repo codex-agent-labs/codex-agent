@@ -215,11 +215,14 @@ def verify_sdk_apple_binary_package_content(
     repository: Path, tooling_evidence: Path, tooling_public_key: Path,
     java_executable: Path, policy_revision: str, required_trust_domain: str,
     tooling_keyring: Path | None = None, tooling_keys_directory: Path | None = None,
+    execution_capture_directory: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Replay on a matching Apple host; caller authenticates original receipts and source election.
 
     Source bytes and toolchain expectations come from immutable Git, never the
     mutable checkout. This returns content inventory, not compiler/test proof.
+    Optional capture retains external events plus their original input binding;
+    the caller must authenticate both through one original execution receipt.
     """
     require_semver(sdk_version, "Apple SDK version")
     developer = Path(developer_directory)
@@ -227,26 +230,56 @@ def verify_sdk_apple_binary_package_content(
         raise ValueError("Apple replay requires an explicit normalized developer directory")
     for ancestor in (developer, *developer.parents):
         require_regular_directory(ancestor, "Apple developer directory ancestry")
+    capture = Path(execution_capture_directory) if execution_capture_directory is not None else None
+    if capture is not None:
+        if not capture.is_absolute() or capture.resolve() != capture or capture.exists():
+            raise ValueError("Apple package execution capture must be fresh and normalized")
+        for ancestor in capture.parents:
+            require_regular_directory(ancestor, "Apple package capture ancestry")
+        originals = (product_directory, binary_frameworks, expected_sdk_compatibility,
+                     developer, tooling_evidence, tooling_public_key, java_executable,
+                     *(path for path in (tooling_keyring, tooling_keys_directory) if path is not None))
+        for original in originals:
+            original = Path(original).resolve()
+            if capture == original or capture in original.parents or original in capture.parents:
+                raise ValueError("Apple package execution capture overlaps an original input")
     with tempfile.TemporaryDirectory(prefix="sdk-apple-package-source-") as temporary:
         source = Path(temporary).resolve() / "source"
         toolchain = capture_apple_package_sources(Path(repository), source_revision, source)
-        before = _verify_sdk_apple_with_tooling(
-            sources={"product": (Path(product_directory), False),
-                     "binary": (Path(binary_frameworks), False), "source": (source, False)},
-            expected_paths={"sdk-compatibility.json": Path(expected_sdk_compatibility)},
-            command_name="verify-apple-binary-package",
-            argument_builder=lambda private, expected, root: {
+        def arguments(private, expected, root):
+            values = {
                 "product-directory": private["product"], "version": sdk_version,
                 "binary-frameworks": private["binary"], "source-snapshot": private["source"],
                 "sdk-compatibility": expected["sdk-compatibility.json"],
                 "work-directory": root / "replay", "developer-directory": developer,
                 "xcode-version": toolchain["xcodeVersion"], "xcode-build": toolchain["xcodeBuild"],
                 "swift-version": toolchain["swiftVersion"],
-            },
+            }
+            if capture is not None:
+                for original in (root, source):
+                    if capture == original or capture in original.parents or original in capture.parents:
+                        raise ValueError("Apple package execution capture overlaps private work")
+                capture.mkdir()
+                values.update({"execution-evidence-directory": capture / "events",
+                               "execution-binding-file": capture / "input-binding.json"})
+            return values
+        before = _verify_sdk_apple_with_tooling(
+            sources={"product": (Path(product_directory), False),
+                     "binary": (Path(binary_frameworks), False), "source": (source, False)},
+            expected_paths={"sdk-compatibility.json": Path(expected_sdk_compatibility)},
+            command_name="capture-apple-binary-package-evidence" if capture is not None else "verify-apple-binary-package",
+            argument_builder=arguments,
             repository=repository, tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
             java_executable=java_executable, policy_revision=policy_revision, required_trust_domain=required_trust_domain,
             tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
         )
     for ancestor in (developer, *developer.parents):
         require_regular_directory(ancestor, "Apple developer directory recheck")
+    if capture is not None:
+        inventory = _input_inventory(capture, allow_empty=True)
+        if (not any(record["relativePath"].startswith("events/") for record in inventory)
+                or {record["relativePath"].split("/")[0] for record in inventory} != {"events", "input-binding.json"}
+                or not read_regular_file_bytes(capture / "input-binding.json", max_bytes=16 * 1024 * 1024,
+                                               reject_symlink_parents=True)):
+            raise ValueError("Apple package execution capture is incomplete")
     return before["product"]

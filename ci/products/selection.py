@@ -304,6 +304,8 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/sdk_apple_simulator_evidence.py",
     "gradle/build-logic/src/main/kotlin/ApplePackageExecutionEvidence.kt",
     "gradle/build-logic/src/main/kotlin/AppleOriginalPackageExecution.kt",
+    "gradle/build-logic/src/main/kotlin/ApplePackageExecutionBinding.kt",
+    "gradle/build-logic/src/main/kotlin/AppleOriginalSimulatorExecution.kt",
     "gradle/build-logic/src/main/kotlin/AppleValidationBindingReplay.kt",
     "ci/products/sdk_apple_framework.py",
     "ci/products/sdk_apple_source.py",

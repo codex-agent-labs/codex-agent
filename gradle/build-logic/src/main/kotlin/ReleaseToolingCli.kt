@@ -56,13 +56,15 @@ internal fun runReleaseTooling(arguments: Array<String>) {
             val inputs = arrayOf("product-directory", "version", "binary-frameworks", "source-snapshot",
                 "sdk-compatibility", "work-directory", "developer-directory",
                 "xcode-version", "xcode-build", "swift-version")
-            options.requireOnly(*(inputs + if (captureEvidence) arrayOf("execution-evidence-directory") else emptyArray()))
+            options.requireOnly(*(inputs + if (captureEvidence)
+                arrayOf("execution-evidence-directory", "execution-binding-file") else emptyArray()))
             verifyAppleBinaryPackageWithTools(
                 options.file("product-directory"), options.required("version"), options.file("binary-frameworks"),
                 options.file("source-snapshot"), options.file("sdk-compatibility"), options.file("work-directory"),
                 options.file("developer-directory"), options.required("xcode-version"), options.required("xcode-build"),
                 options.required("swift-version"),
                 executionEvidenceDirectory = if (captureEvidence) options.file("execution-evidence-directory") else null,
+                executionBindingFile = if (captureEvidence) options.file("execution-binding-file") else null,
             )
         }
         "verify-apple-validation-binding-content" -> {

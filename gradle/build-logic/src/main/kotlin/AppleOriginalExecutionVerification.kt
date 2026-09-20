@@ -528,7 +528,7 @@ private fun verifyOriginalAppleXCTestRaw(raw: File, execution: File, retained: J
     check(reconstructed == retained) { "Original Apple XCTest evidence differs from raw xcresult observations" }
 }
 
-private fun File.verifyOriginalAppleProcess(path: String, requireSuccess: Boolean): JsonObject {
+internal fun File.verifyOriginalAppleProcess(path: String, requireSuccess: Boolean): JsonObject {
     val capture = resolve(path)
     check(verifiedRegularFiles(capture).keys == setOf("execution.json", "stdout.bin", "stderr.bin")) {
         "Original Apple process capture inventory changed: $path"
@@ -554,7 +554,7 @@ private fun File.verifyOriginalAppleProcess(path: String, requireSuccess: Boolea
     return execution
 }
 
-private fun JsonObject.releaseCommand(): List<String> = releaseArray("command").map { value ->
+internal fun JsonObject.releaseCommand(): List<String> = releaseArray("command").map { value ->
     val primitive = value as? JsonPrimitive ?: error("Original Apple process command contains a non-string")
     check(primitive.isString && primitive.content.isNotBlank() && primitive.content.none(Char::isISOControl)) {
         "Original Apple process command contains an invalid argument"
@@ -562,7 +562,7 @@ private fun JsonObject.releaseCommand(): List<String> = releaseArray("command").
     primitive.content
 }
 
-private fun JsonObject.releaseWorkingDirectory(): String {
+internal fun JsonObject.releaseWorkingDirectory(): String {
     val value = this["workingDirectory"] as? JsonPrimitive
         ?: error("Original Apple process working directory is missing")
     check(value.isString && File(value.content).isAbsolute &&
@@ -572,7 +572,7 @@ private fun JsonObject.releaseWorkingDirectory(): String {
     return value.content
 }
 
-private fun JsonObject.releaseExitCodeOrNull(): Int? {
+internal fun JsonObject.releaseExitCodeOrNull(): Int? {
     val value = this["exitCode"]
     if (value === JsonNull) return null
     val primitive = value as? JsonPrimitive ?: error("Original Apple process result is invalid")
@@ -597,7 +597,7 @@ private fun String.requiredOriginalAppleAbsolutePath(label: String, context: Str
 private fun String.normalizedOriginalApplePath(): String = File(this).toPath().normalize().toString()
     .replace(File.separatorChar, '/')
 
-private fun File.readCanonicalOriginalAppleObject(label: String): JsonObject {
+internal fun File.readCanonicalOriginalAppleObject(label: String): JsonObject {
     check(isFile && !Files.isSymbolicLink(toPath())) { "$label is missing or unsafe" }
     val contents = readStrictUtf8()
     val root = releaseJson.parseToJsonElement(contents) as? JsonObject ?: error("$label is not a JSON object")
@@ -607,7 +607,7 @@ private fun File.readCanonicalOriginalAppleObject(label: String): JsonObject {
     return root
 }
 
-private fun File.readStrictUtf8(): String {
+internal fun File.readStrictUtf8(): String {
     check(isFile && !Files.isSymbolicLink(toPath())) { "Original Apple evidence file is missing or unsafe: $this" }
     val bytes = readBytes()
     return Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)

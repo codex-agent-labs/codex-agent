@@ -8,7 +8,11 @@ internal fun verifyAppleBinaryPackageWithTools(
     sdkCompatibility: File, workDirectory: File, developerDirectory: File,
     expectedXcodeVersion: String, expectedXcodeBuild: String, expectedSwiftVersion: String,
     executionEvidenceDirectory: File? = null,
+    executionBindingFile: File? = null,
 ) {
+    check((executionEvidenceDirectory == null) == (executionBindingFile == null)) {
+        "Apple execution capture requires both raw evidence and original input binding"
+    }
     check(PRODUCT_SEMVER.matches(version)) { "Apple binary package version is invalid" }
     val inputs = listOf(productDirectory, binaryFrameworks, sourceSnapshot, sdkCompatibility, developerDirectory)
     (inputs + workDirectory).forEach { requireApplePackagePathWithoutSymlinks(it, "binary package tooling") }
@@ -22,12 +26,25 @@ internal fun verifyAppleBinaryPackageWithTools(
     val scratch = Files.createTempDirectory("codex-agent-apple-package-tools-").toFile().canonicalFile
     try {
         requireOriginalAppleSnapshotDisjoint(scratch, inputs + workDirectory)
+        val context = ApplePackageExecutionContext(
+            scratch, workDirectory, sourceSnapshot, binaryFrameworks, developerDirectory,
+        )
+        executionBindingFile?.let { binding ->
+            requireApplePackagePathWithoutSymlinks(binding, "package execution binding")
+            check(binding.isAbsolute && binding.toPath().normalize() == binding.toPath() &&
+                binding.canonicalFile == binding && !Files.exists(binding.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+                "Apple package execution binding must be fresh and normalized"
+            }
+            requireOriginalAppleSnapshotDisjoint(binding,
+                inputs + workDirectory + scratch + checkNotNull(executionEvidenceDirectory))
+        }
+        val originalInputs = executionBindingFile?.let {
+            captureApplePackageExecutionInputs(productDirectory, binaryFrameworks, sourceSnapshot, sdkCompatibility)
+        }
         val recorder = executionEvidenceDirectory?.let { evidence ->
             requireApplePackagePathWithoutSymlinks(evidence, "package execution evidence")
             requireOriginalAppleSnapshotDisjoint(evidence, inputs + workDirectory + scratch)
-            ApplePackageExecutionRecorder(evidence, ApplePackageExecutionContext(
-                scratch, workDirectory, sourceSnapshot, binaryFrameworks, developerDirectory,
-            ))
+            ApplePackageExecutionRecorder(evidence, context)
         }
         fun run(command: List<String>): Pair<Int, String> {
             check(command.firstOrNull() in setOf("/usr/bin/xcodebuild", "/usr/bin/xcrun", "/usr/bin/plutil", "/usr/bin/grep")) {
@@ -72,6 +89,11 @@ internal fun verifyAppleBinaryPackageWithTools(
             workDirectory, listOf(scratch.path, workDirectory.canonicalPath, sourceSnapshot.canonicalPath), ::capture, ::run)
         verifyToolchain()
         recorder?.finish()
+        executionBindingFile?.let { binding ->
+            writeApplePackageExecutionBinding(binding, context, checkNotNull(originalInputs),
+                productDirectory, binaryFrameworks, sourceSnapshot, sdkCompatibility)
+            checkNotNull(recorder).finish()
+        }
     } finally {
         deleteReleaseTree(scratch)
     }

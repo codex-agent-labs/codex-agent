@@ -89,13 +89,16 @@ class SdkAppleContentTest(unittest.TestCase):
             self.assertFalse({"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "CLASSPATH"} & set(kwargs["env"]))
             self.mutate(fields)
             return subprocess.CompletedProcess(command, 0)
-        if command[3] == "verify-apple-binary-package":
+        if command[3] in {"verify-apple-binary-package", "capture-apple-binary-package-evidence"}:
+            capturing = command[3] == "capture-apple-binary-package-evidence"
             self.assertEqual("0.2.0", fields.pop("--version"))
             self.assertEqual("26.6", fields.pop("--xcode-version"))
             self.assertEqual("17F113", fields.pop("--xcode-build"))
             self.assertEqual("6.3.3", fields.pop("--swift-version"))
             self.assertEqual({"--product-directory", "--binary-frameworks", "--source-snapshot",
-                              "--sdk-compatibility", "--work-directory", "--developer-directory"}, set(fields))
+                              "--sdk-compatibility", "--work-directory", "--developer-directory"} |
+                             ({"--execution-evidence-directory", "--execution-binding-file"} if capturing else set()),
+                             set(fields))
             fields = {name: Path(value) for name, value in fields.items()}
             self.assertEqual(self.developer, fields["--developer-directory"])
             self.assertFalse(fields["--work-directory"].exists())
@@ -105,6 +108,14 @@ class SdkAppleContentTest(unittest.TestCase):
             self.assertEqual(b"immutable source\n", (fields["--source-snapshot"] / "source.txt").read_bytes())
             self.assertEqual(self.compatibility.read_bytes(), fields["--sdk-compatibility"].read_bytes())
             self.assertNotIn("JAVA_TOOL_OPTIONS", kwargs["env"])
+            if capturing:
+                events = fields["--execution-evidence-directory"]
+                binding = fields["--execution-binding-file"]
+                self.assertEqual(events.parent / "input-binding.json", binding)
+                self.assertNotEqual(events.parent, kwargs["cwd"])
+                events.mkdir()
+                (events / "combined.bin").write_bytes(b"")
+                binding.write_bytes(b"mock external binding, not semantic evidence\n")
             self.mutate(fields)
             return subprocess.CompletedProcess(command, 0)
         if command[3] == "verify-original-apple-execution":
@@ -234,6 +245,44 @@ class SdkAppleContentTest(unittest.TestCase):
             self.assertEqual(regular_file_inventory(self.product), self.verify_binary())
         self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
         self.assertEqual(1, len(self.calls))
+
+    def test_binary_capture_retains_external_binding_and_empty_original_streams(self):
+        destination = self.root / "captured-execution"
+        before = regular_file_inventory(self.product)
+        self.assertEqual(before, self.verify_binary(execution_capture_directory=destination))
+        self.assertEqual(b"", (destination / "events/combined.bin").read_bytes())
+        self.assertTrue((destination / "input-binding.json").is_file())
+        self.assertEqual(before, regular_file_inventory(self.product))
+        self.assertEqual("capture-apple-binary-package-evidence", self.calls[-1][3])
+
+    def test_binary_capture_rejects_stale_overlap_and_symlink_before_execution(self):
+        alias = self.root / "capture-alias"
+        alias.symlink_to(self.product, target_is_directory=True)
+        for destination in (self.product, self.product / "new", alias / "new"):
+            with self.subTest(destination=destination), self.assertRaises(ValueError):
+                self.verify_binary(execution_capture_directory=destination)
+        self.assertEqual([], self.calls)
+        self.assertFalse((self.product / "new").exists())
+
+    def test_binary_capture_failure_preserves_diagnostics_but_returns_no_inventory(self):
+        failed = self.root / "failed-capture"
+        def fail(_fields):
+            raise subprocess.CalledProcessError(1, "capture", stderr=b"original failure")
+        self.mutate = fail
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.verify_binary(execution_capture_directory=failed)
+        self.assertEqual(b"", (failed / "events/combined.bin").read_bytes())
+        self.mutate = lambda fields: fields["--execution-binding-file"].unlink()
+        with self.assertRaisesRegex(ValueError, "capture is incomplete"):
+            self.verify_binary(execution_capture_directory=self.root / "incomplete-capture")
+
+    def test_binary_capture_tooling_rejection_creates_no_capture_directory(self):
+        destination = self.root / "untrusted-capture"
+        with patch.object(self, "capture", side_effect=ValueError("tooling authority")), \
+                self.assertRaisesRegex(ValueError, "tooling authority"):
+            self.verify_binary(execution_capture_directory=destination)
+        self.assertFalse(destination.exists())
+        self.assertEqual([], self.calls)
 
     def test_binary_replay_rejects_private_mutation_and_process_failure(self):
         for option, member in (("--binary-frameworks", "synthetic-framework"), ("--source-snapshot", "source.txt")):

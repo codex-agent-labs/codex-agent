@@ -40,8 +40,10 @@ class AppleBinaryPackageReplayTest {
                 val scratch = fixture.root.resolve("scratch").apply { mkdirs() }
                 val developer = fixture.root.resolve("developer").apply { mkdirs() }
                 val evidence = fixture.root.resolve("execution-evidence")
-                val recorder = ApplePackageExecutionRecorder(evidence,
-                    ApplePackageExecutionContext(scratch, work, sources, binary, developer))
+                val binding = fixture.root.resolve("input-binding.json")
+                val context = ApplePackageExecutionContext(scratch, work, sources, binary, developer)
+                val originalInputs = captureApplePackageExecutionInputs(fixture.product, binary, sources, fixture.compatibility)
+                val recorder = ApplePackageExecutionRecorder(evidence, context)
                 fun toolchainObservations() {
                     recorder.record(listOf("/usr/bin/xcodebuild", "-version"), 0,
                         "Xcode 26.6\nBuild version 17F113\n".toByteArray())
@@ -84,8 +86,12 @@ class AppleBinaryPackageReplayTest {
                     )
                     toolchainObservations()
                     recorder.finish()
+                    writeApplePackageExecutionBinding(binding, context, originalInputs,
+                        fixture.product, binary, sources, fixture.compatibility)
+                    recorder.finish()
                 }
                 if (mutation == "none") replay() else assertFailsWith<IllegalStateException>(mutation) { replay() }
+                assertEquals(mutation == "none", binding.isFile)
                 assertEquals(1, commands.count { it.first() == "/usr/bin/xcodebuild" })
                 assertTrue(commands.none { command -> command.any { it in setOf("compile", "test", "archive", "-emit-library") } })
             }

@@ -13,7 +13,7 @@ class ReleaseToolingAppleClosureCliTest {
             "sdk-compatibility" to "missing", "work-directory" to "missing",
             "developer-directory" to "missing", "xcode-version" to "26.6",
             "xcode-build" to "17F113", "swift-version" to "6.3.3",
-            "execution-evidence-directory" to "missing")
+            "execution-evidence-directory" to "missing", "execution-binding-file" to "missing")
         val args = arrayOf("capture-apple-binary-package-evidence",
             *values.flatMap { (key, value) -> listOf("--$key", value) }.toTypedArray())
         values.keys.forEach { missing ->
