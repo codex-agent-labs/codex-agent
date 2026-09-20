@@ -1,6 +1,7 @@
 """Optional caller-policy routing; authentication and execution are explicit seams."""
 
 from copy import deepcopy
+from itertools import product
 import os
 from pathlib import Path
 import shutil
@@ -90,8 +91,10 @@ class NativePackageToolingForwardingTest(unittest.TestCase):
 class NativePackageToolingActionTest(unittest.TestCase):
     def test_action_forwards_local_policy_to_shared_capture_and_both_shell_calls(self):
         action = (ROOT / ".github/actions/sdk-native-package-worker/action.yml").read_text()
+        self.assertIn("  sdk-apple-validation-policy:\n    default: ''", action.split("runs:\n", 1)[0])
         captured = action.split("    - id: captured\n", 1)[1].split("\n    - ", 1)[0]
         self.assertIn("sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}", captured)
+        self.assertIn("sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}", captured)
         preparation = action.split("    - id: preparation\n", 1)[1].split("\n    - ", 1)[0]
         execution = action.split("    - name: Execute one imported-source package with full admission\n", 1)[1].split("\n    - ", 1)[0]
         with tempfile.TemporaryDirectory(prefix="package-tooling-action-") as temporary:
@@ -112,12 +115,17 @@ class NativePackageToolingActionTest(unittest.TestCase):
                 "SDK_INPUTS_SHA256": "sha256:" + "e" * 64, "TRUSTED_WORKFLOW_SHA": "f" * 40}
             for block in (preparation, execution):
                 self.assertIn("SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}", block)
+                self.assertIn("SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}", block)
                 script = textwrap.dedent(block.split("      run: |\n", 1)[1])
                 calls = []
-                for policy in ("", str(root / "caller policy.json")):
-                    with self.subTest(policy=policy, preparation=block is preparation):
+                for policy, apple in product(("", str(root / "caller policy.json")),
+                                             (None, "", str(root / "caller apple policy.json"))):
+                    with self.subTest(policy=policy, apple=apple, preparation=block is preparation):
+                        selected_environment = {**environment, "SDK_VALIDATION_TOOLING": policy}
+                        if apple is not None:
+                            selected_environment["SDK_APPLE_VALIDATION_POLICY"] = apple
                         completed = subprocess.run([shutil.which("bash"), "-c", script],
-                            env={**environment, "SDK_VALIDATION_TOOLING": policy}, capture_output=True, text=True)
+                            env=selected_environment, capture_output=True, text=True)
                         self.assertEqual(0, completed.returncode, completed.stderr)
                         args = recorded.read_bytes().decode().split("\0")[:-1]
                         self.assertEqual(["-B", "-m", "ci.sdk_workflow"], args[:3])
@@ -128,8 +136,15 @@ class NativePackageToolingActionTest(unittest.TestCase):
                             del args[index:index + 2]
                         else:
                             self.assertNotIn("--sdk-validation-tooling", args)
+                        if apple:
+                            index = args.index("--sdk-apple-validation-policy")
+                            self.assertEqual(apple, args[index + 1])
+                            del args[index:index + 2]
+                        else:
+                            self.assertNotIn("--sdk-apple-validation-policy", args)
                         calls.append(args)
-                self.assertEqual(calls[0], calls[1])
+                for arguments in calls[1:]:
+                    self.assertEqual(calls[0], arguments)
 
 
 if __name__ == "__main__":

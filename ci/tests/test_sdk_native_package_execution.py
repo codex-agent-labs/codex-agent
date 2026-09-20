@@ -10,6 +10,7 @@ from copy import deepcopy
 import io
 import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -18,6 +19,16 @@ from ci.tests import test_sdk_native_prepare_workflow as fixture
 from products.inventory import canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory
 from products.receipt import compute_build_key, write_output_manifest
 from products.registry import NATIVE_TARGETS, PhaseInstanceId
+
+
+def caller_apple_policy(root):
+    # Routing fixture only: real signature/source admission is mocked below.
+    return {"plan": str(root / "plan.json"), "attestationPublicKey": None,
+        "attestationTrustDomain": "release", "keyring": str(root / "keyring.json"),
+        "keysDirectory": str(root / "keys"), "toolingEvidence": str(root / "tooling/evidence"),
+        "toolingPublicKey": str(root / "tooling/public.pub"), "javaExecutable": str(root / "java"),
+        "toolingTrustDomain": "release", "toolingKeyring": str(root / "tooling/keyring.json"),
+        "toolingKeysDirectory": str(root / "tooling/keys")}
 
 
 class SdkNativePackageExecutionTest(unittest.TestCase):
@@ -175,6 +186,34 @@ class SdkNativePackageExecutionTest(unittest.TestCase):
         self.assertFalse(self.capture_path.exists())
         self.assertEqual(self.original_plan_bytes, self.plan_path.read_bytes())
 
+    def test_explicit_apple_policy_reaches_all_three_replays_without_becoming_product_data(self):
+        policy = caller_apple_policy(self.root / "caller")
+        before = deepcopy(policy)
+
+        def forwarded(delegate):
+            def invoke(*args, **kwargs):
+                self.assertIs(policy, kwargs.pop("sdk_apple_validation_policy"))
+                # Keep the original fixture's exact no-policy argument checks.
+                return delegate(*args, **kwargs)
+            return invoke
+
+        with patch.object(workflow.sdk_workflow, "verified_inputs", side_effect=forwarded(self.verified)) as verified, \
+                patch.object(workflow.product_reuse, "inspect_products", side_effect=forwarded(self.inspect)) as inspected, \
+                patch.object(workflow.product_reuse, "materialize_product_predecessors", side_effect=forwarded(self.materialize)) as materialized, \
+                patch.object(workflow.product_reuse, "capture_sdk_native_prepared_upload", side_effect=self.capture), \
+                patch.object(workflow, "execute_package", side_effect=self.worker), \
+                patch.object(workflow, "verify_sdk_package_inputs", side_effect=self.gate):
+            result = workflow.execute(self.plan_path, self.discovery, self.state, self.destination,
+                                      **self.arguments, sdk_apple_validation_policy=policy)
+        for replay in (verified, inspected, materialized):
+            replay.assert_called_once()
+            self.assertIs(policy, replay.call_args.kwargs["sdk_apple_validation_policy"])
+        self.assertEqual(before, policy)
+        self.assertNotIn("sdkAppleValidationPolicy", result["receipt"])
+        self.assertNotIn("sdk_apple_validation_policy", result["receipt"])
+        self.assertEqual(self.original_plan_bytes, self.plan_path.read_bytes())
+        self.assertEqual(["enter", "inspect", "capture", "materialize", "worker", "gate", "exit-check", "exited"], self.events)
+
     def test_missing_duplicate_or_wrong_original_preparation_election_denies_capture(self):
         for failure in ("missing-preparation", "duplicate-preparation", "inspection-mutation", "wrong-key"):
             with self.subTest(case=failure):
@@ -257,6 +296,27 @@ class SdkNativePackageCliTest(unittest.TestCase):
                 patch.object(workflow, "execute") as execute:
             self.assertEqual(0, workflow.main(self.argv))
             execute.assert_called_once_with(**self.arguments, environ=os.environ, token="synthetic token")
+
+    def test_cli_forwards_only_canonical_external_apple_policy_and_rejects_malformed_bytes(self):
+        with tempfile.TemporaryDirectory(prefix="native-package-apple-cli-") as temporary:
+            root = Path(temporary).resolve()
+            path = root / "caller apple policy.json"
+            policy = caller_apple_policy(root)
+            raw = canonical_json_bytes(policy)
+            path.write_bytes(raw)
+            with patch.dict(os.environ, {"GITHUB_TOKEN": "caller token"}, clear=True), \
+                    patch.object(workflow, "execute") as execute:
+                self.assertEqual(0, workflow.main([*self.argv, "--sdk-apple-validation-policy", str(path)]))
+                execute.assert_called_once_with(**self.arguments, environ=os.environ, token="caller token",
+                                                sdk_apple_validation_policy=policy)
+                self.assertEqual(raw, path.read_bytes())
+            for invalid in (b"{", b"[]\n", b"null\n", b'{ "plan": "noncanonical" }\n'):
+                with self.subTest(invalid=invalid), patch.object(workflow, "execute") as execute, \
+                        redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failure:
+                    path.write_bytes(invalid)
+                    workflow.main([*self.argv, "--sdk-apple-validation-policy", str(path)])
+                self.assertEqual(2, failure.exception.code)
+                execute.assert_not_called()
 
     def test_required_identity_and_no_arbitrary_source_or_command_flags(self):
         missing = self.argv.copy()

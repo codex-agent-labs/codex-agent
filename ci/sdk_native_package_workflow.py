@@ -26,7 +26,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             preparation_component, preparation_build_key, preparation_state,
             prepared_artifact_id, prepared_artifact_sha256,
             sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
-            keyring, keys_directory, repository_root, environ, token, sdk_validation_tooling=None):
+            keyring, keys_directory, repository_root, environ, token, sdk_validation_tooling=None,
+            sdk_apple_validation_policy=None):
     """Admit one package inside full S858/original Runtime input verification.
 
     Preparation identity comes from replaying its original control state, never
@@ -61,6 +62,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
     identity = {"product": "sdk", "component": component, "phase": "package", "target": "desktop"}
     preparation_identity = {**identity, "component": preparation_component}
     tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
+    if sdk_apple_validation_policy is not None:
+        tooling["sdk_apple_validation_policy"] = sdk_apple_validation_policy
     with tempfile.TemporaryDirectory(prefix="sdk-native-package-") as temporary:
         private = Path(temporary).resolve()
         candidate, capture = private / "shard", private / "prepared-upload"
@@ -193,11 +196,16 @@ def main(argv=None) -> int:
     for name in ("prepared-artifact-id", "sdk-inputs-artifact-id"):
         parser.add_argument(f"--{name}", type=int, required=True)
     parser.add_argument("--sdk-validation-tooling", type=Path)
+    parser.add_argument("--sdk-apple-validation-policy", type=Path)
     arguments = vars(parser.parse_args(argv))
     try:
         policy = arguments.pop("sdk_validation_tooling")
         if policy is not None:
             arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
+        apple_policy = arguments.pop("sdk_apple_validation_policy")
+        if apple_policy is not None:
+            arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
+                apple_policy, "Caller Apple validation policy")
         execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:
         parser.error(str(error))

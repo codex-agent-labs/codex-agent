@@ -75,11 +75,24 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertNotIn("ssh-keygen", self.job)
         self.assertNotRegex(self.job, r"ci/product_reuse\.py\s+(?:discover|advance-products|advance-contract)\b")
         self.assertNotRegex(self.job, r"uses: (?:actions/cache(?:/|@)|actions/setup-)")
-        self.assertEqual(["./.github/actions/capture-sdk-tooling"],
+        self.assertEqual(["./.github/actions/capture-sdk-tooling", "./.github/actions/prepare-sdk-apple-policy"],
                          re.findall(r"uses: (\./\S+)", self.job))
         self.assertLess(self.job.index("uses: ./.github/actions/capture-sdk-tooling"),
                         self.job.index("ci/product_reuse.py resume-products"))
         self.assertNotRegex(self.job, r"(?:\./gradlew|\bcargo\s+(?:build|test)|\bcmake\s|\bxcodebuild\b|\bnpm\s+(?:ci|install|run)|\bpip\s+install)")
+
+    def test_apple_policy_comes_from_original_plan_before_both_replays(self):
+        policy = self.job.split("      - id: apple-policy\n", 1)[1].split("\n      - ", 1)[0]
+        self.assertIn("if: needs.plan.outputs.tooling_required == 'true'", policy)
+        self.assertIn("plan-path: ${{ github.workspace }}/build/product-resume-inputs/plan/impact-plan.json", policy)
+        self.assertIn("tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}", policy)
+        self.assertLess(self.job.index("capture-product-resume-inputs"), self.job.index("      - id: apple-policy"))
+        self.assertLess(self.job.index("      - id: apple-policy"), self.job.index(" resume-products"))
+        for name in ("Resume the existing product planner from authenticated Contract bytes",
+                     "Elect Runtime workers from the verified resumed state"):
+            step = self.job.split("      - name: " + name, 1)[1].split("\n      - ", 1)[0]
+            self.assertIn("SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}", step)
+            self.assertIn('tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")', step)
 
     def test_entire_inputs_and_resumed_state_are_uploaded_immutably(self):
         uploads = re.findall(r"uses: actions/upload-artifact@.*?(?=^      -|\Z)",

@@ -24,7 +24,8 @@ class SdkNativeWorkerActionsTest(unittest.TestCase):
     def test_original_elections_precede_every_tool_setup_and_fixed_execution(self):
         for action, command in ((self.prepare, "native-prepare"), (self.package, "native-package")):
             with self.subTest(command=command):
-                self.assertIn("product: sdk\n        sdk-family: native-package", action)
+                family = "${{ format('native-{0}', inputs.preparation-phase) }}" if command == "native-prepare" else "native-package"
+                self.assertIn("product: sdk\n        sdk-family: " + family, action)
                 self.assertLess(action.index("./.github/actions/capture-runtime-state"), action.index("- id: identity"))
                 self.assertLess(action.index("- id: identity"), action.index("./.github/actions/setup-kmp"))
                 self.assertLess(action.index("./.github/actions/setup-kmp"), action.index("ci.sdk_workflow " + command))
@@ -141,6 +142,7 @@ class SdkNativeWorkerActionsTest(unittest.TestCase):
             base = {"MATRIX": json.dumps({"include": [current]}), "COMPONENT": "python",
                 "BUILD_KEY": current["buildKey"], "PREPARATION_MATRIX": json.dumps({"include": [original]}),
                 "PREPARATION_COMPONENT": "rust", "PREPARATION_BUILD_KEY": original["buildKey"],
+                "PREPARATION_PHASE": "package", "PREPARATION_TARGET": "desktop",
                 "PLAN": str(plan), "TREE": "a" * 40, "GITHUB_OUTPUT": str(output)}
             self.guard(self.prepare, base)
             self.guard(self.package, base)
@@ -163,6 +165,32 @@ class SdkNativeWorkerActionsTest(unittest.TestCase):
                             self.guard(action, environment)
                 with self.subTest(action=action[:30], failure="tree"), self.assertRaises(ValueError):
                     self.guard(action, {**base, "TREE": "d" * 40})
+
+    def test_preparation_preserves_exact_validation_and_metadata_anchor_identity(self):
+        with tempfile.TemporaryDirectory(prefix="native-action-anchor-") as temporary:
+            plan = Path(temporary) / "plan.json"
+            plan.write_text(json.dumps({"validationTree": "a" * 40}))
+            anchors = [("metadata", "desktop", "Linux", "X64"),
+                       ("validation", "macos-arm64", "macOS", "ARM64"),
+                       ("validation", "macos-x64", "macOS", "X64"),
+                       ("validation", "linux-arm64", "Linux", "ARM64"),
+                       ("validation", "linux-x64", "Linux", "X64"),
+                       ("validation", "windows-x64", "Windows", "X64")]
+            for phase, target, runner_os, runner_arch in anchors:
+                row = {"product": "sdk", "component": "python", "phase": phase, "target": target,
+                       "buildKey": "sha256:" + "b" * 64, "runnerOs": runner_os, "runnerArch": runner_arch}
+                environment = {"MATRIX": json.dumps({"include": [row]}), "COMPONENT": "python",
+                    "BUILD_KEY": row["buildKey"], "PREPARATION_PHASE": phase, "PREPARATION_TARGET": target,
+                    "PLAN": str(plan), "TREE": "a" * 40}
+                with self.subTest(phase=phase, target=target):
+                    self.guard(self.prepare, environment)
+                    for changes in ({"PREPARATION_PHASE": "binary"}, {"PREPARATION_TARGET": "unknown"},
+                                    {"PREPARATION_PHASE": "package"}, {"TREE": "c" * 40}):
+                        with self.subTest(changes=changes), self.assertRaises(ValueError):
+                            self.guard(self.prepare, {**environment, **changes})
+                    mismatched = {**row, "runnerArch": "X64" if runner_arch == "ARM64" else "ARM64"}
+                    with self.assertRaises(ValueError):
+                        self.guard(self.prepare, {**environment, "MATRIX": json.dumps({"include": [mismatched]})})
 
 
 if __name__ == "__main__":

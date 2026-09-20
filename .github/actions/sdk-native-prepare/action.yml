@@ -19,6 +19,9 @@ inputs:
   sdk-validation-tooling:
     default: ''
     description: Optional caller-owned local authenticated SDK tooling policy.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional caller-owned local Apple policy for replaying retained validation state.
   sdk-inputs-id:
     required: true
     description: Exact authenticated SDK inputs upload ID.
@@ -73,6 +76,7 @@ runs:
         product: sdk
         sdk-family: ${{ format('native-{0}', inputs.preparation-phase) }}
         sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
         plan-id: ${{ inputs.plan-id }}
         artifact-id: ${{ inputs.artifact-id }}
         artifact-sha256: ${{ inputs.artifact-sha256 }}
@@ -129,11 +133,13 @@ runs:
         SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
         selected=()
         if [ -n "$SDK_VALIDATION_TOOLING" ]; then selected=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+        if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
         python3 -B -m ci.sdk_workflow native-prepare --plan "$PLAN" --discovery-root "$DISCOVERY" \
           --state-root "$STATE" --destination "$GITHUB_WORKSPACE/build/sdk-native-prepare" \
           --repository-root "$GITHUB_WORKSPACE" --component "$COMPONENT" --expected-build-key "$BUILD_KEY" \

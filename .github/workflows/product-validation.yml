@@ -898,13 +898,21 @@ jobs:
             --release-artifact-id "$RELEASE_ARTIFACT_ID" --release-artifact-sha256 "$RELEASE_ARTIFACT_SHA256" \
             --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
             --destination build/product-resume-inputs
+      - id: apple-policy
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/prepare-sdk-apple-policy
+        with:
+          plan-path: ${{ github.workspace }}/build/product-resume-inputs/plan/impact-plan.json
+          tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
       - name: Resume the existing product planner from authenticated Contract bytes
         id: resume
         env:
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
+          SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
         run: |
           tooling=()
           if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
           python3 ci/product_reuse.py resume-products \
             --plan build/product-resume-inputs/plan/impact-plan.json \
             --discovery-root build/product-resume-inputs/plan/product-reuse \
@@ -916,9 +924,11 @@ jobs:
         id: runtime_matrix
         env:
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
+          SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
         run: |
           tooling=()
           if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
           python3 -B ci/runtime_workflow.py matrix \
             --plan build/product-resume-inputs/plan/impact-plan.json \
             --discovery-root build/product-resume-state --state-root build/product-resume-state \
