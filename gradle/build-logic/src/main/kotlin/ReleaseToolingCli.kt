@@ -33,6 +33,15 @@ internal fun runReleaseTooling(arguments: Array<String>) {
     val command = arguments.firstOrNull() ?: error("Release-tooling command is required")
     val options = ReleaseToolingArguments(arguments.drop(1).toTypedArray())
     when (command) {
+        "verify-imported-sdk-facade-publications" -> {
+            options.requireOnly("package-stage", "contract-version", "runtime-version", "sdk-version",
+                "kotlin-version", "forbidden-path")
+            verifyImportedSdkFacadePublicationMetadata(
+                options.file("package-stage"), options.required("contract-version"),
+                options.required("runtime-version"), options.required("sdk-version"),
+                options.required("kotlin-version"), options.required("forbidden-path"),
+            )
+        }
         "inspect-runtime-manifest" -> {
             options.requireOnly("manifest")
             val manifest = readDesktopCodexManifest(options.file("manifest"))

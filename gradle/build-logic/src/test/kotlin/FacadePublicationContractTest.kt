@@ -279,7 +279,7 @@ class FacadePublicationContractTest {
         assertTrue(failure.message.orEmpty().contains("duplicate"))
     }
 
-    private class Fixture(val root: File) {
+    internal class Fixture(val root: File) {
         private val facade = root.resolve("facade")
         private val bom = root.resolve("bom")
 

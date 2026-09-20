@@ -505,6 +505,34 @@ val writeSdkIosBinaryOutputManifest = if (authenticatedSdkComponent == "sdk-ios"
 val requestedProduct = providers.gradleProperty("codexAgent.product")
 val requestedComponent = providers.gradleProperty("codexAgent.component")
 val requestedPhase = providers.gradleProperty("codexAgent.phase")
+val writeSdkCoreValidationOutputManifest = if (
+    requestedProduct.orNull == "sdk" && requestedComponent.orNull == "sdk-core" &&
+    requestedPhase.orNull == "validation"
+) {
+    listOf("codexAgent.target", "codexAgent.sdkFacadeValidationRequest",
+        "codexAgent.sdkVersion", "codexAgent.candidateTree").forEach { property ->
+        check(!providers.gradleProperty(property).orNull.isNullOrBlank()) {
+            "Imported SDK facade validation requires $property"
+        }
+    }
+    registerSdkFacadeValidationTasks(
+        request = layout.file(providers.gradleProperty("codexAgent.sdkFacadeValidationRequest").map(::file)),
+        sdkVersion = providers.gradleProperty("codexAgent.sdkVersion"),
+        contractVersion = providers.provider { contractVersion },
+        kotlinVersion = providers.provider {
+            extensions.getByType<org.gradle.api.artifacts.VersionCatalogsExtension>()
+                .named("libs").findVersion("kotlin").get().requiredVersion
+        },
+        runtimeVersion = providers.provider { rootProject.extra["codexAgent.sdkDefaultRuntimeVersion"].toString() },
+        candidateTree = providers.gradleProperty("codexAgent.candidateTree"),
+        androidSdkDirectory = providers.environmentVariable("ANDROID_HOME").orElse(
+            providers.environmentVariable("ANDROID_SDK_ROOT")).orElse(
+            providers.fileContents(layout.projectDirectory.file("local.properties")).asText.map { contents ->
+                java.util.Properties().apply { load(contents.reader()) }.getProperty("sdk.dir", "")
+            }).orElse(""),
+        validationTarget = providers.gradleProperty("codexAgent.target").get(),
+    )
+} else null
 tasks.register("ciProductPhase") {
     group = "build"
     description = "Executes one exact product/component/phase lifecycle mapping."
@@ -520,6 +548,9 @@ tasks.register("ciProductPhase") {
             }
             Triple("sdk", "sdk-core", "package") ->
                 sdk.get().tasks.named("writeSdkCorePackageOutputManifest")
+            Triple("sdk", "sdk-core", "validation") -> checkNotNull(writeSdkCoreValidationOutputManifest) {
+                "SDK facade validation requires authenticated imported inputs"
+            }
             Triple("sdk", "sdk-android", "binary") -> checkNotNull(writeSdkAndroidBinaryOutputManifest) {
                 "SDK Android binary producer was not authenticated during settings evaluation"
             }

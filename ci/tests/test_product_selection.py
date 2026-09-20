@@ -113,7 +113,13 @@ class ProductSelectionTest(unittest.TestCase):
     def test_facade_content_and_android_transport_have_separate_owners(self) -> None:
         for path, component_name, owns_bytes in (
             ("ci/products/sdk_facade_validation.py", "sdk-core", True),
+            ("ci/products/sdk_facade_inputs.py", "sdk-core", True),
+            ("ci/products/sdk_facade_source.py", "sdk-core", False),
+            ("gradle/build-logic/src/main/kotlin/SdkFacadeValidationTasks.kt", "sdk-core", True),
+            ("gradle/build-logic/src/main/kotlin/ImportedSdkFacadePublicationVerification.kt", "sdk-core", True),
             ("ci/sdk_android_upload_locator.py", "sdk-android", False),
+            ("ci/sdk_android_evidence_capture.py", "sdk-android", False),
+            ("gradle/build-logic/src/main/kotlin/FirebaseAndroidOriginalEvidence.kt", "sdk-android", False),
         ):
             with self.subTest(path=path):
                 expected = {item for item in PHASE_INSTANCE_IDS

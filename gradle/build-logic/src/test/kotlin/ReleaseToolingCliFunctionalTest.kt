@@ -12,6 +12,34 @@ class ReleaseToolingCliFunctionalTest {
     private val jar = File(checkNotNull(System.getProperty("codexAgent.releaseToolingJar")))
 
     @Test
+    fun `packaged facade verifier replays complete imported metadata without Gradle`() {
+        val root = createTempDirectory("release-tooling-facade-").toFile().canonicalFile
+        try {
+            FacadePublicationContractTest.Fixture(root)
+            val stage = root.resolve("stage")
+            val maven = stage.resolve("outputs/maven/${CodexAgentBuild.MAVEN_GROUP.replace('.', '/')}")
+            val publications = facadePublicationSpecs.map { it.artifact to "facade/${it.publication}" } +
+                ("codex-agent-bom" to "bom")
+            publications.forEach { (artifact, directory) ->
+                listOf("pom-default.xml" to "pom", "module.json" to "module").forEach { (name, extension) ->
+                    root.resolve("$directory/$name").copyTo(
+                        maven.resolve("$artifact/3.4.5/$artifact-3.4.5.$extension").also { it.parentFile.mkdirs() },
+                    )
+                }
+            }
+            val before = verifiedRegularFiles(stage).mapValues { it.value.releaseDigest() }
+            val (exit, output) = runTool(root, "verify-imported-sdk-facade-publications",
+                "--package-stage", stage.absolutePath, "--contract-version", "1.2.3",
+                "--runtime-version", "2.3.4", "--sdk-version", "3.4.5",
+                "--kotlin-version", "2.2.20", "--forbidden-path", root.absolutePath)
+            assertEquals(0, exit, output)
+            assertEquals(before, verifiedRegularFiles(stage).mapValues { it.value.releaseDigest() })
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `packaged release tool runs without Gradle from an empty directory`() {
         val workingDirectory = createTempDirectory("release-tooling-cli").toFile()
         try {
@@ -19,6 +47,16 @@ class ReleaseToolingCliFunctionalTest {
             assertEquals(0, exit, output)
             assertEquals("codex-agent release tooling is ready", output.trim())
             assertTrue(workingDirectory.listFiles().isNullOrEmpty())
+            val (facadeExit, facadeOutput) = runTool(
+                workingDirectory, "verify-imported-sdk-facade-publications",
+                "--package-stage", workingDirectory.resolve("missing-facade").absolutePath,
+                "--contract-version", "0.8.0", "--runtime-version", "0.8.0",
+                "--sdk-version", "0.8.0", "--kotlin-version", "2.3.10",
+                "--forbidden-path", workingDirectory.absolutePath,
+            )
+            assertTrue(facadeExit != 0, facadeOutput)
+            assertFalse("NoClassDefFoundError" in facadeOutput || "ClassNotFoundException" in facadeOutput)
+            assertFalse(workingDirectory.resolve("missing-facade").exists())
             val (centralExit, centralOutput) = runTool(
                 workingDirectory,
                 "central-prepare",
@@ -249,10 +287,14 @@ class ReleaseToolingCliFunctionalTest {
             "packageNodeWasmRuntimeEvidenceRunner",
         ).forEach { task -> assertEquals(1, Regex(Regex.escape(task)).findAll(driver).count(), task) }
         assertFalse(":codex-agent-sdk:verifyJavaScriptTypeScriptBindingParity" in driver)
-        assertTrue(
-            ":codex-agent-sdk:verifyJavaScriptTypeScriptBindingParity" in
-                repository.resolve(".github/workflows/product-validation.yml").readText(),
-        )
+        assertTrue("uses: ./.github/actions/sdk-javascript-worker" in
+            repository.resolve(".github/workflows/product-validation.yml").readText())
+        assertTrue("python3 -B -m ci.sdk_workflow javascript" in
+            repository.resolve(".github/actions/sdk-javascript-worker/action.yml").readText())
+        assertTrue("writeJavaScriptSdkValidationOutputManifest" in
+            repository.resolve("gradle/build-logic/src/main/kotlin/codexagent.contract-product.gradle.kts").readText())
+        assertTrue("dependsOn(verifyImportedJavaScriptSdkCompatibility, verifyJavaScriptTypeScriptBindingParity)" in
+            repository.resolve("gradle/build-logic/src/main/kotlin/codexagent.javascript-sdk.gradle.kts").readText())
         assertTrue(":codex-agent-runtime-desktop:wasmJsNodeTest" in driver)
         val portable = driver.substringAfter("  portable)").substringBefore("  android)")
         val nodeWasm = driver.substringAfter("  node-wasm)").substringBefore("  desktop-macos-arm64)")

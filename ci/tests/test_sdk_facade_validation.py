@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from ci.products import sdk_facade_validation as facade
-from ci.products.inventory import canonical_json_bytes, regular_file_inventory
+from ci.products.inventory import canonical_json_bytes, regular_file_inventory, sha256_file
 from ci.products.receipt import output_inventory_digest, write_output_manifest
 from ci.products.registry import SDK_FACADE_TARGETS
 
@@ -25,6 +25,7 @@ class FacadeValidationTest(unittest.TestCase):
         for stage in (self.package, self.contract):
             (stage / "outputs").mkdir(parents=True)
             (stage / "outputs/payload.bin").write_bytes(stage.name.encode())
+        (self.contract / "outputs/payload.bin").rename(self.contract / "outputs/codex-agent-contract-0.8.2.zip")
         self.package_manifest = write_output_manifest(self.package, "sdk", "sdk-core", "package", "common", "0.8.7",
                                                        {"maven": "outputs"})
         write_output_manifest(self.contract, "contract", "contract", "metadata", "common", "0.8.2",
@@ -43,7 +44,13 @@ class FacadeValidationTest(unittest.TestCase):
             contract_stage=self.contract, imported_repository=self.repository,
             expected_package_inventory=regular_file_inventory(self.package),
             expected_contract_inventory=regular_file_inventory(self.contract),
-            expected_repository_inventory=regular_file_inventory(self.repository), original_context=self.context)
+            expected_repository_inventory=regular_file_inventory(self.repository), original_context=self.context,
+            expected_contract_projection={"schemaVersion": 1, "receiptSha256": "sha256:" + "a" * 64,
+                "bundlePath": "outputs/codex-agent-contract-0.8.2.zip",
+                "bundleSha256": sha256_file(self.contract / "outputs/codex-agent-contract-0.8.2.zip"),
+                "manifestSha256": "sha256:" + "b" * 64, "contractVersion": "0.8.2",
+                "contractDigest": "sha256:" + "c" * 64,
+                "componentDigests": [{"component": "jvm", "sha256": "sha256:" + "d" * 64}]})
         self.capture("jvm")
 
     def write(self, name, value):
@@ -52,6 +59,7 @@ class FacadeValidationTest(unittest.TestCase):
 
     def capture(self, target):
         self.arguments["target"] = target
+        self.arguments["expected_contract_projection"]["componentDigests"][0]["component"] = target
         task = facade.FACADE_CONSUMER_TASKS[target]
         self.report = {"schemaVersion": 6, "result": "passed", "sdkVersion": "0.8.7",
             "runtimeVersion": "0.8.9", "repository": "CENTRAL_STAGING-only",
@@ -118,7 +126,7 @@ class FacadeValidationTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     facade.verify_facade_consumer_evidence(**self.arguments)
 
-    def test_exact_caller_inventories_manifest_identities_and_repository_digest(self):
+    def test_exact_caller_inventories_and_target_scoped_content(self):
         baseline = facade.verify_facade_consumer_evidence(**self.arguments)
         for name in ("expected_package_inventory", "expected_contract_inventory", "expected_repository_inventory"):
             arguments = {**self.arguments, name: []}
@@ -132,7 +140,11 @@ class FacadeValidationTest(unittest.TestCase):
             facade.verify_facade_consumer_evidence(**self.arguments)
         self.arguments["expected_repository_inventory"] = regular_file_inventory(self.repository)
         changed = facade.verify_facade_consumer_evidence(**self.arguments)
-        self.assertNotEqual(baseline["importedRepositoryDigest"], changed["importedRepositoryDigest"])
+        self.assertEqual(baseline, changed)  # Full union bytes are checked, never widened into the target key.
+        self.arguments["expected_contract_projection"]["componentDigests"][0]["sha256"] = "sha256:" + "e" * 64
+        self.assertNotEqual(baseline, facade.verify_facade_consumer_evidence(**self.arguments))
+        self.arguments["expected_contract_projection"]["componentDigests"][0]["component"] = "android"
+        with self.assertRaises(ValueError): facade.verify_facade_consumer_evidence(**self.arguments)
 
     def test_missing_extra_symlink_and_duplicate_raw_json_reject(self):
         path = self.evidence / "process/stderr.bin"
@@ -150,6 +162,20 @@ class FacadeValidationTest(unittest.TestCase):
         path.write_bytes(b"")
         (self.evidence / "report.json").write_text('{"schemaVersion":6,"schemaVersion":6}')
         with self.assertRaises(ValueError): facade.verify_facade_consumer_evidence(**self.arguments)
+
+    def test_unrelated_contract_envelope_bytes_do_not_widen_target_content(self):
+        baseline = facade.verify_facade_consumer_evidence(**self.arguments)
+        bundle = self.contract / "outputs/codex-agent-contract-0.8.2.zip"
+        bundle.write_bytes(b"different externally verified unrelated Contract contents")
+        write_output_manifest(self.contract, "contract", "contract", "metadata", "common", "0.8.2",
+                              {"contract-bundle": "outputs"})
+        with self.assertRaises(ValueError): facade.verify_facade_consumer_evidence(**self.arguments)
+        self.arguments["expected_contract_inventory"] = regular_file_inventory(self.contract)
+        with self.assertRaises(ValueError): facade.verify_facade_consumer_evidence(**self.arguments)
+        self.arguments["expected_contract_projection"].update(
+            bundleSha256=sha256_file(bundle), manifestSha256="sha256:" + "f" * 64,
+            receiptSha256="sha256:" + "e" * 64)
+        self.assertEqual(baseline, facade.verify_facade_consumer_evidence(**self.arguments))
 
     def test_late_mutations_of_originals_or_caller_expectations_reject(self):
         project = facade.validate_facade_validation_content

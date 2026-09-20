@@ -15,10 +15,10 @@ from .inventory import (
     canonical_json_bytes, load_json_bytes, read_regular_file_bytes,
     regular_file_inventory, require_array, require_boolean, require_exact_keys,
     require_integer, require_regular_directory, require_semver, require_sha256,
-    require_string, sha256_bytes,
+    require_string,
 )
-from .receipt import output_inventory_digest, verify_output_manifest_identity
-from .registry import SDK_FACADE_TARGETS
+from .receipt import output_inventory_digest, validate_contract_projection, verify_output_manifest_identity
+from .registry import SDK_FACADE_CONTRACT_COMPONENTS, SDK_FACADE_TARGETS
 from .sdk_maven import MAVEN_GROUPS
 
 
@@ -61,7 +61,7 @@ def validate_facade_validation_content(value: Any) -> dict[str, Any]:
     """Validate content shape only; return an independent, authority-free value."""
     value = require_exact_keys(value, {
         "schemaVersion", "kind", "component", "target", "sdkVersion", "packageOutputsDigest",
-        "contractOutputsDigest", "importedRepositoryDigest", "tasks", "result",
+        "contractDigest", "componentDigests", "tasks", "result",
     }, "Facade validation content")
     if (require_integer(value["schemaVersion"], "Facade content schema") != 1
             or value["kind"] != "sdk-facade-validation-content" or value["component"] != "sdk-core"
@@ -69,8 +69,15 @@ def validate_facade_validation_content(value: Any) -> dict[str, Any]:
             or value["result"] != "passed"):
         raise ValueError("Facade validation content identity is invalid")
     require_semver(value["sdkVersion"], "Facade SDK version")
-    for field in ("packageOutputsDigest", "contractOutputsDigest", "importedRepositoryDigest"):
+    for field in ("packageOutputsDigest", "contractDigest"):
         require_sha256(value[field], field)
+    components = require_array(value["componentDigests"], "Facade Contract components")
+    if len(components) != 1:
+        raise ValueError("Facade content requires exactly its target Contract component")
+    component = require_exact_keys(components[0], {"component", "sha256"}, "Facade Contract component")
+    if component["component"] != SDK_FACADE_CONTRACT_COMPONENTS[value["target"]]:
+        raise ValueError("Facade content Contract component differs from its target")
+    require_sha256(component["sha256"], "Facade Contract component digest")
     if require_array(value["tasks"], "Facade tasks") != [FACADE_CONSUMER_TASKS[value["target"]]]:
         raise ValueError("Facade validation content task mapping differs from the fixed target")
     return load_json_bytes(canonical_json_bytes(value))
@@ -81,7 +88,7 @@ def verify_facade_consumer_evidence(
     contract_version: str, package_stage: Path, contract_stage: Path,
     imported_repository: Path, expected_package_inventory: list,
     expected_contract_inventory: list, expected_repository_inventory: list,
-    original_context: dict[str, Any],
+    expected_contract_projection: dict[str, Any], original_context: dict[str, Any],
 ) -> dict[str, Any]:
     """Check retained observations against independent caller inputs, not trust.
 
@@ -91,13 +98,18 @@ def verify_facade_consumer_evidence(
     Its paths describe the original process, never the current replay machine.
     The returned content deliberately excludes logs, paths, Runtime version and
     execution/cache distinctions. Full source/receipt/host admission is external.
+    The caller supplies the full projection from existing Contract verification;
+    only its key-bound contractDigest and target componentDigests enter content.
+    Whole ZIP/repository inventories remain external, since unrelated Contract
+    bytes are deliberately not part of this target's build key.
     """
     if type(target) is not str or target not in SDK_FACADE_TARGETS:
         raise ValueError("Unsupported facade target")
     for value, label in ((sdk_version, "SDK"), (runtime_version, "Runtime"), (contract_version, "Contract")):
         require_semver(value, f"{label} version")
     authority = {"context": original_context, "package": expected_package_inventory,
-                 "contract": expected_contract_inventory, "repository": expected_repository_inventory}
+                 "contract": expected_contract_inventory, "repository": expected_repository_inventory,
+                 "projection": expected_contract_projection}
     authority_bytes = canonical_json_bytes(authority)
     expected = load_json_bytes(authority_bytes)
     context = require_exact_keys(expected["context"], {
@@ -129,6 +141,15 @@ def verify_facade_consumer_evidence(
             raise ValueError("Facade execution capture has an unexpected layout")
         package = verify_output_manifest_identity(paths["package"], "sdk", "sdk-core", "package", "common", sdk_version)
         contract = verify_output_manifest_identity(paths["contract"], "contract", "contract", "metadata", "common", contract_version)
+        projection = validate_contract_projection(expected["projection"], "Facade selected Contract projection")
+        if (projection["schemaVersion"] != 1 or projection["contractVersion"] != contract_version
+                or [row["component"] for row in projection["componentDigests"]] !=
+                [SDK_FACADE_CONTRACT_COMPONENTS[target]]
+                or len(contract["outputs"]) != 1
+                or contract["outputs"][0]["kind"] != "contract-bundle"
+                or contract["outputs"][0]["relativePath"] != projection["bundlePath"]
+                or contract["outputs"][0]["sha256"] != projection["bundleSha256"]):
+            raise ValueError("Facade selected Contract projection differs from the exact target and metadata stage")
         tasks = [FACADE_CONSUMER_TASKS[target]]
         report = require_exact_keys(_read(evidence, "report.json"), {
             "schemaVersion", "result", "sdkVersion", "runtimeVersion", "repository", "mavenGroup", "target", "tasks",
@@ -171,8 +192,8 @@ def verify_facade_consumer_evidence(
             "schemaVersion": 1, "kind": "sdk-facade-validation-content", "component": "sdk-core",
             "target": target, "sdkVersion": sdk_version,
             "packageOutputsDigest": output_inventory_digest(package["outputs"]),
-            "contractOutputsDigest": output_inventory_digest(contract["outputs"]),
-            "importedRepositoryDigest": sha256_bytes(canonical_json_bytes(before["repository"])),
+            "contractDigest": projection["contractDigest"],
+            "componentDigests": projection["componentDigests"],
             "tasks": tasks, "result": "passed",
         })
     finally:

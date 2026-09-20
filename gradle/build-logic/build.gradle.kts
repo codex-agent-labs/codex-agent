@@ -58,6 +58,10 @@ dependencies.add(releaseToolingRuntime.name, configurations["implementation"].de
     it.group == "org.apache.commons" && it.name == "commons-compress"
 })
 val releaseToolingClasses = listOf(
+    "ImportedSdkFacadePublicationVerificationKt",
+    "FacadePublicationContractKt",
+    "FacadePublicationSpec",
+    "PublicationDependency",
     "AndroidRuntimeEvidenceFilesKt",
     "AndroidRuntimeEvidenceSupportKt",
     "AppleArtifactMetrics",
