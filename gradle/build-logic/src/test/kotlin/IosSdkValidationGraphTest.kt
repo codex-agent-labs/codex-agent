@@ -66,6 +66,13 @@ class IosSdkValidationGraphTest {
                         def prepared = ios.tasks.named('prepareSdkIosValidationPackage').get()
                         println('VALIDATION_COMPATIBILITY=' + prepared.sdkCompatibility.get().asFile.canonicalPath)
                         println('VALIDATION_PREPARE_DEPS=' + dependencies(prepared))
+                        def archive = ios.tasks.named('archiveSdkIosValidationEvidence').get()
+                        println('VALIDATION_ARCHIVE_DEPS=' + dependencies(archive))
+                        println('VALIDATION_ARCHIVE_FILE=' + archive.archiveFile.get().asFile.canonicalPath)
+                        println('VALIDATION_ARCHIVE_LAYOUT=' + archive.sourceLayout.get().collect { key, path ->
+                            key + '=' + new File(path).canonicalPath }.sort().join('|'))
+                        println('VALIDATION_ARCHIVE_INPUTS=' + archive.evidenceInputs.files.collect { it.canonicalPath }.sort().join('|'))
+                        println('VALIDATION_HAS_PRODUCT_MANIFEST=' + (ios.tasks.findByName('writeSdkIosValidationOutputManifest') != null))
                     }
                     """.trimIndent() + "\n",
                 )
@@ -75,8 +82,7 @@ class IosSdkValidationGraphTest {
                     it !in setOf("CODEX_AGENT_IMPORTED_SWIFT_ZIP", "CODEX_AGENT_SWIFT_COMPILATION_DIRECTORY")
                 })
                 .withArguments(
-                    ":codex-agent-runtime-ios:generateCodexAgentAppleBindingEvidence",
-                    ":codex-agent-runtime-ios:verifySdkIosDeviceConsumer",
+                    ":codex-agent-runtime-ios:archiveSdkIosValidationEvidence",
                     "--dry-run", "--offline", "--no-configuration-cache", "--console=plain",
                     "-PcodexAgent.product=sdk", "-PcodexAgent.component=sdk-ios", "-PcodexAgent.phase=validation",
                     "-PcodexAgent.target=$target", "-PcodexAgent.iosValidationPackageStage=${originalPackage.path}",
@@ -98,8 +104,10 @@ class IosSdkValidationGraphTest {
                 "verifyAppleToolchain", "generateCodexAgentAppleCompilerEvidence",
                 "verifyCodexAgentSwiftAuthenticationTests", "generateCodexAgentAppleBindingEvidence",
                 "stageSdkIosValidationDeviceInputs", "verifySdkIosDeviceConsumer",
+                "archiveSdkIosValidationEvidence",
             ).map { ios + it }.toSet()
             assertEquals(expected, selected.filter { it.startsWith(ios) }.toSet(), result.output)
+            assertFalse(":ciProductPhase" in selected, result.output)
             assertFalse(selected.any { it.startsWith(":codex-agent-core:") || it.startsWith(":codex-agent-sdk:") }, result.output)
             assertFalse(selected.any { path ->
                 val name = path.substringAfterLast(':').lowercase()
@@ -111,6 +119,9 @@ class IosSdkValidationGraphTest {
             val build = repository.resolve("codex-agent-runtime-ios/build").canonicalFile
             val packageRoot = build.resolve("imported-sdk-validation/$tree/$target")
             val contractRoot = build.resolve("imported-apple-contract-evidence/$tree/contract")
+            assertEquals("false", value("HAS_PRODUCT_MANIFEST"))
+            assertEquals(packageRoot.resolve("execution-envelope/apple-validation-evidence.zip").path, value("ARCHIVE_FILE"))
+            assertFalse(File(value("ARCHIVE_FILE")).toPath().startsWith(build.resolve("product-stage").toPath()))
             assertEquals(originalPackage.path, value("PACKAGE_SOURCE"))
             assertEquals(originalContract.path, value("CONTRACT_SOURCE"))
             assertEquals(packageRoot.resolve("package-stage").path, value("PACKAGE_SNAPSHOT"))
@@ -123,6 +134,33 @@ class IosSdkValidationGraphTest {
             assertEquals(deviceExecution.path, value("DEVICE_EXECUTION"))
             assertEquals(deviceExecution.resolve("raw").path, value("DEVICE_RAW"))
             assertEquals(deviceExecution.resolve("CodexAgentTestApp.xcarchive").path, value("DEVICE_ARCHIVE"))
+            val expectedLayout = mapOf(
+                "canonical/canonical-api.json" to contractRoot.resolve("outputs/evidence/canonical-api.json"),
+                "canonical/canonical-coverage.json" to contractRoot.resolve("outputs/evidence/canonical-coverage.json"),
+                "consumer/CodexFailureSwiftConsumer.swift" to originalCompilerConsumers.resolve("CodexFailureSwiftConsumer.swift"),
+                "consumer/CodexFailureObjectiveCConsumer.m" to originalCompilerConsumers.resolve("CodexFailureObjectiveCConsumer.m"),
+                "reports/compiler-evidence.json" to build.resolve("reports/cross-language-api/apple/compiler-evidence.json"),
+                "reports/binding-evidence.json" to build.resolve("reports/cross-language-api/apple/binding-evidence.json"),
+                "reports/swift-parity.json" to build.resolve("reports/cross-language-api/bindings/swift-parity.json"),
+                "reports/objective-c-parity.json" to build.resolve("reports/cross-language-api/bindings/objective-c-parity.json"),
+                "reports/xctest-summary.json" to build.resolve("swift-authentication-tests-summary.json"),
+                "reports/simulator-devices.json" to build.resolve("simulator-devices.json"),
+                "compiler-raw" to build.resolve("apple-compiler-evidence-task/raw"),
+                "xcframework" to packageRoot.resolve("extracted/xcframework"),
+                "xctest-raw" to build.resolve("swift-authentication-evidence-task/raw"),
+                "xcresult" to build.resolve("swift-authentication-tests.xcresult"),
+                "xctest-package" to packageRoot.resolve("extracted/package"),
+                "xctest-products" to build.resolve("swift-simulator-compilation-derived-data/Build/Products"),
+                "device-raw" to deviceExecution.resolve("raw"),
+                "device-archive" to deviceExecution.resolve("CodexAgentTestApp.xcarchive"),
+                "device-test-application" to packageRoot.resolve("device-consumer/CodexAgentTestApp"),
+                "device-package" to packageRoot.resolve("device-consumer/CodexAgentPackage"),
+                "toolchain" to build.resolve("reports/ios-release/toolchain"),
+            ).mapValues { (_, path) -> path.path }
+            val actualLayout = value("ARCHIVE_LAYOUT").split('|').associate { it.substringBefore('=') to it.substringAfter('=') }
+            assertEquals(21, expectedLayout.size)
+            assertEquals(expectedLayout, actualLayout)
+            assertEquals(expectedLayout.values.toSet(), value("ARCHIVE_INPUTS").split('|').toSet())
             assertEquals(originalTestApp.path, value("DEVICE_TESTAPP_SOURCE"))
             assertEquals(packageRoot.resolve("extracted/package").path, value("DEVICE_PACKAGE_SOURCE"))
             assertEquals(packageRoot.resolve("device-consumer").path, value("DEVICE_WORK"))
@@ -145,6 +183,7 @@ class IosSdkValidationGraphTest {
                 assertEquals(packageRoot.resolve("extracted/package").path, value("${task}_PACKAGE"))
             }
             fun dependencies(name: String) = value("${name}_DEPS").split(',').toSet()
+            assertEquals(setOf(ios + "generateCodexAgentAppleBindingEvidence", ios + "verifySdkIosDeviceConsumer"), dependencies("ARCHIVE"))
             assertEquals(setOf(ios + "verifySdkIosValidationPackage"), dependencies("PREPARE"))
             assertEquals(setOf(ios + "prepareSdkIosValidationPackage"), dependencies("DEVICE_INPUT"))
             assertEquals(setOf("invalidateCodexAgentAppleBindingEvidence", "verifyAppleToolchain",
@@ -168,6 +207,8 @@ class IosSdkValidationGraphTest {
                 "verifyCodexAgentSwiftAuthenticationTests" to "generateCodexAgentAppleBindingEvidence",
                 "prepareSdkIosValidationPackage" to "stageSdkIosValidationDeviceInputs",
                 "stageSdkIosValidationDeviceInputs" to "verifySdkIosDeviceConsumer",
+                "generateCodexAgentAppleBindingEvidence" to "archiveSdkIosValidationEvidence",
+                "verifySdkIosDeviceConsumer" to "archiveSdkIosValidationEvidence",
             ).forEach { (before, after) ->
                 assertTrue(selected.indexOf(ios + before) < selected.indexOf(ios + after), result.output)
             }

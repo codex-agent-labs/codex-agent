@@ -179,6 +179,8 @@ _ANDROID_VALIDATION_BUILD_LOGIC = frozenset({
     "codexagent.android-runtime-evidence.gradle.kts",
 })
 _IOS_VALIDATION_BUILD_LOGIC = frozenset({
+    "AppleValidationEvidenceArchive.kt",
+    "AppleValidationEvidenceTask.kt",
     "AppleDeviceValidationTask.kt",
     "AppleValidationDeviceInputs.kt",
     "AppleValidationPackageInputs.kt",
@@ -296,6 +298,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/sdk_apple_content.py",
     "ci/products/sdk_apple_package_source.py",
     "ci/products/sdk_apple_validation_source.py",
+    "ci/products/sdk_apple_validation_evidence.py",
     "ci/products/sdk_apple_framework.py",
     "ci/products/sdk_apple_source.py",
     "ci/products/runtime_aggregate_handoff.py",

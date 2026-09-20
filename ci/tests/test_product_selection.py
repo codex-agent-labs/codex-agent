@@ -86,6 +86,7 @@ class ProductSelectionTest(unittest.TestCase):
                     if item.product == "sdk" and item.component == "sdk-ios"
                     and item.phase in {"validation", "metadata"}}
         for name in ("AppleDeviceValidationTask.kt", "AppleValidationDeviceInputs.kt",
+                     "AppleValidationEvidenceArchive.kt", "AppleValidationEvidenceTask.kt",
                      "AppleValidationPackageInputs.kt", "AppleValidationPackageTask.kt",
                      "IosSdkValidationPackageTasks.kt", "IosSdkValidationConsumerTasks.kt"):
             with self.subTest(name=name):
@@ -118,6 +119,7 @@ class ProductSelectionTest(unittest.TestCase):
     def test_apple_authenticated_tooling_adapter_is_control_only(self) -> None:
         for path in ("ci/products/sdk_apple_content.py", "ci/products/sdk_apple_package_source.py",
                      "ci/products/sdk_apple_validation_source.py",
+                     "ci/products/sdk_apple_validation_evidence.py",
                      "gradle/build-logic/src/main/kotlin/AppleBinaryPackageContent.kt",
                      "gradle/build-logic/src/main/kotlin/AppleBinaryPackageReplay.kt"):
             with self.subTest(path=path):

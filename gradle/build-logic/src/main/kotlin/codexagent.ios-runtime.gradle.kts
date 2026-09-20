@@ -388,7 +388,7 @@ validationPackageInputs?.let { packageInputs ->
         setDependsOn(listOf(invalidateAppleBindingEvidence, verifyAppleToolchain, deviceInputs))
         workingDir(deviceInputs.flatMap { it.stagedTestApplicationDirectory })
     }
-    tasks.register<VerifyAppleDeviceConsumerTask>("verifySdkIosDeviceConsumer") {
+    val deviceConsumer = tasks.register<VerifyAppleDeviceConsumerTask>("verifySdkIosDeviceConsumer") {
         dependsOn(invalidateAppleBindingEvidence, verifyAppleToolchain, deviceInputs)
         developerDirectory.set(layout.dir(providers.environmentVariable("DEVELOPER_DIR").map(::file)))
         testApplicationDirectory.set(deviceInputs.flatMap { it.stagedTestApplicationDirectory })
@@ -407,6 +407,47 @@ validationPackageInputs?.let { packageInputs ->
         appleCompilerEvidence,
         appleBindingEvidence,
     )
+    val validationTarget = providers.gradleProperty("codexAgent.target").get()
+    val executionEnvelope = layout.buildDirectory.dir(
+        "imported-sdk-validation/${providers.gradleProperty("codexAgent.candidateTree").get()}/" +
+            "$validationTarget/execution-envelope",
+    )
+    val swiftTests = appleDistributionTasks.verifyCodexAgentSwiftAuthenticationTests
+    val evidenceLayout = providers.provider {
+        val compiler = appleCompilerEvidence.get()
+        val binding = appleBindingEvidence.get()
+        val tests = swiftTests.get()
+        val device = deviceConsumer.get()
+        mapOf(
+            "canonical/canonical-api.json" to binding.canonicalApiReport.get().asFile.path,
+            "canonical/canonical-coverage.json" to binding.canonicalCoverageReceipt.get().asFile.path,
+            "consumer/CodexFailureSwiftConsumer.swift" to binding.swiftConsumer.get().asFile.path,
+            "consumer/CodexFailureObjectiveCConsumer.m" to binding.objectiveCConsumer.get().asFile.path,
+            "reports/compiler-evidence.json" to compiler.evidenceFile.get().asFile.path,
+            "reports/binding-evidence.json" to binding.evidenceFile.get().asFile.path,
+            "reports/swift-parity.json" to binding.swiftReceiptFile.get().asFile.path,
+            "reports/objective-c-parity.json" to binding.objectiveCReceiptFile.get().asFile.path,
+            "reports/xctest-summary.json" to tests.summaryFile.get().asFile.path,
+            "reports/simulator-devices.json" to tests.simulatorDevicesFile.get().asFile.path,
+            "compiler-raw" to compiler.rawEvidenceDirectory.get().asFile.path,
+            "xcframework" to binding.xcframeworkDirectory.get().asFile.path,
+            "xctest-raw" to tests.rawEvidenceDirectory.get().asFile.path,
+            "xcresult" to tests.resultBundleDirectory.get().asFile.path,
+            "xctest-package" to tests.packageDirectory.get().asFile.path,
+            "xctest-products" to tests.derivedDataDirectory.dir("Build/Products").get().asFile.path,
+            "device-raw" to device.rawEvidenceDirectory.get().asFile.path,
+            "device-archive" to device.archiveDirectory.get().asFile.path,
+            "device-test-application" to device.testApplicationDirectory.get().asFile.path,
+            "device-package" to device.packageDirectory.get().asFile.path,
+            "toolchain" to verifyAppleToolchain.get().reportDirectory.get().asFile.path,
+        )
+    }
+    tasks.register<ArchiveAppleValidationEvidenceTask>("archiveSdkIosValidationEvidence") {
+        dependsOn(appleBindingEvidence, deviceConsumer)
+        sourceLayout.set(evidenceLayout)
+        evidenceInputs.from(evidenceLayout.map { it.values.map(::file) })
+        archiveFile.set(executionEnvelope.map { it.file("apple-validation-evidence.zip") })
+    }
 }
 
 tasks.register("verifyIosRuntime") {
