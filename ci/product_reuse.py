@@ -3857,10 +3857,19 @@ def collect_runtime_workers(
                         environ=environment, token=token)
                     signed_inventory = regular_file_inventory(signed_capture, allow_empty=True)
                     authenticated = retained / "sdk-apple-validation-evidence"
-                    stage_collected_apple_validation(original / "shard",
-                        signed_capture / "original/sdk-apple-validation-evidence", authenticated,
-                        target=instance.target, repository=root, policy_revision=state.plan["validationCommit"],
-                        policy=sdk_apple_validation_policy)
+                    # Admission cannot publish inside its source repository.
+                    # Retain its verified bytes only after that external gate exits.
+                    with tempfile.TemporaryDirectory(prefix="apple-collected-admission-") as staging:
+                        staged = Path(staging).resolve() / "evidence"
+                        stage_collected_apple_validation(original / "shard",
+                            signed_capture / "original/sdk-apple-validation-evidence", staged,
+                            target=instance.target, repository=root, policy_revision=state.plan["validationCommit"],
+                            policy=sdk_apple_validation_policy)
+                        staged_inventory = regular_file_inventory(staged, allow_empty=True)
+                        snapshot_regular_tree(staged, authenticated, allow_empty=True)
+                        if (regular_file_inventory(staged, allow_empty=True) != staged_inventory
+                                or regular_file_inventory(authenticated, allow_empty=True) != staged_inventory):
+                            raise ValueError("Apple admitted carrier changed during retention")
                     if (verify_phase_shard(original / "shard", instance) != verified
                             or regular_file_inventory(signed_capture, allow_empty=True) != signed_inventory):
                         raise ValueError("Apple original shard or signer evidence changed during collection")

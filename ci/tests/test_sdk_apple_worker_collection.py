@@ -92,6 +92,10 @@ class AppleWorkerCollectionTest(unittest.TestCase):
         return {"synthetic": "capture seam only"}
 
     def admitted(self, shard, carrier, destination, **kwargs):
+        # Exercise the real staging gate's repository/input separation contract,
+        # even though semantic admission remains a mocked boundary in this suite.
+        admission._require_capability_output_separate(Path(destination),
+            [Path(shard), Path(carrier), kwargs["repository"]])
         target = kwargs["target"]
         self.assertEqual(self.repository, kwargs["repository"])
         self.assertEqual(self.producer["commit"], kwargs["policy_revision"])

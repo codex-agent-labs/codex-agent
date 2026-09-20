@@ -110,6 +110,9 @@ class ProductSelectionTest(unittest.TestCase):
             "sdk-ios-package-worker": {item for item in PHASE_INSTANCE_IDS
                 if item.product == "sdk" and item.component == "sdk-ios"
                 and item.phase in {"package", "validation", "metadata"}},
+            "sdk-ios-validation-worker": {item for item in PHASE_INSTANCE_IDS
+                if item.product == "sdk" and item.component == "sdk-ios"
+                and item.phase in {"validation", "metadata"}},
             "sdk-javascript-metadata-worker": {item for item in PHASE_INSTANCE_IDS
                 if item.product == "sdk" and item.component == "javascript" and item.phase == "metadata"},
         }
@@ -131,6 +134,7 @@ class ProductSelectionTest(unittest.TestCase):
                      "ci/sdk_ios_original_package.py",
                      "ci/sdk_ios_original_binary.py",
                      "ci/sdk_ios_validation_workflow.py",
+                     "ci/sdk_apple_policy.py",
                      "ci/products/sdk_apple_package_execution.py",
                      "gradle/build-logic/src/main/kotlin/ApplePackageExecutionEvidence.kt",
                      "gradle/build-logic/src/main/kotlin/AppleOriginalPackageExecution.kt",

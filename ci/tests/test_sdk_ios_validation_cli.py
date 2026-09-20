@@ -5,6 +5,7 @@ import io
 import os
 from pathlib import Path
 import unittest
+import tempfile
 from unittest.mock import patch
 
 from ci import sdk_ios_validation_workflow as command
@@ -12,6 +13,21 @@ from ci import sdk_workflow as dispatcher
 
 
 class SdkIosValidationCliTest(unittest.TestCase):
+    def test_optional_apple_policy_is_canonical_caller_input(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            policy = Path(temporary).resolve() / "caller policy.json"
+            policy.write_bytes(b'{"caller":"policy"}\n')
+            argv = self.arguments() + ["--sdk-apple-validation-policy", str(policy)]
+            with patch.object(command, "execute") as controller:
+                self.assertEqual(0, command.main(argv))
+            self.assertEqual({"caller": "policy"}, controller.call_args.kwargs["sdk_apple_validation_policy"])
+            for malformed in (b'[]\n', b'{"a":1,"a":2}\n', b'{"caller": "policy"}'):
+                policy.write_bytes(malformed)
+                with patch.object(command, "execute") as controller, redirect_stderr(io.StringIO()), \
+                        self.assertRaises(SystemExit):
+                    command.main(argv)
+                controller.assert_not_called()
+
     def fields(self):
         return {
             "plan": "/work/plan.json", "discovery-root": "/work/discovery",

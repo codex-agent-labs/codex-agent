@@ -320,6 +320,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_apple_prepared_release.py",
     "ci/sdk_apple_release_cli.py",
     "ci/sdk_apple_attestation_capture.py",
+    "ci/sdk_apple_policy.py",
     "ci/sdk_ios_validation_workflow.py",
     "ci/products/sdk_apple_package_execution.py",
     "gradle/build-logic/src/main/kotlin/ApplePackageExecutionEvidence.kt",
@@ -558,6 +559,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         return _from_phase("sdk", "dart", "validation")
     if _is_prefix(path, ".github/actions/sdk-ios-package-worker/"):
         return _from_phase("sdk", "sdk-ios", "package")
+    if _is_prefix(path, ".github/actions/sdk-ios-validation-worker/"):
+        return _from_phase("sdk", "sdk-ios", "validation")
     if _is_prefix(path, ".github/actions/sdk-javascript-metadata-worker/"):
         return _from_phase("sdk", "javascript", "metadata")
     if _is_prefix(path, ".github/actions/run-ci-lane/") or path == ".github/workflows/ci.yml":

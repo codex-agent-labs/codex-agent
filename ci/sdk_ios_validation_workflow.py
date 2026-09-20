@@ -35,7 +35,8 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
             binary_artifact_id, binary_artifact_sha256, rust_host,
             keyring, keys_directory, tooling_evidence, tooling_public_key,
             java_executable, policy_revision, required_trust_domain,
-            repository_root, environ, token, tooling_keyring=None, tooling_keys_directory=None):
+            repository_root, environ, token, tooling_keyring=None, tooling_keys_directory=None,
+            sdk_apple_validation_policy=None):
     """Finalize elected validation only after replay and immutable original retention."""
     if target not in ("ios-arm64", "ios-simulator-arm64"):
         raise ValueError("SDK iOS validation requires an exact iOS target")
@@ -52,7 +53,9 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
         "requiredTrustDomain": required_trust_domain,
         "keyring": str(Path(tooling_keyring).absolute()) if tooling_keyring is not None else None,
         "keysDirectory": str(Path(tooling_keys_directory).absolute()) if tooling_keys_directory is not None else None}
-    verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling)
+    verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling,
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy}
+           if sdk_apple_validation_policy is not None else {}))
     instance = PhaseInstanceId("sdk", "sdk-ios", "validation", target)
     ready = verified.prior_ready_plans.get(instance)
     if ready is None or ready["buildKey"] != expected_build_key:
@@ -223,10 +226,15 @@ def main(argv=None) -> int:
     parser.add_argument("--required-trust-domain", choices=("development", "release"), required=True)
     parser.add_argument("--tooling-keyring", type=Path)
     parser.add_argument("--tooling-keys-directory", type=Path)
+    parser.add_argument("--sdk-apple-validation-policy", type=Path)
     arguments = vars(parser.parse_args(argv))
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
         parser.error("Apple tooling keyring and keys directory must be supplied together")
     try:
+        apple_policy = arguments.pop("sdk_apple_validation_policy")
+        if apple_policy is not None:
+            arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
+                apple_policy, "Caller Apple validation policy")
         execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:
         parser.error(str(error))

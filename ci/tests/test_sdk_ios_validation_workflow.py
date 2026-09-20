@@ -13,6 +13,22 @@ from ci import sdk_ios_validation_workflow as workflow
 
 
 class SdkIosValidationWorkflowTest(unittest.TestCase):
+    def test_caller_apple_policy_reaches_original_state_admission_before_execution(self):
+        policy = {"synthetic": "independent caller policy"}
+        discovery = self.root / "discovery"
+        discovery.mkdir()
+        for supplied in (False, True):
+            with self.subTest(supplied=supplied), \
+                    patch.object(workflow, "_original_directory", return_value=Path("/original/Xcode")), \
+                    patch.object(workflow.product_reuse, "_verified_product_state", side_effect=ValueError("admission stop")) as gate, \
+                    patch.object(workflow, "execute_validation") as worker, \
+                    self.assertRaisesRegex(ValueError, "admission stop"):
+                workflow.execute(self.plan, discovery, None, self.destination, **self.arguments,
+                    **({"sdk_apple_validation_policy": policy} if supplied else {}))
+            self.assertEqual({"sdk_apple_validation_policy": policy} if supplied else {}, gate.call_args.kwargs)
+            worker.assert_not_called()
+            self.assertFalse(self.destination.exists())
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
