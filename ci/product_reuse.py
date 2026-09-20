@@ -4442,40 +4442,57 @@ def capture_sdk_ios_package_upload(plan_path, destination, *, package_receipt_pa
     Source/S858 authentication and full original execution replay are still required.
     In particular, neither an uploaded descriptor nor this transport grants those gates.
     """
+    return _capture_sdk_ios_upload(plan_path, destination, phase="package", receipt_path=package_receipt_path,
+        artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
+        repository_root=repository_root, environ=environ, token=token)
+
+
+def capture_sdk_ios_binary_upload(plan_path, destination, *, binary_receipt_path,
+        artifact_id, artifact_sha256, trusted_workflow_sha, repository_root=None, environ=None, token):
+    """Retain the observed original binary upload; native semantic admission is separate."""
+    return _capture_sdk_ios_upload(plan_path, destination, phase="binary", receipt_path=binary_receipt_path,
+        artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
+        repository_root=repository_root, environ=environ, token=token)
+
+
+def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
+        artifact_id, artifact_sha256, trusted_workflow_sha, repository_root, environ, token):
     from products.sdk_package import _require_capability_output_separate
-    require_integer(artifact_id, "Apple package upload ID", 1)
-    require_sha256(artifact_sha256, "Apple package upload digest")
+    if phase not in ("binary", "package"):
+        raise ValueError("Apple upload capture requires an exact binary or package phase")
+    require_integer(artifact_id, f"Apple {phase} upload ID", 1)
+    require_sha256(artifact_sha256, f"Apple {phase} upload digest")
     if not isinstance(token, str) or not token:
-        raise ValueError("Apple package capture requires an observation token")
+        raise ValueError(f"Apple {phase} capture requires an observation token")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else Path(repository_root)).resolve(strict=True)
     plan_path, destination = Path(plan_path).absolute(), Path(destination).absolute()
-    receipt_path = Path(package_receipt_path).absolute()
+    receipt_path = Path(receipt_path).absolute()
 
     def output_safe():
         _require_capability_output_separate(destination, [root, plan_path, receipt_path])
         if destination.exists() or destination.is_symlink():
-            raise ValueError("Apple package capture destination must not exist")
+            raise ValueError(f"Apple {phase} capture destination must not exist")
 
     output_safe()
     plan_bytes = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     receipt_bytes = read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
-    instance = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+    instance = PhaseInstanceId("sdk", "sdk-ios", phase, "ios")
     if _identity(receipt) != instance:
-        raise ValueError("Apple package capture requires the selected original package receipt")
+        raise ValueError(f"Apple {phase} capture requires the selected original {phase} receipt")
     producer = receipt["producer"]
-    with tempfile.TemporaryDirectory(prefix="sdk-ios-package-upload-") as temporary:
+    with tempfile.TemporaryDirectory(prefix=f"sdk-ios-{phase}-upload-") as temporary:
         prepared = Path(temporary).resolve() / "capture"
         captured_plan = prepared / "plan/impact-plan.json"
         captured_plan.parent.mkdir(parents=True)
         captured_plan.write_bytes(plan_bytes)
         plan = _validate_plan(captured_plan, root)
         if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
-            raise ValueError("Apple package capture requires an authorized PR or merge-group plan")
-        job = "product-validation / sdk-sdk-ios-package-ios"
-        observed = _observe_ci_producer_jobs({"ios-package": producer},
-            jobs_by_phase={"ios-package": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
-        name = (f"codex-agent-sdk-worker-sdk-ios-package-ios-{receipt['buildKey'].removeprefix('sha256:')}-"
+            raise ValueError(f"Apple {phase} capture requires an authorized PR or merge-group plan")
+        job = f"product-validation / sdk-sdk-ios-{phase}-ios"
+        observed = _observe_ci_producer_jobs({f"ios-{phase}": producer},
+            jobs_by_phase={f"ios-{phase}": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
+        name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-ios-{receipt['buildKey'].removeprefix('sha256:')}-"
                 f"{producer['tree']}-attempt-{producer['runAttempt']}")
         artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
         _require_artifact_job_window(observed[0], job, artifact)
@@ -4486,15 +4503,15 @@ def capture_sdk_ios_package_upload(plan_path, destination, *, package_receipt_pa
         safe_extract(archive, original)
         verified = verify_phase_shard(original / "shard", instance)
         if verified["receiptBytes"] != receipt_bytes:
-            raise ValueError("Apple uploaded package differs from its selected original receipt")
+            raise ValueError(f"Apple uploaded {phase} differs from its selected original receipt")
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed,
-                     "packageReceiptSha256": sha256_bytes(receipt_bytes)}
+                     f"{phase}ReceiptSha256": sha256_bytes(receipt_bytes)}
         write_canonical_json(prepared / "capture-transport.json", transport)
         if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes
                 or read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != receipt_bytes
                 or captured_plan.read_bytes() != plan_bytes or sha256_file(archive) != artifact_sha256
                 or regular_file_inventory(original, allow_empty=True) != zipped):
-            raise ValueError("Apple package original inputs or upload changed before publication")
+            raise ValueError(f"Apple {phase} original inputs or upload changed before publication")
         output_safe()
         publish_regular_tree(prepared, destination, allow_empty=True)
     return transport

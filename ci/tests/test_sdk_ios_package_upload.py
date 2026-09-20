@@ -1,4 +1,4 @@
-"""Transport-only checks for an observed original iOS package upload.
+"""Transport-only checks for observed original iOS package and binary uploads.
 
 The local plan and official API responses are synthetic.  These tests exercise
 the existing plan, observation, ZIP, and phase-shard gates, but deliberately do
@@ -19,29 +19,39 @@ from products.restore import PHASE_PLAN_KEYS, finalize_phase_object
 
 
 capture = fixture.capture
-JOB = "product-validation / sdk-sdk-ios-package-ios"
 
 
 class SdkIosPackageUploadTest(unittest.TestCase):
     # Reuse only the compact synthetic official-API setup, not its test methods.
     api = fixture.RuntimeAggregateUploadTest.api
     archive = fixture.RuntimeAggregateUploadTest.archive
+    phase = "package"
 
     def setUp(self):
         fixture.RuntimeAggregateUploadTest.setUp(self)
-        self.jobs[0]["name"] = JOB
-        stage = self.root / "original-stage"
-        (stage / "outputs/apple").mkdir(parents=True)
-        (stage / "outputs/apple/CodexAgentPackage-0.3.0.zip").write_bytes(
-            b"opaque original iOS package bytes\x00\xff"
-        )
+        self.jobs[0]["name"] = f"product-validation / sdk-sdk-ios-{self.phase}-ios"
+        stage = self.root / f"original-{self.phase}-stage"
+        if self.phase == "package":
+            (stage / "outputs/apple").mkdir(parents=True)
+            (stage / "outputs/apple/CodexAgentPackage-0.3.0.zip").write_bytes(
+                b"opaque original iOS package bytes\x00\xff"
+            )
+            output_roots = {"apple": "outputs/apple"}
+        else:
+            for target, contents in (
+                ("ios-arm64", b"original device framework\x00\xff"),
+                ("ios-simulator-arm64", b"original simulator framework\x00\xff"),
+            ):
+                framework = stage / f"outputs/apple-binary/{target}/CodexAgent.framework"
+                framework.mkdir(parents=True)
+                (framework / "CodexAgent").write_bytes(contents)
+            output_roots = {"apple-binary": "outputs/apple-binary"}
         manifest = write_output_manifest(
-            stage, "sdk", "sdk-ios", "package", "ios", "0.3.0",
-            {"apple": "outputs/apple"},
+            stage, "sdk", "sdk-ios", self.phase, "ios", "0.3.0", output_roots,
         )
         selected = write_receipt(
-            self.root / "selected-package-receipt.json",
-            product="sdk", component="sdk-ios", phase="package", target="ios",
+            self.root / f"selected-{self.phase}-receipt.json",
+            product="sdk", component="sdk-ios", phase=self.phase, target="ios",
             outputs=manifest["outputs"], upstream=[], version="0.3.0",
             version_identity="0.3.0", context={"producer": self.producer},
         )
@@ -61,20 +71,31 @@ class SdkIosPackageUploadTest(unittest.TestCase):
             "worker/gradle.log": b"",
             "worker/stdout.bin": b"",
             "worker/stderr.bin": b"original stderr bytes\x00\xff",
-            "package-execution/events/00-toolchain-before-xcode/combined.bin": b"",
-            # Transport capture does not independently interpret this descriptor.
-            "apple-package-execution.json": b"opaque descriptor retained for later admission\n",
         }
+        if self.phase == "package":
+            self.files.update({
+                "package-execution/events/00-toolchain-before-xcode/combined.bin": b"",
+                # Transport capture does not independently interpret this descriptor.
+                "apple-package-execution.json": b"opaque descriptor retained for later admission\n",
+            })
+        else:
+            self.files.update({
+                "native-original/ios-rust-device/codex-agent-ios-arm64.a":
+                    b"!<arch>\noriginal native archive\x00\xff",
+                "native-original/ios-rust-device/stdout.bin": b"",
+                "native-original/ios-rust-simulator/stderr.bin": b"",
+            })
         self.artifact["name"] = (
-            "codex-agent-sdk-worker-sdk-ios-package-ios-"
+            f"codex-agent-sdk-worker-sdk-ios-{self.phase}-ios-"
             f"{selected['buildKey'].removeprefix('sha256:')}-{self.producer['tree']}-attempt-2"
         )
+        self.receipt_hash_field = f"{self.phase}ReceiptSha256"
         self.original_plan = self.plan_path.read_bytes()
         self.archive()
 
     def call(self, **changes):
         arguments = {
-            "package_receipt_path": self.receipt_path,
+            f"{self.phase}_receipt_path": self.receipt_path,
             "artifact_id": 701,
             "artifact_sha256": self.artifact["digest"],
             "trusted_workflow_sha": self.pin,
@@ -85,7 +106,7 @@ class SdkIosPackageUploadTest(unittest.TestCase):
         }
         with patch.object(capture, "_validate_plan", return_value=self.plan), \
                 patch("reuse.api_request", side_effect=self.api):
-            return capture.capture_sdk_ios_package_upload(
+            return getattr(capture, f"capture_sdk_ios_{self.phase}_upload")(
                 self.plan_path, self.output, **arguments,
             )
 
@@ -95,7 +116,7 @@ class SdkIosPackageUploadTest(unittest.TestCase):
         self.assertEqual(self.producer, result["captureProducer"])
         self.assertEqual(self.artifact, result["artifact"])
         self.assertEqual(self.run, result["observed"][0]["run"])
-        self.assertEqual(sha256_bytes(self.receipt_bytes), result["packageReceiptSha256"])
+        self.assertEqual(sha256_bytes(self.receipt_bytes), result[self.receipt_hash_field])
         self.assertEqual(result, json.loads((self.output / "capture-transport.json").read_bytes()))
         self.assertEqual(self.raw, (self.output / "transport.zip").read_bytes())
         self.assertEqual(self.original_plan, (self.output / "plan/impact-plan.json").read_bytes())
@@ -112,7 +133,9 @@ class SdkIosPackageUploadTest(unittest.TestCase):
         for case in ("job", "job-failed", "attempt", "pin", "artifact-run", "artifact-head",
                      "name", "digest", "before", "after", "tree"):
             self.run, self.jobs, self.artifact, self.commit = deepcopy(baseline)
-            if case == "job": self.jobs[0]["name"] = "product-validation / sdk-sdk-ios-binary-ios"
+            if case == "job":
+                other = "binary" if self.phase == "package" else "package"
+                self.jobs[0]["name"] = f"product-validation / sdk-sdk-ios-{other}-ios"
             elif case == "job-failed": self.jobs[0]["conclusion"] = "failure"
             elif case == "attempt": self.run["run_attempt"] = 1
             elif case == "pin": self.run["referenced_workflows"][0]["sha"] = "d" * 40
@@ -127,10 +150,10 @@ class SdkIosPackageUploadTest(unittest.TestCase):
                 self.call()
             self.assertFalse(self.output.exists())
 
-    def test_selected_and_uploaded_receipts_must_be_the_same_exact_package(self):
+    def test_selected_and_uploaded_receipts_must_be_the_same_exact_phase(self):
         changed = canonical_json_bytes({**json.loads(self.receipt_bytes), "trustDomain": "release"})
         self.receipt_path.write_bytes(changed)
-        with self.assertRaisesRegex(ValueError, "selected original receipt"):
+        with self.assertRaisesRegex(ValueError, "selected original"):
             self.call()
         self.assertFalse(self.output.exists())
         self.receipt_path.write_bytes(self.receipt_bytes)
@@ -143,6 +166,26 @@ class SdkIosPackageUploadTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.call()
         self.assertFalse(self.output.exists())
+
+    def test_other_ios_phase_receipt_rejects_before_observation(self):
+        other = "binary" if self.phase == "package" else "package"
+        wrong_path = self.root / f"wrong-{other}-receipt.json"
+        wrong = write_receipt(
+            wrong_path, product="sdk", component="sdk-ios", phase=other, target="ios",
+            outputs=json.loads(self.receipt_bytes)["outputs"], upstream=[], version="0.3.0",
+            version_identity="0.3.0", context={"producer": self.producer},
+        )
+        original = self.receipt_path.read_bytes()
+        self.receipt_path.write_bytes(wrong_path.read_bytes())
+        try:
+            with patch.object(capture, "_observe_ci_producer_jobs") as observe, \
+                    self.assertRaisesRegex(ValueError, f"original {self.phase} receipt"):
+                self.call()
+            observe.assert_not_called()
+            self.assertEqual(other, wrong["phase"])
+            self.assertFalse(self.output.exists())
+        finally:
+            self.receipt_path.write_bytes(original)
 
     def test_late_plan_receipt_and_archive_mutations_never_publish(self):
         gate = capture._require_artifact_job_window
@@ -202,6 +245,10 @@ class SdkIosPackageUploadTest(unittest.TestCase):
         with patch.object(capture, "_observe_ci_producer_jobs") as observe, self.assertRaises(ValueError):
             self.call()
         observe.assert_not_called()
+
+
+class SdkIosBinaryUploadTest(SdkIosPackageUploadTest):
+    phase = "binary"
 
 
 if __name__ == "__main__":
