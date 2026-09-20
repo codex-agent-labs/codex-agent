@@ -124,6 +124,7 @@ class ProductSelectionTest(unittest.TestCase):
                      "ci/products/sdk_apple_toolchain_evidence.py",
                      "ci/products/sdk_apple_simulator_evidence.py",
                      "gradle/build-logic/src/main/kotlin/ApplePackageExecutionEvidence.kt",
+                     "gradle/build-logic/src/main/kotlin/AppleOriginalPackageExecution.kt",
                      "gradle/build-logic/src/main/kotlin/AppleValidationBindingReplay.kt",
                      "gradle/build-logic/src/main/kotlin/AppleBinaryPackageContent.kt",
                      "gradle/build-logic/src/main/kotlin/AppleBinaryPackageReplay.kt"):

@@ -12,11 +12,142 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import org.gradle.api.tasks.CacheableTask
 import org.gradle.api.Action
+import org.gradle.testfixtures.ProjectBuilder
 import org.gradle.process.ExecOperations
 import org.gradle.process.ExecResult
 import org.gradle.process.ExecSpec
 
 class AppleDistributionTasksTest {
+    @Test
+    fun `simulator observations are separate lossless captures with optional boot`() = withRoot { temporary ->
+        for (booted in listOf(false, true)) {
+            val fixture = SimulatorCaptureFixture(temporary.resolve("booted-$booted"))
+            fixture.selection(booted)
+            fixture.success()
+            fixture.task.verify()
+            fixture.assertConsumed()
+            val operations = setOf("runtimes", "devices", "bootstatus", "ready-devices") +
+                if (booted) emptySet() else setOf("boot")
+            val simulator = fixture.task.simulatorRawEvidenceDirectory.get().asFile
+            assertEquals(operations.flatMap { operation ->
+                listOf("execution.json", "stdout.bin", "stderr.bin").map { "attempt-0/$operation/$it" }
+            }.toSet(), verifiedRegularFiles(simulator).keys)
+            assertFalse(simulator.resolve("attempt-0/failure.json").exists())
+            assertEquals(fixture.devices("Booted"), simulator.resolve("attempt-0/ready-devices/stdout.bin").readText())
+            assertContentEquals(byteArrayOf(0, -1, 10), simulator.resolve("attempt-0/bootstatus/stderr.bin").readBytes())
+            val raw = fixture.task.rawEvidenceDirectory.get().asFile
+            assertEquals(setOf("successful-attempt.json") + listOf("xcodebuild", "summary", "tests").flatMap { operation ->
+                listOf("execution.json", "stdout.bin", "stderr.bin").map { "attempt-0/$operation/$it" }
+            }, verifiedRegularFiles(raw).keys)
+            assertEquals(0, raw.resolve("successful-attempt.json").readReleaseObject().releaseInt("attempt"))
+            assertEquals(simulator.parentFile.resolve("raw"), raw)
+            assertEquals("package original\n", fixture.packageDirectory.resolve("Package.swift").readText())
+        }
+    }
+
+    @Test
+    fun `disappeared simulator retry retains both attempts without changing retry semantics`() = withRoot { temporary ->
+        val fixture = SimulatorCaptureFixture(temporary)
+        fixture.selection(booted = true)
+        fixture.enqueue(fixture.xcodeCommand(), "first failed XCTest\n", exit = 65)
+        fixture.enqueue(fixture.devicesCommand, """{"devices":{"runtime-1":[]}}""", afterProcess = {
+            assertTrue(fixture.task.simulatorRawEvidenceDirectory.file("attempt-0/failure.json").get().asFile.isFile)
+        })
+        fixture.selection(booted = false)
+        fixture.success()
+        fixture.task.verify()
+        fixture.assertConsumed()
+        val simulator = fixture.task.simulatorRawEvidenceDirectory.get().asFile
+        assertEquals("""{"devices":{"runtime-1":[]}}""",
+            simulator.resolve("attempt-0/retry-devices/stdout.bin").readText())
+        assertTrue(simulator.resolve("attempt-1/boot/execution.json").isFile)
+        assertFalse(simulator.resolve("attempt-1/retry-devices").exists())
+        assertFalse(simulator.resolve("attempt-1/failure.json").exists())
+        val failure = simulator.resolve("attempt-0/failure.json").readReleaseObject()
+        assertEquals(setOf("schemaVersion", "exceptionClass", "message"), failure.keys)
+        assertEquals(1, failure.releaseInt("schemaVersion"))
+        assertEquals(IllegalStateException::class.java.name, failure.releaseString("exceptionClass"))
+        assertTrue("failed (65)" in failure.releaseString("message"))
+        val raw = fixture.task.rawEvidenceDirectory.get().asFile
+        assertEquals(65, raw.resolve("attempt-0/xcodebuild/execution.json").readReleaseObject().releaseInt("exitCode"))
+        assertEquals(1, raw.resolve("successful-attempt.json").readReleaseObject().releaseInt("attempt"))
+    }
+
+    @Test
+    fun `simulator launch and retry observation failures retain raw bytes and do not retry`() = withRoot { temporary ->
+        for (launch in listOf(false, true)) {
+            val fixture = SimulatorCaptureFixture(temporary.resolve("launch-$launch"))
+            fixture.enqueue(fixture.runtimesCommand, fixture.runtimes)
+            fixture.enqueue(fixture.devicesCommand, fixture.devices("Booted"))
+            fixture.enqueue(fixture.bootstatusCommand, "partial bootstatus\n", exit = 70, launch = launch)
+            fixture.enqueue(fixture.devicesCommand, "partial retry listing\n", exit = 71)
+            val originalFailure = assertFailsWith<IllegalStateException> { fixture.task.verify() }
+            fixture.assertConsumed()
+            val simulator = fixture.task.simulatorRawEvidenceDirectory.get().asFile
+            val failure = simulator.resolve("attempt-0/failure.json").readReleaseObject()
+            assertEquals(originalFailure.javaClass.name, failure.releaseString("exceptionClass"))
+            assertEquals(originalFailure.message, failure.releaseString("message"))
+            assertEquals("partial bootstatus\n", simulator.resolve("attempt-0/bootstatus/stdout.bin").readText())
+            assertEquals(if (launch) "null" else "70",
+                simulator.resolve("attempt-0/bootstatus/execution.json").readReleaseObject()["exitCode"].toString())
+            assertEquals(71, simulator.resolve("attempt-0/retry-devices/execution.json").readReleaseObject().releaseInt("exitCode"))
+            assertFalse(simulator.resolve("attempt-1").exists())
+            assertFalse(fixture.task.rawEvidenceDirectory.file("successful-attempt.json").get().asFile.exists())
+        }
+    }
+
+    @Test
+    fun `report filesystem failure after successful XCTest processes has an original failure observation`() = withRoot { temporary ->
+        val fixture = SimulatorCaptureFixture(temporary)
+        fixture.selection(booted = true)
+        fixture.success(afterTests = {
+            fixture.task.summaryFile.get().asFile.apply {
+                mkdirs(); resolve("block-report-replacement").writeText("synthetic filesystem obstruction\n")
+            }
+        })
+        fixture.enqueue(fixture.devicesCommand, fixture.devices("Booted"))
+        val originalFailure = assertFailsWith<Exception> { fixture.task.verify() }
+        fixture.assertConsumed()
+        val simulator = fixture.task.simulatorRawEvidenceDirectory.get().asFile
+        val failure = simulator.resolve("attempt-0/failure.json").readReleaseObject()
+        assertEquals(originalFailure.javaClass.name, failure.releaseString("exceptionClass"))
+        assertEquals(originalFailure.message, failure.releaseString("message"))
+        val raw = fixture.task.rawEvidenceDirectory.get().asFile
+        listOf("xcodebuild", "summary", "tests").forEach { operation ->
+            assertEquals(0, raw.resolve("attempt-0/$operation/execution.json").readReleaseObject().releaseInt("exitCode"))
+        }
+        assertFalse(raw.resolve("successful-attempt.json").exists())
+        assertFalse(simulator.resolve("attempt-1").exists())
+    }
+
+    @Test
+    fun `caught failure with no message retains JSON null`() = withRoot { temporary ->
+        val fixture = SimulatorCaptureFixture(temporary)
+        fixture.enqueue(fixture.runtimesCommand, fixture.runtimes)
+        fixture.enqueue(fixture.devicesCommand, fixture.devices("Booted"))
+        fixture.enqueue(fixture.bootstatusCommand, afterProcess = { throw IllegalStateException() })
+        fixture.enqueue(fixture.devicesCommand, fixture.devices("Booted"))
+        assertFailsWith<IllegalStateException> { fixture.task.verify() }
+        fixture.assertConsumed()
+        val failure = fixture.task.simulatorRawEvidenceDirectory.file("attempt-0/failure.json")
+            .get().asFile.readReleaseObject()
+        assertEquals(IllegalStateException::class.java.name, failure.releaseString("exceptionClass"))
+        assertEquals(kotlinx.serialization.json.JsonNull, failure["message"])
+    }
+
+    @Test
+    fun `simulator capture rejects overlapping inputs before cleanup or any process`() = withRoot { temporary ->
+        val fixture = SimulatorCaptureFixture(temporary)
+        val simulator = fixture.task.simulatorRawEvidenceDirectory.get().asFile
+        simulator.mkdirs()
+        val original = simulator.resolve("Package.swift").apply { writeText("original must remain\n") }
+        fixture.task.packageDirectory.set(simulator)
+        assertFailsWith<IllegalStateException> { fixture.task.verify() }
+        fixture.assertConsumed()
+        assertEquals("original must remain\n", original.readText())
+        assertFalse(fixture.task.rawEvidenceDirectory.get().asFile.exists())
+    }
+
     @Test
     fun `actual capture wrapper retains nonzero and launch failure bytes before throwing`() = withRoot { temporaryRoot ->
         val root = temporaryRoot.canonicalFile
@@ -404,4 +535,94 @@ class AppleDistributionTasksTest {
         val root = createTempDirectory("apple-distribution").toFile()
         try { block(root) } finally { root.deleteRecursively() }
     }
+}
+
+/** Actual task/capture wrapper with scripted process observations, never an Apple tool invocation. */
+private class SimulatorCaptureFixture(directory: File) {
+    private data class Observation(
+        val command: List<String>, val output: String, val exit: Int, val launch: Boolean,
+        val afterProcess: () -> Unit,
+    )
+    private val root = directory.canonicalFile.apply { mkdirs() }
+    private val observations = mutableListOf<Observation>()
+    private var consumed = 0
+    private val processes = Proxy.newProxyInstance(ExecOperations::class.java.classLoader,
+        arrayOf(ExecOperations::class.java)) { _, method, arguments ->
+        check(method.name == "exec")
+        check(consumed < observations.size) { "Unexpected simulator process" }
+        val observation = observations[consumed++]
+        var stdout: OutputStream? = null
+        var stderr: OutputStream? = null
+        var workingDirectory = root
+        var command = emptyList<String>()
+        val spec = Proxy.newProxyInstance(ExecSpec::class.java.classLoader, arrayOf(ExecSpec::class.java)) specHandler@ { _, call, args ->
+            when (call.name) {
+                "commandLine" -> command = (args!![0] as Iterable<*>).map { it.toString() }
+                "setStandardOutput" -> stdout = args!![0] as OutputStream
+                "setErrorOutput" -> stderr = args!![0] as OutputStream
+                "workingDir", "setWorkingDir" -> workingDirectory = args!![0] as File
+                "getWorkingDir" -> return@specHandler workingDirectory
+            }
+            null
+        } as ExecSpec
+        @Suppress("UNCHECKED_CAST")
+        (arguments!![0] as Action<ExecSpec>).execute(spec)
+        assertEquals(observation.command, command)
+        stdout!!.write(observation.output.toByteArray(Charsets.UTF_8))
+        stderr!!.write(byteArrayOf(0, -1, 10))
+        if (command.first() == "xcodebuild") {
+            File(command[command.indexOf("-resultBundlePath") + 1]).resolve("result").apply {
+                parentFile.mkdirs(); writeText("synthetic original result\n")
+            }
+        }
+        observation.afterProcess()
+        if (observation.launch) error("synthetic original launch failure")
+        Proxy.newProxyInstance(ExecResult::class.java.classLoader, arrayOf(ExecResult::class.java)) { _, call, _ ->
+            check(call.name == "getExitValue")
+            observation.exit
+        } as ExecResult
+    } as ExecOperations
+    private val project = ProjectBuilder.builder().withProjectDir(root).build()
+    val packageDirectory = root.resolve("CodexAgentPackage").apply {
+        mkdirs(); resolve("Package.swift").writeText("package original\n")
+    }
+    val task = project.tasks.create("swiftAuthentication", VerifySwiftAuthenticationTestsTask::class.java, processes).apply {
+        packageDirectory.set(this@SimulatorCaptureFixture.packageDirectory)
+        runtimeName.set("iOS 26.5")
+        deviceTypeIdentifier.set("iphone-17")
+        expectedTestIdentifiers.set(listOf("Suite/testOne()"))
+        derivedDataDirectory.set(root.resolve("derived"))
+        resultBundleDirectory.set(root.resolve("swift-authentication-tests.xcresult"))
+        summaryFile.set(root.resolve("reports/summary.json"))
+        simulatorDevicesFile.set(root.resolve("reports/simulator-devices.json"))
+    }
+    val runtimesCommand = listOf("/usr/bin/xcrun", "simctl", "list", "-j", "runtimes")
+    val devicesCommand = listOf("/usr/bin/xcrun", "simctl", "list", "-j", "devices", "available")
+    val bootstatusCommand = listOf("/usr/bin/xcrun", "simctl", "bootstatus", "device-1", "-b")
+    val runtimes = """{"runtimes":[{"name":"iOS 26.5","isAvailable":true,"identifier":"runtime-1"}]}"""
+
+    fun devices(state: String) = """{"devices":{"runtime-1":[{"isAvailable":true,"deviceTypeIdentifier":"iphone-17","udid":"device-1","state":"$state"}]}}"""
+    fun enqueue(command: List<String>, output: String = "", exit: Int = 0, launch: Boolean = false,
+                afterProcess: () -> Unit = {}) {
+        observations += Observation(command, output, exit, launch, afterProcess)
+    }
+    fun selection(booted: Boolean) {
+        enqueue(runtimesCommand, runtimes)
+        enqueue(devicesCommand, devices(if (booted) "Booted" else "Shutdown"))
+        if (!booted) enqueue(listOf("/usr/bin/xcrun", "simctl", "boot", "device-1"))
+        enqueue(bootstatusCommand)
+        enqueue(devicesCommand, devices("Booted"))
+    }
+    fun xcodeCommand() = swiftAuthenticationXcodebuildCommand("device-1",
+        task.derivedDataDirectory.get().asFile, task.resultBundleDirectory.get().asFile)
+    fun success(afterTests: () -> Unit = {}) {
+        enqueue(xcodeCommand(), "XCTest passed\n")
+        val query = listOf("/usr/bin/xcrun", "xcresulttool", "get", "test-results")
+        val suffix = listOf("--path", task.resultBundleDirectory.get().asFile.absolutePath, "--compact")
+        enqueue(query + "summary" + suffix, """{"totalTestCount":1,"failedTests":0}""")
+        enqueue(query + "tests" + suffix,
+            """{"devices":[],"testNodes":[{"name":"testOne()","nodeType":"Test Case","nodeIdentifier":"Suite/testOne()","result":"Passed"}],"testPlanConfigurations":[]}""",
+            afterProcess = afterTests)
+    }
+    fun assertConsumed() = assertEquals(observations.size, consumed)
 }

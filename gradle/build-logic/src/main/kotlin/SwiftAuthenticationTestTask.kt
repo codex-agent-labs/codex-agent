@@ -2,6 +2,7 @@ import java.io.File
 import java.nio.file.Files
 import javax.inject.Inject
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -255,29 +256,37 @@ abstract class VerifySwiftAuthenticationTestsTask @Inject constructor(
     @get:OutputDirectory abstract val resultBundleDirectory: DirectoryProperty
     @get:OutputFile abstract val summaryFile: RegularFileProperty
     @get:OutputDirectory abstract val rawEvidenceDirectory: DirectoryProperty
+    @get:OutputDirectory abstract val simulatorRawEvidenceDirectory: DirectoryProperty
     @get:Internal abstract val ownedEvidenceDirectory: DirectoryProperty
 
     init {
         ownedEvidenceDirectory.convention(project.layout.buildDirectory.dir("swift-authentication-evidence-task"))
         rawEvidenceDirectory.convention(ownedEvidenceDirectory.dir("raw"))
+        simulatorRawEvidenceDirectory.convention(ownedEvidenceDirectory.dir("simulator-raw"))
     }
 
     @TaskAction fun verify() {
         val resultBundle = resultBundleDirectory.get().asFile
         val raw = rawEvidenceDirectory.get().asFile
+        val simulatorRaw = simulatorRawEvidenceDirectory.get().asFile
         val owned = ownedEvidenceDirectory.get().asFile
         val originalInputs = listOf(packageDirectory.get().asFile, derivedDataDirectory.get().asFile,
             resultBundle, summaryFile.get().asFile, simulatorDevicesFile.get().asFile) +
             listOfNotNull(compiledProductsDirectory.orNull?.asFile)
-        (originalInputs + listOf(raw, owned)).forEach {
+        (originalInputs + listOf(raw, simulatorRaw, owned)).forEach {
             requireApplePackagePathWithoutSymlinks(it, "XCTest raw evidence")
         }
-        check(raw.canonicalFile == owned.canonicalFile.resolve("raw") && originalInputs.none {
+        check(raw.canonicalFile == owned.canonicalFile.resolve("raw") &&
+            simulatorRaw.canonicalFile == owned.canonicalFile.resolve("simulator-raw") && originalInputs.none {
             val input = it.canonicalFile.toPath()
-            input.startsWith(raw.canonicalFile.toPath()) || raw.canonicalFile.toPath().startsWith(input)
+            listOf(raw, simulatorRaw).any { directory ->
+                input.startsWith(directory.canonicalFile.toPath()) || directory.canonicalFile.toPath().startsWith(input)
+            }
         }) { "XCTest raw evidence overlaps an input or is not task-owned" }
         deleteReleaseTree(raw)
         Files.createDirectories(raw.toPath())
+        deleteReleaseTree(simulatorRaw)
+        Files.createDirectories(simulatorRaw.toPath())
         Files.deleteIfExists(summaryFile.get().asFile.toPath())
         val importedProducts = compiledProductsDirectory.orNull?.asFile
         if (importedProducts != null) {
@@ -290,20 +299,25 @@ abstract class VerifySwiftAuthenticationTestsTask @Inject constructor(
         repeat(2) { attempt ->
             val runtimes = processes.captureReleaseProcess(
                 listOf("/usr/bin/xcrun", "simctl", "list", "-j", "runtimes"),
+                captureDirectory = simulatorRaw.resolve("attempt-$attempt/runtimes"),
             )
             val devices = processes.captureReleaseProcess(
                 listOf("/usr/bin/xcrun", "simctl", "list", "-j", "devices", "available"),
+                captureDirectory = simulatorRaw.resolve("attempt-$attempt/devices"),
             )
             val simulator = selectSimulator(runtimes, devices, runtimeName.get(), deviceTypeIdentifier.get())
             try {
                 if (simulator.state != "Booted") {
-                    processes.captureReleaseProcess(listOf("/usr/bin/xcrun", "simctl", "boot", simulator.udid))
+                    processes.captureReleaseProcess(listOf("/usr/bin/xcrun", "simctl", "boot", simulator.udid),
+                        captureDirectory = simulatorRaw.resolve("attempt-$attempt/boot"))
                 }
                 processes.captureReleaseProcess(
                     listOf("/usr/bin/xcrun", "simctl", "bootstatus", simulator.udid, "-b"),
+                    captureDirectory = simulatorRaw.resolve("attempt-$attempt/bootstatus"),
                 )
                 val readyDevices = processes.captureReleaseProcess(
                     listOf("/usr/bin/xcrun", "simctl", "list", "-j", "devices", "available"),
+                    captureDirectory = simulatorRaw.resolve("attempt-$attempt/ready-devices"),
                 )
                 check(simulatorStatus(readyDevices, simulator.runtimeIdentifier, simulator.udid) ==
                     SimulatorStatus(true, "Booted")) { "Selected simulator is not available and booted" }
@@ -350,9 +364,15 @@ abstract class VerifySwiftAuthenticationTestsTask @Inject constructor(
                 logger.lifecycle("Swift package tests executed: ${summary.total}")
                 return
             } catch (failure: Throwable) {
+                simulatorRaw.resolve("attempt-$attempt/failure.json").atomicWriteJson(buildJsonObject {
+                    put("schemaVersion", JsonPrimitive(1))
+                    put("exceptionClass", JsonPrimitive(failure.javaClass.name))
+                    put("message", failure.message?.let(::JsonPrimitive) ?: JsonNull)
+                })
                 val latestDevices = runCatching {
                     processes.captureReleaseProcess(
                         listOf("/usr/bin/xcrun", "simctl", "list", "-j", "devices", "available"),
+                        captureDirectory = simulatorRaw.resolve("attempt-$attempt/retry-devices"),
                     )
                 }.getOrNull()
                 if (shouldRetryDisappearedSimulator(

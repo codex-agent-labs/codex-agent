@@ -148,6 +148,7 @@ class IosSdkValidationGraphTest {
                 "compiler-raw" to build.resolve("apple-compiler-evidence-task/raw"),
                 "xcframework" to packageRoot.resolve("extracted/xcframework"),
                 "xctest-raw" to build.resolve("swift-authentication-evidence-task/raw"),
+                "simulator-raw" to build.resolve("swift-authentication-evidence-task/simulator-raw"),
                 "xcresult" to build.resolve("swift-authentication-tests.xcresult"),
                 "xctest-package" to packageRoot.resolve("extracted/CodexAgentPackage"),
                 "xctest-products" to build.resolve("swift-simulator-compilation-derived-data/Build/Products"),
@@ -158,7 +159,7 @@ class IosSdkValidationGraphTest {
                 "toolchain" to build.resolve("reports/ios-release/toolchain"),
             ).mapValues { (_, path) -> path.path }
             val actualLayout = value("ARCHIVE_LAYOUT").split('|').associate { it.substringBefore('=') to it.substringAfter('=') }
-            assertEquals(21, expectedLayout.size)
+            assertEquals(22, expectedLayout.size)
             assertEquals(expectedLayout, actualLayout)
             assertEquals(expectedLayout.values.toSet(), value("ARCHIVE_INPUTS").split('|').toSet())
             assertEquals(originalTestApp.path, value("DEVICE_TESTAPP_SOURCE"))

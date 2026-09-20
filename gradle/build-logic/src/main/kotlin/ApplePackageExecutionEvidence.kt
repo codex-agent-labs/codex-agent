@@ -52,7 +52,7 @@ internal data class ApplePackageExecutionContext(
  */
 internal class ApplePackageExecutionRecorder(
     evidenceDirectory: File,
-    context: ApplePackageExecutionContext,
+    private val context: ApplePackageExecutionContext,
 ) {
     private val evidence = requireNormalizedAppleExecutionPath(evidenceDirectory, "evidence")
     private val scratch = requireNormalizedAppleExecutionPath(context.scratchDirectory, "scratch")
@@ -81,13 +81,13 @@ internal class ApplePackageExecutionRecorder(
 
     internal fun expectedCommand(): List<String> {
         check(next < steps.size) { "Apple package execution is already complete" }
-        return expectedCommand(steps[next])
+        return applePackageExecutionCommand(context, steps[next], availableLibraries)
     }
 
     internal fun record(command: List<String>, exitCode: Int?, combinedOutput: ByteArray) {
         check(next < steps.size) { "Unexpected extra Apple package execution event" }
         val step = steps[next]
-        check(command == expectedCommand(step)) {
+        check(command == applePackageExecutionCommand(context, step, availableLibraries)) {
             "Apple package execution command mismatch for ${step.directoryName}"
         }
         val directory = evidence.resolve(step.directoryName)
@@ -100,7 +100,7 @@ internal class ApplePackageExecutionRecorder(
             put("command", buildJsonArray { command.forEach { add(JsonPrimitive(it)) } })
             put("workingDirectory", JsonPrimitive(scratch.path))
             put("environment", buildJsonObject {
-                expectedEnvironment().toSortedMap().forEach { (name, value) -> put(name, JsonPrimitive(value)) }
+                applePackageExecutionEnvironment(context).toSortedMap().forEach { (name, value) -> put(name, JsonPrimitive(value)) }
             })
             put("exitCode", exitCode?.let(::JsonPrimitive) ?: kotlinx.serialization.json.JsonNull)
             put("streamMode", JsonPrimitive("stderr-merged-into-stdout"))
@@ -108,7 +108,7 @@ internal class ApplePackageExecutionRecorder(
         if (exitCode != step.expectedExitCode) {
             error("Apple package execution failed at ${step.directoryName}: exit=$exitCode")
         }
-        captureEffect(step, directory)
+        captureApplePackageExecutionEffect(context, step, directory)
         verifiedRegularFiles(directory).forEach { (relative, file) ->
             capturedDigests["${step.directoryName}/$relative"] = file.releaseDigest()
         }
@@ -141,16 +141,24 @@ internal class ApplePackageExecutionRecorder(
         }
     }
 
-    private fun expectedEnvironment() = mapOf(
+}
+
+internal fun applePackageExecutionEnvironment(context: ApplePackageExecutionContext) = mapOf(
         "PATH" to "/usr/bin:/bin:/usr/sbin:/sbin",
         "LC_ALL" to "C",
         "LANG" to "C",
-        "HOME" to scratch.path,
-        "TMPDIR" to scratch.path,
-        "DEVELOPER_DIR" to developer.path,
+        "HOME" to context.scratchDirectory.path,
+        "TMPDIR" to context.scratchDirectory.path,
+        "DEVELOPER_DIR" to context.developerDirectory.path,
     )
 
-    private fun expectedCommand(step: ApplePackageExecutionStep): List<String> {
+internal fun applePackageExecutionCommand(
+    context: ApplePackageExecutionContext, step: ApplePackageExecutionStep, availableLibraries: String?,
+): List<String> {
+        val binary = context.binaryFrameworks
+        val work = context.workDirectory
+        val scratch = context.scratchDirectory
+        val source = context.sourceSnapshot
         val device = binary.resolve("ios-arm64/CodexAgent.framework")
         val simulator = binary.resolve("ios-simulator-arm64/CodexAgent.framework")
         val assembled = work.resolve("assembled/CodexAgent.xcframework")
@@ -199,7 +207,11 @@ internal class ApplePackageExecutionRecorder(
         }
     }
 
-    private fun effectSource(step: ApplePackageExecutionStep): File = when (step) {
+internal fun applePackageExecutionEffectSource(
+    context: ApplePackageExecutionContext, step: ApplePackageExecutionStep,
+): File {
+    val work = context.workDirectory
+    return when (step) {
         ApplePackageExecutionStep.ASSEMBLE_XCFRAMEWORK -> work.resolve("assembled/CodexAgent.xcframework")
         ApplePackageExecutionStep.DEVICE_STRIP ->
             work.resolve("release/CodexAgent.xcframework/ios-arm64/CodexAgent.framework/CodexAgent.stripped")
@@ -213,10 +225,13 @@ internal class ApplePackageExecutionRecorder(
             work.resolve("release/CodexAgent.xcframework/Info.plist")
         else -> error("Apple package execution step has no output effect")
     }
+}
 
-    private fun captureEffect(step: ApplePackageExecutionStep, eventDirectory: File) {
+private fun captureApplePackageExecutionEffect(
+    context: ApplePackageExecutionContext, step: ApplePackageExecutionStep, eventDirectory: File,
+) {
         if (step.effect == ApplePackageExecutionEffect.NONE) return
-        val sourceEffect = effectSource(step)
+        val sourceEffect = applePackageExecutionEffectSource(context, step)
         requireApplePackagePathWithoutSymlinks(sourceEffect, "execution effect")
         when (step.effect) {
             ApplePackageExecutionEffect.NONE -> Unit
@@ -243,8 +258,6 @@ internal class ApplePackageExecutionRecorder(
             }
         }
     }
-}
-
 private fun requireNormalizedAppleExecutionPath(file: File, role: String): File {
     check(file.isAbsolute && file.toPath().normalize() == file.toPath() && file.canonicalFile == file) {
         "Apple package execution $role path must be absolute and normalized"

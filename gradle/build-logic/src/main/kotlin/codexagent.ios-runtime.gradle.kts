@@ -432,6 +432,7 @@ validationPackageInputs?.let { packageInputs ->
             "compiler-raw" to compiler.rawEvidenceDirectory.get().asFile.path,
             "xcframework" to binding.xcframeworkDirectory.get().asFile.path,
             "xctest-raw" to tests.rawEvidenceDirectory.get().asFile.path,
+            "simulator-raw" to tests.simulatorRawEvidenceDirectory.get().asFile.path,
             "xcresult" to tests.resultBundleDirectory.get().asFile.path,
             "xctest-package" to tests.packageDirectory.get().asFile.path,
             "xctest-products" to tests.derivedDataDirectory.dir("Build/Products").get().asFile.path,
