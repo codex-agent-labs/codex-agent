@@ -25,10 +25,13 @@ if __package__:
         require_integer,
         require_sha256,
         sha256_bytes,
+        sha256_file,
+        snapshot_regular_tree,
         verified_zip_contents,
         write_canonical_json,
     )
     from .products.receipt import validate_phase_receipt, validate_producer
+    from .products.sdk_apple_content import _input_inventory
     from .sdk_apple_source import _original_transport_producer
 else:
     import product_reuse
@@ -43,10 +46,13 @@ else:
         require_integer,
         require_sha256,
         sha256_bytes,
+        sha256_file,
+        snapshot_regular_tree,
         verified_zip_contents,
         write_canonical_json,
     )
     from products.receipt import validate_phase_receipt, validate_producer
+    from products.sdk_apple_content import _input_inventory
     from sdk_apple_source import _original_transport_producer
 
 
@@ -131,6 +137,135 @@ def _require_native_records(
     if original is None:
         raise ValueError("Apple native reused lane lacks its transport provenance")
     return original[0]
+
+
+def _native_lane_content(plan, producer, lane, captured, evidence, root):
+    """One receipt/content gate shared by observed and retained native captures."""
+    receipt = validate_receipt(captured / "lane-receipt.json", plan, captured, lane, repository_root=root)
+    if (receipt["artifactName"] != f"codex-agent-ci-{lane}-{producer['tree']}"
+            or _receipt_producer(receipt) != producer):
+        raise ValueError("Apple native lane receipt differs from its current upload producer")
+    original_producer = _require_native_records(receipt, lane, captured) or producer
+    for source, destination in NATIVE_FILES[lane].items():
+        contents = read_regular_file_bytes(captured / source,
+            max_bytes=product_reuse._CATALOG_LIMIT, reject_symlink_parents=True)
+        if not contents:
+            raise ValueError("Apple native evidence contains an empty required file")
+        if destination.endswith(".json"):
+            proof = load_json_bytes(contents)
+            if (type(proof) is not dict or proof.get("candidateCommit") != original_producer["commit"]
+                    or proof.get("candidateTree") != original_producer["tree"]):
+                raise ValueError("Apple native proof differs from its original producer")
+        (evidence / destination).write_bytes(contents)
+    return receipt, original_producer
+
+
+@contextmanager
+def verified_retained_sdk_apple_native_inputs(capture_root, *, original_binary_receipt_path, repository_root):
+    """Replay retained bytes, NOT their enclosing transport authentication.
+
+    The caller must independently authenticate the enclosing capture/catalog.
+    Recorded observations confer no authority here. The original native semantic
+    and toolchain matcher must still run after this receipt/content replay.
+    """
+    source = Path(capture_root)
+    receipt_path = Path(original_binary_receipt_path)
+    receipt_bytes = read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+    if tuple(receipt[name] for name in ("product", "component", "phase", "target")) != ("sdk", "sdk-ios", "binary", "ios"):
+        raise ValueError("Retained Apple native inputs require the exact binary receipt")
+    producer = receipt["producer"]
+    before = _input_inventory(source, allow_empty=True)
+    with tempfile.TemporaryDirectory(prefix="retained-apple-native-") as temporary:
+        private = Path(temporary).resolve()
+        captured = private / "capture"
+        snapshot_regular_tree(source, captured, allow_empty=True)
+        roots = {"plan", "archives", "lanes", "native-evidence", "native-transport.json"}
+        historical = captured / "original-binary-receipt.json"
+        if historical.exists():
+            roots.add(historical.name)
+            if read_regular_file_bytes(historical) != receipt_bytes:
+                raise ValueError("Retained Apple native selected binary receipt differs")
+        if {path.name for path in captured.iterdir()} != roots:
+            raise ValueError("Retained Apple native capture has unexpected roots")
+        transport_path = captured / "native-transport.json"
+        transport = load_canonical_json_bytes(read_regular_file_bytes(transport_path,
+            max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
+        fields = {"schemaVersion", "captureProducer", "observed", "artifacts", "receiptSha256s"}
+        if historical.exists():
+            fields.add("binaryReceiptSha256")
+        require_exact_keys(transport, fields, "Retained Apple native transport")
+        if (require_integer(transport["schemaVersion"], "Native transport schema", 1) != 1
+                or transport["captureProducer"] != producer
+                or historical.exists() and transport["binaryReceiptSha256"] != sha256_bytes(receipt_bytes)):
+            raise ValueError("Retained Apple native transport differs from the selected binary")
+        artifacts = require_exact_keys(transport["artifacts"], LANES, "Retained Apple native artifacts")
+        digests = require_exact_keys(transport["receiptSha256s"], LANES, "Retained Apple native receipts")
+        plan_path = captured / "plan/impact-plan.json"
+        if {row["relativePath"] for row in regular_file_inventory(plan_path.parent, allow_empty=True)} != {
+                "impact-plan.json", *(f"inventories/{lane}/{name}" for lane in LANES for name in INPUT_NAMES.values())}:
+            raise ValueError("Retained Apple native plan inventory has unexpected files")
+        root = Path(repository_root).resolve(strict=True)
+        plan = product_reuse._validate_plan(plan_path, root, expected_revision=producer["commit"])
+        if (plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch"
+                or product_reuse._consumer(plan, {"GITHUB_RUN_ID": str(producer["runId"]),
+                    "GITHUB_RUN_ATTEMPT": str(producer["runAttempt"])})["producer"] != producer):
+            raise ValueError("Retained Apple native plan differs from its authorized producer")
+        if ({path.name for path in (captured / "archives").iterdir()} != {f"{lane}.zip" for lane in LANES}
+                or {path.name for path in (captured / "lanes").iterdir()} != set(LANES)):
+            raise ValueError("Retained Apple native lanes or archives are incomplete")
+        evidence = private / "native-evidence"
+        evidence.mkdir()
+        receipts, originals, raw_receipts, ids = {}, {}, {}, set()
+        for lane in LANES:
+            artifact = artifacts[lane]
+            if not isinstance(artifact, dict):
+                raise ValueError("Retained Apple native artifact must be an object")
+            identifier = require_integer(artifact.get("id"), "Retained native artifact ID", 1)
+            if identifier in ids or artifact.get("name") != f"codex-agent-ci-{lane}-{producer['tree']}":
+                raise ValueError("Retained native artifact identity differs")
+            ids.add(identifier)
+            archive = captured / "archives" / f"{lane}.zip"
+            if sha256_file(archive) != require_sha256(artifact.get("digest"), "Retained native artifact digest"):
+                raise ValueError("Retained native archive differs from its original digest")
+            zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
+                                                  **product_reuse._CATALOG_ZIP_LIMITS)
+            lane_root = captured / "lanes" / lane
+            if zipped != regular_file_inventory(lane_root, allow_empty=True):
+                raise ValueError("Retained native lane differs from its exact original archive")
+            receipts[lane], originals[lane] = _native_lane_content(plan_path, producer, lane, lane_root, evidence, root)
+            raw_receipts[lane] = read_regular_file_bytes(lane_root / "lane-receipt.json", max_bytes=16 * 1024 * 1024)
+            if sha256_bytes(raw_receipts[lane]) != require_sha256(digests[lane], "Retained native receipt digest"):
+                raise ValueError("Retained native receipt differs from transport inventory")
+        inventory = regular_file_inventory(evidence)
+        inventory_bytes = canonical_json_bytes(inventory)
+        originals_bytes = canonical_json_bytes(originals)
+        receipt_digests = {lane: sha256_bytes(value) for lane, value in raw_receipts.items()}
+        if inventory != regular_file_inventory(captured / "native-evidence"):
+            raise ValueError("Retained native flat evidence differs from its original lanes")
+
+        def unchanged():
+            if (_input_inventory(source, allow_empty=True) != before
+                    or regular_file_inventory(captured, allow_empty=True) != before
+                    or canonical_json_bytes(regular_file_inventory(evidence)) != inventory_bytes
+                    or canonical_json_bytes(inventory) != inventory_bytes
+                    or read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024,
+                        reject_symlink_parents=True) != receipt_bytes
+                    or canonical_json_bytes(receipt) != receipt_bytes
+                    or canonical_json_bytes(originals) != originals_bytes
+                    or {lane: sha256_bytes(value) for lane, value in raw_receipts.items()} != receipt_digests
+                    or canonical_json_bytes(transport) != read_regular_file_bytes(transport_path)
+                    or any(canonical_json_bytes(receipts[lane]) != canonical_json_bytes(load_json_bytes(raw_receipts[lane])) for lane in LANES)
+                    or product_reuse._validate_plan(plan_path, root, expected_revision=producer["commit"]) != plan):
+                raise ValueError("Retained Apple native inputs changed during use")
+        unchanged()
+        try:
+            yield {"directory": evidence, "captureRoot": captured, "producer": producer,
+                   "originalProducers": originals, "receipts": receipts, "receiptBytes": raw_receipts,
+                   "transport": transport, "inventory": inventory,
+                   "binaryReceiptSha256": sha256_bytes(receipt_bytes)}
+        finally:
+            unchanged()
 
 
 @contextmanager
@@ -255,27 +390,7 @@ def verified_sdk_apple_native_inputs(
             captured = private / "lanes" / lane
             safe_extract(archive, captured)
             receipt_path = captured / "lane-receipt.json"
-            receipt = validate_receipt(
-                receipt_path, private_plan, captured, lane, repository_root=root,
-            )
-            if receipt["artifactName"] != expected_name or _receipt_producer(receipt) != producer:
-                raise ValueError("Apple native lane receipt differs from its current upload producer")
-            original_producer = _require_native_records(receipt, lane, captured) or producer
-            for source, destination in NATIVE_FILES[lane].items():
-                contents = read_regular_file_bytes(
-                    captured / source,
-                    max_bytes=product_reuse._CATALOG_LIMIT,
-                    reject_symlink_parents=True,
-                )
-                if not contents:
-                    raise ValueError("Apple native evidence contains an empty required file")
-                if destination.endswith(".json"):
-                    proof = load_json_bytes(contents)
-                    if (type(proof) is not dict
-                            or proof.get("candidateCommit") != original_producer["commit"]
-                            or proof.get("candidateTree") != original_producer["tree"]):
-                        raise ValueError("Apple native proof differs from its original producer")
-                (evidence / destination).write_bytes(contents)
+            receipt, original_producer = _native_lane_content(private_plan, producer, lane, captured, evidence, root)
             artifacts[lane] = artifact
             receipt_bytes[lane] = read_regular_file_bytes(
                 receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,

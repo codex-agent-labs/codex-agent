@@ -6,8 +6,10 @@ native execution, or hosted phase admission.
 
 from contextlib import contextmanager, ExitStack
 from copy import deepcopy
+import io
 from pathlib import Path
 import unittest
+import zipfile
 from unittest.mock import patch
 
 from ci import sdk_ios_original_validation as workflow
@@ -145,7 +147,11 @@ class SdkIosOriginalValidationTest(unittest.TestCase):
         self.events.append("package-enter")
         self.assertEqual(self.fixture.plan, plan)
         self.assertEqual(self.fixture.receipt_bytes, receipt_path.read_bytes())
-        self.assertEqual(701, arguments["artifact_id"])
+        if "package_capture" in arguments:
+            self.captured = arguments["package_capture"].parent.parent.parent
+            self.assertEqual(self.captured / "original/originals/sdk", arguments["sdk_capture"])
+        else:
+            self.assertEqual(701, arguments["artifact_id"])
         yield {"stage": self.root / "package-stage", "receipt": self.package_receipt,
                "receiptBytes": canonical_json_bytes(self.package_receipt), "original": self.fixture.upload / "original",
                "packageCapture": self.captures["package"], "sdkCapture": self.captures["sdk"],
@@ -159,7 +165,10 @@ class SdkIosOriginalValidationTest(unittest.TestCase):
         self.events.append("binary-enter")
         stage, path, _ = self.fixture.predecessors[("sdk", "binary")]
         self.assertEqual(path, receipt_path)
-        self.assertEqual(702, arguments["artifact_id"])
+        if "binary_capture" in arguments:
+            self.assertEqual(self.captured / "original/originals/binary", arguments["binary_capture"])
+        else:
+            self.assertEqual(702, arguments["artifact_id"])
         self.assertEqual("aarch64-apple-darwin", arguments["rust_host"])
         yield {"stage": stage, "receiptBytes": b"different binary receipt" if self.mutation == "binary-receipt" else path.read_bytes(),
                "binaryCapture": self.captures["binary"],
@@ -200,14 +209,14 @@ class SdkIosOriginalValidationTest(unittest.TestCase):
         return {"ordinary": "content"}
 
     @contextmanager
-    def context(self):
+    def context(self, *, retained=False):
         with ExitStack() as stack:
             for owner, name, options in (
-                (workflow.product_reuse, "capture_sdk_ios_validation_upload", {"side_effect": self.capture}),
+                (workflow.product_reuse, "capture_sdk_ios_validation_upload", {"side_effect": AssertionError("network") if retained else self.capture}),
                 (workflow.product_reuse, "_validate_plan", {"side_effect": self.validate_plan}),
                 (workflow.product_reuse, "_consumer", {"side_effect": self.consumer}),
-                (workflow, "verified_original_ios_package", {"side_effect": self.package}),
-                (workflow, "verified_original_ios_binary", {"side_effect": self.binary}),
+                (workflow, "verified_retained_ios_package" if retained else "verified_original_ios_package", {"side_effect": self.package}),
+                (workflow, "verified_retained_ios_binary" if retained else "verified_original_ios_binary", {"side_effect": self.binary}),
                 (workflow, "run_git", {"side_effect": self.git}),
                 (workflow, "git_product_versions", {"return_value": {"sdk": "0.8.0"}}),
                 (workflow, "phase_git_inventory", {"side_effect": self.inventory}),
@@ -215,8 +224,55 @@ class SdkIosOriginalValidationTest(unittest.TestCase):
                 (workflow, "verify_apple_validation_stage", {"side_effect": self.replay}),
             ):
                 stack.enter_context(patch.object(owner, name, **options))
-            with workflow.verified_original_ios_validation(self.fixture.plan, self.receipt_path, **self.arguments) as value:
+            arguments = self.arguments if not retained else {key: value for key, value in self.arguments.items()
+                if key not in {"artifact_id", "artifact_sha256", "trusted_workflow_sha", "environ", "token"}}
+            if retained:
+                for name in ("verified_original_ios_package", "verified_original_ios_binary"):
+                    stack.enter_context(patch.object(workflow, name, side_effect=AssertionError("network")))
+            selected = (workflow.verified_retained_ios_validation(self.fixture.plan, self.receipt_path,
+                        validation_capture=self.template, **arguments) if retained else
+                        workflow.verified_original_ios_validation(self.fixture.plan, self.receipt_path, **arguments))
+            with selected as value:
                 yield value
+
+    def retained_template(self):
+        original = self.template / "original"
+        for name in ("package", "binary"):
+            locator = self.execution_context[f"{name}Artifact"]
+            write_canonical_json(original / "originals" / name / "capture-transport.json",
+                {"artifact": {"id": locator["artifactId"], "digest": locator["artifactSha256"]}})
+        plan = self.template / "plan/impact-plan.json"
+        plan.parent.mkdir(exist_ok=True)
+        plan.write_bytes(self.fixture.plan.read_bytes())
+        raw = io.BytesIO()
+        with zipfile.ZipFile(raw, "w") as archive:
+            for row in regular_file_inventory(original, allow_empty=True):
+                archive.writestr(row["relativePath"], (original / row["relativePath"]).read_bytes())
+        (self.template / "transport.zip").write_bytes(raw.getvalue())
+        write_canonical_json(self.template / "capture-transport.json", {
+            "captureProducer": self.producer, "observed": [], "validationReceiptSha256": sha256_bytes(self.raw),
+            "artifact": {"id": 703, "digest": sha256_bytes(raw.getvalue()),
+                "name": f"codex-agent-sdk-worker-sdk-ios-validation-ios-arm64-{self.receipt['buildKey'].removeprefix('sha256:')}-"
+                        f"{self.producer['tree']}-attempt-{self.producer['runAttempt']}"}})
+
+    def test_retained_validation_replays_all_gates_without_network_or_rewriting(self):
+        self.retained_template()
+        before = regular_file_inventory(self.template, allow_empty=True)
+        with self.context(retained=True) as value:
+            self.assertEqual(self.raw, value["receiptBytes"])
+            self.assertEqual(["package-enter", "binary-enter", "plan", "replay"], self.events)
+            self.assertEqual(before, regular_file_inventory(value["capture"], allow_empty=True))
+        self.assertEqual(["binary-exit", "package-exit"], self.events[-2:])
+        self.assertEqual(before, regular_file_inventory(self.template, allow_empty=True))
+
+    def test_retained_validation_replay_replan_and_exit_mutations_reject(self):
+        for mutation in ("replay", "replan", "binary-receipt", "package-exit", "source-exit"):
+            self.retained_template()
+            self.mutation = mutation
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                with self.context(retained=True):
+                    if mutation == "source-exit":
+                        (self.template / "extra").write_bytes(b"changed")
 
     def test_real_restore_context_original_pairing_and_mixed_producer_lifetimes(self):
         before = self.receipt_path.read_bytes()

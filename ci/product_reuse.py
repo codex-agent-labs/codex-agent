@@ -37,6 +37,7 @@ from products.inventory import (
     require_boolean,
     require_exact_keys,
     require_integer,
+    require_object,
     require_relative_path,
     require_semver,
     require_sha256,
@@ -4337,6 +4338,55 @@ def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact
         output_safe()
         publish_regular_tree(prepared, destination, allow_empty=True)
     return transport
+
+
+def _verify_retained_sdk_upload_archive(capture, artifact, *, extra_roots=()):
+    """Check preserved upload bytes; stored transport metadata is not authority."""
+    capture = Path(capture)
+    regular_file_inventory(capture, allow_empty=True)
+    if {path.name for path in capture.iterdir()} != {
+            "plan", "original", "transport.zip", "capture-transport.json", *extra_roots}:
+        raise ValueError("Retained SDK upload has unexpected roots")
+    if {row["relativePath"] for row in regular_file_inventory(capture / "plan")} != {"impact-plan.json"}:
+        raise ValueError("Retained SDK upload plan has unexpected files")
+    artifact = require_object(artifact, "Retained SDK upload artifact")
+    require_integer(artifact.get("id"), "Retained SDK upload artifact ID", 1)
+    digest = require_sha256(artifact.get("digest"), "Retained SDK upload digest")
+    archive = capture / "transport.zip"
+    if sha256_file(archive) != digest:
+        raise ValueError("Retained SDK upload archive differs from its original digest")
+    zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+    if regular_file_inventory(capture / "original", allow_empty=True) != zipped:
+        raise ValueError("Retained SDK upload content differs from its original archive")
+
+
+def verify_retained_sdk_ios_upload(capture, receipt_bytes):
+    """Replay exact Apple upload consistency inside caller-authenticated evidence.
+
+    This does not observe CI or authenticate a catalog. Full source/tooling and
+    semantic replay remains required before admitting the selected receipt.
+    """
+    receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+    phase, target = receipt["phase"], receipt["target"]
+    if ((receipt["product"], receipt["component"]) != ("sdk", "sdk-ios")
+            or phase not in {"binary", "package", "validation"}
+            or target not in (("ios-arm64", "ios-simulator-arm64") if phase == "validation" else ("ios",))):
+        raise ValueError("Retained Apple upload requires an exact original phase receipt")
+    capture = Path(capture)
+    transport = require_exact_keys(_canonical_control(capture / "capture-transport.json", "Retained Apple transport"),
+        {"artifact", "captureProducer", "observed", f"{phase}ReceiptSha256"}, "Retained Apple transport")
+    producer = receipt["producer"]
+    if (transport["captureProducer"] != producer
+            or transport[f"{phase}ReceiptSha256"] != sha256_bytes(receipt_bytes)):
+        raise ValueError("Retained Apple transport differs from the exact original receipt")
+    _verify_retained_sdk_upload_archive(capture, transport["artifact"])
+    name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-{target}-{receipt['buildKey'].removeprefix('sha256:')}-"
+            f"{producer['tree']}-attempt-{producer['runAttempt']}")
+    if transport["artifact"].get("name") != name:
+        raise ValueError("Retained Apple artifact differs from its original phase identity")
+    shard = verify_phase_shard(capture / "original/shard", _identity(receipt))
+    if shard["receiptBytes"] != receipt_bytes:
+        raise ValueError("Retained Apple shard differs from its selected receipt")
 
 
 def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_sha256,

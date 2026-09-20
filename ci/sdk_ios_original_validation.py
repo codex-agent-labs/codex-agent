@@ -18,6 +18,7 @@ import product_reuse
 from products.inventory import (
     canonical_json_bytes, git_product_versions, load_canonical_json_bytes, read_regular_file_bytes,
     regular_file_inventory, require_array, require_exact_keys, require_integer, require_regular_directory, run_git, sha256_file,
+    snapshot_regular_tree,
 )
 from products.plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST, plan_phase
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
@@ -29,8 +30,8 @@ from products.sdk_apple_validation_context import verify_apple_validation_contex
 from products.sdk_apple_validation_execution import verify_apple_validation_stage
 from products.sdk_package import _require_capability_output_separate
 from products.selection import phase_git_inventory
-from sdk_ios_original_binary import verified_original_ios_binary
-from sdk_ios_original_package import verified_original_ios_package
+from sdk_ios_original_binary import verified_original_ios_binary, verified_retained_ios_binary
+from sdk_ios_original_package import verified_original_ios_package, verified_retained_ios_package
 
 
 _LIMIT = 16 * 1024 * 1024
@@ -107,6 +108,38 @@ def verified_original_ios_validation(plan, validation_receipt_path, *, artifact_
         trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token,
         tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
         tooling_keyring=None, tooling_keys_directory=None):
+    with _verified_ios_validation(plan, validation_receipt_path, validation_capture=None,
+            artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
+            keyring=keyring, keys_directory=keys_directory, repository_root=repository_root, environ=environ, token=token,
+            tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key, java_executable=java_executable,
+            policy_revision=policy_revision, required_trust_domain=required_trust_domain,
+            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as value:
+        yield value
+
+
+@contextmanager
+def verified_retained_ios_validation(plan, validation_receipt_path, *, validation_capture,
+        keyring, keys_directory, repository_root, tooling_evidence, tooling_public_key,
+        java_executable, policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None):
+    """Replay complete retained content; caller authenticates its enclosing carrier.
+
+    This never turns recorded observations into transport authority or rewrites
+    producer evidence. The original key, package, native and validation gates
+    are shared with fresh original recovery and must all pass before yielding.
+    """
+    with _verified_ios_validation(plan, validation_receipt_path, validation_capture=Path(validation_capture),
+            keyring=keyring, keys_directory=keys_directory, repository_root=repository_root,
+            tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key, java_executable=java_executable,
+            policy_revision=policy_revision, required_trust_domain=required_trust_domain,
+            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as value:
+        yield value
+
+
+@contextmanager
+def _verified_ios_validation(plan, validation_receipt_path, *, validation_capture,
+        keyring, keys_directory, repository_root, tooling_evidence, tooling_public_key,
+        java_executable, policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
+        artifact_id=None, artifact_sha256=None, trusted_workflow_sha=None, environ=None, token=None):
     """Yield privately restored originals only inside all authenticated input lifetimes."""
     root = Path(repository_root).resolve(strict=True)
     plan, receipt_path = Path(plan), Path(validation_receipt_path)
@@ -115,6 +148,8 @@ def verified_original_ios_validation(plan, validation_receipt_path, *, artifact_
     if tooling_keyring is not None:
         files["tooling-keyring"] = Path(tooling_keyring)
     directories = {"keys": Path(keys_directory), "tooling": Path(tooling_evidence)}
+    if validation_capture is not None:
+        directories["retained-validation"] = validation_capture
     if tooling_keys_directory is not None:
         directories["tooling-keys"] = Path(tooling_keys_directory)
     before_files = {name: read_regular_file_bytes(path, max_bytes=128 * 1024 * 1024,
@@ -145,9 +180,17 @@ def verified_original_ios_validation(plan, validation_receipt_path, *, artifact_
         selected_receipt.write_bytes(raw)
         try:
             capture = private / "capture"
-            product_reuse.capture_sdk_ios_validation_upload(plan, capture, validation_receipt_path=selected_receipt,
-                artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
-                repository_root=root, environ=environ, token=token)
+            if validation_capture is None:
+                product_reuse.capture_sdk_ios_validation_upload(plan, capture, validation_receipt_path=selected_receipt,
+                    artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
+                    repository_root=root, environ=environ, token=token)
+            else:
+                snapshot_regular_tree(validation_capture, capture, allow_empty=True)
+                if _input_inventory(capture, allow_empty=True) != before_dirs["retained-validation"]:
+                    raise ValueError("Retained Apple validation changed during private capture")
+                product_reuse.verify_retained_sdk_ios_upload(capture, raw)
+                if _input_inventory(capture, allow_empty=True) != before_dirs["retained-validation"]:
+                    raise ValueError("Retained Apple validation changed during archive verification")
             captured[capture] = _input_inventory(capture, allow_empty=True)
             original = capture / "original"
             layouts = {
@@ -202,11 +245,21 @@ def verified_original_ios_validation(plan, validation_receipt_path, *, artifact_
 
             package_path = original / "originals/package/original/shard/phase-receipt.json"
             package_bytes = read_regular_file_bytes(package_path, max_bytes=_LIMIT, reject_symlink_parents=True)
-            with verified_original_ios_package(plan, package_path,
+            if validation_capture is not None:
+                for name in ("package", "binary"):
+                    artifact = _json(original / "originals" / name / "capture-transport.json")["artifact"]
+                    locator = context[f"{name}Artifact"]
+                    if (artifact.get("id"), artifact.get("digest")) != (locator["artifactId"], locator["artifactSha256"]):
+                        raise ValueError("Retained Apple predecessor differs from its original validation locator")
+            package_context = (verified_original_ios_package(plan, package_path,
                     artifact_id=context["packageArtifact"]["artifactId"],
                     artifact_sha256=context["packageArtifact"]["artifactSha256"],
                     trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-                    repository_root=root, environ=environ, token=token, **tooling) as package:
+                    repository_root=root, environ=environ, token=token, **tooling) if validation_capture is None else
+                verified_retained_ios_package(plan, package_path,
+                    package_capture=original / "originals/package", sdk_capture=original / "originals/sdk",
+                    keyring=keyring, keys_directory=keys_directory, repository_root=root, **tooling))
+            with package_context as package:
                 if (package["receiptBytes"] != package_bytes or canonical_json_bytes(package["receipt"]) != package_bytes
                         or package["receipt"]["productVersion"] != receipt["productVersion"]):
                     raise ValueError("Original Apple validation differs from its exact package predecessor")
@@ -215,11 +268,14 @@ def verified_original_ios_validation(plan, validation_receipt_path, *, artifact_
                 binary = package["original"] / "inputs/sdk-sdk-ios-binary-ios"
                 binary_receipt = binary / "phase-receipt.json"
                 binary_bytes = read_regular_file_bytes(binary_receipt, max_bytes=_LIMIT, reject_symlink_parents=True)
-                with verified_original_ios_binary(plan, binary_receipt,
+                binary_context = (verified_original_ios_binary(plan, binary_receipt,
                         artifact_id=context["binaryArtifact"]["artifactId"],
                         artifact_sha256=context["binaryArtifact"]["artifactSha256"],
                         trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token,
-                        rust_host=context["rustHost"], **tooling) as binary_inputs:
+                        rust_host=context["rustHost"], **tooling) if validation_capture is None else
+                    verified_retained_ios_binary(plan, binary_receipt, binary_capture=original / "originals/binary",
+                        repository_root=root, rust_host=context["rustHost"], **tooling))
+                with binary_context as binary_inputs:
                     if (binary_inputs["receiptBytes"] != binary_bytes
                             or regular_file_inventory(binary_inputs["stage"]) != regular_file_inventory(binary / "stage")):
                         raise ValueError("Original Apple binary differs from the package predecessor")

@@ -561,6 +561,84 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
         self.artifacts[lane]["digest"] = sha256_bytes(self.raw[lane])
         self.artifacts[lane]["size_in_bytes"] = len(self.raw[lane])
 
+    def retain_native(self, destination, *, historical=False):
+        receipt = self.original_binary_receipt()
+        context, _, patches = self.invoke(original_binary_receipt_path=receipt if historical else None)
+        try:
+            with context as result:
+                sdk_apple_native.snapshot_regular_tree(result["captureRoot"], destination, allow_empty=True)
+        finally:
+            self.close(patches)
+        return receipt
+
+    def test_retained_native_replays_fresh_and_historical_captures_without_network_or_rewriting(self):
+        for historical in (False, True):
+            captured = self.root / f"retained-{historical}"
+            receipt = self.retain_native(captured, historical=historical)
+            before = regular_file_inventory(captured, allow_empty=True)
+            with self.subTest(historical=historical), \
+                    mock.patch.object(sdk_apple_native.product_reuse, "_observe_ci_producer_jobs", side_effect=AssertionError("network")), \
+                    mock.patch.object(sdk_apple_native.product_reuse, "_download_contract_ci_upload", side_effect=AssertionError("network")):
+                with sdk_apple_native.verified_retained_sdk_apple_native_inputs(captured,
+                        original_binary_receipt_path=receipt, repository_root=self.root) as result:
+                    self.assertEqual(self.producer, result["producer"])
+                    self.assertEqual(before, regular_file_inventory(result["captureRoot"], allow_empty=True))
+                    self.assertEqual(sha256_bytes(receipt.read_bytes()), result["binaryReceiptSha256"])
+                    self.assertEqual({lane: self.producer for lane in sdk_apple_native.LANES}, result["originalProducers"])
+                    self.assertEqual((captured / "native-transport.json").read_bytes(),
+                                     canonical_json_bytes(result["transport"]))
+                self.assertFalse(result["captureRoot"].exists())
+            self.assertEqual(before, regular_file_inventory(captured, allow_empty=True))
+
+    def test_retained_native_archive_receipt_producer_and_extra_file_mutations_reject(self):
+        original = self.root / "retained-baseline"
+        receipt = self.retain_native(original)
+        for index, mutation in enumerate(("archive", "lane", "flat", "receipt-digest", "producer", "extra-plan", "extra-root")):
+            captured = self.root / f"retained-mutation-{index}"
+            sdk_apple_native.snapshot_regular_tree(original, captured, allow_empty=True)
+            lane = sdk_apple_native.LANES[0]
+            if mutation == "archive":
+                (captured / "archives" / f"{lane}.zip").write_bytes(b"changed archive")
+            elif mutation == "lane":
+                (captured / "lanes" / lane / "lane-result.txt").write_bytes(b"changed lane")
+            elif mutation == "flat":
+                (captured / "native-evidence/native-tests-proof.json").write_bytes(b"changed proof")
+            elif mutation.startswith("extra"):
+                (captured / ("plan/extra" if mutation == "extra-plan" else "extra")).write_bytes(b"extra")
+            else:
+                path = captured / "native-transport.json"
+                value = json.loads(path.read_bytes())
+                if mutation == "producer":
+                    value["captureProducer"]["runAttempt"] += 1
+                else:
+                    value["receiptSha256s"][lane] = "sha256:" + "0" * 64
+                path.write_bytes(canonical_json_bytes(value))
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                with sdk_apple_native.verified_retained_sdk_apple_native_inputs(captured,
+                        original_binary_receipt_path=receipt, repository_root=self.root):
+                    self.fail("mutated native originals passed retained replay")
+
+    def test_retained_native_context_exit_rejects_source_private_and_yielded_mutations(self):
+        original = self.root / "retained-exit-baseline"
+        receipt = self.retain_native(original)
+        for index, mutation in enumerate(("source", "private", "evidence", "evidence-and-inventory", "producer", "transport", "receipt")):
+            captured = self.root / f"retained-exit-{index}"
+            sdk_apple_native.snapshot_regular_tree(original, captured, allow_empty=True)
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, "changed during use"):
+                with sdk_apple_native.verified_retained_sdk_apple_native_inputs(captured,
+                        original_binary_receipt_path=receipt, repository_root=self.root) as result:
+                    if mutation == "producer":
+                        result["originalProducers"][sdk_apple_native.LANES[0]]["runAttempt"] += 1
+                    elif mutation == "transport":
+                        result["transport"]["observed"] = []
+                    elif mutation == "receipt":
+                        result["receipts"][sdk_apple_native.LANES[0]]["runAttempt"] += 1
+                    else:
+                        directory = captured if mutation == "source" else result["captureRoot"] if mutation == "private" else result["directory"]
+                        (directory / "unexpected.bin").write_bytes(b"changed")
+                        if mutation == "evidence-and-inventory":
+                            result["inventory"][:] = regular_file_inventory(directory)
+
 
 if __name__ == "__main__":
     unittest.main()

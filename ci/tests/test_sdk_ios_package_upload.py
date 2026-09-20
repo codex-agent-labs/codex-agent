@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from ci.tests import test_runtime_aggregate_upload as fixture
 from ci.tests.product_chain_support import write_receipt
-from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes
+from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes, snapshot_regular_tree
 from products.receipt import write_output_manifest
 from products.restore import PHASE_PLAN_KEYS, finalize_phase_object
 
@@ -120,6 +120,38 @@ class SdkIosPackageUploadTest(unittest.TestCase):
             return getattr(capture, f"capture_sdk_ios_{self.phase}_upload")(
                 self.plan_path, self.output, **arguments,
             )
+
+    def test_retained_upload_consistency_preserves_bytes_without_observation(self):
+        self.call()
+        before = regular_file_inventory(self.output, allow_empty=True)
+        with patch.object(capture, "_observe_ci_producer_jobs", side_effect=AssertionError("network")), \
+                patch.object(capture, "_download_contract_ci_upload", side_effect=AssertionError("network")):
+            capture.verify_retained_sdk_ios_upload(self.output, self.receipt_bytes)
+        self.assertEqual(before, regular_file_inventory(self.output, allow_empty=True))
+
+    def test_retained_upload_rejects_archive_materialization_and_identity_mutations(self):
+        self.call()
+        for index, mutation in enumerate(("archive", "original", "plan-extra", "root-extra", "producer", "receipt", "name", "id")):
+            copied = self.work / f"retained-upload-{index}"
+            snapshot_regular_tree(self.output, copied, allow_empty=True)
+            if mutation in {"archive", "original", "plan-extra", "root-extra"}:
+                path = {"archive": "transport.zip", "original": "original/worker/gradle.log",
+                        "plan-extra": "plan/extra", "root-extra": "extra"}[mutation]
+                (copied / path).write_bytes(b"changed")
+            else:
+                path = copied / "capture-transport.json"
+                value = json.loads(path.read_bytes())
+                if mutation == "producer":
+                    value["captureProducer"]["runAttempt"] += 1
+                elif mutation == "receipt":
+                    value[self.receipt_hash_field] = "sha256:" + "0" * 64
+                elif mutation == "name":
+                    value["artifact"]["name"] = "another-artifact"
+                else:
+                    value["artifact"]["id"] = False
+                path.write_bytes(canonical_json_bytes(value))
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                capture.verify_retained_sdk_ios_upload(copied, self.receipt_bytes)
 
     def test_exact_original_archive_plan_shard_and_empty_streams_are_preserved(self):
         source_before = regular_file_inventory(self.root, allow_empty=True)

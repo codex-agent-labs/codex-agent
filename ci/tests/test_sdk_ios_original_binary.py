@@ -151,6 +151,46 @@ class SdkIosOriginalBinaryTest(unittest.TestCase):
             finally:
                 self.fixture.plan_path.write_bytes(self.fixture.original_plan)
 
+    def test_retained_binary_uses_same_semantic_gate_and_never_recaptures(self):
+        self.fixture.files = {row["relativePath"]: (self.template / row["relativePath"]).read_bytes()
+                              for row in regular_file_inventory(self.template, allow_empty=True)}
+        self.fixture.archive()
+        self.fixture.call()
+        captured = self.fixture.output
+        before = regular_file_inventory(captured, allow_empty=True)
+
+        @contextmanager
+        def native(root, **arguments):
+            self.events.append("retained-native-enter")
+            self.assertEqual(self.fixture.receipt_bytes, arguments["original_binary_receipt_path"].read_bytes())
+            self.assertEqual(regular_file_inventory(self.template / "native-original", allow_empty=True),
+                             regular_file_inventory(root, allow_empty=True))
+            yield {"producer": self.fixture.producer, "captureRoot": self.native,
+                   "directory": self.native / "native-evidence", "originalProducers": self.producers,
+                   "transport": self.transport, "binaryReceiptSha256": sha256_bytes(self.fixture.receipt_bytes)}
+            self.events.append("retained-native-exit")
+
+        for mutation in (None, "semantic-rejection", "retained-capture"):
+            self.mutation = mutation
+            self.events.clear()
+            with patch.object(workflow, "verified_retained_sdk_apple_native_inputs", side_effect=native), \
+                    patch.object(workflow, "verify_sdk_apple_original_native_content", side_effect=self.semantics), \
+                    patch.object(workflow.product_reuse, "capture_sdk_ios_binary_upload", side_effect=AssertionError("network")), \
+                    patch.object(workflow, "verified_sdk_apple_native_inputs", side_effect=AssertionError("network")):
+                def consume():
+                    with workflow.verified_retained_ios_binary(self.fixture.plan_path, self.fixture.receipt_path,
+                            binary_capture=captured, repository_root=self.fixture.root, **self.tooling) as value:
+                        self.assertEqual(self.fixture.receipt_bytes, value["receiptBytes"])
+                        if mutation == "retained-capture":
+                            (captured / "unexpected").write_bytes(b"changed")
+                if mutation:
+                    with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                        consume()
+                else:
+                    consume()
+                    self.assertEqual(["retained-native-enter", "semantic-verify", "retained-native-exit"], self.events)
+                    self.assertEqual(before, regular_file_inventory(captured, allow_empty=True))
+
 
 if __name__ == "__main__":
     unittest.main()

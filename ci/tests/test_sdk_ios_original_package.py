@@ -11,10 +11,11 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 from ci import sdk_ios_original_package as workflow
 from ci.products.inventory import (
-    canonical_json_bytes, regular_file_inventory, sha256_bytes,
+    canonical_json_bytes, regular_file_inventory, sha256_bytes, sha256_file,
     snapshot_regular_tree, write_canonical_json,
 )
 from ci.products.receipt import write_output_manifest
@@ -284,7 +285,7 @@ class SdkIosOriginalPackageTest(unittest.TestCase):
         self.assertEqual(self.last_original / "original-plan/impact-plan.json", path)
         self.assertEqual(self.root, repository)
         self.assertEqual({"expected_revision": self.producer["commit"]}, arguments)
-        return {"synthetic": "validated historical plan"}
+        return {"synthetic": "validated historical plan", "remoteBuildAuthorized": True, "event": "pull_request"}
 
     def original_context(self, **changes):
         arguments = dict(
@@ -321,6 +322,90 @@ class SdkIosOriginalPackageTest(unittest.TestCase):
         self.addCleanup(stack.close)
         context = workflow.verified_original_ios_package(self.plan, self.receipt_path, **arguments)
         return context
+
+    def prepare_retained(self):
+        self.retained_package = self.root / "retained-package"
+        snapshot_regular_tree(self.upload, self.retained_package, allow_empty=True)
+        self.retained_sdk = self.root / "retained-sdk"
+        self.capture_sdk(self.plan, self.retained_sdk, expected_source="current-runtime",
+                         artifact_id=811, artifact_sha256="sha256:" + "8" * 64)
+        sdk_original = self.retained_sdk / "original"
+        sdk_original.mkdir()
+        (self.retained_sdk / "sdk").rename(sdk_original / "sdk-inputs")
+        (self.retained_sdk / "authority").rename(sdk_original / "sdk-inputs/authority")
+        (self.retained_sdk / "transport.bin").rename(sdk_original / "sdk-inputs/transport.bin")
+        nested_plan = sdk_original / "runtime-capture/plan/impact-plan.json"
+        nested_plan.parent.mkdir(parents=True)
+        nested_plan.write_bytes(self.plan.read_bytes())
+        self.archive_retained(self.retained_sdk)
+        sdk_digest = sha256_file(self.retained_sdk / "transport.zip")
+        (self.retained_sdk / "original-package-receipt.json").write_bytes(self.receipt_bytes)
+        write_canonical_json(self.retained_sdk / "capture-transport.json", {
+            "artifact": {"id": 811, "digest": sdk_digest,
+                         "name": f"codex-agent-sdk-inputs-{self.producer['tree']}-attempt-2"},
+            "captureProducer": self.producer, "observed": [], "sdkRuntimeSource": "current-runtime",
+            "packageReceiptSha256": sha256_bytes(self.receipt_bytes),
+        })
+        descriptor_path = self.retained_package / "original/apple-package-execution.json"
+        descriptor = json.loads(descriptor_path.read_bytes())
+        descriptor["sdkInputsArtifact"]["artifactSha256"] = sdk_digest
+        write_canonical_json(descriptor_path, descriptor)
+        self.archive_retained(self.retained_package)
+        write_canonical_json(self.retained_package / "capture-transport.json", {
+            "artifact": {"id": 701, "digest": sha256_file(self.retained_package / "transport.zip"),
+                "name": f"codex-agent-sdk-worker-sdk-ios-package-ios-{self.receipt['buildKey'].removeprefix('sha256:')}-{self.producer['tree']}-attempt-2"},
+            "captureProducer": self.producer, "observed": [], "packageReceiptSha256": sha256_bytes(self.receipt_bytes),
+        })
+        self.events.clear()
+        self.private_paths.clear()
+
+    def archive_retained(self, capture):
+        plan = capture / "plan/impact-plan.json"
+        plan.parent.mkdir(exist_ok=True)
+        plan.write_bytes(self.plan.read_bytes())
+        with zipfile.ZipFile(capture / "transport.zip", "w") as archive:
+            for record in regular_file_inventory(capture / "original", allow_empty=True):
+                name = record["relativePath"]
+                archive.write(capture / "original" / name, name)
+
+    @contextmanager
+    def retained_context(self):
+        def validate(path, repository, **arguments):
+            self.last_original = path.parent.parent
+            self.assertEqual(self.plan.read_bytes(), path.read_bytes())
+            return self.validate_plan(path, repository, **arguments)
+
+        @contextmanager
+        def signed(capture, **arguments):
+            sdk = capture / "original/sdk-inputs"
+            self.sdk_paths = {"directory": sdk, "authority": sdk / "authority",
+                              "metadata": sdk / "authority/metadata.json", "keys": sdk / "authority/keys"}
+            with self.signed_inputs(capture, **arguments) as value:
+                yield value
+
+        with ExitStack() as stack:
+            network = []
+            for name in ("capture_sdk_ios_package_upload", "capture_sdk_inputs_upload", "api_json", "download_artifact"):
+                network.append(stack.enter_context(patch.object(workflow.product_reuse, name,
+                    side_effect=AssertionError("retained content replay must not access network"))))
+            stack.enter_context(patch.object(workflow.product_reuse, "_validate_plan", side_effect=validate))
+            stack.enter_context(patch.object(workflow.product_reuse, "_consumer",
+                side_effect=lambda *_: {"producer": self.consumer_producer}))
+            stack.enter_context(patch.object(workflow, "git_product_versions",
+                return_value={"runtime-release": "0.2.0", "sdk": "0.8.0"}))
+            stack.enter_context(patch.object(workflow, "sdk_runtime_source", return_value=None))
+            stack.enter_context(patch.object(workflow, "verified_apple_original_inputs", side_effect=signed))
+            stack.enter_context(patch.object(workflow, "verify_sdk_package_inputs", side_effect=self.gate))
+            try:
+                with workflow.verified_retained_ios_package(self.plan, self.receipt_path,
+                        package_capture=self.retained_package, sdk_capture=self.retained_sdk,
+                        keyring=self.keyring, keys_directory=self.keys, repository_root=self.root,
+                        tooling_evidence=self.tooling, tooling_public_key=self.tooling_key, java_executable=self.java,
+                        policy_revision="9" * 40, required_trust_domain="release") as value:
+                    yield value
+            finally:
+                for operation in network:
+                    operation.assert_not_called()
 
     def test_restores_exact_originals_runs_full_gate_inside_signed_context_and_cleans_up(self):
         with self.original_context() as value:
@@ -397,6 +482,98 @@ class SdkIosOriginalPackageTest(unittest.TestCase):
                 self.assertTrue(all(not path.exists() for path in self.private_paths))
             finally:
                 self.keyring.write_bytes(policy_bytes)
+
+    def test_retained_captures_use_same_full_gate_without_network_and_remain_private(self):
+        self.prepare_retained()
+        before = {path: regular_file_inventory(path, allow_empty=True)
+                  for path in (self.retained_package, self.retained_sdk)}
+        with self.retained_context() as value:
+            self.assertEqual(self.receipt_bytes, value["receiptBytes"])
+            self.assertEqual(self.receipt_bytes, value["receiptPath"].read_bytes())
+            self.assertNotEqual(self.retained_package, value["packageCapture"])
+            self.assertNotEqual(self.retained_sdk, value["sdkCapture"])
+            self.assertEqual(before[self.retained_package], regular_file_inventory(value["packageCapture"], allow_empty=True))
+            self.assertEqual(before[self.retained_sdk], regular_file_inventory(value["sdkCapture"], allow_empty=True))
+            self.assertEqual(["signed-enter", "full-gate"], self.events)
+            private = value["stage"].parent
+        self.assertFalse(private.exists())
+        self.assertEqual(["signed-enter", "full-gate", "signed-exit", "signed-closed"], self.events)
+        self.assertEqual(before, {path: regular_file_inventory(path, allow_empty=True) for path in before})
+
+    def test_retained_original_private_and_context_exit_mutation_reject(self):
+        self.prepare_retained()
+        for mutation in ("original-package", "original-sdk", "private-package", "private-sdk", "context-exit"):
+            self.context_exit_mutation = "sdk-capture" if mutation == "context-exit" else None
+            originals = {self.retained_package / "original/apple-package-execution.json":
+                         (self.retained_package / "original/apple-package-execution.json").read_bytes(),
+                         self.retained_sdk / "transport.zip": (self.retained_sdk / "transport.zip").read_bytes()}
+            try:
+                with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                    with self.retained_context() as value:
+                        paths = {"original-package": self.retained_package / "original/apple-package-execution.json",
+                                 "original-sdk": self.retained_sdk / "transport.zip",
+                                 "private-package": value["packageCapture"] / "original/apple-package-execution.json",
+                                 "private-sdk": value["sdkCapture"] / "transport.zip"}
+                        if mutation in paths:
+                            paths[mutation].write_bytes(b"late original mutation\n")
+                        private = value["stage"].parent
+                self.assertFalse(private.exists())
+            finally:
+                for path, raw in originals.items():
+                    path.write_bytes(raw)
+
+    def test_retained_mode_still_rejects_full_semantic_gate_failure(self):
+        self.prepare_retained()
+        self.gate_failure = True
+        with self.assertRaisesRegex(ValueError, "full original package rejection"):
+            with self.retained_context():
+                self.fail("retained input bypassed the existing full gate")
+        self.assertIn("signed-closed", self.events)
+
+    def test_retained_sdk_transport_receipt_plan_and_archive_mismatches_reject_before_gate(self):
+        self.prepare_retained()
+        transport_path = self.retained_sdk / "capture-transport.json"
+        for mutation in ("id", "digest", "source", "producer", "receipt-digest", "receipt", "plan", "original", "archive"):
+            paths = [transport_path, self.retained_sdk / "original-package-receipt.json",
+                     self.retained_sdk / "plan/impact-plan.json", self.retained_sdk / "transport.zip",
+                     self.retained_sdk / "original/sdk-inputs" / REQUEST_NAME]
+            baseline = {path: path.read_bytes() for path in paths}
+            self.events.clear()
+            try:
+                transport = json.loads(transport_path.read_bytes())
+                if mutation == "id":
+                    transport["artifact"]["id"] += 1
+                elif mutation == "digest":
+                    transport["artifact"]["digest"] = "sha256:" + "0" * 64
+                elif mutation == "source":
+                    transport["sdkRuntimeSource"] = "released-default"
+                elif mutation == "producer":
+                    transport["captureProducer"]["runAttempt"] = 1
+                elif mutation == "receipt-digest":
+                    transport["packageReceiptSha256"] = "sha256:" + "0" * 64
+                else:
+                    target = {"receipt": paths[1], "plan": paths[2], "archive": paths[3], "original": paths[4]}[mutation]
+                    target.write_bytes(target.read_bytes() + b"changed")
+                write_canonical_json(transport_path, transport)
+                with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                    with self.retained_context():
+                        self.fail("inconsistent retained SDK capture yielded")
+                self.assertNotIn("signed-enter", self.events)
+                self.assertNotIn("full-gate", self.events)
+            finally:
+                for path, raw in baseline.items():
+                    path.write_bytes(raw)
+
+    def test_retained_package_zip_and_materialized_tree_must_agree(self):
+        self.prepare_retained()
+        path = self.retained_package / "original/inputs/producer.json"
+        value = json.loads(path.read_bytes())
+        value["runAttempt"] = 1
+        write_canonical_json(path, value)
+        with self.assertRaisesRegex(ValueError, "content differs from its original archive"):
+            with self.retained_context():
+                self.fail("materialized package drift yielded")
+        self.assertNotIn("signed-enter", self.events)
 
 
 if __name__ == "__main__":

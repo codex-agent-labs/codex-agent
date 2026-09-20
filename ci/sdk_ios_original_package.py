@@ -11,13 +11,14 @@ if __package__:
 import product_reuse
 from products.inventory import (
     canonical_json_bytes, git_product_versions, load_canonical_json_bytes,
-    read_regular_file_bytes, regular_file_inventory, require_exact_keys,
+    read_regular_file_bytes, regular_file_inventory, require_exact_keys, sha256_bytes, snapshot_regular_tree,
 )
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
 from products.contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
 from products.registry import PhaseInstanceId
 from products.restore import PHASE_PLAN_KEYS, restore_object, verify_phase_shard
 from products.sdk_apple_original_inputs import verified_apple_original_inputs
+from products.sdk_apple_content import _input_inventory
 from products.sdk_apple_package_execution import verify_apple_package_execution_context
 from products.sdk_inputs import REQUEST_NAME
 from products.sdk_package import _require_capability_output_separate, verify_sdk_package_inputs
@@ -33,6 +34,40 @@ def verified_original_ios_package(plan, package_receipt_path, *, artifact_id, ar
         trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token,
         tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
         tooling_keyring=None, tooling_keys_directory=None):
+    """Independently capture original uploads, then use the common content gate."""
+    with _verified_ios_package(plan, package_receipt_path, package_capture=None, sdk_capture=None,
+            artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
+            keyring=keyring, keys_directory=keys_directory, repository_root=repository_root, environ=environ, token=token,
+            tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key, java_executable=java_executable,
+            policy_revision=policy_revision, required_trust_domain=required_trust_domain,
+            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as value:
+        yield value
+
+
+@contextmanager
+def verified_retained_ios_package(plan, package_receipt_path, *, package_capture, sdk_capture,
+        keyring, keys_directory, repository_root, tooling_evidence, tooling_public_key,
+        java_executable, policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None):
+    """Replay caller-authenticated retained captures privately without network.
+
+    The caller must authenticate the enclosing upload or catalog and selected
+    original receipt. Stored transport/observation records grant no authority.
+    This content-only entrypoint never observes CI, signs, or reissues receipts.
+    """
+    with _verified_ios_package(plan, package_receipt_path,
+            package_capture=Path(package_capture), sdk_capture=Path(sdk_capture),
+            keyring=keyring, keys_directory=keys_directory, repository_root=repository_root,
+            tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key, java_executable=java_executable,
+            policy_revision=policy_revision, required_trust_domain=required_trust_domain,
+            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as value:
+        yield value
+
+
+@contextmanager
+def _verified_ios_package(plan, package_receipt_path, *, package_capture, sdk_capture,
+        keyring, keys_directory, repository_root, tooling_evidence, tooling_public_key,
+        java_executable, policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
+        artifact_id=None, artifact_sha256=None, trusted_workflow_sha=None, environ=None, token=None):
     """Yield temporary verified originals; consumers publish only after clean exit.
 
     This joins observed original package execution with content/input verification.
@@ -40,6 +75,17 @@ def verified_original_ios_package(plan, package_receipt_path, *, artifact_id, ar
     acceptance, and never generates a replacement receipt or product bytes.
     """
     root = Path(repository_root).resolve(strict=True)
+    if (package_capture is None) != (sdk_capture is None):
+        raise ValueError("Retained Apple package and SDK captures must be supplied together")
+    retained = {} if package_capture is None else {"package": Path(package_capture), "sdk": Path(sdk_capture)}
+    if retained:
+        _require_capability_output_separate(retained["package"], retained["sdk"])
+    retained_before = {name: _input_inventory(path, allow_empty=True) for name, path in retained.items()}
+
+    def retained_unchanged():
+        if any(_input_inventory(path, allow_empty=True) != retained_before[name] for name, path in retained.items()):
+            raise ValueError("Original retained Apple package inputs changed during use")
+
     plan, package_receipt_path = Path(plan), Path(package_receipt_path)
     plan_bytes = read_regular_file_bytes(plan, max_bytes=_LIMIT, reject_symlink_parents=True)
     receipt_bytes = read_regular_file_bytes(package_receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True)
@@ -54,11 +100,22 @@ def verified_original_ios_package(plan, package_receipt_path, *, artifact_id, ar
         private = Path(temporary).resolve()
         _require_capability_output_separate(private, [root, plan, package_receipt_path, Path(keyring),
             Path(keys_directory), Path(tooling_evidence), Path(tooling_public_key), Path(java_executable),
+            *retained.values(),
             *(Path(path) for path in (tooling_keyring, tooling_keys_directory) if path is not None)])
         capture = private / "package-capture"
-        product_reuse.capture_sdk_ios_package_upload(plan, capture, package_receipt_path=package_receipt_path,
-            artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
-            repository_root=root, environ=environ, token=token)
+        if retained:
+            snapshot_regular_tree(retained["package"], capture, allow_empty=True)
+            if _input_inventory(capture, allow_empty=True) != retained_before["package"]:
+                raise ValueError("Retained Apple package changed during private capture")
+            retained_unchanged()
+            product_reuse.verify_retained_sdk_ios_upload(capture, receipt_bytes)
+            if _input_inventory(capture, allow_empty=True) != retained_before["package"]:
+                raise ValueError("Retained Apple package changed during archive verification")
+            retained_unchanged()
+        else:
+            product_reuse.capture_sdk_ios_package_upload(plan, capture, package_receipt_path=package_receipt_path,
+                artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
+                repository_root=root, environ=environ, token=token)
         capture_before = regular_file_inventory(capture, allow_empty=True)
         original = capture / "original"
         shard = verify_phase_shard(original / "shard", _INSTANCE)
@@ -74,6 +131,8 @@ def verified_original_ios_package(plan, package_receipt_path, *, artifact_id, ar
         selected_receipt.write_bytes(receipt_bytes)
         historical_plan = original / "original-plan/impact-plan.json"
         validated = product_reuse._validate_plan(historical_plan, root, expected_revision=producer["commit"])
+        if validated.get("remoteBuildAuthorized") is not True or validated.get("event") == "workflow_dispatch":
+            raise ValueError("Original Apple package requires an authorized historical plan")
         if product_reuse._consumer(validated, {"GITHUB_RUN_ID": str(producer["runId"]),
                 "GITHUB_RUN_ATTEMPT": str(producer["runAttempt"])})["producer"] != producer:
             raise ValueError("Original Apple impact plan differs from its package producer")
@@ -120,10 +179,46 @@ def verified_original_ios_package(plan, package_receipt_path, *, artifact_id, ar
             instances=product_reuse._dependency_closure((_INSTANCE,)),
             runtime_version=versions["runtime-release"], sdk_version=versions["sdk"]) or "current-runtime"
         sdk_capture = private / "sdk-capture"
-        product_reuse.capture_sdk_inputs_upload(historical_plan, sdk_capture,
-            original_package_receipt_path=selected_receipt, artifact_id=locator["artifactId"],
-            artifact_sha256=locator["artifactSha256"], trusted_workflow_sha=trusted_workflow_sha,
-            expected_source=source, repository_root=root, environ=environ, token=token)
+        if retained:
+            snapshot_regular_tree(retained["sdk"], sdk_capture, allow_empty=True)
+            if _input_inventory(sdk_capture, allow_empty=True) != retained_before["sdk"]:
+                raise ValueError("Retained Apple SDK inputs changed during private capture")
+            retained_unchanged()
+            transport = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(
+                sdk_capture / "capture-transport.json", max_bytes=_LIMIT, reject_symlink_parents=True)),
+                {"artifact", "captureProducer", "observed", "sdkRuntimeSource", "packageReceiptSha256"},
+                "Retained Apple SDK transport")
+            product_reuse._verify_retained_sdk_upload_archive(sdk_capture, transport["artifact"],
+                extra_roots=("original-package-receipt.json",))
+            artifact = transport["artifact"]
+            if (artifact["id"] != locator["artifactId"] or artifact["digest"] != locator["artifactSha256"]
+                    or artifact.get("name") != f"codex-agent-sdk-inputs-{producer['tree']}-attempt-{producer['runAttempt']}"
+                    or transport["captureProducer"] != producer or transport["sdkRuntimeSource"] != source
+                    or transport["packageReceiptSha256"] != sha256_bytes(receipt_bytes)
+                    or read_regular_file_bytes(sdk_capture / "original-package-receipt.json") != receipt_bytes
+                    or read_regular_file_bytes(sdk_capture / "plan/impact-plan.json") != read_regular_file_bytes(historical_plan)):
+                raise ValueError("Retained Apple SDK inputs differ from their original package binding")
+            sdk_original = sdk_capture / "original"
+            expected_roots = ({"runtime-original", "current-contract", "sdk-inputs", "selection.json", "transport.json"}
+                              if source == "released-default" else {"runtime-capture", "sdk-inputs"})
+            if {path.name for path in sdk_original.iterdir()} != expected_roots:
+                raise ValueError("Retained Apple SDK inputs differ from the selected source layout")
+            if source == "released-default":
+                selection = product_reuse._canonical_control(sdk_original / "selection.json", "Retained SDK selection")
+                current = product_reuse._canonical_control(sdk_original / "transport.json", "Retained SDK transport")
+                if (selection.get("source") != source or not isinstance(current.get("consumer"), dict)
+                        or current["consumer"].get("producer") != producer):
+                    raise ValueError("Retained Apple SDK selection differs from its original producer")
+            elif read_regular_file_bytes(sdk_original / "runtime-capture/plan/impact-plan.json") != read_regular_file_bytes(historical_plan):
+                raise ValueError("Retained Apple SDK original plan differs from its package plan")
+            if _input_inventory(sdk_capture, allow_empty=True) != retained_before["sdk"]:
+                raise ValueError("Retained Apple SDK inputs changed during archive verification")
+            retained_unchanged()
+        else:
+            product_reuse.capture_sdk_inputs_upload(historical_plan, sdk_capture,
+                original_package_receipt_path=selected_receipt, artifact_id=locator["artifactId"],
+                artifact_sha256=locator["artifactSha256"], trusted_workflow_sha=trusted_workflow_sha,
+                expected_source=source, repository_root=root, environ=environ, token=token)
         sdk_before = regular_file_inventory(sdk_capture, allow_empty=True)
         records = descriptor["captureFiles"]
         binding_digest = next(record["sha256"] for record in records if record["relativePath"] == "input-binding.json")
@@ -133,6 +228,7 @@ def verified_original_ios_package(plan, package_receipt_path, *, artifact_id, ar
         expected_events.write_bytes(event_bytes)
 
         def unchanged():
+            retained_unchanged()
             if (canonical_json_bytes(receipt) != receipt_bytes
                     or read_regular_file_bytes(Path(keyring), max_bytes=64 * 1024, reject_symlink_parents=True) != keyring_bytes
                     or regular_file_inventory(Path(keys_directory), allow_empty=True) != keys_before
