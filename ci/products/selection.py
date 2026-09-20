@@ -181,6 +181,7 @@ _ANDROID_VALIDATION_BUILD_LOGIC = frozenset({
 _IOS_VALIDATION_BUILD_LOGIC = frozenset({
     "AppleValidationEvidenceArchive.kt",
     "AppleValidationEvidenceTask.kt",
+    "AppleValidationContentTasks.kt",
     "AppleDeviceValidationTask.kt",
     "AppleValidationDeviceInputs.kt",
     "AppleValidationPackageInputs.kt",

@@ -13,7 +13,7 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import product_reuse
-from products.inventory import load_json_bytes, read_regular_file_bytes, regular_file_inventory, sha256_file
+from products.inventory import canonical_json_bytes, load_json_bytes, read_regular_file_bytes, regular_file_inventory, sha256_file
 from products.receipt import output_inventory_digest
 from products.registry import PhaseInstanceId
 from products.restore import verify_object
@@ -158,4 +158,9 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
             unchanged()
     if sha256_file(result["evidenceArchive"]) != result["evidenceSha256"]:
         raise ValueError("SDK iOS validation raw archive changed during context exit")
+    if regular_file_inventory(result["stage"]) != result["outputInventory"]:
+        raise ValueError("SDK iOS validation output changed during context exit")
+    if read_regular_file_bytes(result["stage"] / "outputs/validation/apple-validation.json",
+            max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != canonical_json_bytes(content):
+        raise ValueError("SDK iOS validation staged content differs from complete evidence replay")
     return {**result, "content": content}

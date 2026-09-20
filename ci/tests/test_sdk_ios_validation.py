@@ -211,9 +211,12 @@ class SdkIosValidationExecutionTest(unittest.TestCase):
             f"imported-sdk-validation/{self.producer['tree']}/{self.plan['target']}"
         )
         self.archive = self.validation_root / "execution-envelope/apple-validation-evidence.zip"
+        self.stage = self.root / "build/product-stage/sdk/sdk-ios/validation"
+        self.validation_output = self.stage / "outputs/validation/apple-validation.json"
         self.return_code = 0
         self.launch_error = False
         self.archive_mode = "valid"
+        self.stage_mode = "valid"
         self.after_process = lambda _fields: None
         self.process_calls = []
 
@@ -224,8 +227,7 @@ class SdkIosValidationExecutionTest(unittest.TestCase):
         self.assertEqual(subprocess.STDOUT, arguments["stderr"])
         self.assertFalse(arguments["check"])
         self.assertEqual(".", command[command.index("-p") + 1])
-        self.assertIn(sdk_ios_validation.TASK, command)
-        self.assertNotIn("ciProductPhase", command)
+        self.assertEqual(1, command.count("ciProductPhase"))
         fields = dict(value[2:].split("=", 1) for value in command if value.startswith("-P"))
         self.assertEqual({
             "product": "sdk", "component": "sdk-ios", "phase": "validation",
@@ -252,6 +254,20 @@ class SdkIosValidationExecutionTest(unittest.TestCase):
                 )
             if self.archive_mode == "extra":
                 (self.archive.parent / "unexpected.bin").write_bytes(b"unexpected evidence\n")
+        if self.return_code == 0 and self.stage_mode != "missing":
+            output = "outputs/other" if self.stage_mode == "wrong-path" else "outputs/validation"
+            member = self.stage / output / "apple-validation.json"
+            member.parent.mkdir(parents=True)
+            member.write_bytes(b"canonical validation content\x00\xff\n")
+            if self.stage_mode == "extra":
+                (member.parent / "unexpected.json").write_bytes(b"unexpected canonical output\n")
+            write_output_manifest(
+                self.stage, "sdk", "sdk-ios", "validation",
+                "ios-simulator-arm64" if self.stage_mode == "wrong-target" else self.plan["target"],
+                "0.8.1" if self.stage_mode == "wrong-version" else "0.8.0",
+                {"wrong-kind" if self.stage_mode == "wrong-kind"
+                 else "apple-validation-content": output},
+            )
         self.after_process(fields)
         return subprocess.CompletedProcess(command, self.return_code)
 
@@ -280,9 +296,10 @@ class SdkIosValidationExecutionTest(unittest.TestCase):
 
     def cleanup_outputs(self):
         shutil.rmtree(self.root / "codex-agent-runtime-ios", ignore_errors=True)
+        shutil.rmtree(self.stage, ignore_errors=True)
         shutil.rmtree(self.destination, ignore_errors=True)
 
-    def test_fixed_imported_archive_task_preserves_raw_evidence_and_emits_no_admission(self):
+    def test_fixed_imported_phase_preserves_canonical_and_raw_outputs_without_admission(self):
         originals = {
             "package": regular_file_inventory(self.package),
             "contract": regular_file_inventory(self.contract),
@@ -290,14 +307,26 @@ class SdkIosValidationExecutionTest(unittest.TestCase):
             "consumers": regular_file_inventory(self.consumers),
         }
         result = self.execute()
-        self.assertEqual({"evidenceArchive", "diagnostics", "evidenceSha256"}, set(result))
+        self.assertEqual({
+            "stage", "diagnostics", "outputInventory", "evidenceArchive", "evidenceSha256",
+        }, set(result))
+        self.assertEqual(self.stage, result["stage"])
+        self.assertEqual(regular_file_inventory(self.stage), result["outputInventory"])
         self.assertEqual(self.archive, result["evidenceArchive"])
         self.assertEqual(self.destination, result["diagnostics"])
         self.assertEqual(sha256_bytes(self.archive.read_bytes()), result["evidenceSha256"])
-        self.assertFalse({"receipt", "receiptPath", "stage", "admission"} & set(result))
+        self.assertFalse({"receipt", "receiptPath", "admission"} & set(result))
+        manifest = load_canonical_json_bytes((self.stage / "output-manifest.json").read_bytes())
+        self.assertEqual(("sdk", "sdk-ios", "validation", self.plan["target"], "0.8.0"), tuple(
+            manifest[field] for field in ("product", "component", "phase", "target", "productVersion")
+        ))
+        self.assertEqual([("outputs/validation/apple-validation.json", "apple-validation-content")], [
+            (output["relativePath"], output["kind"]) for output in manifest["outputs"]
+        ])
+        self.assertEqual(b"canonical validation content\x00\xff\n", self.validation_output.read_bytes())
         self.assertEqual(b"raw validation diagnostics\x00\xff\n", (self.destination / "gradle.log").read_bytes())
         execution = load_canonical_json_bytes((self.destination / "execution.json").read_bytes())
-        self.assertEqual(sdk_ios_validation.TASK, execution["command"][execution["command"].index(sdk_ios_validation.TASK)])
+        self.assertEqual(1, execution["command"].count("ciProductPhase"))
         self.assertEqual(0, execution["returnCode"])
         self.assertIsNone(execution["launchError"])
         self.assertEqual(originals["package"], regular_file_inventory(self.package))
@@ -328,6 +357,16 @@ class SdkIosValidationExecutionTest(unittest.TestCase):
             self.cleanup_outputs()
             self.destination = self.root / f"build/archive-{mode}"
             self.archive_mode = mode
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                self.execute()
+            self.assertEqual(1, len(self.process_calls))
+            self.process_calls.clear()
+
+    def test_missing_wrong_identity_path_and_ambiguous_canonical_outputs_are_rejected(self):
+        for mode in ("missing", "wrong-target", "wrong-version", "wrong-path", "wrong-kind", "extra"):
+            self.cleanup_outputs()
+            self.destination = self.root / f"build/stage-{mode}"
+            self.stage_mode = mode
             with self.subTest(mode=mode), self.assertRaises(ValueError):
                 self.execute()
             self.assertEqual(1, len(self.process_calls))
@@ -416,12 +455,13 @@ class SdkIosValidationExecutionTest(unittest.TestCase):
                 destination=self.destination, environ={},
             )
         process.assert_not_called()
-        stale = self.validation_root
-        stale.mkdir(parents=True)
-        (stale / "sentinel").write_bytes(b"preserve\n")
-        with self.assertRaisesRegex(ValueError, "fresh"):
-            self.execute()
-        self.assertEqual(b"preserve\n", (stale / "sentinel").read_bytes())
+        for stale in (self.stage, self.validation_root):
+            self.cleanup_outputs()
+            stale.mkdir(parents=True)
+            (stale / "sentinel").write_bytes(b"preserve\n")
+            with self.subTest(stale=stale), self.assertRaisesRegex(ValueError, "fresh"):
+                self.execute()
+            self.assertEqual(b"preserve\n", (stale / "sentinel").read_bytes())
 
 
 if __name__ == "__main__":

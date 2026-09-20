@@ -72,6 +72,8 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
             raise ValueError("original context changed")
         if self.mutation == "archive":
             (self.root / "raw.zip").write_bytes(b"changed archive")
+        if self.mutation == "stage-exit":
+            (self.root / "stage/outputs/validation/apple-validation.json").write_bytes(b"changed content")
 
     @contextmanager
     def original_binary(self, plan, receipt, **arguments):
@@ -133,7 +135,13 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
             raise ValueError("worker failed")
         archive = self.root / "raw.zip"
         archive.write_bytes(b"raw archive fixture")
-        return {"evidenceArchive": archive, "evidenceSha256": workflow.sha256_file(archive)}
+        stage = self.root / "stage"
+        content = stage / "outputs/validation/apple-validation.json"
+        content.parent.mkdir(parents=True, exist_ok=True)
+        content.write_bytes(workflow.canonical_json_bytes(
+            {"synthetic": "wrong" if self.mutation == "content" else "semantic projection"}))
+        return {"evidenceArchive": archive, "evidenceSha256": workflow.sha256_file(archive),
+                "stage": stage, "outputInventory": workflow.regular_file_inventory(stage)}
 
     def execute(self, **changes):
         with ExitStack() as stack:
@@ -176,7 +184,8 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         self.assertEqual([], self.events)
 
     def test_failure_and_mutations_never_return_admission(self):
-        for mutation in ("worker", "context", "source", "plan", "archive", "archive-context", "gate"):
+        for mutation in ("worker", "context", "source", "plan", "archive", "archive-context", "gate",
+                         "stage-exit", "content"):
             self.mutation = mutation
             self.plan.write_bytes(b"original plan")
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):

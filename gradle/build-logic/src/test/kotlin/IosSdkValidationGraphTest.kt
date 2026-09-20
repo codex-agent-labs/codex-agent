@@ -82,7 +82,7 @@ class IosSdkValidationGraphTest {
                     it !in setOf("CODEX_AGENT_IMPORTED_SWIFT_ZIP", "CODEX_AGENT_SWIFT_COMPILATION_DIRECTORY")
                 })
                 .withArguments(
-                    ":codex-agent-runtime-ios:archiveSdkIosValidationEvidence",
+                    "ciProductPhase",
                     "--dry-run", "--offline", "--no-configuration-cache", "--console=plain",
                     "-PcodexAgent.product=sdk", "-PcodexAgent.component=sdk-ios", "-PcodexAgent.phase=validation",
                     "-PcodexAgent.target=$target", "-PcodexAgent.iosValidationPackageStage=${originalPackage.path}",
@@ -105,9 +105,10 @@ class IosSdkValidationGraphTest {
                 "verifyCodexAgentSwiftAuthenticationTests", "generateCodexAgentAppleBindingEvidence",
                 "stageSdkIosValidationDeviceInputs", "verifySdkIosDeviceConsumer",
                 "archiveSdkIosValidationEvidence",
+                "writeSdkIosValidationContent", "writeSdkIosValidationOutputManifest",
             ).map { ios + it }.toSet()
             assertEquals(expected, selected.filter { it.startsWith(ios) }.toSet(), result.output)
-            assertFalse(":ciProductPhase" in selected, result.output)
+            assertTrue(":ciProductPhase" in selected, result.output)
             assertFalse(selected.any { it.startsWith(":codex-agent-core:") || it.startsWith(":codex-agent-sdk:") }, result.output)
             assertFalse(selected.any { path ->
                 val name = path.substringAfterLast(':').lowercase()
@@ -119,7 +120,7 @@ class IosSdkValidationGraphTest {
             val build = repository.resolve("codex-agent-runtime-ios/build").canonicalFile
             val packageRoot = build.resolve("imported-sdk-validation/$tree/$target")
             val contractRoot = build.resolve("imported-apple-contract-evidence/$tree/contract")
-            assertEquals("false", value("HAS_PRODUCT_MANIFEST"))
+            assertEquals("true", value("HAS_PRODUCT_MANIFEST"))
             assertEquals(packageRoot.resolve("execution-envelope/apple-validation-evidence.zip").path, value("ARCHIVE_FILE"))
             assertFalse(File(value("ARCHIVE_FILE")).toPath().startsWith(build.resolve("product-stage").toPath()))
             assertEquals(originalPackage.path, value("PACKAGE_SOURCE"))

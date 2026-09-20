@@ -6,6 +6,10 @@ checks do not replace any of those gates or establish complete API coverage.
 Original receipts and execution evidence remain external to this content.
 """
 
+import argparse
+import os
+from pathlib import Path
+import tempfile
 from typing import Any
 
 from .inventory import (
@@ -17,6 +21,11 @@ from .inventory import (
     require_semver,
     require_sha256,
     require_string,
+    read_regular_file_bytes,
+    regular_file_inventory,
+    require_regular_directory,
+    sha256_file,
+    write_canonical_json,
 )
 
 
@@ -143,3 +152,88 @@ def apple_validation_content(
     # Return independent content; subsequent mutations of original evidence must
     # not silently change what the caller serializes with the canonical writer.
     return load_json_bytes(canonical_json_bytes(content))
+
+
+def write_apple_validation_content(*, target: str, sdk_version: str, package_stage: Path,
+        sdk_compatibility: Path, canonical_api: Path, canonical_coverage: Path,
+        swift_receipt: Path, objective_c_receipt: Path, output: Path) -> dict[str, Any]:
+    """Write only deterministic content, after separately authenticated semantic gates.
+
+    This file boundary checks structure and byte pairing, not signatures, source,
+    compiler execution or admission. It creates no output manifest or receipt.
+    """
+    from .receipt import output_inventory_digest, verify_output_manifest_identity
+    from .sdk_archive import validate_sdk_compatibility_bytes
+    from .sdk_package import _require_capability_output_separate
+
+    package_stage, output = Path(package_stage).absolute(), Path(output).absolute()
+    paths = {"compatibility": Path(sdk_compatibility), "api": Path(canonical_api),
+             "coverage": Path(canonical_coverage), "swift": Path(swift_receipt),
+             "objective-c": Path(objective_c_receipt)}
+
+    def output_safe():
+        _require_capability_output_separate(output, [package_stage, *paths.values()])
+        if output.resolve(strict=False) != output or output.exists() or output.is_symlink():
+            raise ValueError("Apple validation content output must be fresh, normalized and non-symbolic")
+        for parent in output.parents:
+            if parent.exists() or parent.is_symlink():
+                require_regular_directory(parent, "Apple validation content output ancestry")
+
+    output_safe()
+    inventory = regular_file_inventory(package_stage)
+    originals = {name: read_regular_file_bytes(path, max_bytes=16 * 1024 * 1024,
+                                              reject_symlink_parents=True)
+                 for name, path in paths.items()}
+
+    def unchanged():
+        if (regular_file_inventory(package_stage) != inventory or
+                any(read_regular_file_bytes(path, max_bytes=16 * 1024 * 1024,
+                                            reject_symlink_parents=True) != originals[name]
+                    for name, path in paths.items())):
+            raise ValueError("Apple validation content original inputs changed during projection")
+
+    try:
+        manifest = verify_output_manifest_identity(package_stage, "sdk", "sdk-ios", "package", "ios", sdk_version)
+        compatibility = validate_sdk_compatibility_bytes(originals["compatibility"])
+        if compatibility["sdkVersion"] != sdk_version:
+            raise ValueError("Apple validation compatibility differs from the selected SDK version")
+        content = apple_validation_content(
+            target=target, sdk_version=sdk_version,
+            package_outputs_digest=output_inventory_digest(manifest["outputs"]),
+            contract_digest=compatibility["contract"]["digest"],
+            expected_canonical={"apiReportSha256": sha256_file(paths["api"]).removeprefix("sha256:"),
+                                "coverageReceiptSha256": sha256_file(paths["coverage"]).removeprefix("sha256:")},
+            binding_receipts={language: load_json_bytes(originals[language]) for language in _LANGUAGES},
+        )
+    finally:
+        unchanged()
+    output_safe()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".apple-validation-content-", dir=output.parent) as temporary:
+        staged = Path(temporary) / "content.json"
+        write_canonical_json(staged, content)
+        unchanged()
+        output_safe()
+        # No-clobber publication: unlike replace(), link() cannot overwrite a
+        # file another caller created after the fresh-output check.
+        os.link(staged, output, follow_symlinks=False)
+    return content
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument("--target", required=True, choices=("ios-arm64", "ios-simulator-arm64"))
+    parser.add_argument("--sdk-version", required=True)
+    for name in ("package-stage", "sdk-compatibility", "canonical-api", "canonical-coverage",
+                 "swift-receipt", "objective-c-receipt", "output"):
+        parser.add_argument(f"--{name}", type=Path, required=True)
+    arguments = parser.parse_args(argv)
+    try:
+        write_apple_validation_content(**vars(arguments))
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

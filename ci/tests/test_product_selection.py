@@ -87,6 +87,7 @@ class ProductSelectionTest(unittest.TestCase):
                     and item.phase in {"validation", "metadata"}}
         for name in ("AppleDeviceValidationTask.kt", "AppleValidationDeviceInputs.kt",
                      "AppleValidationEvidenceArchive.kt", "AppleValidationEvidenceTask.kt",
+                     "AppleValidationContentTasks.kt",
                      "AppleValidationPackageInputs.kt", "AppleValidationPackageTask.kt",
                      "IosSdkValidationPackageTasks.kt", "IosSdkValidationConsumerTasks.kt"):
             with self.subTest(name=name):

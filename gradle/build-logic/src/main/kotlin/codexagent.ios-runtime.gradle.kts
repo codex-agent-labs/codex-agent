@@ -443,11 +443,42 @@ validationPackageInputs?.let { packageInputs ->
             "toolchain" to verifyAppleToolchain.get().reportDirectory.get().asFile.path,
         )
     }
-    tasks.register<ArchiveAppleValidationEvidenceTask>("archiveSdkIosValidationEvidence") {
+    val archiveValidation = tasks.register<ArchiveAppleValidationEvidenceTask>("archiveSdkIosValidationEvidence") {
         dependsOn(appleBindingEvidence, deviceConsumer)
         sourceLayout.set(evidenceLayout)
         evidenceInputs.from(evidenceLayout.map { it.values.map(::file) })
         archiveFile.set(executionEnvelope.map { it.file("apple-validation-evidence.zip") })
+    }
+    val validationStage = rootProject.layout.buildDirectory.dir("product-stage/sdk/sdk-ios/validation")
+    val validationContent = tasks.register<WriteAppleValidationContentTask>("writeSdkIosValidationContent") {
+        dependsOn(archiveValidation)
+        target.set(validationTarget)
+        sdkVersion.set(providers.gradleProperty("codexAgent.sdkVersion"))
+        packageStage.set(tasks.named<SnapshotImportedProductStageTask>("snapshotSdkIosValidationPackage")
+            .flatMap { it.outputDirectory })
+        sdkCompatibility.set(packageInputs.flatMap { it.sdkCompatibility })
+        canonicalApi.set(appleBindingEvidence.flatMap { it.canonicalApiReport })
+        canonicalCoverage.set(appleBindingEvidence.flatMap { it.canonicalCoverageReceipt })
+        swiftReceipt.set(appleBindingEvidence.flatMap { it.swiftReceiptFile })
+        objectiveCReceipt.set(appleBindingEvidence.flatMap { it.objectiveCReceiptFile })
+        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+        outputFile.set(validationStage.map { it.file("outputs/validation/apple-validation.json") })
+    }
+    tasks.register<WriteProductOutputManifestTask>("writeSdkIosValidationOutputManifest") {
+        dependsOn(validationContent)
+        product.set("sdk")
+        component.set("sdk-ios")
+        phase.set("validation")
+        target.set(validationTarget)
+        productVersion.set(providers.gradleProperty("codexAgent.sdkVersion"))
+        outputRoots.set(mapOf("apple-validation-content" to "outputs/validation"))
+        expectedOutputPaths.set(listOf("outputs/validation/apple-validation.json"))
+        outputsDirectory.set(validationStage.map { it.dir("outputs") })
+        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+        stageRoot.set(validationStage)
+        manifestFile.set(validationStage.map { it.file("output-manifest.json") })
     }
 }
 

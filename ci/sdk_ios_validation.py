@@ -15,12 +15,11 @@ from products.inventory import (
     require_exact_keys, require_integer, require_semver, require_sha256,
     write_canonical_json,
 )
-from products.receipt import validate_producer
+from products.receipt import validate_producer, verify_output_manifest_identity
 from products.restore import PHASE_PLAN_KEYS
 from sdk_ios_phase import _directory, _request, _GIT_ID
 
 
-TASK = ":codex-agent-runtime-ios:archiveSdkIosValidationEvidence"
 _LIMIT = 16 * 1024 * 1024
 
 
@@ -68,10 +67,10 @@ def execute(
     sdk_compatibility: Path, test_application: Path, compiler_consumers: Path,
     repository_root: Path, destination: Path, environ: Mapping[str, str],
 ) -> dict[str, Any]:
-    """Run the fixed imported-validation archive task over authenticated originals.
+    """Run the fixed imported-validation phase over authenticated originals.
 
-    The returned archive and process diagnostics are raw evidence only. This
-    function emits no phase receipt, admission record, or semantic verdict.
+    The canonical stage is not a phase receipt or admission record. The raw
+    archive and process diagnostics remain external execution evidence.
     """
     from native_wrappers import host_classifier
     from product_reuse import (
@@ -152,11 +151,13 @@ def execute(
     root = Path(repository_root).resolve(strict=True)
     destination = Path(destination).absolute()
     ios_build = root / "codex-agent-runtime-ios/build"
+    stage = root / "build/product-stage/sdk/sdk-ios/validation"
     tree = current_producer["tree"]
     validation_root = ios_build / f"imported-sdk-validation/{tree}/{target}"
     envelope = validation_root / "execution-envelope"
     archive = envelope / "apple-validation-evidence.zip"
     owned_directories = (
+        stage,
         validation_root,
         ios_build / f"imported-apple-contract-evidence/{tree}",
         ios_build / "reports/cross-language-api",
@@ -208,7 +209,6 @@ def execute(
     command = _runtime_worker_command(wrapper, fields, environment, build_directory=".")
     if command.count("ciProductPhase") != 1:
         raise ValueError("iOS SDK validation worker command no longer has the fixed phase task")
-    command[command.index("ciProductPhase")] = TASK
     unchanged()
     if any(path.exists() or path.is_symlink() for path in (*owned_directories, *owned_files)):
         raise ValueError("iOS SDK validation output appeared before execution")
@@ -236,12 +236,25 @@ def execute(
         raise ValueError(
             f"iOS SDK validation task failed with exit code {return_code}; see {destination / 'gradle.log'}",
         )
+    manifest = verify_output_manifest_identity(
+        stage, "sdk", "sdk-ios", "validation", target, version,
+    )
+    if (len(manifest["outputs"]) != 1
+            or manifest["outputs"][0]["kind"] != "apple-validation-content"
+            or manifest["outputs"][0]["relativePath"] !=
+            "outputs/validation/apple-validation.json"):
+        raise ValueError("iOS SDK validation canonical output is missing or ambiguous")
+    output_inventory = _inventory(stage)
     evidence_inventory = regular_file_inventory(envelope)
     if ([record["relativePath"] for record in evidence_inventory] != [archive.name]
             or evidence_inventory[0]["bytes"] <= 0):
         raise ValueError("iOS SDK validation evidence archive output is missing or ambiguous")
     digest = evidence_inventory[0]["sha256"]
     unchanged()
-    if regular_file_inventory(envelope) != evidence_inventory:
-        raise ValueError("iOS SDK validation evidence archive changed during verification")
-    return {"evidenceArchive": archive, "diagnostics": destination, "evidenceSha256": digest}
+    if (_inventory(stage) != output_inventory
+            or regular_file_inventory(envelope) != evidence_inventory):
+        raise ValueError("iOS SDK validation output changed during verification")
+    return {
+        "stage": stage, "diagnostics": destination, "outputInventory": output_inventory,
+        "evidenceArchive": archive, "evidenceSha256": digest,
+    }
