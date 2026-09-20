@@ -180,6 +180,8 @@ _ANDROID_VALIDATION_BUILD_LOGIC = frozenset({
 })
 _IOS_VALIDATION_BUILD_LOGIC = frozenset({
     "AppleValidationPackageInputs.kt",
+    "AppleValidationPackageTask.kt",
+    "IosSdkValidationPackageTasks.kt",
     "AppleCompilerEvidenceTask.kt",
     "AppleReleaseCheckTasks.kt",
     "AppleVerifiedDistributionModel.kt",

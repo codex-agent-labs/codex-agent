@@ -82,16 +82,19 @@ class ProductSelectionTest(unittest.TestCase):
                     self.assertEqual((), phase_inventory_paths([path], instance))
 
     def test_apple_validation_package_inputs_do_not_invalidate_binary_or_package(self) -> None:
-        path = "gradle/build-logic/src/main/kotlin/AppleValidationPackageInputs.kt"
-        result = classify_paths([path])
         expected = {item for item in PHASE_INSTANCE_IDS
                     if item.product == "sdk" and item.component == "sdk-ios"
                     and item.phase in {"validation", "metadata"}}
-        self.assertEqual(expected, identities(result))
-        self.assertEqual((), result.unknown_paths)
-        for instance in PHASE_INSTANCE_IDS:
-            self.assertEqual((path,) if instance in expected and instance.phase == "validation" else (),
-                             phase_inventory_paths([path], instance))
+        for name in ("AppleValidationPackageInputs.kt", "AppleValidationPackageTask.kt",
+                     "IosSdkValidationPackageTasks.kt"):
+            with self.subTest(name=name):
+                path = f"gradle/build-logic/src/main/kotlin/{name}"
+                result = classify_paths([path])
+                self.assertEqual(expected, identities(result))
+                self.assertEqual((), result.unknown_paths)
+                for instance in PHASE_INSTANCE_IDS:
+                    self.assertEqual((path,) if instance in expected and instance.phase == "validation" else (),
+                                     phase_inventory_paths([path], instance))
 
     def test_scoped_product_actions_select_only_their_existing_consumers(self) -> None:
         owners = {
