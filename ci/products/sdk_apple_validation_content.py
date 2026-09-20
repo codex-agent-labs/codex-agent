@@ -93,7 +93,15 @@ def _binding(receipt: Any, language: str, expected_canonical: dict[str, str]) ->
     for field in ("hostConsumerProofs", "exclusions"):
         if require_array(receipt[field], field):
             raise ValueError(f"Apple {field} must be empty")
+    return _semantic_binding({field: receipt[field] for field in _SEMANTIC_FIELDS}, language)
 
+
+def _semantic_binding(receipt: Any, language: str) -> dict[str, Any]:
+    receipt = require_exact_keys(receipt, _SEMANTIC_FIELDS, "Apple binding content")
+    if receipt["phase"] != "M8" or receipt["language"] != language:
+        raise ValueError("Apple binding content identity is invalid")
+    if require_array(receipt["exclusions"], "Apple exclusions"):
+        raise ValueError("Apple exclusions must be empty")
     symbols = set(_strings(receipt["publicSymbols"], "Apple public symbols"))
     tests = _rows(receipt["tests"], {"id", "status"}, "id", "Apple tests")
     if any(row["status"] != "passed" for row in tests):
@@ -114,6 +122,30 @@ def _binding(receipt: Any, language: str, expected_canonical: dict[str, str]) ->
             if not set(_strings(claim[field], f"Apple claim {field}")).issubset(known):
                 raise ValueError(f"Apple claim names unknown {field}")
     return {field: receipt[field] for field in _SEMANTIC_FIELDS}
+
+
+def validate_apple_validation_content(value: Any) -> dict[str, Any]:
+    """Validate a deterministic projection structurally, never grant admission."""
+    value = require_exact_keys(value, {
+        "schemaVersion", "kind", "component", "target", "sdkVersion",
+        "packageOutputsDigest", "contractDigest", "canonical", "bindings",
+    }, "Apple validation content")
+    if (require_integer(value["schemaVersion"], "Apple content schema") != 1
+            or value["kind"] != "sdk-apple-validation-content" or value["component"] != "sdk-ios"
+            or value["target"] not in ("ios-arm64", "ios-simulator-arm64")):
+        raise ValueError("Apple validation content identity is invalid")
+    require_semver(value["sdkVersion"], "SDK version")
+    for field in ("packageOutputsDigest", "contractDigest"):
+        require_sha256(value[field], field)
+    canonical = require_exact_keys(value["canonical"], _CANONICAL_FIELDS, "Apple canonical identity")
+    for field in _CANONICAL_FIELDS:
+        _raw_sha256(canonical[field], field)
+    bindings = require_array(value["bindings"], "Apple binding contents")
+    if len(bindings) != len(_LANGUAGES):
+        raise ValueError("Apple content requires exactly both language projections")
+    for binding, language in zip(bindings, _LANGUAGES):
+        _semantic_binding(binding, language)
+    return load_json_bytes(canonical_json_bytes(value))
 
 
 def apple_validation_content(

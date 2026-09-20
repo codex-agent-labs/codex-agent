@@ -99,6 +99,17 @@ class ProductSelectionTest(unittest.TestCase):
                     self.assertEqual((path,) if instance in expected and instance.phase == "validation" else (),
                                      phase_inventory_paths([path], instance))
 
+    def test_apple_metadata_writer_selects_only_metadata_and_owns_its_bytes(self) -> None:
+        expected = {PhaseInstanceId("sdk", "sdk-ios", "metadata", "ios")}
+        for path in ("ci/products/sdk_apple_metadata.py",
+                     "gradle/build-logic/src/main/kotlin/IosSdkMetadataContentTask.kt"):
+            with self.subTest(path=path):
+                result = classify_paths([path])
+                self.assertEqual(expected, identities(result))
+                self.assertEqual((), result.unknown_paths)
+                for instance in PHASE_INSTANCE_IDS:
+                    self.assertEqual((path,) if instance in expected else (), phase_inventory_paths([path], instance))
+
     def test_scoped_product_actions_select_only_their_existing_consumers(self) -> None:
         owners = {
             "prepare-runtime-signing": {item for item in PHASE_INSTANCE_IDS

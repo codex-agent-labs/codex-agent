@@ -73,6 +73,29 @@ class AppleValidationContentTest(unittest.TestCase):
                 content["bindings"][0]["claims"].clear()
                 self.assertEqual(arguments, original)
 
+    def test_existing_projection_validator_is_independent_and_rejects_foreign_fields(self):
+        value = apple_validation_content(**self.arguments)
+        verified = content_module.validate_apple_validation_content(value)
+        self.assertEqual(value, verified)
+        verified["bindings"][0]["claims"].clear()
+        self.assertTrue(value["bindings"][0]["claims"])
+        changes = [lambda row: row.update(producer={}),
+                   lambda row: row.update(schemaVersion=True),
+                   lambda row: row.update(target="ios"),
+                   lambda row: row.update(contractDigest="wrong"),
+                   lambda row: row["canonical"].update(apiReportSha256="wrong"),
+                   lambda row: row["bindings"].reverse(),
+                   lambda row: row["bindings"].pop(),
+                   lambda row: row["bindings"][0].update(testResultsSha256="a" * 64),
+                   lambda row: row["bindings"][0]["exclusions"].append("capability"),
+                   lambda row: row["bindings"][0]["tests"][0].update(status="failed"),
+                   lambda row: row["bindings"][0]["claims"][0].update(executedTests=["unknown"])]
+        for change in changes:
+            mutated = deepcopy(value)
+            change(mutated)
+            with self.subTest(value=mutated), self.assertRaises(ValueError):
+                content_module.validate_apple_validation_content(mutated)
+
     def test_different_original_execution_hashes_have_identical_content(self):
         baseline = canonical_json_bytes(apple_validation_content(**self.arguments))
         for receipt in self.arguments["binding_receipts"].values():

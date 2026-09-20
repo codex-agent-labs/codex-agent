@@ -549,6 +549,8 @@ def _native_metadata_owners(path: str) -> set[PhaseInstanceId]:
 
 
 def _control_selection(path: str) -> set[PhaseInstanceId] | None:
+    if path == "ci/products/sdk_apple_metadata.py":
+        return _from_phase("sdk", "sdk-ios", "metadata")
     if path == "ci/products/sdk_apple_validation_content.py":
         return _from_phase("sdk", "sdk-ios", "validation")
     if path in _CONTROL_ONLY_FILES:
@@ -647,6 +649,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _is_control_only(path: str) -> bool:
+    if path == "ci/products/sdk_apple_metadata.py":
+        return False  # Defines deterministic two-target Apple metadata bytes.
     if path == "ci/products/sdk_apple_validation_content.py":
         return False  # Defines deterministic Apple validation product bytes.
     if path == "ci/products/sdk_runtime_content.py":
@@ -1003,6 +1007,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
     }
     if _is_prefix(path, "gradle/build-logic/src/main/kotlin/"):
         name = path.rsplit("/", 1)[-1]
+        if name == "IosSdkMetadataContentTask.kt":
+            return _from_phase("sdk", "sdk-ios", "metadata")
         if name == "NativeWrapperMetadataContentTask.kt":
             return set().union(*(
                 _from_phase("sdk", language, "metadata") for language in NATIVE_BINDINGS
@@ -1091,6 +1097,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstanceId]:
+    if path == "ci/products/sdk_apple_metadata.py":
+        return {instance for instance in selected if instance.phase == "metadata"}
     if path == "ci/products/sdk_apple_validation_content.py":
         return {instance for instance in selected if instance.phase == "validation"}
     if path in {"gradle/build-logic/build.gradle.kts", "gradle/build-logic/settings.gradle.kts",
