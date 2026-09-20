@@ -15,7 +15,8 @@ internal fun Project.usesAppleSdkValidationInputs(): Boolean {
         providers.gradleProperty("codexAgent.target").orNull in setOf("ios-arm64", "ios-simulator-arm64")) {
         "Imported Apple validation requires an exact SDK iOS validation phase and target"
     }
-    listOf("iosValidationPackageStage", "contractBinaryStage", "sdkCompatibilityFile").forEach {
+    listOf("iosValidationPackageStage", "contractBinaryStage", "sdkCompatibilityFile",
+        "iosValidationTestApplicationDirectory").forEach {
         check(!providers.gradleProperty("codexAgent.$it").orNull.isNullOrBlank()) {
             "Imported Apple validation requires codexAgent.$it"
         }

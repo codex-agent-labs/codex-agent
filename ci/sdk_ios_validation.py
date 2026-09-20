@@ -12,11 +12,11 @@ from sdk_ios_phase import _directory, _request, _GIT_ID
 
 def validation_properties(*, target, sdk_version, contract_version, candidate_tree,
                           package_stage: Path, contract_binary_stage: Path,
-                          sdk_compatibility: Path) -> dict[str, str]:
+                          sdk_compatibility: Path, test_application: Path) -> dict[str, str]:
     """Map exact original paths to imported-only validation properties.
 
     The caller must authenticate the selected phase, original receipts/stages,
-    and compatibility bytes before using this mapper. Path and version checks
+    compatibility bytes, and test-application source before using this mapper. Path and version checks
     here do not establish source, signature, Apple host or semantic authority.
     Tree IDs follow the current receipt producer contract: 40 lowercase hex.
     """
@@ -34,6 +34,8 @@ def validation_properties(*, target, sdk_version, contract_version, candidate_tr
         "codexAgent.iosValidationPackageStage": _directory(package_stage, "Original iOS SDK package stage"),
         "codexAgent.contractBinaryStage": _directory(contract_binary_stage, "Original Contract binary stage"),
         "codexAgent.sdkCompatibilityFile": _request(sdk_compatibility, "Authenticated SDK compatibility"),
+        "codexAgent.iosValidationTestApplicationDirectory": _directory(
+            test_application, "Authenticated iOS validation test application"),
         "codexAgent.sdkVersion": version,
         "codexAgent.contractVersion": contract,
         "codexAgent.candidateTree": candidate_tree,

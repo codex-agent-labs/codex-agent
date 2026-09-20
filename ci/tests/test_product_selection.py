@@ -85,7 +85,7 @@ class ProductSelectionTest(unittest.TestCase):
         expected = {item for item in PHASE_INSTANCE_IDS
                     if item.product == "sdk" and item.component == "sdk-ios"
                     and item.phase in {"validation", "metadata"}}
-        for name in ("AppleValidationPackageInputs.kt", "AppleValidationPackageTask.kt",
+        for name in ("AppleValidationDeviceInputs.kt", "AppleValidationPackageInputs.kt", "AppleValidationPackageTask.kt",
                      "IosSdkValidationPackageTasks.kt", "IosSdkValidationConsumerTasks.kt"):
             with self.subTest(name=name):
                 path = f"gradle/build-logic/src/main/kotlin/{name}"

@@ -45,12 +45,15 @@ class IosSdkValidationModeTest {
 
     @Test
     fun `selected validation rejects missing empty and whitespace original inputs`() = withMode { mode ->
-        listOf("codexAgent.iosValidationPackageStage", "codexAgent.contractBinaryStage",
-            "codexAgent.sdkCompatibilityFile").forEach { key ->
-            assertFailsWith<IllegalStateException>("missing $key") { mode(properties() - key, emptyMap()) }
-            listOf("", " \t\n").forEach { blank ->
-                assertFailsWith<IllegalStateException>("blank $key") {
-                    mode(properties() + (key to blank), emptyMap())
+        listOf("ios-arm64", "ios-simulator-arm64").forEach { target ->
+            val selected = properties() + ("codexAgent.target" to target)
+            listOf("codexAgent.iosValidationPackageStage", "codexAgent.contractBinaryStage",
+                "codexAgent.sdkCompatibilityFile", "codexAgent.iosValidationTestApplicationDirectory").forEach { key ->
+                assertFailsWith<IllegalStateException>("missing $key for $target") { mode(selected - key, emptyMap()) }
+                listOf("", " \t\n").forEach { blank ->
+                    assertFailsWith<IllegalStateException>("blank $key for $target") {
+                        mode(selected + (key to blank), emptyMap())
+                    }
                 }
             }
         }
@@ -85,6 +88,7 @@ class IosSdkValidationModeTest {
         "codexAgent.iosValidationPackageStage" to "/original/package",
         "codexAgent.contractBinaryStage" to "/original/contract",
         "codexAgent.sdkCompatibilityFile" to "/original/sdk-compatibility.json",
+        "codexAgent.iosValidationTestApplicationDirectory" to "/original/TestApp",
     )
 
     private fun withMode(block: ((Map<String, String>, Map<String, String>) -> Boolean) -> Unit) {

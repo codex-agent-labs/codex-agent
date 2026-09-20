@@ -17,6 +17,7 @@ class IosSdkValidationGraphTest {
         try {
             val originalPackage = root.resolve("package-stage").apply { mkdirs() }
             val originalContract = root.resolve("contract-stage").apply { mkdirs() }
+            val originalTestApp = root.resolve("TestApp").apply { mkdirs() }
             val compatibility = root.resolve("sdk-compatibility.json").apply { writeText("synthetic graph input\n") }
             val tree = "3".repeat(40)
             val target = "ios-simulator-arm64"
@@ -30,6 +31,8 @@ class IosSdkValidationGraphTest {
                         def compiler = ios.tasks.named('generateCodexAgentAppleCompilerEvidence').get()
                         def binding = ios.tasks.named('generateCodexAgentAppleBindingEvidence').get()
                         def tests = ios.tasks.named('verifyCodexAgentSwiftAuthenticationTests').get()
+                        def device = ios.tasks.named('verifyCodexAgentSwiftPackage').get()
+                        def deviceInputs = ios.tasks.named('stageSdkIosValidationDeviceInputs').get()
                         ['COMPILER': compiler, 'BINDING': binding].each { label, task ->
                             println('VALIDATION_' + label + '_FRAMEWORK=' + task.xcframeworkDirectory.get().asFile.canonicalPath)
                             println('VALIDATION_' + label + '_CANONICAL=' + task.canonicalApiReport.get().asFile.canonicalPath)
@@ -39,6 +42,14 @@ class IosSdkValidationGraphTest {
                         println('VALIDATION_XCTEST_PACKAGE=' + tests.packageDirectory.get().asFile.canonicalPath)
                         println('VALIDATION_BINDING_PACKAGE=' + binding.xctestPackageDirectory.get().asFile.canonicalPath)
                         println('VALIDATION_XCTEST_DEPS=' + dependencies(tests))
+                        println('VALIDATION_DEVICE_WORKING_DIR=' + device.workingDir.canonicalPath)
+                        println('VALIDATION_DEVICE_DEPS=' + dependencies(device))
+                        println('VALIDATION_DEVICE_INPUT_DEPS=' + dependencies(deviceInputs))
+                        println('VALIDATION_DEVICE_COMMAND=' + device.commandLine.join('|'))
+                        println('VALIDATION_DEVICE_TESTAPP_SOURCE=' + deviceInputs.testApplicationDirectory.get().asFile.canonicalPath)
+                        println('VALIDATION_DEVICE_PACKAGE_SOURCE=' + deviceInputs.packageDirectory.get().asFile.canonicalPath)
+                        println('VALIDATION_DEVICE_STAGED_TESTAPP=' + deviceInputs.stagedTestApplicationDirectory.get().asFile.canonicalPath)
+                        println('VALIDATION_DEVICE_WORK=' + deviceInputs.workDirectory.get().asFile.canonicalPath)
                         ['PACKAGE': 'snapshotSdkIosValidationPackage',
                          'CONTRACT': 'snapshotImportedAppleContractEvidence'].each { label, name ->
                             def task = ios.tasks.named(name).get()
@@ -58,11 +69,13 @@ class IosSdkValidationGraphTest {
                 })
                 .withArguments(
                     ":codex-agent-runtime-ios:generateCodexAgentAppleBindingEvidence",
+                    ":codex-agent-runtime-ios:verifyCodexAgentSwiftPackage",
                     "--dry-run", "--offline", "--no-configuration-cache", "--console=plain",
                     "-PcodexAgent.product=sdk", "-PcodexAgent.component=sdk-ios", "-PcodexAgent.phase=validation",
                     "-PcodexAgent.target=$target", "-PcodexAgent.iosValidationPackageStage=${originalPackage.path}",
                     "-PcodexAgent.contractBinaryStage=${originalContract.path}",
                     "-PcodexAgent.sdkCompatibilityFile=${compatibility.path}",
+                    "-PcodexAgent.iosValidationTestApplicationDirectory=${originalTestApp.path}",
                     "-PcodexAgent.sdkVersion=0.8.0", "-PcodexAgent.contractVersion=0.8.0",
                     "-PcodexAgent.candidateTree=$tree", "--init-script", inspection.path,
                 ).build()
@@ -76,6 +89,7 @@ class IosSdkValidationGraphTest {
                 "snapshotSdkIosValidationPackage", "verifySdkIosValidationPackage", "prepareSdkIosValidationPackage",
                 "verifyAppleToolchain", "generateCodexAgentAppleCompilerEvidence",
                 "verifyCodexAgentSwiftAuthenticationTests", "generateCodexAgentAppleBindingEvidence",
+                "stageSdkIosValidationDeviceInputs", "verifyCodexAgentSwiftPackage",
             ).map { ios + it }.toSet()
             assertEquals(expected, selected.filter { it.startsWith(ios) }.toSet(), result.output)
             assertFalse(selected.any { it.startsWith(":codex-agent-core:") || it.startsWith(":codex-agent-sdk:") }, result.output)
@@ -94,6 +108,16 @@ class IosSdkValidationGraphTest {
             assertEquals(packageRoot.resolve("package-stage").path, value("PACKAGE_SNAPSHOT"))
             assertEquals(contractRoot.path, value("CONTRACT_SNAPSHOT"))
             assertEquals(compatibility.path, value("COMPATIBILITY"))
+            assertEquals(packageRoot.resolve("device-consumer/CodexAgentTestApp").path, value("DEVICE_WORKING_DIR"))
+            assertEquals(value("DEVICE_WORKING_DIR"), value("DEVICE_STAGED_TESTAPP"))
+            assertEquals(originalTestApp.path, value("DEVICE_TESTAPP_SOURCE"))
+            assertEquals(packageRoot.resolve("extracted/package").path, value("DEVICE_PACKAGE_SOURCE"))
+            assertEquals(packageRoot.resolve("device-consumer").path, value("DEVICE_WORK"))
+            val deviceCommand = value("DEVICE_COMMAND").split('|')
+            assertEquals("xcodebuild", deviceCommand.first())
+            assertEquals("generic/platform=iOS", deviceCommand[deviceCommand.indexOf("-destination") + 1])
+            assertTrue("ARCHS=arm64" in deviceCommand && "CODE_SIGNING_ALLOWED=NO" in deviceCommand)
+            assertEquals(listOf("clean", "archive"), deviceCommand.takeLast(2))
             listOf("COMPILER", "BINDING").forEach { task ->
                 assertEquals(packageRoot.resolve("extracted/xcframework").path, value("${task}_FRAMEWORK"))
                 assertEquals(contractRoot.resolve("outputs/evidence/canonical-api.json").path, value("${task}_CANONICAL"))
@@ -104,6 +128,9 @@ class IosSdkValidationGraphTest {
             }
             fun dependencies(name: String) = value("${name}_DEPS").split(',').toSet()
             assertEquals(setOf(ios + "verifySdkIosValidationPackage"), dependencies("PREPARE"))
+            assertEquals(setOf(ios + "prepareSdkIosValidationPackage"), dependencies("DEVICE_INPUT"))
+            assertEquals(setOf("invalidateCodexAgentAppleBindingEvidence", "verifyAppleToolchain",
+                "stageSdkIosValidationDeviceInputs").map { ios + it }.toSet(), dependencies("DEVICE"))
             assertEquals(setOf("invalidateCodexAgentAppleBindingEvidence", "verifyAppleToolchain",
                 "prepareSdkIosValidationPackage", "verifyImportedAppleContractEvidence").map { ios + it }.toSet(),
                 dependencies("COMPILER"))
@@ -121,11 +148,14 @@ class IosSdkValidationGraphTest {
                 "verifyImportedAppleContractEvidence" to "generateCodexAgentAppleCompilerEvidence",
                 "generateCodexAgentAppleCompilerEvidence" to "generateCodexAgentAppleBindingEvidence",
                 "verifyCodexAgentSwiftAuthenticationTests" to "generateCodexAgentAppleBindingEvidence",
+                "prepareSdkIosValidationPackage" to "stageSdkIosValidationDeviceInputs",
+                "stageSdkIosValidationDeviceInputs" to "verifyCodexAgentSwiftPackage",
             ).forEach { (before, after) ->
                 assertTrue(selected.indexOf(ios + before) < selected.indexOf(ios + after), result.output)
             }
             assertEquals(emptyList(), originalPackage.listFiles()!!.toList())
             assertEquals(emptyList(), originalContract.listFiles()!!.toList())
+            assertEquals(emptyList(), originalTestApp.listFiles()!!.toList())
             assertEquals("synthetic graph input\n", compatibility.readText())
         } finally {
             root.deleteRecursively()

@@ -94,6 +94,7 @@ class IosImportedContractEvidenceTasksTest {
         assertTrue("xcframeworkDirectory.set(importedAppleXCFramework.flatMap" in imported)
 
         val configured = selection.substringAfter("importedContractEvidence?.let")
+            .substringBefore("validationPackageInputs?.let")
         assertFalse(":codex-agent-core:" in configured)
         assertFalse("core/build" in configured)
         assertTrue("importedAppleXCFramework ?:" in configured)

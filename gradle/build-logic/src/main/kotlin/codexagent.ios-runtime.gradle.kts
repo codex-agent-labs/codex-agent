@@ -362,6 +362,21 @@ importedContractEvidence?.let { contractEvidence ->
 }
 
 validationPackageInputs?.let { packageInputs ->
+    val deviceInputs = tasks.register<StageAppleValidationDeviceInputsTask>("stageSdkIosValidationDeviceInputs") {
+        dependsOn(packageInputs)
+        packageDirectory.set(packageInputs.flatMap { it.packageDirectory })
+        testApplicationDirectory.set(layout.dir(
+            providers.gradleProperty("codexAgent.iosValidationTestApplicationDirectory").map(::file),
+        ))
+        workDirectory.set(layout.buildDirectory.dir(
+            "imported-sdk-validation/${providers.gradleProperty("codexAgent.candidateTree").get()}/" +
+                "${providers.gradleProperty("codexAgent.target").get()}/device-consumer",
+        ))
+    }
+    appleDistributionTasks.verifyCodexAgentSwiftPackage.configure {
+        setDependsOn(listOf(invalidateAppleBindingEvidence, verifyAppleToolchain, deviceInputs))
+        workingDir(deviceInputs.flatMap { it.stagedTestApplicationDirectory })
+    }
     configureIosSdkValidationConsumers(
         packageInputs,
         checkNotNull(importedContractEvidence),
