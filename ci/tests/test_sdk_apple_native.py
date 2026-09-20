@@ -19,8 +19,9 @@ sys.path.insert(0, str(CI_ROOT))
 import receipt as lane_receipt  # noqa: E402
 import reuse as lane_reuse  # noqa: E402
 import sdk_apple_native  # noqa: E402
-from products.inventory import regular_file_inventory, sha256_bytes  # noqa: E402
+from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes  # noqa: E402
 from ci.tests import test_ci as ci_fixture  # noqa: E402
+from ci.tests.product_chain_support import output, write_receipt  # noqa: E402
 
 
 def archive_tree(root: Path) -> bytes:
@@ -159,7 +160,19 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
             for lane, artifact in self.artifacts.items()
         }
 
-    def invoke(self, *, uploads=None, plan_path=None):
+    def original_binary_receipt(self, *, producer=None, product="sdk", component="sdk-ios",
+                                phase="binary", target="ios"):
+        path = self.root / "selected-original-binary" / f"{product}-{component}-{phase}-{target}.json"
+        write_receipt(
+            path, product=product, component=component, phase=phase, target=target,
+            version="0.8.0", version_identity="0.8.0",
+            outputs=[output("fixture", "outputs/original.bin", b"synthetic original iOS binary")],
+            upstream=[], context={"producer": self.producer if producer is None else producer},
+        )
+        return path
+
+    def invoke(self, *, uploads=None, plan_path=None, environ=None,
+               original_binary_receipt_path=None):
         def query(url, token):
             self.assertEqual(self.token, token)
             attempt = (f"https://api.github.com/repos/{self.producer['repository']}"
@@ -203,7 +216,8 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
                 self.plan_path if plan_path is None else plan_path,
                 uploads=self.uploads() if uploads is None else uploads,
                 trusted_workflow_sha=self.pin, repository_root=self.root,
-                environ=self.environment, token=self.token,
+                environ=self.environment if environ is None else environ, token=self.token,
+                original_binary_receipt_path=original_binary_receipt_path,
             )
             return context, (first, second, third), patches
         except BaseException:
@@ -248,6 +262,107 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
         finally:
             self.close(patches)
         self.assertEqual(self.plan_before, self.plan_path.read_bytes())
+
+    def test_historical_binary_receipt_selects_original_attempt_not_current_environment(self) -> None:
+        receipt = self.original_binary_receipt()
+        receipt_bytes = receipt.read_bytes()
+        current_head = self.commit("unrelated-after-original-native-inputs.txt", "new checkout head\n")
+        self.assertNotEqual(self.producer["commit"], current_head)
+        validator = sdk_apple_native.product_reuse._validate_plan
+        with mock.patch.object(
+            sdk_apple_native.product_reuse, "_validate_plan", wraps=validator,
+        ) as validate:
+            context, calls, patches = self.invoke(
+                original_binary_receipt_path=receipt,
+                environ={"GITHUB_RUN_ID": "unrelated", "GITHUB_RUN_ATTEMPT": "not-original"},
+            )
+            try:
+                with context as result:
+                    self.assertEqual(self.producer, result["producer"])
+                    self.assertEqual(self.producer, result["transport"]["captureProducer"])
+                    self.assertEqual(
+                        sha256_bytes(receipt_bytes), result["transport"]["binaryReceiptSha256"],
+                    )
+                    self.assertEqual(
+                        receipt_bytes,
+                        (result["captureRoot"] / "original-binary-receipt.json").read_bytes(),
+                    )
+                    self.assertEqual(self.plan_before, (
+                        result["captureRoot"] / "plan/impact-plan.json"
+                    ).read_bytes())
+                self.assertEqual((5, 1, 3), tuple(call.call_count for call in calls))
+            finally:
+                self.close(patches)
+        self.assertGreaterEqual(validate.call_count, 2)
+        self.assertTrue(all(call.kwargs == {"expected_revision": self.producer["commit"]}
+                            for call in validate.call_args_list))
+        self.assertEqual(receipt_bytes, receipt.read_bytes())
+        self.assertEqual(self.plan_before, self.plan_path.read_bytes())
+
+    def test_historical_receipt_requires_exact_binary_identity_before_observation(self) -> None:
+        identities = (
+            {"phase": "package"}, {"component": "javascript", "target": "node"},
+            {"product": "contract", "component": "contract", "phase": "binary", "target": "common"},
+        )
+        for identity in identities:
+            receipt = self.original_binary_receipt(**identity)
+            with self.subTest(identity=identity), self.assertRaises(ValueError):
+                context, calls, patches = self.invoke(original_binary_receipt_path=receipt)
+                try:
+                    with context:
+                        self.fail("wrong original binary identity yielded Apple native inputs")
+                finally:
+                    self.close(patches)
+            self.assertEqual((0, 0, 0), tuple(call.call_count for call in calls))
+
+    def test_historical_plan_requires_full_original_producer_before_observation(self) -> None:
+        receipt = self.original_binary_receipt()
+        value = json.loads(receipt.read_bytes())
+        value["producer"]["workflowPath"] = ".github/workflows/other.yml"
+        receipt.write_bytes(canonical_json_bytes(value))
+        context, calls, patches = self.invoke(original_binary_receipt_path=receipt)
+        try:
+            with self.assertRaisesRegex(ValueError, "differs from the original binary producer"):
+                with context:
+                    self.fail("cross-paired historical producer yielded Apple native inputs")
+            self.assertEqual((0, 0, 0), tuple(call.call_count for call in calls))
+        finally:
+            self.close(patches)
+
+        historical = {**self.producer, "commit": self.base,
+                      "tree": self.git("rev-parse", f"{self.base}^{{tree}}")}
+        receipt = self.original_binary_receipt(producer=historical)
+        context, calls, patches = self.invoke(original_binary_receipt_path=receipt)
+        try:
+            with self.assertRaisesRegex(ValueError, "selected revision"):
+                with context:
+                    self.fail("wrong historical plan revision yielded Apple native inputs")
+            self.assertEqual((0, 0, 0), tuple(call.call_count for call in calls))
+        finally:
+            self.close(patches)
+
+    def test_historical_receipt_and_plan_are_rechecked_through_context_exit(self) -> None:
+        mutations = ("receipt", "private receipt", "plan", "private plan")
+        for mutation in mutations:
+            receipt = self.original_binary_receipt()
+            receipt_bytes = receipt.read_bytes()
+            plan_bytes = self.plan_path.read_bytes()
+            context, _, patches = self.invoke(original_binary_receipt_path=receipt)
+            try:
+                with self.subTest(mutation=mutation), \
+                        self.assertRaisesRegex(ValueError, "changed during use"):
+                    with context as result:
+                        targets = {
+                            "receipt": receipt,
+                            "private receipt": result["captureRoot"] / "original-binary-receipt.json",
+                            "plan": self.plan_path,
+                            "private plan": result["captureRoot"] / "plan/impact-plan.json",
+                        }
+                        targets[mutation].write_bytes(b"changed during use\n")
+            finally:
+                self.close(patches)
+                receipt.write_bytes(receipt_bytes)
+                self.plan_path.write_bytes(plan_bytes)
 
     def test_upload_identity_window_and_exact_map_reject_before_yield(self) -> None:
         baseline = deepcopy((self.artifacts, self.jobs))

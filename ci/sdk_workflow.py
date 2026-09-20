@@ -171,7 +171,8 @@ def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_
         try:
             yield {"ready": ready, "producer": verified.producer,
                    "sdkVersion": verified.expected_fixed["versions"]["sdk"], "contract": contract,
-                   "contractHandoff": handoff, "native": native["directory"], "inputs": destination}
+                   "contractHandoff": handoff, "native": native["directory"],
+                   "nativeCaptureRoot": native["captureRoot"], "inputs": destination}
         finally:
             unchanged()
     unchanged()
@@ -192,9 +193,20 @@ def execute_ios_binary(plan, discovery, state, destination, *, expected_build_ke
             expected_build_key=expected_build_key, native_uploads=native_uploads,
             trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token, **tooling) as inputs:
         ready, producer, version = inputs["ready"], inputs["producer"], inputs["sdkVersion"]
+        # External original evidence, never part of the reusable binary stage.
+        retained_native = destination / "native-original"
+        native_inventory = regular_file_inventory(inputs["nativeCaptureRoot"], allow_empty=True)
+        snapshot_regular_tree(inputs["nativeCaptureRoot"], retained_native, allow_empty=True)
+        if regular_file_inventory(retained_native, allow_empty=True) != native_inventory:
+            raise ValueError("SDK iOS binary retained native evidence differs from its original capture")
         result = execute(ready, producer=producer, sdk_version=version,
             contract_metadata=inputs["contract"], verified_contract_handoff=inputs["contractHandoff"],
             native_evidence=inputs["native"], repository_root=root, destination=destination / "worker", environ=environ)
+        if (regular_file_inventory(inputs["nativeCaptureRoot"], allow_empty=True) != native_inventory
+                or regular_file_inventory(retained_native, allow_empty=True) != native_inventory):
+            raise ValueError("SDK iOS binary native evidence changed during execution")
+    if regular_file_inventory(retained_native, allow_empty=True) != native_inventory:
+        raise ValueError("SDK iOS binary native evidence changed during context exit")
     if regular_file_inventory(result["stage"]) != result["outputInventory"]:
         raise ValueError("SDK iOS binary output changed before finalization")
     trust = "development" if producer["event"] == "pull_request" else "release"

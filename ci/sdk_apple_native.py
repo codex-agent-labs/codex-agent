@@ -16,6 +16,8 @@ if __package__:
     from . import product_reuse
     from .receipt import INPUT_NAMES, safe_extract, validate_receipt
     from .products.inventory import (
+        canonical_json_bytes,
+        load_canonical_json_bytes,
         load_json_bytes,
         read_regular_file_bytes,
         regular_file_inventory,
@@ -26,12 +28,14 @@ if __package__:
         verified_zip_contents,
         write_canonical_json,
     )
-    from .products.receipt import validate_producer
+    from .products.receipt import validate_phase_receipt, validate_producer
     from .sdk_apple_source import _original_transport_producer
 else:
     import product_reuse
     from receipt import INPUT_NAMES, safe_extract, validate_receipt
     from products.inventory import (
+        canonical_json_bytes,
+        load_canonical_json_bytes,
         load_json_bytes,
         read_regular_file_bytes,
         regular_file_inventory,
@@ -42,7 +46,7 @@ else:
         verified_zip_contents,
         write_canonical_json,
     )
-    from products.receipt import validate_producer
+    from products.receipt import validate_phase_receipt, validate_producer
     from sdk_apple_source import _original_transport_producer
 
 
@@ -127,8 +131,9 @@ def verified_sdk_apple_native_inputs(
     repository_root: Path,
     environ: Mapping[str, str],
     token: str,
+    original_binary_receipt_path: Path | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Yield exact current native evidence while its three uploads stay verified."""
+    """Yield exact fresh or receipt-selected native evidence while uploads stay verified."""
     if type(token) is not str or not token:
         raise ValueError("Apple native input capture requires an observation token")
     upload_values = require_exact_keys(uploads, LANES, "Apple native uploads")
@@ -152,6 +157,25 @@ def verified_sdk_apple_native_inputs(
     plan_bytes = read_regular_file_bytes(
         plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
     )
+    original_receipt_path = (Path(original_binary_receipt_path).absolute()
+                             if original_binary_receipt_path is not None else None)
+    original_receipt_bytes = None
+    original_receipt = None
+    binary_producer = None
+    if original_receipt_path is not None:
+        original_receipt_bytes = read_regular_file_bytes(
+            original_receipt_path, max_bytes=16 * 1024 * 1024,
+            reject_symlink_parents=True,
+        )
+        original_receipt = validate_phase_receipt(
+            load_canonical_json_bytes(original_receipt_bytes),
+        )
+        if tuple(original_receipt[name] for name in ("product", "component", "phase", "target")) != (
+                "sdk", "sdk-ios", "binary", "ios"):
+            raise ValueError("Historical Apple native inputs require the original iOS SDK binary receipt")
+        binary_producer = validate_producer(
+            original_receipt["producer"], "Original iOS SDK binary producer",
+        )
     inventory_sources = {
         (lane, name): plan_path.parent / "inventories" / lane / name
         for lane in LANES for name in INPUT_NAMES.values()
@@ -166,15 +190,27 @@ def verified_sdk_apple_native_inputs(
         private_plan = private / "plan/impact-plan.json"
         private_plan.parent.mkdir()
         private_plan.write_bytes(plan_bytes)
+        private_receipt = None
+        if original_receipt_bytes is not None:
+            private_receipt = private / "original-binary-receipt.json"
+            private_receipt.write_bytes(original_receipt_bytes)
         for (lane, name), contents in inventory_bytes.items():
             target = private_plan.parent / "inventories" / lane / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(contents)
 
-        plan = product_reuse._validate_plan(private_plan, root)
+        plan_options = ({"expected_revision": binary_producer["commit"]}
+                        if binary_producer is not None else {})
+        plan = product_reuse._validate_plan(private_plan, root, **plan_options)
         if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
             raise ValueError("Apple native input capture requires an authorized PR or merge-group plan")
-        producer = product_reuse._consumer(plan, dict(environ))["producer"]
+        producer_environment = (dict(environ) if binary_producer is None else {
+            "GITHUB_RUN_ID": str(binary_producer["runId"]),
+            "GITHUB_RUN_ATTEMPT": str(binary_producer["runAttempt"]),
+        })
+        producer = product_reuse._consumer(plan, producer_environment)["producer"]
+        if binary_producer is not None and producer != binary_producer:
+            raise ValueError("Historical Apple native plan differs from the original binary producer")
         observed = product_reuse._observe_ci_producer_jobs(
             {lane: producer for lane in LANES}, jobs_by_phase=JOBS,
             trusted_workflow_sha=trusted_workflow_sha, token=token,
@@ -248,6 +284,8 @@ def verified_sdk_apple_native_inputs(
                 lane: sha256_bytes(receipt_bytes[lane]) for lane in LANES
             },
         }
+        if original_receipt_bytes is not None:
+            transport["binaryReceiptSha256"] = sha256_bytes(original_receipt_bytes)
         transport_path = private / "native-transport.json"
         write_canonical_json(transport_path, transport)
         transport_bytes = read_regular_file_bytes(
@@ -261,6 +299,14 @@ def verified_sdk_apple_native_inputs(
                     or read_regular_file_bytes(
                         private_plan, max_bytes=16 * 1024 * 1024,
                         reject_symlink_parents=True) != plan_bytes
+                    or (original_receipt_path is not None and (
+                        read_regular_file_bytes(
+                            original_receipt_path, max_bytes=16 * 1024 * 1024,
+                            reject_symlink_parents=True) != original_receipt_bytes
+                        or read_regular_file_bytes(
+                            private_receipt, max_bytes=16 * 1024 * 1024,
+                            reject_symlink_parents=True) != original_receipt_bytes
+                        or canonical_json_bytes(original_receipt) != original_receipt_bytes))
                     or any(read_regular_file_bytes(
                         path, reject_symlink_parents=True) != inventory_bytes[identity]
                         for identity, path in inventory_sources.items())
@@ -281,7 +327,7 @@ def verified_sdk_apple_native_inputs(
                         transport_path, max_bytes=16 * 1024 * 1024,
                         reject_symlink_parents=True) != transport_bytes):
                 raise ValueError("Apple native original inputs changed during use")
-            if product_reuse._validate_plan(private_plan, root) != plan:
+            if product_reuse._validate_plan(private_plan, root, **plan_options) != plan:
                 raise ValueError("Apple native plan changed during use")
 
         unchanged()

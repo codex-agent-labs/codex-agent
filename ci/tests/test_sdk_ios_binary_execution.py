@@ -53,21 +53,28 @@ class SdkIosBinaryExecutionTest(unittest.TestCase):
             (destination / name / "synthetic-input").write_bytes(b"original controller input\n")
         receipt = destination / "metadata-receipt.json"
         receipt.write_bytes(b'{"synthetic":"already verified receipt boundary"}\n')
+        capture = destination / "native-capture"
+        capture.mkdir()
+        (capture / "original-receipt.json").write_bytes(b"immutable original lane receipt")
+        (capture / "stderr.bin").write_bytes(b"")
         self.value = {"ready": self.ready, "producer": self.producer, "sdkVersion": "0.2.9",
             "contract": {"stage": destination / "metadata-stage", "receiptPath": receipt,
                          "receipt": {"synthetic": "already verified record"}},
             "contractHandoff": destination / "contract-handoff", "native": destination / "native",
+            "nativeCaptureRoot": capture,
             "inputs": destination}
-        before = regular_file_inventory(destination)
+        before = regular_file_inventory(destination, allow_empty=True)
         try:
             yield self.value
             self.events.append("exit-check")
             if self.failure == "context":
                 raise ValueError("synthetic original context exit rejected")
-            if regular_file_inventory(destination) != before:
+            if regular_file_inventory(destination, allow_empty=True) != before:
                 raise ValueError("synthetic original context input mutation")
             if self.failure == "output":
                 (self.result["stage"] / "synthetic-output").write_bytes(b"changed before finalization\n")
+            if self.failure == "native-exit":
+                (self.destination / "native-original/stderr.bin").write_bytes(b"changed")
             self.events.append("exited")
         finally:
             self.live = False
@@ -80,10 +87,14 @@ class SdkIosBinaryExecutionTest(unittest.TestCase):
             "native_evidence": self.value["native"], "repository_root": self.repository,
             "destination": self.destination / "worker", "environ": self.options["environ"]}, arguments)
         self.events.append("worker")
+        self.assertEqual(regular_file_inventory(self.value["nativeCaptureRoot"], allow_empty=True),
+                         regular_file_inventory(self.destination / "native-original", allow_empty=True))
         if self.failure == "worker":
             raise ValueError("synthetic leaf failure")
         if self.failure == "input":
             self.value["contract"]["receiptPath"].write_bytes(b"changed during worker\n")
+        if self.failure == "native":
+            (self.destination / "native-original/stderr.bin").write_bytes(b"changed")
         stage = self.destination / "synthetic-stage"
         stage.mkdir()
         (stage / "synthetic-output").write_bytes(b"not a compiled iOS product\n")
@@ -126,10 +137,14 @@ class SdkIosBinaryExecutionTest(unittest.TestCase):
         self.mocks[2].assert_not_called()
         self.assertFalse((self.destination / "shard").exists())
         self.assertFalse(self.live)
+        self.assertEqual(b"immutable original lane receipt",
+                         (self.destination / "native-original/original-receipt.json").read_bytes())
+        self.assertEqual(b"", (self.destination / "native-original/stderr.bin").read_bytes())
 
     def test_context_exit_error_input_mutation_and_output_mutation_never_finalize(self):
         for failure, message in (("context", "context exit rejected"), ("input", "context input mutation"),
-                                 ("output", "output changed before finalization")):
+                                 ("output", "output changed before finalization"),
+                                 ("native", "native evidence changed"), ("native-exit", "native evidence changed")):
             self.failure = failure
             self.destination = self.repository / "build" / failure
             self.events.clear()

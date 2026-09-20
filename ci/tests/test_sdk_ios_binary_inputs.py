@@ -125,7 +125,8 @@ class SdkIosBinaryInputsTest(unittest.TestCase):
     def native_inputs(self, *args, **kwargs):
         self.events.append("native-enter")
         try:
-            yield {"producer": self.native_producer, "directory": self.native_directory}
+            yield {"producer": self.native_producer, "directory": self.native_directory,
+                   "captureRoot": self.native_directory}
             if self.native_exit == "mutate":
                 (self.destination / "late-file").write_bytes(b"changed on native exit\n")
             elif self.native_exit == "reject":
@@ -139,7 +140,8 @@ class SdkIosBinaryInputsTest(unittest.TestCase):
 
     def test_exact_binary_readiness_originals_policy_and_ios_projection_are_forwarded(self):
         with self.inputs() as value:
-            self.assertEqual({"ready", "producer", "sdkVersion", "contract", "contractHandoff", "native", "inputs"}, set(value))
+            self.assertEqual({"ready", "producer", "sdkVersion", "contract", "contractHandoff", "native",
+                              "nativeCaptureRoot", "inputs"}, set(value))
             self.assertEqual(self.ready, value["ready"])
             self.assertEqual(self.producer, value["producer"])
             self.assertEqual("0.2.9", value["sdkVersion"])
