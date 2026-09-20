@@ -532,6 +532,8 @@ tasks.register("ciProductPhase") {
                 sdk.get().tasks.named("writeSdkIosPackageOutputManifest")
             Triple("sdk", "sdk-ios", "validation") ->
                 project(":codex-agent-runtime-ios").tasks.named("writeSdkIosValidationOutputManifest")
+            Triple("sdk", "sdk-ios", "metadata") ->
+                project(":codex-agent-runtime-ios").tasks.named("writeSdkIosMetadataOutputManifest")
             Triple("sdk", "javascript", "package") ->
                 sdk.get().tasks.named("writeJavaScriptSdkPackageOutputManifest")
             Triple("sdk", "javascript", "validation") ->

@@ -387,7 +387,8 @@ def _verified_ios_validation(plan, validation_receipt_path, *, validation_captur
                     if canonical_json_bytes(context) != context_bytes:
                         raise ValueError("Original Apple validation context changed during replay")
                     yield {"stage": stage, "receiptPath": selected_receipt, "receiptBytes": raw,
-                           "receipt": receipt, "original": original, "capture": capture}
+                           "receipt": receipt, "original": original, "capture": capture,
+                           "package": package}
         finally:
             unchanged()
             if read_regular_file_bytes(selected_receipt) != raw:

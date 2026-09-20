@@ -70,6 +70,50 @@ class AppleValidationAdmission:
         self._records = {record["receiptSha256"]: record for record in
                          rebase_sdk_apple_validation_records(records, self._root, self._root)}
         self._arguments = {**arguments, "repository_root": Path(repository), "policy_revision": policy_revision}
+        self._policy = {**policy}
+
+    def verify_metadata(self, envelope, validation_envelopes):
+        """Verify exact joined bytes after lookup has authenticated the phase object."""
+        from .reuse import _validate_envelope
+        from .sdk_apple_metadata_admission import verify_sdk_apple_metadata_receipt_admission
+
+        require_no_signing_secret(os.environ)
+        instance, envelope = _validate_envelope(envelope)
+        if (instance.product, instance.component, instance.phase, instance.target) != (
+                "sdk", "sdk-ios", "metadata", "ios"):
+            raise ValueError("Apple metadata admission requires the exact metadata envelope")
+        def binding(value):
+            return (value["receiptBytes"], value["receiptSha256"], value["objectSha256"],
+                    canonical_json_bytes(value["receipt"]))
+
+        selected = [(envelope, binding(envelope))]
+        originals = {}
+        for value in validation_envelopes:
+            identity, value = _validate_envelope(value)
+            if ((identity.product, identity.component, identity.phase) != ("sdk", "sdk-ios", "validation")
+                    or identity.target not in ("ios-arm64", "ios-simulator-arm64")
+                    or identity.target in originals):
+                raise ValueError("Apple metadata requires exact unique validation predecessors")
+            originals[identity.target] = value["receiptBytes"]
+            selected.append((value, binding(value)))
+        if set(originals) != {"ios-arm64", "ios-simulator-arm64"}:
+            raise ValueError("Apple metadata requires both original validation predecessors")
+        raw = envelope["receiptBytes"]
+        with tempfile.TemporaryDirectory(prefix="apple-metadata-receipts-") as temporary:
+            root = Path(temporary).resolve()
+            paths = {target: root / f"{target}.json" for target in originals}
+            for target, path in paths.items():
+                path.write_bytes(originals[target])
+            verified, verified_bytes = verify_sdk_apple_metadata_receipt_admission(
+                repository=self._arguments["repository_root"], metadata_receipt_bytes=raw,
+                validation_receipts=paths, evidence_root=self._root,
+                evidence_records=list(self._records.values()),
+                policy_revision=self._arguments["policy_revision"], policy=self._policy)
+            if verified_bytes != raw or canonical_json_bytes(verified) != raw:
+                raise ValueError("Apple metadata full gate returned a different original receipt")
+        require_no_signing_secret(os.environ)
+        if any(binding(value) != original for value, original in selected):
+            raise ValueError("Apple metadata or predecessor envelope changed during admission")
 
     def verify(self, envelope):
         require_no_signing_secret(os.environ)

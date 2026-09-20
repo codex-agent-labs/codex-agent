@@ -1563,6 +1563,12 @@ def advance_reuse(
             if sdk_apple_validation_admission is None:
                 raise ValueError("Apple validation reuse lacks authenticated original evidence")
             sdk_apple_validation_admission.verify(envelope)
+        elif instance == PhaseInstanceId("sdk", "sdk-ios", "metadata", "ios"):
+            if sdk_apple_validation_admission is None:
+                raise ValueError("Apple metadata reuse lacks authenticated original evidence")
+            sdk_apple_validation_admission.verify_metadata(envelope, tuple(
+                dependency_envelope(instance, dependency)
+                for dependency in phase_instance_dependencies(instance)))
     if (repository_root is None) != (repository_revision is None):
         raise ValueError("Reuse repository root and revision must be supplied together")
     if contract_projection_provider is not None and not callable(contract_projection_provider):

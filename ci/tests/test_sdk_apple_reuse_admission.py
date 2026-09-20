@@ -130,6 +130,25 @@ class AppleReuseAdmissionTest(unittest.TestCase):
             self.assertEqual((self.envelope,), originals)
             verify.assert_not_called()
 
+    def test_metadata_routes_require_full_join_and_propagate_rejection(self):
+        self.identity = PhaseInstanceId("sdk", "sdk-ios", "metadata", "ios")
+        for route in ("retained", "lookup"):
+            with self.subTest(route=route), self.assertRaisesRegex(ValueError, "metadata reuse lacks"):
+                self.run_route(route)
+            with patch.object(reuse.AppleValidationAdmission, "verify_metadata", autospec=True,
+                    side_effect=ValueError("full metadata replay rejected")) as verify, \
+                    self.assertRaisesRegex(ValueError, "full metadata replay rejected"):
+                self.run_route(route, self.admission)
+            verify.assert_called_once_with(self.admission, self.envelope, ())
+            self.build_consumer.assert_not_called()
+            # This orchestration fixture removes dependencies; the concrete
+            # metadata gate separately rejects an empty predecessor tuple.
+            with patch.object(reuse.AppleValidationAdmission, "verify_metadata", autospec=True) as verify:
+                result, originals = self.run_route(route, self.admission)
+            verify.assert_called_once_with(self.admission, self.envelope, ())
+            self.assertTrue(result["fullReuse"])
+            self.assertEqual((self.envelope,), originals)
+
     def test_transported_apple_policy_is_rejected_before_rebase_or_planning(self):
         with patch.object(sys, "path", [str(Path(__file__).resolve().parents[1]), *sys.path]):
             import product_reuse as adapter

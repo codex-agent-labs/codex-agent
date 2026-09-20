@@ -28,6 +28,8 @@ class ProductPhaseMappingContractTest {
             Triple("sdk", "sdk-android", "package") to "writeSdkAndroidPackageOutputManifest",
             Triple("sdk", "sdk-ios", "binary") to "writeSdkIosBinaryOutputManifest",
             Triple("sdk", "sdk-ios", "package") to "writeSdkIosPackageOutputManifest",
+            Triple("sdk", "sdk-ios", "validation") to "writeSdkIosValidationOutputManifest",
+            Triple("sdk", "sdk-ios", "metadata") to "writeSdkIosMetadataOutputManifest",
             Triple("sdk", "javascript", "package") to
                 "writeJavaScriptSdkPackageOutputManifest",
             Triple("sdk", "javascript", "validation") to

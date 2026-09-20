@@ -482,6 +482,50 @@ validationPackageInputs?.let { packageInputs ->
     }
 }
 
+// Artifact-only iOS metadata registration. Original receipt/source admission is caller-owned.
+if (providers.gradleProperty("codexAgent.product").orNull == "sdk" &&
+    providers.gradleProperty("codexAgent.component").orNull == "sdk-ios" &&
+    providers.gradleProperty("codexAgent.phase").orNull == "metadata" &&
+    providers.gradleProperty("codexAgent.target").orNull == "ios"
+) {
+    listOf("codexAgent.sdkVersion", "codexAgent.iosMetadataPackageStage",
+        "codexAgent.iosMetadataDeviceValidationContent", "codexAgent.iosMetadataSimulatorValidationContent",
+    ).forEach { property ->
+        check(!providers.gradleProperty(property).orNull.isNullOrBlank()) {
+            "Imported iOS metadata requires $property"
+        }
+    }
+    val metadataStage = rootProject.layout.buildDirectory.dir("product-stage/sdk/sdk-ios/metadata")
+    val metadataContent = tasks.register<WriteIosSdkMetadataContentTask>("writeSdkIosMetadataContent") {
+        sdkVersion.set(providers.gradleProperty("codexAgent.sdkVersion"))
+        packageStage.set(layout.dir(providers.gradleProperty("codexAgent.iosMetadataPackageStage").map(::file)))
+        deviceValidation.set(layout.file(
+            providers.gradleProperty("codexAgent.iosMetadataDeviceValidationContent").map(::file),
+        ))
+        simulatorValidation.set(layout.file(
+            providers.gradleProperty("codexAgent.iosMetadataSimulatorValidationContent").map(::file),
+        ))
+        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+        outputFile.set(metadataStage.map { it.file("outputs/evidence/apple-metadata.json") })
+    }
+    tasks.register<WriteProductOutputManifestTask>("writeSdkIosMetadataOutputManifest") {
+        dependsOn(metadataContent)
+        product.set("sdk")
+        component.set("sdk-ios")
+        phase.set("metadata")
+        target.set("ios")
+        productVersion.set(providers.gradleProperty("codexAgent.sdkVersion"))
+        outputRoots.set(mapOf("apple-metadata-content" to "outputs/evidence"))
+        expectedOutputPaths.set(listOf("outputs/evidence/apple-metadata.json"))
+        outputsDirectory.set(metadataStage.map { it.dir("outputs") })
+        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+        stageRoot.set(metadataStage)
+        manifestFile.set(metadataStage.map { it.file("output-manifest.json") })
+    }
+}
+
 tasks.register("verifyIosRuntime") {
     group = "verification"
     description = "Builds and tests the embedded iOS runtime and clean Swift Package consumer."

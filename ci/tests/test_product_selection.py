@@ -110,6 +110,15 @@ class ProductSelectionTest(unittest.TestCase):
                 for instance in PHASE_INSTANCE_IDS:
                     self.assertEqual((path,) if instance in expected else (), phase_inventory_paths([path], instance))
 
+    def test_apple_metadata_admission_and_controller_are_control_not_payload_inputs(self) -> None:
+        for path in ("ci/products/sdk_apple_metadata_admission.py", "ci/sdk_ios_metadata_workflow.py"):
+            with self.subTest(path=path):
+                result = classify_paths([path])
+                self.assertEqual(set(PHASE_INSTANCE_IDS), identities(result))
+                self.assertEqual((), result.unknown_paths)
+                for instance in PHASE_INSTANCE_IDS:
+                    self.assertEqual((), phase_inventory_paths([path], instance))
+
     def test_scoped_product_actions_select_only_their_existing_consumers(self) -> None:
         owners = {
             "prepare-runtime-signing": {item for item in PHASE_INSTANCE_IDS

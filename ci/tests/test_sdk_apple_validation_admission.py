@@ -104,6 +104,50 @@ class AppleValidationAdmissionTest(unittest.TestCase):
                     gate.verify(envelope)
             verify.assert_not_called()
 
+    def test_metadata_forwards_both_originals_and_rejects_late_envelope_mutation(self):
+        from ci.products import sdk_apple_metadata_admission as metadata
+
+        simulator = self.fixture.entry("simulator", "ios-simulator-arm64")
+        simulator_raw = (simulator / "capture/original/shard/phase-receipt.json").read_bytes()
+        receipt = write_receipt(self.root / "metadata.json", product="sdk", component="sdk-ios",
+            phase="metadata", target="ios", version="0.8.0", version_identity="0.8.0", upstream=[],
+            context={"producer": self.fixture.producer},
+            outputs=[output("apple-metadata-content", "outputs/evidence/apple-metadata.json", b"fixture")])
+        raw = canonical_json_bytes(receipt)
+
+        def envelope(contents):
+            return {"receipt": json.loads(contents), "receiptBytes": contents,
+                    "receiptSha256": sha256_bytes(contents), "objectSha256": "sha256:" + "8" * 64}
+
+        for mutation in (None, "metadata-digest", "metadata-object", "validation-digest", "validation-receipt"):
+            selected = envelope(raw)
+            predecessors = (envelope(self.raw), envelope(simulator_raw))
+            gate = self.make()
+
+            def verify(**arguments):
+                self.assertEqual(raw, arguments["metadata_receipt_bytes"])
+                self.assertEqual({"ios-arm64": self.raw, "ios-simulator-arm64": simulator_raw},
+                    {target: path.read_bytes() for target, path in arguments["validation_receipts"].items()})
+                self.assertEqual(self.policy, arguments["policy"])
+                if mutation == "metadata-digest": selected["receiptSha256"] = "sha256:" + "0" * 64
+                if mutation == "metadata-object": selected["objectSha256"] = "sha256:" + "0" * 64
+                if mutation == "validation-digest": predecessors[0]["receiptSha256"] = "sha256:" + "0" * 64
+                if mutation == "validation-receipt": predecessors[1]["receipt"]["producer"]["runAttempt"] += 1
+                return receipt, raw
+
+            with self.subTest(mutation=mutation), patch.object(metadata,
+                    "verify_sdk_apple_metadata_receipt_admission", side_effect=verify):
+                if mutation is None:
+                    self.assertIsNone(gate.verify_metadata(selected, predecessors))
+                else:
+                    with self.assertRaisesRegex(ValueError, "envelope changed"):
+                        gate.verify_metadata(selected, predecessors)
+        with patch.object(metadata, "verify_sdk_apple_metadata_receipt_admission") as verify:
+            for predecessors in ((), (envelope(self.raw),), (envelope(self.raw), envelope(self.raw))):
+                with self.subTest(predecessors=len(predecessors)), self.assertRaises(ValueError):
+                    self.make().verify_metadata(envelope(raw), predecessors)
+            verify.assert_not_called()
+
     def test_caller_policy_is_strict_and_detached_from_later_dictionary_changes(self):
         for changed in ({"extra": "unknown"}, {"plan": "relative/plan"}, {"attestationPublicKey": None},
                         {"keyring": None}, {"attestationTrustDomain": "untrusted"},

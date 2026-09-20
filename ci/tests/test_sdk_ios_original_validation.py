@@ -260,6 +260,9 @@ class SdkIosOriginalValidationTest(unittest.TestCase):
         before = regular_file_inventory(self.template, allow_empty=True)
         with self.context(retained=True) as value:
             self.assertEqual(self.raw, value["receiptBytes"])
+            self.assertEqual(self.package_receipt, value["package"]["receipt"])
+            self.assertEqual(canonical_json_bytes(self.package_receipt), value["package"]["receiptBytes"])
+            self.assertEqual(self.root / "package-stage", value["package"]["stage"])
             self.assertEqual(["package-enter", "binary-enter", "plan", "replay"], self.events)
             self.assertEqual(before, regular_file_inventory(value["capture"], allow_empty=True))
         self.assertEqual(["binary-exit", "package-exit"], self.events[-2:])
