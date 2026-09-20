@@ -198,6 +198,7 @@ def verify_sdk_package_inputs(
     validation_stage_root: Path | None = None, validation_target: str | None = None,
     validation_content_output: Path | None = None,
     apple_verification: dict[str, Any] | None = None,
+    apple_binary_verification: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     """Verify package semantics, original artifacts and the complete source-input plan.
 
@@ -211,13 +212,17 @@ def verify_sdk_package_inputs(
     stage_root = Path(stage_root)
     receipt, original = _receipt(receipt_path)
     instance = _instance(receipt)
-    if apple_verification is not None:
-        from .sdk_maven import _APPLE_VERIFICATION_KEYS
+    if apple_verification is not None and apple_binary_verification is not None:
+        raise ValueError("Apple package verification modes are mutually exclusive")
+    apple_policy = apple_verification if apple_verification is not None else apple_binary_verification
+    if apple_policy is not None:
+        from .sdk_maven import _APPLE_VERIFICATION_KEYS, _APPLE_BINARY_VERIFICATION_KEYS
+        expected_keys = _APPLE_VERIFICATION_KEYS if apple_verification is not None else _APPLE_BINARY_VERIFICATION_KEYS
         if (instance != PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
-                or type(apple_verification) is not dict
-                or set(apple_verification) != _APPLE_VERIFICATION_KEYS):
+                or type(apple_policy) is not dict
+                or set(apple_policy) != expected_keys):
             raise ValueError("Apple package inputs require exact iOS identity and complete caller verification")
-        if Path(apple_verification["repository"]).resolve(strict=True) != repository.resolve(strict=True):
+        if Path(apple_policy["repository"]).resolve(strict=True) != repository.resolve(strict=True):
             raise ValueError("Apple package verification cannot change the caller repository")
     native = instance.component in NATIVE_BINDINGS
     javascript = instance.component == "javascript"
@@ -297,7 +302,7 @@ def verify_sdk_package_inputs(
             ))
             stage_sdk_inputs(captured_request, handoff, request_directory=request_directory)
         arguments = load_sdk_compatibility_request(handoff / REQUEST_NAME)
-        if apple_verification is not None and apple_verification["required_trust_domain"] != arguments["required_trust_domain"]:
+        if apple_policy is not None and apple_policy["required_trust_domain"] != arguments["required_trust_domain"]:
             raise ValueError("Apple package verification cannot change the authenticated trust domain")
         compatibility = load_canonical_json_bytes((handoff / COMPATIBILITY_NAME).read_bytes())
         aggregate = load_canonical_json_bytes(arguments["runtime_manifest"].read_bytes())
@@ -381,14 +386,7 @@ def verify_sdk_package_inputs(
             from .sdk_maven import verify_packaged_sdk_maven_phase, verify_sdk_maven_binary_predecessor
             if binary_contract_evidence.get("expectedTrustDomain") != arguments["required_trust_domain"]:
                 raise ValueError("SDK binary Contract evidence cannot change the required trust domain")
-            apple_options = {"apple_verification": apple_verification} if apple_verification is not None else {}
-            verified, verified_bytes = verify_packaged_sdk_maven_phase(
-                stage, captured_receipt, handoff / REQUEST_NAME, **apple_options,
-            )
-            binary, _ = verify_sdk_maven_binary_predecessor(
-                binary_stage_root, binary_receipt_path, stage, captured_receipt, handoff / COMPATIBILITY_NAME,
-                **apple_options,
-            )
+            binary, binary_bytes = _receipt(binary_receipt_path)
             binary_projection = _contract_projection_from_request(_instance(binary), versions, binary_contract_evidence)
             binary_contract, _ = _receipt(Path(binary_contract_evidence["phaseReceipt"]))
             _verify_plan(repository, binary, versions, [binary_contract], binary_projection)
@@ -397,6 +395,27 @@ def verify_sdk_package_inputs(
                    for record in binary_projection.receipt_value()["componentDigests"]):
                 raise ValueError("SDK binary original Contract components differ from package-selected Contract")
             upstream[_instance(binary)] = binary
+            apple_options = {"apple_verification": apple_verification} if apple_verification is not None else {}
+            if apple_binary_verification is not None:
+                # Authenticate elected package source identity before executing native parsers.
+                _verify_plan(repository, receipt, versions,
+                             [upstream[identity] for identity in phase_instance_dependencies(instance)], projection, native_projections)
+                captured_binary_receipt = root / "sdk-binary-receipt.json"
+                captured_binary_receipt.write_bytes(binary_bytes)
+                apple_options = {"apple_binary_verification": apple_binary_verification,
+                                 "binary_stage_root": binary_stage_root, "binary_receipt_path": captured_binary_receipt}
+            verified, verified_bytes = verify_packaged_sdk_maven_phase(
+                stage, captured_receipt, handoff / REQUEST_NAME, **apple_options,
+            )
+            if apple_binary_verification is None:
+                verified_binary, verified_binary_bytes = verify_sdk_maven_binary_predecessor(
+                    binary_stage_root, binary_receipt_path, stage, captured_receipt, handoff / COMPATIBILITY_NAME,
+                    **apple_options,
+                )
+                if verified_binary != binary or verified_binary_bytes != binary_bytes:
+                    raise ValueError("SDK binary receipt changed during semantic verification")
+            if _receipt(binary_receipt_path)[1] != binary_bytes:
+                raise ValueError("SDK binary receipt changed during semantic verification")
         if verified != receipt or verified_bytes != original:
             raise ValueError("SDK package receipt changed during semantic verification")
         _verify_plan(repository, receipt, versions,

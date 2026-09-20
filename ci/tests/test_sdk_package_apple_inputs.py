@@ -38,6 +38,7 @@ class SdkPackageAppleInputsTest(unittest.TestCase):
             cls.ios_binary / "outputs/maven",
         )
         maven_fixture._write_binary_inventory(cls.ios_binary, component, version)
+        maven_fixture._write_apple_binary(cls.ios_binary)
         cls.ios_package = cls.root / "apple-forwarding/package"
         compatibility = cls.ios_package / "outputs/evidence/sdk-compatibility.json"
         compatibility.parent.mkdir(parents=True)
@@ -58,6 +59,8 @@ class SdkPackageAppleInputsTest(unittest.TestCase):
             roots = {"maven": "outputs/maven", "evidence": "outputs/evidence"}
             if phase == "package":
                 roots["apple"] = "outputs/apple"
+            else:
+                roots["apple-binary"] = "outputs/apple-binary"
             outputs = write_output_manifest(
                 stage, "sdk", component, phase, "ios", version, roots,
             )["outputs"]
@@ -119,6 +122,70 @@ class SdkPackageAppleInputsTest(unittest.TestCase):
             binary_contract_evidence=self.older_evidence,
             apple_verification=self.options if options is _DEFAULT else options,
         )
+
+    def binary_policy(self):
+        return {**{key: value for key, value in self.options.items() if key not in {
+            "validation_evidence_directory", "expected_distribution_proof", "expected_sdk_compatibility",
+        }}, "developer_directory": self.work / "Developer"}
+
+    def verify_binary(self, **changes):
+        return verify_sdk_package_inputs(
+            self.repository, self.ios_package, self.ios_receipt, self.request,
+            binary_stage_root=self.ios_binary, binary_receipt_path=self.ios_binary_receipt,
+            binary_contract_evidence=self.older_evidence,
+            **{"apple_binary_verification": self.binary_policy(), **changes},
+        )
+
+    def test_binary_replay_binds_original_receipts_source_and_compatibility_once(self):
+        from ci.products.sdk_maven import verify_packaged_sdk_maven_phase
+        before = regular_file_inventory(self.root / "apple-forwarding")
+        binary_bytes = self.ios_binary_receipt.read_bytes()
+        def verify_captured(*args, **kwargs):
+            self.assertNotEqual(self.ios_binary_receipt, kwargs["binary_receipt_path"])
+            self.assertEqual(binary_bytes, kwargs["binary_receipt_path"].read_bytes())
+            self.ios_binary_receipt.write_bytes(b"transient replacement\n")
+            try:
+                return verify_packaged_sdk_maven_phase(*args, **kwargs)
+            finally:
+                self.ios_binary_receipt.write_bytes(binary_bytes)
+        def gate(**arguments):
+            self.calls.append(arguments)
+            self.assertEqual(load_canonical_json_bytes(self.ios_receipt.read_bytes())["producer"]["commit"],
+                             arguments["source_revision"])
+            self.assertNotEqual(self.ios_binary / "outputs/apple-binary", arguments["binary_frameworks"])
+            self.assertEqual(regular_file_inventory(self.ios_binary / "outputs/apple-binary"),
+                             regular_file_inventory(arguments["binary_frameworks"]))
+            self.assertEqual(self.chain["compatibility"].read_bytes(), arguments["expected_sdk_compatibility"].read_bytes())
+            self.assertEqual(self.binary_policy(), {key: arguments[key] for key in self.binary_policy()})
+            return regular_file_inventory(arguments["product_directory"])
+        with patch("ci.products.sdk_apple_content.verify_sdk_apple_binary_package_content", side_effect=gate), \
+                patch("ci.products.sdk_maven.verify_packaged_sdk_maven_phase", side_effect=verify_captured):
+            value, raw = self.verify_binary()
+        self.assertEqual(self.ios_receipt.read_bytes(), raw)
+        self.assertEqual(load_canonical_json_bytes(raw), value)
+        self.assertEqual(1, len(self.calls))
+        self.assertEqual(before, regular_file_inventory(self.root / "apple-forwarding"))
+
+    def test_binary_replay_rejects_policy_crosspair_and_source_plan_before_tools(self):
+        with patch("ci.products.sdk_apple_content.verify_sdk_apple_binary_package_content",
+                   side_effect=AssertionError("unverified native replay")):
+            for options in ({}, {**self.binary_policy(), "source_revision": "f" * 40},
+                            {**self.binary_policy(), "binary_frameworks": self.work},
+                            {**self.binary_policy(), "repository": self.work},
+                            {**self.binary_policy(), "required_trust_domain": "release"}):
+                with self.subTest(options=options), self.assertRaises(ValueError):
+                    self.verify_binary(apple_binary_verification=options)
+            with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+                self.verify_binary(apple_verification=self.options)
+            original = self.ios_receipt.read_bytes()
+            changed = load_canonical_json_bytes(original)
+            changed["producer"]["tree"] = "f" * 40
+            self.ios_receipt.write_bytes(canonical_json_bytes(changed))
+            try:
+                with self.assertRaisesRegex(ValueError, "commit|authenticated plan"):
+                    self.verify_binary()
+            finally:
+                self.ios_receipt.write_bytes(original)
 
     def test_signed_plan_forwards_the_same_apple_authority_through_both_real_maven_gates(self):
         before = regular_file_inventory(self.root / "apple-forwarding")
