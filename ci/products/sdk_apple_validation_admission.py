@@ -17,6 +17,36 @@ _PATHS = {
 }
 
 
+def apple_validation_policy_arguments(policy):
+    """Parse caller-owned paths/trust, without selecting or authenticating keys.
+
+    A release attestation may omit its explicit public key: the full handoff
+    must then resolve the signed key identity against the caller's pinned
+    keyring. Development attestations always require an explicit caller key.
+    """
+    policy = require_exact_keys(policy, {*_PATHS, "attestationTrustDomain", "toolingTrustDomain"},
+                                "Apple validation caller policy")
+    for name in ("attestationTrustDomain", "toolingTrustDomain"):
+        if type(policy[name]) is not str or policy[name] not in {"development", "release"}:
+            raise ValueError("Apple admission requires explicit caller trust domains")
+    optional = ("toolingKeyring", "toolingKeysDirectory")
+    if (policy["toolingTrustDomain"] == "release" and any(policy[name] is None for name in optional)
+            or policy["toolingTrustDomain"] == "development" and any(policy[name] is not None for name in optional)):
+        raise ValueError("Apple tooling trust requires the exact caller keyring pair")
+    arguments = {}
+    for field, name in _PATHS.items():
+        if policy[field] is None and (field in optional or
+                (field == "attestationPublicKey" and policy["attestationTrustDomain"] == "release")):
+            arguments[name] = None
+            continue
+        path = Path(require_string(policy[field], f"Apple caller {field}"))
+        if not path.is_absolute():
+            raise ValueError("Apple caller policy paths must be absolute")
+        arguments[name] = path
+    return {**arguments, "attestation_trust_domain": policy["attestationTrustDomain"],
+            "required_trust_domain": policy["toolingTrustDomain"]}
+
+
 class AppleValidationAdmission:
     """Run signature AND original semantic replay without caching acceptance.
 
@@ -28,30 +58,11 @@ class AppleValidationAdmission:
     def __init__(self, root, records, *, repository, policy_revision, policy):
         if type(policy_revision) is not str or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", policy_revision) is None:
             raise ValueError("Apple admission requires an exact caller policy revision")
-        policy = require_exact_keys(policy, {*_PATHS, "attestationTrustDomain", "toolingTrustDomain"},
-                                    "Apple validation caller policy")
-        for name in ("attestationTrustDomain", "toolingTrustDomain"):
-            if type(policy[name]) is not str or policy[name] not in {"development", "release"}:
-                raise ValueError("Apple admission requires explicit caller trust domains")
-        optional = ("toolingKeyring", "toolingKeysDirectory")
-        if (policy["toolingTrustDomain"] == "release" and any(policy[name] is None for name in optional)
-                or policy["toolingTrustDomain"] == "development" and any(policy[name] is not None for name in optional)):
-            raise ValueError("Apple tooling trust requires the exact caller keyring pair")
-        arguments = {}
-        for field, name in _PATHS.items():
-            if field in optional and policy[field] is None:
-                arguments[name] = None
-                continue
-            path = Path(require_string(policy[field], f"Apple caller {field}"))
-            if not path.is_absolute():
-                raise ValueError("Apple caller policy paths must be absolute")
-            arguments[name] = path
+        arguments = apple_validation_policy_arguments(policy)
         self._root = Path(root).absolute()
         self._records = {record["receiptSha256"]: record for record in
                          rebase_sdk_apple_validation_records(records, self._root, self._root)}
-        self._arguments = {**arguments, "repository_root": Path(repository), "policy_revision": policy_revision,
-            "attestation_trust_domain": policy["attestationTrustDomain"],
-            "required_trust_domain": policy["toolingTrustDomain"]}
+        self._arguments = {**arguments, "repository_root": Path(repository), "policy_revision": policy_revision}
 
     def verify(self, envelope):
         # Local import preserves the existing envelope validator without an

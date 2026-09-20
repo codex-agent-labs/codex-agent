@@ -142,6 +142,39 @@ class AppleValidationAdmissionTest(unittest.TestCase):
         with patch.object(admission, "verified_apple_validation_handoff", side_effect=handoff):
             self.assertIsNone(gate.verify(self.envelope))
 
+    def test_release_null_attestation_key_uses_shared_parser_and_forwards_pinned_keyring(self):
+        policy = {**self.policy, "attestationTrustDomain": "release", "attestationPublicKey": None}
+        parsed = admission.apple_validation_policy_arguments(policy)
+        self.assertIsNone(parsed["attestation_public_key"])
+        self.assertEqual("release", parsed["attestation_trust_domain"])
+        self.assertEqual(Path(policy["keyring"]), parsed["keyring"])
+        self.assertEqual(Path(policy["keysDirectory"]), parsed["keys_directory"])
+        with patch.object(admission, "apple_validation_policy_arguments", wraps=admission.apple_validation_policy_arguments) as parser:
+            gate = self.make(policy=policy)
+            parser.assert_called_once_with(policy)
+
+        @contextmanager
+        def handoff(*args, **kwargs):
+            self.assertEqual(parsed, {name: kwargs[name] for name in parsed})
+            yield {"receiptBytes": self.raw, "receipt": copy.deepcopy(self.receipt)}
+
+        with patch.object(admission, "verified_apple_validation_handoff", side_effect=handoff):
+            self.assertIsNone(gate.verify(self.envelope))
+
+    def test_shared_parser_rejects_development_null_key_and_incomplete_or_cross_domain_policy(self):
+        for change in ({"attestationPublicKey": None}, {"attestationTrustDomain": "other"},
+                       {"attestationTrustDomain": "release", "attestationPublicKey": None, "keyring": None},
+                       {"attestationTrustDomain": "release", "attestationPublicKey": None, "keysDirectory": None},
+                       {"toolingTrustDomain": "release", "toolingKeysDirectory": None},
+                       {"toolingTrustDomain": "development", "toolingKeyring": None},
+                       {"plan": "relative/plan"}, {"extra": True}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                admission.apple_validation_policy_arguments({**self.policy, **change})
+        missing = dict(self.policy)
+        missing.pop("attestationPublicKey")
+        with self.assertRaises(ValueError):
+            admission.apple_validation_policy_arguments(missing)
+
 
 if __name__ == "__main__":
     unittest.main()

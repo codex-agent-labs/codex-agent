@@ -191,6 +191,97 @@ class AppleValidationAttestationTest(unittest.TestCase):
             with binding.verified_apple_validation_handoff(evidence, **arguments):
                 self.fail("signature substituted for full replay")
 
+    def release_bindings(self):
+        current_key, current_public, current_signing = generate_development_key(self.root / "current-key")
+        keys = self.root / "mixed-release-keys"
+        keys.mkdir()
+        bindings = []
+        for name, private, public, signing in (
+            ("current", current_key, current_public, current_signing),
+            ("previous", self.key, self.public, self.signing),
+        ):
+            release = {**signing, "trustDomain": "release", "keyId": name}
+            (keys / f"{name}.pub").write_bytes(public.read_bytes())
+            directory = self.root / f"binding-{name}"
+            directory.mkdir()
+            manifest = directory / binding.ATTESTATION_NAME
+            write_canonical_json(manifest, binding.derive_apple_validation_attestation(self.capture, self.raw, release))
+            signature = sign_manifest(manifest, private, release)
+            bindings.append((release, public, manifest, signature))
+        ring = self.root / "mixed-keyring.json"
+        record = lambda signing: {name: signing[name] for name in ("keyId", "fingerprint")}
+        write_canonical_json(ring, {"schemaVersion": 1, "namespace": self.signing["namespace"],
+            "algorithm": self.signing["algorithm"], "trustDomain": "release",
+            "activeKey": record(bindings[0][0]), "retiredKeys": [record(bindings[1][0])]})
+        return ring, keys, bindings
+
+    def test_release_selects_mixed_active_and_retired_signatures_from_one_pinned_policy(self):
+        before = regular_file_inventory(self.capture)
+        ring, keys, bindings = self.release_bindings()
+        policy_before = (ring.read_bytes(), regular_file_inventory(keys))
+        for signing, public, manifest, signature in bindings:
+            raw_manifest, raw_signature = manifest.read_bytes(), signature.read_bytes()
+            for explicit in (False, True):
+                with self.subTest(key=signing["keyId"], explicit=explicit):
+                    with binding.verified_apple_validation_attestation(self.capture, self.receipt, manifest, signature,
+                            public_key=public if explicit else None, required_trust_domain="release",
+                            keyring=ring, keys_directory=keys) as verified:
+                        self.assertEqual(signing, verified["attestation"]["signing"])
+                        self.assertEqual(self.raw, verified["receiptBytes"])
+                        self.assertEqual(raw_manifest, verified["attestationBytes"])
+                        self.assertEqual(raw_signature, verified["signatureBytes"])
+                        self.assertEqual(public.read_bytes(), (verified["capture"].parent / "public-key").read_bytes())
+                    self.assertEqual(before, regular_file_inventory(self.capture))
+                    self.assertEqual(raw_manifest, manifest.read_bytes())
+                    self.assertEqual(raw_signature, signature.read_bytes())
+        self.assertEqual(policy_before, (ring.read_bytes(), regular_file_inventory(keys)))
+
+    def test_missing_development_key_unpinned_release_and_wrong_explicit_key_reject(self):
+        with self.assertRaisesRegex(ValueError, "explicit caller public key"):
+            with self.context(public_key=None):
+                self.fail("development selected a key from evidence")
+        ring, keys, bindings = self.release_bindings()
+        _, _, manifest, signature = bindings[1]
+        for policy in ({}, {"keyring": ring}, {"keys_directory": keys}):
+            with self.subTest(policy=policy), self.assertRaisesRegex(ValueError, "caller-pinned key policy"):
+                with binding.verified_apple_validation_attestation(self.capture, self.receipt, manifest, signature,
+                        public_key=None, required_trust_domain="release", **policy):
+                    self.fail("release key selection lacked caller policy")
+        with self.assertRaisesRegex(ValueError, "differs from caller release policy"):
+            with binding.verified_apple_validation_attestation(self.capture, self.receipt, manifest, signature,
+                    public_key=bindings[0][1], required_trust_domain="release", keyring=ring, keys_directory=keys):
+                self.fail("explicit current key substituted for original retired signer")
+        policy = load_canonical_json_bytes(ring.read_bytes())
+        write_canonical_json(ring, {**policy, "retiredKeys": []})
+        with self.assertRaisesRegex(ValueError, "allowed release key"):
+            with binding.verified_apple_validation_attestation(self.capture, self.receipt, manifest, signature,
+                    public_key=None, required_trust_domain="release", keyring=ring, keys_directory=keys):
+                self.fail("unlisted original signer was accepted")
+
+    def test_inferred_release_key_and_ring_remain_immutable_during_copy_and_yield(self):
+        ring, keys, bindings = self.release_bindings()
+        _, _, manifest, signature = bindings[1]
+        selected_key = keys / "previous.pub"
+        original_ring, original_key = ring.read_bytes(), selected_key.read_bytes()
+        copy = binding.snapshot_regular_tree
+        for mutation in ("key-copy", "ring-copy", "key-yield", "private-key-yield"):
+            def snapshot(*args, **kwargs):
+                copy(*args, **kwargs)
+                if mutation.endswith("copy"):
+                    (ring if mutation == "ring-copy" else selected_key).write_bytes(b"changed during capture")
+            try:
+                with self.subTest(mutation=mutation), patch.object(binding, "snapshot_regular_tree", side_effect=snapshot), \
+                        self.assertRaisesRegex(ValueError, "changed during use"):
+                    with binding.verified_apple_validation_attestation(self.capture, self.receipt, manifest, signature,
+                            public_key=None, required_trust_domain="release", keyring=ring, keys_directory=keys) as verified:
+                        if mutation == "key-yield":
+                            selected_key.write_bytes(b"changed caller key")
+                        elif mutation == "private-key-yield":
+                            (verified["capture"].parent / "public-key").write_bytes(b"changed selected key snapshot")
+            finally:
+                ring.write_bytes(original_ring)
+                selected_key.write_bytes(original_key)
+
 
 if __name__ == "__main__":
     unittest.main()

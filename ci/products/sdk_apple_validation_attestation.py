@@ -75,7 +75,8 @@ def verified_apple_validation_attestation(capture, receipt_path, attestation, si
 
     Development keys must be explicitly pinned by the caller's independently
     authenticated original-upload/local policy. A key from this evidence is not
-    a trust root. Release mode additionally requires the caller's tracked keyring.
+    a trust root. Release mode requires the caller's tracked keyring and may
+    select its exact signed key identity when public_key is None.
     Successful signature verification alone never proves compiler/host behavior.
     """
     if required_trust_domain not in {"development", "release"}:
@@ -83,9 +84,13 @@ def verified_apple_validation_attestation(capture, receipt_path, attestation, si
     if (required_trust_domain == "release" and (keyring is None or keys_directory is None)
             or required_trust_domain == "development" and (keyring is not None or keys_directory is not None)):
         raise ValueError("Apple attestation trust requires exact caller-pinned key policy")
+    if required_trust_domain == "development" and public_key is None:
+        raise ValueError("Development Apple attestation requires an explicit caller public key")
     capture = Path(capture)
     files = {"receipt": Path(receipt_path), "attestation": Path(attestation),
-             "signature": Path(signature), "public-key": Path(public_key)}
+             "signature": Path(signature)}
+    if public_key is not None:
+        files["public-key"] = Path(public_key)
     if files["attestation"].name != ATTESTATION_NAME or files["signature"].name != SIGNATURE_NAME:
         raise ValueError("Apple validation attestation filenames are not canonical")
     # Signatures must never become part of the capture whose digest they bind.
@@ -106,8 +111,10 @@ def verified_apple_validation_attestation(capture, receipt_path, attestation, si
             trusted = public_key_for_metadata(signing,
                 load_keyring(root / "policy/product-signing-keys.json", root / "policy/keys"),
                 root / "policy/keys", allow_retired=True)
-            if read_regular_file_bytes(trusted, reject_symlink_parents=True) != originals["public-key"]:
+            selected_public = read_regular_file_bytes(trusted, reject_symlink_parents=True)
+            if public_key is not None and selected_public != originals["public-key"]:
                 raise ValueError("Apple attestation public key differs from caller release policy")
+            originals["public-key"] = selected_public
         snapshot_regular_tree(capture, captured, allow_empty=True)
         snapshots = {}
         for name, raw in originals.items():

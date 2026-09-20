@@ -16,12 +16,13 @@ from product_reuse import (
 )
 from runtime_aggregate_release import _destination
 from products.inventory import (
-    load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
+    canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
     regular_file_inventory, require_exact_keys, require_sha256, require_string, sha256_bytes, snapshot_regular_tree,
     write_canonical_json,
 )
 from products.registry import NATIVE_TARGETS
 from products.signing_isolation import require_no_signing_secret
+from products.sdk_apple_validation_admission import apple_validation_policy_arguments
 
 
 def prepare_runtime_signing_inputs(
@@ -31,6 +32,7 @@ def prepare_runtime_signing_inputs(
     transport_producer: Mapping[str, Any], event_payload: dict[str, Any],
     environment: Mapping[str, str], token: str,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    sdk_apple_validation_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Capture/elect originals without access to the product signing secret.
 
@@ -57,16 +59,25 @@ def prepare_runtime_signing_inputs(
                              for name in path_names)
         if any(not path.is_absolute() for path in tooling_paths):
             raise ValueError("Caller SDK tooling paths must be absolute")
+    apple_paths, apple_bytes = (), None
+    if sdk_apple_validation_policy is not None:
+        apple_arguments = apple_validation_policy_arguments(sdk_apple_validation_policy)
+        if apple_arguments["required_trust_domain"] != "release":
+            raise ValueError("Runtime signing preparation requires release Apple tooling trust")
+        apple_paths = tuple(value for value in apple_arguments.values() if isinstance(value, Path))
+        apple_bytes = canonical_json_bytes(sdk_apple_validation_policy)
     trusted, producer, _, _, _ = verify_product_release_context(
         repository_root, trusted_source_sha=trusted_source_sha, trusted_workflow_sha=trusted_workflow_sha,
         transport_producer=transport_producer, event_payload=event_payload, environment=environment)
     candidate = Path(candidate_root).resolve(strict=True)
     if trusted == candidate or trusted in candidate.parents or candidate in trusted.parents:
         raise ValueError("Runtime preparation requires separate trusted and candidate checkouts")
-    protected = (trusted, candidate, Path(plan_path), *tooling_paths)
+    protected = (trusted, candidate, Path(plan_path), *tooling_paths, *apple_paths)
     output = _destination(destination, protected)
     plan_bytes = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
+    if apple_bytes is not None:
+        tooling["sdk_apple_validation_policy"] = load_canonical_json_bytes(apple_bytes)
     with tempfile.TemporaryDirectory(prefix="runtime-signing-inputs-", dir=candidate) as temporary:
         root = Path(temporary).resolve()
         capture = root / "capture"
@@ -77,6 +88,10 @@ def prepare_runtime_signing_inputs(
 
         def unchanged():
             require_no_signing_secret(environment)
+            if apple_bytes is not None and (
+                    canonical_json_bytes(sdk_apple_validation_policy) != apple_bytes
+                    or canonical_json_bytes(tooling["sdk_apple_validation_policy"]) != apple_bytes):
+                raise ValueError("Runtime preparation caller Apple policy changed during use")
             if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024,
                     reject_symlink_parents=True) != plan_bytes
                     or any(regular_file_inventory(path, allow_empty=True) != inventory

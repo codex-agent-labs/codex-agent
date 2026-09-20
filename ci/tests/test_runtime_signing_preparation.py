@@ -49,6 +49,16 @@ class RuntimeSigningPreparationTest(unittest.TestCase):
             path = self.root / "tooling" / name
             self.write(path, b"caller original tooling\n")
             self.tooling[name] = str(path)
+        self.apple_policy = {"plan": str(self.plan), "attestationTrustDomain": "release",
+                             "attestationPublicKey": None, "toolingTrustDomain": "release"}
+        for name in ("keyring", "keysDirectory", "toolingEvidence", "toolingPublicKey", "javaExecutable",
+                     "toolingKeyring", "toolingKeysDirectory"):
+            path = self.root / "apple-policy" / name
+            if name in ("keysDirectory", "toolingEvidence", "toolingKeysDirectory"):
+                self.write(path / "original", b"caller Apple policy input\n")
+            else:
+                self.write(path, b"caller Apple policy input\n")
+            self.apple_policy[name] = str(path)
 
     def mock(self, name, **kwargs):
         mocked = patch.object(preparation, name, **kwargs)
@@ -122,6 +132,8 @@ class RuntimeSigningPreparationTest(unittest.TestCase):
                     self.assertEqual(b"", (destination / "selected-inputs/predecessors/empty-stderr.log").read_bytes())
                     self.assertEqual(b"original selected receipt\n", (destination / "selected-inputs/predecessors/phase-receipt.json").read_bytes())
                     self.assertNotIn("sdk_validation_tooling", self.capture.call_args.kwargs)
+                    self.assertNotIn("sdk_apple_validation_policy", self.capture.call_args.kwargs)
+                    self.assertNotIn("sdk_apple_validation_policy", self.selector.call_args.kwargs)
                     if supplied:
                         self.assertIs(self.tooling, self.selector.call_args.kwargs["sdk_validation_tooling"])
                     else:
@@ -143,6 +155,87 @@ class RuntimeSigningPreparationTest(unittest.TestCase):
         self.invoke(target="aggregate", state_wave=0)
         self.assertFalse((self.root / "output/release-handoff").exists())
         self.assertEqual(self.capture_root / "original/product-resume-state", self.aggregate.call_args.args[2])
+
+    def test_apple_policy_native_and_aggregate_replay_receive_copy_never_serialized_authority(self):
+        original = deepcopy(self.apple_policy)
+        raw = canonical_json_bytes(original)
+        for target in ("linux-x64", "aggregate"):
+            destination = self.root / f"apple-{target}"
+            self.selector.reset_mock()
+            self.aggregate.reset_mock()
+            result = self.invoke(destination, target=target, sdk_apple_validation_policy=self.apple_policy)
+            forwarded = self.selector.call_args.kwargs["sdk_apple_validation_policy"]
+            self.assertEqual(original, forwarded)
+            self.assertIsNot(self.apple_policy, forwarded)
+            self.assertNotIn("sdk_apple_validation_policy", self.capture.call_args.kwargs)
+            if target == "aggregate":
+                self.assertEqual(original, self.aggregate.call_args.kwargs["sdk_apple_validation_policy"])
+                self.assertIsNot(self.apple_policy, self.aggregate.call_args.kwargs["sdk_apple_validation_policy"])
+            self.assertEqual(original, self.apple_policy)
+            self.assertNotIn("sdk_apple_validation_policy", result)
+            for row in regular_file_inventory(destination, allow_empty=True):
+                payload = (destination / row["relativePath"]).read_bytes()
+                self.assertNotIn(raw, payload)
+                self.assertNotIn(b"sdkAppleValidationPolicy", payload)
+                self.assertNotIn(str(self.root / "apple-policy").encode(), payload)
+
+    def test_malformed_or_development_apple_tooling_rejects_before_context(self):
+        invalid = ([], {}, {**self.apple_policy, "extra": True},
+                   {**self.apple_policy, "plan": "relative/plan"},
+                   {**self.apple_policy, "attestationTrustDomain": "development"},
+                   {**self.apple_policy, "toolingKeyring": None},
+                   {**self.apple_policy, "toolingTrustDomain": "development",
+                    "toolingKeyring": None, "toolingKeysDirectory": None})
+        for policy in invalid:
+            with self.subTest(policy=policy), self.assertRaises(ValueError):
+                self.invoke(sdk_apple_validation_policy=policy)
+            self.context.assert_not_called()
+            self.capture.assert_not_called()
+            self.selector.assert_not_called()
+        self.assertFalse((self.root / "output").exists())
+
+    def test_apple_policy_output_overlap_rejects_without_changing_inputs(self):
+        before = regular_file_inventory(self.root / "apple-policy", allow_empty=True)
+        destinations = (Path(self.apple_policy["keyring"]),
+                        Path(self.apple_policy["toolingEvidence"]) / "output",
+                        Path(self.apple_policy["keysDirectory"]) / "output",
+                        Path(self.apple_policy["toolingKeysDirectory"]) / "output")
+        for destination in destinations:
+            with self.subTest(destination=destination), self.assertRaises(ValueError):
+                self.invoke(destination, sdk_apple_validation_policy=self.apple_policy)
+            self.capture.assert_not_called()
+            self.selector.assert_not_called()
+        self.assertEqual(before, regular_file_inventory(self.root / "apple-policy", allow_empty=True))
+
+    def test_caller_apple_policy_mutation_during_selection_or_aggregate_replay_prevents_publication(self):
+        original = deepcopy(self.apple_policy)
+        for boundary in ("selection", "aggregate", "selection-copy", "aggregate-copy"):
+            self.apple_policy = deepcopy(original)
+            destination = self.root / f"apple-mutated-{boundary}"
+
+            def select(*args, **kwargs):
+                self.assertIsNot(self.apple_policy, kwargs["sdk_apple_validation_policy"])
+                value = self.select(*args, **kwargs)
+                if boundary == "selection":
+                    self.apple_policy["toolingPublicKey"] = str(self.root / "changed.pub")
+                elif boundary == "selection-copy":
+                    kwargs["sdk_apple_validation_policy"]["toolingPublicKey"] = str(self.root / "changed.pub")
+                return value
+
+            def retain(*args, **kwargs):
+                self.assertIsNot(self.apple_policy, kwargs["sdk_apple_validation_policy"])
+                value = self.retain(*args, **kwargs)
+                if boundary == "aggregate":
+                    self.apple_policy["attestationTrustDomain"] = "development"
+                elif boundary == "aggregate-copy":
+                    kwargs["sdk_apple_validation_policy"]["attestationTrustDomain"] = "development"
+                return value
+
+            self.selector.side_effect = select
+            self.aggregate.side_effect = retain
+            with self.subTest(boundary=boundary), self.assertRaisesRegex(ValueError, "Apple policy changed"):
+                self.invoke(destination, target="aggregate", sdk_apple_validation_policy=self.apple_policy)
+            self.assertFalse(destination.exists())
 
     def test_secret_presence_even_empty_rejects_before_context_or_replay(self):
         for global_environment in (False, True):

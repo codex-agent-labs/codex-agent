@@ -258,6 +258,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--state-wave", type=int, choices=range(6), required=True)
     parser.add_argument("--release-handoff", type=Path, action="append", default=[])
     parser.add_argument("--sdk-validation-tooling", type=Path)
+    parser.add_argument("--sdk-apple-validation-policy", type=Path)
     parser.add_argument("--prepare-only", action="store_true",
                         help="Materialize original signing inputs on a non-secret runner; never sign")
     parser.add_argument("--preparation-artifact-id", type=int)
@@ -270,6 +271,8 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("prepared release and preparation-only modes are mutually exclusive")
     if prepared_mode and args.sdk_validation_tooling is not None:
         parser.error("prepared release does not accept SDK tooling")
+    if args.sdk_apple_validation_policy is not None and not args.prepare_only:
+        parser.error("Apple validation policy is accepted only by non-secret preparation")
     if prepared_mode and args.release_handoff:
         parser.error("prepared release does not accept release handoff overrides")
     if args.prepare_only:
@@ -303,6 +306,11 @@ def main(argv: list[str] | None = None) -> None:
     if args.sdk_validation_tooling is not None:
         from product_reuse import _canonical_control
         tooling = _canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")
+    apple = {}
+    if args.sdk_apple_validation_policy is not None:
+        from product_reuse import _canonical_control
+        apple["sdk_apple_validation_policy"] = _canonical_control(
+            args.sdk_apple_validation_policy, "Caller Apple validation policy")
     if prepared_mode:
         from runtime_prepared_release import attest_prepared_runtime_ci
         caller = attest_prepared_runtime_ci
@@ -331,7 +339,7 @@ def main(argv: list[str] | None = None) -> None:
         trusted_source_sha=args.trusted_source_sha, trusted_workflow_sha=args.trusted_workflow_sha,
         transport_producer=producer, event_payload=event_payload, environment=os.environ,
         token=os.environ.get("GITHUB_TOKEN"),
-        **({} if prepared_mode else {"sdk_validation_tooling": tooling}))
+        **({} if prepared_mode else {"sdk_validation_tooling": tooling}), **apple)
 
 
 if __name__ == "__main__":
