@@ -175,7 +175,8 @@ class RuntimeCollectionScopeTest(unittest.TestCase):
             "continuationRequirements": [],
         }
 
-        def plan(_request, _tooling, build_plan_consumer=None):
+        def plan(_request, _tooling, *, apple_policy=None, build_plan_consumer=None):
+            self.assertIsNone(apple_policy)
             if build_plan_consumer is not None:
                 for instance in self.instances:
                     if instance not in retained:

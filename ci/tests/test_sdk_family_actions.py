@@ -14,7 +14,14 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FAMILIES = ("native-package", "ios-package", "javascript-metadata")
+FAMILY_WAVES = {
+    "native-package": 4,
+    "ios-package": 5,
+    "javascript-metadata": 6,
+    "native-validation": 7,
+    "native-metadata": 8,
+    "ios-validation": 9,
+}
 
 
 class SdkFamilyActionsTest(unittest.TestCase):
@@ -47,7 +54,7 @@ class SdkFamilyActionsTest(unittest.TestCase):
                 "TRUSTED_WORKFLOW_SHA": "b" * 40, "STATE_WAVE": "0", "STATE_PRODUCT": "runtime",
                 "SDK_STATE_WAVE": "", "SDK_FAMILY": "", "COMPONENT": "", "PHASE": "", "TARGET": "",
                 "BUILD_KEY": "", "PRODUCT": "runtime", "INPUT_ROOT": "/original input/with spaces",
-                "WAVE": "1", **changes,
+                "WAVE": "1", "SDK_APPLE_VALIDATION_POLICY": "", **changes,
             }
             result = subprocess.run([self.shell, "--noprofile", "--norc", "-c", script], cwd=root,
                                     env=environment, capture_output=True, text=True, check=False)
@@ -72,12 +79,14 @@ class SdkFamilyActionsTest(unittest.TestCase):
             "--wave", wave, *selected, "--trusted-workflow-sha", "b" * 40, "--github-output", output]
 
     def test_capture_routes_each_family_with_exact_original_sdk_state_arguments(self):
-        for family in FAMILIES:
-            with self.subTest(family=family):
+        for family, wave in FAMILY_WAVES.items():
+            predecessor = str(wave - 1)
+            with self.subTest(family=family, predecessor=predecessor):
                 result, args, token, output = self.run_action("capture", STATE_PRODUCT="sdk",
-                    SDK_FAMILY=family, SDK_STATE_WAVE="3")
+                    SDK_FAMILY=family, SDK_STATE_WAVE=predecessor)
                 self.assertEqual(0, result.returncode, result.stderr)
-                self.assertEqual(self.capture_arguments(output, ["--sdk-state-wave", "3", "--family", family], sdk=True), args)
+                self.assertEqual(self.capture_arguments(output,
+                    ["--sdk-state-wave", predecessor, "--family", family], sdk=True), args)
                 self.assertEqual("synthetic environment-only token", token)
                 self.assertNotIn("--token", args)
 
@@ -112,7 +121,7 @@ class SdkFamilyActionsTest(unittest.TestCase):
 
     def test_collect_routes_exact_family_and_preserves_legacy_scopes(self):
         cases = [({"PRODUCT": "sdk", "SDK_FAMILY": family, "WAVE": str(wave)}, True,
-                  ["--family", family], str(wave)) for family, wave in zip(FAMILIES, (4, 5, 6), strict=True)]
+                  ["--family", family], str(wave)) for family, wave in FAMILY_WAVES.items()]
         cases += [({}, False, ["--state-wave", "0"], "1"),
                   ({"STATE_WAVE": "3", "WAVE": "4"}, False, ["--state-wave", "3"], "4"),
                   ({"PRODUCT": "sdk"}, True, [], "1"),

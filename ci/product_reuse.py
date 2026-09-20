@@ -2769,7 +2769,7 @@ def _sdk_ios_binary_worker_instance(instance):
     return instance == PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
 
 
-SDK_WORKER_FAMILIES = ("native-package", "ios-package", "javascript-metadata", "native-validation", "native-metadata")
+SDK_WORKER_FAMILIES = ("native-package", "ios-package", "javascript-metadata", "native-validation", "native-metadata", "ios-validation")
 
 
 def _sdk_family_worker_instance(instance, family):
@@ -2782,6 +2782,9 @@ def _sdk_family_worker_instance(instance, family):
                             for language in NATIVE_BINDINGS for target in NATIVE_TARGETS}
     if family == "native-metadata":
         return instance in {PhaseInstanceId("sdk", language, "metadata", "desktop") for language in NATIVE_BINDINGS}
+    if family == "ios-validation":
+        return instance in {PhaseInstanceId("sdk", "sdk-ios", "validation", target)
+                            for target in ("ios-arm64", "ios-simulator-arm64")}
     return instance == (PhaseInstanceId("sdk", "sdk-ios", "package", "ios") if family == "ios-package"
                         else PhaseInstanceId("sdk", "javascript", "metadata", "node"))
 
@@ -3756,6 +3759,10 @@ def collect_runtime_workers(
         name = f"product-validation / {product}-{instance.component}-{instance.phase}-{instance.target}"
         if any(job.get("name") == name and job.get("status") != "completed" for job in jobs):
             raise ValueError("An elected Runtime worker is still running; collect after all siblings finish")
+        if sdk_family == "ios-validation":
+            signer = f"product-validation / sdk-apple-validation-attestation-{instance.target}"
+            if any(job.get("name") == signer and job.get("status") != "completed" for job in jobs):
+                raise ValueError("An elected Apple signer is still running; collect after all siblings finish")
     _prepare_destination(destination, root).rmdir()
     with tempfile.TemporaryDirectory(prefix="codex-agent-runtime-collection-", dir=root) as temporary:
         prepared = Path(temporary).resolve() / "collection"
@@ -3822,6 +3829,42 @@ def collect_runtime_workers(
                     if verify_phase_shard(original / "shard", instance) != verified:
                         raise ValueError("SDK validation original shard changed during evidence admission")
                     row["sdkValidationEvidenceDirectory"] = authenticated.relative_to(prepared).as_posix()
+                if sdk_family == "ios-validation":
+                    from sdk_apple_attestation_capture import capture_apple_validation_attestation
+                    from products.sdk_apple_validation_admission import stage_collected_apple_validation
+
+                    if sdk_apple_validation_policy is None:
+                        raise ValueError("Apple collection requires independent caller admission policy")
+                    signer_job = f"product-validation / sdk-apple-validation-attestation-{instance.target}"
+                    signer_jobs = [item for item in jobs if item.get("name") == signer_job]
+                    if (len(signer_jobs) != 1 or signer_jobs[0].get("conclusion") != "success"
+                            or signer_jobs[0].get("run_id") != producer["runId"]
+                            or signer_jobs[0].get("head_sha") != observed[0]["run"]["head_sha"]):
+                        raise ValueError("Apple signer job is missing, ambiguous or unsuccessful")
+                    signer_name = (f"codex-agent-sdk-apple-validation-evidence-{instance.target}-"
+                        f"{verified['receiptSha256'].removeprefix('sha256:')}-{producer['tree']}-"
+                        f"attempt-{producer['runAttempt']}")
+                    signer_artifacts = [item for item in artifacts if isinstance(item, dict)
+                                        and item.get("name") == signer_name]
+                    if len(signer_artifacts) != 1:
+                        raise ValueError("Apple signer upload is missing or ambiguous")
+                    signed = signer_artifacts[0]
+                    signed_capture = retained / "apple-attestation-upload"
+                    capture_apple_validation_attestation(plan_path, signed_capture,
+                        target=instance.target, expected_receipt_sha256=verified["receiptSha256"],
+                        artifact_id=signed.get("id"), artifact_sha256=signed.get("digest"),
+                        trusted_workflow_sha=trusted_workflow_sha, repository_root=root,
+                        environ=environment, token=token)
+                    signed_inventory = regular_file_inventory(signed_capture, allow_empty=True)
+                    authenticated = retained / "sdk-apple-validation-evidence"
+                    stage_collected_apple_validation(original / "shard",
+                        signed_capture / "original/sdk-apple-validation-evidence", authenticated,
+                        target=instance.target, repository=root, policy_revision=state.plan["validationCommit"],
+                        policy=sdk_apple_validation_policy)
+                    if (verify_phase_shard(original / "shard", instance) != verified
+                            or regular_file_inventory(signed_capture, allow_empty=True) != signed_inventory):
+                        raise ValueError("Apple original shard or signer evidence changed during collection")
+                    row["sdkAppleValidationEvidenceDirectory"] = authenticated.relative_to(prepared).as_posix()
                 row.update(result="success", reason="verified-original-shard",
                            shardDirectory=(original / "shard").relative_to(prepared).as_posix())
             except (ValueError, OSError) as error:
@@ -4309,8 +4352,8 @@ def capture_runtime_resume_upload(
     if type(state_wave) is not int or not 0 <= state_wave <= 5:
         raise ValueError("Runtime state wave must be an integer from zero through five")
     if sdk_state_wave is not None and (type(sdk_state_wave) is not int
-            or sdk_state_wave not in (1, 2, 3, 4, 5, 6, 7, 8) or state_wave != 0):
-        raise ValueError("SDK state wave must be one through eight, without a Runtime state wave")
+            or sdk_state_wave not in (1, 2, 3, 4, 5, 6, 7, 8, 9) or state_wave != 0):
+        raise ValueError("SDK state wave must be one through nine, without a Runtime state wave")
     require_sha256(artifact_sha256, "Runtime resume artifact digest")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     if destination.exists() or destination.is_symlink():

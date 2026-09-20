@@ -17,7 +17,8 @@ from reuse import github_output
 
 
 def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
-                           repository_root=None, environ=None, sdk_validation_tooling=None):
+                           repository_root=None, environ=None, sdk_validation_tooling=None,
+                           sdk_apple_validation_policy=None):
     """Check the full replayed SDK closure, not a family matrix or new election.
 
     Existing inspection authenticates the exact result schema, requested closure,
@@ -28,7 +29,9 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
     """
     inspected = products.inspect_products(plan_path, discovery_root, state_root,
         repository_root=repository_root, environ=environ,
-        **({"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}))
+        **({"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}),
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy}
+           if sdk_apple_validation_policy is not None else {}))
     result = require_exact_keys(require_object(inspected, "SDK completion inspection").get("result"),
                                 products._REUSE_RESULT_KEYS, "SDK completion replay result")
     if (require_integer(result["schemaVersion"], "SDK completion result schema", 1) != 1
@@ -61,14 +64,16 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "discovery-root", "repository-root"):
         parser.add_argument("--" + name, type=Path, required=True)
-    for name in ("state-root", "sdk-validation-tooling", "github-output"):
+    for name in ("state-root", "sdk-validation-tooling", "sdk-apple-validation-policy", "github-output"):
         parser.add_argument("--" + name, type=Path)
     args = parser.parse_args(argv)
     try:
         tooling = {} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
             products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")}
+        apple = {} if args.sdk_apple_validation_policy is None else {"sdk_apple_validation_policy":
+            products._canonical_control(args.sdk_apple_validation_policy, "Caller Apple validation policy")}
         result = require_sdk_completion(args.plan, args.discovery_root, args.state_root,
-            repository_root=args.repository_root, environ=os.environ, **tooling)
+            repository_root=args.repository_root, environ=os.environ, **tooling, **apple)
         if args.github_output is None:
             print(canonical_json_bytes(result).decode().strip())
         else:

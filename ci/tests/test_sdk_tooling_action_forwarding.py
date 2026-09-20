@@ -48,7 +48,7 @@ class SdkToolingActionForwardingTest(unittest.TestCase):
         before_collect = self.harness.collect.split("    - id: collect", 1)[0]
         self.assertIn("sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}", before_collect)
 
-    def test_runtime_and_mixed_or_unknown_sdk_controls_reject_before_python(self):
+    def test_runtime_policy_forwarding_and_invalid_sdk_scope_rejection(self):
         cases = (
             ("capture", {"STATE_PRODUCT": "runtime", "SDK_VALIDATION_TOOLING": self.tooling}),
             ("capture", {"STATE_PRODUCT": "sdk", "SDK_FAMILY": "unknown",
@@ -63,10 +63,19 @@ class SdkToolingActionForwardingTest(unittest.TestCase):
         )
         for action, environment in cases:
             with self.subTest(action=action, environment=environment):
-                result, args, token, _ = self.harness.run_action(action, **environment)
-                self.assertNotEqual(0, result.returncode)
-                self.assertIsNone(args)
-                self.assertIsNone(token)
+                result, args, token, output = self.harness.run_action(action, **environment)
+                if environment.get("STATE_PRODUCT", environment.get("PRODUCT")) == "runtime":
+                    # Runtime replay also authenticates retained SDK evidence.
+                    selected = ["--sdk-validation-tooling", self.tooling]
+                    expected = (self.harness.capture_arguments(output, selected) if action == "capture" else
+                                self.harness.collect_arguments(output, ["--state-wave", "0", *selected]))
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(expected, args)
+                    self.assertEqual("synthetic environment-only token", token)
+                else:
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIsNone(args)
+                    self.assertIsNone(token)
 
     def test_absent_tooling_preserves_existing_default_arguments(self):
         for action in ("capture", "collect"):

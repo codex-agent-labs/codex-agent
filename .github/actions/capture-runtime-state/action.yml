@@ -24,10 +24,13 @@ inputs:
     description: Optional exact SDK collection wave, mutually exclusive with Runtime state-wave.
   sdk-family:
     default: ''
-    description: Optional exact native-package, ios-package, javascript-metadata, native-validation, or native-metadata SDK projection.
+    description: Optional exact native-package, ios-package, javascript-metadata, native-validation, native-metadata, or ios-validation SDK projection.
   sdk-validation-tooling:
     default: ''
     description: Caller-provisioned tooling policy path; never obtained from the captured state.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Caller-provisioned Apple validation policy path; never obtained from the captured state.
   component:
     default: ''
     description: Optional elected Runtime component.
@@ -74,6 +77,7 @@ runs:
         SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
         SDK_FAMILY: ${{ inputs.sdk-family }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         COMPONENT: ${{ inputs.component }}
         PHASE: ${{ inputs.phase }}
         TARGET: ${{ inputs.target }}
@@ -96,7 +100,7 @@ runs:
               selected+=(--ios-binary)
             elif [ -n "$SDK_FAMILY" ]; then
               case "$SDK_FAMILY" in
-                native-package|ios-package|javascript-metadata|native-validation|native-metadata) selected+=(--family "$SDK_FAMILY") ;;
+                native-package|ios-package|javascript-metadata|native-validation|native-metadata|ios-validation) selected+=(--family "$SDK_FAMILY") ;;
                 *) echo 'Unknown SDK family' >&2; exit 1 ;;
               esac
             fi
@@ -108,6 +112,9 @@ runs:
         fi
         if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then
           selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
+        fi
+        if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
+          selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
         fi
         "${command[@]}" \
           --plan build/runtime-plan/impact-plan.json --destination build/runtime-input \

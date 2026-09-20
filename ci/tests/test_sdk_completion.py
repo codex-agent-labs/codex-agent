@@ -73,11 +73,33 @@ class SdkCompletionTest(unittest.TestCase):
 
     def test_exact_caller_tooling_is_forwarded_and_replay_error_cannot_be_overridden(self):
         policy = {"synthetic": "caller-owned policy boundary"}
-        self.call(inspected([]), sdk_validation_tooling=policy)
+        apple = {"synthetic": "independent caller-owned Apple policy"}
+        before = deepcopy(apple)
+        self.call(inspected([]), sdk_validation_tooling=policy, sdk_apple_validation_policy=apple)
         self.assertIs(policy, self.inspect.call_args.kwargs["sdk_validation_tooling"])
+        self.assertIs(apple, self.inspect.call_args.kwargs["sdk_apple_validation_policy"])
+        self.assertEqual(before, apple)
+        self.call(inspected([]), sdk_apple_validation_policy=apple)
+        self.inspect.assert_called_once_with(*self.paths, repository_root=self.root,
+            environ=self.environment, sdk_apple_validation_policy=apple)
+        self.call(inspected([]), sdk_apple_validation_policy=None)
+        self.inspect.assert_called_once_with(*self.paths, repository_root=self.root, environ=self.environment)
         with patch.object(completion.products, "inspect_products", side_effect=ValueError("original evidence rejected")):
             with self.assertRaisesRegex(ValueError, "original evidence rejected"):
-                completion.require_sdk_completion(*self.paths)
+                completion.require_sdk_completion(*self.paths, sdk_apple_validation_policy=apple)
+
+    def test_completed_apple_validations_do_not_complete_unresolved_ios_metadata(self):
+        validations = sorted(identity for identity in self.sdk
+                             if identity.component == "sdk-ios" and identity.phase == "validation")
+        self.assertEqual(["ios-arm64", "ios-simulator-arm64"], [identity.target for identity in validations])
+        metadata = next(identity for identity in self.sdk
+                        if (identity.component, identity.phase, identity.target) == ("sdk-ios", "metadata", "ios"))
+        for state in ("build", "waiting"):
+            value = inspected([*(phase(identity) for identity in validations), phase(metadata, state)])
+            before = deepcopy(value)
+            with self.subTest(state=state), self.assertRaisesRegex(ValueError, "sdk-ios/metadata/ios: " + state):
+                self.call(value, sdk_apple_validation_policy={"synthetic": "caller policy"})
+            self.assertEqual(before, value)
 
     def test_malformed_or_duplicate_inspected_rows_cannot_claim_completion(self):
         row = phase(self.sdk[0])
@@ -98,15 +120,21 @@ class SdkCompletionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="sdk-completion-cli-") as temporary:
             root = Path(temporary).resolve()
             policy_path, output = root / "policy.json", root / "github-output"
+            apple_path = root / "apple-policy.json"
             policy = {"synthetic": "caller policy"}
+            apple = {"synthetic": "caller Apple policy"}
             policy_path.write_bytes(canonical_json_bytes(policy))
+            apple_path.write_bytes(canonical_json_bytes(apple))
             argv = ["--plan", str(self.paths[0]), "--discovery-root", str(self.paths[1]),
                 "--state-root", str(self.paths[2]), "--repository-root", str(self.root),
-                "--sdk-validation-tooling", str(policy_path), "--github-output", str(output)]
+                "--sdk-validation-tooling", str(policy_path), "--sdk-apple-validation-policy", str(apple_path),
+                "--github-output", str(output)]
             with patch.object(completion, "require_sdk_completion", return_value={"complete": True, "phaseCount": 2, "fullReuse": False}) as gate:
                 self.assertEqual(0, completion.main(argv))
-            gate.assert_called_once_with(*self.paths, repository_root=self.root, environ=os.environ, sdk_validation_tooling=policy)
+            gate.assert_called_once_with(*self.paths, repository_root=self.root, environ=os.environ,
+                                         sdk_validation_tooling=policy, sdk_apple_validation_policy=apple)
             self.assertEqual("complete=true\nphaseCount=2\nfullReuse=false\n", output.read_text())
+            self.assertEqual(canonical_json_bytes(apple), apple_path.read_bytes())
             output.unlink()
             with patch.object(completion, "require_sdk_completion", side_effect=ValueError("unresolved")), \
                     redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -117,6 +145,13 @@ class SdkCompletionTest(unittest.TestCase):
                 with patch.object(completion, "require_sdk_completion") as gate, redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                     completion.main(bad)
                 gate.assert_not_called()
+            for malformed in (b'{"synthetic": "noncanonical"}', b'{"a":1,"a":2}\n'):
+                apple_path.write_bytes(malformed)
+                with patch.object(completion, "require_sdk_completion") as gate, redirect_stderr(io.StringIO()), \
+                        self.assertRaises(SystemExit):
+                    completion.main(argv)
+                gate.assert_not_called()
+                self.assertFalse(output.exists())
 
     def test_cli_omitted_policy_preserves_legacy_shape_and_prints_concise_summary(self):
         argv = ["--plan", str(self.paths[0]), "--discovery-root", str(self.paths[1]), "--repository-root", str(self.root)]
