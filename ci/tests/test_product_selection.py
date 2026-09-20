@@ -177,6 +177,21 @@ class ProductSelectionTest(unittest.TestCase):
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((), phase_inventory_paths([path], instance))
 
+    def test_platform_controllers_select_only_consumers_without_owning_payload_bytes(self):
+        for path, components, phases in (
+            ("ci/sdk_facade_metadata_inputs.py", {"sdk-core"}, {"metadata"}),
+            ("ci/sdk_facade_metadata_workflow.py", {"sdk-core"}, {"metadata"}),
+            ("ci/sdk_maven_package_workflow.py", {"sdk-core", "sdk-android"}, {"package", "validation", "metadata"}),
+            ("ci/sdk_android_validation_workflow.py", {"sdk-android"}, {"validation", "metadata"}),
+        ):
+            with self.subTest(path=path):
+                result = classify_paths([path])
+                self.assertEqual({instance for instance in PHASE_INSTANCE_IDS if instance.product == "sdk"
+                                  and instance.component in components and instance.phase in phases}, identities(result))
+                self.assertEqual((), result.unknown_paths)
+                for instance in PHASE_INSTANCE_IDS:
+                    self.assertEqual((), phase_inventory_paths([path], instance))
+
     def test_android_projections_own_validation_and_metadata_not_compilation(self) -> None:
         path = "ci/products/sdk_android_validation_content.py"
         expected = {PhaseInstanceId("sdk", "sdk-android", phase, "android")

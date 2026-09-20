@@ -12,6 +12,14 @@ from ci import sdk_workflow as workflow
 
 
 class SdkWorkflowTest(unittest.TestCase):
+    def test_platform_controller_dispatch_preserves_exact_cli_tail_and_result(self):
+        for command, module in (("core-metadata", "sdk_facade_metadata_workflow"),
+                                ("android-validation", "sdk_android_validation_workflow"),
+                                ("maven-package", "sdk_maven_package_workflow")):
+            with self.subTest(command=command), patch(module + ".main", return_value=7) as execute:
+                self.assertEqual(7, workflow.main([command, "--plan", "original plan"]))
+                execute.assert_called_once_with(["--plan", "original plan"])
+
     def test_core_validation_dispatch_preserves_exact_cli_tail_and_result(self):
         with patch("sdk_facade_workflow.main", return_value=7) as execute:
             self.assertEqual(7, workflow.main(["core-validation", "--plan", "original plan"]))

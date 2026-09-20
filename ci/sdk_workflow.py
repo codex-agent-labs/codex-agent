@@ -602,6 +602,15 @@ def _ios_binary_main(argv):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "core-metadata":
+        from sdk_facade_metadata_workflow import main as facade_metadata_main
+        return facade_metadata_main(argv[1:])
+    if argv and argv[0] == "android-validation":
+        from sdk_android_validation_workflow import main as android_validation_main
+        return android_validation_main(argv[1:])
+    if argv and argv[0] == "maven-package":
+        from sdk_maven_package_workflow import main as maven_package_main
+        return maven_package_main(argv[1:])
     if argv and argv[0] == "core-validation":
         from sdk_facade_workflow import main as facade_main
         return facade_main(argv[1:])

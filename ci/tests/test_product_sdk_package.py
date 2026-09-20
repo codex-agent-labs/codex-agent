@@ -25,6 +25,7 @@ from ci.tests import test_product_sdk_maven as maven_fixture
 from ci.tests import test_product_sdk_native as native_fixture
 from ci.tests import test_product_sdk_archive as javascript_fixture
 from ci.tests.product_chain_support import write_receipt
+from ci.tests.test_csharp_restore_admission import execution as csharp_restore_execution
 from ci.tests.test_product_native_chain import build_chain
 from ci.tests.test_product_sdk_inputs import _request
 
@@ -130,6 +131,9 @@ class NativeValidationContentTest(unittest.TestCase):
                     f"validation/outputs/installed/evidence/{component}/toolchain.tsv": b"tool\tversion\ncompiler\tfixture\n",
                     "validation/outputs/capability/raw.log": b"original run path/timing fixture\n",
                 }
+                if component == "csharp":
+                    originals["validation/outputs/capability/dotnet-restore-execution.json"] = \
+                        canonical_json_bytes(csharp_restore_execution("linux-x64"))
                 if component == "cpp":
                     originals["validation-source/test_installed_package_tamper.py"] = b"original negative program\n"
                     cases = sorted(("baseline", "tampered-0", "tampered-1", "tampered-2", "tampered-3",
@@ -163,6 +167,9 @@ class NativeValidationContentTest(unittest.TestCase):
                 (raw / "capability/raw.log").write_bytes(b"another run path/time\n")
                 if component == "csharp":
                     (raw / "capability/test-program").write_bytes(b"different compiled execution envelope\n")
+                    restore = csharp_restore_execution("linux-x64")
+                    restore["stderrBase64"] = "cmF3Cg=="  # Exact retained raw bytes, not deterministic content.
+                    (raw / "capability/dotnet-restore-execution.json").write_bytes(canonical_json_bytes(restore))
                 (raw / f"installed/evidence/{component}/toolchain.tsv").write_bytes(b"different observed tool provenance\n")
                 if component == "cpp":
                     table = raw / "package-negatives/package-tamper-results.tsv"
@@ -250,6 +257,9 @@ class NativeValidationStageInventoryTest(unittest.TestCase):
                     output = stage / path / "fixture.txt"
                     output.parent.mkdir(parents=True)
                     output.write_bytes(b"not semantic acceptance\n")
+                if component == "csharp":
+                    (stage / "outputs/capability/dotnet-restore-execution.json").write_bytes(
+                        canonical_json_bytes(csharp_restore_execution("linux-x64")))
                 manifest = write_output_manifest(stage, "sdk", component, "validation", "linux-x64", "0.2.9", roots)
                 receipt = {**manifest}  # Only the narrow inventory checker is under test.
                 _verify_native_validation_stage(stage, receipt, "linux-x64")
@@ -503,6 +513,8 @@ class SdkPackagePlanTest(unittest.TestCase):
                 path = stage / "outputs" / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"synthetic raw execution output\n")
+            restore_bytes = canonical_json_bytes(csharp_restore_execution("linux-x64"))
+            (stage / "outputs/capability/dotnet-restore-execution.json").write_bytes(restore_bytes)
             manifest = write_output_manifest(stage, "sdk", "csharp", "validation", "linux-x64", "0.2.9", {
                 "native-wrapper-installed": "outputs/installed",
                 "native-wrapper-capability": "outputs/capability",
@@ -540,6 +552,8 @@ class SdkPackagePlanTest(unittest.TestCase):
                 self.assertEqual(original, (output / "receipts/sdk-validation.json").read_bytes())
                 self.assertEqual((stage / "output-manifest.json").read_bytes(),
                                  (output / "validation/output-manifest.json").read_bytes())
+                self.assertEqual(restore_bytes,
+                    (output / "validation/outputs/capability/dotnet-restore-execution.json").read_bytes())
                 self.assertEqual(original, receipt.read_bytes())
             finally:
                 source.write_bytes(original_source)
