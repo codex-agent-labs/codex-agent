@@ -27,7 +27,9 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
             sources={self.package: self.root / "object"},
             prior_carrier_phases={self.package: dict(buildKey="key", receiptSha256="receipt", objectSha256="object")},
             expected_fixed={"versions": {"sdk": "0.8.0"}},
-            producer={"commit": "a" * 40, "tree": "d" * 40, "event": "pull_request"})
+            producer={"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+                      "commit": "a" * 40, "tree": "d" * 40, "event": "pull_request",
+                      "runId": 104, "runAttempt": 2, "pullRequest": 7})
         self.expected_producer = dict(self.verified.producer)
         canonical = self.root / "original/inputs/contract-contract-binary-common/stage/outputs/evidence"
         canonical.mkdir(parents=True)
@@ -106,7 +108,7 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         self.assertEqual(self.binary / "phase-receipt.json", receipt)
         self.assertEqual(18, arguments["artifact_id"])
         self.assertEqual("sha256:" + "5" * 64, arguments["artifact_sha256"])
-        self.assertEqual("aarch64-apple-darwin", arguments["rust_host"])
+        self.assertEqual(self.arguments["rust_host"], arguments["rust_host"])
         self.events.append("binary-enter")
         if self.mutation == "binary-gate":
             raise ValueError("binary native gate failed")
@@ -296,7 +298,9 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
 
     def test_non_pr_finalizer_uses_release_and_finalizer_failure_does_not_publish_shard(self):
         self.verified.producer["event"] = "merge_group"
+        self.verified.producer["pullRequest"] = None
         self.expected_producer["event"] = "merge_group"
+        self.expected_producer["pullRequest"] = None
         self.assertEqual({"fixture": "finalized"}, self.execute()["shard"])
         self.reset_outputs()
         self.mutation = "finalizer"
@@ -310,6 +314,17 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "late checkout changed"):
             self.execute()
         self.assertEqual("checkout", self.events[-1])
+        self.assertNotIn("finalize", self.events)
+        self.assertFalse((self.destination / "shard").exists())
+
+    def test_real_execution_context_rejects_wrong_rust_host_before_finalization(self):
+        # The native authority seam is mocked; rejection must come from the real
+        # context verifier after the successful worker and complete-gate seams.
+        self.arguments["rust_host"] = "x86_64-unknown-linux-gnu"
+        with self.assertRaisesRegex(ValueError, "fixed macOS ARM64 Rust host"):
+            self.execute()
+        self.assertIn("projection", self.events)
+        self.assertNotIn("checkout", self.events)
         self.assertNotIn("finalize", self.events)
         self.assertFalse((self.destination / "shard").exists())
 

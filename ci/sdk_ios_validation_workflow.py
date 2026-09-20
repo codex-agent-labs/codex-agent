@@ -24,6 +24,7 @@ from products.sdk_apple_validation_source import capture_apple_validation_source
 from products.sdk_apple_validation_evidence import verified_apple_validation_archive
 from products.sdk_apple_validation_execution import verify_apple_validation_execution
 from products.sdk_apple_validation_content import apple_validation_content
+from products.sdk_apple_validation_context import verify_apple_validation_context
 from products.sdk_apple_device_evidence import _original_directory
 from sdk_ios_original_package import verified_original_ios_package
 from sdk_ios_original_binary import verified_original_ios_binary
@@ -199,6 +200,10 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
                     "originalTestApplicationDirectory": str(execution / "device-consumer/CodexAgentTestApp"),
                     "evidenceSha256": result["evidenceSha256"],
                 })
+                verify_apple_validation_context(context / "execution-context.json",
+                    producer=verified.producer, target=target,
+                    evidence_archive=destination / "execution" / result["evidenceArchive"].name,
+                    original_working_directory=str(module))
                 retained[context] = regular_file_inventory(context)
                 retained_unchanged()
         finally:

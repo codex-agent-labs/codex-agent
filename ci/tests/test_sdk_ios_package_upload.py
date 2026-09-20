@@ -26,10 +26,11 @@ class SdkIosPackageUploadTest(unittest.TestCase):
     api = fixture.RuntimeAggregateUploadTest.api
     archive = fixture.RuntimeAggregateUploadTest.archive
     phase = "package"
+    target = "ios"
 
     def setUp(self):
         fixture.RuntimeAggregateUploadTest.setUp(self)
-        self.jobs[0]["name"] = f"product-validation / sdk-sdk-ios-{self.phase}-ios"
+        self.jobs[0]["name"] = f"product-validation / sdk-sdk-ios-{self.phase}-{self.target}"
         stage = self.root / f"original-{self.phase}-stage"
         if self.phase == "package":
             (stage / "outputs/apple").mkdir(parents=True)
@@ -37,6 +38,10 @@ class SdkIosPackageUploadTest(unittest.TestCase):
                 b"opaque original iOS package bytes\x00\xff"
             )
             output_roots = {"apple": "outputs/apple"}
+        elif self.phase == "validation":
+            (stage / "outputs/validation").mkdir(parents=True)
+            (stage / "outputs/validation/apple-validation.json").write_bytes(b"opaque semantic content\n")
+            output_roots = {"apple-validation-content": "outputs/validation"}
         else:
             for target, contents in (
                 ("ios-arm64", b"original device framework\x00\xff"),
@@ -47,11 +52,11 @@ class SdkIosPackageUploadTest(unittest.TestCase):
                 (framework / "CodexAgent").write_bytes(contents)
             output_roots = {"apple-binary": "outputs/apple-binary"}
         manifest = write_output_manifest(
-            stage, "sdk", "sdk-ios", self.phase, "ios", "0.3.0", output_roots,
+            stage, "sdk", "sdk-ios", self.phase, self.target, "0.3.0", output_roots,
         )
         selected = write_receipt(
             self.root / f"selected-{self.phase}-receipt.json",
-            product="sdk", component="sdk-ios", phase=self.phase, target="ios",
+            product="sdk", component="sdk-ios", phase=self.phase, target=self.target,
             outputs=manifest["outputs"], upstream=[], version="0.3.0",
             version_identity="0.3.0", context={"producer": self.producer},
         )
@@ -78,6 +83,12 @@ class SdkIosPackageUploadTest(unittest.TestCase):
                 # Transport capture does not independently interpret this descriptor.
                 "apple-package-execution.json": b"opaque descriptor retained for later admission\n",
             })
+        elif self.phase == "validation":
+            self.files.update({
+                "context/execution-context.json": b"opaque context for independent replay\n",
+                "execution/apple-validation-evidence.zip": b"opaque original execution archive\x00\xff",
+                "originals/package/transport.zip": b"original package upload",
+            })
         else:
             self.files.update({
                 "native-original/ios-rust-device/codex-agent-ios-arm64.a":
@@ -86,7 +97,7 @@ class SdkIosPackageUploadTest(unittest.TestCase):
                 "native-original/ios-rust-simulator/stderr.bin": b"",
             })
         self.artifact["name"] = (
-            f"codex-agent-sdk-worker-sdk-ios-{self.phase}-ios-"
+            f"codex-agent-sdk-worker-sdk-ios-{self.phase}-{self.target}-"
             f"{selected['buildKey'].removeprefix('sha256:')}-{self.producer['tree']}-attempt-2"
         )
         self.receipt_hash_field = f"{self.phase}ReceiptSha256"
@@ -187,6 +198,15 @@ class SdkIosPackageUploadTest(unittest.TestCase):
         finally:
             self.receipt_path.write_bytes(original)
 
+    def test_phase_incompatible_target_rejects_before_observation(self):
+        receipt = json.loads(self.receipt_bytes)
+        receipt["target"] = "ios" if self.phase == "validation" else "ios-arm64"
+        self.receipt_path.write_bytes(canonical_json_bytes(receipt))
+        with patch.object(capture, "_observe_ci_producer_jobs") as observe, self.assertRaises(ValueError):
+            self.call()
+        observe.assert_not_called()
+        self.assertFalse(self.output.exists())
+
     def test_late_plan_receipt_and_archive_mutations_never_publish(self):
         gate = capture._require_artifact_job_window
         for case in ("plan", "receipt"):
@@ -249,6 +269,28 @@ class SdkIosPackageUploadTest(unittest.TestCase):
 
 class SdkIosBinaryUploadTest(SdkIosPackageUploadTest):
     phase = "binary"
+
+
+class SdkIosValidationUploadTest(SdkIosPackageUploadTest):
+    phase = "validation"
+    target = "ios-arm64"
+
+    def test_other_validation_target_job_and_artifact_are_rejected(self):
+        other = "ios-simulator-arm64" if self.target == "ios-arm64" else "ios-arm64"
+        original_job = self.jobs[0]["name"]
+        self.jobs[0]["name"] = f"product-validation / sdk-sdk-ios-validation-{other}"
+        with self.assertRaises(ValueError):
+            self.call()
+        self.assertFalse(self.output.exists())
+        self.jobs[0]["name"] = original_job
+        self.artifact["name"] = self.artifact["name"].replace(f"validation-{self.target}-", f"validation-{other}-")
+        with self.assertRaises(ValueError):
+            self.call()
+        self.assertFalse(self.output.exists())
+
+
+class SdkIosSimulatorValidationUploadTest(SdkIosValidationUploadTest):
+    target = "ios-simulator-arm64"
 
 
 if __name__ == "__main__":

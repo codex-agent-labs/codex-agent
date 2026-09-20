@@ -4455,11 +4455,19 @@ def capture_sdk_ios_binary_upload(plan_path, destination, *, binary_receipt_path
         repository_root=repository_root, environ=environ, token=token)
 
 
+def capture_sdk_ios_validation_upload(plan_path, destination, *, validation_receipt_path,
+        artifact_id, artifact_sha256, trusted_workflow_sha, repository_root=None, environ=None, token):
+    """Retain an observed original validation upload; full semantic replay is separate."""
+    return _capture_sdk_ios_upload(plan_path, destination, phase="validation", receipt_path=validation_receipt_path,
+        artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
+        repository_root=repository_root, environ=environ, token=token)
+
+
 def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
         artifact_id, artifact_sha256, trusted_workflow_sha, repository_root, environ, token):
     from products.sdk_package import _require_capability_output_separate
-    if phase not in ("binary", "package"):
-        raise ValueError("Apple upload capture requires an exact binary or package phase")
+    if phase not in ("binary", "package", "validation"):
+        raise ValueError("Apple upload capture requires an exact binary, package or validation phase")
     require_integer(artifact_id, f"Apple {phase} upload ID", 1)
     require_sha256(artifact_sha256, f"Apple {phase} upload digest")
     if not isinstance(token, str) or not token:
@@ -4477,8 +4485,10 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
     plan_bytes = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     receipt_bytes = read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
-    instance = PhaseInstanceId("sdk", "sdk-ios", phase, "ios")
-    if _identity(receipt) != instance:
+    target = receipt["target"]
+    targets = ("ios-arm64", "ios-simulator-arm64") if phase == "validation" else ("ios",)
+    instance = PhaseInstanceId("sdk", "sdk-ios", phase, target)
+    if target not in targets or _identity(receipt) != instance:
         raise ValueError(f"Apple {phase} capture requires the selected original {phase} receipt")
     producer = receipt["producer"]
     with tempfile.TemporaryDirectory(prefix=f"sdk-ios-{phase}-upload-") as temporary:
@@ -4489,10 +4499,10 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
         plan = _validate_plan(captured_plan, root)
         if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
             raise ValueError(f"Apple {phase} capture requires an authorized PR or merge-group plan")
-        job = f"product-validation / sdk-sdk-ios-{phase}-ios"
+        job = f"product-validation / sdk-sdk-ios-{phase}-{target}"
         observed = _observe_ci_producer_jobs({f"ios-{phase}": producer},
             jobs_by_phase={f"ios-{phase}": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
-        name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-ios-{receipt['buildKey'].removeprefix('sha256:')}-"
+        name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-{target}-{receipt['buildKey'].removeprefix('sha256:')}-"
                 f"{producer['tree']}-attempt-{producer['runAttempt']}")
         artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
         _require_artifact_job_window(observed[0], job, artifact)
