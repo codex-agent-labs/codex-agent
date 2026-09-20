@@ -7,6 +7,24 @@ import kotlin.test.assertTrue
 /** CLI routing checks only; the delegated Apple verifier has its own complete synthetic closure tests. */
 class ReleaseToolingAppleClosureCliTest {
     @Test
+    fun `simulator replay requires independent caller pins and forbids output overrides`() {
+        val values = linkedMapOf("evidence-directory" to "missing",
+            "expected-runtime-name" to "iOS 26.5",
+            "expected-device-type-identifier" to "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+            "original-working-directory" to "/original/checkout")
+        val args = arrayOf("verify-original-apple-simulator-execution",
+            *values.flatMap { (key, value) -> listOf("--$key", value) }.toTypedArray())
+        values.keys.forEach { missing ->
+            val failure = assertFailsWith<IllegalStateException> { runReleaseTooling(args.withoutOption(missing)) }
+            assertTrue("Unexpected release-tooling options" in failure.message.orEmpty())
+        }
+        val failure = assertFailsWith<IllegalStateException> {
+            runReleaseTooling(args + arrayOf("--success-output", "unused"))
+        }
+        assertTrue("Unexpected release-tooling options" in failure.message.orEmpty())
+    }
+
+    @Test
     fun `package evidence capture requires explicit external destination and no success override`() {
         val values = linkedMapOf("product-directory" to "missing", "version" to "0.8.0",
             "binary-frameworks" to "missing", "source-snapshot" to "missing",

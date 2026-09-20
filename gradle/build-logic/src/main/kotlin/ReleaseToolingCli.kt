@@ -84,6 +84,14 @@ internal fun runReleaseTooling(arguments: Array<String>) {
                 options.file("expected-distribution-proof"), options.file("expected-sdk-compatibility"),
             )
         }
+        "verify-original-apple-simulator-execution" -> {
+            options.requireOnly("evidence-directory", "expected-runtime-name",
+                "expected-device-type-identifier", "original-working-directory")
+            verifyOriginalAppleSimulatorExecution(
+                options.file("evidence-directory"), options.required("expected-runtime-name"),
+                options.required("expected-device-type-identifier"), options.required("original-working-directory"),
+            )
+        }
         "verify-transported-apple-sdk-package-closure" -> {
             options.requireOnly(
                 "product-directory", "validation-evidence-directory", "version",

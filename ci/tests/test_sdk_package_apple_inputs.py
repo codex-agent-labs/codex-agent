@@ -140,6 +140,7 @@ class SdkPackageAppleInputsTest(unittest.TestCase):
         from ci.products.sdk_maven import verify_packaged_sdk_maven_phase
         before = regular_file_inventory(self.root / "apple-forwarding")
         binary_bytes = self.ios_binary_receipt.read_bytes()
+        capture = self.root / "external-package-capture"
         def verify_captured(*args, **kwargs):
             self.assertNotEqual(self.ios_binary_receipt, kwargs["binary_receipt_path"])
             self.assertEqual(binary_bytes, kwargs["binary_receipt_path"].read_bytes())
@@ -150,6 +151,7 @@ class SdkPackageAppleInputsTest(unittest.TestCase):
                 self.ios_binary_receipt.write_bytes(binary_bytes)
         def gate(**arguments):
             self.calls.append(arguments)
+            self.assertEqual(capture, arguments["execution_capture_directory"])
             self.assertEqual(load_canonical_json_bytes(self.ios_receipt.read_bytes())["producer"]["commit"],
                              arguments["source_revision"])
             self.assertNotEqual(self.ios_binary / "outputs/apple-binary", arguments["binary_frameworks"])
@@ -160,7 +162,7 @@ class SdkPackageAppleInputsTest(unittest.TestCase):
             return regular_file_inventory(arguments["product_directory"])
         with patch("ci.products.sdk_apple_content.verify_sdk_apple_binary_package_content", side_effect=gate), \
                 patch("ci.products.sdk_maven.verify_packaged_sdk_maven_phase", side_effect=verify_captured):
-            value, raw = self.verify_binary()
+            value, raw = self.verify_binary(apple_execution_capture_directory=capture)
         self.assertEqual(self.ios_receipt.read_bytes(), raw)
         self.assertEqual(load_canonical_json_bytes(raw), value)
         self.assertEqual(1, len(self.calls))

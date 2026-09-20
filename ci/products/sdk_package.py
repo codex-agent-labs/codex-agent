@@ -199,6 +199,7 @@ def verify_sdk_package_inputs(
     validation_content_output: Path | None = None,
     apple_verification: dict[str, Any] | None = None,
     apple_binary_verification: dict[str, Any] | None = None,
+    apple_execution_capture_directory: Path | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     """Verify package semantics, original artifacts and the complete source-input plan.
 
@@ -214,6 +215,20 @@ def verify_sdk_package_inputs(
     instance = _instance(receipt)
     if apple_verification is not None and apple_binary_verification is not None:
         raise ValueError("Apple package verification modes are mutually exclusive")
+    if apple_execution_capture_directory is not None:
+        if apple_binary_verification is None:
+            raise ValueError("Apple execution capture requires binary package verification")
+        _require_capability_output_separate(Path(apple_execution_capture_directory), (
+            stage_root, Path(receipt_path), Path(compatibility_request), binary_stage_root,
+            binary_receipt_path, *(Path(binary_contract_evidence[name]) for name in (
+                "stageRoot", "phaseReceipt", "attestation", "attestationSignature", "publicKey", "keyring", "keysDirectory",
+            ) if binary_contract_evidence and binary_contract_evidence.get(name) is not None),
+        ))
+        original_apple_arguments = load_sdk_compatibility_request(Path(compatibility_request))
+        _require_capability_output_separate(Path(apple_execution_capture_directory), original_apple_arguments)
+        from .contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
+        _require_capability_output_separate(Path(apple_execution_capture_directory),
+            original_apple_arguments["contract_attestation"].parent / CONTRACT_EXECUTION_CLOSURE_DIRECTORY)
     apple_policy = apple_verification if apple_verification is not None else apple_binary_verification
     if apple_policy is not None:
         from .sdk_maven import _APPLE_VERIFICATION_KEYS, _APPLE_BINARY_VERIFICATION_KEYS
@@ -404,6 +419,10 @@ def verify_sdk_package_inputs(
                 captured_binary_receipt.write_bytes(binary_bytes)
                 apple_options = {"apple_binary_verification": apple_binary_verification,
                                  "binary_stage_root": binary_stage_root, "binary_receipt_path": captured_binary_receipt}
+                if apple_execution_capture_directory is not None:
+                    _require_capability_output_separate(Path(apple_execution_capture_directory),
+                                                        _original_artifact_directories(arguments))
+                    apple_options["apple_execution_capture_directory"] = Path(apple_execution_capture_directory)
             verified, verified_bytes = verify_packaged_sdk_maven_phase(
                 stage, captured_receipt, handoff / REQUEST_NAME, **apple_options,
             )

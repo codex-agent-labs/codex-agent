@@ -95,6 +95,10 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
                 (self.result["stage"] / "changed-after-gate").write_bytes(b"changed\n")
             elif self.context_failure == "sdk-prepared":
                 (self.destination / "inputs/changed-after-gate").write_bytes(b"changed\n")
+            elif self.context_failure == "capture":
+                (self.destination / "package-execution/input-binding.json").write_bytes(b"changed\n")
+            elif self.context_failure == "capture-context":
+                (self.destination / "apple-package-execution.json").write_bytes(b"changed\n")
         finally:
             self.events.append("sdk-closed")
 
@@ -197,8 +201,27 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
             "tooling_keyring": None,
             "tooling_keys_directory": None,
         }, apple)
+        capture = arguments["apple_execution_capture_directory"]
+        self.assertEqual(self.destination / "package-execution", capture)
+        (capture / "events").mkdir(parents=True)
+        (capture / "events/combined.bin").write_bytes(b"")
+        (capture / "input-binding.json").write_bytes(b"mock captured binding\n")
         raw = receipt.read_bytes()
         return self.finalized["receipt"], raw
+
+    def execution_context(self, **arguments):
+        self.events.append("capture-context")
+        self.assertIn("gate", self.events)
+        self.assertNotIn("sdk-exit", self.events)
+        self.assertEqual(self.producer, arguments["producer"])
+        self.assertEqual(11, arguments["sdk_inputs_artifact_id"])
+        self.assertEqual("sha256:" + "1" * 64, arguments["sdk_inputs_artifact_sha256"])
+        self.assertEqual(self.destination / "inputs/sdk-sdk-ios-binary-ios/phase-receipt.json",
+                         arguments["binary_receipt"])
+        self.assertEqual(self.result["stage"] / "outputs/evidence/sdk-compatibility.json",
+                         arguments["sdk_compatibility"])
+        return {"synthetic": "external capture binding, not authority",
+                "captureFiles": regular_file_inventory(arguments["capture_directory"], allow_empty=True)}
 
     def invoke(self, **changes):
         self.tooling_policy = {
@@ -250,6 +273,8 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
                 side_effect=self.finalize,
             ))
             stack.enter_context(patch.object(workflow, "verify_sdk_package_inputs", side_effect=self.gate))
+            stack.enter_context(patch.object(workflow, "build_apple_package_execution_context",
+                                            side_effect=self.execution_context))
             stack.enter_context(patch.object(
                 workflow,
                 "verify_phase_shard",
@@ -261,10 +286,12 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         result = self.invoke()
         self.assertEqual(self.finalized, result)
         self.assertEqual(
-            ["sdk-enter", "materialize", "worker", "finalize", "gate", "sdk-exit", "sdk-closed"],
+            ["sdk-enter", "materialize", "worker", "finalize", "gate", "capture-context", "sdk-exit", "sdk-closed"],
             self.events,
         )
         self.assertTrue((self.destination / "shard").is_dir())
+        self.assertTrue((self.destination / "apple-package-execution.json").is_file())
+        self.assertFalse((self.destination / "shard/apple-package-execution.json").exists())
 
     def test_current_contract_receipt_must_match_authenticated_sdk_inputs(self):
         self.contract_mismatch = True
@@ -283,6 +310,8 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         for mutation, message in (
             ("sdk", "candidate changed after admission"),
             ("sdk-prepared", "changed after SDK verification"),
+            ("capture", "original execution capture changed before publication"),
+            ("capture-context", "original execution capture changed before publication"),
         ):
             self.destination = self.root / "build" / mutation
             self.events.clear()

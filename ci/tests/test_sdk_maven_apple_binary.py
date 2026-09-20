@@ -59,6 +59,7 @@ class SdkMavenAppleBinaryTest(unittest.TestCase):
         dynamic = {
             "product_directory", "binary_frameworks", "sdk_version",
             "expected_sdk_compatibility", "source_revision",
+            "execution_capture_directory",
         }
         self.assertEqual(self.binary_options, {
             key: value for key, value in arguments.items() if key not in dynamic
@@ -103,6 +104,17 @@ class SdkMavenAppleBinaryTest(unittest.TestCase):
 
         self.assertEqual(2, len(self.binary_calls))
         self.assertEqual(before, regular_file_inventory(self.work))
+
+    def test_capture_destination_is_forwarded_once_and_cannot_overlap_originals(self):
+        for predecessor in (False, True):
+            capture = self.work / f"external-capture-{predecessor}"
+            self.verify(predecessor, apple_execution_capture_directory=capture)
+            self.assertEqual(capture, self.binary_calls[-1]["execution_capture_directory"])
+        self.assertEqual(2, len(self.binary_calls))
+        for capture in (self.binary / "new", self.package / "new", self.receipt):
+            with self.subTest(capture=capture), self.assertRaisesRegex(ValueError, "overlaps an original input"):
+                self.verify(apple_execution_capture_directory=capture)
+        self.assertEqual(2, len(self.binary_calls))
 
     def test_rejects_caller_supplied_leaf_fields_and_legacy_mixing(self):
         forbidden = {

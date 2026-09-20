@@ -14,8 +14,9 @@ if __package__:
 import product_reuse
 import sdk_workflow
 from products.inventory import (
-    publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
+    canonical_json_bytes, publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
 )
+from products.sdk_apple_package_execution import build_apple_package_execution_context
 from products.registry import PhaseInstanceId
 from products.restore import PHASE_RECEIPT_NAME, verify_phase_shard
 from products.sdk_inputs import REQUEST_NAME
@@ -153,10 +154,26 @@ def execute(
                 binary_receipt_path=sdk_binary["receiptPath"],
                 binary_contract_evidence=contract_evidence,
                 apple_binary_verification=apple_verification,
+                apple_execution_capture_directory=destination / "package-execution",
             )
             if (verified != finalized["receipt"] or raw != read_regular_file_bytes(
                     candidate / PHASE_RECEIPT_NAME)):
                 raise ValueError("SDK iOS package gate returned a different candidate receipt")
+            execution_context = build_apple_package_execution_context(
+                capture_directory=destination / "package-execution",
+                package_receipt=candidate / PHASE_RECEIPT_NAME,
+                binary_receipt=sdk_binary["receiptPath"],
+                contract_binary_receipt=contract_binary["receiptPath"],
+                contract_metadata_receipt=contract_metadata["receiptPath"],
+                producer=producer,
+                sdk_compatibility=result["stage"] / "outputs/evidence/sdk-compatibility.json",
+                sdk_inputs_artifact_id=sdk_inputs_artifact_id,
+                sdk_inputs_artifact_sha256=sdk_inputs_artifact_sha256,
+            )
+            context_bytes = canonical_json_bytes(execution_context)
+            context_path = destination / "apple-package-execution.json"
+            with context_path.open("xb") as context_file:
+                context_file.write(context_bytes)
             candidate_inventory = regular_file_inventory(candidate)
             if regular_file_inventory(prepared, allow_empty=True) != prepared_inventory:
                 raise ValueError("SDK iOS package authenticated inputs changed before publication")
@@ -166,6 +183,9 @@ def execute(
                 or regular_file_inventory(candidate) != candidate_inventory
                 or verify_phase_shard(candidate, _INSTANCE) != finalized):
             raise ValueError("SDK iOS package candidate changed after admission")
+        if (regular_file_inventory(destination / "package-execution", allow_empty=True) != execution_context["captureFiles"]
+                or read_regular_file_bytes(context_path, reject_symlink_parents=True) != context_bytes):
+            raise ValueError("SDK iOS package original execution capture changed before publication")
         publish_regular_tree(candidate, destination / "shard")
     return verify_phase_shard(destination / "shard", _INSTANCE)
 
