@@ -4,6 +4,8 @@ Full evidence replay, retained originals and successful context exits precede
 the phase receipt. Hosted upload observation remains a separate trust boundary.
 """
 
+import argparse
+import os
 from pathlib import Path
 from contextlib import ExitStack
 import sys
@@ -202,3 +204,34 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
         destination=destination / "shard")
     return {**result, "evidenceArchive": destination / "execution" / result["evidenceArchive"].name,
             "content": content, "shard": shard}
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    for name in ("plan", "destination", "repository-root", "keyring", "keys-directory",
+                 "tooling-evidence", "tooling-public-key", "java-executable"):
+        parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--discovery-root", dest="discovery", type=Path, required=True)
+    parser.add_argument("--state-root", dest="state", type=Path, required=True)
+    parser.add_argument("--target", choices=("ios-arm64", "ios-simulator-arm64"), required=True)
+    parser.add_argument("--rust-host", choices=("aarch64-apple-darwin",), required=True)
+    for name in ("expected-build-key", "package-artifact-sha256", "binary-artifact-sha256",
+                 "trusted-workflow-sha", "policy-revision"):
+        parser.add_argument(f"--{name}", required=True)
+    for name in ("package-artifact-id", "binary-artifact-id"):
+        parser.add_argument(f"--{name}", type=int, required=True)
+    parser.add_argument("--required-trust-domain", choices=("development", "release"), required=True)
+    parser.add_argument("--tooling-keyring", type=Path)
+    parser.add_argument("--tooling-keys-directory", type=Path)
+    arguments = vars(parser.parse_args(argv))
+    if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
+        parser.error("Apple tooling keyring and keys directory must be supplied together")
+    try:
+        execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

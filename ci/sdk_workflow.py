@@ -580,6 +580,9 @@ def _ios_binary_main(argv):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "ios-validation":
+        from sdk_ios_validation_workflow import main as ios_validation_main
+        return ios_validation_main(argv[1:])
     if argv and argv[0] == "native-validation":
         from sdk_native_validation_workflow import main as validation_main
         return validation_main(argv[1:])
