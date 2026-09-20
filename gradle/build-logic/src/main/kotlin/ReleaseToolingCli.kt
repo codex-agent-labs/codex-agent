@@ -76,6 +76,21 @@ internal fun runReleaseTooling(arguments: Array<String>) {
                 options.file("consumer-source-directory"), options.file("work-directory"),
             )
         }
+        "verify-original-apple-native-evidence" -> {
+            options.requireOnly("evidence-directory", "source-snapshot", "toolchain-directory", "rust-host",
+                "xcode-version", "xcode-build", "swift-version", "device-commit", "device-tree",
+                "simulator-commit", "simulator-tree", "tests-commit", "tests-tree")
+            verifyOriginalAppleNativeEvidence(
+                options.file("evidence-directory"), options.file("source-snapshot"), options.file("toolchain-directory"),
+                mapOf(
+                    "ios-rust-device" to (options.required("device-commit") to options.required("device-tree")),
+                    "ios-rust-simulator" to (options.required("simulator-commit") to options.required("simulator-tree")),
+                    "ios-native-tests" to (options.required("tests-commit") to options.required("tests-tree")),
+                ),
+                options.required("rust-host"), options.required("xcode-version"), options.required("xcode-build"),
+                options.required("swift-version"),
+            )
+        }
         "verify-original-apple-execution" -> {
             options.requireOnly("distribution-directory", "execution-directory",
                 "expected-distribution-proof", "expected-sdk-compatibility")
