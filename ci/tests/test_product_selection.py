@@ -153,6 +153,30 @@ class ProductSelectionTest(unittest.TestCase):
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((path,) if instance in expected else (), phase_inventory_paths([path], instance))
 
+    def test_platform_metadata_producers_own_only_their_metadata_phase(self) -> None:
+        for path, component, target in (
+            ("ci/products/sdk_android_metadata.py", "sdk-android", "android"),
+            ("gradle/build-logic/src/main/kotlin/SdkAndroidMetadataTasks.kt", "sdk-android", "android"),
+            ("gradle/build-logic/src/main/kotlin/SdkFacadeMetadataTasks.kt", "sdk-core", "common"),
+        ):
+            with self.subTest(path=path):
+                expected = {PhaseInstanceId("sdk", component, "metadata", target)}
+                result = classify_paths([path])
+                self.assertEqual(expected, identities(result))
+                self.assertEqual((), result.unknown_paths)
+                for instance in PHASE_INSTANCE_IDS:
+                    self.assertEqual((path,) if instance in expected else (), phase_inventory_paths([path], instance))
+
+    def test_maven_executor_selects_only_core_and_android_without_owning_payload_bytes(self):
+        path = "ci/sdk_maven_phase.py"
+        result = classify_paths([path])
+        self.assertEqual({instance for instance in PHASE_INSTANCE_IDS
+                          if instance.product == "sdk" and instance.component in {"sdk-core", "sdk-android"}},
+                         identities(result))
+        self.assertEqual((), result.unknown_paths)
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((), phase_inventory_paths([path], instance))
+
     def test_android_projections_own_validation_and_metadata_not_compilation(self) -> None:
         path = "ci/products/sdk_android_validation_content.py"
         expected = {PhaseInstanceId("sdk", "sdk-android", phase, "android")

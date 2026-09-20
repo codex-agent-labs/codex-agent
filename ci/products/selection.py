@@ -552,9 +552,15 @@ def _native_metadata_owners(path: str) -> set[PhaseInstanceId]:
 
 
 def _control_selection(path: str) -> set[PhaseInstanceId] | None:
+    if path == "ci/sdk_maven_phase.py":
+        return _from_phase("sdk", "sdk-core", "binary") | _from_phase("sdk", "sdk-android", "binary")
     if path == "ci/products/sdk_android_validation_content.py":
         return _from_phase("sdk", "sdk-android", "validation")
-    if path == "ci/products/sdk_platform_metadata.py":
+    if path in {"ci/products/sdk_android_metadata.py",
+                "gradle/build-logic/src/main/kotlin/SdkAndroidMetadataTasks.kt"}:
+        return _from_phase("sdk", "sdk-android", "metadata")
+    if path in {"ci/products/sdk_platform_metadata.py",
+                "gradle/build-logic/src/main/kotlin/SdkFacadeMetadataTasks.kt"}:
         return _from_phase("sdk", "sdk-core", "metadata")
     if path in {"ci/products/sdk_facade_source.py", "ci/sdk_facade_validation_phase.py",
                 "ci/sdk_facade_capture.py",
@@ -674,9 +680,14 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _is_control_only(path: str) -> bool:
+    if path == "ci/sdk_maven_phase.py":
+        return True  # Fixed execution controller; tracked producers own product bytes.
     if path == "ci/products/sdk_android_validation_content.py":
         return False  # Defines Android validation and metadata product bytes.
-    if path == "ci/products/sdk_platform_metadata.py":
+    if path in {"ci/products/sdk_android_metadata.py",
+                "gradle/build-logic/src/main/kotlin/SdkAndroidMetadataTasks.kt",
+                "gradle/build-logic/src/main/kotlin/SdkFacadeMetadataTasks.kt",
+                "ci/products/sdk_platform_metadata.py"}:
         return False  # Defines deterministic eleven-target Core metadata bytes.
     if path in {"ci/products/sdk_facade_source.py", "ci/sdk_facade_validation_phase.py",
                 "ci/sdk_facade_capture.py",
@@ -1138,6 +1149,10 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstanceId]:
+    if path in {"ci/products/sdk_android_metadata.py",
+                "gradle/build-logic/src/main/kotlin/SdkAndroidMetadataTasks.kt",
+                "gradle/build-logic/src/main/kotlin/SdkFacadeMetadataTasks.kt"}:
+        return {instance for instance in selected if instance.phase == "metadata"}
     if path == "ci/products/sdk_android_validation_content.py":
         return selected  # Both pure projections live here; neither is a binary/package input.
     if path in {"ci/products/sdk_facade_validation.py", "ci/products/sdk_facade_inputs.py",

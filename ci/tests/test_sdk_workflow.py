@@ -12,6 +12,11 @@ from ci import sdk_workflow as workflow
 
 
 class SdkWorkflowTest(unittest.TestCase):
+    def test_core_validation_dispatch_preserves_exact_cli_tail_and_result(self):
+        with patch("sdk_facade_workflow.main", return_value=7) as execute:
+            self.assertEqual(7, workflow.main(["core-validation", "--plan", "original plan"]))
+        execute.assert_called_once_with(["--plan", "original plan"])
+
     def test_ios_metadata_dispatch_preserves_exact_cli_tail_and_result(self):
         with patch("sdk_ios_metadata_workflow.main", return_value=7) as execute:
             self.assertEqual(7, workflow.main(["ios-metadata", "--plan", "original plan"]))

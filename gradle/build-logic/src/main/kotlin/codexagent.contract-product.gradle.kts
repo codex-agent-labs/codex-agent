@@ -533,6 +533,34 @@ val writeSdkCoreValidationOutputManifest = if (
         validationTarget = providers.gradleProperty("codexAgent.target").get(),
     )
 } else null
+val writeSdkCoreMetadataOutputManifest = if (
+    requestedProduct.orNull == "sdk" && requestedComponent.orNull == "sdk-core" &&
+    requestedPhase.orNull == "metadata"
+) {
+    check(providers.gradleProperty("codexAgent.target").orNull == "common") {
+        "SDK facade metadata requires the exact common target"
+    }
+    val request = layout.file(providers.gradleProperty("codexAgent.sdkFacadeMetadataRequest").map(::file))
+    registerSdkFacadeMetadataTasks(
+        request = request,
+        sdkVersion = providers.gradleProperty("codexAgent.sdkVersion"),
+        referencedInputs = files(request.map { sdkFacadeMetadataInputFiles(it.asFile) }),
+    )
+} else null
+val writeSdkAndroidMetadataOutputManifest = if (
+    requestedProduct.orNull == "sdk" && requestedComponent.orNull == "sdk-android" &&
+    requestedPhase.orNull == "metadata"
+) {
+    check(providers.gradleProperty("codexAgent.target").orNull == "android") {
+        "SDK Android metadata requires the exact android target"
+    }
+    val request = layout.file(providers.gradleProperty("codexAgent.sdkAndroidMetadataRequest").map(::file))
+    registerSdkAndroidMetadataTasks(
+        request = request,
+        sdkVersion = providers.gradleProperty("codexAgent.sdkVersion"),
+        referencedInputs = files(request.map { sdkAndroidMetadataInputFiles(it.asFile) }),
+    )
+} else null
 tasks.register("ciProductPhase") {
     group = "build"
     description = "Executes one exact product/component/phase lifecycle mapping."
@@ -551,11 +579,17 @@ tasks.register("ciProductPhase") {
             Triple("sdk", "sdk-core", "validation") -> checkNotNull(writeSdkCoreValidationOutputManifest) {
                 "SDK facade validation requires authenticated imported inputs"
             }
+            Triple("sdk", "sdk-core", "metadata") -> checkNotNull(writeSdkCoreMetadataOutputManifest) {
+                "SDK facade metadata requires authenticated original validation inputs"
+            }
             Triple("sdk", "sdk-android", "binary") -> checkNotNull(writeSdkAndroidBinaryOutputManifest) {
                 "SDK Android binary producer was not authenticated during settings evaluation"
             }
             Triple("sdk", "sdk-android", "package") ->
                 sdk.get().tasks.named("writeSdkAndroidPackageOutputManifest")
+            Triple("sdk", "sdk-android", "metadata") -> checkNotNull(writeSdkAndroidMetadataOutputManifest) {
+                "SDK Android metadata requires authenticated original validation inputs"
+            }
             Triple("sdk", "sdk-ios", "binary") -> checkNotNull(writeSdkIosBinaryOutputManifest) {
                 "SDK iOS binary producer was not authenticated during settings evaluation"
             }

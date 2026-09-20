@@ -602,6 +602,9 @@ def _ios_binary_main(argv):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "core-validation":
+        from sdk_facade_workflow import main as facade_main
+        return facade_main(argv[1:])
     if argv and argv[0] == "ios-metadata":
         from sdk_ios_metadata_workflow import main as ios_metadata_main
         return ios_metadata_main(argv[1:])

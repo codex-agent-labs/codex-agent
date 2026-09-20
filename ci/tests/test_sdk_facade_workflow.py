@@ -4,6 +4,8 @@ These tests prove orchestration only, not genuine compiler or hosted execution.
 """
 
 from copy import deepcopy
+from contextlib import redirect_stderr
+import io
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -18,6 +20,30 @@ from products.registry import PhaseInstanceId
 
 
 class FacadeWorkflowTest(unittest.TestCase):
+    def test_cli_requires_explicit_context_and_forwards_policy_without_inference(self):
+        argv = []
+        for name, value in {
+            "plan": self.plan, "destination": self.destination, "repository-root": self.root,
+            "facade-request": self.f.request, "tooling-evidence": self.tooling,
+            "tooling-public-key": self.f.evidence["publicKey"], "java-executable": self.java,
+            "discovery-root": self.discovery, "state-root": self.discovery, "target": "jvm",
+            "expected-build-key": self.ready["buildKey"], "policy-revision": "a" * 40,
+            "android-sdk-directory": "", "required-trust-domain": "development",
+        }.items():
+            argv.extend(["--" + name, str(value)])
+        with patch.object(workflow, "execute") as execute:
+            self.assertEqual(0, workflow.main(argv))
+            self.assertEqual("", execute.call_args.kwargs["android_sdk_directory"])
+            self.assertEqual(self.f.request, execute.call_args.kwargs["facade_request"])
+            self.assertNotIn("sdk_apple_validation_policy", execute.call_args.kwargs)
+            for invalid in ([*argv, "--tooling-keyring", "unpaired"],
+                            [*argv, "--target", "browser"],
+                            ["--pl" if arg == "--plan" else arg for arg in argv]):
+                execute.reset_mock()
+                with self.subTest(argv=invalid), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    workflow.main(invalid)
+                execute.assert_not_called()
+
     def setUp(self):
         self.f = fixtures.FacadeInputsTest(methodName="runTest")
         self.f.setUp()

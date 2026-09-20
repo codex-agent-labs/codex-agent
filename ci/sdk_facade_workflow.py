@@ -1,5 +1,6 @@
 """Finalize elected Core validation after full original replay, never host admission."""
 
+import argparse
 import os
 from pathlib import Path
 import sys
@@ -210,3 +211,34 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
         return {**result, "shard": shard, "originals": destination / "originals"}
     finally:
         unchanged()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    for name in ("plan", "destination", "repository-root", "facade-request",
+                 "tooling-evidence", "tooling-public-key", "java-executable"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--discovery-root", dest="discovery", type=Path, required=True)
+    parser.add_argument("--state-root", dest="state", type=Path, required=True)
+    parser.add_argument("--target", choices=SDK_FACADE_TARGETS, required=True)
+    for name in ("expected-build-key", "policy-revision", "android-sdk-directory"):
+        parser.add_argument("--" + name, required=True)
+    parser.add_argument("--required-trust-domain", choices=("development", "release"), required=True)
+    for name in ("consumer-java-executable", "tooling-keyring", "tooling-keys-directory", "sdk-apple-validation-policy"):
+        parser.add_argument("--" + name, type=Path)
+    arguments = vars(parser.parse_args(argv))
+    if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
+        parser.error("Core tooling keyring and directory must be supplied together")
+    try:
+        policy = arguments.pop("sdk_apple_validation_policy")
+        if policy is not None:
+            arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
+                policy, "Caller Apple validation policy")
+        execute(**arguments, environ=os.environ)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
