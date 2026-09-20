@@ -318,6 +318,8 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_ios_original_validation.py",
     "ci/sdk_apple_preparation_capture.py",
     "ci/sdk_apple_prepared_release.py",
+    "ci/sdk_apple_release_cli.py",
+    "ci/sdk_apple_attestation_capture.py",
     "ci/sdk_ios_validation_workflow.py",
     "ci/products/sdk_apple_package_execution.py",
     "gradle/build-logic/src/main/kotlin/ApplePackageExecutionEvidence.kt",
