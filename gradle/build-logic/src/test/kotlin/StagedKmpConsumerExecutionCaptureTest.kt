@@ -23,6 +23,33 @@ import org.gradle.testkit.runner.GradleRunner
 /** Process mocks test transport only; the tiny TestKit fixture observes Gradle task states, not KMP compilation. */
 class StagedKmpConsumerExecutionCaptureTest {
     @Test
+    fun `Windows capture retains Java wrapper command and rejects changed launcher inputs`() {
+        for (mutate in listOf("none", "java", "jar")) fixture { f ->
+            val wrapper = f.wrapper.parentFile.resolve("gradlew.bat").apply { writeText("original Windows wrapper") }
+            val java = f.wrapper.parentFile.resolve("jdk/bin/java.exe").apply {
+                parentFile.mkdirs(); writeText("fixture launcher; process is mocked")
+            }
+            val jar = f.wrapper.parentFile.resolve("gradle/wrapper/gradle-wrapper.jar").apply {
+                parentFile.mkdirs(); writeText("fixture wrapper JAR; process is mocked")
+            }
+            f.task.gradleWrapper.set(wrapper)
+            f.task.javaExecutable.set(java)
+            if (mutate != "none") f.afterProcess = {
+                (if (mutate == "java") java else jar).appendText("changed")
+            }
+            if (mutate == "none") f.task.verify()
+            else assertFailsWith<IllegalStateException> { f.task.verify() }
+            val execution = f.capture.resolve("process/execution.json").readReleaseObject()
+            val command = stagedConsumerCommand(wrapper, stagedConsumerArguments(f.consumer, f.repository,
+                "0.8.1", "0.8.0", "common", listOf("compileKotlinJvm"),
+                f.consumer.resolve(".codex-consumer-task-outcomes.init.gradle.kts")), java)
+            assertEquals(JsonArray(command.map(::JsonPrimitive)), execution["command"])
+            assertEquals(mutate == "none", f.report.exists())
+            assertEquals(1, f.calls)
+        }
+    }
+
+    @Test
     fun `optional capture retains exact command raw bytes and unchanged report`() = fixture { f ->
         f.task.verify()
         val execution = f.capture.resolve("process/execution.json").readReleaseObject()

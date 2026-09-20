@@ -360,6 +360,8 @@ abstract class VerifyStagedKmpConsumerTask @Inject constructor(
     abstract val mavenInventory: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val gradleWrapper: RegularFileProperty
+    @get:Optional @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val javaExecutable: RegularFileProperty
     @get:Input abstract val sdkVersion: Property<String>
     @get:Input abstract val runtimeVersion: Property<String>
     @get:Input abstract val androidSdkDirectory: Property<String>
@@ -389,8 +391,12 @@ abstract class VerifyStagedKmpConsumerTask @Inject constructor(
         }
         val consumerInputs = if (capture != null) consumerInputsCaptureDirectory.get().asFile else null
         val report = resultFile.get().asFile
+        val wrapper = gradleWrapper.get().asFile
+        val launcher = javaExecutable.orNull?.asFile
         val sources = listOf(repository, templateDirectory.get().asFile,
-            mavenInventory.get().asFile, gradleWrapper.get().asFile)
+            mavenInventory.get().asFile, wrapper) + listOfNotNull(launcher) +
+            if (wrapper.name == "gradlew.bat") listOf(wrapper.parentFile.resolve("gradle/wrapper/gradle-wrapper.jar"))
+            else emptyList()
         var originals: List<Map<String, String>>? = null
         var preparedInputs: Map<String, String>? = null
         fun inputInventory() = sources.map { source ->
@@ -468,15 +474,15 @@ abstract class VerifyStagedKmpConsumerTask @Inject constructor(
                 consumer, repository, sdkVersion.get(), runtimeVersion.get(), targetName.get(), requestedTasks,
                 outcomeInitScript,
             )
+            val command = stagedConsumerCommand(wrapper, arguments, launcher)
             if (capture == null) {
                 exec.exec {
                     workingDir(consumer)
-                    executable(gradleWrapper.get().asFile.absolutePath)
-                    args(arguments)
+                    commandLine(command)
                 }.assertNormalExitValue()
             } else {
                 try {
-                    exec.captureReleaseProcess(listOf(gradleWrapper.get().asFile.absolutePath) + arguments,
+                    exec.captureReleaseProcess(command,
                         workingDirectory = consumer, environmentVariables = emptyMap(),
                         captureDirectory = capture.resolve("process"))
                 } finally { unchanged() }

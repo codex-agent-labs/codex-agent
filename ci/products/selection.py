@@ -552,9 +552,12 @@ def _native_metadata_owners(path: str) -> set[PhaseInstanceId]:
 
 
 def _control_selection(path: str) -> set[PhaseInstanceId] | None:
+    if path == "ci/products/sdk_android_validation_content.py":
+        return _from_phase("sdk", "sdk-android", "validation")
     if path == "ci/products/sdk_platform_metadata.py":
         return _from_phase("sdk", "sdk-core", "metadata")
     if path in {"ci/products/sdk_facade_source.py", "ci/sdk_facade_validation_phase.py",
+                "ci/sdk_facade_capture.py",
                 "ci/products/sdk_facade_validation_admission.py",
                 "gradle/build-logic/src/main/kotlin/SdkFacadeOriginalExecution.kt"}:
         return _from_phase("sdk", "sdk-core", "validation")
@@ -669,9 +672,12 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _is_control_only(path: str) -> bool:
+    if path == "ci/products/sdk_android_validation_content.py":
+        return False  # Defines Android validation and metadata product bytes.
     if path == "ci/products/sdk_platform_metadata.py":
         return False  # Defines deterministic eleven-target Core metadata bytes.
     if path in {"ci/products/sdk_facade_source.py", "ci/sdk_facade_validation_phase.py",
+                "ci/sdk_facade_capture.py",
                 "ci/products/sdk_facade_validation_admission.py",
                 "gradle/build-logic/src/main/kotlin/SdkFacadeOriginalExecution.kt"}:
         return True  # Original source capture authenticates evidence, not product bytes.
@@ -1128,6 +1134,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstanceId]:
+    if path == "ci/products/sdk_android_validation_content.py":
+        return selected  # Both pure projections live here; neither is a binary/package input.
     if path in {"ci/products/sdk_facade_validation.py", "ci/products/sdk_facade_inputs.py",
                 "gradle/build-logic/src/main/kotlin/ImportedSdkFacadePublicationVerification.kt",
                 "gradle/build-logic/src/main/kotlin/SdkFacadeValidationTasks.kt"}:

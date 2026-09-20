@@ -18,6 +18,7 @@ import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.OutputFile
+import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
@@ -74,6 +75,7 @@ abstract class WriteSdkFacadeValidationContentTask @Inject constructor(private v
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE) abstract val inputsDirectory: DirectoryProperty
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE) abstract val evidenceDirectory: DirectoryProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val gradleWrapper: RegularFileProperty
+    @get:Optional @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val javaExecutable: RegularFileProperty
     @get:Internal abstract val consumerDirectory: DirectoryProperty
     @get:Input abstract val targetName: Property<String>
     @get:Input abstract val sdkVersion: Property<String>
@@ -94,7 +96,7 @@ abstract class WriteSdkFacadeValidationContentTask @Inject constructor(private v
         "--gradle-wrapper", gradleWrapper.get().asFile.absolutePath,
         "--consumer-directory", consumerDirectory.get().asFile.absolutePath,
         "--output", outputFile.get().asFile.absolutePath,
-    )
+    ) + javaExecutable.orNull?.let { listOf("--java-executable", it.asFile.absolutePath) }.orEmpty()
 
     @TaskAction fun writeContent() {
         requireFacadeRequestIdentity(requestFile.get().asFile, targetName.get(), sdkVersion.get(), runtimeVersion.get(), contractVersion.get())
@@ -165,7 +167,11 @@ internal fun Project.registerSdkFacadeValidationTasks(
     val imported = work.map { it.dir("inputs") }
     val consumerRoot = work.map { it.dir("consumer") }
     val evidence = work.map { it.dir("execution") }
-    val wrapper = rootProject.layout.projectDirectory.file("gradlew")
+    val windowsHost = System.getProperty("os.name").startsWith("Windows")
+    val wrapper = rootProject.layout.projectDirectory.file(if (windowsHost) "gradlew.bat" else "gradlew")
+    val javaLauncher = if (windowsHost) rootProject.layout.file(providers.systemProperty("java.home").map {
+        File(it, "bin/java.exe")
+    }) else null
     val sdk = sdkVersion
     val runtime = runtimeVersion
     val contract = contractVersion
@@ -197,6 +203,7 @@ internal fun Project.registerSdkFacadeValidationTasks(
         templateDirectory.set(rootProject.layout.projectDirectory.dir("gradle/release/sdk-facade-consumer-template"))
         mavenInventory.set(imported.map { it.file("maven-inventory.json") })
         gradleWrapper.set(wrapper)
+        javaLauncher?.let { javaExecutable.set(it) }
         this.sdkVersion.set(sdk)
         this.runtimeVersion.set(runtime)
         this.androidSdkDirectory.set(android)
@@ -216,6 +223,7 @@ internal fun Project.registerSdkFacadeValidationTasks(
         inputsDirectory.set(imported)
         evidenceDirectory.set(evidence)
         gradleWrapper.set(wrapper)
+        javaLauncher?.let { javaExecutable.set(it) }
         consumerDirectory.set(consumerRoot)
         producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
         repositoryRoot.set(rootProject.layout.projectDirectory)

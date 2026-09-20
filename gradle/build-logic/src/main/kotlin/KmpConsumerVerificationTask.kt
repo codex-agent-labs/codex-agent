@@ -26,6 +26,17 @@ internal val stagedConsumerBuildTasks = linkedMapOf(
 
 internal const val stagedConsumerOutcomeTask = "verifyCodexStagedConsumerTaskOutcomes"
 
+internal fun stagedConsumerCommand(wrapper: File, arguments: List<String>, javaExecutable: File? = null): List<String> {
+    if (wrapper.name != "gradlew.bat") {
+        check(javaExecutable == null) { "POSIX consumer rejects a Windows Java launcher" }
+        return listOf(wrapper.absolutePath) + arguments
+    }
+    val java = checkNotNull(javaExecutable) { "Windows consumer requires an explicit Java launcher" }
+    check(java.isAbsolute && java.name == "java.exe") { "Windows consumer Java launcher is invalid" }
+    return listOf(java.absolutePath, "-Xmx64m", "-Xms64m", "-Dorg.gradle.appname=gradlew", "-jar",
+        wrapper.parentFile.resolve("gradle/wrapper/gradle-wrapper.jar").absolutePath) + arguments
+}
+
 internal fun stagedConsumerOutcomeInitScript(buildTasks: List<String>): String {
     check(buildTasks.isNotEmpty()) { "Staged consumer build task set is empty" }
     check(buildTasks.distinct().size == buildTasks.size) { "Staged consumer build tasks contain duplicates" }

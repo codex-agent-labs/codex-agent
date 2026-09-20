@@ -42,18 +42,30 @@ def _read(path):
 
 
 def _context(value, receipt):
-    value = require_exact_keys(value, {"repositoryRoot", "androidSdkDirectory"}, "Original facade context")
+    value = require_exact_keys(value, {"repositoryRoot", "androidSdkDirectory"} |
+        ({"javaExecutable"} if type(value) is dict and "javaExecutable" in value else set()),
+        "Original facade context")
     original = _original_path(value["repositoryRoot"], "Original facade repository")
     android = value["androidSdkDirectory"]
     if type(android) is not str or "\r" in android or "\n" in android:
         raise ValueError("Original facade Android SDK context is invalid")
     root = PureWindowsPath(original) if PureWindowsPath(original).drive else PurePosixPath(original)
+    windows = isinstance(root, PureWindowsPath)
+    require_exact_keys(value, {"repositoryRoot", "androidSdkDirectory"} |
+        ({"javaExecutable"} if windows else set()), "Original facade platform context")
+    launcher = {}
+    if windows:
+        java = _original_path(value["javaExecutable"], "Original facade Java executable")
+        if not PureWindowsPath(java).drive or PureWindowsPath(java).name != "java.exe":
+            raise ValueError("Original Windows facade requires its explicit java.exe launcher")
+        launcher["javaExecutable"] = java
     work = root / "build/imported-sdk-facade-validation" / receipt["producer"]["tree"] / receipt["target"]
     consumer = work / "consumer"
     return {
-        "gradleWrapper": str(root / "gradlew"),
+        "gradleWrapper": str(root / ("gradlew.bat" if windows else "gradlew")),
         "consumerDirectory": str(consumer), "repositoryDirectory": str(work / "inputs/maven-repository"),
         "outcomeInitScript": str(consumer / ".codex-consumer-task-outcomes.init.gradle.kts"), "environment": {},
+        **launcher,
     }, str(work / "execution"), original, android
 
 
@@ -69,7 +81,11 @@ def verify_sdk_facade_validation_original_content(
 
     facade_request is current caller-owned policy/paths, never a transported
     request selected as authority. original_context has exactly repositoryRoot
-    and androidSdkDirectory from the independently authenticated original worker;
+    and androidSdkDirectory from the independently authenticated original worker,
+    plus javaExecutable for Windows. These paths must bind that original worker's
+    immutable source and launcher policy, not the current replay host. Legacy
+    Windows bare-gradlew evidence is unsupported and is never relabelled as a
+    successful Java-wrapper invocation;
     all nested command paths derive from the committed fixed producer layout.
     Current replay paths are not substituted into original process evidence.
     """

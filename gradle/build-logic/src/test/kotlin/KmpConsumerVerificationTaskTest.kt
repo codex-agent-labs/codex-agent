@@ -13,6 +13,27 @@ import kotlinx.serialization.json.buildJsonObject
 
 class KmpConsumerVerificationTaskTest {
     @Test
+    fun `Windows consumer uses explicit Java wrapper without a shell`() {
+        val root = createTempDirectory("kmp-wrapper-command").toFile().canonicalFile
+        try {
+            val wrapper = root.resolve("gradlew.bat")
+            val java = root.resolve("jdk with spaces/bin/java.exe")
+            val arguments = listOf("-p", root.resolve("consumer & spaces").absolutePath, "compileKotlinMingwX64")
+            assertEquals(listOf(java.absolutePath, "-Xmx64m", "-Xms64m",
+                "-Dorg.gradle.appname=gradlew", "-jar",
+                root.resolve("gradle/wrapper/gradle-wrapper.jar").absolutePath) + arguments,
+                stagedConsumerCommand(wrapper, arguments, java))
+            assertFailsWith<IllegalStateException> { stagedConsumerCommand(wrapper, arguments) }
+            assertFailsWith<IllegalStateException> {
+                stagedConsumerCommand(wrapper, arguments, root.resolve("cmd.exe"))
+            }
+            val posix = root.resolve("gradlew")
+            assertEquals(listOf(posix.absolutePath) + arguments, stagedConsumerCommand(posix, arguments))
+            assertFailsWith<IllegalStateException> { stagedConsumerCommand(posix, arguments, java) }
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test
     fun `promoted consumer report binds exact SDK Runtime target and tasks`() {
         val valid = promotedConsumerReport()
         assertEquals("android", verifyPromotedConsumerReport(valid, "consumer-android", "1.2.3", "2.3.4"))

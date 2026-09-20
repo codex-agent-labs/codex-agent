@@ -34,6 +34,9 @@ class SdkFacadeValidationTasksTest {
             val work = project.layout.buildDirectory.dir("imported-sdk-facade-validation/$tree/$target").get().asFile
             val stage = project.layout.buildDirectory.dir("product-stage/sdk/sdk-core/validation/$target").get().asFile
             val request = project.file("caller-request.json")
+            val windows = System.getProperty("os.name").startsWith("Windows")
+            val wrapper = project.file(if (windows) "gradlew.bat" else "gradlew")
+            val java = File(System.getProperty("java.home"), "bin/java.exe")
             assertEquals(emptySet(), prepare.taskDependencies.getDependencies(prepare))
             assertEquals(setOf(prepare), metadata.taskDependencies.getDependencies(metadata))
             assertEquals(setOf(metadata), consumer.taskDependencies.getDependencies(consumer))
@@ -50,7 +53,13 @@ class SdkFacadeValidationTasksTest {
             assertEquals(work.resolve("inputs/maven-repository"), consumer.repositoryDirectory.get().asFile)
             assertEquals(work.resolve("inputs/maven-inventory.json"), consumer.mavenInventory.get().asFile)
             assertEquals(project.file("gradle/release/sdk-facade-consumer-template"), consumer.templateDirectory.get().asFile)
-            assertEquals(project.file("gradlew"), consumer.gradleWrapper.get().asFile)
+            assertEquals(wrapper, consumer.gradleWrapper.get().asFile)
+            assertEquals(windows, consumer.javaExecutable.isPresent)
+            assertEquals(windows, content.javaExecutable.isPresent)
+            if (windows) {
+                assertEquals(java, consumer.javaExecutable.get().asFile)
+                assertEquals(java, content.javaExecutable.get().asFile)
+            }
             assertEquals(target, consumer.targetName.get())
             assertEquals(listOf(taskName), consumer.buildTasks.get())
             assertEquals("/sdk", consumer.androidSdkDirectory.get())
@@ -59,8 +68,9 @@ class SdkFacadeValidationTasksTest {
             assertEquals(work.resolve("report.json"), consumer.resultFile.get().asFile)
             assertEquals(listOf("python3", "-m", "ci.products.sdk_facade_inputs", "content", "--request", request.path,
                 "--inputs", work.resolve("inputs").path, "--evidence", work.resolve("execution").path,
-                "--gradle-wrapper", project.file("gradlew").path, "--consumer-directory", work.resolve("consumer").path,
-                "--output", stage.resolve("outputs/validation/facade-validation.json").path), content.commandLine)
+                "--gradle-wrapper", wrapper.path, "--consumer-directory", work.resolve("consumer").path,
+                "--output", stage.resolve("outputs/validation/facade-validation.json").path) +
+                if (windows) listOf("--java-executable", java.path) else emptyList(), content.commandLine)
             assertEquals(listOf("sdk", "sdk-core", "validation", target, "0.8.1"), listOf(manifest.product.get(),
                 manifest.component.get(), manifest.phase.get(), manifest.target.get(), manifest.productVersion.get()))
             assertEquals(mapOf("sdk-facade-validation-content" to "outputs/validation"), manifest.outputRoots.get())
@@ -71,6 +81,25 @@ class SdkFacadeValidationTasksTest {
             assertFalse(work.exists())
             assertFalse(stage.exists())
         } }
+    }
+
+    @Test
+    fun `Windows host selects batch wrapper and explicit Java for both execution and content replay`() = fixture { project ->
+        // Configuration-only host simulation: no Windows process or native compiler runs.
+        val originalOs = System.getProperty("os.name")
+        try {
+            System.setProperty("os.name", "Windows 11")
+            register(project, "windows-x64")
+        } finally { System.setProperty("os.name", originalOs) }
+        val consumer = project.tasks.named("verifySdkCoreValidationConsumer", VerifyStagedKmpConsumerTask::class.java).get()
+        val content = project.tasks.named("writeSdkCoreValidationContent", WriteSdkFacadeValidationContentTask::class.java).get()
+        val java = File(System.getProperty("java.home"), "bin/java.exe")
+        assertEquals(project.file("gradlew.bat"), consumer.gradleWrapper.get().asFile)
+        assertEquals(consumer.gradleWrapper.get(), content.gradleWrapper.get())
+        assertEquals(java, consumer.javaExecutable.get().asFile)
+        assertEquals(java, content.javaExecutable.get().asFile)
+        assertEquals(listOf("--java-executable", java.path), content.commandLine.takeLast(2))
+        assertEquals(1, content.commandLine.count { it == "--java-executable" })
     }
 
     @Test

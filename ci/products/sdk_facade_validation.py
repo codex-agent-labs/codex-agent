@@ -112,11 +112,24 @@ def verify_facade_consumer_evidence(
                  "projection": expected_contract_projection}
     authority_bytes = canonical_json_bytes(authority)
     expected = load_json_bytes(authority_bytes)
-    context = require_exact_keys(expected["context"], {
+    raw_context = expected["context"]
+    if type(raw_context) is not dict:
+        raise ValueError("Original facade context must be an object")
+    wrapper_value = _original_path(raw_context.get("gradleWrapper"), "gradleWrapper")
+    windows = bool(PureWindowsPath(wrapper_value).drive)
+    context = require_exact_keys(raw_context, {
         "gradleWrapper", "consumerDirectory", "repositoryDirectory", "outcomeInitScript", "environment",
-    }, "Original facade context")
+    } | ({"javaExecutable"} if windows else set()), "Original facade context")
     for field in ("gradleWrapper", "consumerDirectory", "repositoryDirectory", "outcomeInitScript"):
         _original_path(context[field], field)
+    launcher = [context["gradleWrapper"]]
+    if windows:
+        java = PureWindowsPath(_original_path(context["javaExecutable"], "javaExecutable"))
+        wrapper = PureWindowsPath(wrapper_value)
+        if wrapper.name != "gradlew.bat" or java.name != "java.exe" or not java.is_absolute():
+            raise ValueError("Windows facade requires its explicit Java wrapper launcher")
+        launcher = [str(java), "-Xmx64m", "-Xms64m", "-Dorg.gradle.appname=gradlew", "-jar",
+                    str(wrapper.parent / "gradle/wrapper/gradle-wrapper.jar")]
     if require_exact_keys(context["environment"], set(), "Facade environment") != {}:
         raise ValueError("Facade process requires unchanged empty environment overrides")
     paths = {"evidence": Path(evidence_directory).absolute(), "package": Path(package_stage).absolute(),
@@ -159,7 +172,7 @@ def verify_facade_consumer_evidence(
                     "runtimeVersion": runtime_version, "repository": "CENTRAL_STAGING-only",
                     "mavenGroup": MAVEN_GROUPS["sdk-core"], "target": target, "tasks": tasks}):
             raise ValueError("Facade consumer report does not match its original inputs and fixed task")
-        command = [context["gradleWrapper"], "-p", context["consumerDirectory"], "--no-daemon",
+        command = [*launcher, "-p", context["consumerDirectory"], "--no-daemon",
             "--no-configuration-cache", "-PCENTRAL_STAGING=" + context["repositoryDirectory"],
             "-PcodexAgent.sdkVersion=" + sdk_version, "-PcodexAgent.runtimeVersion=" + runtime_version,
             "-PcodexAgent.consumerTarget=" + target, "--init-script", context["outcomeInitScript"],

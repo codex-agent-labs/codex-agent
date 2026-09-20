@@ -99,6 +99,32 @@ class FacadeValidationTest(unittest.TestCase):
             (self.evidence / "process/stdout.bin").write_bytes(message.encode())
             self.assertEqual(baseline, canonical_json_bytes(facade.verify_facade_consumer_evidence(**self.arguments)))
 
+    def test_windows_java_wrapper_is_exact_and_does_not_enter_product_content(self):
+        self.capture("windows-x64")
+        baseline = facade.verify_facade_consumer_evidence(**self.arguments)
+        self.context.update(gradleWrapper=r"C:\original checkout\gradlew.bat",
+            javaExecutable=r"C:\Java & spaces\bin\java.exe",
+            consumerDirectory=r"C:\work\consumer", repositoryDirectory=r"C:\work\maven",
+            outcomeInitScript=r"C:\work\consumer\.codex-consumer-task-outcomes.init.gradle.kts")
+        self.capture("windows-x64")
+        self.execution["command"][:1] = [self.context["javaExecutable"], "-Xmx64m", "-Xms64m",
+            "-Dorg.gradle.appname=gradlew", "-jar", r"C:\original checkout\gradle\wrapper\gradle-wrapper.jar"]
+        self.write("process/execution.json", self.execution)
+        self.assertEqual(baseline, facade.verify_facade_consumer_evidence(**self.arguments))
+        for mutate in (
+            lambda: self.execution["command"].__setitem__(0, "cmd.exe"),
+            lambda: self.context.update(javaExecutable=r"C:\other\bin\java.exe"),
+            lambda: self.context.pop("javaExecutable"),
+            lambda: self.context.update(gradleWrapper=r"C:\original checkout\gradlew"),
+        ):
+            original_context, original_execution = deepcopy(self.context), deepcopy(self.execution)
+            mutate()
+            self.write("process/execution.json", self.execution)
+            with self.assertRaises(ValueError): facade.verify_facade_consumer_evidence(**self.arguments)
+            self.context.clear()
+            self.context.update(original_context)
+            self.execution = original_execution
+
     def test_report_process_and_outcome_failures_are_not_success(self):
         cases = [
             ("report.json", lambda v: v.update(target="desktop")),

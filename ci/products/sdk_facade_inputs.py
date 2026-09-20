@@ -243,7 +243,8 @@ def prepare_facade_validation_inputs(request: Path, destination: Path) -> dict:
 
 
 def write_facade_validation_content(*, request: Path, inputs: Path, evidence: Path,
-                                    gradle_wrapper: str, consumer_directory: str, output: Path) -> dict:
+                                    gradle_wrapper: str, consumer_directory: str, output: Path,
+                                    java_executable: str | None = None) -> dict:
     """Reauthenticate explicit originals, compare prepared bytes, project raw capture.
 
     inputs.json is NOT authority. The complete preparation gate runs again and
@@ -286,7 +287,8 @@ def write_facade_validation_content(*, request: Path, inputs: Path, evidence: Pa
                     "gradleWrapper": gradle_wrapper, "consumerDirectory": consumer_directory,
                     "repositoryDirectory": str(inputs / "maven-repository"),
                     "outcomeInitScript": str(Path(consumer_directory) / ".codex-consumer-task-outcomes.init.gradle.kts"),
-                    "environment": {}})
+                    "environment": {},
+                    **({"javaExecutable": java_executable} if java_executable is not None else {})})
             unchanged()
     finally:
         unchanged()
@@ -312,6 +314,7 @@ def main(argv=None):
         content.add_argument("--" + name, type=Path, required=True)
     for name in ("gradle-wrapper", "consumer-directory"):
         content.add_argument("--" + name, required=True)
+    content.add_argument("--java-executable")
     arguments = vars(parser.parse_args(argv))
     mode = arguments.pop("mode")
     try:

@@ -116,6 +116,7 @@ class ProductSelectionTest(unittest.TestCase):
             ("ci/products/sdk_facade_inputs.py", "sdk-core", True),
             ("ci/products/sdk_facade_source.py", "sdk-core", False),
             ("ci/products/sdk_facade_validation_admission.py", "sdk-core", False),
+            ("ci/sdk_facade_capture.py", "sdk-core", False),
             ("ci/sdk_facade_validation_phase.py", "sdk-core", False),
             ("gradle/build-logic/src/main/kotlin/SdkFacadeOriginalExecution.kt", "sdk-core", False),
             ("gradle/build-logic/src/main/kotlin/SdkFacadeValidationTasks.kt", "sdk-core", True),
@@ -143,6 +144,16 @@ class ProductSelectionTest(unittest.TestCase):
     def test_core_metadata_join_owns_only_core_metadata_bytes(self) -> None:
         path = "ci/products/sdk_platform_metadata.py"
         expected = {PhaseInstanceId("sdk", "sdk-core", "metadata", "common")}
+        result = classify_paths([path])
+        self.assertEqual(expected, identities(result))
+        self.assertEqual((), result.unknown_paths)
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((path,) if instance in expected else (), phase_inventory_paths([path], instance))
+
+    def test_android_projections_own_validation_and_metadata_not_compilation(self) -> None:
+        path = "ci/products/sdk_android_validation_content.py"
+        expected = {PhaseInstanceId("sdk", "sdk-android", phase, "android")
+                    for phase in ("validation", "metadata")}
         result = classify_paths([path])
         self.assertEqual(expected, identities(result))
         self.assertEqual((), result.unknown_paths)

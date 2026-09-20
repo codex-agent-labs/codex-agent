@@ -159,11 +159,47 @@ class FacadeOriginalContentTest(unittest.TestCase):
             with self.subTest(context=value), self.assertRaises(ValueError):
                 self.verify(original_context=value)
         context, execution, original, android = admission._context(
-            {"repositoryRoot": r"C:\original checkout", "androidSdkDirectory": r"C:\Android SDK"}, self.receipt)
-        self.assertEqual(r"C:\original checkout\gradlew", context["gradleWrapper"])
+            {"repositoryRoot": r"C:\original checkout", "androidSdkDirectory": r"C:\Android SDK",
+             "javaExecutable": r"C:\original Java\bin\java.exe"}, self.receipt)
+        self.assertEqual(r"C:\original checkout\gradlew.bat", context["gradleWrapper"])
+        self.assertEqual(r"C:\original Java\bin\java.exe", context["javaExecutable"])
         self.assertTrue(execution.endswith("\\jvm\\execution"))
         self.assertEqual(r"C:\original checkout", original)
         self.assertEqual(r"C:\Android SDK", android)
+
+    def test_original_windows_requires_explicit_exact_launcher_and_posix_remains_unchanged(self):
+        windows = {"repositoryRoot": r"C:\original checkout", "androidSdkDirectory": r"C:\Android SDK"}
+        for value in (windows, {**windows, "javaExecutable": None},
+                      {**windows, "javaExecutable": r"java.exe"},
+                      {**windows, "javaExecutable": "/current/host/java.exe"},
+                      {**windows, "javaExecutable": r"C:\Java\bin\java"},
+                      {**windows, "javaExecutable": r"C:\Java\..\bin\java.exe"},
+                      {**self.context, "javaExecutable": r"C:\Java\bin\java.exe"}):
+            with self.subTest(context=value), self.assertRaises(ValueError):
+                admission._context(value, self.receipt)
+        context, _, _, _ = admission._context(self.context, self.receipt)
+        self.assertEqual("/original checkout/gradlew", context["gradleWrapper"])
+        self.assertNotIn("javaExecutable", context)
+
+    def test_original_windows_process_is_exact_java_wrapper_command_not_legacy_bare_wrapper(self):
+        original = {"repositoryRoot": r"C:\original checkout", "androidSdkDirectory": "",
+                    "javaExecutable": r"C:\original Java\bin\java.exe"}
+        context, _, _, _ = admission._context(original, self.receipt)
+        self.f.f.context = context
+        self.f.f.capture("jvm")
+        record = self.f.f.execution
+        wrapper_jar = str(admission.PureWindowsPath(original["repositoryRoot"]) / "gradle/wrapper/gradle-wrapper.jar")
+        bare = deepcopy(record)
+        record["command"] = [original["javaExecutable"], "-Xmx64m", "-Xms64m",
+                             "-Dorg.gradle.appname=gradlew", "-jar", wrapper_jar, *record["command"][1:]]
+        self.f.f.write("process/execution.json", record)
+        arguments = {**self.content_arguments(), "original_context": context}
+        self.assertEqual(self.content, sdk_facade_validation.verify_facade_consumer_evidence(**arguments))
+        for bad in (bare, {**record, "command": ["cmd.exe", "/c", *bare["command"]]},
+                    {**record, "command": [r"C:\other\java.exe", *record["command"][1:]]}):
+            self.f.f.write("process/execution.json", bad)
+            with self.subTest(command=bad["command"]), self.assertRaises(ValueError):
+                sdk_facade_validation.verify_facade_consumer_evidence(**arguments)
 
     def test_late_original_private_or_caller_mutation_rejects_without_returning_receipt(self):
         original_context = deepcopy(self.context)
