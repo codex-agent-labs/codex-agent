@@ -221,7 +221,7 @@ class AppleOriginalExecutionVerificationTest {
     }
 }
 
-private class OriginalAppleExecutionFixture : AutoCloseable {
+internal class OriginalAppleExecutionFixture : AutoCloseable {
     val root = createTempDirectory("original-apple-execution").toFile().canonicalFile
     val distribution = root.resolve("distribution").apply { mkdirs() }
     val execution = root.resolve("execution").apply { mkdirs() }

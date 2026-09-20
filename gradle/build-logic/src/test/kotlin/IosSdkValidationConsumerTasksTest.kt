@@ -14,7 +14,7 @@ class IosSdkValidationConsumerTasksTest {
     fun `rewires validation consumers to exact package and Contract snapshots`() = fixture().use { fixture ->
         fixture.configure()
 
-        val packageRoot = fixture.packageInputs.get().workDirectory.get().asFile.resolve("package")
+        val packageRoot = fixture.packageInputs.get().workDirectory.get().asFile.resolve("CodexAgentPackage")
         val xcframework = fixture.packageInputs.get().workDirectory.get().asFile.resolve("xcframework")
         assertEquals(xcframework, fixture.compiler.get().xcframeworkDirectory.get().asFile)
         assertEquals(xcframework, fixture.binding.get().xcframeworkDirectory.get().asFile)

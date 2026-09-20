@@ -25,7 +25,7 @@ abstract class PrepareAppleValidationPackageInputsTask : DefaultTask() {
     @get:OutputDirectory abstract val workDirectory: DirectoryProperty
 
     @get:Internal
-    val packageDirectory: Provider<Directory> get() = workDirectory.dir("package")
+    val packageDirectory: Provider<Directory> get() = workDirectory.dir("CodexAgentPackage")
 
     @get:Internal
     val xcframeworkDirectory: Provider<Directory> get() = workDirectory.dir("xcframework")

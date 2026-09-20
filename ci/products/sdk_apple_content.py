@@ -171,6 +171,44 @@ def verify_sdk_apple_original_execution(
     )
 
 
+def verify_sdk_apple_validation_binding_content(
+    *, product_directory: Path, evidence_directory: Path, sdk_version: str,
+    expected_sdk_compatibility: Path, canonical_api: Path, canonical_coverage: Path,
+    consumer_source_directory: Path,
+    repository: Path, tooling_evidence: Path, tooling_public_key: Path,
+    java_executable: Path, policy_revision: str, required_trust_domain: str,
+    tooling_keyring: Path | None = None, tooling_keys_directory: Path | None = None,
+) -> None:
+    """Replay selected package/binding content using authenticated tooling.
+
+    The caller authenticates the original receipt, Contract and consumer source
+    identities. Device/source/toolchain gates and phase admission remain separate.
+    No product or acceptance token is emitted by this content check.
+    """
+    require_semver(sdk_version, "Apple SDK version")
+    _verify_sdk_apple_with_tooling(
+        sources={"product": (Path(product_directory), False),
+                 "evidence": (Path(evidence_directory), True),
+                 "consumers": (Path(consumer_source_directory), False)},
+        expected_paths={"sdk-compatibility.json": Path(expected_sdk_compatibility),
+                        "canonical-api.json": Path(canonical_api),
+                        "canonical-coverage.json": Path(canonical_coverage)},
+        command_name="verify-apple-validation-binding-content",
+        argument_builder=lambda private, expected, root: {
+            "product-directory": private["product"], "evidence-directory": private["evidence"],
+            "consumer-source-directory": private["consumers"], "version": sdk_version,
+            "sdk-compatibility": expected["sdk-compatibility.json"],
+            "canonical-api": expected["canonical-api.json"],
+            "canonical-coverage": expected["canonical-coverage.json"],
+            "work-directory": root / "work",
+        },
+        repository=repository, tooling_evidence=tooling_evidence,
+        tooling_public_key=tooling_public_key, java_executable=java_executable,
+        policy_revision=policy_revision, required_trust_domain=required_trust_domain,
+        tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
+    )
+
+
 def verify_sdk_apple_binary_package_content(
     *, product_directory: Path, binary_frameworks: Path, sdk_version: str,
     expected_sdk_compatibility: Path, source_revision: str, developer_directory: Path,

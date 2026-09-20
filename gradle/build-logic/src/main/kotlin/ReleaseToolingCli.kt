@@ -62,6 +62,15 @@ internal fun runReleaseTooling(arguments: Array<String>) {
                 options.required("swift-version"),
             )
         }
+        "verify-apple-validation-binding-content" -> {
+            options.requireOnly("evidence-directory", "product-directory", "version", "sdk-compatibility",
+                "canonical-api", "canonical-coverage", "consumer-source-directory", "work-directory")
+            verifyAppleValidationBindingReplay(
+                options.file("evidence-directory"), options.file("product-directory"), options.required("version"),
+                options.file("sdk-compatibility"), options.file("canonical-api"), options.file("canonical-coverage"),
+                options.file("consumer-source-directory"), options.file("work-directory"),
+            )
+        }
         "verify-original-apple-execution" -> {
             options.requireOnly("distribution-directory", "execution-directory",
                 "expected-distribution-proof", "expected-sdk-compatibility")

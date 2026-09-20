@@ -121,6 +121,8 @@ class ProductSelectionTest(unittest.TestCase):
                      "ci/products/sdk_apple_validation_source.py",
                      "ci/products/sdk_apple_validation_evidence.py",
                      "ci/products/sdk_apple_device_evidence.py",
+                     "ci/products/sdk_apple_toolchain_evidence.py",
+                     "gradle/build-logic/src/main/kotlin/AppleValidationBindingReplay.kt",
                      "gradle/build-logic/src/main/kotlin/AppleBinaryPackageContent.kt",
                      "gradle/build-logic/src/main/kotlin/AppleBinaryPackageReplay.kt"):
             with self.subTest(path=path):

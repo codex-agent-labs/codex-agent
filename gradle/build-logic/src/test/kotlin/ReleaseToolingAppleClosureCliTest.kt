@@ -7,6 +7,23 @@ import kotlin.test.assertTrue
 /** CLI routing checks only; the delegated Apple verifier has its own complete synthetic closure tests. */
 class ReleaseToolingAppleClosureCliTest {
     @Test
+    fun `selected validation binding replay requires every independent input and accepts no output override`() {
+        val values = linkedMapOf("evidence-directory" to "unused", "product-directory" to "unused",
+            "version" to "0.8.0", "sdk-compatibility" to "unused", "canonical-api" to "unused",
+            "canonical-coverage" to "unused", "consumer-source-directory" to "unused", "work-directory" to "unused")
+        val args = arrayOf("verify-apple-validation-binding-content",
+            *values.flatMap { (key, value) -> listOf("--$key", value) }.toTypedArray())
+        values.keys.forEach { missing ->
+            val error = assertFailsWith<IllegalStateException> { runReleaseTooling(args.withoutOption(missing)) }
+            assertTrue("Unexpected release-tooling options" in error.message.orEmpty())
+        }
+        val error = assertFailsWith<IllegalStateException> {
+            runReleaseTooling(args + arrayOf("--success-output", "unused"))
+        }
+        assertTrue("Unexpected release-tooling options" in error.message.orEmpty())
+    }
+
+    @Test
     fun `binary replay requires complete caller inputs and packaged command fails before native tools`() {
         val root = createTempDirectory("apple-binary-cli-").toFile().canonicalFile
         try {

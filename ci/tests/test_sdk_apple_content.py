@@ -10,6 +10,7 @@ from unittest.mock import patch
 from ci.products.inventory import regular_file_inventory
 from ci.products.sdk_apple_content import (
     verify_sdk_apple_original_execution, verify_sdk_apple_package_content, verify_sdk_apple_binary_package_content,
+    verify_sdk_apple_validation_binding_content,
 )
 
 
@@ -68,6 +69,26 @@ class SdkAppleContentTest(unittest.TestCase):
         self.calls.append(command)
         self.assertEqual([str(self.java), "-jar", str(self.jar)], command[:3])
         fields = dict(zip(command[4::2], command[5::2], strict=True))
+        if command[3] == "verify-apple-validation-binding-content":
+            self.assertEqual("0.2.0", fields.pop("--version"))
+            self.assertEqual({"--product-directory", "--evidence-directory", "--consumer-source-directory",
+                              "--sdk-compatibility", "--canonical-api", "--canonical-coverage",
+                              "--work-directory"}, set(fields))
+            fields = {name: Path(value) for name, value in fields.items()}
+            for option, source, empty in (("--product-directory", self.product, False),
+                                         ("--evidence-directory", self.execution, True),
+                                         ("--consumer-source-directory", self.consumers, False)):
+                self.assertNotEqual(source, fields[option])
+                self.assertEqual(regular_file_inventory(source, allow_empty=empty),
+                                 regular_file_inventory(fields[option], allow_empty=empty))
+            for option, source in (("--sdk-compatibility", self.compatibility),
+                                   ("--canonical-api", self.api), ("--canonical-coverage", self.coverage)):
+                self.assertNotEqual(source, fields[option])
+                self.assertEqual(source.read_bytes(), fields[option].read_bytes())
+            self.assertFalse(fields["--work-directory"].exists())
+            self.assertFalse({"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "CLASSPATH"} & set(kwargs["env"]))
+            self.mutate(fields)
+            return subprocess.CompletedProcess(command, 0)
         if command[3] == "verify-apple-binary-package":
             self.assertEqual("0.2.0", fields.pop("--version"))
             self.assertEqual("26.6", fields.pop("--xcode-version"))
@@ -163,6 +184,49 @@ class SdkAppleContentTest(unittest.TestCase):
                 patch("ci.products.sdk_apple_content.verified_tooling_capture", self.capture), \
                 patch("ci.products.sdk_apple_content.subprocess.run", side_effect=self.execute):
             return verify_sdk_apple_binary_package_content(**{**arguments, **changes})
+
+    def validation_binding_inputs(self):
+        self.consumers = self.root / "selected-consumers"
+        self.consumers.mkdir()
+        (self.consumers / "consumer.swift").write_bytes(b"selected immutable consumer\n")
+        self.api = self.root / "api.json"
+        self.api.write_bytes(b"authenticated canonical API\n")
+        self.coverage = self.root / "coverage.json"
+        self.coverage.write_bytes(b"authenticated canonical coverage\n")
+
+    def verify_validation_binding(self, **changes):
+        arguments = {key: value for key, value in self.args.items()
+                     if key not in {"validation_evidence_directory", "expected_distribution_proof"}}
+        arguments.update(evidence_directory=self.execution, canonical_api=self.api,
+                         canonical_coverage=self.coverage, consumer_source_directory=self.consumers)
+        with patch("ci.products.sdk_apple_content.verified_tooling_capture", self.capture), \
+                patch("ci.products.sdk_apple_content.subprocess.run", side_effect=self.execute):
+            return verify_sdk_apple_validation_binding_content(**{**arguments, **changes})
+
+    def test_validation_binding_replay_uses_private_selected_inputs_and_no_output(self):
+        self.validation_binding_inputs()
+        before = regular_file_inventory(self.root, allow_empty=True)
+        with patch.dict("os.environ", {"JAVA_TOOL_OPTIONS": "injected"}):
+            self.assertIsNone(self.verify_validation_binding())
+        self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
+
+    def test_validation_binding_replay_rejects_each_private_authority_mutation_and_failure(self):
+        self.validation_binding_inputs()
+        for option, member in (("--evidence-directory", "compiler-raw/raw-observation.json"),
+                               ("--product-directory", "CodexAgentPackage-0.2.0.zip"),
+                               ("--consumer-source-directory", "consumer.swift"),
+                               ("--canonical-api", None), ("--canonical-coverage", None),
+                               ("--sdk-compatibility", None)):
+            with self.subTest(option=option):
+                def mutate(fields):
+                    path = fields[option] / member if member else fields[option]
+                    path.write_bytes(b"tampered expectation\n")
+                self.mutate = mutate
+                with self.assertRaisesRegex(ValueError, "changed during verification"):
+                    self.verify_validation_binding()
+        self.mutate = lambda fields: (_ for _ in ()).throw(subprocess.CalledProcessError(1, "replay"))
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.verify_validation_binding()
 
     def test_binary_replay_uses_git_source_pins_private_inputs_and_fixed_command(self):
         before = regular_file_inventory(self.root, allow_empty=True)

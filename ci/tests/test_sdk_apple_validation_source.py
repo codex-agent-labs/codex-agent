@@ -2,13 +2,15 @@
 
 from pathlib import Path
 import os
+import shutil
 import stat
 import unittest
 from unittest import mock
 
 from ci.products import sdk_apple_package_source as shared
+from ci.products import sdk_apple_validation_source as validation
 from ci.products.inventory import git_file_inventory, regular_file_inventory
-from ci.products.sdk_apple_validation_source import capture_apple_validation_sources
+from ci.products.sdk_apple_validation_source import capture_apple_validation_sources, verify_apple_validation_sources
 from ci.tests.test_sdk_apple_package_source import RepositoryFixture
 
 
@@ -26,7 +28,91 @@ def validation_fixture():
     return fixture
 
 
+def retained_sources(fixture, revision):
+    capture_apple_validation_sources(fixture.repository, revision, fixture.output)
+    evidence = fixture.root / "evidence"
+    shutil.copytree(fixture.output / (_APPLE + "CompilerEvidence"), evidence / "consumer")
+    shutil.copytree(fixture.output / (_APPLE + "TestApp"), evidence / "device-test-application")
+    (evidence / "device-raw").mkdir()
+    (evidence / "device-raw/stderr.bin").write_bytes(b"")
+    return evidence
+
+
 class SdkAppleValidationSourceTest(unittest.TestCase):
+    def test_retained_sources_match_selected_git_not_dirty_checkout_and_preserve_raw(self):
+        with validation_fixture() as fixture:
+            revision = fixture.commit()
+            evidence = retained_sources(fixture, revision)
+            before = regular_file_inventory(evidence, allow_empty=True)
+            fixture.write(_SWIFT, "dirty unrelated checkout\n")
+            fixture.write(_APPLE + "TestApp/App.swift", "dirty application\n")
+            fixture.write(fixture.pin_path, "dirty invalid toolchain declarations\n")
+
+            result = verify_apple_validation_sources(fixture.repository, revision, evidence)
+
+            self.assertEqual({
+                "consumerInventory": regular_file_inventory(evidence / "consumer"),
+                "testApplicationInventory": regular_file_inventory(evidence / "device-test-application"),
+                "toolchain": {"xcodeVersion": "26.6", "xcodeBuild": "17F113", "swiftVersion": "6.3.3"},
+            }, result)
+            self.assertEqual(before, regular_file_inventory(evidence, allow_empty=True))
+            self.assertEqual(b"dirty unrelated checkout\n", (fixture.repository / _SWIFT).read_bytes())
+
+    def test_retained_missing_extra_modified_empty_or_linked_sources_reject(self):
+        for relative in ("consumer/CodexFailureSwiftConsumer.swift", "device-test-application/App.swift"):
+            for mutation in ("missing", "extra", "modified", "empty", "linked"):
+                with self.subTest(path=relative, mutation=mutation), validation_fixture() as fixture:
+                    revision = fixture.commit()
+                    evidence = retained_sources(fixture, revision)
+                    source = evidence / relative
+                    if mutation == "missing":
+                        source.unlink()
+                    elif mutation == "extra":
+                        source.with_name("extra.swift").write_bytes(b"extra\n")
+                    elif mutation == "linked":
+                        source.unlink()
+                        source.symlink_to(fixture.repository / _SWIFT)
+                    else:
+                        source.write_bytes(b"" if mutation == "empty" else b"unrelated\n")
+                    with self.assertRaises(ValueError):
+                        verify_apple_validation_sources(fixture.repository, revision, evidence)
+                    self.assertEqual(b"", (evidence / "device-raw/stderr.bin").read_bytes())
+
+    def test_self_consistent_retained_checkout_is_not_selected_git_authority(self):
+        with validation_fixture() as fixture:
+            revision = fixture.commit()
+            evidence = retained_sources(fixture, revision)
+            changed = b"different source\n"
+            fixture.write(_SWIFT, changed.decode())
+            (evidence / "consumer/CodexFailureSwiftConsumer.swift").write_bytes(changed)
+            before = regular_file_inventory(evidence, allow_empty=True)
+            with self.assertRaisesRegex(ValueError, "selected immutable Git"):
+                verify_apple_validation_sources(fixture.repository, revision, evidence)
+            self.assertEqual(before, regular_file_inventory(evidence, allow_empty=True))
+            for invalid in ("HEAD", None):
+                with self.subTest(revision=invalid), self.assertRaises(ValueError):
+                    verify_apple_validation_sources(fixture.repository, invalid, evidence)
+
+    def test_retained_source_mutation_during_capture_and_root_alias_reject(self):
+        with validation_fixture() as fixture:
+            revision = fixture.commit()
+            evidence = retained_sources(fixture, revision)
+            original_capture = validation.capture_apple_validation_sources
+
+            def capture(*args):
+                result = original_capture(*args)
+                (evidence / "consumer/CodexFailureSwiftConsumer.swift").write_bytes(b"late mutation\n")
+                return result
+
+            with mock.patch.object(validation, "capture_apple_validation_sources", side_effect=capture):
+                with self.assertRaisesRegex(ValueError, "changed during verification"):
+                    verify_apple_validation_sources(fixture.repository, revision, evidence)
+            alias = fixture.root / "evidence-alias"
+            alias.symlink_to(evidence, target_is_directory=True)
+            for root in (alias, Path("relative"), evidence / "device-raw" / ".."):
+                with self.subTest(root=root), self.assertRaises(ValueError):
+                    verify_apple_validation_sources(fixture.repository, revision, root)
+
     def test_exact_commit_and_tree_capture_only_consumer_allowlist_and_original_modes(self):
         for tree_revision in (False, True):
             with self.subTest(tree=tree_revision), validation_fixture() as fixture:

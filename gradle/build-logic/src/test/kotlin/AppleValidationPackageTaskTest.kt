@@ -12,7 +12,7 @@ class AppleValidationPackageTaskTest {
 
         task.prepare()
 
-        assertEquals(fixture.work.resolve("package"), task.packageDirectory.get().asFile)
+        assertEquals(fixture.work.resolve("CodexAgentPackage"), task.packageDirectory.get().asFile)
         assertEquals(fixture.work.resolve("xcframework"), task.xcframeworkDirectory.get().asFile)
         assertEquals(fixture.packageDigests(), task.packageDirectory.get().asFile.digests())
         val xcframework = task.xcframeworkDirectory.get().asFile.digests()

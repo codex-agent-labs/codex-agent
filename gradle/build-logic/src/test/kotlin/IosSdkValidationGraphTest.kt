@@ -149,7 +149,7 @@ class IosSdkValidationGraphTest {
                 "xcframework" to packageRoot.resolve("extracted/xcframework"),
                 "xctest-raw" to build.resolve("swift-authentication-evidence-task/raw"),
                 "xcresult" to build.resolve("swift-authentication-tests.xcresult"),
-                "xctest-package" to packageRoot.resolve("extracted/package"),
+                "xctest-package" to packageRoot.resolve("extracted/CodexAgentPackage"),
                 "xctest-products" to build.resolve("swift-simulator-compilation-derived-data/Build/Products"),
                 "device-raw" to deviceExecution.resolve("raw"),
                 "device-archive" to deviceExecution.resolve("CodexAgentTestApp.xcarchive"),
@@ -162,7 +162,7 @@ class IosSdkValidationGraphTest {
             assertEquals(expectedLayout, actualLayout)
             assertEquals(expectedLayout.values.toSet(), value("ARCHIVE_INPUTS").split('|').toSet())
             assertEquals(originalTestApp.path, value("DEVICE_TESTAPP_SOURCE"))
-            assertEquals(packageRoot.resolve("extracted/package").path, value("DEVICE_PACKAGE_SOURCE"))
+            assertEquals(packageRoot.resolve("extracted/CodexAgentPackage").path, value("DEVICE_PACKAGE_SOURCE"))
             assertEquals(packageRoot.resolve("device-consumer").path, value("DEVICE_WORK"))
             val deviceCommand = value("DEVICE_COMMAND").split('|')
             assertEquals("/usr/bin/xcodebuild", deviceCommand.first())
@@ -180,7 +180,7 @@ class IosSdkValidationGraphTest {
                     value("${task}_OBJC_CONSUMER"))
             }
             listOf("XCTEST", "BINDING").forEach { task ->
-                assertEquals(packageRoot.resolve("extracted/package").path, value("${task}_PACKAGE"))
+                assertEquals(packageRoot.resolve("extracted/CodexAgentPackage").path, value("${task}_PACKAGE"))
             }
             fun dependencies(name: String) = value("${name}_DEPS").split(',').toSet()
             assertEquals(setOf(ios + "generateCodexAgentAppleBindingEvidence", ios + "verifySdkIosDeviceConsumer"), dependencies("ARCHIVE"))

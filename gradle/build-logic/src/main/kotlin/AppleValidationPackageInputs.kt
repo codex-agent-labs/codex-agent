@@ -56,7 +56,7 @@ internal fun prepareAppleValidationPackageInputs(
         .contentEquals("${swiftArchive.releaseDigest()}\n".toByteArray())) {
         "Apple validation package checksum is not exact"
     }
-    val packageDirectory = work.resolve("package")
+    val packageDirectory = work.resolve("CodexAgentPackage")
     val xcframeworkDirectory = work.resolve("xcframework")
     extractStrictAppleArchive(
         capturedArtifacts.getValue("CodexAgentPackage-$sdkVersion.zip"),
