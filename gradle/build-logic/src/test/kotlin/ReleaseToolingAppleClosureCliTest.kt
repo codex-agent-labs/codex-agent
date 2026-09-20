@@ -7,6 +7,25 @@ import kotlin.test.assertTrue
 /** CLI routing checks only; the delegated Apple verifier has its own complete synthetic closure tests. */
 class ReleaseToolingAppleClosureCliTest {
     @Test
+    fun `package evidence capture requires explicit external destination and no success override`() {
+        val values = linkedMapOf("product-directory" to "missing", "version" to "0.8.0",
+            "binary-frameworks" to "missing", "source-snapshot" to "missing",
+            "sdk-compatibility" to "missing", "work-directory" to "missing",
+            "developer-directory" to "missing", "xcode-version" to "26.6",
+            "xcode-build" to "17F113", "swift-version" to "6.3.3",
+            "execution-evidence-directory" to "missing")
+        val args = arrayOf("capture-apple-binary-package-evidence",
+            *values.flatMap { (key, value) -> listOf("--$key", value) }.toTypedArray())
+        values.keys.forEach { missing ->
+            val error = assertFailsWith<IllegalStateException> { runReleaseTooling(args.withoutOption(missing)) }
+            assertTrue("Unexpected release-tooling options" in error.message.orEmpty())
+        }
+        val error = assertFailsWith<IllegalStateException> { runReleaseTooling(args) }
+        assertTrue("Apple binary package tooling input is missing" in error.message.orEmpty())
+        assertFailsWith<IllegalStateException> { runReleaseTooling(args + arrayOf("--success-output", "missing")) }
+    }
+
+    @Test
     fun `selected validation binding replay requires every independent input and accepts no output override`() {
         val values = linkedMapOf("evidence-directory" to "unused", "product-directory" to "unused",
             "version" to "0.8.0", "sdk-compatibility" to "unused", "canonical-api" to "unused",

@@ -7,6 +7,7 @@ internal fun verifyAppleBinaryPackageWithTools(
     productDirectory: File, version: String, binaryFrameworks: File, sourceSnapshot: File,
     sdkCompatibility: File, workDirectory: File, developerDirectory: File,
     expectedXcodeVersion: String, expectedXcodeBuild: String, expectedSwiftVersion: String,
+    executionEvidenceDirectory: File? = null,
 ) {
     check(PRODUCT_SEMVER.matches(version)) { "Apple binary package version is invalid" }
     val inputs = listOf(productDirectory, binaryFrameworks, sourceSnapshot, sdkCompatibility, developerDirectory)
@@ -21,19 +22,41 @@ internal fun verifyAppleBinaryPackageWithTools(
     val scratch = Files.createTempDirectory("codex-agent-apple-package-tools-").toFile().canonicalFile
     try {
         requireOriginalAppleSnapshotDisjoint(scratch, inputs + workDirectory)
+        val recorder = executionEvidenceDirectory?.let { evidence ->
+            requireApplePackagePathWithoutSymlinks(evidence, "package execution evidence")
+            requireOriginalAppleSnapshotDisjoint(evidence, inputs + workDirectory + scratch)
+            ApplePackageExecutionRecorder(evidence, ApplePackageExecutionContext(
+                scratch, workDirectory, sourceSnapshot, binaryFrameworks, developerDirectory,
+            ))
+        }
         fun run(command: List<String>): Pair<Int, String> {
             check(command.firstOrNull() in setOf("/usr/bin/xcodebuild", "/usr/bin/xcrun", "/usr/bin/plutil", "/usr/bin/grep")) {
                 "Unsupported Apple package tool"
             }
+            recorder?.let {
+                check(command == it.expectedCommand()) { "Apple package execution command differs from fixed sequence" }
+            }
             val output = scratch.resolve("process-output.txt")
-            val process = ProcessBuilder(command).directory(scratch).redirectErrorStream(true)
-                .redirectOutput(output).apply {
-                    environment().clear()
-                    environment().putAll(mapOf("PATH" to "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL" to "C", "LANG" to "C",
-                        "HOME" to scratch.path, "TMPDIR" to scratch.path, "DEVELOPER_DIR" to developerDirectory.canonicalPath))
-                }.start()
-            process.outputStream.close()
-            return process.waitFor() to output.readText()
+            Files.deleteIfExists(output.toPath())
+            val code = try {
+                val process = ProcessBuilder(command).directory(scratch).redirectErrorStream(true)
+                    .redirectOutput(output).apply {
+                        environment().clear()
+                        environment().putAll(mapOf("PATH" to "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL" to "C", "LANG" to "C",
+                            "HOME" to scratch.path, "TMPDIR" to scratch.path, "DEVELOPER_DIR" to developerDirectory.canonicalPath))
+                    }.start()
+                process.outputStream.close()
+                process.waitFor()
+            } catch (failure: Throwable) {
+                recorder?.let {
+                    runCatching { it.record(command, null, if (output.isFile) output.readBytes() else byteArrayOf()) }
+                        .exceptionOrNull()?.let(failure::addSuppressed)
+                }
+                throw failure
+            }
+            val combined = output.readBytes()
+            recorder?.record(command, code, combined)
+            return code to combined.toString(Charsets.UTF_8)
         }
         fun capture(command: List<String>): String {
             val (code, output) = run(command)
@@ -48,6 +71,7 @@ internal fun verifyAppleBinaryPackageWithTools(
         verifyAppleBinaryPackageReplay(productDirectory, version, binaryFrameworks, sourceSnapshot, sdkCompatibility,
             workDirectory, listOf(scratch.path, workDirectory.canonicalPath, sourceSnapshot.canonicalPath), ::capture, ::run)
         verifyToolchain()
+        recorder?.finish()
     } finally {
         deleteReleaseTree(scratch)
     }

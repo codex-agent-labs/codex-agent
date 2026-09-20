@@ -36,12 +36,25 @@ class AppleBinaryPackageReplayTest {
                 if (mutation == "binary") rawBinary.appendText("changed")
                 if (mutation == "source") apple.resolve("Sources/CodexAgent/CodexAgent.swift").appendText("changed")
                 val commands = mutableListOf<List<String>>()
+                val work = fixture.root.resolve("replay")
+                val scratch = fixture.root.resolve("scratch").apply { mkdirs() }
+                val developer = fixture.root.resolve("developer").apply { mkdirs() }
+                val evidence = fixture.root.resolve("execution-evidence")
+                val recorder = ApplePackageExecutionRecorder(evidence,
+                    ApplePackageExecutionContext(scratch, work, sources, binary, developer))
+                fun toolchainObservations() {
+                    recorder.record(listOf("/usr/bin/xcodebuild", "-version"), 0,
+                        "Xcode 26.6\nBuild version 17F113\n".toByteArray())
+                    recorder.record(listOf("/usr/bin/xcrun", "swift", "--version"), 0,
+                        "Apple Swift version 6.3.3\n".toByteArray())
+                }
                 val replay = {
+                    toolchainObservations()
                     verifyAppleBinaryPackageReplay(fixture.product, "0.2.0", binary, sources,
-                        fixture.compatibility, fixture.root.resolve("replay"), listOf("/private-builder"),
+                        fixture.compatibility, work, listOf(scratch.path, work.path, sources.path),
                         capture = { command ->
                             commands += command
-                            when {
+                            val output = when {
                                 command.first() == "/usr/bin/xcodebuild" -> {
                                     val output = File(command.last())
                                     slices.forEach { (target, slice) ->
@@ -62,8 +75,15 @@ class AppleBinaryPackageReplayTest {
                                 }
                                 else -> error("Unexpected command $command")
                             }
-                        }, scan = { 1 to "" },
+                            recorder.record(command, 0, output.toByteArray())
+                            output
+                        }, scan = { command ->
+                            recorder.record(command, 1, byteArrayOf())
+                            1 to ""
+                        },
                     )
+                    toolchainObservations()
+                    recorder.finish()
                 }
                 if (mutation == "none") replay() else assertFailsWith<IllegalStateException>(mutation) { replay() }
                 assertEquals(1, commands.count { it.first() == "/usr/bin/xcodebuild" })

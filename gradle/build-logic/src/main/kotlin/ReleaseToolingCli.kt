@@ -51,15 +51,18 @@ internal fun runReleaseTooling(arguments: Array<String>) {
             check(productionCrossLanguageCAbiScenarioMappings().sumOf { it.testIds.size } == 231)
             println("codex-agent release tooling is ready")
         }
-        "verify-apple-binary-package" -> {
-            options.requireOnly("product-directory", "version", "binary-frameworks", "source-snapshot",
+        "verify-apple-binary-package", "capture-apple-binary-package-evidence" -> {
+            val captureEvidence = command == "capture-apple-binary-package-evidence"
+            val inputs = arrayOf("product-directory", "version", "binary-frameworks", "source-snapshot",
                 "sdk-compatibility", "work-directory", "developer-directory",
                 "xcode-version", "xcode-build", "swift-version")
+            options.requireOnly(*(inputs + if (captureEvidence) arrayOf("execution-evidence-directory") else emptyArray()))
             verifyAppleBinaryPackageWithTools(
                 options.file("product-directory"), options.required("version"), options.file("binary-frameworks"),
                 options.file("source-snapshot"), options.file("sdk-compatibility"), options.file("work-directory"),
                 options.file("developer-directory"), options.required("xcode-version"), options.required("xcode-build"),
                 options.required("swift-version"),
+                executionEvidenceDirectory = if (captureEvidence) options.file("execution-evidence-directory") else null,
             )
         }
         "verify-apple-validation-binding-content" -> {
