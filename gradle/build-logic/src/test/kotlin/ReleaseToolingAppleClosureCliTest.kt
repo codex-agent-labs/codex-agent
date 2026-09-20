@@ -7,6 +7,25 @@ import kotlin.test.assertTrue
 /** CLI routing checks only; the delegated Apple verifier has its own complete synthetic closure tests. */
 class ReleaseToolingAppleClosureCliTest {
     @Test
+    fun `original package replay requires original binding and event authority without output override`() {
+        val values = linkedMapOf("evidence-directory" to "unused", "product-directory" to "unused",
+            "version" to "0.8.0", "binary-frameworks" to "unused", "source-snapshot" to "unused",
+            "sdk-compatibility" to "unused", "work-directory" to "unused", "execution-binding-file" to "unused",
+            "expected-binding-sha256" to "sha256:${"a".repeat(64)}", "expected-execution-files" to "unused",
+            "xcode-version" to "26.6", "xcode-build" to "17F113", "swift-version" to "6.3.3")
+        val args = arrayOf("verify-original-apple-package-execution",
+            *values.flatMap { (key, value) -> listOf("--$key", value) }.toTypedArray())
+        values.keys.forEach { missing ->
+            val failure = assertFailsWith<IllegalStateException> { runReleaseTooling(args.withoutOption(missing)) }
+            assertTrue("Unexpected release-tooling options" in failure.message.orEmpty())
+        }
+        val failure = assertFailsWith<IllegalStateException> {
+            runReleaseTooling(args + arrayOf("--success-output", "unused"))
+        }
+        assertTrue("Unexpected release-tooling options" in failure.message.orEmpty())
+    }
+
+    @Test
     fun `simulator replay requires independent caller pins and forbids output overrides`() {
         val values = linkedMapOf("evidence-directory" to "missing",
             "expected-runtime-name" to "iOS 26.5",

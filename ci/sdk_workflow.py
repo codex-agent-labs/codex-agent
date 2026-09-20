@@ -19,9 +19,7 @@ from products.inventory import (
     regular_file_inventory, sha256_bytes, snapshot_regular_tree, publish_regular_tree,
 )
 from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId
-from products.runtime_aggregate_handoff import verified_runtime_aggregate_handoff
-from products.sdk_inputs_verification import verified_sdk_inputs
-from products.sdk_protected_runtime import _original_carrier
+from products.sdk_apple_original_inputs import verified_apple_original_inputs
 from products.sdk_inputs import REQUEST_NAME
 from reuse import github_output
 
@@ -90,27 +88,12 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
                     or read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes):
                 raise ValueError("SDK consumer original plan or captured upload changed during use")
 
-        with verified_sdk_inputs(capture / "original/sdk-inputs", keyring=keyring, keys_directory=keys_directory,
+        with verified_apple_original_inputs(capture, expected_source=selection["source"],
+                keyring=keyring, keys_directory=keys_directory,
                 selection_repository_root=repository_root, selection_revision=validated["validationCommit"],
-                expected_contract_payload_sha256=selection["contractPayloadSha256"]) as sdk:
-            arguments = sdk["arguments"]
-            raw = read_regular_file_bytes(arguments["runtime_metadata_receipt"])
-            receipt = load_canonical_json_bytes(raw)
-            carrier = (capture / "original/runtime-original" if selection["source"] == "released-default"
-                       else capture / "original/runtime-capture/original")
-            carrier = _original_carrier(carrier, sha256_bytes(raw), receipt["buildKey"])
-            with verified_runtime_aggregate_handoff(carrier, keyring=arguments["runtime_keyring"],
-                    keys_directory=arguments["runtime_keys_directory"]) as runtime:
-                if read_regular_file_bytes(runtime["indexInputs"]["attestation"]) != read_regular_file_bytes(
-                        arguments["runtime_attestation"]):
-                    raise ValueError("SDK inputs and raw Runtime carrier have different original attestations")
-                for product, component, target in (("contract", "contract", "common"),
-                                                    ("runtime", "runtime-aggregate", "aggregate")):
-                    identity = PhaseInstanceId(product, component, "metadata", target)
-                    if runtime["receiptBytes"][identity] != read_regular_file_bytes(arguments[f"{product}_metadata_receipt"]):
-                        raise ValueError("SDK inputs and raw Runtime carrier have different original receipts")
-                unchanged()
-                yield {"selection": selection, "capture": capture, "sdk": sdk, "runtime": runtime}
+                expected_contract_payload_sha256=selection["contractPayloadSha256"]) as original:
+            unchanged()
+            yield {"selection": selection, "capture": capture, **original}
         unchanged()
 
 

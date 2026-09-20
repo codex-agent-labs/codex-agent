@@ -11,6 +11,7 @@ from ci import sdk_workflow as receiver
 from ci.tests import test_sdk_inputs_verification as fixture
 from products.inventory import canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory, snapshot_regular_tree
 from products.registry import PhaseInstanceId
+from products.runtime_aggregate_handoff import verified_runtime_aggregate_handoff
 from products.sdk_inputs import COMPATIBILITY_NAME
 from products.signatures import generate_development_key, sign_manifest
 
@@ -82,7 +83,8 @@ class SdkInputReceiverTest(unittest.TestCase):
                 patch.object(receiver.product_reuse, "capture_sdk_inputs_upload", side_effect=self.capture), \
                 patch("reuse.api_request", side_effect=AssertionError("unexpected receiver network")):
             with receiver.verified_inputs(self.plan, self.discovery, self.state, **{**self.options, **changes}) as value:
-                selection.assert_called_once_with(self.plan, self.discovery, self.state, self.repository, self.options["environ"])
+                selection.assert_called_once_with(self.plan, self.discovery, self.state, self.repository,
+                                                self.options["environ"], sdk_validation_tooling=None)
                 yield value
 
     def test_both_layouts_join_exact_signed_receipts_full_runtime_and_sdk_inputs(self):
@@ -153,7 +155,7 @@ class SdkInputReceiverTest(unittest.TestCase):
         self.options.update(keyring=keyring, keys_directory=keys)
 
         # Full original carrier verification, not a mocked signature-only proof.
-        with receiver.verified_runtime_aggregate_handoff(self.runtime, keyring=keyring, keys_directory=keys) as verified:
+        with verified_runtime_aggregate_handoff(self.runtime, keyring=keyring, keys_directory=keys) as verified:
             self.assertEqual(replacement, verified["attestation"])
             self.assertNotEqual(original_attestation, verified["attestation"])
             self.assertEqual(50, len(verified["receiptBytes"]))

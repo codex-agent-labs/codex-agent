@@ -10,7 +10,7 @@ import kotlin.test.assertTrue
 /** Pure retained-execution tests with simulated original tools; no Apple process is invoked. */
 class AppleOriginalPackageExecutionTest {
     @Test
-    fun `replays complete original observations after historical paths are gone`() {
+    fun `replays complete original observations without native calls after historical paths are gone`() {
         Fixture().use { fixture ->
             assertFalse(fixture.originalContext.scratchDirectory.exists())
             assertFalse(fixture.originalContext.workDirectory.exists())
@@ -18,6 +18,48 @@ class AppleOriginalPackageExecutionTest {
             assertFalse(fixture.originalContext.binaryFrameworks.exists())
             fixture.verify()
             fixture.assertInputsUnchanged()
+        }
+    }
+
+    @Test
+    fun `requires exact canonical joined binding and independently authenticated event inventory`() {
+        listOf("hash", "canonical", "schema", "context", "input-role", "input-digest", "event")
+            .forEach { mutation ->
+            Fixture().use { fixture ->
+                fixture.verify(fixture.content.root.resolve("baseline-bound-$mutation"))
+                when (mutation) {
+                    "hash" -> fixture.changeExpectedBindingDigest()
+                    "canonical" -> fixture.makeBindingNoncanonical()
+                    "schema" -> fixture.rewriteBinding {
+                        JsonObject(it + ("schemaVersion" to JsonPrimitive(2)))
+                    }
+                    "context" -> fixture.rewriteBinding {
+                        val context = it.releaseObject("context")
+                        JsonObject(it + ("context" to JsonObject(context - "developerDirectory")))
+                    }
+                    "input-role" -> fixture.rewriteBinding {
+                        val inputs = it.releaseObject("inputs")
+                        JsonObject(it + ("inputs" to JsonObject(inputs - "compatibility")))
+                    }
+                    "input-digest" -> fixture.rewriteBinding {
+                        val inputs = it.releaseObject("inputs")
+                        val product = inputs.releaseObject("product")
+                        val first = product.keys.sorted().first()
+                        val changed = JsonObject(product + (first to JsonPrimitive("0".repeat(64))))
+                        JsonObject(it + ("inputs" to JsonObject(inputs + ("product" to changed))))
+                    }
+                    "event" -> fixture.changeExpectedEventDigest()
+                }
+                val cause = when (mutation) {
+                    "hash" -> "binding digest changed"
+                    "canonical" -> "metadata is not canonical"
+                    "schema" -> "binding schema is invalid"
+                    "context" -> "context fields are invalid"
+                    "input-role" -> "input roles are invalid"
+                    else -> "input binding changed"
+                }
+                expectCausalFailure(cause) { fixture.verify() }
+            }
         }
     }
 
@@ -136,6 +178,9 @@ class AppleOriginalPackageExecutionTest {
         val source = content.root.resolve("current-source")
         val binary = content.root.resolve("current-binary")
         val work = content.root.resolve("pure-replay")
+        private val binding = content.root.resolve("input-binding.json")
+        private val expectedExecutionFiles = content.root.resolve("expected-execution-files.json")
+        private var expectedBindingSha256 = ""
         val originalContext = ApplePackageExecutionContext(
             historyScratch,
             historyWork,
@@ -147,20 +192,19 @@ class AppleOriginalPackageExecutionTest {
         private val initialSource: Map<String, String>
         private val initialBinary: Map<String, String>
         private val initialCompatibility: ByteArray
-        private val expectedOriginalInputs = linkedMapOf<String, Map<String, String>>()
 
         init {
             populateInputs(historySource, historyBinary)
             recordOriginalExecution()
-            expectedOriginalInputs.putAll(mapOf(
-                "execution" to digests(evidence),
-                "product" to digests(content.product),
-                "binary" to digests(historyBinary),
-                "source" to digests(historySource),
-                "compatibility" to mapOf(
-                    "sdk-compatibility.json" to content.compatibility.releaseDigest(),
-                ),
-            ))
+            val originalInputs = captureApplePackageExecutionInputs(
+                content.product, historyBinary, historySource, content.compatibility,
+            )
+            writeApplePackageExecutionBinding(
+                binding, originalContext, originalInputs,
+                content.product, historyBinary, historySource, content.compatibility,
+            )
+            refreshBindingDigest()
+            refreshExecutionBinding()
             copyReleaseTree(historySource, source)
             copyReleaseTree(historyBinary, binary)
             history.deleteRecursively()
@@ -179,10 +223,12 @@ class AppleOriginalPackageExecutionTest {
         }
 
         fun refreshExecutionBinding() {
-            expectedOriginalInputs["execution"] = digests(evidence)
+            expectedExecutionFiles.atomicWriteJson(JsonObject(
+                digests(evidence).mapValues { (_, digest) -> JsonPrimitive(digest) },
+            ))
         }
 
-        fun verify(replayWork: File = work) = verifyOriginalApplePackageExecution(
+        fun verify(replayWork: File = work) = verifyBoundOriginalApplePackageExecution(
             evidence,
             content.product,
             "0.2.0",
@@ -190,12 +236,35 @@ class AppleOriginalPackageExecutionTest {
             source,
             content.compatibility,
             replayWork,
-            originalContext,
-            expectedOriginalInputs.mapValues { (_, inventory) -> inventory.toMap() },
+            binding,
+            expectedBindingSha256,
+            expectedExecutionFiles,
             "26.6",
             "17F113",
             "6.3.3",
         )
+
+        fun changeExpectedBindingDigest() {
+            expectedBindingSha256 = "sha256:${"0".repeat(64)}"
+        }
+
+        fun makeBindingNoncanonical() {
+            binding.appendText(" ")
+            refreshBindingDigest()
+        }
+
+        fun rewriteBinding(transform: (JsonObject) -> JsonObject) {
+            binding.atomicWriteJson(transform(binding.readReleaseObject()))
+            refreshBindingDigest()
+        }
+
+        fun changeExpectedEventDigest() {
+            val inventory = expectedExecutionFiles.readReleaseObject()
+            val first = inventory.keys.sorted().first()
+            expectedExecutionFiles.atomicWriteJson(JsonObject(
+                inventory + (first to JsonPrimitive("0".repeat(64))),
+            ))
+        }
 
         fun assertInputsUnchanged() {
             assertContentEquals(initialCompatibility, content.compatibility.readBytes())
@@ -285,6 +354,10 @@ class AppleOriginalPackageExecutionTest {
 
         private fun digests(root: File) =
             verifiedRegularFiles(root).mapValues { (_, file) -> file.releaseDigest() }
+
+        private fun refreshBindingDigest() {
+            expectedBindingSha256 = "sha256:${binding.releaseDigest()}"
+        }
 
         override fun close() = content.close()
     }

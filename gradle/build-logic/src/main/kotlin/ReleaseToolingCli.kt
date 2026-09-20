@@ -84,6 +84,18 @@ internal fun runReleaseTooling(arguments: Array<String>) {
                 options.file("expected-distribution-proof"), options.file("expected-sdk-compatibility"),
             )
         }
+        "verify-original-apple-package-execution" -> {
+            options.requireOnly("evidence-directory", "product-directory", "version", "binary-frameworks",
+                "source-snapshot", "sdk-compatibility", "work-directory", "execution-binding-file",
+                "expected-binding-sha256", "expected-execution-files", "xcode-version", "xcode-build", "swift-version")
+            verifyBoundOriginalApplePackageExecution(
+                options.file("evidence-directory"), options.file("product-directory"), options.required("version"),
+                options.file("binary-frameworks"), options.file("source-snapshot"), options.file("sdk-compatibility"),
+                options.file("work-directory"), options.file("execution-binding-file"),
+                options.required("expected-binding-sha256"), options.file("expected-execution-files"),
+                options.required("xcode-version"), options.required("xcode-build"), options.required("swift-version"),
+            )
+        }
         "verify-original-apple-simulator-execution" -> {
             options.requireOnly("evidence-directory", "expected-runtime-name",
                 "expected-device-type-identifier", "original-working-directory")

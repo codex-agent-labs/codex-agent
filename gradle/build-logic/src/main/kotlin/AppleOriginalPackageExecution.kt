@@ -11,6 +11,89 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
 /**
+ * File boundary for the existing pure replay. Both expectations must be supplied from the
+ * SAME authenticated original upload; hashing current arguments is not an authority.
+ * This verifies content only and never authenticates an upload, receipt, producer or host.
+ */
+internal fun verifyBoundOriginalApplePackageExecution(
+    evidenceDirectory: File,
+    productDirectory: File,
+    version: String,
+    binaryFrameworks: File,
+    sourceSnapshot: File,
+    sdkCompatibility: File,
+    workDirectory: File,
+    bindingFile: File,
+    expectedBindingSha256: String,
+    expectedExecutionFiles: File,
+    expectedXcodeVersion: String,
+    expectedXcodeBuild: String,
+    expectedSwiftVersion: String,
+) {
+    listOf(bindingFile, expectedExecutionFiles).forEach {
+        requireApplePackagePathWithoutSymlinks(it, "original package binding")
+        check(it.isFile) { "Original Apple package binding file is missing" }
+    }
+    requireOriginalAppleSnapshotDisjoint(workDirectory, listOf(bindingFile, expectedExecutionFiles))
+    val bindingBefore = bindingFile.readBytes()
+    val executionBefore = expectedExecutionFiles.readBytes()
+    check(expectedBindingSha256.matches(Regex("sha256:[0-9a-f]{64}")) &&
+        "sha256:${bindingFile.releaseDigest()}" == expectedBindingSha256) {
+        "Original Apple package binding digest changed"
+    }
+    val binding = bindingFile.readCanonicalOriginalApplePackageObject()
+    check(binding.keys == setOf("schemaVersion", "context", "inputs") &&
+        binding["schemaVersion"]?.toString() == "1") {
+        "Original Apple package binding schema is invalid"
+    }
+    val context = binding["context"] as? JsonObject ?: error("Original Apple package context is invalid")
+    check(context.keys == setOf("scratchDirectory", "workDirectory", "sourceSnapshot",
+        "binaryFrameworks", "developerDirectory")) { "Original Apple package context fields are invalid" }
+    fun path(role: String): File {
+        val value = context[role] as? kotlinx.serialization.json.JsonPrimitive
+            ?: error("Original Apple package context path is invalid")
+        check(value.isString && value.content.none(Char::isISOControl)) {
+            "Original Apple package context path is invalid"
+        }
+        return File(value.content)
+    }
+    val originalContext = ApplePackageExecutionContext(path("scratchDirectory"), path("workDirectory"),
+        path("sourceSnapshot"), path("binaryFrameworks"), path("developerDirectory"))
+    val inputs = binding["inputs"] as? JsonObject ?: error("Original Apple package inputs are invalid")
+    check(inputs.keys == setOf("product", "binary", "source", "compatibility")) {
+        "Original Apple package input roles are invalid"
+    }
+    fun digests(value: JsonObject): Map<String, String> = value.mapValues { (path, digest) ->
+        check(path.isNotBlank() && !path.startsWith('/') && '\\' !in path &&
+            path.none(Char::isISOControl) && path.split('/').none { it.isEmpty() || it == "." || it == ".." }) {
+            "Original Apple package inventory path is invalid"
+        }
+        val primitive = digest as? kotlinx.serialization.json.JsonPrimitive
+            ?: error("Original Apple package inventory digest is invalid")
+        check(primitive.isString && primitive.content.matches(Regex("[0-9a-f]{64}"))) {
+            "Original Apple package inventory digest is invalid"
+        }
+        primitive.content
+    }
+    val expected = inputs.mapValues { (_, value) ->
+        digests(value as? JsonObject ?: error("Original Apple package input inventory is invalid"))
+    } + ("execution" to digests(expectedExecutionFiles.readCanonicalOriginalApplePackageObject()))
+    try {
+        verifyOriginalApplePackageExecution(evidenceDirectory, productDirectory, version, binaryFrameworks,
+            sourceSnapshot, sdkCompatibility, workDirectory, originalContext, expected,
+            expectedXcodeVersion, expectedXcodeBuild, expectedSwiftVersion)
+    } finally {
+        listOf(bindingFile, expectedExecutionFiles).forEach {
+            requireApplePackagePathWithoutSymlinks(it, "original package binding recheck")
+        }
+        check(bindingFile.readBytes().contentEquals(bindingBefore) &&
+            expectedExecutionFiles.readBytes().contentEquals(executionBefore)) {
+            "Original Apple package binding changed during replay"
+        }
+    }
+}
+
+/**
  * Pure replay of caller-authenticated original package execution bytes. The retained process
  * observations and effects grant no receipt, producer, source, or host authority by themselves.
  * expectedOriginalInputs must come from the same authenticated original execution binding as

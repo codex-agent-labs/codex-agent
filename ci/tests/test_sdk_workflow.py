@@ -46,14 +46,13 @@ class SdkWorkflowTest(unittest.TestCase):
                     workflow.PhaseInstanceId("contract", "contract", "metadata", "common"): contract.read_bytes(),
                     workflow.PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"): runtime.read_bytes()}}
 
-            # These two contexts stand for existing signed-content authority;
-            # this test exercises actual selection forwarding and receipt pairing only.
+            # The joined context stands for existing signed-content authority;
+            # its exact original receipt pairing has separate full-fixture tests.
             with self.subTest(policy=policy), \
                     patch.object(workflow, "_selection", wraps=workflow._selection) as selected, \
                     patch.object(workflow.product_reuse, "capture_sdk_inputs_upload", side_effect=capture), \
-                    patch.object(workflow, "verified_sdk_inputs", side_effect=lambda *a, **k: nullcontext(captured["sdk"])), \
-                    patch.object(workflow, "_original_carrier", side_effect=lambda path, *args: path), \
-                    patch.object(workflow, "verified_runtime_aggregate_handoff", side_effect=lambda *a, **k: nullcontext(captured["runtime"])):
+                    patch.object(workflow, "verified_apple_original_inputs",
+                                 side_effect=lambda *a, **k: nullcontext(captured)) as verified:
                 optional = {"sdk_validation_tooling": policy} if policy is not None else {}
                 with workflow.verified_inputs(self.plan, self.discovery, self.state, **self.arguments,
                         **self.upload_for_capture(), **optional) as inputs:
@@ -61,6 +60,9 @@ class SdkWorkflowTest(unittest.TestCase):
                     self.assertTrue(captured_path.exists())
                     self.assertIs(imported_policy, inputs["sdk"]["sdk_validation_tooling"])
                     self.assertIs(policy, selected.call_args.kwargs["sdk_validation_tooling"])
+                    self.assertEqual(self.revision, verified.call_args.kwargs["selection_revision"])
+                    self.assertEqual(self.arguments["keyring"], verified.call_args.kwargs["keyring"])
+                    self.assertEqual(self.arguments["keys_directory"], verified.call_args.kwargs["keys_directory"])
                     expected = {"repository_root": self.repository, "environ": self.arguments["environ"],
                                 "include_sdk_selection": True, **optional}
                     self.inspect.assert_called_once_with(self.plan, self.discovery, self.state, **expected)
