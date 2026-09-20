@@ -34,33 +34,9 @@ inputs:
   tree:
     required: true
     description: Exact tested source tree.
-  apple-artifact-id:
+  developer-directory:
     required: true
-    description: Exact original Swift tests upload ID.
-  apple-artifact-sha256:
-    required: true
-    description: Exact original Swift tests upload digest.
-  native-tests-artifact-id:
-    required: true
-    description: Exact current Apple native tests upload ID.
-  native-tests-artifact-sha256:
-    required: true
-    description: Exact current Apple native tests upload digest.
-  rust-device-artifact-id:
-    required: true
-    description: Exact current Apple Rust device upload ID.
-  rust-device-artifact-sha256:
-    required: true
-    description: Exact current Apple Rust device upload digest.
-  rust-simulator-artifact-id:
-    required: true
-    description: Exact current Apple Rust simulator upload ID.
-  rust-simulator-artifact-sha256:
-    required: true
-    description: Exact current Apple Rust simulator upload digest.
-  expected-distribution-proof:
-    required: true
-    description: Caller-authenticated expected Apple distribution proof file.
+    description: Explicit Xcode Developer directory used by package production and replay.
   sdk-validation-tooling:
     required: true
     description: Caller-owned canonical six-field tooling policy file.
@@ -71,22 +47,19 @@ runs:
   using: composite
   steps:
     - id: policy
-      name: Pin caller tooling and expected Apple proof before state capture
+      name: Pin caller tooling before state capture
       shell: bash
       env:
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
-        EXPECTED_DISTRIBUTION_PROOF: ${{ inputs.expected-distribution-proof }}
       run: |
         python3 -B - <<'PY'
         import os
         from pathlib import Path
         from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes
         policy_path = Path(os.environ['SDK_VALIDATION_TOOLING'])
-        proof_path = Path(os.environ['EXPECTED_DISTRIBUTION_PROOF'])
-        if not policy_path.is_absolute() or not proof_path.is_absolute():
-            raise ValueError('iOS package tooling and expected proof require explicit absolute paths')
+        if not policy_path.is_absolute():
+            raise ValueError('iOS package tooling requires an explicit absolute path')
         raw = read_regular_file_bytes(policy_path, reject_symlink_parents=True)
-        proof = read_regular_file_bytes(proof_path, reject_symlink_parents=True)
         policy = require_exact_keys(load_canonical_json_bytes(raw),
             {'evidence', 'publicKey', 'javaExecutable', 'requiredTrustDomain', 'keyring', 'keysDirectory'},
             'Caller SDK tooling policy')
@@ -103,7 +76,6 @@ runs:
                 raise ValueError('Caller tooling fields must be explicit absolute paths')
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('policy_sha256=' + sha256_bytes(raw) + '\n')
-            output.write('proof_sha256=' + sha256_bytes(proof) + '\n')
         PY
     - id: captured
       uses: ./.github/actions/capture-runtime-state
@@ -128,9 +100,7 @@ runs:
         BUILD_KEY: ${{ inputs.build-key }}
         TREE: ${{ inputs.tree }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
-        EXPECTED_DISTRIBUTION_PROOF: ${{ inputs.expected-distribution-proof }}
         POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
-        PROOF_SHA256: ${{ steps.policy.outputs.proof_sha256 }}
       run: |
         python3 -B - <<'PY'
         import json, os, re, sys
@@ -141,10 +111,8 @@ runs:
         if host_classifier() != 'macos-arm64':
             raise ValueError('iOS SDK package must execute on the elected macOS ARM64 host')
         if (sha256_bytes(read_regular_file_bytes(Path(os.environ['SDK_VALIDATION_TOOLING']), reject_symlink_parents=True))
-                != os.environ['POLICY_SHA256'] or
-                sha256_bytes(read_regular_file_bytes(Path(os.environ['EXPECTED_DISTRIBUTION_PROOF']), reject_symlink_parents=True))
-                != os.environ['PROOF_SHA256']):
-            raise ValueError('iOS package caller tooling or expected proof changed during state capture')
+                != os.environ['POLICY_SHA256']):
+            raise ValueError('iOS package caller tooling changed during state capture')
         key, tree = os.environ['BUILD_KEY'], os.environ['TREE']
         rows = json.loads(os.environ['MATRIX'])['include']
         expected = ('sdk', 'sdk-ios', 'package', 'ios')
@@ -173,18 +141,9 @@ runs:
         BUILD_KEY: ${{ inputs.build-key }}
         SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
         SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
-        APPLE_ARTIFACT_ID: ${{ inputs.apple-artifact-id }}
-        APPLE_ARTIFACT_SHA256: ${{ inputs.apple-artifact-sha256 }}
-        NATIVE_TESTS_ID: ${{ inputs.native-tests-artifact-id }}
-        NATIVE_TESTS_SHA256: ${{ inputs.native-tests-artifact-sha256 }}
-        RUST_DEVICE_ID: ${{ inputs.rust-device-artifact-id }}
-        RUST_DEVICE_SHA256: ${{ inputs.rust-device-artifact-sha256 }}
-        RUST_SIMULATOR_ID: ${{ inputs.rust-simulator-artifact-id }}
-        RUST_SIMULATOR_SHA256: ${{ inputs.rust-simulator-artifact-sha256 }}
-        EXPECTED_DISTRIBUTION_PROOF: ${{ inputs.expected-distribution-proof }}
+        DEVELOPER_DIR: ${{ inputs.developer-directory }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
-        PROOF_SHA256: ${{ steps.policy.outputs.proof_sha256 }}
         POLICY_REVISION: ${{ inputs.policy-revision }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
@@ -196,11 +155,9 @@ runs:
         sys.path.insert(0, str(root / 'ci'))
         from products.inventory import load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes
         policy_path = Path(os.environ['SDK_VALIDATION_TOOLING'])
-        proof_path = Path(os.environ['EXPECTED_DISTRIBUTION_PROOF'])
         raw = read_regular_file_bytes(policy_path, reject_symlink_parents=True)
-        if (sha256_bytes(raw) != os.environ['POLICY_SHA256'] or
-                sha256_bytes(read_regular_file_bytes(proof_path, reject_symlink_parents=True)) != os.environ['PROOF_SHA256']):
-            raise ValueError('iOS package caller tooling or expected proof changed before execution')
+        if sha256_bytes(raw) != os.environ['POLICY_SHA256']:
+            raise ValueError('iOS package caller tooling changed before execution')
         policy = require_exact_keys(load_canonical_json_bytes(raw),
             {'evidence', 'publicKey', 'javaExecutable', 'requiredTrustDomain', 'keyring', 'keysDirectory'},
             'Caller SDK tooling policy')
@@ -211,21 +168,13 @@ runs:
             '--repository-root': str(root), '--expected-build-key': os.environ['BUILD_KEY'],
             '--sdk-inputs-artifact-id': os.environ['SDK_INPUTS_ID'],
             '--sdk-inputs-artifact-sha256': os.environ['SDK_INPUTS_SHA256'],
-            '--apple-artifact-id': os.environ['APPLE_ARTIFACT_ID'],
-            '--apple-artifact-sha256': os.environ['APPLE_ARTIFACT_SHA256'],
             '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
             '--keyring': str(root / 'gradle/release/product-signing-keys.json'),
             '--keys-directory': str(root / 'gradle/release/keys'),
-            '--expected-distribution-proof': str(proof_path),
+            '--developer-directory': os.environ['DEVELOPER_DIR'],
             '--tooling-evidence': policy['evidence'], '--tooling-public-key': policy['publicKey'],
             '--java-executable': policy['javaExecutable'], '--policy-revision': os.environ['POLICY_REVISION'],
             '--required-trust-domain': trust,
-            '--native-tests-artifact-id': os.environ['NATIVE_TESTS_ID'],
-            '--native-tests-artifact-sha256': os.environ['NATIVE_TESTS_SHA256'],
-            '--rust-device-artifact-id': os.environ['RUST_DEVICE_ID'],
-            '--rust-device-artifact-sha256': os.environ['RUST_DEVICE_SHA256'],
-            '--rust-simulator-artifact-id': os.environ['RUST_SIMULATOR_ID'],
-            '--rust-simulator-artifact-sha256': os.environ['RUST_SIMULATOR_SHA256'],
         }
         if (trust not in ('development', 'release')
                 or (trust == 'release' and (policy['keyring'] is None or policy['keysDirectory'] is None))

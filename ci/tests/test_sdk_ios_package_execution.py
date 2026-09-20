@@ -1,4 +1,4 @@
-"""Controller-order tests; authority, Apple tooling and host execution are mocked."""
+"""Controller-order tests; authority, tooling, and host execution are mocked."""
 
 from contextlib import contextmanager, ExitStack
 from pathlib import Path
@@ -8,9 +8,7 @@ from unittest.mock import patch
 
 from ci import sdk_ios_package_workflow as workflow
 from ci.tests.product_chain_support import write_receipt
-from products.inventory import (
-    canonical_json_bytes, regular_file_inventory, write_canonical_json,
-)
+from products.inventory import canonical_json_bytes, regular_file_inventory, write_canonical_json
 from products.receipt import write_output_manifest
 
 
@@ -24,42 +22,58 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         self.plan = self.root / "plan.json"
         self.plan.write_bytes(b'{"synthetic":"verified plan boundary"}\n')
         self.destination = self.root / "build/package"
+        self.developer = self.root / "Applications/Xcode.app/Contents/Developer"
+        self.developer.mkdir(parents=True)
         self.producer = {
             "repository": "owner/repository",
             "workflowPath": ".github/workflows/product-validation.yml",
-            "commit": "a" * 40, "tree": "b" * 40, "event": "pull_request",
-            "runId": 7, "runAttempt": 2, "pullRequest": 3,
+            "commit": "a" * 40,
+            "tree": "b" * 40,
+            "event": "pull_request",
+            "runId": 7,
+            "runAttempt": 2,
+            "pullRequest": 3,
         }
-        self.ready = {"schemaVersion": 1, "product": "sdk", "component": "sdk-ios",
-                      "phase": "package", "target": "ios",
-                      "buildKey": "sha256:" + "c" * 64, "inputs": {}}
+        self.ready = {
+            "schemaVersion": 1,
+            "product": "sdk",
+            "component": "sdk-ios",
+            "phase": "package",
+            "target": "ios",
+            "buildKey": "sha256:" + "c" * 64,
+            "inputs": {},
+        }
         self.expected_key = self.ready["buildKey"]
         self.sdk_directory = self.root / "verified-sdk"
         self.sdk_directory.mkdir()
         (self.sdk_directory / "sdk-compatibility-request.json").write_bytes(b"request\n")
-        (self.sdk_directory / "sdk-compatibility.json").write_bytes(b"compatibility\n")
         self.arguments = {}
-        for name in ("contract_payload", "contract_metadata_receipt", "contract_attestation",
-                     "contract_attestation_signature", "contract_public_key"):
-            path = self.root / f"verified-sdk/{name}"
+        for name in (
+            "contract_payload",
+            "contract_metadata_receipt",
+            "contract_attestation",
+            "contract_attestation_signature",
+            "contract_public_key",
+        ):
+            path = self.sdk_directory / name
             path.write_bytes(f"synthetic {name}\n".encode())
             self.arguments[name] = path
         self.arguments.update({
-            "required_trust_domain": "release", "contract_keyring": self.root / "keyring.json",
+            "required_trust_domain": "release",
+            "contract_keyring": self.root / "keyring.json",
             "contract_keys_directory": self.root / "keys",
         })
         self.arguments["contract_keyring"].write_bytes(b"policy\n")
         self.arguments["contract_keys_directory"].mkdir()
         self.sdk_inputs = {
-            "selection": {"consumers": [{"product": "sdk", "component": "sdk-ios",
-                                           "phase": "package", "target": "ios"}],
-                          "sdkVersion": "0.8.0"},
+            "selection": {
+                "consumers": [{
+                    "product": "sdk", "component": "sdk-ios", "phase": "package", "target": "ios",
+                }],
+                "sdkVersion": "0.8.0",
+            },
             "sdk": {"directory": self.sdk_directory, "arguments": self.arguments},
         }
-        self.expected_proof = self.root / "expected-proof.json"
-        self.expected_proof.write_bytes(b"expected proof\n")
-        self.native = self.root / "native"
-        self.native.mkdir(); (self.native / "proof.json").write_bytes(b"native\n")
         self.tooling = self.root / "tooling"
         self.tooling.mkdir(); (self.tooling / "receipt.json").write_bytes(b"tooling\n")
         self.tooling_key = self.root / "tooling.pub"; self.tooling_key.write_bytes(b"public\n")
@@ -67,7 +81,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         self.events = []
         self.context_failure = None
         self.gate_failure = False
-        self.native_producer = self.producer
+        self.contract_mismatch = False
         self.finalized = None
 
     @contextmanager
@@ -81,8 +95,6 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
                 (self.result["stage"] / "changed-after-gate").write_bytes(b"changed\n")
             elif self.context_failure == "sdk-prepared":
                 (self.destination / "inputs/changed-after-gate").write_bytes(b"changed\n")
-            elif self.context_failure == "sdk-apple":
-                (self.destination / "apple-source/changed-after-gate").write_bytes(b"changed\n")
         finally:
             self.events.append("sdk-closed")
 
@@ -108,53 +120,49 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
             )
             receipt = directory / "phase-receipt.json"
             write_receipt(
-                receipt, product=product, component=component, phase=phase, target=target,
-                version=version, version_identity=version, outputs=manifest["outputs"],
-                upstream=[], context={"producer": self.producer},
+                receipt,
+                product=product,
+                component=component,
+                phase=phase,
+                target=target,
+                version=version,
+                version_identity=version,
+                outputs=manifest["outputs"],
+                upstream=[],
+                context={"producer": self.producer},
             )
             if phase == "metadata":
                 self.arguments["contract_metadata_receipt"].write_bytes(receipt.read_bytes())
+        if self.contract_mismatch:
+            self.arguments["contract_metadata_receipt"].write_bytes(b"different Contract receipt\n")
         return self.ready
-
-    def capture_apple(self, plan, destination, **arguments):
-        self.events.append("apple-source")
-        self.assertEqual("development", arguments["required_trust_domain"])
-        self.assertEqual(self.expected_proof, arguments["expected_distribution_proof"])
-        self.assertEqual(
-            self.sdk_directory / "sdk-compatibility.json",
-            arguments["expected_sdk_compatibility"],
-        )
-        distribution = destination / workflow._DISTRIBUTION
-        distribution.mkdir(parents=True)
-        (distribution / "verified-distribution-proof.json").write_bytes(b"captured original proof\n")
-        # A retained source producer may differ; the caller must not relabel it.
-        return {"originalProducer": {**self.producer, "commit": "d" * 40, "tree": "e" * 40}}
-
-    @contextmanager
-    def native_inputs(self, *args, **kwargs):
-        self.events.append("native-enter")
-        try:
-            yield {"producer": self.native_producer, "directory": self.native}
-            self.events.append("native-exit")
-            if self.context_failure == "native":
-                raise ValueError("synthetic native context rejection")
-        finally:
-            self.events.append("native-closed")
 
     def worker(self, ready, **arguments):
         self.events.append("worker")
         self.assertEqual(self.ready, ready)
         self.assertEqual(self.producer, arguments["producer"])
-        self.assertEqual(self.destination / "apple-source" / workflow._DISTRIBUTION,
-                         arguments["verified_distribution"])
+        self.assertEqual(
+            {"SAFE": "environment", "DEVELOPER_DIR": str(self.developer)},
+            arguments["environ"],
+        )
+        self.assertEqual(
+            self.sdk_directory / "sdk-compatibility-request.json",
+            arguments["compatibility_request"],
+        )
+        self.assertTrue({
+            "verified_distribution",
+            "native_evidence",
+            "expected_sdk_compatibility",
+            "expected_distribution_proof",
+        }.isdisjoint(arguments))
         stage = self.destination / "synthetic-stage"
-        validation = self.destination / "synthetic-validation"
-        stage.mkdir(); validation.mkdir()
+        stage.mkdir()
         (stage / "output").write_bytes(b"synthetic package output\n")
-        (validation / "proof").write_bytes(b"synthetic validation evidence\n")
-        self.result = {"stage": stage, "validationEvidence": validation,
-                       "outputInventory": regular_file_inventory(stage),
-                       "validationEvidenceInventory": regular_file_inventory(validation)}
+        self.result = {
+            "stage": stage,
+            "diagnostics": self.destination / "worker",
+            "outputInventory": regular_file_inventory(stage),
+        }
         return self.result
 
     def finalize(self, **arguments):
@@ -171,95 +179,126 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         self.events.append("gate")
         if self.gate_failure:
             raise ValueError("synthetic full package rejection")
-        self.assertIn("native-enter", self.events)
-        self.assertNotIn("native-exit", self.events)
-        apple = arguments["apple_verification"]
-        self.assertEqual(self.result["validationEvidence"], apple["validation_evidence_directory"])
-        self.assertEqual("development", apple["required_trust_domain"])
-        self.assertEqual(self.sdk_directory / "sdk-compatibility.json",
-                         apple["expected_sdk_compatibility"])
+        self.assertIn("sdk-enter", self.events)
+        self.assertNotIn("sdk-exit", self.events)
+        self.assertEqual(self.result["stage"], stage)
+        self.assertEqual(self.sdk_directory / "sdk-compatibility-request.json", request)
+        self.assertEqual(self.destination / "inputs/sdk-sdk-ios-binary-ios/stage",
+                         arguments["binary_stage_root"])
+        apple = arguments["apple_binary_verification"]
+        self.assertEqual({
+            "developer_directory": self.developer,
+            "repository": self.root,
+            "tooling_evidence": self.tooling,
+            "tooling_public_key": self.tooling_key,
+            "java_executable": self.java,
+            "policy_revision": "9" * 40,
+            "required_trust_domain": "development",
+            "tooling_keyring": None,
+            "tooling_keys_directory": None,
+        }, apple)
         raw = receipt.read_bytes()
         return self.finalized["receipt"], raw
 
-    def invoke(self):
-        self.tooling_policy = {"evidence": str(self.tooling), "publicKey": str(self.tooling_key),
-            "javaExecutable": str(self.java), "requiredTrustDomain": "development",
-            "keyring": None, "keysDirectory": None}
+    def invoke(self, **changes):
+        self.tooling_policy = {
+            "evidence": str(self.tooling),
+            "publicKey": str(self.tooling_key),
+            "javaExecutable": str(self.java),
+            "requiredTrustDomain": "development",
+            "keyring": None,
+            "keysDirectory": None,
+        }
         arguments = dict(
             expected_build_key=self.expected_key,
-            sdk_inputs_artifact_id=11, sdk_inputs_artifact_sha256="sha256:" + "1" * 64,
-            apple_artifact_id=12, apple_artifact_sha256="sha256:" + "2" * 64,
-            native_uploads={"synthetic": "caller uploads"}, trusted_workflow_sha="f" * 40,
-            keyring=self.arguments["contract_keyring"], keys_directory=self.arguments["contract_keys_directory"],
-            expected_distribution_proof=self.expected_proof,
-            tooling_evidence=self.tooling, tooling_public_key=self.tooling_key,
-            java_executable=self.java, policy_revision="9" * 40, required_trust_domain="development",
-            repository_root=self.root, environ={"SAFE": "environment"}, token="token",
+            sdk_inputs_artifact_id=11,
+            sdk_inputs_artifact_sha256="sha256:" + "1" * 64,
+            trusted_workflow_sha="f" * 40,
+            keyring=self.arguments["contract_keyring"],
+            keys_directory=self.arguments["contract_keys_directory"],
+            developer_directory=self.developer,
+            tooling_evidence=self.tooling,
+            tooling_public_key=self.tooling_key,
+            java_executable=self.java,
+            policy_revision="9" * 40,
+            required_trust_domain="development",
+            repository_root=self.root,
+            environ={"SAFE": "environment"},
+            token="token",
         )
+        arguments.update(changes)
         with ExitStack() as stack:
-            stack.enter_context(patch.object(workflow.product_reuse, "_product_materialization_paths",
-                                             return_value=(self.discovery, self.state, self.destination)))
-            stack.enter_context(patch.object(workflow.sdk_workflow, "verified_inputs",
-                                             side_effect=self.verified_inputs))
-            stack.enter_context(patch.object(workflow.product_reuse, "materialize_product_predecessors",
-                                             side_effect=self.materialize))
-            stack.enter_context(patch.object(workflow, "verify_contract_component_projection",
-                                             return_value=object()))
-            stack.enter_context(patch.object(workflow, "capture_sdk_apple_original_ci",
-                                             side_effect=self.capture_apple))
-            stack.enter_context(patch.object(workflow, "verified_sdk_apple_native_inputs",
-                                             side_effect=self.native_inputs))
+            stack.enter_context(patch.object(
+                workflow.product_reuse,
+                "_product_materialization_paths",
+                return_value=(self.discovery, self.state, self.destination),
+            ))
+            stack.enter_context(patch.object(
+                workflow.sdk_workflow,
+                "verified_inputs",
+                side_effect=self.verified_inputs,
+            ))
+            stack.enter_context(patch.object(
+                workflow.product_reuse,
+                "materialize_product_predecessors",
+                side_effect=self.materialize,
+            ))
             stack.enter_context(patch.object(workflow, "execute_package", side_effect=self.worker))
-            stack.enter_context(patch.object(workflow.product_reuse, "finalize_phase_object",
-                                             side_effect=self.finalize))
+            stack.enter_context(patch.object(
+                workflow.product_reuse,
+                "finalize_phase_object",
+                side_effect=self.finalize,
+            ))
             stack.enter_context(patch.object(workflow, "verify_sdk_package_inputs", side_effect=self.gate))
-            stack.enter_context(patch.object(workflow, "verify_phase_shard",
-                                             side_effect=lambda *_: self.finalized))
+            stack.enter_context(patch.object(
+                workflow,
+                "verify_phase_shard",
+                side_effect=lambda *_: self.finalized,
+            ))
             return workflow.execute(self.plan, self.discovery, self.state, self.destination, **arguments)
 
-    def test_full_gate_precedes_context_exit_and_publication(self):
+    def test_binary_gate_precedes_sdk_context_exit_and_publication(self):
         result = self.invoke()
         self.assertEqual(self.finalized, result)
         self.assertEqual(
-            ["sdk-enter", "materialize", "apple-source", "native-enter", "worker", "finalize",
-             "gate", "native-exit", "native-closed", "sdk-exit", "sdk-closed"],
+            ["sdk-enter", "materialize", "worker", "finalize", "gate", "sdk-exit", "sdk-closed"],
             self.events,
         )
         self.assertTrue((self.destination / "shard").is_dir())
 
-    def test_native_original_must_match_elected_producer(self):
-        self.native_producer = {**self.producer, "runAttempt": 3}
-        with self.assertRaisesRegex(ValueError, "native evidence differs"):
+    def test_current_contract_receipt_must_match_authenticated_sdk_inputs(self):
+        self.contract_mismatch = True
+        with self.assertRaisesRegex(ValueError, "Current Contract predecessor differs"):
             self.invoke()
         self.assertNotIn("worker", self.events)
         self.assertFalse((self.destination / "shard").exists())
 
-    def test_gate_or_context_exit_failure_never_publishes(self):
+    def test_gate_failure_never_publishes(self):
         self.gate_failure = True
         with self.assertRaisesRegex(ValueError, "full package rejection"):
             self.invoke()
         self.assertFalse((self.destination / "shard").exists())
 
-        self.destination = self.root / "build/context-rejection"
-        self.events.clear(); self.gate_failure = False; self.context_failure = "native"
-        with self.assertRaisesRegex(ValueError, "native context rejection"):
-            self.invoke()
-        self.assertFalse((self.destination / "shard").exists())
-
-    def test_output_mutation_after_outer_exit_rejects_before_publication(self):
-        self.context_failure = "sdk"
-        with self.assertRaisesRegex(ValueError, "candidate changed after admission"):
-            self.invoke()
-        self.assertFalse((self.destination / "shard").exists())
-
-    def test_authenticated_input_mutation_on_outer_exit_rejects_before_publication(self):
-        for mutation in ("sdk-prepared", "sdk-apple"):
+    def test_stage_or_predecessor_mutation_after_sdk_exit_rejects_publication(self):
+        for mutation, message in (
+            ("sdk", "candidate changed after admission"),
+            ("sdk-prepared", "changed after SDK verification"),
+        ):
             self.destination = self.root / "build" / mutation
-            self.events.clear(); self.context_failure = mutation
-            with self.subTest(mutation=mutation), self.assertRaisesRegex(
-                    ValueError, "changed after SDK verification"):
+            self.events.clear()
+            self.context_failure = mutation
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, message):
                 self.invoke()
             self.assertFalse((self.destination / "shard").exists())
+
+    def test_developer_directory_is_required_normalized_and_unchanged(self):
+        for value in (
+            self.root / "missing-developer",
+            self.developer.parent / ".." / "Contents/Developer",
+        ):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.invoke(developer_directory=value)
+            self.assertNotIn("worker", self.events)
 
 
 if __name__ == "__main__":
