@@ -18,7 +18,7 @@ import product_reuse
 from products.inventory import (
     canonical_json_bytes, git_product_versions, load_canonical_json_bytes, read_regular_file_bytes,
     regular_file_inventory, require_array, require_exact_keys, require_integer, require_regular_directory, run_git, sha256_file,
-    snapshot_regular_tree,
+    snapshot_regular_tree, publish_regular_tree, require_sha256, sha256_bytes, write_canonical_json,
 )
 from products.plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST, plan_phase
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
@@ -29,12 +29,96 @@ from products.sdk_apple_device_evidence import _original_directory
 from products.sdk_apple_validation_context import verify_apple_validation_context
 from products.sdk_apple_validation_execution import verify_apple_validation_stage
 from products.sdk_package import _require_capability_output_separate
+from products.signing_isolation import require_no_signing_secret
 from products.selection import phase_git_inventory
 from sdk_ios_original_binary import verified_original_ios_binary, verified_retained_ios_binary
 from sdk_ios_original_package import verified_original_ios_package, verified_retained_ios_package
 
 
 _LIMIT = 16 * 1024 * 1024
+
+
+def prepare_ios_validation_signing_inputs(plan, validation_receipt_path, destination, *,
+        target, expected_receipt_sha256, artifact_id, artifact_sha256, trusted_workflow_sha,
+        keyring, keys_directory, repository_root, environ, token,
+        tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
+        tooling_keyring=None, tooling_keys_directory=None):
+    """Preserve fully replayed originals on a non-secret runner, without signing.
+
+    This unsigned preparation is not authority. A protected consumer must
+    independently authenticate its fixed preparation job/upload and original
+    validation upload before issuing a detached signature over these exact bytes.
+    """
+    require_no_signing_secret(environ)
+    if target not in ("ios-arm64", "ios-simulator-arm64"):
+        raise ValueError("Apple preparation requires an exact validation target")
+    require_sha256(expected_receipt_sha256, "Selected Apple validation receipt")
+    require_integer(artifact_id, "Original Apple validation artifact ID", 1)
+    require_sha256(artifact_sha256, "Original Apple validation artifact digest")
+    if required_trust_domain != "release" or tooling_keyring is None or tooling_keys_directory is None:
+        raise ValueError("Apple signing preparation requires release-trust replay tooling")
+    plan, receipt_path, output = Path(plan), Path(validation_receipt_path), Path(destination).absolute()
+    inputs = [Path(value) for value in (plan, receipt_path, repository_root, keyring, keys_directory,
+        tooling_evidence, tooling_public_key, java_executable, tooling_keyring, tooling_keys_directory)]
+
+    def output_safe():
+        _require_capability_output_separate(output, inputs)
+        if output.exists() or output.is_symlink():
+            raise ValueError("Apple preparation destination must not exist")
+        for ancestor in output.parents:
+            if ancestor.exists() or ancestor.is_symlink():
+                require_regular_directory(ancestor, "Apple preparation output ancestry")
+
+    output_safe()
+    raw = read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True)
+    receipt = validate_phase_receipt(load_canonical_json_bytes(raw))
+    plan_bytes = read_regular_file_bytes(plan, max_bytes=_LIMIT, reject_symlink_parents=True)
+    if (sha256_bytes(raw) != expected_receipt_sha256
+            or (receipt["product"], receipt["component"], receipt["phase"], receipt["target"]) !=
+               ("sdk", "sdk-ios", "validation", target)):
+        raise ValueError("Apple preparation differs from selected validation receipt")
+
+    def unchanged():
+        require_no_signing_secret(environ)
+        if (read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True) != raw
+                or read_regular_file_bytes(plan, max_bytes=_LIMIT, reject_symlink_parents=True) != plan_bytes):
+            raise ValueError("Apple preparation selected inputs changed during use")
+
+    with tempfile.TemporaryDirectory(prefix="apple-signing-preparation-") as temporary:
+        prepared = Path(temporary).resolve() / "prepared"
+        captured = prepared / "capture"
+        with verified_original_ios_validation(plan, receipt_path, artifact_id=artifact_id,
+                artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
+                keyring=keyring, keys_directory=keys_directory, repository_root=repository_root,
+                environ=environ, token=token, tooling_evidence=tooling_evidence,
+                tooling_public_key=tooling_public_key, java_executable=java_executable,
+                policy_revision=policy_revision, required_trust_domain=required_trust_domain,
+                tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as verified:
+            unchanged()
+            if verified["receiptBytes"] != raw or canonical_json_bytes(verified["receipt"]) != raw:
+                raise ValueError("Apple preparation replay returned a different original receipt")
+            inventory = _input_inventory(verified["capture"], allow_empty=True)
+            snapshot_regular_tree(verified["capture"], captured, allow_empty=True)
+            if (_input_inventory(captured, allow_empty=True) != inventory
+                    or _input_inventory(verified["capture"], allow_empty=True) != inventory
+                    or read_regular_file_bytes(captured / "original/shard/phase-receipt.json",
+                        max_bytes=_LIMIT, reject_symlink_parents=True) != raw):
+                raise ValueError("Apple preparation changed the original validation capture")
+        # Publish only after every original-reader context-exit check succeeds.
+        unchanged()
+        if _input_inventory(captured, allow_empty=True) != inventory:
+            raise ValueError("Apple preparation capture changed after replay")
+        record = {"schemaVersion": 1, "target": target, "receiptSha256": expected_receipt_sha256,
+            "captureDigest": sha256_bytes(canonical_json_bytes(inventory)),
+            "planSha256": sha256_bytes(plan_bytes), "producer": receipt["producer"],
+            "originalArtifact": {"artifactId": artifact_id, "artifactSha256": artifact_sha256}}
+        write_canonical_json(prepared / "preparation.json", record)
+        unchanged()
+        if _input_inventory(captured, allow_empty=True) != inventory:
+            raise ValueError("Apple preparation capture changed before publication")
+        output_safe()
+        publish_regular_tree(prepared, output, allow_empty=True)
+    return record
 
 
 def _json(path):
