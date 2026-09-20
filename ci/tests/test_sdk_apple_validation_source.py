@@ -10,13 +10,27 @@ from unittest import mock
 from ci.products import sdk_apple_package_source as shared
 from ci.products import sdk_apple_validation_source as validation
 from ci.products.inventory import git_file_inventory, regular_file_inventory
-from ci.products.sdk_apple_validation_source import capture_apple_validation_sources, verify_apple_validation_sources
+from ci.products.sdk_apple_validation_source import (
+    capture_apple_validation_sources,
+    read_apple_validation_simulator_policy,
+    verify_apple_validation_sources,
+)
 from ci.tests.test_sdk_apple_package_source import RepositoryFixture
 
 
 _APPLE = "codex-agent-runtime-ios/apple/"
 _SWIFT = _APPLE + "CompilerEvidence/CodexFailureSwiftConsumer.swift"
 _OBJECTIVE_C = _APPLE + "CompilerEvidence/CodexFailureObjectiveCConsumer.m"
+_SIMULATOR_POLICY = "gradle/build-logic/src/main/kotlin/IosAppleDistributionTasks.kt"
+
+
+def simulator_policy(runtime="iOS 26.5", device="com.apple.CoreSimulator.SimDeviceType.iPhone-17"):
+    return (
+        "fun register() {\n"
+        f'    runtimeName.set("{runtime}")\n'
+        f'    deviceTypeIdentifier.set("{device}")\n'
+        "}\n"
+    )
 
 
 def validation_fixture():
@@ -25,6 +39,7 @@ def validation_fixture():
     fixture.write(_OBJECTIVE_C, "original Objective-C consumer\n")
     fixture.write(_APPLE + "CompilerEvidence/unrelated.m", "not selected\n")
     fixture.write(_APPLE + "TestApp/Nested/config.json", "original test application config\n")
+    fixture.write(_SIMULATOR_POLICY, simulator_policy())
     return fixture
 
 
@@ -39,6 +54,64 @@ def retained_sources(fixture, revision):
 
 
 class SdkAppleValidationSourceTest(unittest.TestCase):
+    def test_simulator_policy_comes_only_from_the_exact_immutable_commit_or_tree(self):
+        with validation_fixture() as fixture:
+            revision = fixture.commit()
+            tree = fixture.git("rev-parse", f"{revision}^{{tree}}")
+            fixture.write(_SIMULATOR_POLICY, simulator_policy("iOS 99.1", "com.apple.CoreSimulator.SimDeviceType.iPad-99"))
+
+            expected = {
+                "runtimeName": "iOS 26.5",
+                "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+            }
+            self.assertEqual(expected, read_apple_validation_simulator_policy(fixture.repository, revision))
+            self.assertEqual(expected, read_apple_validation_simulator_policy(fixture.repository, tree))
+
+    def test_simulator_policy_rejects_missing_duplicate_malformed_and_nonregular_declarations(self):
+        invalid = (
+            "",
+            'runtimeName.set("iOS 26.5")\n',
+            simulator_policy() + 'runtimeName.set("iOS 26.5")\n',
+            simulator_policy() +
+            'deviceTypeIdentifier.set("com.apple.CoreSimulator.SimDeviceType.iPhone-17")\n',
+            simulator_policy() + 'runtimeName.set(providers.gradleProperty("runtime"))\n',
+            simulator_policy() +
+            'deviceTypeIdentifier . set (providers.gradleProperty("device"))\n',
+            simulator_policy("26.5"),
+            simulator_policy("iOS 026.5"),
+            simulator_policy(device="iPhone-17"),
+            simulator_policy(device="com.apple.CoreSimulator.SimDeviceType.iPhone 17"),
+        )
+        for index, contents in enumerate(invalid):
+            with self.subTest(index=index), validation_fixture() as fixture:
+                fixture.write(_SIMULATOR_POLICY, contents)
+                revision = fixture.commit()
+                with self.assertRaises(ValueError):
+                    read_apple_validation_simulator_policy(fixture.repository, revision)
+
+        with validation_fixture() as fixture:
+            fixture.remove(_SIMULATOR_POLICY)
+            revision = fixture.commit()
+            with self.assertRaises(ValueError):
+                read_apple_validation_simulator_policy(fixture.repository, revision)
+        with validation_fixture() as fixture:
+            fixture.symlink(_SIMULATOR_POLICY)
+            revision = fixture.commit()
+            with self.assertRaises(ValueError):
+                read_apple_validation_simulator_policy(fixture.repository, revision)
+
+    def test_simulator_policy_rejects_invalid_revision_and_non_utf8_source(self):
+        with validation_fixture() as fixture:
+            revision = fixture.commit()
+            for invalid in ("HEAD", revision[:12], revision.upper(), "f" * 40, None):
+                with self.subTest(revision=invalid), self.assertRaises(ValueError):
+                    read_apple_validation_simulator_policy(fixture.repository, invalid)
+        with validation_fixture() as fixture:
+            (fixture.repository / _SIMULATOR_POLICY).write_bytes(b"\xff\xfe")
+            revision = fixture.commit()
+            with self.assertRaisesRegex(ValueError, "not UTF-8"):
+                read_apple_validation_simulator_policy(fixture.repository, revision)
+
     def test_retained_sources_match_selected_git_not_dirty_checkout_and_preserve_raw(self):
         with validation_fixture() as fixture:
             revision = fixture.commit()

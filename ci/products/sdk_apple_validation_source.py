@@ -1,10 +1,11 @@
 """Capture fixed validation consumer sources; the caller authenticates the Git revision."""
 
 from pathlib import Path
+import re
 import tempfile
 
-from .inventory import regular_file_inventory
-from .sdk_apple_package_source import _capture_apple_sources
+from .inventory import git_regular_blob_bytes, regular_file_inventory
+from .sdk_apple_package_source import _capture_apple_sources, _immutable_tree
 
 
 _CONSUMERS = (
@@ -12,6 +13,36 @@ _CONSUMERS = (
     "codex-agent-runtime-ios/apple/CompilerEvidence/CodexFailureObjectiveCConsumer.m",
 )
 _TEST_APPLICATION = ("codex-agent-runtime-ios/apple/TestApp",)
+_SIMULATOR_POLICY = "gradle/build-logic/src/main/kotlin/IosAppleDistributionTasks.kt"
+_RUNTIME_NAME = re.compile(r"iOS (?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))+")
+_DEVICE_TYPE = re.compile(
+    r"com\.apple\.CoreSimulator\.SimDeviceType\.[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*",
+)
+
+
+def read_apple_validation_simulator_policy(repository: Path, revision: str) -> dict[str, str]:
+    """Read fixed simulator selectors from a caller-authenticated immutable Git object."""
+    repository = Path(repository).resolve(strict=True)
+    tree = _immutable_tree(repository, revision)
+    raw = git_regular_blob_bytes(repository, tree, _SIMULATOR_POLICY, max_bytes=1024 * 1024)
+    try:
+        source = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("Apple validation simulator policy is not UTF-8") from error
+    declarations = {
+        "runtimeName": ("runtimeName", _RUNTIME_NAME),
+        "deviceTypeIdentifier": ("deviceTypeIdentifier", _DEVICE_TYPE),
+    }
+    result = {}
+    for key, (name, pattern) in declarations.items():
+        occurrences = re.findall(rf'\b{re.escape(name)}\s*\.\s*set\s*\(', source)
+        matches = re.findall(rf'^\s*{name}\.set\("([^"\r\n]+)"\)\s*$', source, re.MULTILINE)
+        if len(occurrences) != 1 or len(matches) != 1 or pattern.fullmatch(matches[0]) is None:
+            raise ValueError(
+                f"Apple validation {name} declaration is missing, duplicated, or invalid",
+            )
+        result[key] = matches[0]
+    return result
 
 
 def capture_apple_validation_sources(repository: Path, revision: str, output: Path) -> dict[str, str]:

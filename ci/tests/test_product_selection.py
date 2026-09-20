@@ -119,6 +119,7 @@ class ProductSelectionTest(unittest.TestCase):
     def test_apple_authenticated_tooling_adapter_is_control_only(self) -> None:
         for path in ("ci/products/sdk_apple_content.py", "ci/products/sdk_apple_package_source.py",
                      "ci/products/sdk_apple_validation_source.py",
+                     "ci/products/sdk_apple_validation_execution.py",
                      "ci/products/sdk_apple_validation_evidence.py",
                      "ci/products/sdk_apple_device_evidence.py",
                      "ci/products/sdk_apple_toolchain_evidence.py",
