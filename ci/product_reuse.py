@@ -4663,9 +4663,33 @@ def capture_sdk_ios_validation_upload(plan_path, destination, *, validation_rece
         repository_root=repository_root, environ=environ, token=token)
 
 
+def capture_elected_sdk_ios_validation_upload(plan_path, destination, *, target, expected_build_key,
+        artifact_id, artifact_sha256, trusted_workflow_sha, repository_root=None, environ=None, token):
+    """Bootstrap a current worker receipt; this is transport, not semantic admission.
+
+    Subsequent preparation/signing independently recaptures the selected original
+    receipt and applies all existing gates. No historical receipt is inferred.
+    """
+    return _capture_sdk_ios_upload(plan_path, destination, phase="validation", receipt_path=None,
+        artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
+        repository_root=repository_root, environ=environ, token=token,
+        elected_target=target, elected_build_key=expected_build_key)
+
+
 def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
-        artifact_id, artifact_sha256, trusted_workflow_sha, repository_root, environ, token):
+        artifact_id, artifact_sha256, trusted_workflow_sha, repository_root, environ, token,
+        elected_target=None, elected_build_key=None):
     from products.sdk_package import _require_capability_output_separate
+    from products.signing_isolation import require_no_signing_secret
+    bootstrap = receipt_path is None
+    environment = os.environ if environ is None else environ
+    if bootstrap:
+        require_no_signing_secret(environment)
+        if phase != "validation" or elected_target not in ("ios-arm64", "ios-simulator-arm64"):
+            raise ValueError("Apple receipt bootstrap requires an exact validation target")
+        require_sha256(elected_build_key, "Elected Apple validation build key")
+    elif elected_target is not None or elected_build_key is not None:
+        raise ValueError("Original Apple receipt cannot be replaced by a current election")
     if phase not in ("binary", "package", "validation"):
         raise ValueError("Apple upload capture requires an exact binary, package or validation phase")
     require_integer(artifact_id, f"Apple {phase} upload ID", 1)
@@ -4674,7 +4698,7 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
         raise ValueError(f"Apple {phase} capture requires an observation token")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else Path(repository_root)).resolve(strict=True)
     plan_path, destination = Path(plan_path).absolute(), Path(destination).absolute()
-    receipt_path = Path(receipt_path).absolute()
+    receipt_path = Path(receipt_path).absolute() if receipt_path is not None else None
 
     def output_safe():
         _require_capability_output_separate(destination, [root, plan_path, receipt_path])
@@ -4683,14 +4707,15 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
 
     output_safe()
     plan_bytes = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
-    receipt_bytes = read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
-    receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
-    target = receipt["target"]
+    receipt_bytes = (read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+                     if receipt_path is not None else None)
+    receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes)) if receipt_bytes is not None else None
+    target = elected_target if bootstrap else receipt["target"]
     targets = ("ios-arm64", "ios-simulator-arm64") if phase == "validation" else ("ios",)
     instance = PhaseInstanceId("sdk", "sdk-ios", phase, target)
-    if target not in targets or _identity(receipt) != instance:
+    if target not in targets or (not bootstrap and _identity(receipt) != instance):
         raise ValueError(f"Apple {phase} capture requires the selected original {phase} receipt")
-    producer = receipt["producer"]
+    producer = receipt["producer"] if receipt is not None else None
     with tempfile.TemporaryDirectory(prefix=f"sdk-ios-{phase}-upload-") as temporary:
         prepared = Path(temporary).resolve() / "capture"
         captured_plan = prepared / "plan/impact-plan.json"
@@ -4699,10 +4724,16 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
         plan = _validate_plan(captured_plan, root)
         if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
             raise ValueError(f"Apple {phase} capture requires an authorized PR or merge-group plan")
+        if bootstrap:
+            if plan["event"] not in {"pull_request", "merge_group"}:
+                raise ValueError("Apple receipt bootstrap requires an authorized PR or merge-group plan")
+            producer = validate_producer(_consumer(plan, environment)["producer"])
+            bootstrap_plan = canonical_json_bytes(plan)
+        build_key = elected_build_key if bootstrap else receipt["buildKey"]
         job = f"product-validation / sdk-sdk-ios-{phase}-{target}"
         observed = _observe_ci_producer_jobs({f"ios-{phase}": producer},
             jobs_by_phase={f"ios-{phase}": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
-        name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-{target}-{receipt['buildKey'].removeprefix('sha256:')}-"
+        name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-{target}-{build_key.removeprefix('sha256:')}-"
                 f"{producer['tree']}-attempt-{producer['runAttempt']}")
         artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
         _require_artifact_job_window(observed[0], job, artifact)
@@ -4712,17 +4743,27 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
         original = prepared / "original"
         safe_extract(archive, original)
         verified = verify_phase_shard(original / "shard", instance)
+        if bootstrap:
+            if verified["receipt"]["producer"] != producer or verified["receipt"]["buildKey"] != build_key:
+                raise ValueError("Apple validation bootstrap differs from its current producer or elected key")
+            receipt_bytes = verified["receiptBytes"]
         if verified["receiptBytes"] != receipt_bytes:
             raise ValueError(f"Apple uploaded {phase} differs from its selected original receipt")
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed,
                      f"{phase}ReceiptSha256": sha256_bytes(receipt_bytes)}
         write_canonical_json(prepared / "capture-transport.json", transport)
         if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes
-                or read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != receipt_bytes
+                or (receipt_path is not None and read_regular_file_bytes(receipt_path,
+                    max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != receipt_bytes)
                 or captured_plan.read_bytes() != plan_bytes or sha256_file(archive) != artifact_sha256
                 or regular_file_inventory(original, allow_empty=True) != zipped):
             raise ValueError(f"Apple {phase} original inputs or upload changed before publication")
         output_safe()
+        if bootstrap:
+            require_no_signing_secret(environment)
+            if (canonical_json_bytes(plan) != bootstrap_plan
+                    or validate_producer(_consumer(plan, environment)["producer"]) != producer):
+                raise ValueError("Apple bootstrap plan or current producer changed during capture")
         publish_regular_tree(prepared, destination, allow_empty=True)
     return transport
 

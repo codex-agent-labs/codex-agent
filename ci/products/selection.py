@@ -321,6 +321,8 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_apple_release_cli.py",
     "ci/sdk_apple_attestation_capture.py",
     "ci/sdk_apple_policy.py",
+    "ci/sdk_apple_upload_locator.py",
+    "ci/sdk_apple_worker_capture.py",
     "ci/sdk_ios_validation_workflow.py",
     "ci/products/sdk_apple_package_execution.py",
     "gradle/build-logic/src/main/kotlin/ApplePackageExecutionEvidence.kt",
@@ -552,6 +554,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path in _CONTROL_ONLY_FILES:
         return set(ALL_INSTANCES)
     if _is_prefix(path, ".github/actions/capture-sdk-tooling/"):
+        return set(ALL_INSTANCES)
+    if _is_prefix(path, ".github/actions/prepare-sdk-apple-policy/"):
         return set(ALL_INSTANCES)
     if _is_prefix(path, ".github/actions/prepare-runtime-signing/"):
         return _runtime(NATIVE_TARGETS, "metadata")

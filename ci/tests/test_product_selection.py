@@ -135,6 +135,8 @@ class ProductSelectionTest(unittest.TestCase):
                      "ci/sdk_ios_original_binary.py",
                      "ci/sdk_ios_validation_workflow.py",
                      "ci/sdk_apple_policy.py",
+                     "ci/sdk_apple_upload_locator.py",
+                     "ci/sdk_apple_worker_capture.py",
                      "ci/products/sdk_apple_package_execution.py",
                      "gradle/build-logic/src/main/kotlin/ApplePackageExecutionEvidence.kt",
                      "gradle/build-logic/src/main/kotlin/AppleOriginalPackageExecution.kt",
