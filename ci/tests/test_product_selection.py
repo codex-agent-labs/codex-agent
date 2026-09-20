@@ -127,6 +127,7 @@ class ProductSelectionTest(unittest.TestCase):
                      "ci/products/sdk_apple_original_inputs.py",
                      "ci/products/sdk_apple_package_replay.py",
                      "ci/sdk_ios_original_package.py",
+                     "ci/sdk_ios_validation_workflow.py",
                      "ci/products/sdk_apple_package_execution.py",
                      "gradle/build-logic/src/main/kotlin/ApplePackageExecutionEvidence.kt",
                      "gradle/build-logic/src/main/kotlin/AppleOriginalPackageExecution.kt",

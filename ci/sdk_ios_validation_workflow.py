@@ -1,0 +1,100 @@
+"""Execute elected Apple validation from authenticated original package inputs.
+
+Raw execution is not canonical phase admission. Full evidence replay and
+original binary/host admission must precede any validation receipt.
+"""
+
+from pathlib import Path
+import sys
+import tempfile
+
+if __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import product_reuse
+from products.inventory import read_regular_file_bytes, regular_file_inventory, sha256_file
+from products.registry import PhaseInstanceId
+from products.restore import verify_object
+from products.sdk_apple_validation_source import capture_apple_validation_sources
+from sdk_ios_original_package import verified_original_ios_package
+from sdk_ios_validation import execute as execute_validation
+
+
+def execute(plan, discovery, state, destination, *, target, expected_build_key,
+            package_artifact_id, package_artifact_sha256, trusted_workflow_sha,
+            keyring, keys_directory, tooling_evidence, tooling_public_key,
+            java_executable, policy_revision, required_trust_domain,
+            repository_root, environ, token, tooling_keyring=None, tooling_keys_directory=None):
+    """Run only the elected phase; return raw diagnostics, never mint a receipt."""
+    if target not in ("ios-arm64", "ios-simulator-arm64"):
+        raise ValueError("SDK iOS validation requires an exact iOS target")
+    root = Path(repository_root).resolve(strict=True)
+    discovery, state, destination = product_reuse._product_materialization_paths(
+        root, discovery, state, destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("SDK iOS validation destination must not exist")
+    plan_bytes = read_regular_file_bytes(Path(plan), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    tooling = {"evidence": str(Path(tooling_evidence).absolute()),
+        "publicKey": str(Path(tooling_public_key).absolute()),
+        "javaExecutable": str(Path(java_executable).absolute()),
+        "requiredTrustDomain": required_trust_domain,
+        "keyring": str(Path(tooling_keyring).absolute()) if tooling_keyring is not None else None,
+        "keysDirectory": str(Path(tooling_keys_directory).absolute()) if tooling_keys_directory is not None else None}
+    verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling)
+    instance = PhaseInstanceId("sdk", "sdk-ios", "validation", target)
+    ready = verified.prior_ready_plans.get(instance)
+    if ready is None or ready["buildKey"] != expected_build_key:
+        raise ValueError("SDK iOS validation is not ready with the elected build key")
+    package = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+    if package not in verified.sources or package not in verified.prior_carrier_phases:
+        raise ValueError("SDK iOS validation lacks its selected original package")
+    record = verified.prior_carrier_phases[package]
+    original = verify_object(verified.sources[package], build_key=record["buildKey"],
+        receipt_sha256=record["receiptSha256"], object_sha256=record["objectSha256"])
+    version = verified.expected_fixed["versions"]["sdk"]
+    if (tuple(original["receipt"][name] for name in ("product", "component", "phase", "target")) !=
+            ("sdk", "sdk-ios", "package", "ios") or original["receipt"]["productVersion"] != version):
+        raise ValueError("SDK iOS validation package identity/version differs from its selection")
+
+    with tempfile.TemporaryDirectory(prefix="sdk-ios-validation-inputs-") as temporary:
+        private = Path(temporary).resolve()
+        selected_receipt = private / "package-receipt.json"
+        selected_receipt.write_bytes(original["receiptBytes"])
+        sources = private / "source"
+        capture_apple_validation_sources(root, verified.producer["commit"], sources)
+        source_before = regular_file_inventory(sources)
+
+        def unchanged():
+            if (read_regular_file_bytes(Path(plan), max_bytes=16 * 1024 * 1024,
+                    reject_symlink_parents=True) != plan_bytes
+                    or regular_file_inventory(sources) != source_before
+                    or read_regular_file_bytes(selected_receipt) != original["receiptBytes"]):
+                raise ValueError("SDK iOS validation selected inputs changed during execution")
+
+        try:
+            with verified_original_ios_package(plan, selected_receipt,
+                    artifact_id=package_artifact_id, artifact_sha256=package_artifact_sha256,
+                    trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
+                    repository_root=root, environ=environ, token=token, tooling_evidence=tooling_evidence,
+                    tooling_public_key=tooling_public_key, java_executable=java_executable,
+                    policy_revision=policy_revision, required_trust_domain=required_trust_domain,
+                    tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as inputs:
+                contract = inputs["original"] / "inputs/contract-contract-binary-common"
+                contract_receipt = contract / "phase-receipt.json"
+                contract_value = product_reuse.validate_phase_receipt(product_reuse._canonical_control(
+                    contract_receipt, "Original signed Contract binary receipt"))
+                unchanged()
+                result = execute_validation(ready, producer=verified.producer, sdk_version=version,
+                    package_stage={"stage": inputs["stage"], "receiptPath": inputs["receiptPath"],
+                                   "receipt": inputs["receipt"]},
+                    contract_binary_stage={"stage": contract / "stage", "receiptPath": contract_receipt,
+                                           "receipt": contract_value},
+                    sdk_compatibility=inputs["sdk"]["directory"] / "sdk-compatibility.json",
+                    test_application=sources / "codex-agent-runtime-ios/apple/TestApp",
+                    compiler_consumers=sources / "codex-agent-runtime-ios/apple/CompilerEvidence",
+                    repository_root=root, destination=destination, environ=environ)
+        finally:
+            unchanged()
+    if sha256_file(result["evidenceArchive"]) != result["evidenceSha256"]:
+        raise ValueError("SDK iOS validation raw archive changed during context exit")
+    return result
