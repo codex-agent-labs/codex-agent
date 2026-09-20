@@ -21,6 +21,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         self.discovery.mkdir(); self.state.mkdir()
         self.plan = self.root / "plan.json"
         self.plan.write_bytes(b'{"synthetic":"verified plan boundary"}\n')
+        self.plan_bytes = self.plan.read_bytes()
         self.destination = self.root / "build/package"
         self.developer = self.root / "Applications/Xcode.app/Contents/Developer"
         self.developer.mkdir(parents=True)
@@ -99,6 +100,12 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
                 (self.destination / "package-execution/input-binding.json").write_bytes(b"changed\n")
             elif self.context_failure == "capture-context":
                 (self.destination / "apple-package-execution.json").write_bytes(b"changed\n")
+            elif self.context_failure == "source-plan":
+                self.plan.write_bytes(b"changed source plan after package gate\n")
+            elif self.context_failure == "retained-plan":
+                (self.destination / "original-plan/impact-plan.json").write_bytes(
+                    b"changed retained plan after package gate\n"
+                )
         finally:
             self.events.append("sdk-closed")
 
@@ -292,6 +299,9 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         self.assertTrue((self.destination / "shard").is_dir())
         self.assertTrue((self.destination / "apple-package-execution.json").is_file())
         self.assertFalse((self.destination / "shard/apple-package-execution.json").exists())
+        retained_plan = self.destination / "original-plan/impact-plan.json"
+        self.assertEqual(self.plan_bytes, retained_plan.read_bytes())
+        self.assertFalse((self.destination / "shard/original-plan").exists())
 
     def test_current_contract_receipt_must_match_authenticated_sdk_inputs(self):
         self.contract_mismatch = True
@@ -319,6 +329,18 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, message):
                 self.invoke()
             self.assertFalse((self.destination / "shard").exists())
+
+    def test_source_or_retained_plan_mutation_on_sdk_context_exit_rejects_publication(self):
+        for mutation in ("source-plan", "retained-plan"):
+            self.destination = self.root / "build" / mutation
+            self.events.clear()
+            self.context_failure = mutation
+            try:
+                with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                    self.invoke()
+                self.assertFalse((self.destination / "shard").exists())
+            finally:
+                self.plan.write_bytes(self.plan_bytes)
 
     def test_developer_directory_is_required_normalized_and_unchanged(self):
         for value in (

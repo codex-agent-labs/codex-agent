@@ -726,7 +726,7 @@ def capture_runtime_original_ci_phases(
     return evidence
 
 
-def _validate_plan(plan_path: Path, root: Path) -> dict[str, Any]:
+def _validate_plan(plan_path: Path, root: Path, *, expected_revision: str | None = None) -> dict[str, Any]:
     plan = require_exact_keys(
         load_json_bytes(plan_path.read_bytes()), _PLAN_KEYS, "impact plan",
     )
@@ -738,9 +738,15 @@ def _validate_plan(plan_path: Path, root: Path) -> dict[str, Any]:
     tree = require_string(plan["validationTree"], "impact plan.validationTree")
     if _OID.fullmatch(commit) is None or _OID.fullmatch(tree) is None:
         raise ValueError("Impact plan validation identity is malformed")
-    if _git_value(root, "rev-parse", "HEAD^{commit}") != commit:
+    revision = "HEAD"
+    if expected_revision is not None:
+        if (type(expected_revision) is not str or _OID.fullmatch(expected_revision) is None
+                or expected_revision != commit):
+            raise ValueError("Original impact plan does not match the selected revision")
+        revision = expected_revision
+    if _git_value(root, "rev-parse", f"{revision}^{{commit}}") != commit:
         raise ValueError("Checkout commit does not match the impact plan")
-    if _git_value(root, "rev-parse", "HEAD^{tree}") != tree:
+    if _git_value(root, "rev-parse", f"{revision}^{{tree}}") != tree:
         raise ValueError("Checkout tree does not match the impact plan")
     return plan
 
@@ -4334,8 +4340,13 @@ def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact
 
 
 def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_sha256,
-        trusted_workflow_sha, expected_source, repository_root=None, environ=None, token):
-    """Capture exact SDK transport; caller-policy content verification remains separate."""
+        trusted_workflow_sha, expected_source, repository_root=None, environ=None, token,
+        original_package_receipt_path=None):
+    """Capture exact SDK transport; caller-policy content verification remains separate.
+
+    Historical recovery requires the original iOS package receipt AND its exact
+    validated original plan. Current-run environment never replaces that producer.
+    """
     from products.inventory import require_regular_directory
     from products.sdk_package import _require_capability_output_separate
     require_integer(artifact_id, "SDK input upload ID", 1)
@@ -4346,23 +4357,40 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
         raise ValueError("SDK input capture requires an observation token")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else Path(repository_root)).resolve(strict=True)
     plan_path, destination = Path(plan_path).absolute(), Path(destination).absolute()
+    receipt_path = (Path(original_package_receipt_path).absolute()
+                    if original_package_receipt_path is not None else None)
 
     def output_safe():
-        _require_capability_output_separate(destination, [root, plan_path])
+        _require_capability_output_separate(destination, [root, plan_path, *([receipt_path] if receipt_path else [])])
         if destination.exists() or destination.is_symlink():
             raise ValueError("SDK input capture destination must not exist")
 
     output_safe()
     plan_bytes = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    receipt_bytes = None
+    original_producer = None
+    if receipt_path is not None:
+        receipt_bytes = read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+        receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+        if _identity(receipt) != PhaseInstanceId("sdk", "sdk-ios", "package", "ios"):
+            raise ValueError("Historical SDK input capture requires the original iOS package receipt")
+        original_producer = receipt["producer"]
     with tempfile.TemporaryDirectory(prefix="sdk-input-upload-") as temporary:
         prepared = Path(temporary).resolve() / "capture"
         captured_plan = prepared / "plan/impact-plan.json"
         captured_plan.parent.mkdir(parents=True)
         captured_plan.write_bytes(plan_bytes)
-        plan = _validate_plan(captured_plan, root)
+        plan = _validate_plan(captured_plan, root, **(
+            {"expected_revision": original_producer["commit"]} if original_producer is not None else {}))
         if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
             raise ValueError("SDK input capture requires an authorized PR or merge-group plan")
-        producer = validate_producer(_consumer(plan, os.environ if environ is None else environ)["producer"])
+        producer_environment = (os.environ if environ is None else environ) if original_producer is None else {
+            "GITHUB_RUN_ID": str(original_producer["runId"]),
+            "GITHUB_RUN_ATTEMPT": str(original_producer["runAttempt"]),
+        }
+        producer = validate_producer(_consumer(plan, producer_environment)["producer"])
+        if original_producer is not None and producer != original_producer:
+            raise ValueError("Historical SDK input plan differs from the original package producer")
         job = "product-validation / sdk-inputs"
         observed = _observe_ci_producer_jobs({"sdk-inputs": producer}, jobs_by_phase={"sdk-inputs": job},
             trusted_workflow_sha=trusted_workflow_sha, token=token)
@@ -4391,8 +4419,14 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
             raise ValueError("SDK input original plan differs from the selected plan")
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed,
                      "sdkRuntimeSource": expected_source}
+        if receipt_bytes is not None:
+            transport["packageReceiptSha256"] = sha256_bytes(receipt_bytes)
+            (prepared / "original-package-receipt.json").write_bytes(receipt_bytes)
         write_canonical_json(prepared / "capture-transport.json", transport)
         if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes
+                or (receipt_path is not None and (
+                    read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != receipt_bytes
+                    or read_regular_file_bytes(prepared / "original-package-receipt.json") != receipt_bytes))
                 or captured_plan.read_bytes() != plan_bytes or sha256_file(archive) != artifact_sha256
                 or regular_file_inventory(original, allow_empty=True) != zipped):
             raise ValueError("SDK input original plan or upload changed before capture publication")

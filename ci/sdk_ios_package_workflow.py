@@ -49,6 +49,7 @@ def execute(
     )
     if destination.exists() or destination.is_symlink():
         raise ValueError("SDK iOS package destination must not exist")
+    plan_bytes = read_regular_file_bytes(Path(plan), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
 
     tooling = {"evidence": str(Path(tooling_evidence).absolute()),
         "publicKey": str(Path(tooling_public_key).absolute()),
@@ -174,6 +175,12 @@ def execute(
             context_path = destination / "apple-package-execution.json"
             with context_path.open("xb") as context_file:
                 context_file.write(context_bytes)
+            if read_regular_file_bytes(Path(plan), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes:
+                raise ValueError("SDK iOS package original plan changed during verification")
+            retained_plan = destination / "original-plan/impact-plan.json"
+            retained_plan.parent.mkdir()
+            with retained_plan.open("xb") as plan_file:
+                plan_file.write(plan_bytes)
             candidate_inventory = regular_file_inventory(candidate)
             if regular_file_inventory(prepared, allow_empty=True) != prepared_inventory:
                 raise ValueError("SDK iOS package authenticated inputs changed before publication")
@@ -186,6 +193,9 @@ def execute(
         if (regular_file_inventory(destination / "package-execution", allow_empty=True) != execution_context["captureFiles"]
                 or read_regular_file_bytes(context_path, reject_symlink_parents=True) != context_bytes):
             raise ValueError("SDK iOS package original execution capture changed before publication")
+        if (read_regular_file_bytes(Path(plan), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes
+                or read_regular_file_bytes(retained_plan, reject_symlink_parents=True) != plan_bytes):
+            raise ValueError("SDK iOS package original plan changed before publication")
         publish_regular_tree(candidate, destination / "shard")
     return verify_phase_shard(destination / "shard", _INSTANCE)
 

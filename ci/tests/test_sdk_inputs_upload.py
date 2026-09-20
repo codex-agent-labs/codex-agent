@@ -11,10 +11,11 @@ import json
 from pathlib import Path
 import stat
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 import zipfile
 
 from ci.tests import test_runtime_aggregate_upload as fixture
+from ci.tests.product_chain_support import output, write_receipt
 from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes
 
 
@@ -52,14 +53,194 @@ class SdkInputsUploadTest(unittest.TestCase):
         self.archive()
 
     def call(self, **changes):
-        with patch.object(capture, "_validate_plan", return_value=self.plan), \
+        with patch.object(capture, "_validate_plan", return_value=self.plan) as validate, \
                 patch("reuse.api_request", side_effect=self.api):
-            return capture.capture_sdk_inputs_upload(self.plan_path, self.output, **{
+            result = capture.capture_sdk_inputs_upload(self.plan_path, self.output, **{
                 "artifact_id": 701, "artifact_sha256": self.artifact["digest"],
                 "trusted_workflow_sha": self.pin, "expected_source": self.expected_source,
                 "repository_root": self.root,
                 "environ": {"GITHUB_RUN_ID": "71", "GITHUB_RUN_ATTEMPT": "2"},
                 "token": "synthetic-token", **changes})
+            self.plan_validation_call = validate.call_args
+            return result
+
+    def original_package_receipt(self, *, product="sdk", component="sdk-ios", phase="package", target="ios"):
+        path = self.work / "original-package" / f"{product}-{component}-{phase}-{target}.json"
+        write_receipt(
+            path, product=product, component=component, phase=phase, target=target,
+            version="0.8.0", version_identity="0.8.0",
+            outputs=[output("fixture", "outputs/original.bin", b"synthetic original package")],
+            upstream=[], context={"producer": self.producer},
+        )
+        return path
+
+    def test_historical_package_producer_ignores_current_environment_for_both_layouts(self):
+        receipt = self.original_package_receipt()
+        original_receipt = receipt.read_bytes()
+        for source in ("released-default", "current-runtime"):
+            with self.subTest(source=source):
+                self.source(source)
+                self.output = self.work / f"historical-{source}"
+                result = self.call(original_package_receipt_path=receipt, environ={
+                    "GITHUB_RUN_ID": "unrelated-current-run", "GITHUB_RUN_ATTEMPT": "not-the-original-attempt",
+                    "GITHUB_SHA": "e" * 40, "GITHUB_EVENT_NAME": "workflow_dispatch",
+                })
+                self.assertEqual(self.producer, result["captureProducer"])
+                self.assertEqual({"expected_revision": self.producer["commit"]},
+                                 self.plan_validation_call.kwargs)
+                self.assertEqual(self.run, result["observed"][0]["run"])
+                self.assertEqual(self.raw, (self.output / "transport.zip").read_bytes())
+                self.assertEqual(self.original_plan, (self.output / "plan/impact-plan.json").read_bytes())
+                self.assertEqual(original_receipt, (self.output / "original-package-receipt.json").read_bytes())
+                self.assertEqual(sha256_bytes(original_receipt), result["packageReceiptSha256"])
+                for relative, contents in self.files.items():
+                    self.assertEqual(contents, (self.output / "original" / relative).read_bytes())
+                self.assertEqual(original_receipt, receipt.read_bytes())
+
+    def test_historical_receipt_requires_exact_ios_package_identity_before_observation(self):
+        identities = (
+            dict(phase="binary"),
+            dict(component="javascript", target="node"),
+            dict(product="contract", component="contract", phase="metadata", target="common"),
+        )
+        for identity in identities:
+            receipt = self.original_package_receipt(**identity)
+            before = receipt.read_bytes()
+            with self.subTest(identity=identity), patch.object(capture, "_observe_ci_producer_jobs") as observe:
+                with self.assertRaises(ValueError):
+                    self.call(original_package_receipt_path=receipt)
+                observe.assert_not_called()
+                self.assertFalse(self.output.exists())
+                self.assertEqual(before, receipt.read_bytes())
+
+    def test_historical_plan_must_match_all_original_producer_fields_before_observation(self):
+        receipt = self.original_package_receipt()
+        original_plan = deepcopy(self.plan)
+        changes = (
+            {"validationCommit": "e" * 40}, {"validationTree": "e" * 40},
+            {"pullRequest": 32}, {"event": "merge_group", "pullRequest": None},
+            {"repository": "another/repository"},
+        )
+        for change in changes:
+            self.plan = {**deepcopy(original_plan), **change}
+            self.plan_path.write_bytes(canonical_json_bytes(self.plan))
+            with self.subTest(change=change), patch.object(capture, "_observe_ci_producer_jobs") as observe:
+                with self.assertRaises(ValueError):
+                    self.call(original_package_receipt_path=receipt)
+                observe.assert_not_called()
+                self.assertFalse(self.output.exists())
+        self.plan = original_plan
+        self.plan_path.write_bytes(self.original_plan)
+        # Workflow is fixed by _consumer, not accepted from a claimed receipt.
+        value = json.loads(receipt.read_bytes())
+        value["producer"]["workflowPath"] = ".github/workflows/other.yml"
+        receipt.write_bytes(canonical_json_bytes(value))
+        with patch.object(capture, "_observe_ci_producer_jobs") as observe, self.assertRaises(ValueError):
+            self.call(original_package_receipt_path=receipt)
+        observe.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_historical_current_runtime_upload_still_requires_original_plan_bytes(self):
+        receipt = self.original_package_receipt()
+        self.source("current-runtime")
+        self.files["runtime-capture/plan/impact-plan.json"] = canonical_json_bytes({
+            **self.plan, "validationCommit": "e" * 40,
+        })
+        self.archive()
+        with self.assertRaisesRegex(ValueError, "original plan differs"):
+            self.call(original_package_receipt_path=receipt, environ={})
+        self.assertFalse(self.output.exists())
+
+    def test_historical_receipt_mutation_rejects_before_publication(self):
+        receipt = self.original_package_receipt()
+        original = receipt.read_bytes()
+        gate = capture._require_artifact_job_window
+
+        def mutate_after_observation(*arguments):
+            result = gate(*arguments)
+            receipt.write_bytes(original + b" ")
+            return result
+
+        with patch.object(capture, "_require_artifact_job_window", side_effect=mutate_after_observation):
+            with self.assertRaisesRegex(ValueError, "changed"):
+                self.call(original_package_receipt_path=receipt, environ={})
+        self.assertFalse(self.output.exists())
+        self.assertEqual(self.original_plan, self.plan_path.read_bytes())
+
+    def test_historical_receipt_output_overlap_rejects_before_observation(self):
+        receipt = self.original_package_receipt()
+        before = regular_file_inventory(self.work, allow_empty=True)
+        for destination in (receipt, receipt.parent):
+            self.output = destination
+            with self.subTest(destination=destination), patch.object(capture, "_observe_ci_producer_jobs") as observe:
+                with self.assertRaisesRegex(ValueError, "overlaps an original input"):
+                    self.call(original_package_receipt_path=receipt)
+                observe.assert_not_called()
+            self.assertEqual(before, regular_file_inventory(self.work, allow_empty=True))
+
+    def plan_for_validation(self):
+        # Exact existing impact schema. Authorization and legacy projection are
+        # explicit seams below; the real selected-revision checks are exercised.
+        plan = {**self.plan, "schemaVersion": 1,
+                "baseCommit": "1" * 40, "headCommit": "f" * 40, "mergeReady": True,
+                "remoteBuildAuthorizationReason": "synthetic authorized fixture",
+                "androidEvidenceRequired": False, "fullRequested": False, "full": False,
+                "unknownPaths": [], "changedPaths": [], "lanes": {}}
+        self.plan_path.write_bytes(canonical_json_bytes(plan))
+        return plan
+
+    def test_real_plan_validator_selects_exact_historical_object_without_head(self):
+        plan = self.plan_for_validation()
+        revision = plan["validationCommit"]
+        identities = {f"{revision}^{{commit}}": revision, f"{revision}^{{tree}}": plan["validationTree"],
+                      "HEAD^{commit}": "e" * 40, "HEAD^{tree}": "d" * 40}
+        with patch.object(capture, "validate_remote_build_authorization") as authorize, \
+                patch.object(capture, "validate_legacy_lane_projection") as projection, \
+                patch.object(capture, "_git_value", side_effect=lambda root, operation, name: identities[name]) as git:
+            self.assertEqual(plan, capture._validate_plan(self.plan_path, self.root, expected_revision=revision))
+            self.assertEqual([call(self.root, "rev-parse", f"{revision}^{{commit}}"),
+                              call(self.root, "rev-parse", f"{revision}^{{tree}}")], git.call_args_list)
+            authorize.assert_called_once_with(plan)
+            projection.assert_called_once_with(plan, repository_root=self.root, plan_path=self.plan_path)
+            git.reset_mock()
+            with self.assertRaisesRegex(ValueError, "Checkout commit"):
+                capture._validate_plan(self.plan_path, self.root)
+            git.assert_called_once_with(self.root, "rev-parse", "HEAD^{commit}")
+            identities.update({"HEAD^{commit}": revision, "HEAD^{tree}": plan["validationTree"]})
+            git.reset_mock()
+            self.assertEqual(plan, capture._validate_plan(self.plan_path, self.root))
+            self.assertEqual([call(self.root, "rev-parse", "HEAD^{commit}"),
+                              call(self.root, "rev-parse", "HEAD^{tree}")], git.call_args_list)
+
+    def test_real_historical_plan_validator_rejects_wrong_revision_commit_and_tree(self):
+        plan = self.plan_for_validation()
+        revision = plan["validationCommit"]
+        with patch.object(capture, "validate_remote_build_authorization"), \
+                patch.object(capture, "validate_legacy_lane_projection"), \
+                patch.object(capture, "_git_value") as git:
+            for invalid in ("HEAD", revision[:12], revision.upper(), "e" * 40, True):
+                with self.subTest(revision=invalid), self.assertRaisesRegex(ValueError, "selected revision"):
+                    capture._validate_plan(self.plan_path, self.root, expected_revision=invalid)
+                git.assert_not_called()
+            for values, message in ((("e" * 40, plan["validationTree"]), "Checkout commit"),
+                                    ((revision, "d" * 40), "Checkout tree")):
+                git.side_effect = values
+                with self.subTest(values=values), self.assertRaisesRegex(ValueError, message):
+                    capture._validate_plan(self.plan_path, self.root, expected_revision=revision)
+
+    def test_historical_revision_does_not_skip_authorization_or_legacy_projection(self):
+        plan = self.plan_for_validation()
+        for rejecting in ("validate_remote_build_authorization", "validate_legacy_lane_projection"):
+            with self.subTest(rejecting=rejecting), \
+                    patch.object(capture, "validate_remote_build_authorization") as authorize, \
+                    patch.object(capture, "validate_legacy_lane_projection") as projection, \
+                    patch.object(capture, "_git_value") as git:
+                gate = authorize if rejecting == "validate_remote_build_authorization" else projection
+                gate.side_effect = ValueError("original policy rejected")
+                with self.assertRaisesRegex(ValueError, "original policy rejected"):
+                    capture._validate_plan(self.plan_path, self.root, expected_revision=plan["validationCommit"])
+                gate.assert_called_once()
+                git.assert_not_called()
 
     def test_both_exact_layouts_preserve_original_archive_and_empty_diagnostics(self):
         for source in ("released-default", "current-runtime"):
