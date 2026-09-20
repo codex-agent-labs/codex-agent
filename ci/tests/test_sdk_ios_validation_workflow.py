@@ -1,6 +1,7 @@
 """Selected caller orchestration only; mocked gates do not prove Apple acceptance."""
 
 from contextlib import contextmanager, ExitStack
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import shutil
@@ -42,10 +43,6 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         self.recovered_binary = self.root / "recovered-binary"
         self.recovered_binary.mkdir()
         (self.recovered_binary / "framework").write_bytes(b"exact binary predecessor")
-        self.evidence = self.root / "raw-evidence"
-        (self.evidence / "reports").mkdir(parents=True)
-        for language in ("swift", "objective-c"):
-            (self.evidence / f"reports/{language}-parity.json").write_bytes(b"{}")
         self.captures = {}
         for name in ("package", "sdk", "binary", "native"):
             directory = self.root / "captures" / name
@@ -121,30 +118,21 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         if self.mutation == "binary-exit":
             raise ValueError("binary context changed")
 
-    @contextmanager
-    def archive(self, archive, **arguments):
-        self.assertEqual(workflow.sha256_file(archive), arguments["expected_sha256"])
-        self.assertEqual(workflow._EVIDENCE_ROOTS, arguments["expected_roots"])
-        self.events.append("archive-enter")
-        yield self.evidence
-        self.events.append("archive-exit")
-        if self.mutation == "archive-context":
-            raise ValueError("archive context failed")
-
-    def gate(self, **arguments):
-        self.events.append("complete-gate")
-        self.assertEqual(self.evidence, arguments["evidence_root"])
-        self.assertEqual(str(self.root / "codex-agent-runtime-ios"), arguments["original_working_directory"])
+    def replay(self, **arguments):
+        self.events.append("replay")
+        self.assertEqual(self.destination / "execution/apple-validation-evidence.zip", arguments["evidence_archive"])
+        self.assertEqual(str(self.root / "codex-agent-runtime-ios"), arguments["context"]["originalWorkingDirectory"])
+        self.assertEqual(self.verified.producer, arguments["context"]["producer"])
+        self.assertEqual(self.root / "stage", arguments["validation_stage"])
+        self.assertEqual("ios-arm64", arguments["target"])
+        self.assertEqual("0.8.0", arguments["sdk_version"])
+        self.assertEqual(self.receipt, arguments["package_receipt"])
         self.assertEqual(self.verified.producer["commit"], arguments["source_revision"])
-        self.assertEqual(self.root / "package/outputs/apple", arguments["product_directory"])
+        self.assertEqual(self.root / "package", arguments["package_stage"])
         self.assertEqual(self.root / "original/inputs/contract-contract-binary-common/stage/outputs/evidence/canonical-api.json",
                          arguments["canonical_api"])
-        if self.mutation == "gate":
+        if self.mutation in ("gate", "archive-context"):
             raise ValueError("full gate failed")
-
-    def projection(self, **arguments):
-        self.events.append("projection")
-        self.assertIn("complete-gate", self.events)
         self.assertEqual("sha256:" + "3" * 64, arguments["contract_digest"])
         return {"synthetic": "semantic projection"}
 
@@ -180,7 +168,7 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
     def checkout(self, root, producer):
         self.assertEqual("original-exit", self.events[-1])
         self.assertIn("binary-exit", self.events)
-        self.assertIn("archive-exit", self.events)
+        self.assertIn("replay", self.events)
         self.assertEqual(self.root, root)
         self.assertEqual(self.expected_producer, producer)
         self.events.append("checkout")
@@ -204,7 +192,7 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
                          (self.destination / "selection/phase-plan.json").read_bytes())
         self.assertEqual(workflow.canonical_json_bytes(self.verified.producer),
                          (self.destination / "selection/producer.json").read_bytes())
-        context = workflow.load_json_bytes((self.destination / "context/execution-context.json").read_bytes())
+        context = json.loads((self.destination / "context/execution-context.json").read_bytes())
         self.assertEqual(self.verified.producer, context["producer"])
         self.assertEqual("ios-arm64", context["target"])
         self.assertEqual({"artifactId": 17, "artifactSha256": "sha256:" + "2" * 64}, context["packageArtifact"])
@@ -236,10 +224,7 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
                 (workflow.product_reuse, "_canonical_control", {"return_value": {"original": "contract"}}),
                 (workflow.product_reuse, "validate_phase_receipt", {"side_effect": lambda value: value}),
                 (workflow, "execute_validation", {"side_effect": self.worker}),
-                (workflow, "verified_apple_validation_archive", {"side_effect": self.archive}),
-                (workflow, "verify_apple_validation_execution", {"side_effect": self.gate}),
-                (workflow, "apple_validation_content", {"side_effect": self.projection}),
-                (workflow, "output_inventory_digest", {"return_value": "sha256:" + "4" * 64}),
+                (workflow, "verify_apple_validation_stage", {"side_effect": self.replay}),
                 (workflow.product_reuse, "finalize_phase_object", {"side_effect": self.finalize}),
                 (workflow.product_reuse, "_runtime_worker_checkout", {"side_effect": self.checkout}),
             ):
@@ -251,8 +236,8 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         result = self.execute()
         self.assertEqual(self.destination / "execution/apple-validation-evidence.zip", result["evidenceArchive"])
         self.assertEqual(workflow.sha256_file(result["evidenceArchive"]), result["evidenceSha256"])
-        self.assertEqual(["original-enter", "binary-enter", "worker", "archive-enter", "complete-gate", "projection",
-                          "archive-exit", "binary-exit", "original-exit", "checkout", "finalize"], self.events)
+        self.assertEqual(["original-enter", "binary-enter", "worker", "replay",
+                          "binary-exit", "original-exit", "checkout", "finalize"], self.events)
         self.assertEqual({"synthetic": "semantic projection"}, result["content"])
         self.assertFalse(self.sources.exists())
         self.assertEqual({"fixture": "finalized"}, result["shard"])
@@ -319,11 +304,12 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
 
     def test_real_execution_context_rejects_wrong_rust_host_before_finalization(self):
         # The native authority seam is mocked; rejection must come from the real
-        # context verifier after the successful worker and complete-gate seams.
+        # context verifier after the successful worker, before semantic replay.
         self.arguments["rust_host"] = "x86_64-unknown-linux-gnu"
         with self.assertRaisesRegex(ValueError, "fixed macOS ARM64 Rust host"):
             self.execute()
-        self.assertIn("projection", self.events)
+        self.assertIn("worker", self.events)
+        self.assertNotIn("replay", self.events)
         self.assertNotIn("checkout", self.events)
         self.assertNotIn("finalize", self.events)
         self.assertFalse((self.destination / "shard").exists())

@@ -1,12 +1,18 @@
 """Gate composition tests with mocked leaves, not genuine Apple evidence."""
 
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from copy import deepcopy
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from ci.products import sdk_apple_validation_execution as gate
+from ci.products.inventory import canonical_json_bytes, regular_file_inventory, sha256_file
+from ci.products.receipt import write_output_manifest
+from ci.tests.product_chain_support import write_receipt
+import ci.tests.test_sdk_apple_validation_content as content_fixture
+import ci.tests.test_sdk_apple_validation_evidence as archive_fixture
 
 
 class AppleValidationExecutionTest(unittest.TestCase):
@@ -95,6 +101,161 @@ class AppleValidationExecutionTest(unittest.TestCase):
                     self.run_gate(mutation=path)
             finally:
                 path.write_bytes(original)
+
+
+class AppleValidationStageTest(unittest.TestCase):
+    """Real manifests/archive/projection; full execution gate is explicitly mocked."""
+
+    def setUp(self):
+        content_fixture.AppleValidationContentFileTest.setUp(self)
+        self.package = self.stage
+        self.producer = {
+            "repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "commit": "a" * 40, "tree": "b" * 40, "event": "pull_request",
+            "runId": 7, "runAttempt": 1, "pullRequest": 8,
+        }
+        self.receipt = write_receipt(self.root / "package-receipt.json", product="sdk", component="sdk-ios",
+            phase="package", target="ios", version="0.8.0", version_identity="0.8.0",
+            outputs=self.manifest["outputs"], upstream=[], context={"producer": self.producer})
+        self.archive = self.root / "evidence.zip"
+        members = {f"{name}/original.bin": b"original raw evidence" for name in gate.APPLE_VALIDATION_EVIDENCE_ROOTS}
+        members["compiler-raw/empty-stderr.bin"] = b""
+        members.update({f"reports/{language}-parity.json": canonical_json_bytes(receipt)
+                        for language, receipt in self.receipts.items()})
+        archive_fixture.SdkAppleValidationEvidenceTest.write(self, sorted(members.items()))
+        work = "/original/repository/codex-agent-runtime-ios"
+        execution = work + "/build/imported-sdk-validation/" + self.producer["tree"] + "/ios-arm64"
+        self.context = {
+            "schemaVersion": 1, "producer": dict(self.producer), "target": "ios-arm64",
+            "packageArtifact": {"artifactId": 1, "artifactSha256": "sha256:" + "1" * 64},
+            "binaryArtifact": {"artifactId": 2, "artifactSha256": "sha256:" + "2" * 64},
+            "rustHost": "aarch64-apple-darwin", "developerDirectory": "/original/Xcode.app/Contents/Developer",
+            "originalWorkingDirectory": work, "originalDeviceWorkDirectory": execution + "/device-execution",
+            "originalTestApplicationDirectory": execution + "/device-consumer/CodexAgentTestApp",
+            "evidenceSha256": sha256_file(self.archive),
+        }
+        self.validation = self.root / "validation"
+        self.content_path = self.validation / "outputs/validation/apple-validation.json"
+        self.content_path.parent.mkdir(parents=True)
+        self.content = gate.apple_validation_content(target="ios-arm64", sdk_version="0.8.0",
+            package_outputs_digest=gate.output_inventory_digest(self.manifest["outputs"]),
+            contract_digest=self.compatibility["contract"]["digest"], expected_canonical=self.canonical,
+            binding_receipts=self.receipts)
+        self.stage_content(self.content)
+        self.arguments = dict(validation_stage=self.validation, target="ios-arm64", sdk_version="0.8.0",
+            package_stage=self.package, package_receipt=self.receipt,
+            sdk_compatibility=self.paths["sdk_compatibility"], contract_digest=self.compatibility["contract"]["digest"],
+            canonical_api=self.paths["canonical_api"], canonical_coverage=self.paths["canonical_coverage"],
+            evidence_archive=self.archive, context=self.context, repository=self.root, source_revision="a" * 40,
+            tooling_evidence=self.root / "tooling", tooling_public_key=self.root / "key",
+            java_executable=self.root / "java", policy_revision="b" * 40, required_trust_domain="release",
+            tooling_keyring=self.root / "tooling-policy.json", tooling_keys_directory=self.root / "tooling-keys")
+
+    def stage_content(self, content, target="ios-arm64", kind="apple-validation-content"):
+        self.content_path.write_bytes(canonical_json_bytes(content))
+        write_output_manifest(self.validation, "sdk", "sdk-ios", "validation", target, "0.8.0",
+                              {kind: "outputs/validation"})
+
+    def test_full_gate_precedes_projection_and_preserves_all_originals(self):
+        before = regular_file_inventory(self.root)
+        order, extracted = [], []
+        projection = gate.apple_validation_content
+
+        def execute(**arguments):
+            order.append("full gate")
+            extracted.append(arguments["evidence_root"])
+            self.assertTrue(extracted[-1].is_dir())
+            self.assertEqual(self.package / "outputs/apple", arguments["product_directory"])
+            for name in ("repository", "source_revision", "tooling_evidence", "tooling_public_key",
+                         "java_executable", "policy_revision", "required_trust_domain", "tooling_keyring",
+                         "tooling_keys_directory", "sdk_version", "sdk_compatibility", "canonical_api", "canonical_coverage"):
+                self.assertEqual(self.arguments[name], arguments[name])
+            for argument, field in (("original_working_directory", "originalWorkingDirectory"),
+                    ("original_device_work_directory", "originalDeviceWorkDirectory"),
+                    ("original_test_application_directory", "originalTestApplicationDirectory"),
+                    ("developer_directory", "developerDirectory")):
+                self.assertEqual(self.context[field], arguments[argument])
+
+        def project(**arguments):
+            self.assertEqual(["full gate"], order)
+            order.append("projection")
+            return projection(**arguments)
+
+        with patch.object(gate, "verify_apple_validation_execution", side_effect=execute), \
+                patch.object(gate, "apple_validation_content", side_effect=project):
+            self.assertEqual(self.content, gate.verify_apple_validation_stage(**self.arguments))
+        self.assertEqual(["full gate", "projection"], order)
+        self.assertFalse(extracted[0].exists())
+        self.assertEqual(before, regular_file_inventory(self.root))
+
+    def test_second_target_and_exact_stage_content_comparison(self):
+        target = "ios-simulator-arm64"
+        content = {**self.content, "target": target}
+        self.stage_content(content, target)
+        context = {**self.context, "target": target,
+                   "originalDeviceWorkDirectory": self.context["originalDeviceWorkDirectory"].replace("ios-arm64/", target + "/"),
+                   "originalTestApplicationDirectory": self.context["originalTestApplicationDirectory"].replace("ios-arm64/", target + "/")}
+        with patch.object(gate, "verify_apple_validation_execution"):
+            self.assertEqual(content, gate.verify_apple_validation_stage(**{**self.arguments, "target": target, "context": context}))
+        self.stage_content({**self.content, "contractDigest": "sha256:" + "f" * 64})
+        with patch.object(gate, "verify_apple_validation_execution"), self.assertRaisesRegex(ValueError, "staged content differs"):
+            gate.verify_apple_validation_stage(**self.arguments)
+
+    def test_structural_pairing_fails_before_full_gate(self):
+        changed_receipt = deepcopy(self.receipt)
+        changed_receipt["outputs"][0]["sha256"] = "sha256:" + "c" * 64
+        for change in ({"target": "desktop"}, {"context": {**self.context, "target": "ios-simulator-arm64"}},
+                       {"sdk_version": "0.8.1"}, {"package_receipt": changed_receipt}):
+            with self.subTest(change=change), patch.object(gate, "verify_apple_validation_execution") as execute, \
+                    self.assertRaises(ValueError):
+                gate.verify_apple_validation_stage(**{**self.arguments, **change})
+            execute.assert_not_called()
+        for kind in ("evidence", "validation"):
+            self.stage_content(self.content, kind=kind)
+            with patch.object(gate, "verify_apple_validation_execution") as execute, self.assertRaises(ValueError):
+                gate.verify_apple_validation_stage(**self.arguments)
+            execute.assert_not_called()
+
+    def test_full_gate_failure_never_projects(self):
+        with patch.object(gate, "verify_apple_validation_execution", side_effect=ValueError("full gate rejected")), \
+                patch.object(gate, "apple_validation_content") as project, \
+                self.assertRaisesRegex(ValueError, "full gate rejected"):
+            gate.verify_apple_validation_stage(**self.arguments)
+        project.assert_not_called()
+
+    def test_original_file_and_mutable_expectation_changes_reject(self):
+        paths = [self.content_path, self.package / "outputs/apple/package.zip", self.archive,
+                 self.paths["canonical_api"], self.paths["canonical_coverage"], self.paths["sdk_compatibility"]]
+        for path in paths:
+            original = path.read_bytes()
+            try:
+                with self.subTest(path=path), patch.object(gate, "verify_apple_validation_execution",
+                        side_effect=lambda **_arguments: path.write_bytes(b"changed")), self.assertRaises(ValueError):
+                    gate.verify_apple_validation_stage(**self.arguments)
+            finally:
+                path.write_bytes(original)
+        for value in (self.context, self.receipt):
+            original = deepcopy(value)
+            try:
+                with self.subTest(value=value), patch.object(gate, "verify_apple_validation_execution",
+                        side_effect=lambda **_arguments: value.update(unexpected="mutation")), self.assertRaises(ValueError):
+                    gate.verify_apple_validation_stage(**self.arguments)
+            finally:
+                value.clear()
+                value.update(original)
+
+    def test_archive_exit_mutation_is_rejected_after_projection(self):
+        original_archive_context = gate.verified_apple_validation_archive
+
+        @contextmanager
+        def late_mutation(*arguments, **keywords):
+            with original_archive_context(*arguments, **keywords) as extracted:
+                yield extracted
+            self.context["rustHost"] = "changed after replay"
+
+        with patch.object(gate, "verified_apple_validation_archive", side_effect=late_mutation), \
+                patch.object(gate, "verify_apple_validation_execution"), self.assertRaisesRegex(ValueError, "originals changed"):
+            gate.verify_apple_validation_stage(**self.arguments)
 
 
 if __name__ == "__main__":

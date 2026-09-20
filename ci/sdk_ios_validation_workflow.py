@@ -14,28 +14,18 @@ if __package__:
 
 import product_reuse
 from products.inventory import (
-    canonical_json_bytes, load_json_bytes, read_regular_file_bytes, regular_file_inventory,
+    canonical_json_bytes, read_regular_file_bytes, regular_file_inventory,
     sha256_file, snapshot_regular_tree, write_canonical_json,
 )
-from products.receipt import output_inventory_digest
 from products.registry import PhaseInstanceId
 from products.restore import verify_object
 from products.sdk_apple_validation_source import capture_apple_validation_sources
-from products.sdk_apple_validation_evidence import verified_apple_validation_archive
-from products.sdk_apple_validation_execution import verify_apple_validation_execution
-from products.sdk_apple_validation_content import apple_validation_content
+from products.sdk_apple_validation_execution import verify_apple_validation_stage
 from products.sdk_apple_validation_context import verify_apple_validation_context
 from products.sdk_apple_device_evidence import _original_directory
 from sdk_ios_original_package import verified_original_ios_package
 from sdk_ios_original_binary import verified_original_ios_binary
 from sdk_ios_validation import execute as execute_validation
-
-
-_EVIDENCE_ROOTS = (
-    "canonical", "consumer", "reports", "compiler-raw", "xcframework", "xctest-raw",
-    "simulator-raw", "xcresult", "xctest-package", "xctest-products", "device-raw",
-    "device-archive", "device-test-application", "device-package", "toolchain",
-)
 
 
 def execute(plan, discovery, state, destination, *, target, expected_build_key,
@@ -165,27 +155,6 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
                 compatibility = inputs["sdk"]["directory"] / "sdk-compatibility.json"
                 module = root / "codex-agent-runtime-ios"
                 execution = module / "build/imported-sdk-validation" / verified.producer["tree"] / target
-                with verified_apple_validation_archive(result["evidenceArchive"],
-                        expected_sha256=result["evidenceSha256"], expected_roots=_EVIDENCE_ROOTS) as evidence:
-                    verify_apple_validation_execution(evidence_root=evidence,
-                        product_directory=inputs["stage"] / "outputs/apple", sdk_version=version,
-                        sdk_compatibility=compatibility, canonical_api=api, canonical_coverage=coverage,
-                        repository=root, source_revision=verified.producer["commit"],
-                        original_working_directory=str(module),
-                        original_device_work_directory=str(execution / "device-execution"),
-                        original_test_application_directory=str(execution / "device-consumer/CodexAgentTestApp"),
-                        developer_directory=developer, tooling_evidence=tooling_evidence,
-                        tooling_public_key=tooling_public_key, java_executable=java_executable,
-                        policy_revision=policy_revision, required_trust_domain=required_trust_domain,
-                        tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory)
-                    content = apple_validation_content(target=target, sdk_version=version,
-                        package_outputs_digest=output_inventory_digest(inputs["receipt"]["outputs"]),
-                        contract_digest=inputs["sdk"]["compatibility"]["contract"]["digest"],
-                        expected_canonical={"apiReportSha256": sha256_file(api).removeprefix("sha256:"),
-                                            "coverageReceiptSha256": sha256_file(coverage).removeprefix("sha256:")},
-                        binding_receipts={language: load_json_bytes(read_regular_file_bytes(
-                            evidence / f"reports/{language}-parity.json", max_bytes=16 * 1024 * 1024,
-                            reject_symlink_parents=True)) for language in ("swift", "objective-c")})
                 retain(result["evidenceArchive"].parent, destination / "execution")
                 # This is external execution identity, never a reusable output.
                 context = destination / "context"
@@ -200,11 +169,21 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
                     "originalTestApplicationDirectory": str(execution / "device-consumer/CodexAgentTestApp"),
                     "evidenceSha256": result["evidenceSha256"],
                 })
-                verify_apple_validation_context(context / "execution-context.json",
+                execution_context = verify_apple_validation_context(context / "execution-context.json",
                     producer=verified.producer, target=target,
                     evidence_archive=destination / "execution" / result["evidenceArchive"].name,
                     original_working_directory=str(module))
                 retained[context] = regular_file_inventory(context)
+                content = verify_apple_validation_stage(validation_stage=result["stage"], target=target,
+                    sdk_version=version, package_stage=inputs["stage"], package_receipt=inputs["receipt"],
+                    sdk_compatibility=compatibility, contract_digest=inputs["sdk"]["compatibility"]["contract"]["digest"],
+                    canonical_api=api, canonical_coverage=coverage,
+                    evidence_archive=destination / "execution" / result["evidenceArchive"].name,
+                    context=execution_context, repository=root, source_revision=verified.producer["commit"],
+                    tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
+                    java_executable=java_executable, policy_revision=policy_revision,
+                    required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
+                    tooling_keys_directory=tooling_keys_directory)
                 retained_unchanged()
         finally:
             unchanged()
