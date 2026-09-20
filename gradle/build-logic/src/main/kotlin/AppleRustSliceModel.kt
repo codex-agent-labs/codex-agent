@@ -123,6 +123,21 @@ internal fun appleCompilerSettingsDigest(settings: Map<String, String>): String 
         .byteInputStream().releaseDigest()
 }
 
+/** Read only from the caller's authenticated source snapshot, never a lane proof. */
+internal fun appleRustCompilerSettingsFromProvenance(provenance: JsonObject): Map<String, String> =
+    listOf(
+        "rustToolchain", "rustSrcComponent", "minimumIosVersion", "releaseLto", "releaseCodegenUnits",
+        "releaseRustFlags", "releaseDebug", "releaseStrip", "sqliteCompileFlags", "releaseRustFlagsTransport",
+        "releaseRustPathRemapOrder", "releaseRustBuilderHomePrefix", "releaseRustCargoHomePrefix",
+        "releaseRustSysrootPrefix", "releaseRustProjectRootPrefix", "releaseRustPreparedSourcePrefix",
+    ).associateWith { name ->
+        val value = provenance[name]
+        check(value is JsonPrimitive && value.isString && value.content.isNotBlank()) {
+            "Original Apple compiler setting is missing or non-string: $name"
+        }
+        value.content
+    }
+
 internal fun verifyStaticArchive(file: File) {
     check(file.isFile && !Files.isSymbolicLink(file.toPath()) && file.length() > 8) {
         "Apple Rust static archive is missing or unsafe: $file"

@@ -14,6 +14,31 @@ import org.gradle.testfixtures.ProjectBuilder
 
 class AppleRustSliceEvidenceTest {
     @Test
+    fun `native compiler settings come from tracked provenance and require strings`() {
+        val provenance = File("../../codex-agent-runtime-ios/native/provenance.json").readReleaseObject()
+        val settings = appleRustCompilerSettingsFromProvenance(provenance)
+        assertEquals(16, settings.size)
+        settings.forEach { (key, value) ->
+            assertEquals(provenance.releaseString(key), value)
+            assertFailsWith<IllegalStateException> {
+                appleRustCompilerSettingsFromProvenance(kotlinx.serialization.json.JsonObject(provenance - key))
+            }
+            assertFailsWith<IllegalStateException> {
+                appleRustCompilerSettingsFromProvenance(kotlinx.serialization.json.JsonObject(
+                    provenance + (key to kotlinx.serialization.json.JsonPrimitive(1)),
+                ))
+            }
+        }
+        assertEquals(
+            appleCompilerSettingsDigest(settings),
+            appleCompilerSettingsDigest(appleRustCompilerSettingsFromProvenance(
+                kotlinx.serialization.json.JsonObject(provenance +
+                    ("unrelated" to kotlinx.serialization.json.JsonPrimitive("ignored"))),
+            )),
+        )
+    }
+
+    @Test
     fun `original toolchain observations bind producer target and independent pins`() {
         val directory = createTempDirectory("apple-original-toolchain").toFile()
         try {
