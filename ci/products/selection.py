@@ -303,6 +303,8 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/sdk_apple_validation_source.py",
     "ci/products/sdk_apple_validation_execution.py",
     "ci/products/sdk_apple_validation_context.py",
+    "ci/products/sdk_apple_validation_attestation.py",
+    "ci/products/sdk_apple_validation_inputs.py",
     "ci/products/sdk_apple_validation_evidence.py",
     "ci/products/sdk_apple_device_evidence.py",
     "ci/products/sdk_apple_toolchain_evidence.py",
