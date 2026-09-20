@@ -14,6 +14,64 @@ import org.gradle.testfixtures.ProjectBuilder
 
 class AppleRustSliceEvidenceTest {
     @Test
+    fun `original toolchain observations bind producer target and independent pins`() {
+        val directory = createTempDirectory("apple-original-toolchain").toFile()
+        try {
+            val file = directory.resolve("observations.json")
+            val values = linkedMapOf(
+                "candidateCommit" to "1".repeat(40), "candidateTree" to "2".repeat(40),
+                "target" to IOS_DEVICE_RUST_TARGET,
+                "rustCompilerIdentity" to "rustc 1.95.0\nrelease: 1.95.0\nhost: aarch64-apple-darwin",
+                "appleToolchainIdentity" to "xcode=Xcode 26.6\nBuild version 17F113\nsdk=iphoneos\nversion=26.6\nbuild=23F1",
+                "xcodeVersion" to "Xcode 26.6\nBuild version 17F113\n",
+                "swiftVersion" to "Apple Swift version 6.3.3 (synthetic fixture)\n",
+            )
+            fun write() = file.atomicWriteJson(kotlinx.serialization.json.buildJsonObject {
+                put("schemaVersion", kotlinx.serialization.json.JsonPrimitive(1))
+                values.forEach { (key, value) -> put(key, kotlinx.serialization.json.JsonPrimitive(value)) }
+            })
+            fun read() = readAppleRustToolchainEvidence(
+                file, "1".repeat(40), "2".repeat(40), IOS_DEVICE_RUST_TARGET,
+                "1.95.0", "aarch64-apple-darwin", "26.6", "17F113", "6.3.3",
+            )
+            write()
+            val hashes = read()
+            listOf("rustCompilerIdentity", "appleToolchainIdentity", "xcodeVersion", "swiftVersion").forEach {
+                assertEquals(values.getValue(it).byteInputStream().releaseDigest(), hashes.getValue("${it}Sha256"))
+            }
+            for ((key, replacement) in mapOf(
+                "candidateCommit" to "3".repeat(40), "candidateTree" to "4".repeat(40),
+                "target" to IOS_SIMULATOR_RUST_TARGET, "rustCompilerIdentity" to "release: 1.94.0\nhost: x86_64-apple-darwin",
+                "appleToolchainIdentity" to values.getValue("appleToolchainIdentity").replace("iphoneos", "iphonesimulator"),
+                "xcodeVersion" to "Xcode 26.5\nBuild version 17F113\n", "swiftVersion" to "Apple Swift version 6.2\n",
+            )) {
+                val original = values.put(key, replacement)!!
+                write()
+                assertFailsWith<IllegalStateException> { read() }
+                values[key] = original
+            }
+            values["unexpected"] = "field"
+            write()
+            assertFailsWith<IllegalStateException> { read() }
+            values.remove("unexpected")
+            write()
+            val valid = file.readText()
+            for (invalid in listOf(
+                valid.replaceFirst("{", "{\"schemaVersion\":1,"),
+                valid.replace(Regex("\"schemaVersion\"\\s*:\\s*1"), "\"schemaVersion\":\"1\""),
+                valid.replace("\"${values.getValue("candidateCommit")}\"", values.getValue("candidateCommit")),
+                valid.replace("\"${values.getValue("candidateTree")}\"", values.getValue("candidateTree")),
+            )) {
+                assertFalse(valid == invalid)
+                file.writeText(invalid)
+                assertFailsWith<IllegalStateException> { read() }
+            }
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `exact complete evidence validates`() = fixture().use { it.verify() }
 
     @Test

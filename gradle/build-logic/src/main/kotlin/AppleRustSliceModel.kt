@@ -47,6 +47,55 @@ internal data class AppleNativeTestsIdentity(
 
 internal data class AppleNativeTestCommand(val taskPath: String, val cargoArguments: List<String>)
 
+/** The caller authenticates the original receipt and supplies its producer and source-pinned policy. */
+internal fun readAppleRustToolchainEvidence(
+    file: File,
+    commit: String,
+    tree: String,
+    target: String,
+    rustToolchain: String,
+    rustHost: String,
+    xcodeVersion: String,
+    xcodeBuild: String,
+    swiftVersion: String,
+): Map<String, String> {
+    check(file.isFile && !Files.isSymbolicLink(file.toPath())) { "Unsafe Apple Rust toolchain evidence" }
+    val evidence = file.readCanonicalOriginalAppleObject("Apple Rust toolchain evidence")
+    val observations = listOf("rustCompilerIdentity", "appleToolchainIdentity", "xcodeVersion", "swiftVersion")
+    check(evidence.keys == (observations + listOf("schemaVersion", "candidateCommit", "candidateTree", "target")).toSet()) {
+        "Apple Rust toolchain evidence fields mismatch"
+    }
+    check(evidence["schemaVersion"] == JsonPrimitive(1) &&
+        evidence.filterKeys { it != "schemaVersion" }.values.all { it is JsonPrimitive && it.isString }) {
+        "Apple Rust toolchain evidence field types mismatch"
+    }
+    check(evidence.releaseInt("schemaVersion") == 1 &&
+        evidence.releaseString("candidateCommit") == commit &&
+        evidence.releaseString("candidateTree") == tree && evidence.releaseString("target") == target) {
+        "Apple Rust toolchain evidence producer or target mismatch"
+    }
+    val rust = evidence.releaseString("rustCompilerIdentity")
+    check(rust.lines().filter { it.startsWith("release:") } == listOf("release: $rustToolchain") &&
+        rust.lines().filter { it.startsWith("host:") } == listOf("host: $rustHost")) {
+        "Apple Rust compiler observation differs from the original policy"
+    }
+    val xcode = evidence.releaseString("xcodeVersion")
+    verifyAppleToolchainOutput(xcode, evidence.releaseString("swiftVersion"), xcodeVersion, xcodeBuild, swiftVersion)
+    val sdk = when (target) {
+        IOS_DEVICE_RUST_TARGET -> "iphoneos"
+        IOS_SIMULATOR_RUST_TARGET -> "iphonesimulator"
+        else -> error("Unsupported Apple Rust evidence target")
+    }
+    val apple = evidence.releaseString("appleToolchainIdentity")
+    check(Regex(
+        Regex.escape("xcode=${xcode.trim()}\nsdk=$sdk\nversion=") +
+            "[0-9]+(?:\\.[0-9]+)*\\nbuild=[0-9A-Za-z]+",
+    ).matches(apple)) { "Apple SDK observation differs from the original target/toolchain" }
+    return observations.associate { name ->
+        "${name}Sha256" to evidence.releaseString(name).byteInputStream(Charsets.UTF_8).releaseDigest()
+    }
+}
+
 internal fun appleNativeInputDigest(repository: File, inputs: Set<File>): String {
     val root = repository.canonicalFile.toPath()
     val records = linkedMapOf<String, File>()
