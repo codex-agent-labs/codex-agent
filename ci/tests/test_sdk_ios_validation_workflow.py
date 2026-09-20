@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager, ExitStack
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import shutil
@@ -10,6 +11,9 @@ import unittest
 from unittest.mock import patch
 
 from ci import sdk_ios_validation_workflow as workflow
+
+
+SIGNING_SECRET = "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY"
 
 
 class SdkIosValidationWorkflowTest(unittest.TestCase):
@@ -149,6 +153,8 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
                          arguments["canonical_api"])
         if self.mutation in ("gate", "archive-context"):
             raise ValueError("full gate failed")
+        if self.mutation == "late-secret":
+            self.arguments["environ"][SIGNING_SECRET] = ""
         self.assertEqual("sha256:" + "3" * 64, arguments["contract_digest"])
         return {"synthetic": "semantic projection"}
 
@@ -261,6 +267,119 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         self.assertEqual(b"original worker diagnostics\n", (self.destination / "worker/gradle.log").read_bytes())
         for name, inventory in self.capture_inventories.items():
             self.assertEqual(inventory, workflow.regular_file_inventory(self.captures[name], allow_empty=True))
+
+    def test_missing_original_locators_use_selected_package_then_its_exact_binary_predecessor(self):
+        cases = (
+            (None, None, None, None, ("package", "binary")),
+            (None, None, 18, "sha256:" + "5" * 64, ("package",)),
+            (17, "sha256:" + "2" * 64, None, None, ("binary",)),
+        )
+        for package_id, package_digest, binary_id, binary_digest, expected in cases:
+            self.reset_outputs()
+            calls = []
+
+            def locate(receipt, *, trusted_workflow_sha, environ, token):
+                receipt = Path(receipt)
+                self.assertEqual(self.arguments["trusted_workflow_sha"], trusted_workflow_sha)
+                self.assertIs(self.arguments["environ"], environ)
+                self.assertEqual(self.arguments["token"], token)
+                if receipt.name == "package-receipt.json":
+                    self.assertEqual([], self.events)
+                    self.assertEqual(b"original receipt", receipt.read_bytes())
+                    self.assertNotEqual(self.root, receipt.parent)
+                    calls.append(("package", receipt.read_bytes()))
+                    self.events.append("package-locate")
+                    return {"artifact_id": 17, "artifact_sha256": "sha256:" + "2" * 64}
+                self.assertEqual(self.binary / "phase-receipt.json", receipt)
+                self.assertEqual(b"exact binary receipt", receipt.read_bytes())
+                self.assertEqual("original-enter", self.events[-1])
+                calls.append(("binary", receipt.read_bytes()))
+                self.events.append("binary-locate")
+                return {"artifact_id": 18, "artifact_sha256": "sha256:" + "5" * 64}
+
+            with self.subTest(expected=expected), patch(
+                "sdk_apple_upload_locator.locate_original_apple_upload", side_effect=locate,
+            ) as lookup:
+                result = self.execute(package_artifact_id=package_id,
+                    package_artifact_sha256=package_digest, binary_artifact_id=binary_id,
+                    binary_artifact_sha256=binary_digest)
+            self.assertEqual(expected, tuple(name for name, _ in calls))
+            self.assertEqual(len(expected), lookup.call_count)
+            self.assertEqual({"fixture": "finalized"}, result["shard"])
+            if "package" in expected:
+                self.assertLess(self.events.index("package-locate"), self.events.index("original-enter"))
+            if "binary" in expected:
+                self.assertLess(self.events.index("original-enter"), self.events.index("binary-locate"))
+                self.assertLess(self.events.index("binary-locate"), self.events.index("binary-enter"))
+
+    def test_original_locator_failures_never_fallback_or_finalize(self):
+        for phase, changes in (
+            ("package", {"package_artifact_id": None, "package_artifact_sha256": None}),
+            ("binary", {"binary_artifact_id": None, "binary_artifact_sha256": None}),
+        ):
+            self.reset_outputs()
+
+            def reject(receipt, **arguments):
+                receipt = Path(receipt)
+                if phase == "package":
+                    self.assertEqual(b"original receipt", receipt.read_bytes())
+                    self.assertEqual([], self.events)
+                else:
+                    self.assertEqual(self.binary / "phase-receipt.json", receipt)
+                    self.assertEqual("original-enter", self.events[-1])
+                self.events.append(f"{phase}-lookup-failed")
+                raise ValueError(f"{phase} locator rejected")
+
+            with self.subTest(phase=phase), patch(
+                "sdk_apple_upload_locator.locate_original_apple_upload", side_effect=reject,
+            ) as lookup, self.assertRaisesRegex(ValueError, f"{phase} locator rejected"):
+                self.execute(**changes)
+            lookup.assert_called_once()
+            self.assertNotIn("worker", self.events)
+            self.assertNotIn("finalize", self.events)
+            self.assertFalse((self.destination / "shard").exists())
+
+    def test_partial_locator_pairs_and_signing_secret_fail_before_state_or_finalization(self):
+        invalid_pairs = (
+            ({"package_artifact_id": None}, "ID and digest"),
+            ({"package_artifact_sha256": None}, "ID and digest"),
+            ({"binary_artifact_id": None}, "ID and digest"),
+            ({"binary_artifact_sha256": None}, "ID and digest"),
+            ({"package_artifact_id": True}, "artifact ID"),
+            ({"binary_artifact_sha256": "not-a-digest"}, "artifact digest"),
+        )
+        for changes, message in invalid_pairs:
+            arguments = {**self.arguments, **changes}
+            with self.subTest(changes=changes), patch.dict(os.environ, {}, clear=True), \
+                    patch.object(workflow.product_reuse, "_verified_product_state") as state, \
+                    self.assertRaisesRegex(ValueError, message):
+                workflow.execute(self.plan, self.root, self.root, self.destination, **arguments)
+            state.assert_not_called()
+            self.assertFalse(self.destination.exists())
+
+        for supplied, live in ((True, False), (False, True)):
+            environment = dict(self.arguments["environ"])
+            if supplied:
+                environment[SIGNING_SECRET] = ""
+            with self.subTest(supplied=supplied), patch.dict(
+                    os.environ, {SIGNING_SECRET: ""} if live else {}, clear=True), \
+                    patch.object(workflow.product_reuse, "_verified_product_state") as state, \
+                    self.assertRaisesRegex(ValueError, "signing-secret"):
+                workflow.execute(self.plan, self.root, self.root, self.destination,
+                    **{**self.arguments, "environ": environment})
+            state.assert_not_called()
+            self.assertFalse(self.destination.exists())
+
+        self.mutation = "late-secret"
+        try:
+            with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(ValueError, "signing-secret"):
+                self.execute()
+            self.assertIn("replay", self.events)
+            self.assertNotIn("checkout", self.events)
+            self.assertNotIn("finalize", self.events)
+            self.assertFalse((self.destination / "shard").exists())
+        finally:
+            self.arguments["environ"].pop(SIGNING_SECRET, None)
 
     def test_rejects_wrong_target_key_and_package_version_before_worker(self):
         for changes in ({"target": "ios"}, {"expected_build_key": "wrong"}):

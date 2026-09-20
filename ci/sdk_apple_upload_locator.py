@@ -1,4 +1,4 @@
-"""Locate fixed current Apple uploads; never admit or download product contents."""
+"""Locate fixed Apple uploads; never admit or download product contents."""
 
 import argparse
 import os
@@ -10,9 +10,72 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import product_reuse as products
-from products.inventory import canonical_json_bytes, read_regular_file_bytes, require_integer, require_sha256
+from products.inventory import (
+    canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
+    require_integer, require_sha256,
+)
 from products.signing_isolation import require_no_signing_secret
 from reuse import github_output
+
+
+def _locate(producer, *, phase, job, name, trusted_workflow_sha, token):
+    """Shared fixed-callsite observation/list/detail/window checks, no downloads."""
+    producer_bytes = canonical_json_bytes(producer)
+    observation = products._observe_ci_producer_jobs({phase: producer},
+        jobs_by_phase={phase: job}, trusted_workflow_sha=trusted_workflow_sha, token=token)[0]
+    api = f"https://api.github.com/repos/{producer['repository']}/actions"
+    artifacts = products.paginated_items(f"{api}/runs/{producer['runId']}/artifacts", "artifacts", token)
+    selected = [value for value in artifacts if type(value) is dict
+                and value.get("name") == name and value.get("expired") is False]
+    if len(selected) != 1:
+        raise ValueError("Apple original upload is missing or ambiguous")
+    listed = selected[0]
+    artifact_id = require_integer(listed.get("id"), "Apple upload ID", 1)
+    digest = require_sha256(listed.get("digest"), "Apple upload digest")
+    url = f"{api}/artifacts/{artifact_id}"
+    detail = products.api_json(url, token)
+    if (type(detail) is not dict or any(detail.get(field) != listed.get(field) for field in (
+            "id", "name", "digest", "expired", "workflow_run", "created_at"))
+            or detail.get("archive_download_url") != url + "/zip"
+            or type(detail.get("workflow_run")) is not dict
+            or require_integer(detail["workflow_run"].get("id"), "Apple upload run", 1) != producer["runId"]
+            or detail["workflow_run"].get("head_sha") != observation["run"]["head_sha"]):
+        raise ValueError("Apple upload differs from its observed run or listing")
+    products._require_artifact_job_window(observation, job, detail)
+    if canonical_json_bytes(producer) != producer_bytes:
+        raise ValueError("Apple upload producer changed during observation")
+    return {"artifact_id": artifact_id, "artifact_sha256": digest}
+
+
+def locate_original_apple_upload(receipt_path, *, trusted_workflow_sha, token, environ=None):
+    """Locate the selected original iOS binary/package upload, not current work.
+
+    The caller must independently authenticate/select the original receipt.
+    Canonical structure and official upload metadata do not replace recapture
+    and complete original content admission. Current environment cannot relabel
+    the receipt's producer, build key, run or attempt.
+    """
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    if type(token) is not str or not token:
+        raise ValueError("Apple upload locator requires an observation token")
+    receipt_path = Path(receipt_path).absolute()
+    raw = read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    receipt = products.validate_phase_receipt(load_canonical_json_bytes(raw))
+    if ((receipt["product"], receipt["component"], receipt["target"]) != ("sdk", "sdk-ios", "ios")
+            or receipt["phase"] not in ("binary", "package")):
+        raise ValueError("Original Apple upload locator requires an exact iOS binary or package receipt")
+    producer, phase = receipt["producer"], receipt["phase"]
+    job = f"product-validation / sdk-sdk-ios-{phase}-ios"
+    name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-ios-{receipt['buildKey'].removeprefix('sha256:')}-"
+            f"{producer['tree']}-attempt-{producer['runAttempt']}")
+    result = _locate(producer, phase=phase, job=job, name=name,
+                     trusted_workflow_sha=trusted_workflow_sha, token=token)
+    require_no_signing_secret(environment)
+    if (read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != raw
+            or canonical_json_bytes(receipt) != raw):
+        raise ValueError("Original Apple receipt changed during observation")
+    return result
 
 
 def locate_apple_upload(plan_path, candidate_root, *, mode, target,
@@ -52,34 +115,15 @@ def locate_apple_upload(plan_path, candidate_root, *, mode, target,
             job = f"product-validation / sdk-apple-signing-prepare-{target}"
             name = (f"codex-agent-sdk-apple-signing-preparation-{target}-"
                     f"{producer['tree']}-attempt-{producer['runAttempt']}")
-        observation = products._observe_ci_producer_jobs({mode: producer},
-            jobs_by_phase={mode: job}, trusted_workflow_sha=trusted_workflow_sha, token=token)[0]
-        api = f"https://api.github.com/repos/{producer['repository']}/actions"
-        artifacts = products.paginated_items(f"{api}/runs/{producer['runId']}/artifacts", "artifacts", token)
-        selected = [value for value in artifacts if type(value) is dict
-                    and value.get("name") == name and value.get("expired") is False]
-        if len(selected) != 1:
-            raise ValueError("Apple original upload is missing or ambiguous")
-        listed = selected[0]
-        artifact_id = require_integer(listed.get("id"), "Apple upload ID", 1)
-        digest = require_sha256(listed.get("digest"), "Apple upload digest")
-        url = f"{api}/artifacts/{artifact_id}"
-        detail = products.api_json(url, token)
-        if (type(detail) is not dict or any(detail.get(field) != listed.get(field) for field in (
-                "id", "name", "digest", "expired", "workflow_run", "created_at"))
-                or detail.get("archive_download_url") != url + "/zip"
-                or type(detail.get("workflow_run")) is not dict
-                or require_integer(detail["workflow_run"].get("id"), "Apple upload run", 1) != producer["runId"]
-                or detail["workflow_run"].get("head_sha") != observation["run"]["head_sha"]):
-            raise ValueError("Apple upload differs from its observed run or listing")
-        products._require_artifact_job_window(observation, job, detail)
+        result = _locate(producer, phase=mode, job=job, name=name,
+                         trusted_workflow_sha=trusted_workflow_sha, token=token)
         require_no_signing_secret(environment)
         if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes
                 or read_regular_file_bytes(captured_plan) != plan_bytes
                 or canonical_json_bytes(plan) != plan_value
                 or products.validate_producer(products._consumer(plan, environment)["producer"]) != producer):
             raise ValueError("Apple locator plan or current producer changed during observation")
-    return {"artifact_id": artifact_id, "artifact_sha256": digest}
+    return result
 
 
 def _digest(value):

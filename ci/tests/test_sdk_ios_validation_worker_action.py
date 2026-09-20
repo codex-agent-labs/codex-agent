@@ -154,6 +154,54 @@ class IosValidationWorkerActionTest(unittest.TestCase):
                 self.run_snippet(step)
             process.assert_not_called()
 
+    def test_absent_locator_pairs_are_omitted_independently_for_original_receipt_lookup(self):
+        original = dict(self.environment)
+        for absent in (("PACKAGE", "BINARY"), ("PACKAGE",), ("BINARY",)):
+            self.environment = dict(original)
+            for name in absent:
+                self.environment[name + "_ARTIFACT_ID"] = ""
+                self.environment[name + "_ARTIFACT_SHA256"] = ""
+            self.pin()
+            with self.subTest(absent=absent), patch("subprocess.run") as process:
+                self.run_snippet("execute")
+            process.assert_called_once()
+            argv = process.call_args.args[0]
+            fields = dict(zip(argv[5::2], argv[6::2]))
+            for name in ("PACKAGE", "BINARY"):
+                for suffix in ("ID", "SHA256"):
+                    flag = "--" + name.lower() + "-artifact-" + suffix.lower()
+                    if name in absent:
+                        self.assertNotIn(flag, fields)
+                    else:
+                        self.assertEqual(original[name + "_ARTIFACT_" + suffix], fields[flag])
+
+    def test_half_pairs_fail_before_setup_and_subprocess_and_explicit_values_never_fall_back(self):
+        self.pin()
+        original = dict(self.environment)
+        for name in ("PACKAGE", "BINARY"):
+            for suffix in ("ID", "SHA256"):
+                self.environment = {**original, name + "_ARTIFACT_" + suffix: ""}
+                for step in ("policy", "execute"):
+                    with self.subTest(name=name, suffix=suffix, step=step), \
+                            patch("subprocess.run") as process, self.assertRaisesRegex(ValueError, "supplied together"):
+                        self.run_snippet(step)
+                    process.assert_not_called()
+                    self.assertFalse(self.output.exists())
+        self.environment = {**original, "PACKAGE_ARTIFACT_ID": "invalid-explicit",
+                            "PACKAGE_ARTIFACT_SHA256": "invalid-explicit-digest"}
+        self.pin()
+        with patch("subprocess.run") as process:
+            self.run_snippet("execute")
+        argv = process.call_args.args[0]
+        fields = dict(zip(argv[5::2], argv[6::2]))
+        self.assertEqual("invalid-explicit", fields["--package-artifact-id"])
+        self.assertEqual("invalid-explicit-digest", fields["--package-artifact-sha256"])
+        # CLI/controller validation must reject these explicit values; absence is never inferred.
+        for name in ("package-artifact-id", "package-artifact-sha256", "binary-artifact-id", "binary-artifact-sha256"):
+            block = self.action.split("  " + name + ":\n", 1)[1].split("\n  ", 1)[0]
+            self.assertIn("default: ''", block)
+            self.assertNotIn("required: true", block)
+
     def test_secret_and_malformed_tooling_fail_before_setup_or_process(self):
         for name in ("evidence", "publicKey", "javaExecutable"):
             self.policy_path.write_bytes(canonical_json_bytes({**self.policy, name: None}))

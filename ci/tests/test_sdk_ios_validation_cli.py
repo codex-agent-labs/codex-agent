@@ -98,6 +98,18 @@ class SdkIosValidationCliTest(unittest.TestCase):
             self.assertEqual(2, error.exception.code)
             controller.assert_not_called()
 
+    def test_absent_predecessor_pairs_are_forwarded_as_absent_without_choosing_current_uploads(self):
+        for omitted in (("package",), ("binary",), ("package", "binary")):
+            fields = self.fields()
+            for phase in omitted:
+                fields.pop(f"{phase}-artifact-id")
+                fields.pop(f"{phase}-artifact-sha256")
+            with self.subTest(omitted=omitted), patch.object(command, "execute") as controller:
+                self.assertEqual(0, command.main(self.arguments(fields)))
+            for phase in omitted:
+                self.assertIsNone(controller.call_args.kwargs[f"{phase}_artifact_id"])
+                self.assertIsNone(controller.call_args.kwargs[f"{phase}_artifact_sha256"])
+
     def test_controller_errors_fail_and_absent_token_is_not_invented(self):
         for failure in (ValueError("verification failed"), OSError("input unavailable")):
             with self.subTest(failure=failure), redirect_stderr(io.StringIO()), \

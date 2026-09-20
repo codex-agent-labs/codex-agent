@@ -17,10 +17,11 @@ if __package__:
 import product_reuse
 from products.inventory import (
     canonical_json_bytes, read_regular_file_bytes, regular_file_inventory,
-    sha256_file, snapshot_regular_tree, write_canonical_json,
+    require_integer, require_sha256, sha256_file, snapshot_regular_tree, write_canonical_json,
 )
 from products.registry import PhaseInstanceId
 from products.restore import verify_object
+from products.signing_isolation import require_no_signing_secret
 from products.sdk_apple_validation_source import capture_apple_validation_sources
 from products.sdk_apple_validation_execution import verify_apple_validation_stage
 from products.sdk_apple_validation_context import verify_apple_validation_context
@@ -31,13 +32,21 @@ from sdk_ios_validation import execute as execute_validation
 
 
 def execute(plan, discovery, state, destination, *, target, expected_build_key,
-            package_artifact_id, package_artifact_sha256, trusted_workflow_sha,
-            binary_artifact_id, binary_artifact_sha256, rust_host,
+            package_artifact_id=None, package_artifact_sha256=None, trusted_workflow_sha,
+            binary_artifact_id=None, binary_artifact_sha256=None, rust_host,
             keyring, keys_directory, tooling_evidence, tooling_public_key,
             java_executable, policy_revision, required_trust_domain,
             repository_root, environ, token, tooling_keyring=None, tooling_keys_directory=None,
             sdk_apple_validation_policy=None):
     """Finalize elected validation only after replay and immutable original retention."""
+    require_no_signing_secret(environ)
+    for artifact_id, digest in ((package_artifact_id, package_artifact_sha256),
+                               (binary_artifact_id, binary_artifact_sha256)):
+        if (artifact_id is None) != (digest is None):
+            raise ValueError("Apple original upload ID and digest must be supplied together")
+        if artifact_id is not None:
+            require_integer(artifact_id, "Apple original artifact ID", 1)
+            require_sha256(digest, "Apple original artifact digest")
     if target not in ("ios-arm64", "ios-simulator-arm64"):
         raise ValueError("SDK iOS validation requires an exact iOS target")
     root = Path(repository_root).resolve(strict=True)
@@ -101,6 +110,11 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
         private = Path(temporary).resolve()
         selected_receipt = private / "package-receipt.json"
         selected_receipt.write_bytes(original["receiptBytes"])
+        if package_artifact_id is None:
+            from sdk_apple_upload_locator import locate_original_apple_upload
+            locator = locate_original_apple_upload(selected_receipt,
+                trusted_workflow_sha=trusted_workflow_sha, environ=environ, token=token)
+            package_artifact_id, package_artifact_sha256 = locator["artifact_id"], locator["artifact_sha256"]
         sources = private / "source"
         capture_apple_validation_sources(root, verified.producer["commit"], sources)
         source_before = regular_file_inventory(sources)
@@ -125,6 +139,11 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
                 binary_receipt = binary / "phase-receipt.json"
                 selected_binary_bytes = read_regular_file_bytes(binary_receipt,
                     max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+                if binary_artifact_id is None:
+                    from sdk_apple_upload_locator import locate_original_apple_upload
+                    locator = locate_original_apple_upload(binary_receipt,
+                        trusted_workflow_sha=trusted_workflow_sha, environ=environ, token=token)
+                    binary_artifact_id, binary_artifact_sha256 = locator["artifact_id"], locator["artifact_sha256"]
                 binary_inputs = binary_context.enter_context(verified_original_ios_binary(
                     plan, binary_receipt, artifact_id=binary_artifact_id, artifact_sha256=binary_artifact_sha256,
                     trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token,
@@ -201,6 +220,7 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
             max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != canonical_json_bytes(content):
         raise ValueError("SDK iOS validation staged content differs from complete evidence replay")
     trust = "development" if verified.producer["event"] == "pull_request" else "release"
+    require_no_signing_secret(environ)
     product_reuse._runtime_worker_checkout(root, verified.producer)
     shard = product_reuse.finalize_phase_object(stage_root=result["stage"], phase_plan=ready,
         producer=verified.producer, product_version=version, trust_domain=trust,
@@ -218,11 +238,12 @@ def main(argv=None) -> int:
     parser.add_argument("--state-root", dest="state", type=Path, required=True)
     parser.add_argument("--target", choices=("ios-arm64", "ios-simulator-arm64"), required=True)
     parser.add_argument("--rust-host", choices=("aarch64-apple-darwin",), required=True)
-    for name in ("expected-build-key", "package-artifact-sha256", "binary-artifact-sha256",
-                 "trusted-workflow-sha", "policy-revision"):
+    for name in ("expected-build-key", "trusted-workflow-sha", "policy-revision"):
         parser.add_argument(f"--{name}", required=True)
     for name in ("package-artifact-id", "binary-artifact-id"):
-        parser.add_argument(f"--{name}", type=int, required=True)
+        parser.add_argument(f"--{name}", type=int)
+    for name in ("package-artifact-sha256", "binary-artifact-sha256"):
+        parser.add_argument(f"--{name}")
     parser.add_argument("--required-trust-domain", choices=("development", "release"), required=True)
     parser.add_argument("--tooling-keyring", type=Path)
     parser.add_argument("--tooling-keys-directory", type=Path)
@@ -230,6 +251,9 @@ def main(argv=None) -> int:
     arguments = vars(parser.parse_args(argv))
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
         parser.error("Apple tooling keyring and keys directory must be supplied together")
+    for phase in ("package", "binary"):
+        if (arguments[f"{phase}_artifact_id"] is None) != (arguments[f"{phase}_artifact_sha256"] is None):
+            parser.error("Apple original upload ID and digest must be supplied together")
     try:
         apple_policy = arguments.pop("sdk_apple_validation_policy")
         if apple_policy is not None:
