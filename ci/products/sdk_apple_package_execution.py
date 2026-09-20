@@ -153,8 +153,11 @@ def verify_apple_package_execution_context(
 ) -> dict[str, Any]:
     """Check retained descriptor bytes against independent caller inputs only.
 
-    Never derive these arguments from the descriptor itself. The caller must
+    Never derive authority from an unauthenticated descriptor. The caller must
     authenticate the same original transport/receipts/source closure separately.
+    Selected receipts and producer are independent inputs. A locator bound by an
+    already-authenticated original upload may identify the SDK-input upload, but
+    that upload still needs its own producer/job/digest authentication.
     This reuses the builder's schema and mutation checks, but performs no native
     replay and grants no receipt, source, tool, host or phase admission authority.
     """
