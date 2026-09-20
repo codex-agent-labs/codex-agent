@@ -362,6 +362,17 @@ importedContractEvidence?.let { contractEvidence ->
 }
 
 validationPackageInputs?.let { packageInputs ->
+    val validationConsumers = layout.dir(
+        providers.gradleProperty("codexAgent.iosValidationCompilerConsumersDirectory").map(::file),
+    )
+    appleCompilerEvidence.configure {
+        swiftConsumer.set(validationConsumers.map { it.file("CodexFailureSwiftConsumer.swift") })
+        objectiveCConsumer.set(validationConsumers.map { it.file("CodexFailureObjectiveCConsumer.m") })
+    }
+    appleBindingEvidence.configure {
+        swiftConsumer.set(validationConsumers.map { it.file("CodexFailureSwiftConsumer.swift") })
+        objectiveCConsumer.set(validationConsumers.map { it.file("CodexFailureObjectiveCConsumer.m") })
+    }
     val deviceInputs = tasks.register<StageAppleValidationDeviceInputsTask>("stageSdkIosValidationDeviceInputs") {
         dependsOn(packageInputs)
         packageDirectory.set(packageInputs.flatMap { it.packageDirectory })
@@ -376,6 +387,16 @@ validationPackageInputs?.let { packageInputs ->
     appleDistributionTasks.verifyCodexAgentSwiftPackage.configure {
         setDependsOn(listOf(invalidateAppleBindingEvidence, verifyAppleToolchain, deviceInputs))
         workingDir(deviceInputs.flatMap { it.stagedTestApplicationDirectory })
+    }
+    tasks.register<VerifyAppleDeviceConsumerTask>("verifySdkIosDeviceConsumer") {
+        dependsOn(invalidateAppleBindingEvidence, verifyAppleToolchain, deviceInputs)
+        developerDirectory.set(layout.dir(providers.environmentVariable("DEVELOPER_DIR").map(::file)))
+        testApplicationDirectory.set(deviceInputs.flatMap { it.stagedTestApplicationDirectory })
+        packageDirectory.set(deviceInputs.flatMap { it.stagedPackageDirectory })
+        workDirectory.set(layout.buildDirectory.dir(
+            "imported-sdk-validation/${providers.gradleProperty("codexAgent.candidateTree").get()}/" +
+                "${providers.gradleProperty("codexAgent.target").get()}/device-execution",
+        ))
     }
     configureIosSdkValidationConsumers(
         packageInputs,

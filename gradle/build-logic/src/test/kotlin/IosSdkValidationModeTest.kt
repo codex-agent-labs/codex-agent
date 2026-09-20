@@ -48,7 +48,8 @@ class IosSdkValidationModeTest {
         listOf("ios-arm64", "ios-simulator-arm64").forEach { target ->
             val selected = properties() + ("codexAgent.target" to target)
             listOf("codexAgent.iosValidationPackageStage", "codexAgent.contractBinaryStage",
-                "codexAgent.sdkCompatibilityFile", "codexAgent.iosValidationTestApplicationDirectory").forEach { key ->
+                "codexAgent.sdkCompatibilityFile", "codexAgent.iosValidationTestApplicationDirectory",
+                "codexAgent.iosValidationCompilerConsumersDirectory").forEach { key ->
                 assertFailsWith<IllegalStateException>("missing $key for $target") { mode(selected - key, emptyMap()) }
                 listOf("", " \t\n").forEach { blank ->
                     assertFailsWith<IllegalStateException>("blank $key for $target") {
@@ -89,6 +90,7 @@ class IosSdkValidationModeTest {
         "codexAgent.contractBinaryStage" to "/original/contract",
         "codexAgent.sdkCompatibilityFile" to "/original/sdk-compatibility.json",
         "codexAgent.iosValidationTestApplicationDirectory" to "/original/TestApp",
+        "codexAgent.iosValidationCompilerConsumersDirectory" to "/original/CompilerEvidence",
     )
 
     private fun withMode(block: ((Map<String, String>, Map<String, String>) -> Boolean) -> Unit) {

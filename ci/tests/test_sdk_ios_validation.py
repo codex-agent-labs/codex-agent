@@ -17,6 +17,10 @@ class SdkIosValidationTest(unittest.TestCase):
         self.package = self.root / "original-package"
         self.contract = self.root / "original-contract"
         self.application = self.root / "original-test-application"
+        self.consumers = self.root / "original-compiler-consumers"
+        self.consumers.mkdir()
+        for name in ("CodexFailureSwiftConsumer.swift", "CodexFailureObjectiveCConsumer.m"):
+            (self.consumers / name).write_bytes(b"original compiler consumer fixture\n")
         for stage in (self.package, self.contract, self.application):
             stage.mkdir()
             (stage / "original.bin").write_bytes(b"unchanged original fixture\n")
@@ -24,7 +28,8 @@ class SdkIosValidationTest(unittest.TestCase):
         self.compatibility.write_bytes(b"opaque caller-authenticated compatibility fixture\n")
         self.arguments = dict(target="ios-arm64", sdk_version="0.8.1", contract_version="0.8.0",
             candidate_tree="a" * 40, package_stage=self.package, contract_binary_stage=self.contract,
-            sdk_compatibility=self.compatibility, test_application=self.application)
+            sdk_compatibility=self.compatibility, test_application=self.application,
+            compiler_consumers=self.consumers)
 
     def translate(self, **changes):
         return validation_properties(**{**self.arguments, **changes})
@@ -41,6 +46,7 @@ class SdkIosValidationTest(unittest.TestCase):
                     "codexAgent.contractBinaryStage": str(self.contract),
                     "codexAgent.sdkCompatibilityFile": str(self.compatibility),
                     "codexAgent.iosValidationTestApplicationDirectory": str(self.application),
+                    "codexAgent.iosValidationCompilerConsumersDirectory": str(self.consumers),
                     "codexAgent.sdkVersion": "0.8.1", "codexAgent.contractVersion": "0.8.0",
                     "codexAgent.candidateTree": "a" * 40,
                 }, self.translate(target=target))
@@ -62,7 +68,7 @@ class SdkIosValidationTest(unittest.TestCase):
         alias.symlink_to(self.package, target_is_directory=True)
         parent_alias = self.root / "parent-alias"
         parent_alias.symlink_to(self.root, target_is_directory=True)
-        for field in ("package_stage", "contract_binary_stage", "test_application"):
+        for field in ("package_stage", "contract_binary_stage", "test_application", "compiler_consumers"):
             for value in (None, str(self.package), Path("relative"), self.root / "missing",
                           self.compatibility, alias, parent_alias / "original-package",
                           self.package / ".." / "original-contract"):
@@ -90,6 +96,36 @@ class SdkIosValidationTest(unittest.TestCase):
                       self.package / ".." / self.compatibility.name):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.translate(sdk_compatibility=value)
+
+    def test_both_targets_require_the_compiler_consumers_directory(self):
+        for target in ("ios-arm64", "ios-simulator-arm64"):
+            arguments = {**self.arguments, "target": target}
+            del arguments["compiler_consumers"]
+            with self.subTest(target=target), self.assertRaises(TypeError):
+                validation_properties(**arguments)
+
+    def test_both_named_compiler_consumers_must_be_nonempty_regular_original_files(self):
+        for name in ("CodexFailureSwiftConsumer.swift", "CodexFailureObjectiveCConsumer.m"):
+            for mutation in ("missing", "empty", "linked", "directory"):
+                with self.subTest(name=name, mutation=mutation):
+                    member = self.consumers / name
+                    original = member.read_bytes()
+                    member.unlink()
+                    try:
+                        if mutation == "empty":
+                            member.write_bytes(b"")
+                        elif mutation == "linked":
+                            member.symlink_to(self.compatibility)
+                        elif mutation == "directory":
+                            member.mkdir()
+                        with self.assertRaises(ValueError):
+                            self.translate()
+                    finally:
+                        if member.is_symlink() or member.is_file():
+                            member.unlink()
+                        elif member.is_dir():
+                            member.rmdir()
+                        member.write_bytes(original)
 
 
 if __name__ == "__main__":

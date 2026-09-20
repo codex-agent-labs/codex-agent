@@ -74,6 +74,17 @@ def capture_apple_package_sources(
     output: Path,
 ) -> dict[str, str]:
     """Copy package inputs only; caller authentication and replay remain separate gates."""
+    return _capture_apple_sources(repository, revision, output, _SINGLE_FILES, _SOURCE_TREES)
+
+
+def _capture_apple_sources(
+    repository: Path,
+    revision: str,
+    output: Path,
+    single_files: tuple[str, ...],
+    source_trees: tuple[str, ...],
+) -> dict[str, str]:
+    """Capture a fixed caller-owned allowlist, without establishing revision authority."""
     repository = Path(repository).resolve(strict=True)
     output = Path(output)
     if not output.is_absolute() or output != output.resolve(strict=False):
@@ -85,8 +96,8 @@ def capture_apple_package_sources(
 
     tree = _immutable_tree(repository, revision)
     entries = {path: record.split("\t", 3) for path, record in tree_entries(repository, tree)}
-    paths = list(_SINGLE_FILES)
-    for prefix in _SOURCE_TREES:
+    paths = list(single_files)
+    for prefix in source_trees:
         members = sorted(path for path in entries if path.startswith(prefix + "/"))
         if not members:
             raise ValueError(f"Apple package source tree is empty: {prefix}")
