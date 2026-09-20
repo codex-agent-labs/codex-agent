@@ -123,6 +123,7 @@ def verified_original_ios_binary(plan, binary_receipt_path, *, artifact_id, arti
                 )
                 unchanged()
                 yield {"stage": stage, "receiptPath": original / "shard/phase-receipt.json",
-                       "receiptBytes": receipt_bytes, "original": original, "native": native}
+                       "receiptBytes": receipt_bytes, "original": original,
+                       "binaryCapture": capture, "native": native}
         finally:
             unchanged()

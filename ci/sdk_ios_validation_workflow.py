@@ -1,7 +1,7 @@
 """Execute elected Apple validation from authenticated original package inputs.
 
-Raw execution is not canonical phase admission. Full evidence replay and
-original binary/host admission must precede any validation receipt.
+Full evidence replay, retained originals and successful context exits precede
+the phase receipt. Hosted upload observation remains a separate trust boundary.
 """
 
 from pathlib import Path
@@ -13,7 +13,10 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import product_reuse
-from products.inventory import canonical_json_bytes, load_json_bytes, read_regular_file_bytes, regular_file_inventory, sha256_file
+from products.inventory import (
+    canonical_json_bytes, load_json_bytes, read_regular_file_bytes, regular_file_inventory,
+    sha256_file, snapshot_regular_tree, write_canonical_json,
+)
 from products.receipt import output_inventory_digest
 from products.registry import PhaseInstanceId
 from products.restore import verify_object
@@ -40,11 +43,7 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
             keyring, keys_directory, tooling_evidence, tooling_public_key,
             java_executable, policy_revision, required_trust_domain,
             repository_root, environ, token, tooling_keyring=None, tooling_keys_directory=None):
-    """Run and replay elected validation; return content, never mint a receipt.
-
-    Original binary/native-host admission and canonical phase staging remain
-    separate requirements. The returned ordinary content dict grants no trust.
-    """
+    """Finalize elected validation only after replay and immutable original retention."""
     if target not in ("ios-arm64", "ios-simulator-arm64"):
         raise ValueError("SDK iOS validation requires an exact iOS target")
     root = Path(repository_root).resolve(strict=True)
@@ -75,6 +74,32 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
     if (tuple(original["receipt"][name] for name in ("product", "component", "phase", "target")) !=
             ("sdk", "sdk-ios", "package", "ios") or original["receipt"]["productVersion"] != version):
         raise ValueError("SDK iOS validation package identity/version differs from its selection")
+    selection_bytes = {"impact-plan.json": plan_bytes,
+                       "phase-plan.json": canonical_json_bytes(ready),
+                       "producer.json": canonical_json_bytes(verified.producer)}
+    destination = product_reuse._prepare_destination(destination, root)
+    selection = destination / "selection"
+    selection.mkdir()
+    for name, raw in selection_bytes.items():
+        (selection / name).write_bytes(raw)
+    retained = {selection: regular_file_inventory(selection)}
+
+    def retain(source, output):
+        inventory = regular_file_inventory(source, allow_empty=True)
+        snapshot_regular_tree(source, output, allow_empty=True)
+        if (regular_file_inventory(source, allow_empty=True) != inventory or
+                regular_file_inventory(output, allow_empty=True) != inventory):
+            raise ValueError("SDK iOS validation retained originals differ from their capture")
+        retained[output] = inventory
+
+    def retained_unchanged():
+        if (canonical_json_bytes(ready) != selection_bytes["phase-plan.json"] or
+                canonical_json_bytes(verified.producer) != selection_bytes["producer.json"] or
+                read_regular_file_bytes(Path(plan), max_bytes=16 * 1024 * 1024,
+                    reject_symlink_parents=True) != plan_bytes or
+                any(regular_file_inventory(path, allow_empty=True) != inventory
+                    for path, inventory in retained.items())):
+            raise ValueError("SDK iOS validation retained evidence or election changed")
 
     with tempfile.TemporaryDirectory(prefix="sdk-ios-validation-inputs-") as temporary:
         private = Path(temporary).resolve()
@@ -114,6 +139,11 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
                 if (binary_inputs["receiptBytes"] != selected_binary_bytes or
                         regular_file_inventory(binary_inputs["stage"]) != regular_file_inventory(binary / "stage")):
                     raise ValueError("Original Apple binary differs from the package's exact predecessor")
+                for name, capture in (("package", inputs["packageCapture"]),
+                        ("sdk", inputs["sdkCapture"]), ("binary", binary_inputs["binaryCapture"]),
+                        ("native", binary_inputs["native"]["captureRoot"])):
+                    retain(capture, destination / "originals" / name)
+                retained[destination / "originals"] = regular_file_inventory(destination / "originals", allow_empty=True)
                 contract = inputs["original"] / "inputs/contract-contract-binary-common"
                 contract_receipt = contract / "phase-receipt.json"
                 contract_value = product_reuse.validate_phase_receipt(product_reuse._canonical_control(
@@ -127,7 +157,8 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
                     sdk_compatibility=inputs["sdk"]["directory"] / "sdk-compatibility.json",
                     test_application=sources / "codex-agent-runtime-ios/apple/TestApp",
                     compiler_consumers=sources / "codex-agent-runtime-ios/apple/CompilerEvidence",
-                    repository_root=root, destination=destination, environ=environ)
+                    repository_root=root, destination=destination / "worker", environ=environ)
+                retained[destination / "worker"] = regular_file_inventory(destination / "worker", allow_empty=True)
                 canonical = contract / "stage/outputs/evidence"
                 api, coverage = canonical / "canonical-api.json", canonical / "canonical-coverage.json"
                 compatibility = inputs["sdk"]["directory"] / "sdk-compatibility.json"
@@ -154,8 +185,25 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
                         binding_receipts={language: load_json_bytes(read_regular_file_bytes(
                             evidence / f"reports/{language}-parity.json", max_bytes=16 * 1024 * 1024,
                             reject_symlink_parents=True)) for language in ("swift", "objective-c")})
+                retain(result["evidenceArchive"].parent, destination / "execution")
+                # This is external execution identity, never a reusable output.
+                context = destination / "context"
+                context.mkdir()
+                write_canonical_json(context / "execution-context.json", {
+                    "schemaVersion": 1, "producer": verified.producer, "target": target,
+                    "packageArtifact": {"artifactId": package_artifact_id, "artifactSha256": package_artifact_sha256},
+                    "binaryArtifact": {"artifactId": binary_artifact_id, "artifactSha256": binary_artifact_sha256},
+                    "rustHost": rust_host, "developerDirectory": developer,
+                    "originalWorkingDirectory": str(module),
+                    "originalDeviceWorkDirectory": str(execution / "device-execution"),
+                    "originalTestApplicationDirectory": str(execution / "device-consumer/CodexAgentTestApp"),
+                    "evidenceSha256": result["evidenceSha256"],
+                })
+                retained[context] = regular_file_inventory(context)
+                retained_unchanged()
         finally:
             unchanged()
+    retained_unchanged()
     if sha256_file(result["evidenceArchive"]) != result["evidenceSha256"]:
         raise ValueError("SDK iOS validation raw archive changed during context exit")
     if regular_file_inventory(result["stage"]) != result["outputInventory"]:
@@ -163,4 +211,10 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
     if read_regular_file_bytes(result["stage"] / "outputs/validation/apple-validation.json",
             max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != canonical_json_bytes(content):
         raise ValueError("SDK iOS validation staged content differs from complete evidence replay")
-    return {**result, "content": content}
+    trust = "development" if verified.producer["event"] == "pull_request" else "release"
+    product_reuse._runtime_worker_checkout(root, verified.producer)
+    shard = product_reuse.finalize_phase_object(stage_root=result["stage"], phase_plan=ready,
+        producer=verified.producer, product_version=version, trust_domain=trust,
+        destination=destination / "shard")
+    return {**result, "evidenceArchive": destination / "execution" / result["evidenceArchive"].name,
+            "content": content, "shard": shard}

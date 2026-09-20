@@ -177,6 +177,7 @@ def verified_original_ios_package(plan, package_receipt_path, *, artifact_id, ar
                     raise ValueError("Original Apple package gate returned a different receipt")
                 unchanged()
                 yield {"stage": stage, "receiptPath": selected_receipt, "receipt": receipt,
-                       "receiptBytes": receipt_bytes, "original": original, **joined}
+                       "receiptBytes": receipt_bytes, "original": original, **joined,
+                       "packageCapture": capture, "sdkCapture": sdk_capture}
         finally:
             unchanged()

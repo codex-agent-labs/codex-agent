@@ -220,6 +220,8 @@ class SdkIosOriginalPackageTest(unittest.TestCase):
             self.events.append("signed-exit")
             if self.context_exit_mutation == "capture":
                 (self.last_original / "apple-package-execution.json").write_bytes(b"changed on context exit\n")
+            elif self.context_exit_mutation == "sdk-capture":
+                (self.sdk_paths["directory"].parent / "transport.bin").write_bytes(b"changed on context exit\n")
             elif self.context_exit_mutation == "policy":
                 self.keyring.write_bytes(b"changed policy on context exit\n")
         finally:
@@ -326,6 +328,10 @@ class SdkIosOriginalPackageTest(unittest.TestCase):
             self.assertEqual(self.receipt, value["receipt"])
             self.assertEqual(self.receipt_bytes, value["receiptBytes"])
             self.assertEqual(self.receipt_bytes, value["receiptPath"].read_bytes())
+            self.assertEqual(value["original"].parent, value["packageCapture"])
+            self.assertEqual(value["sdk"]["directory"].parent, value["sdkCapture"])
+            self.assertTrue(value["packageCapture"].is_dir())
+            self.assertTrue(value["sdkCapture"].is_dir())
             self.assertEqual(self.compatibility_bytes,
                              (value["stage"] / "outputs/evidence/sdk-compatibility.json").read_bytes())
             self.assertEqual({"synthetic": "authenticated runtime input"}, value["runtime"])
@@ -378,7 +384,7 @@ class SdkIosOriginalPackageTest(unittest.TestCase):
 
     def test_context_exit_capture_policy_and_in_memory_receipt_mutations_reject(self):
         policy_bytes = self.keyring.read_bytes()
-        for mutation in ("capture", "policy", "receipt"):
+        for mutation in ("capture", "sdk-capture", "policy", "receipt"):
             self.events.clear()
             self.context_exit_mutation = mutation if mutation != "receipt" else None
             try:

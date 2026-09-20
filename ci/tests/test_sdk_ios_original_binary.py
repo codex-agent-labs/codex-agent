@@ -120,6 +120,8 @@ class SdkIosOriginalBinaryTest(unittest.TestCase):
         with self.context() as value:
             self.assertEqual(self.fixture.receipt_bytes, value["receiptBytes"])
             self.assertEqual(self.fixture.receipt_bytes, value["receiptPath"].read_bytes())
+            self.assertEqual(value["original"].parent, value["binaryCapture"])
+            self.assertTrue(value["binaryCapture"].is_dir())
             stage = value["stage"]
             self.assertTrue(stage.exists())
             self.assertEqual(["capture", "native-enter", "semantic-verify"], self.events)
@@ -137,12 +139,14 @@ class SdkIosOriginalBinaryTest(unittest.TestCase):
             (self.native / "native-evidence/ios-native-tests.bin").write_bytes(b"original evidence")
 
     def test_consumer_stage_or_plan_mutation_fails_exit(self):
-        for mutation in ("stage", "plan", "toolchain"):
+        for mutation in ("stage", "plan", "toolchain", "capture"):
             try:
                 with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, "changed during recovery"):
                     with self.context() as value:
                         path = (value["stage"] / "injected" if mutation == "stage" else
-                                next(self.toolchain_copy.iterdir()) if mutation == "toolchain" else self.fixture.plan_path)
+                                next(self.toolchain_copy.iterdir()) if mutation == "toolchain" else
+                                value["binaryCapture"] / "original/native-original/native-transport.json"
+                                if mutation == "capture" else self.fixture.plan_path)
                         path.write_bytes(b"changed")
             finally:
                 self.fixture.plan_path.write_bytes(self.fixture.original_plan)
