@@ -718,6 +718,35 @@ def verify_packaged_sdk_maven_phase(
         return receipt, receipt_bytes
 
 
+def verify_sdk_maven_binary_content(stage: Path, identity: dict[str, Any]) -> None:
+    """Verify existing binary content rules, not producer or receipt authority."""
+    stage = Path(stage)
+    original = regular_file_inventory(stage)
+    identity_bytes = canonical_json_bytes(identity)
+    _verify_sdk_maven_stage(stage, identity, "binary")
+    component, version = identity["component"], identity["productVersion"]
+    raw_maven = stage / "outputs/maven"
+    verify_sdk_maven_repository(raw_maven, MAVEN_GROUPS[component], version, component)
+    # Existing Gradle primary-inventory authority; preserve its field/format rules.
+    primaries = [record for record in regular_file_inventory(raw_maven)
+                 if not any(record["relativePath"].endswith(suffix) for suffix in CHECKSUMS)]
+    expected_evidence = {
+        "schemaVersion": 1, "product": "sdk", "component": component,
+        "groupId": MAVEN_GROUPS[component], "sdkVersion": version,
+        "artifactIds": sorted(COMPONENT_ARTIFACTS[component]),
+        "primaryArtifactCount": len(primaries),
+        "files": [{"path": record["relativePath"], "bytes": record["bytes"],
+                   "sha256": record["sha256"].removeprefix("sha256:")} for record in primaries],
+    }
+    evidence = load_json_bytes(read_regular_file_bytes(
+        stage / "outputs/evidence/maven-primary-inventory.json",
+        max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
+    if canonical_json_bytes(evidence) != canonical_json_bytes(expected_evidence):
+        raise ValueError("SDK Maven binary primary inventory differs from its exact artifacts")
+    if regular_file_inventory(stage) != original or canonical_json_bytes(identity) != identity_bytes:
+        raise ValueError("SDK Maven binary content changed during verification")
+
+
 def verify_sdk_maven_binary_predecessor(
     binary_stage_root: Path,
     binary_receipt_path: Path,
@@ -766,7 +795,7 @@ def verify_sdk_maven_binary_predecessor(
                 raise ValueError(f"SDK Maven {phase} stage changed during snapshot")
             receipts[phase] = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes[phase]))
             if phase == "binary":
-                _verify_sdk_maven_stage(private / phase, receipts[phase], phase)
+                verify_sdk_maven_binary_content(private / phase, receipts[phase])
         binary, package = receipts["binary"], receipts["package"]
         if any(binary[field] != package[field] for field in ("component", "target", "productVersion")):
             raise ValueError("SDK Maven binary predecessor and package identities differ")
@@ -777,25 +806,6 @@ def verify_sdk_maven_binary_predecessor(
                                apple_original_verification=apple_original_verification,
                                apple_execution_capture_directory=apple_execution_capture_directory)
         raw_maven = private / "binary/outputs/maven"
-        verify_sdk_maven_repository(raw_maven, MAVEN_GROUPS[component], version, component)
-        # This is the existing Gradle primary-inventory authority, not a new
-        # receipt/parser. Accept its formatting while comparing exact fields.
-        primaries = [record for record in regular_file_inventory(raw_maven)
-                     if not any(record["relativePath"].endswith(suffix) for suffix in CHECKSUMS)]
-        expected_evidence = {
-            "schemaVersion": 1, "product": "sdk", "component": component,
-            "groupId": MAVEN_GROUPS[component], "sdkVersion": version,
-            "artifactIds": sorted(COMPONENT_ARTIFACTS[component]),
-            "primaryArtifactCount": len(primaries),
-            "files": [{"path": record["relativePath"], "bytes": record["bytes"],
-                       "sha256": record["sha256"].removeprefix("sha256:")} for record in primaries],
-        }
-        evidence = load_json_bytes(read_regular_file_bytes(
-            private / "binary/outputs/evidence/maven-primary-inventory.json",
-            max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
-        ))
-        if canonical_json_bytes(evidence) != canonical_json_bytes(expected_evidence):
-            raise ValueError("SDK Maven binary primary inventory differs from its exact artifacts")
         private_compatibility = private / "sdk-compatibility.json"
         private_compatibility.write_bytes(compatibility)
         if (private / "package/outputs/evidence/sdk-compatibility.json").read_bytes() != compatibility:

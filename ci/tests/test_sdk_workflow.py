@@ -14,6 +14,8 @@ from ci import sdk_workflow as workflow
 class SdkWorkflowTest(unittest.TestCase):
     def test_platform_controller_dispatch_preserves_exact_cli_tail_and_result(self):
         for command, module in (("core-metadata", "sdk_facade_metadata_workflow"),
+                                ("maven-binary", "sdk_maven_binary_workflow"),
+                                ("android-metadata", "sdk_android_metadata_workflow"),
                                 ("android-validation", "sdk_android_validation_workflow"),
                                 ("maven-package", "sdk_maven_package_workflow")):
             with self.subTest(command=command), patch(module + ".main", return_value=7) as execute:

@@ -181,6 +181,9 @@ class ProductSelectionTest(unittest.TestCase):
         for path, components, phases in (
             ("ci/sdk_facade_metadata_inputs.py", {"sdk-core"}, {"metadata"}),
             ("ci/sdk_facade_metadata_workflow.py", {"sdk-core"}, {"metadata"}),
+            ("ci/sdk_facade_metadata_original.py", {"sdk-core"}, {"metadata"}),
+            ("ci/sdk_android_metadata_workflow.py", {"sdk-android"}, {"metadata"}),
+            ("ci/sdk_maven_binary_workflow.py", {"sdk-core", "sdk-android"}, {"binary", "package", "validation", "metadata"}),
             ("ci/sdk_maven_package_workflow.py", {"sdk-core", "sdk-android"}, {"package", "validation", "metadata"}),
             ("ci/sdk_android_validation_workflow.py", {"sdk-android"}, {"validation", "metadata"}),
         ):

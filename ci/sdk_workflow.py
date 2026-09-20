@@ -602,6 +602,12 @@ def _ios_binary_main(argv):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "maven-binary":
+        from sdk_maven_binary_workflow import main as maven_binary_main
+        return maven_binary_main(argv[1:])
+    if argv and argv[0] == "android-metadata":
+        from sdk_android_metadata_workflow import main as android_metadata_main
+        return android_metadata_main(argv[1:])
     if argv and argv[0] == "core-metadata":
         from sdk_facade_metadata_workflow import main as facade_metadata_main
         return facade_metadata_main(argv[1:])

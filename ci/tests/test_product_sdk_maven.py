@@ -27,6 +27,7 @@ from ci.products.sdk_maven import (
     verify_packaged_sdk_maven_phase,
     verify_packaged_sdk_maven_repository,
     verify_sdk_maven_binary_predecessor,
+    verify_sdk_maven_binary_content,
     verify_sdk_maven_repository,
 )
 from ci.products.inventory import (
@@ -714,6 +715,16 @@ class SdkMavenPackagingTest(unittest.TestCase):
 @unittest.skipUnless(shutil.which("ssh-keygen"), "OpenSSH signing tool unavailable")
 class SdkMavenPhaseVerificationTest(unittest.TestCase):
     """Signed synthetic products prove semantics, not execution or admission."""
+
+    def test_binary_content_gate_reuses_exact_rules_without_package_or_subprocess(self):
+        for component, (stage, receipt_path) in self.binary_stages.items():
+            before = regular_file_inventory(stage)
+            for identity_path in (receipt_path, stage / "output-manifest.json"):
+                with self.subTest(component=component, identity=identity_path.name), \
+                        patch("subprocess.run", side_effect=AssertionError("No build in binary content verification")):
+                    self.assertIsNone(verify_sdk_maven_binary_content(
+                        stage, load_canonical_json_bytes(identity_path.read_bytes())))
+                    self.assertEqual(before, regular_file_inventory(stage))
 
     @classmethod
     def setUpClass(cls) -> None:
