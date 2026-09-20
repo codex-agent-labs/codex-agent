@@ -21,11 +21,19 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         self.package = workflow.PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
         self.instance = workflow.PhaseInstanceId("sdk", "sdk-ios", "validation", "ios-arm64")
         self.ready = {"buildKey": "sha256:" + "1" * 64}
-        self.receipt = dict(product="sdk", component="sdk-ios", phase="package", target="ios", productVersion="0.8.0")
+        self.receipt = dict(product="sdk", component="sdk-ios", phase="package", target="ios", productVersion="0.8.0", outputs=[])
         self.verified = SimpleNamespace(prior_ready_plans={self.instance: self.ready},
             sources={self.package: self.root / "object"},
             prior_carrier_phases={self.package: dict(buildKey="key", receiptSha256="receipt", objectSha256="object")},
-            expected_fixed={"versions": {"sdk": "0.8.0"}}, producer={"commit": "a" * 40})
+            expected_fixed={"versions": {"sdk": "0.8.0"}}, producer={"commit": "a" * 40, "tree": "d" * 40})
+        canonical = self.root / "original/inputs/contract-contract-binary-common/stage/outputs/evidence"
+        canonical.mkdir(parents=True)
+        for name in ("canonical-api.json", "canonical-coverage.json"):
+            (canonical / name).write_bytes(b"independent Contract fixture")
+        self.evidence = self.root / "raw-evidence"
+        (self.evidence / "reports").mkdir(parents=True)
+        for language in ("swift", "objective-c"):
+            (self.evidence / f"reports/{language}-parity.json").write_bytes(b"{}")
         self.events = []
         self.mutation = None
         self.arguments = dict(target="ios-arm64", expected_build_key=self.ready["buildKey"],
@@ -33,7 +41,7 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
             trusted_workflow_sha="b" * 40, keyring=self.root / "keys.json", keys_directory=self.root / "keys",
             tooling_evidence=self.root / "tooling", tooling_public_key=self.root / "public",
             java_executable=self.root / "java", policy_revision="c" * 40, required_trust_domain="release",
-            repository_root=self.root, environ={}, token="test")
+            repository_root=self.root, environ={"DEVELOPER_DIR": "/original/Xcode"}, token="test")
 
     def capture(self, root, revision, output):
         self.assertEqual(self.verified.producer["commit"], revision)
@@ -48,12 +56,40 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         self.assertEqual(17, arguments["artifact_id"])
         self.events.append("original-enter")
         yield {"original": self.root / "original", "stage": self.root / "package",
-               "receiptPath": receipt, "receipt": self.receipt, "sdk": {"directory": self.root / "sdk"}}
+               "receiptPath": receipt, "receipt": self.receipt, "sdk": {"directory": self.root / "sdk",
+                   "compatibility": {"contract": {"digest": "sha256:" + "3" * 64}}}}
         self.events.append("original-exit")
         if self.mutation == "context":
             raise ValueError("original context changed")
         if self.mutation == "archive":
             (self.root / "raw.zip").write_bytes(b"changed archive")
+
+    @contextmanager
+    def archive(self, archive, **arguments):
+        self.assertEqual(workflow.sha256_file(archive), arguments["expected_sha256"])
+        self.assertEqual(workflow._EVIDENCE_ROOTS, arguments["expected_roots"])
+        self.events.append("archive-enter")
+        yield self.evidence
+        self.events.append("archive-exit")
+        if self.mutation == "archive-context":
+            raise ValueError("archive context failed")
+
+    def gate(self, **arguments):
+        self.events.append("complete-gate")
+        self.assertEqual(self.evidence, arguments["evidence_root"])
+        self.assertEqual(str(self.root / "codex-agent-runtime-ios"), arguments["original_working_directory"])
+        self.assertEqual(self.verified.producer["commit"], arguments["source_revision"])
+        self.assertEqual(self.root / "package/outputs/apple", arguments["product_directory"])
+        self.assertEqual(self.root / "original/inputs/contract-contract-binary-common/stage/outputs/evidence/canonical-api.json",
+                         arguments["canonical_api"])
+        if self.mutation == "gate":
+            raise ValueError("full gate failed")
+
+    def projection(self, **arguments):
+        self.events.append("projection")
+        self.assertIn("complete-gate", self.events)
+        self.assertEqual("sha256:" + "3" * 64, arguments["contract_digest"])
+        return {"synthetic": "semantic projection"}
 
     def worker(self, ready, **arguments):
         self.events.append("worker")
@@ -83,6 +119,10 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
                 (workflow.product_reuse, "_canonical_control", {"return_value": {"original": "contract"}}),
                 (workflow.product_reuse, "validate_phase_receipt", {"side_effect": lambda value: value}),
                 (workflow, "execute_validation", {"side_effect": self.worker}),
+                (workflow, "verified_apple_validation_archive", {"side_effect": self.archive}),
+                (workflow, "verify_apple_validation_execution", {"side_effect": self.gate}),
+                (workflow, "apple_validation_content", {"side_effect": self.projection}),
+                (workflow, "output_inventory_digest", {"return_value": "sha256:" + "4" * 64}),
             ):
                 stack.enter_context(patch.object(owner, name, **options))
             return workflow.execute(self.plan, self.root, self.root, self.destination,
@@ -92,7 +132,9 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         result = self.execute()
         self.assertEqual(self.root / "raw.zip", result["evidenceArchive"])
         self.assertEqual(workflow.sha256_file(result["evidenceArchive"]), result["evidenceSha256"])
-        self.assertEqual(["original-enter", "worker", "original-exit"], self.events)
+        self.assertEqual(["original-enter", "worker", "archive-enter", "complete-gate", "projection",
+                          "archive-exit", "original-exit"], self.events)
+        self.assertEqual({"synthetic": "semantic projection"}, result["content"])
         self.assertFalse(self.sources.exists())
         self.assertFalse(self.destination.exists())
 
@@ -106,7 +148,7 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         self.assertEqual([], self.events)
 
     def test_failure_and_mutations_never_return_admission(self):
-        for mutation in ("worker", "context", "source", "plan", "archive"):
+        for mutation in ("worker", "context", "source", "plan", "archive", "archive-context", "gate"):
             self.mutation = mutation
             self.plan.write_bytes(b"original plan")
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
