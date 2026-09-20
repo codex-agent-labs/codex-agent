@@ -122,6 +122,14 @@ val verifyAppleToolchain = registerAppleToolchainVerificationTask(
     pinnedSwiftVersion,
 )
 val binaryPackageMode = usesAppleBinaryPackageInputs()
+val importedValidationMode = usesAppleSdkValidationInputs()
+val validationPackageInputs = if (importedValidationMode) registerIosSdkValidationPackageInputs(
+    layout.dir(providers.gradleProperty("codexAgent.iosValidationPackageStage").map(::file)),
+    providers.gradleProperty("codexAgent.sdkVersion"),
+    layout.file(providers.gradleProperty("codexAgent.sdkCompatibilityFile").map(::file)),
+    providers.gradleProperty("codexAgent.candidateTree"),
+    providers.gradleProperty("codexAgent.target").get(),
+) else null
 val packageBinarySnapshot = if (binaryPackageMode) project(":codex-agent-sdk").layout.buildDirectory.dir(
     providers.gradleProperty("codexAgent.candidateTree").map { "imported-sdk-binary-stages/$it/sdk-ios" },
 ) else null
@@ -297,7 +305,7 @@ val importedAppleXCFramework = verifiedDistributionTasks.importedXCFramework
 check(importedAppleXCFramework == null || !freshAppleContractStagePath.isPresent) {
     "codexAgent.iosContractBinaryStage is only valid for fresh Apple distribution production"
 }
-val selectedContractStagePath = if (importedAppleXCFramework != null) {
+val selectedContractStagePath = if (importedAppleXCFramework != null || importedValidationMode) {
     sharedContractStagePath
 } else {
     freshAppleContractStagePath
@@ -351,6 +359,18 @@ importedContractEvidence?.let { contractEvidence ->
     invalidateAppleBindingEvidence.configure {
         delete(appleCompilerEvidenceFile)
     }
+}
+
+validationPackageInputs?.let { packageInputs ->
+    configureIosSdkValidationConsumers(
+        packageInputs,
+        checkNotNull(importedContractEvidence),
+        verifyAppleToolchain,
+        invalidateAppleBindingEvidence,
+        appleDistributionTasks,
+        appleCompilerEvidence,
+        appleBindingEvidence,
+    )
 }
 
 tasks.register("verifyIosRuntime") {

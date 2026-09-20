@@ -78,7 +78,7 @@ class IosImportedContractEvidenceTasksTest {
         assertFalse("sharedContractStagePath.isPresent" in selection)
         assertFalse("importedContractVersion.isPresent" in selection)
         assertTrue("importedAppleXCFramework == null || !freshAppleContractStagePath.isPresent" in selection)
-        assertTrue("val selectedContractStagePath = if (importedAppleXCFramework != null)" in selection)
+        assertTrue("val selectedContractStagePath = if (importedAppleXCFramework != null || importedValidationMode)" in selection)
         assertTrue("sharedContractStagePath\n} else {\n    freshAppleContractStagePath" in selection)
         assertTrue("if (selectedContractStagePath.isPresent)" in selection)
         assertTrue("layout.dir(selectedContractStagePath.map(::file))" in selection)

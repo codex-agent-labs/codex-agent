@@ -5,6 +5,36 @@ import org.gradle.api.provider.Provider
 import org.gradle.api.tasks.TaskProvider
 import org.gradle.kotlin.dsl.register
 
+internal fun Project.usesAppleSdkValidationInputs(): Boolean {
+    val selected = listOf("product", "component", "phase").map {
+        providers.gradleProperty("codexAgent.$it").orNull
+    }
+    val source = providers.gradleProperty("codexAgent.iosValidationPackageStage")
+    if (!source.isPresent && selected != listOf("sdk", "sdk-ios", "validation")) return false
+    check(selected == listOf("sdk", "sdk-ios", "validation") &&
+        providers.gradleProperty("codexAgent.target").orNull in setOf("ios-arm64", "ios-simulator-arm64")) {
+        "Imported Apple validation requires an exact SDK iOS validation phase and target"
+    }
+    listOf("iosValidationPackageStage", "contractBinaryStage", "sdkCompatibilityFile").forEach {
+        check(!providers.gradleProperty("codexAgent.$it").orNull.isNullOrBlank()) {
+            "Imported Apple validation requires codexAgent.$it"
+        }
+    }
+    listOf(
+        IOS_VERIFIED_DISTRIBUTION_PROPERTY,
+        "codexAgent.iosPackageFromBinary", "codexAgent.iosExpectedDistributionProof",
+        "codexAgent.iosExpectedSdkCompatibility", "codexAgent.iosNativeEvidenceDirectory",
+        "codexAgent.iosDeviceFrameworkDirectory", "codexAgent.iosSimulatorFrameworkDirectory",
+        "codexAgent.iosContractBinaryStage", "codexAgent.sdkCompatibilityRequest",
+    ).forEach {
+        check(!providers.gradleProperty(it).isPresent) { "Imported Apple validation rejects override $it" }
+    }
+    listOf("CODEX_AGENT_IMPORTED_SWIFT_ZIP", "CODEX_AGENT_SWIFT_COMPILATION_DIRECTORY").forEach {
+        check(!providers.environmentVariable(it).isPresent) { "Imported Apple validation rejects override $it" }
+    }
+    return true
+}
+
 /** Integrity-only input graph; the caller authenticates original receipts and owns fresh outputs. */
 internal fun Project.registerIosSdkValidationPackageInputs(
     source: Provider<Directory>,
