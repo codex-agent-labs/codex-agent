@@ -27,7 +27,7 @@ _LOCATOR = ("artifact_id", "artifact_digest", "state_wave", "sdk_state_wave")
 _STAGES = {
     "package": ("sdk-javascript", "sdk-native-plan", "sdk-native-workers", "sdk-collect-4", "4"),
     "ios-package": ("sdk-native-packages", "sdk-ios-package-plan", "sdk-ios-package", "sdk-collect-5", "5"),
-    "javascript-metadata": ("sdk-native-packages", "sdk-javascript-metadata-plan", "sdk-javascript-metadata", "sdk-collect-6", "6"),
+    "javascript-metadata": ("sdk-ios-packages", "sdk-javascript-metadata-plan", "sdk-javascript-metadata", "sdk-collect-6", "6"),
     "validation": ("sdk-javascript-metadata-result", "sdk-native-validation-plan", "sdk-native-validation", "sdk-collect-7", "7"),
     "metadata": ("sdk-native-validation-result", "sdk-native-metadata-plan", "sdk-native-metadata", "sdk-collect-8", "8"),
 }

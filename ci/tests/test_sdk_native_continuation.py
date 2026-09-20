@@ -92,7 +92,7 @@ class NativeStateSelectionTest(unittest.TestCase):
     def test_ios_package_and_javascript_metadata_use_exact_fixed_parent_and_collector(self):
         routes = (
             ("ios-package", "sdk-native-packages", "sdk-ios-package-plan", "sdk-ios-package", "sdk-collect-5", "5"),
-            ("javascript-metadata", "sdk-native-packages", "sdk-javascript-metadata-plan", "sdk-javascript-metadata", "sdk-collect-6", "6"),
+            ("javascript-metadata", "sdk-ios-packages", "sdk-javascript-metadata-plan", "sdk-javascript-metadata", "sdk-collect-6", "6"),
         )
         for stage, parent, election, workers, collector, wave in routes:
             for required in (False, True):
@@ -122,8 +122,8 @@ class NativeStateSelectionTest(unittest.TestCase):
                 with self.subTest(javascript=javascript_required, validation=validation_required):
                     parent = locator("4", "0")
                     javascript = needs_for("javascript-metadata", required=javascript_required, state=parent)
-                    self.assertIn("sdk-native-packages", javascript)
-                    self.assertNotIn("sdk-ios-packages", javascript)
+                    self.assertIn("sdk-ios-packages", javascript)
+                    self.assertNotIn("sdk-native-packages", javascript)
                     selected = routing.select_native_state(javascript, stage="javascript-metadata")
                     self.assertEqual("6" if javascript_required else "4", selected["sdk_state_wave"])
                     validation = needs_for("validation", required=validation_required, state=selected)
