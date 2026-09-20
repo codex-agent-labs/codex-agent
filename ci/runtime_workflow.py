@@ -12,10 +12,11 @@ from reuse import github_output
 
 
 def matrix(plan_path, discovery_root, state_root, github_output_path, *, repository_root=None, environ=None,
-           sdk_validation_tooling=None):
+           sdk_validation_tooling=None, sdk_apple_validation_policy=None):
     value = products.runtime_worker_matrix(
         plan_path, discovery_root, state_root, repository_root=repository_root, environ=environ,
-        **({"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}))
+        **({"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}),
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
     supervisors = [row["buildKey"] for row in value["include"]
                    if products._identity(row) == PhaseInstanceId("runtime", "linux-arm64", "binary", "linux-arm64")]
     if len(supervisors) > 1:
@@ -30,7 +31,7 @@ def matrix(plan_path, discovery_root, state_root, github_output_path, *, reposit
 
 def continuation(plan_path, discovery_root, state_root, github_output_path, *,
                  repository_root=None, environ=None, sdk_validation_tooling=None,
-                 require_completed=False, if_selected=False):
+                 require_completed=False, if_selected=False, sdk_apple_validation_policy=None):
     """Route the final fully materialized Runtime closure, not early native fanout.
 
     The sole replay supplies every identity/key/receipt. A completed aggregate
@@ -42,7 +43,8 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
         raise ValueError("Runtime continuation selection/completion requirements must be boolean")
     inspected = products.inspect_products(plan_path, discovery_root, state_root,
         repository_root=repository_root, environ=environ,
-        sdk_validation_tooling=sdk_validation_tooling, include_sdk_selection=True)
+        sdk_validation_tooling=sdk_validation_tooling, include_sdk_selection=True,
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
     sdk = inspected.get("sdkInputSelection")
     sdk_outputs = {"sdk_handoff_required": sdk is not None,
                    "sdk_input_selection": canonical_json_bytes(sdk).decode().strip()}
@@ -120,8 +122,10 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
 
 def capture(plan_path, destination, github_output_path, *, artifact_id, artifact_sha256,
             trusted_workflow_sha, state_wave=0, instance=None, expected_build_key=None,
-            repository_root=None, environ=None, token, sdk_validation_tooling=None):
+            repository_root=None, environ=None, token, sdk_validation_tooling=None, sdk_apple_validation_policy=None):
     tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
+    if sdk_apple_validation_policy is not None:
+        tooling["sdk_apple_validation_policy"] = sdk_apple_validation_policy
     products.capture_runtime_resume_upload(
         plan_path, destination, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
         trusted_workflow_sha=trusted_workflow_sha, state_wave=state_wave,
@@ -154,8 +158,11 @@ def capture(plan_path, destination, github_output_path, *, artifact_id, artifact
 
 
 def collect(input_root, destination, github_output_path, *, wave, trusted_workflow_sha,
-            repository_root=None, environ=None, token, state_wave=None, sdk_validation_tooling=None):
+            repository_root=None, environ=None, token, state_wave=None, sdk_validation_tooling=None,
+            sdk_apple_validation_policy=None):
     tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
+    if sdk_apple_validation_policy is not None:
+        tooling["sdk_apple_validation_policy"] = sdk_apple_validation_policy
     if type(wave) is not int or not 1 <= wave <= 5:
         raise ValueError("Runtime workflow wave must be one through five")
     # Aggregate may already be ready in initial reuse, before any native wave.
@@ -243,22 +250,27 @@ def main(argv=None):
     collected.add_argument("--state-wave", type=int)
     collected.add_argument("--trusted-workflow-sha", required=True)
     collected.add_argument("--sdk-validation-tooling", type=Path)
+    for command in (show, final, captured, collected):
+        command.add_argument("--sdk-apple-validation-policy", type=Path)
     trust = commands.add_parser("variant-trust")
     trust.add_argument("--variant-handoff", action="append", required=True, metavar="TARGET=PATH")
     for name in ("destination", "keyring", "keys-directory"):
         trust.add_argument(f"--{name}", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
+        apple_policy = ({} if getattr(args, "sdk_apple_validation_policy", None) is None else {
+            "sdk_apple_validation_policy": products._canonical_control(
+                args.sdk_apple_validation_policy, "Caller Apple validation policy")})
         if args.command == "matrix":
             tooling = ({} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
                 products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")})
-            matrix(args.plan, args.discovery_root, args.state_root, args.github_output, **tooling)
+            matrix(args.plan, args.discovery_root, args.state_root, args.github_output, **tooling, **apple_policy)
         elif args.command == "continuation":
             tooling = (None if args.sdk_validation_tooling is None else
                        products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy"))
             continuation(args.plan, args.discovery_root, args.state_root, args.github_output,
                          sdk_validation_tooling=tooling, **({"if_selected": True} if args.if_selected else {}),
-                         **({"require_completed": True} if args.require_completed else {}))
+                         **({"require_completed": True} if args.require_completed else {}), **apple_policy)
         elif args.command == "capture":
             tooling = ({} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
                 products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")})
@@ -269,7 +281,7 @@ def main(argv=None):
                     artifact_id=args.artifact_id, artifact_sha256=args.artifact_sha256,
                     trusted_workflow_sha=args.trusted_workflow_sha, state_wave=args.state_wave,
                     instance=PhaseInstanceId("runtime", *values[:3]) if all(values) else None,
-                    expected_build_key=args.expected_build_key, token=os.environ.get("GITHUB_TOKEN", ""), **tooling)
+                    expected_build_key=args.expected_build_key, token=os.environ.get("GITHUB_TOKEN", ""), **tooling, **apple_policy)
         elif args.command == "variant-trust":
             from products.runtime_variant_trust import stage_runtime_variant_trust
             handoffs = {}
@@ -286,7 +298,7 @@ def main(argv=None):
             collect(Path(os.path.abspath(args.input_root)), Path(os.path.abspath(args.destination)), args.github_output,
                     wave=args.wave, trusted_workflow_sha=args.trusted_workflow_sha,
                     token=os.environ.get("GITHUB_TOKEN", ""),
-                    **({"state_wave": args.state_wave} if args.state_wave is not None else {}), **tooling)
+                    **({"state_wave": args.state_wave} if args.state_wave is not None else {}), **tooling, **apple_policy)
     except (ValueError, OSError) as error:
         parser.error(str(error))
     return 0

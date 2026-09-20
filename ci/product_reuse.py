@@ -2794,6 +2794,7 @@ def runtime_worker_matrix(
     plan_path: Path, discovery_root: Path, state_root: Path | None = None, *,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    sdk_apple_validation_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Route only authenticated ready standalone phases, never the cheap aggregate.
 
@@ -2802,7 +2803,8 @@ def runtime_worker_matrix(
     """
     inspected = inspect_products(
         plan_path, discovery_root, state_root, repository_root=repository_root,
-        environ=environ, sdk_validation_tooling=sdk_validation_tooling)
+        environ=environ, sdk_validation_tooling=sdk_validation_tooling,
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
     from runtime_adapter_phase import route as adapter_route
     from runtime_native_phase import route as native_route
 
@@ -2999,12 +3001,14 @@ def materialize_sdk_default_inputs(
 def materialize_runtime_aggregate_release_evidence(
     plan_path, discovery_root, state_root, destination, *, expected_build_key,
     keyring, keys_directory, repository_root=None, environ=None, sdk_validation_tooling=None,
+    sdk_apple_validation_policy=None,
 ):
     """Select the complete original carrier; selected-stage equality is checked by the caller."""
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     discovery_root, state_root, destination = _product_materialization_paths(root, discovery_root, state_root, destination)
     state = _verified_product_state(plan_path, discovery_root, state_root, root,
-        os.environ if environ is None else environ, sdk_validation_tooling)
+        os.environ if environ is None else environ, sdk_validation_tooling,
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
     instance = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
     selected = state.prior_by_instance.get(instance)
     if (selected is None or instance not in state.sources or instance not in state.prior_carrier_phases
@@ -3026,6 +3030,7 @@ def prepare_runtime_phase(
     instance: PhaseInstanceId, destination: Path, *, expected_build_key: str,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    sdk_apple_validation_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
     """Prepare original worker inputs; never execute or grant hosted acceptance."""
     if instance not in PHASE_INSTANCE_IDS or instance.product != "runtime" or instance.component == "runtime-aggregate":
@@ -3035,7 +3040,8 @@ def prepare_runtime_phase(
         root, discovery_root, state_root, destination)
     state = _verified_product_state(
         plan_path, discovery_root, state_root, root,
-        os.environ if environ is None else environ, sdk_validation_tooling)
+        os.environ if environ is None else environ, sdk_validation_tooling,
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
     return _prepare_runtime_phase(state, instance, destination, expected_build_key, root)[0]
 
 
@@ -3044,6 +3050,7 @@ def materialize_runtime_attestation_inputs(
     destination: Path, *, target: str, expected_build_key: str,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     retained_release_keyring: Path | None = None,
     retained_release_keys_directory: Path | None = None,
 ) -> dict[str, Any]:
@@ -3064,7 +3071,8 @@ the complete product semantics. This selection never grants signing authority.
     if destination.exists() or destination.is_symlink():
         raise ValueError("Runtime attestation selection destination must not exist")
     state = _verified_product_state(plan_path, discovery_root, state_root, root,
-        os.environ if environ is None else environ, sdk_validation_tooling)
+        os.environ if environ is None else environ, sdk_validation_tooling,
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
     _runtime_worker_checkout(root, state.producer)
     metadata = PhaseInstanceId("runtime", "runtime-aggregate" if target == "aggregate" else target, "metadata", target)
     selected = state.prior_by_instance.get(metadata)
@@ -3370,6 +3378,7 @@ def execute_runtime_supervisor(
     plan_path: Path, discovery_root: Path, state_root: Path | None, destination: Path, *,
     expected_build_key: str, repository_root: Path | None = None,
     environ: Mapping[str, str] | None = None, sdk_validation_tooling: Mapping[str, Any] | None = None,
+    sdk_apple_validation_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     from native_wrappers import host_classifier
     from runtime_supervisor import execute_supervisor
@@ -3379,7 +3388,8 @@ def execute_runtime_supervisor(
     if destination.exists() or destination.is_symlink():
         raise ValueError("Runtime supervisor worker destination must not exist")
     environment = dict(os.environ if environ is None else environ)
-    state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling)
+    state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
     instance = PhaseInstanceId("runtime", "linux-arm64", "binary", "linux-arm64")
     ready = state.prior_ready_plans.get(instance)
     if ready is None or ready["buildKey"] != expected_build_key:
@@ -3402,6 +3412,7 @@ def execute_runtime_phase(
     instance: PhaseInstanceId, destination: Path, *, expected_build_key: str,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     supervisor_upload: Mapping[str, Any] | None = None,
     app_server_archive: Path | None = None,
 ) -> dict[str, Any]:
@@ -3421,7 +3432,8 @@ def execute_runtime_phase(
     if destination.exists() or destination.is_symlink():
         raise ValueError("Runtime execution destination must not exist")
     environment = dict(os.environ if environ is None else environ)
-    state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling)
+    state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
     ready = state.prior_ready_plans.get(instance)
     if ready is None or ready["buildKey"] != expected_build_key:
         raise ValueError("Runtime worker is not ready with the expected elected build key")
@@ -3577,6 +3589,7 @@ def execute_runtime_aggregate(
     destination: Path, *, expected_build_key: str, variant_trust_root: Path,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    sdk_apple_validation_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Produce deterministic metadata from originals; never sign or rebuild inputs."""
     from runtime_aggregate_phase import collect_inputs, collect_maven_outputs
@@ -3591,7 +3604,8 @@ def execute_runtime_aggregate(
     if destination.exists() or destination.is_symlink():
         raise ValueError("Runtime aggregate destination must not exist")
     environment = dict(os.environ if environ is None else environ)
-    state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling)
+    state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
     ready = state.prior_ready_plans.get(instance)
     if ready is None or ready["buildKey"] != expected_build_key:
         raise ValueError("Runtime aggregate is not ready with the expected elected build key")
@@ -5385,7 +5399,8 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--runtime-aggregate-release-evidence", type=Path, action="append", default=[])
         command.add_argument("--sdk-validation-tooling", type=Path,
                              help="Current caller-owned tooling policy JSON, never a retained request field")
-    for command in (discover_command, products_command, advance_command, resume_command, runtime_collection, sdk_metadata):
+    for command in (discover_command, products_command, advance_command, resume_command, runtime_collection,
+                    sdk_metadata, supervisor_execute, aggregate_execute):
         command.add_argument("--sdk-apple-validation-policy", type=Path,
                              help="Current caller-owned Apple policy JSON, never retained artifact authority")
     materialize_command = commands.add_parser("materialize-contract")
@@ -5399,6 +5414,7 @@ def parser() -> argparse.ArgumentParser:
         matrix_command.add_argument(f"--{argument}", type=Path, required=True)
     matrix_command.add_argument("--state-root", type=Path)
     matrix_command.add_argument("--sdk-validation-tooling", type=Path)
+    matrix_command.add_argument("--sdk-apple-validation-policy", type=Path)
     for name in ("materialize-product-predecessors", "prepare-runtime-phase", "execute-runtime-phase"):
         predecessors_command = commands.add_parser(name)
         for argument in ("plan", "discovery-root", "destination"):
@@ -5408,6 +5424,7 @@ def parser() -> argparse.ArgumentParser:
             predecessors_command.add_argument(f"--{argument}", required=True)
         predecessors_command.add_argument("--sdk-validation-tooling", type=Path,
                                           help="Current caller-owned tooling policy JSON")
+        predecessors_command.add_argument("--sdk-apple-validation-policy", type=Path)
         if name == "execute-runtime-phase":
             predecessors_command.add_argument("--app-server-archive", type=Path,
                                               help="Existing native binary archive; verified against exact Git policy")
@@ -5500,7 +5517,7 @@ def main(argv: list[str] | None = None) -> int:
             github_output(arguments.github_output, {"runtime_matrix": '{"include":[]}', "runtime_workers_required": False})
             matrix = runtime_worker_matrix(
                 arguments.plan, arguments.discovery_root, arguments.state_root,
-                sdk_validation_tooling=tooling)
+                sdk_validation_tooling=tooling, **apple_options)
             github_output(arguments.github_output, {"runtime_matrix": canonical_json_bytes(matrix).decode("utf-8").strip(),
                                                    "runtime_workers_required": bool(matrix["include"])})
         elif arguments.command == "capture-contract-ci":
@@ -5513,7 +5530,7 @@ def main(argv: list[str] | None = None) -> int:
         elif arguments.command == "execute-runtime-supervisor":
             execute_runtime_supervisor(
                 arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,
-                expected_build_key=arguments.expected_build_key, sdk_validation_tooling=tooling)
+                expected_build_key=arguments.expected_build_key, sdk_validation_tooling=tooling, **apple_options)
         elif arguments.command == "capture-runtime-supervisor-upload":
             capture_runtime_supervisor_upload(
                 arguments.plan, arguments.destination, artifact_id=arguments.artifact_id,
@@ -5547,7 +5564,7 @@ def main(argv: list[str] | None = None) -> int:
             execute_runtime_aggregate(
                 arguments.plan, arguments.discovery_root, arguments.state_root,
                 arguments.destination, expected_build_key=arguments.expected_build_key,
-                variant_trust_root=arguments.variant_trust_root, sdk_validation_tooling=tooling)
+                variant_trust_root=arguments.variant_trust_root, sdk_validation_tooling=tooling, **apple_options)
         elif arguments.command in {"materialize-product-predecessors", "prepare-runtime-phase", "execute-runtime-phase"}:
             operation = {"materialize-product-predecessors": materialize_product_predecessors,
                          "prepare-runtime-phase": prepare_runtime_phase,
@@ -5567,7 +5584,7 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.plan, arguments.discovery_root, arguments.state_root,
                 PhaseInstanceId(arguments.product, arguments.component, arguments.phase, arguments.target),
                 arguments.destination, expected_build_key=arguments.expected_build_key,
-                sdk_validation_tooling=tooling, **additional)
+                sdk_validation_tooling=tooling, **apple_options, **additional)
         elif arguments.command == "capture-contract-original-ci":
             capture_contract_original_ci_phases(
                 arguments.capture_root, arguments.destination, contract_version=arguments.contract_version,

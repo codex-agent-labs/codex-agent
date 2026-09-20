@@ -111,14 +111,18 @@ def main_released_default(argv=None):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--state-root", type=Path)
     parser.add_argument("--sdk-validation-tooling", type=Path)
+    parser.add_argument("--sdk-apple-validation-policy", type=Path)
     arguments = parser.parse_args(argv)
     try:
         tooling = None if arguments.sdk_validation_tooling is None else product_reuse._canonical_control(
             arguments.sdk_validation_tooling, "Caller SDK tooling policy")
+        apple = {} if arguments.sdk_apple_validation_policy is None else {
+            "sdk_apple_validation_policy": product_reuse._canonical_control(
+                arguments.sdk_apple_validation_policy, "Caller Apple validation policy")}
         product_reuse.materialize_sdk_default_inputs(arguments.plan, arguments.discovery_root,
             arguments.state_root, arguments.destination, keyring=arguments.keyring,
             keys_directory=arguments.keys_directory, repository_root=arguments.repository_root,
-            environ=os.environ, sdk_validation_tooling=tooling)
+            environ=os.environ, sdk_validation_tooling=tooling, **apple)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

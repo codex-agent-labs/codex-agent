@@ -265,7 +265,36 @@ class ReleasedDefaultSdkHandoffCliTest(unittest.TestCase):
             self.assertEqual(0, caller.main(self.argv))
             self.assertIsNone(materialize.call_args.args[2])
             self.assertIsNone(materialize.call_args.kwargs["sdk_validation_tooling"])
+            self.assertNotIn("sdk_apple_validation_policy", materialize.call_args.kwargs)
             self.assertNotIn("token", materialize.call_args.kwargs)
+
+    def test_released_default_reads_external_apple_policy_only_for_replay(self):
+        path = self.root / "caller-apple-policy.json"
+        policy = {"fixture": "independently supplied Apple policy"}
+        raw = canonical_json_bytes(policy)
+        path.write_bytes(raw)
+        with patch.object(caller.product_reuse, "materialize_sdk_default_inputs") as materialize, \
+                patch.object(caller, "capture_sdk_handoff", side_effect=AssertionError("replay must not capture")) as capture:
+            self.assertEqual(0, caller.main([*self.argv, "--sdk-apple-validation-policy", str(path)]))
+            materialize.assert_called_once_with(self.paths["plan"], self.paths["discovery-root"], None,
+                self.paths["destination"], keyring=self.paths["keyring"], keys_directory=self.paths["keys-directory"],
+                repository_root=self.paths["repository-root"], environ=os.environ, sdk_validation_tooling=None,
+                sdk_apple_validation_policy=policy)
+            capture.assert_not_called()
+        self.assertEqual(raw, path.read_bytes())
+        self.assertFalse(self.paths["destination"].exists())
+
+    def test_released_default_rejects_malformed_apple_policy_before_replay(self):
+        path = self.root / "caller-apple-policy.json"
+        for raw in (b"[]\n", b'{"duplicate":1,"duplicate":2}\n', b'{ "noncanonical": true }\n'):
+            path.write_bytes(raw)
+            with self.subTest(raw=raw), patch.object(caller.product_reuse, "materialize_sdk_default_inputs") as materialize, \
+                    patch.object(caller, "capture_sdk_handoff") as capture, self.assertRaises(SystemExit) as error:
+                caller.main([*self.argv, "--sdk-apple-validation-policy", str(path)])
+            self.assertEqual(2, error.exception.code)
+            materialize.assert_not_called()
+            capture.assert_not_called()
+        self.assertFalse(self.paths["destination"].exists())
 
     def test_released_default_required_paths_and_override_flags_reject_before_controller(self):
         for name in self.paths:
