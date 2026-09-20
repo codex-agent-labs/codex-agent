@@ -72,6 +72,10 @@ from products.runtime_adapter_content import rebase_adapter_comparison_records
 from products.sdk_validation import rebase_sdk_validation_records
 from products.sdk_release_selection import sdk_runtime_source
 from products.sdk_validation_inputs import load_sdk_validation_evidence, stage_sdk_validation_evidence
+from products.sdk_apple_validation_inputs import (
+    capture_sdk_apple_validation_evidence, load_sdk_apple_validation_evidence, rebase_sdk_apple_validation_records,
+)
+from products.inventory import require_regular_directory
 from products.adapter_runtime_inputs import load_adapter_runtime_evidence, stage_adapter_runtime_evidence
 from products.runtime_evidence import (
     derive_authenticated_runtime_validation_projection,
@@ -128,7 +132,7 @@ _WAVE_REQUEST_KEYS = {
 _NATIVE_REQUEST_KEYS = {"nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence"}
 _ADAPTER_REQUEST_KEY = "adapterRuntimeComparisonEvidence"
 _AGGREGATE_REQUEST_KEY = "runtimeAggregateReleaseEvidence"
-_SDK_REQUEST_KEYS = {"sdkValidationEvidence", "sdkRuntimeSource"}
+_SDK_REQUEST_KEYS = {"sdkValidationEvidence", "sdkAppleValidationEvidence", "sdkRuntimeSource"}
 _KEYRING_PATH = "gradle/release/product-signing-keys.json"
 _KEYS_ROOT = "gradle/release/keys"
 _PROFILE_ROOT = "gradle/release/toolchains/runtime"
@@ -1900,6 +1904,9 @@ def _rebase_native_request(request, source_root, artifact_root):
         result[_ADAPTER_REQUEST_KEY] = rebase_adapter_comparison_records(request[_ADAPTER_REQUEST_KEY], source_root, artifact_root)
     if "sdkValidationEvidence" in request:
         result["sdkValidationEvidence"] = rebase_sdk_validation_records(request["sdkValidationEvidence"], source_root, artifact_root)
+    if "sdkAppleValidationEvidence" in request:
+        result["sdkAppleValidationEvidence"] = rebase_sdk_apple_validation_records(
+            request["sdkAppleValidationEvidence"], source_root, artifact_root)
     if _AGGREGATE_REQUEST_KEY in request:
         result[_AGGREGATE_REQUEST_KEY] = rebase_runtime_aggregate_release_records(
             request[_AGGREGATE_REQUEST_KEY], source_root, artifact_root)
@@ -1936,13 +1943,17 @@ def _relocated_wave_control(path, label, root):
     return {**value, "repositoryRoot": str(root), "artifactRoot": str(root / "build/product-reuse")}
 
 
-def _plan_with_sdk_tooling(request, tooling, **kwargs):
+def _plan_with_sdk_tooling(request, tooling, *, apple_policy=None, **kwargs):
     # Never serialize invocation authority into retained control or evidence.
     if {"sdkValidationTooling", "sdkAppleValidationPolicy"} & request.keys():
         raise ValueError("Retained SDK evidence cannot supply current-invocation tooling authority")
     invocation = dict(request)
     if tooling is not None:
         invocation["sdkValidationTooling"] = tooling
+    if "sdkAppleValidationEvidence" in request:
+        if apple_policy is None:
+            raise ValueError("Retained Apple evidence requires caller-owned validation policy")
+        invocation["sdkAppleValidationPolicy"] = apple_policy
     return plan_reuse_wave(invocation, **kwargs)
 
 
@@ -1964,7 +1975,36 @@ def _retained_sdk_handoffs(state_root, artifact_root):
             for record in rebase_sdk_validation_records(load_sdk_validation_evidence(child), child, artifact_root)]
 
 
+def _retained_apple_handoffs(state_root, artifact_root):
+    path = state_root / "sdk-apple-validation-evidence"
+    if not path.exists() and not path.is_symlink():
+        return []
+    require_regular_directory(path, "Retained Apple evidence carriers")
+    for parent in path.absolute().parents:
+        require_regular_directory(parent, "Retained Apple evidence ancestry")
+    return [record for child in sorted(path.iterdir())
+            for record in rebase_sdk_apple_validation_records(load_sdk_apple_validation_evidence(child), child, artifact_root)]
+
+
+def _capture_apple_handoffs(evidence_roots, destination, artifact_root):
+    # Structural transport only. The planner's mandatory full gate grants admission.
+    offset = len(list(destination.iterdir())) if destination.exists() else 0
+    records = []
+    for index, source in enumerate(evidence_roots, offset):
+        original = load_sdk_apple_validation_evidence(source)
+        target = destination / str(index)
+        captured = capture_sdk_apple_validation_evidence(
+            [source / record["evidenceRoot"] for record in original], target)
+        records.extend(rebase_sdk_apple_validation_records(captured, target, artifact_root))
+    return records
+
+
 def _verify_discovery_sdk_records(request, discovery_root):
+    apple = {}
+    _merge_native_comparison_records(apple,
+        _retained_apple_handoffs(discovery_root, discovery_root), key="sdkAppleValidationEvidence")
+    if request.get("sdkAppleValidationEvidence", []) != apple.get("sdkAppleValidationEvidence", []):
+        raise ValueError("Apple discovery request differs from its complete retained evidence carrier")
     retained = {}
     _merge_native_comparison_records(retained,
         _retained_sdk_handoffs(discovery_root, discovery_root), key="sdkValidationEvidence")
@@ -2452,7 +2492,7 @@ class _VerifiedProductState:
 def _verified_product_state(
     plan_path: Path, discovery_root: Path, state_root: Path, root: Path,
     environment: Mapping[str, str], sdk_validation_tooling: Mapping[str, Any] | None,
-    *, sdk_runtime_consumer=None,
+    *, sdk_runtime_consumer=None, sdk_apple_validation_policy=None,
 ) -> _VerifiedProductState:
     plan = _validate_plan(plan_path, root)
     if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
@@ -2545,6 +2585,7 @@ def _verified_product_state(
         build_plan_consumer=lambda instance, value: _retain_product_plan(replay_plans, instance, value),
         **({"sdk_runtime_consumer": sdk_runtime_consumer}
            if sdk_runtime_consumer is not None and state_root == discovery_root else {}),
+        apple_policy=sdk_apple_validation_policy,
     )
     initial = _canonical_control(discovery_root / "reuse-wave-result.json", "Initial reuse result")
     if replay != initial:
@@ -2600,6 +2641,7 @@ def _verified_product_state(
             _merge_native_comparison_records(state_request, _retained_native_handoffs(state_root, root, adapter=True),
                                              key=_ADAPTER_REQUEST_KEY)
             _merge_native_comparison_records(state_request, _retained_sdk_handoffs(state_root, root), key="sdkValidationEvidence")
+            _merge_native_comparison_records(state_request, _retained_apple_handoffs(state_root, root), key="sdkAppleValidationEvidence")
             _merge_native_comparison_records(state_request, _retained_aggregate_handoffs(state_root, root), key=_AGGREGATE_REQUEST_KEY)
             prior_ready_plans = {}
             state_replay = _plan_with_sdk_tooling(
@@ -2608,6 +2650,7 @@ def _verified_product_state(
                     prior_ready_plans, instance, value,
                 ),
                 **({"sdk_runtime_consumer": sdk_runtime_consumer} if sdk_runtime_consumer is not None else {}),
+                apple_policy=sdk_apple_validation_policy,
             )
         state_by_instance = {_identity(phase): phase for phase in state_replay["phases"]}
         if any(state_by_instance[instance]["state"] != "retained" for instance in prior_materialized):
@@ -3755,6 +3798,8 @@ def advance_products(
     native_evidence_roots: tuple[Path, ...] = (),
     adapter_evidence_roots: tuple[Path, ...] = (),
     sdk_evidence_roots: tuple[Path, ...] = (),
+    sdk_apple_evidence_roots: tuple[Path, ...] = (),
+    sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     aggregate_evidence_roots: tuple[Path, ...] = (),
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     failed_instances: tuple[PhaseInstanceId, ...] = (),
@@ -3788,7 +3833,8 @@ def advance_products(
 
     state = _verified_product_state(
         plan_path, discovery_root, state_root, root,
-        os.environ if environ is None else environ, sdk_validation_tooling)
+        os.environ if environ is None else environ, sdk_validation_tooling,
+        sdk_apple_validation_policy=sdk_apple_validation_policy)
     plan = state.plan
     producer = state.producer
     consumer = state.consumer
@@ -3923,6 +3969,13 @@ def advance_products(
                 repository=root, policy_revision=plan["validationCommit"], tooling=sdk_validation_tooling)
         retained_sdk = _retained_sdk_handoffs(temporary_root / "result", root)
         _merge_native_comparison_records(advanced_request, retained_sdk, key="sdkValidationEvidence")
+        apple_destination = temporary_root / "result/sdk-apple-validation-evidence"
+        prior_apple = state_root / "sdk-apple-validation-evidence"
+        if prior_apple.exists() or prior_apple.is_symlink():
+            snapshot_regular_tree(prior_apple, apple_destination, allow_empty=True)
+        _capture_apple_handoffs(sdk_apple_evidence_roots, apple_destination, root)
+        retained_apple = _retained_apple_handoffs(temporary_root / "result", root)
+        _merge_native_comparison_records(advanced_request, retained_apple, key="sdkAppleValidationEvidence")
         aggregate_destination = temporary_root / "result/runtime-aggregate-release-evidence"
         prior_aggregate = state_root / "runtime-aggregate-release-evidence"
         if prior_aggregate.exists():
@@ -3934,6 +3987,7 @@ def advance_products(
         ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
         advanced = _plan_with_sdk_tooling(
             advanced_request, sdk_validation_tooling,
+            apple_policy=sdk_apple_validation_policy,
             build_plan_consumer=lambda instance, value: _retain_product_plan(ready_plans, instance, value),
         )
         supplied = set(sources)
@@ -3999,6 +4053,7 @@ def advance_products(
         _merge_native_comparison_records(staged_request, retained_native)
         _merge_native_comparison_records(staged_request, retained_adapter, key=_ADAPTER_REQUEST_KEY)
         _merge_native_comparison_records(staged_request, retained_sdk, key="sdkValidationEvidence")
+        _merge_native_comparison_records(staged_request, retained_apple, key="sdkAppleValidationEvidence")
         _merge_native_comparison_records(staged_request, retained_aggregate, key=_AGGREGATE_REQUEST_KEY)
         staged_request["runtimeValidationEvidence"] = [{
             **record,
@@ -4014,7 +4069,8 @@ def advance_products(
                 f"{object_relative_path(phase['buildKey'], phase['receiptSha256'])}"
             ),
         } for instance, phase in zip(selected, selected_phases, strict=True)]
-        staged_replay = _plan_with_sdk_tooling(staged_request, sdk_validation_tooling)
+        staged_replay = _plan_with_sdk_tooling(staged_request, sdk_validation_tooling,
+            apple_policy=sdk_apple_validation_policy)
         staged_by_instance = {_identity(phase): phase for phase in staged_replay["phases"]}
         for instance in selected:
             staged_by_instance[instance].update({
@@ -4026,7 +4082,7 @@ def advance_products(
 
         destination_prefix = destination.relative_to(root).as_posix()
         final_request = dict(staged_request)
-        if {"nativeRuntimeComparisonEvidence", _ADAPTER_REQUEST_KEY, _AGGREGATE_REQUEST_KEY, "sdkValidationEvidence"} & final_request.keys():
+        if {"nativeRuntimeComparisonEvidence", _ADAPTER_REQUEST_KEY, _AGGREGATE_REQUEST_KEY, "sdkValidationEvidence", "sdkAppleValidationEvidence"} & final_request.keys():
             # Move only paths inside this staged transport. Original discovery
             # catalogs remain at their separately retained discovery paths.
             def relocated_native(value):
@@ -4037,7 +4093,7 @@ def advance_products(
                 if isinstance(value, str) and value.startswith(staged_prefix + "/"):
                     return destination_prefix + value[len(staged_prefix):]
                 return value
-            for key in ("nativeRuntimeComparisonEvidence", _ADAPTER_REQUEST_KEY, _AGGREGATE_REQUEST_KEY, "sdkValidationEvidence"):
+            for key in ("nativeRuntimeComparisonEvidence", _ADAPTER_REQUEST_KEY, _AGGREGATE_REQUEST_KEY, "sdkValidationEvidence", "sdkAppleValidationEvidence"):
                 if key in final_request:
                     final_request[key] = relocated_native(final_request[key])
         final_request["runtimeValidationEvidence"] = [{
