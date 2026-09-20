@@ -5,6 +5,7 @@ original binary/host admission must precede any validation receipt.
 """
 
 from pathlib import Path
+from contextlib import ExitStack
 import sys
 import tempfile
 
@@ -22,6 +23,7 @@ from products.sdk_apple_validation_execution import verify_apple_validation_exec
 from products.sdk_apple_validation_content import apple_validation_content
 from products.sdk_apple_device_evidence import _original_directory
 from sdk_ios_original_package import verified_original_ios_package
+from sdk_ios_original_binary import verified_original_ios_binary
 from sdk_ios_validation import execute as execute_validation
 
 
@@ -34,6 +36,7 @@ _EVIDENCE_ROOTS = (
 
 def execute(plan, discovery, state, destination, *, target, expected_build_key,
             package_artifact_id, package_artifact_sha256, trusted_workflow_sha,
+            binary_artifact_id, binary_artifact_sha256, rust_host,
             keyring, keys_directory, tooling_evidence, tooling_public_key,
             java_executable, policy_revision, required_trust_domain,
             repository_root, environ, token, tooling_keyring=None, tooling_keys_directory=None):
@@ -95,7 +98,22 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
                     repository_root=root, environ=environ, token=token, tooling_evidence=tooling_evidence,
                     tooling_public_key=tooling_public_key, java_executable=java_executable,
                     policy_revision=policy_revision, required_trust_domain=required_trust_domain,
-                    tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as inputs:
+                    tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as inputs, \
+                    ExitStack() as binary_context:
+                binary = inputs["original"] / "inputs/sdk-sdk-ios-binary-ios"
+                binary_receipt = binary / "phase-receipt.json"
+                selected_binary_bytes = read_regular_file_bytes(binary_receipt,
+                    max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+                binary_inputs = binary_context.enter_context(verified_original_ios_binary(
+                    plan, binary_receipt, artifact_id=binary_artifact_id, artifact_sha256=binary_artifact_sha256,
+                    trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token,
+                    rust_host=rust_host, tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
+                    java_executable=java_executable, policy_revision=policy_revision,
+                    required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
+                    tooling_keys_directory=tooling_keys_directory))
+                if (binary_inputs["receiptBytes"] != selected_binary_bytes or
+                        regular_file_inventory(binary_inputs["stage"]) != regular_file_inventory(binary / "stage")):
+                    raise ValueError("Original Apple binary differs from the package's exact predecessor")
                 contract = inputs["original"] / "inputs/contract-contract-binary-common"
                 contract_receipt = contract / "phase-receipt.json"
                 contract_value = product_reuse.validate_phase_receipt(product_reuse._canonical_control(

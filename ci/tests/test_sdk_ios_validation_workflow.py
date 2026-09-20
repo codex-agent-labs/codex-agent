@@ -30,6 +30,13 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         canonical.mkdir(parents=True)
         for name in ("canonical-api.json", "canonical-coverage.json"):
             (canonical / name).write_bytes(b"independent Contract fixture")
+        self.binary = self.root / "original/inputs/sdk-sdk-ios-binary-ios"
+        (self.binary / "stage").mkdir(parents=True)
+        (self.binary / "stage/framework").write_bytes(b"exact binary predecessor")
+        (self.binary / "phase-receipt.json").write_bytes(b"exact binary receipt")
+        self.recovered_binary = self.root / "recovered-binary"
+        self.recovered_binary.mkdir()
+        (self.recovered_binary / "framework").write_bytes(b"exact binary predecessor")
         self.evidence = self.root / "raw-evidence"
         (self.evidence / "reports").mkdir(parents=True)
         for language in ("swift", "objective-c"):
@@ -38,6 +45,8 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         self.mutation = None
         self.arguments = dict(target="ios-arm64", expected_build_key=self.ready["buildKey"],
             package_artifact_id=17, package_artifact_sha256="sha256:" + "2" * 64,
+            binary_artifact_id=18, binary_artifact_sha256="sha256:" + "5" * 64,
+            rust_host="aarch64-apple-darwin",
             trusted_workflow_sha="b" * 40, keyring=self.root / "keys.json", keys_directory=self.root / "keys",
             tooling_evidence=self.root / "tooling", tooling_public_key=self.root / "public",
             java_executable=self.root / "java", policy_revision="c" * 40, required_trust_domain="release",
@@ -63,6 +72,24 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
             raise ValueError("original context changed")
         if self.mutation == "archive":
             (self.root / "raw.zip").write_bytes(b"changed archive")
+
+    @contextmanager
+    def original_binary(self, plan, receipt, **arguments):
+        self.assertEqual(self.plan, plan)
+        self.assertEqual(self.binary / "phase-receipt.json", receipt)
+        self.assertEqual(18, arguments["artifact_id"])
+        self.assertEqual("sha256:" + "5" * 64, arguments["artifact_sha256"])
+        self.assertEqual("aarch64-apple-darwin", arguments["rust_host"])
+        self.events.append("binary-enter")
+        if self.mutation == "binary-gate":
+            raise ValueError("binary native gate failed")
+        if self.mutation == "binary-stage":
+            (self.recovered_binary / "framework").write_bytes(b"different predecessor")
+        yield {"stage": self.recovered_binary, "receiptBytes":
+               b"wrong receipt" if self.mutation == "binary-receipt" else b"exact binary receipt"}
+        self.events.append("binary-exit")
+        if self.mutation == "binary-exit":
+            raise ValueError("binary context changed")
 
     @contextmanager
     def archive(self, archive, **arguments):
@@ -116,6 +143,7 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
                 (workflow, "verify_object", {"return_value": {"receipt": self.receipt, "receiptBytes": b"original receipt"}}),
                 (workflow, "capture_apple_validation_sources", {"side_effect": self.capture}),
                 (workflow, "verified_original_ios_package", {"side_effect": self.originals}),
+                (workflow, "verified_original_ios_binary", {"side_effect": self.original_binary}),
                 (workflow.product_reuse, "_canonical_control", {"return_value": {"original": "contract"}}),
                 (workflow.product_reuse, "validate_phase_receipt", {"side_effect": lambda value: value}),
                 (workflow, "execute_validation", {"side_effect": self.worker}),
@@ -132,8 +160,8 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         result = self.execute()
         self.assertEqual(self.root / "raw.zip", result["evidenceArchive"])
         self.assertEqual(workflow.sha256_file(result["evidenceArchive"]), result["evidenceSha256"])
-        self.assertEqual(["original-enter", "worker", "archive-enter", "complete-gate", "projection",
-                          "archive-exit", "original-exit"], self.events)
+        self.assertEqual(["original-enter", "binary-enter", "worker", "archive-enter", "complete-gate", "projection",
+                          "archive-exit", "binary-exit", "original-exit"], self.events)
         self.assertEqual({"synthetic": "semantic projection"}, result["content"])
         self.assertFalse(self.sources.exists())
         self.assertFalse(self.destination.exists())
@@ -154,6 +182,16 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 self.execute()
             self.assertFalse(self.sources.exists())
+
+    def test_binary_native_gate_and_exact_package_predecessor_are_required(self):
+        for mutation in ("binary-gate", "binary-receipt", "binary-stage", "binary-exit"):
+            self.mutation = mutation
+            self.events.clear()
+            (self.recovered_binary / "framework").write_bytes(b"exact binary predecessor")
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.execute()
+            if mutation != "binary-exit":
+                self.assertNotIn("worker", self.events)
 
 
 if __name__ == "__main__":
