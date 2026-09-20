@@ -33,6 +33,29 @@ internal fun verifyImportedFrameworkPlatform(expected: String, actual: String) {
     }
 }
 
+internal fun importedXCFrameworkAssemblyCommand(device: File, simulator: File, output: File) = listOf(
+    "/usr/bin/xcodebuild", "-create-xcframework",
+    "-framework", device.absolutePath, "-framework", simulator.absolutePath,
+    "-output", output.absolutePath,
+)
+
+internal fun verifyImportedAppleFramework(source: File, platform: String, capture: (List<String>) -> String) {
+    val required = listOf("CodexAgent", "Headers/CodexAgent.h", "Modules/module.modulemap", "Info.plist")
+    required.forEach { relative ->
+        val file = source.resolve(relative)
+        check(file.isFile && file.length() > 0L && !Files.isSymbolicLink(file.toPath())) {
+            "Imported $platform framework member is missing or unsafe: $relative"
+        }
+    }
+    Files.walk(source.toPath()).use { paths ->
+        check(paths.noneMatch(Files::isSymbolicLink)) { "Imported framework contains a symbolic link" }
+    }
+    verifyImportedFrameworkPlatform(platform, capture(importedFrameworkPlatformCommand(source.resolve("Info.plist"))))
+    check("arm64" in capture(listOf("/usr/bin/xcrun", "lipo", "-info", source.resolve("CodexAgent").absolutePath))) {
+        "Imported framework does not contain arm64"
+    }
+}
+
 private const val MAX_VERIFIED_XCFRAMEWORK_ENTRIES = 100_000
 private const val MAX_VERIFIED_XCFRAMEWORK_BYTES = 4_294_967_296L
 
@@ -118,7 +141,7 @@ private fun captureVerifiedAppleArchive(
     return heldArchive
 }
 
-private fun extractStrictAppleArchive(archiveFile: File, output: File, prefix: String) {
+internal fun extractStrictAppleArchive(archiveFile: File, output: File, prefix: String) {
     val seen = mutableSetOf<String>()
     var count = 0
     var bytes = 0L
@@ -314,21 +337,7 @@ abstract class ImportCodexAgentFrameworkTask @Inject constructor(
     @TaskAction
     fun importFramework() {
         val source = frameworkDirectory.get().asFile
-        val required = listOf("CodexAgent", "Headers/CodexAgent.h", "Modules/module.modulemap", "Info.plist")
-        required.forEach { relative ->
-            val file = source.resolve(relative)
-            check(file.isFile && file.length() > 0L && !Files.isSymbolicLink(file.toPath())) {
-                "Imported ${platformName.get()} framework member is missing or unsafe: $relative"
-            }
-        }
-        Files.walk(source.toPath()).use { paths ->
-            check(paths.noneMatch(Files::isSymbolicLink)) { "Imported framework contains a symbolic link" }
-        }
-        val actualPlatform = capture(*importedFrameworkPlatformCommand(source.resolve("Info.plist")).toTypedArray())
-        verifyImportedFrameworkPlatform(platformName.get(), actualPlatform)
-        check("arm64" in capture("/usr/bin/xcrun", "lipo", "-info", source.resolve("CodexAgent").absolutePath)) {
-            "Imported framework does not contain arm64"
-        }
+        verifyImportedAppleFramework(source, platformName.get()) { capture(*it.toTypedArray()) }
         val output = importedFrameworkDirectory.get().asFile
         deleteReleaseTree(output)
         copyReleaseTree(source, output)
@@ -358,12 +367,9 @@ abstract class AssembleImportedCodexAgentXCFrameworkTask @Inject constructor(
         deleteReleaseTree(output)
         output.parentFile.mkdirs()
         processes.exec {
-            commandLine(
-                "/usr/bin/xcodebuild", "-create-xcframework",
-                "-framework", deviceFrameworkDirectory.get().asFile.absolutePath,
-                "-framework", simulatorFrameworkDirectory.get().asFile.absolutePath,
-                "-output", output.absolutePath,
-            )
+            commandLine(importedXCFrameworkAssemblyCommand(
+                deviceFrameworkDirectory.get().asFile, simulatorFrameworkDirectory.get().asFile, output,
+            ))
         }.assertNormalExitValue()
     }
 }
