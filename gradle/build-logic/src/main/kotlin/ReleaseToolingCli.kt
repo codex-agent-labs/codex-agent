@@ -34,6 +34,17 @@ internal fun runReleaseTooling(arguments: Array<String>) {
     val command = arguments.firstOrNull() ?: error("Release-tooling command is required")
     val options = ReleaseToolingArguments(arguments.drop(1).toTypedArray())
     when (command) {
+        "verify-original-firebase-android-evidence" -> {
+            options.requireOnly("evidence-directory", "protected-observation-directory", "expected-release-aar",
+                "candidate-commit", "candidate-tree", "trusted-source-commit", "trusted-source-tree",
+                "apkanalyzer-executable")
+            verifyOriginalFirebaseAndroidEvidenceWithApkanalyzer(
+                options.file("evidence-directory"), options.file("protected-observation-directory"),
+                options.file("expected-release-aar"), options.required("candidate-commit"),
+                options.required("candidate-tree"), options.required("trusted-source-commit"),
+                options.required("trusted-source-tree"), options.file("apkanalyzer-executable"),
+            )
+        }
         "verify-original-sdk-facade-consumer-inputs" -> {
             options.requireOnly("source-snapshot", "consumer-inputs", "package-stage", "target",
                 "contract-version", "runtime-version", "sdk-version", "kotlin-version",

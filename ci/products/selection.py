@@ -176,6 +176,7 @@ _ANDROID_VALIDATION_BUILD_LOGIC = frozenset({
     "FirebaseAndroidRuntimeEvidenceModel.kt",
     "FirebaseAndroidRuntimeEvidenceTasks.kt",
     "ImportedAndroidReleaseAar.kt",
+    "ImportedAndroidReleaseAarVerification.kt",
     "codexagent.android-runtime-evidence.gradle.kts",
 })
 _IOS_VALIDATION_BUILD_LOGIC = frozenset({
@@ -551,7 +552,10 @@ def _native_metadata_owners(path: str) -> set[PhaseInstanceId]:
 
 
 def _control_selection(path: str) -> set[PhaseInstanceId] | None:
+    if path == "ci/products/sdk_platform_metadata.py":
+        return _from_phase("sdk", "sdk-core", "metadata")
     if path in {"ci/products/sdk_facade_source.py", "ci/sdk_facade_validation_phase.py",
+                "ci/products/sdk_facade_validation_admission.py",
                 "gradle/build-logic/src/main/kotlin/SdkFacadeOriginalExecution.kt"}:
         return _from_phase("sdk", "sdk-core", "validation")
     if path in {"ci/products/sdk_facade_validation.py", "ci/products/sdk_facade_inputs.py",
@@ -559,6 +563,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
                 "gradle/build-logic/src/main/kotlin/SdkFacadeValidationTasks.kt"}:
         return _from_phase("sdk", "sdk-core", "validation")
     if path in {"ci/sdk_android_upload_locator.py", "ci/sdk_android_evidence_capture.py",
+                "ci/products/sdk_android_validation_admission.py",
                 "ci/sdk_android_firebase_capture.py", "ci/products/sdk_android_observation.py",
                 "gradle/build-logic/src/main/kotlin/FirebaseAndroidOriginalEvidence.kt"}:
         return _from_phase("sdk", "sdk-android", "validation")
@@ -664,10 +669,14 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _is_control_only(path: str) -> bool:
+    if path == "ci/products/sdk_platform_metadata.py":
+        return False  # Defines deterministic eleven-target Core metadata bytes.
     if path in {"ci/products/sdk_facade_source.py", "ci/sdk_facade_validation_phase.py",
+                "ci/products/sdk_facade_validation_admission.py",
                 "gradle/build-logic/src/main/kotlin/SdkFacadeOriginalExecution.kt"}:
         return True  # Original source capture authenticates evidence, not product bytes.
     if path in {"ci/sdk_android_upload_locator.py", "ci/sdk_android_evidence_capture.py",
+                "ci/products/sdk_android_validation_admission.py",
                 "ci/sdk_android_firebase_capture.py", "ci/products/sdk_android_observation.py",
                 "gradle/build-logic/src/main/kotlin/FirebaseAndroidOriginalEvidence.kt"}:
         return True  # Original transport lookup never defines product bytes.

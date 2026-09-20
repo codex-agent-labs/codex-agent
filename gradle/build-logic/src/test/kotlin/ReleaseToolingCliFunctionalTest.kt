@@ -12,6 +12,49 @@ class ReleaseToolingCliFunctionalTest {
     private val jar = File(checkNotNull(System.getProperty("codexAgent.releaseToolingJar")))
 
     @Test
+    fun `packaged Firebase verifier replays protected evidence without Gradle`() {
+        val root = createTempDirectory("release-tooling-firebase-").toFile().canonicalFile
+        try {
+            val schema = Regex("(?m)^LANE_RECEIPT_SCHEMA_VERSION = ([1-9][0-9]*)$")
+                .findAll(repository.resolve("ci/receipt.py").readText()).single().groupValues[1].toInt()
+            val fixture = FirebaseAndroidOriginalEvidenceTest.Fixture(root, schema)
+            // Fixture-only manifest decoder; this proves packaged replay, not real APK/host execution.
+            val analyzer = root.resolve("apkanalyzer-fixture").apply {
+                writeText("""
+                    #!/bin/sh
+                    test "${'$'}1" = manifest && test "${'$'}2" = print || exit 7
+                    case "${'$'}3" in
+                      */$FIREBASE_APPLICATION_APK) printf '%s\n' '<manifest package="$FIREBASE_APPLICATION_ID"/>' ;;
+                      */$FIREBASE_TEST_APK) printf '%s\n' '<manifest package="$FIREBASE_TEST_APPLICATION_ID"><instrumentation android:targetPackage="$FIREBASE_APPLICATION_ID"/></manifest>' ;;
+                      *) exit 8 ;;
+                    esac
+                """.trimIndent() + "\n")
+                check(setExecutable(true))
+            }
+            val args = arrayOf("verify-original-firebase-android-evidence",
+                "--evidence-directory", fixture.evidence.absolutePath,
+                "--protected-observation-directory", fixture.observation.absolutePath,
+                "--expected-release-aar", fixture.expectedAar.absolutePath,
+                "--candidate-commit", FirebaseAndroidOriginalEvidenceTest.CANDIDATE_COMMIT,
+                "--candidate-tree", FirebaseAndroidOriginalEvidenceTest.CANDIDATE_TREE,
+                "--trusted-source-commit", FirebaseAndroidOriginalEvidenceTest.SOURCE_COMMIT,
+                "--trusted-source-tree", FirebaseAndroidOriginalEvidenceTest.SOURCE_TREE,
+                "--apkanalyzer-executable", analyzer.absolutePath)
+            val before = verifiedRegularFiles(root).mapValues { it.value.releaseDigest() }
+            val passed = runTool(root, *args)
+            assertEquals(0, passed.first, passed.second)
+            assertEquals(before, verifiedRegularFiles(root).mapValues { it.value.releaseDigest() })
+            fixture.expectedAar.appendText("different authenticated binary")
+            val failed = runTool(root, *args)
+            assertTrue(failed.first != 0, failed.second)
+            assertTrue("differs from its authenticated binary" in failed.second, failed.second)
+            assertFalse("NoClassDefFoundError" in failed.second || "ClassNotFoundException" in failed.second)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `packaged facade verifier replays complete imported metadata without Gradle`() {
         val root = createTempDirectory("release-tooling-facade-").toFile().canonicalFile
         try {
@@ -240,6 +283,7 @@ class ReleaseToolingCliFunctionalTest {
         val workingDirectory = createTempDirectory("release-tooling-commands").toFile()
         try {
             listOf(
+                "verify-original-firebase-android-evidence",
                 "assemble-c-abi-binding-receipt",
                 "assemble-native-wrapper-binding-receipt",
                 "advance-cross-language-binding-receipt",

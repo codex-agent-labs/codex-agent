@@ -117,7 +117,7 @@ class FirebaseAndroidOriginalEvidenceTest {
         }
     }
 
-    private class Fixture(root: File, private val laneReceiptSchemaVersion: Int) {
+    internal class Fixture(root: File, private val laneReceiptSchemaVersion: Int) {
         val evidence = root.resolve("final-evidence").apply { mkdirs() }
         val observation = root.resolve("protected-observation").apply { mkdirs() }
         val runtime = root.resolve("runtime.so").apply { writeText("pinned runtime") }
@@ -252,10 +252,10 @@ class FirebaseAndroidOriginalEvidenceTest {
     }
 
     companion object {
-        private const val CANDIDATE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
-        private const val CANDIDATE_TREE = "1111111111111111111111111111111111111111"
-        private const val SOURCE_COMMIT = "2222222222222222222222222222222222222222"
-        private const val SOURCE_TREE = "3333333333333333333333333333333333333333"
+        internal const val CANDIDATE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+        internal const val CANDIDATE_TREE = "1111111111111111111111111111111111111111"
+        internal const val SOURCE_COMMIT = "2222222222222222222222222222222222222222"
+        internal const val SOURCE_TREE = "3333333333333333333333333333333333333333"
 
         private fun matrixJson() = """
             {

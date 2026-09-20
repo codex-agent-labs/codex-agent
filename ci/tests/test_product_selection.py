@@ -115,11 +115,13 @@ class ProductSelectionTest(unittest.TestCase):
             ("ci/products/sdk_facade_validation.py", "sdk-core", True),
             ("ci/products/sdk_facade_inputs.py", "sdk-core", True),
             ("ci/products/sdk_facade_source.py", "sdk-core", False),
+            ("ci/products/sdk_facade_validation_admission.py", "sdk-core", False),
             ("ci/sdk_facade_validation_phase.py", "sdk-core", False),
             ("gradle/build-logic/src/main/kotlin/SdkFacadeOriginalExecution.kt", "sdk-core", False),
             ("gradle/build-logic/src/main/kotlin/SdkFacadeValidationTasks.kt", "sdk-core", True),
             ("gradle/build-logic/src/main/kotlin/ImportedSdkFacadePublicationVerification.kt", "sdk-core", True),
             ("ci/sdk_android_upload_locator.py", "sdk-android", False),
+            ("ci/products/sdk_android_validation_admission.py", "sdk-android", False),
             ("ci/sdk_android_evidence_capture.py", "sdk-android", False),
             ("ci/sdk_android_firebase_capture.py", "sdk-android", False),
             ("ci/products/sdk_android_observation.py", "sdk-android", False),
@@ -137,6 +139,15 @@ class ProductSelectionTest(unittest.TestCase):
                         (path,) if owns_bytes and instance in expected and instance.phase == "validation" else (),
                         phase_inventory_paths([path], instance),
                     )
+
+    def test_core_metadata_join_owns_only_core_metadata_bytes(self) -> None:
+        path = "ci/products/sdk_platform_metadata.py"
+        expected = {PhaseInstanceId("sdk", "sdk-core", "metadata", "common")}
+        result = classify_paths([path])
+        self.assertEqual(expected, identities(result))
+        self.assertEqual((), result.unknown_paths)
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((path,) if instance in expected else (), phase_inventory_paths([path], instance))
 
     def test_apple_metadata_admission_and_controller_are_control_not_payload_inputs(self) -> None:
         for path in ("ci/products/sdk_apple_metadata_admission.py", "ci/sdk_ios_metadata_workflow.py"):
