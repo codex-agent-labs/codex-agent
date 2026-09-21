@@ -7,6 +7,7 @@ from copy import deepcopy
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+import zipfile
 
 from ci import sdk_facade_metadata_original as original
 from ci.tests import test_sdk_facade_metadata_workflow as fixtures
@@ -84,6 +85,115 @@ class FacadeMetadataOriginalTest(unittest.TestCase):
             artifact_sha256="sha256:" + "d" * 64, original_context=self.context)
         arguments.update(changes)
         return original.verified_original_sdk_facade_metadata(**arguments)
+
+    def prepare_retained(self):
+        self.retained = self.root / "caller-authenticated-metadata-capture"
+        # Build real ZIP/shard consistency; no assertion of official observation.
+        self.capture_upload(self.f.f.plan, self.retained,
+            metadata_receipt_path=self.receipt_path, artifact_id=123, token="explicit-caller-token")
+        with zipfile.ZipFile(self.retained / "transport.zip", "w") as archive:
+            for row in regular_file_inventory(self.retained / "original", allow_empty=True):
+                name = row["relativePath"]
+                archive.writestr(name, (self.retained / "original" / name).read_bytes())
+        transport = original._json(self.retained / "capture-transport.json")
+        producer = self.receipt["producer"]
+        transport["artifact"] = {"id": 123, "digest": original.sha256_file(self.retained / "transport.zip"),
+            "name": f"codex-agent-sdk-worker-sdk-core-metadata-common-{self.receipt['buildKey'].removeprefix('sha256:')}-"
+                    f"{producer['tree']}-attempt-{producer['runAttempt']}"}
+        (self.retained / "capture-transport.json").write_bytes(canonical_json_bytes(transport))
+        for target, record in self.f.f.records.items():
+            capture = self.root / ("retained-validation-" + target)
+            snapshot_regular_tree(self.f.destination / "originals/validations" / target / "capture",
+                                  capture, allow_empty=True)
+            self.f.f.records[target] = {key: value for key, value in record.items()
+                if key in {"validationReceipt", "facadeRequest", "nativeCompilerArchive"}}
+            self.f.f.records[target]["captureRoot"] = capture
+        self.no_network = self.enterContext(patch("reuse.api_request",
+            side_effect=AssertionError("retained metadata replay must not perform network acquisition")))
+
+    def retained_call(self, **changes):
+        arguments = self.f.arguments()
+        for name in ("discovery", "state", "destination", "expected_build_key", "token", "trusted_workflow_sha"):
+            arguments.pop(name)
+        arguments.update(metadata_receipt_path=self.receipt_path, capture_root=self.retained,
+                         original_context=self.context)
+        arguments.update(changes)
+        return original.verified_retained_sdk_facade_metadata(**arguments)
+
+    def test_retained_metadata_is_offline_and_holds_all_eleven_full_gates(self):
+        self.prepare_retained()
+        before = regular_file_inventory(self.retained, allow_empty=True)
+        with self.retained_call() as value:
+            self.assertEqual(set(SDK_FACADE_TARGETS), self.f.f.active)
+            self.assertEqual(self.receipt_path.read_bytes(), value["receiptBytes"])
+            self.assertEqual(before, regular_file_inventory(value["capture"], allow_empty=True))
+            self.assertNotEqual(self.retained, value["capture"])
+            self.assertEqual({"stage", "receiptPath", "receiptBytes", "receipt", "capture", "original", "transport"}, set(value))
+            private = value["capture"]
+        self.assertFalse(private.exists())
+        self.assertFalse(self.f.f.active)
+        self.assertEqual(before, regular_file_inventory(self.retained, allow_empty=True))
+        self.capture.assert_not_called()
+        self.no_network.assert_not_called()
+
+    def test_retained_metadata_rejects_live_predecessors_or_transport_substitution(self):
+        self.prepare_retained()
+        records = deepcopy(self.f.f.records)
+        records["jvm"].pop("captureRoot")
+        records["jvm"].update(artifactId=1, artifactSha256="sha256:" + "a" * 64)
+        with self.assertRaisesRegex(ValueError, "all eleven"), self.retained_call(validations=records):
+            self.fail("retained metadata must not fall back to network")
+        self.held.assert_not_called()
+        archive = self.retained / "transport.zip"
+        archive.write_bytes(archive.read_bytes() + b"altered original ZIP")
+        with self.assertRaisesRegex(ValueError, "original digest"), self.retained_call():
+            self.fail("changed archive yielded")
+        self.held.assert_not_called()
+        self.capture.assert_not_called()
+        self.no_network.assert_not_called()
+
+    def test_retained_metadata_full_replay_failure_and_exit_failure_remain_mandatory(self):
+        self.prepare_retained()
+        before = self.git_inventory.return_value
+        self.git_inventory.return_value = [{**self.inventory[0], "sha256": "sha256:" + "e" * 64}]
+        with self.assertRaisesRegex(ValueError, "original source/version/phase key"), self.retained_call():
+            self.fail("source replan bypassed")
+        self.git_inventory.return_value = before
+        self.f.f.exit_failure = "jvm"
+        with self.assertRaisesRegex(ValueError, "reader exit rejected"), self.retained_call():
+            pass
+        self.capture.assert_not_called()
+
+    def test_retained_metadata_source_private_and_caller_mutations_reject(self):
+        self.prepare_retained()
+        with self.assertRaisesRegex(ValueError, "changed"), self.retained_call() as value:
+            (value["original"] / "worker/gradle.log").write_bytes(b"private mutation")
+        with self.assertRaisesRegex(ValueError, "changed"), self.retained_call() as value:
+            value["receipt"]["producer"]["runAttempt"] += 1
+        with self.assertRaisesRegex(ValueError, "changed"), self.retained_call():
+            self.f.f.archive.write_bytes(b"independent policy mutation")
+        # Archive baseline is established anew on the next independent replay;
+        # deep native authentication remains explicitly mocked in this fixture.
+        with self.assertRaisesRegex(ValueError, "changed"), self.retained_call():
+            (self.retained / "original/worker/gradle.log").write_bytes(b"caller capture mutation")
+
+    def test_retained_metadata_snapshot_and_ancestry_are_not_implicit_authority(self):
+        self.prepare_retained()
+        symbolic = self.root / "symbolic-capture"
+        symbolic.symlink_to(self.retained, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "non-symbolic"), self.retained_call(capture_root=symbolic):
+            pass
+        snapshot = original.snapshot_regular_tree
+        def mutate(source, destination, **kwargs):
+            result = snapshot(source, destination, **kwargs)
+            if source == self.retained:
+                (destination / "original/worker/gradle.log").write_bytes(b"snapshot mutation")
+            return result
+        with patch.object(original, "snapshot_regular_tree", side_effect=mutate), \
+                self.assertRaisesRegex(ValueError, "changed during snapshot"), self.retained_call():
+            pass
+        self.held.assert_not_called()
+        self.capture.assert_not_called()
 
     def test_original_observation_full_held_join_and_real_key_replay(self):
         with self.call() as value:

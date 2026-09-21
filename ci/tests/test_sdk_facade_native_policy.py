@@ -18,14 +18,8 @@ from ci.products import sdk_facade_native_policy as policy
 
 
 class FacadeNativePolicyTest(unittest.TestCase):
-    def test_v2_fingerprint_is_bound_to_pinned_archive_without_admitting_dependencies(self):
-        self.value["schemaVersion"] = 2
-        self.value["nativeSelection"] = {
-            "dataDirectory": "/original/konan", "dependenciesDirectory": "/original/konan/dependencies",
-            "host": "macos_arm64", "target": "macos_arm64",
-            "fingerprint": self.inventory({"konan/compiler.fingerprint": b"not yet captured by Core"}),
-            "dependencies": {"opaque": "full original gate owns dependency proof"},
-        }
+    def test_v2_fingerprint_and_selection_are_bound_without_admitting_dependency_bytes(self):
+        self.value = self.observation_v2()
         self.save()
         self.assertIsNone(self.call())
         original = deepcopy(self.value)
@@ -56,7 +50,11 @@ class FacadeNativePolicyTest(unittest.TestCase):
         self.version = "2.3.10"
         self.home = "/original/selected/kotlin-native"
         self.prefix = "kotlin-native-prebuilt-macos-aarch64-" + self.version
-        self.selected = {"konan/konan.properties": b"selected-properties\n",
+        self.selected = {"konan/konan.properties": (
+                            b"llvmHome.macos_arm64 = $llvm.macos_arm64.user\n"
+                            b"llvm.macos_arm64.user = llvm-reviewed\n"
+                            b"libffiDir.macos_arm64 = libffi-reviewed\n"
+                            b"dependencies.macos_arm64 = lldb-reviewed\n"),
                          "konan/lib/kotlin-native-compiler-embeddable.jar": b"selected-compiler",
                          "konan/lib/empty-resource": b""}
         self.sources = {policy.VERSION_CATALOG: b'[versions]\nkotlin="2.3.10"\n'}
@@ -95,8 +93,8 @@ class FacadeNativePolicyTest(unittest.TestCase):
             f'name="kotlin-native-prebuilt" version="{self.version}"><artifact name="{artifact}">'
             f'<sha256 value="{digest}"/></artifact></component></components></verification-metadata>').encode()
 
-    def inventory(self, values):
-        rows = [{"path": self.home + "/" + name, "bytes": len(contents),
+    def inventory(self, values, *, root=None):
+        rows = [{"path": (self.home if root is None else root) + "/" + name, "bytes": len(contents),
                  "sha256": hashlib.sha256(contents).hexdigest()} for name, contents in values.items()]
         rows.sort(key=lambda row: row["path"])
         encoded = "".join(f"{row['path']}\0{row['bytes']}\0{row['sha256']}\n" for row in rows).encode()
@@ -118,6 +116,96 @@ class FacadeNativePolicyTest(unittest.TestCase):
             "inputs": {"intentionally": "left to the full original gate"},
             "outcome": {"task": task, "didWork": True, "upToDate": False,
                         "skipped": False, "skipMessage": None, "failure": None}}
+
+    def observation_v2(self, target="macos-arm64"):
+        value = self.observation(target)
+        value["schemaVersion"] = 2
+        names = ["libffi-reviewed", "llvm-reviewed"]
+        if target == "macos-arm64":
+            names.append("lldb-reviewed")
+        directory = "/original/konan/dependencies"
+        value["nativeSelection"] = {
+            "dataDirectory": "/original/konan", "dependenciesDirectory": directory,
+            "host": "macos_arm64", "target": target.replace("-", "_"),
+            "fingerprint": self.inventory({"konan/compiler.fingerprint": b"not yet captured by Core"}),
+            "dependencies": [{"name": name, "root": directory + "/" + name,
+                "inventory": self.inventory({"bin/tool": b"unreviewed dependency bytes"}, root=directory + "/" + name),
+                "symlinks": []} for name in sorted(names)],
+        }
+        return value
+
+    def test_v2_exact_target_dependencies_come_from_the_same_pinned_archive(self):
+        for target in ("macos-arm64", "ios-arm64", "ios-simulator-arm64"):
+            self.value = self.observation_v2(target)
+            self.save()
+            before = self.capture.read_bytes(), self.archive.read_bytes()
+            with self.subTest(target=target):
+                self.assertIsNone(self.call())
+                self.assertEqual(before, (self.capture.read_bytes(), self.archive.read_bytes()))
+        # Changing dependency bytes consistently is NOT rejected as a pin
+        # mismatch: this leaf authenticates names, not LLVM/libffi file bytes.
+        record = self.value["nativeSelection"]["dependencies"][0]
+        record["inventory"] = self.inventory({"bin/tool": b"different unreviewed content"}, root=record["root"])
+        self.save()
+        self.assertIsNone(self.call())
+
+    def test_v2_dependency_names_roots_inventory_and_order_cannot_be_self_selected(self):
+        for change in ("missing", "extra", "duplicate", "reordered", "root", "data", "directory", "escape", "shape"):
+            self.value = self.observation_v2()
+            selection = self.value["nativeSelection"]
+            records = selection["dependencies"]
+            if change == "missing": records.pop()
+            elif change == "extra": records.append({**records[0], "name": "unselected-cache"})
+            elif change == "duplicate": records.append(deepcopy(records[0]))
+            elif change == "reordered": records.reverse()
+            elif change == "root": records[0]["root"] = "/another/data/dependencies/libffi-reviewed"
+            elif change == "data": selection["dataDirectory"] = "/unselected"
+            elif change == "directory": selection["dependenciesDirectory"] = "/original/konan/../dependencies"
+            elif change == "escape": records[0]["inventory"] = self.inventory({"bin/tool": b"outside"})
+            else: records[0]["unknown"] = True
+            self.save()
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.call()
+
+    def test_v2_property_selection_is_not_inferred_from_installed_files_or_observation(self):
+        self.value = self.observation_v2()
+        self.save()
+        # Replace the reviewed synthetic archive's LLVM selection and re-pin it,
+        # then update observed property bytes too: the OLD dependency names must
+        # still fail, even though observed and pinned property hashes agree.
+        self.selected["konan/konan.properties"] = self.selected["konan/konan.properties"].replace(
+            b"llvm-reviewed", b"different-reviewed-llvm")
+        self.write_archive()
+        self.value["tools"]["native"] = self.inventory(self.selected)
+        self.save()
+        with self.assertRaisesRegex(ValueError, "pinned property selection"):
+            self.call()
+
+    def test_v2_unsupported_or_malformed_property_selection_fails_closed(self):
+        baseline = self.selected["konan/konan.properties"]
+        for suffix in (b"dependencies = ignored-fallback\n", b"llvmHome.macos_arm64 = duplicate\n"):
+            self.selected["konan/konan.properties"] = baseline + suffix
+            self.write_archive()
+            self.value = self.observation_v2()
+            self.save()
+            with self.subTest(suffix=suffix), self.assertRaises(ValueError):
+                self.call()
+        for value in (b"/outside/custom-llvm", b"$llvm.macos_arm64.user", b"../escape"):
+            self.selected["konan/konan.properties"] = baseline.replace(b"llvm-reviewed", value)
+            self.write_archive()
+            self.value = self.observation_v2()
+            self.save()
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.call()
+
+    def test_properties_capture_is_bounded_and_does_not_retain_other_members(self):
+        retained = bytearray()
+        with self.archive.open("rb") as stream:
+            policy._archive_subset(stream, self.version, include_fingerprint=True, properties=retained)
+        self.assertEqual(self.selected["konan/konan.properties"], bytes(retained))
+        with self.archive.open("rb") as stream, patch.object(policy, "_LIMIT", 1), \
+                self.assertRaisesRegex(ValueError, "properties exceed the control limit"):
+            policy._archive_subset(stream, self.version, include_fingerprint=True, properties=bytearray())
 
     def save(self):
         self.capture.write_text(json.dumps(self.value, indent=2) + "\n")

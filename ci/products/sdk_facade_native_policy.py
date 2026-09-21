@@ -2,7 +2,8 @@
 
 Only macOS ARM64 has a reviewed archive in the existing verification metadata.
 Schema 1 covers konan/lib/** and konan/konan.properties; schema 2 also binds the
-compiler fingerprint. Neither comparison authenticates the complete installation, LLVM/libffi/sysroot dependencies,
+compiler fingerprint and exact dependency selection from those pinned properties.
+Neither comparison authenticates the complete installation or dependency bytes,
 JDK, or hosted execution. Successful comparison grants none of those authorities.
 The caller independently binds the original capture, host and policy revision.
 """
@@ -10,18 +11,20 @@ The caller independently binds the original capture, host and policy revision.
 import hashlib
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
+import re
 import tarfile
 import tomllib
 
 from .inventory import (
     _open_regular_file, _stat_identity, git_regular_blob_bytes, load_json_bytes,
-    read_regular_file_bytes, require_exact_keys, require_integer, require_relative_path,
+    read_regular_file_bytes, require_array, require_exact_keys, require_integer, require_relative_path,
     require_regular_directory, require_semver, run_git,
 )
 from .restore import OBJECT_ZIP_LIMITS
 from .sdk_facade_compiler_policy import _TOP, _TOOLS, compiler_observation_inventory
 from .sdk_facade_validation import FACADE_CONSUMER_TASKS, _original_path
-from .toolchain import _metadata_checksum, _revision, RUNTIME_VERIFICATION_METADATA, VERSION_CATALOG
+from .toolchain import (_expand_property, _metadata_checksum, _properties, _revision,
+                       RUNTIME_VERIFICATION_METADATA, VERSION_CATALOG)
 
 
 _LIMIT = 16 * 1024 * 1024
@@ -34,7 +37,7 @@ _TARGETS = {"macos-arm64", "ios-arm64", "ios-simulator-arm64"}
 _LIMITS = {**OBJECT_ZIP_LIMITS, "max_members": 65_536, "max_headers": 131_072}
 
 
-def _archive_subset(stream, version, *, include_fingerprint=False):
+def _archive_subset(stream, version, *, include_fingerprint=False, properties=None):
     prefix = f"kotlin-native-prebuilt-macos-aarch64-{version}"
     archive_bytes = os.fstat(stream.fileno()).st_size
     headers, total = 0, 0
@@ -87,6 +90,9 @@ def _archive_subset(stream, version, *, include_fingerprint=False):
                 relative = path.relative_to(prefix).as_posix()
                 if member.isfile() and (relative == "konan/konan.properties" or relative.startswith("konan/lib/")
                         or include_fingerprint and relative == "konan/compiler.fingerprint"):
+                    retain = properties is not None and relative == "konan/konan.properties"
+                    if retain and member.size > _LIMIT:
+                        raise ValueError("Pinned native properties exceed the control limit")
                     source = archive.extractfile(member)
                     if source is None:
                         raise ValueError("Native archive selected member lacks its payload")
@@ -97,6 +103,8 @@ def _archive_subset(stream, version, *, include_fingerprint=False):
                             size += len(chunk)
                             if size > member.size:
                                 raise ValueError("Native archive selected member exceeds declared size")
+                            if retain:
+                                properties.extend(chunk)
                     if size != member.size:
                         raise ValueError("Native archive selected member is truncated")
                     selected[relative] = {"bytes": size, "sha256": digest.hexdigest()}
@@ -107,6 +115,54 @@ def _archive_subset(stream, version, *, include_fingerprint=False):
             or include_fingerprint and "konan/compiler.fingerprint" not in selected):
         raise ValueError("Pinned native archive lacks the selected compiler subset")
     return selected
+
+
+def _dependency_selection(selection, contents, observed):
+    """Authenticate names from pinned properties, NOT dependency file bytes.
+
+    Full Kotlin replay owns exact link/subtree semantics and task argument
+    binding. These properties authenticate only which dependency roots belong
+    to the selected distribution's default configuration.
+    """
+    properties = _properties(contents, "Pinned native properties")
+    host, target = selection["host"], selection["target"]
+    data = _original_path(selection["dataDirectory"], "Original native data directory")
+    directory = _original_path(selection["dependenciesDirectory"], "Original native dependencies directory")
+    if PureWindowsPath(data).drive or directory != data + "/dependencies":
+        raise ValueError("Native dependency directory differs from its selected data directory")
+    keys = [f"llvmHome.{host}", f"libffiDir.{host}"]
+    expected = set()
+    for key in keys:
+        name = _expand_property(properties, key)
+        if re.fullmatch(r"[A-Za-z0-9_.-]+", name) is None or name in {".", ".."}:
+            raise ValueError("Pinned native compiler dependency is not a supported named root")
+        expected.add(name)
+    # KGP's hostTargetList uses the host-target suffix (host alone for a native
+    # host target). The reviewed archive has no generic dependencies fallback.
+    # Fail closed if a future pinned distribution introduces one.
+    if "dependencies" in properties:
+        raise ValueError("Generic native dependency configuration is unsupported")
+    suffix = target if host == target else f"{host}-{target}"
+    key = "dependencies." + suffix
+    if key in properties:
+        for name in _expand_property(properties, key).split():
+            if re.fullmatch(r"[A-Za-z0-9_.-]+", name) is None or name in {".", ".."}:
+                raise ValueError("Pinned target dependency is not a supported named root")
+            expected.add(name)
+    names = []
+    for record in require_array(selection["dependencies"], "Selected native dependencies"):
+        record = require_exact_keys(record, {"name", "root", "inventory", "symlinks"},
+                                    "Selected native dependency")
+        name = record["name"]
+        if type(name) is not str or name not in expected or record["root"] != directory + "/" + name:
+            raise ValueError("Selected native dependency differs from the pinned property selection")
+        rows = compiler_observation_inventory(record["inventory"], observed=observed)
+        if any(not row["path"].startswith(record["root"] + "/") for row in rows):
+            raise ValueError("Selected native dependency inventory escapes its named root")
+        require_array(record["symlinks"], "Selected native symbolic links")
+        names.append(name)
+    if names != sorted(expected):
+        raise ValueError("Selected native dependencies differ from the exact pinned property selection")
 
 
 def verify_facade_native_compiler_artifacts(*, repository, policy_revision,
@@ -158,8 +214,8 @@ def verify_facade_native_compiler_artifacts(*, repository, policy_revision,
         if len(fingerprint) != 1 or fingerprint[0]["path"] != home + "/konan/compiler.fingerprint":
             raise ValueError("Native compiler fingerprint differs from its selected distribution")
         selected["konan/compiler.fingerprint"] = {key: fingerprint[0][key] for key in ("bytes", "sha256")}
-        # Full original replay owns dependency-root/link semantics and provenance;
-        # this partial archive policy authenticates distribution members only.
+        # Dependency names are bound below after reading the pinned properties;
+        # full original replay still owns link semantics and provenance.
     sources = {}
     actual = None
     descriptor, before = _open_regular_file(Path(native_archive), "Caller native archive", reject_symlink_parents=True)
@@ -181,10 +237,13 @@ def verify_facade_native_compiler_artifacts(*, repository, policy_revision,
             if actual != expected:
                 raise ValueError("Caller native archive differs from the immutable artifact pin")
             stream.seek(0)
-            expected_subset = (_archive_subset(stream, version, include_fingerprint=True) if schema == 2
+            properties = bytearray()
+            expected_subset = (_archive_subset(stream, version, include_fingerprint=True, properties=properties) if schema == 2
                                else _archive_subset(stream, version))
             if selected != expected_subset:
                 raise ValueError("Observed native compiler subset differs from the pinned archive")
+            if schema == 2:
+                _dependency_selection(selection, bytes(properties), observed)
         finally:
             stream.seek(0)
             final_digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()

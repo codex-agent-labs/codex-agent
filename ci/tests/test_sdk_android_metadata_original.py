@@ -49,8 +49,15 @@ class AndroidMetadataOriginalTest(unittest.TestCase):
         self.capture_mutation = None
         self.held_exit_failure = None
         self.active = False
-        self.enterContext(patch.object(
+        self.retained_capture = self.root / "authenticated-metadata-capture"
+        self.capture_upload(
+            self.recovery_plan, self.retained_capture,
+            metadata_receipt_path=self.receipt_path, artifact_id=73,
+            token="caller-observation-token")
+        self.capture = self.enterContext(patch.object(
             original, "capture_sdk_android_metadata_upload", side_effect=self.capture_upload))
+        self.retained = self.enterContext(patch.object(
+            original, "verify_retained_sdk_phase_upload"))
         self.plan = self.enterContext(patch.object(
             original.product_reuse, "_validate_plan",
             return_value={"remoteBuildAuthorized": True, "event": "pull_request"}))
@@ -178,23 +185,33 @@ class AndroidMetadataOriginalTest(unittest.TestCase):
             if self.held_exit_failure is not None:
                 raise self.held_exit_failure
 
-    def call(self, **changes):
-        values = dict(
+    def arguments(self):
+        return dict(
             plan=self.recovery_plan, metadata_receipt_path=self.receipt_path,
-            artifact_id=73, artifact_sha256="sha256:" + "7" * 64,
             validation_capture=self.f.original_capture,
             package_stage=self.f.package_stage, package_receipt=self.f.package_receipt,
             binary_stage=self.f.binary_stage, binary_receipt=self.f.binary_receipt,
             compatibility_request=self.f.compatibility,
             binary_contract_evidence=self.f.contract_evidence,
             trusted_source_commit="e" * 40, trusted_source_tree="f" * 40,
-            original_context=self.context, trusted_workflow_sha="8" * 40,
+            original_context=self.context,
             tooling_evidence=self.f.tooling, tooling_public_key=self.f.tooling_key,
             java_executable=self.f.java, apkanalyzer_executable=self.f.analyzer,
             policy_revision="1" * 40, required_trust_domain="development",
-            repository_root=self.root, environ={}, token="caller-observation-token")
+            repository_root=self.root, environ={})
+
+    def call(self, **changes):
+        values = {**self.arguments(), "artifact_id": 73,
+                  "artifact_sha256": "sha256:" + "7" * 64,
+                  "trusted_workflow_sha": "8" * 40,
+                  "token": "caller-observation-token"}
         values.update(changes)
         return original.verified_original_sdk_android_metadata(**values)
+
+    def retained_call(self, **changes):
+        values = {**self.arguments(), "metadata_capture": self.retained_capture}
+        values.update(changes)
+        return original.verified_retained_sdk_android_metadata(**values)
 
     def test_full_held_validation_real_join_and_key_replay(self):
         with self.call() as value:
@@ -216,6 +233,30 @@ class AndroidMetadataOriginalTest(unittest.TestCase):
         self.assertEqual((self.root,), self.plan.call_args.args[1:])
         self.assertEqual(self.producer["commit"],
                          self.plan.call_args.kwargs["expected_revision"])
+
+    def test_retained_capture_runs_the_same_full_gate_without_observation(self):
+        self.capture.reset_mock()
+        with self.retained_call() as value:
+            self.assertTrue(self.active)
+            self.assertEqual(self.receipt, value["receipt"])
+            self.assertEqual(self.receipt_path.read_bytes(), value["receiptBytes"])
+            self.assertEqual((self.root / "metadata-stage" / original.OUTPUT_PATH).read_bytes(),
+                             (value["stage"] / original.OUTPUT_PATH).read_bytes())
+        self.capture.assert_not_called()
+        self.retained.assert_called_once()
+        self.assertEqual(self.receipt_path.read_bytes(), self.retained.call_args.args[1])
+        self.held.assert_called_once()
+
+    def test_retained_capture_and_selected_receipt_are_immutable_and_exact(self):
+        with self.assertRaisesRegex(ValueError, "changed"), self.retained_call():
+            (self.retained_capture / "original/worker/gradle.log").write_bytes(b"late")
+        changed = deepcopy(self.receipt)
+        changed["producer"]["runId"] += 1
+        other = self.root / "different-metadata-receipt.json"
+        write_canonical_json(other, changed)
+        with self.assertRaisesRegex(ValueError, "transport differs"), \
+                self.retained_call(metadata_receipt_path=other):
+            pass
 
     def test_exact_original_context_and_worker_command_are_required(self):
         with self.assertRaisesRegex(ValueError, "path is invalid"):

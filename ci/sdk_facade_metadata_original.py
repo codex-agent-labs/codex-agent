@@ -18,7 +18,7 @@ import product_reuse
 from products.inventory import (
     canonical_json_bytes, git_product_versions, load_canonical_json_bytes,
     read_regular_file_bytes, require_exact_keys, require_integer,
-    require_regular_directory, run_git, sha256_bytes, sha256_file,
+    require_regular_directory, run_git, sha256_bytes, sha256_file, snapshot_regular_tree,
 )
 from products.plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST, plan_phase
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
@@ -31,7 +31,7 @@ from products.sdk_platform_metadata import OUTPUT_KIND, OUTPUT_PATH
 from products.sdk_validation_inputs import _request_inventory
 from products.selection import phase_git_inventory
 from products.signing_isolation import require_no_signing_secret
-from sdk_facade_capture import capture_sdk_facade_metadata_upload
+from sdk_facade_capture import capture_sdk_facade_metadata_upload, verify_retained_sdk_phase_upload
 from sdk_facade_metadata_inputs import _records, _view, _native_archives, verified_facade_metadata_inputs
 
 
@@ -150,6 +150,43 @@ def verified_original_sdk_facade_metadata(plan, metadata_receipt_path, *, artifa
     Original invocation context and all trust inputs are independently supplied
     caller policy, not authority recovered from uploaded request/worker records.
     """
+    with _verified_sdk_facade_metadata(plan, metadata_receipt_path, capture_root=None,
+            artifact_id=artifact_id, artifact_sha256=artifact_sha256, validations=validations,
+            contract_digest=contract_digest, component_digests=component_digests, original_context=original_context,
+            repository_root=repository_root, environ=environ, token=token, trusted_workflow_sha=trusted_workflow_sha,
+            tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key, java_executable=java_executable,
+            policy_revision=policy_revision, required_trust_domain=required_trust_domain,
+            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as result:
+        yield result
+
+
+@contextmanager
+def verified_retained_sdk_facade_metadata(plan, metadata_receipt_path, *, capture_root,
+        validations, contract_digest, component_digests, original_context, repository_root, environ,
+        tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
+        tooling_keyring=None, tooling_keys_directory=None):
+    """Hold full offline replay inside independently authenticated caller carriers.
+
+    All eleven validations must also use retained captureRoot records. Neither
+    private copies nor stored transport observations authenticate themselves.
+    Original invocation context, native archives and tooling policy remain
+    independent caller inputs, never recovered from retained metadata paths.
+    """
+    with _verified_sdk_facade_metadata(plan, metadata_receipt_path, capture_root=Path(capture_root),
+            validations=validations, contract_digest=contract_digest, component_digests=component_digests,
+            original_context=original_context, repository_root=repository_root, environ=environ,
+            tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key, java_executable=java_executable,
+            policy_revision=policy_revision, required_trust_domain=required_trust_domain,
+            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as result:
+        yield result
+
+
+@contextmanager
+def _verified_sdk_facade_metadata(plan, metadata_receipt_path, *, capture_root,
+        validations, contract_digest, component_digests, original_context, repository_root, environ,
+        tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
+        tooling_keyring, tooling_keys_directory, artifact_id=None, artifact_sha256=None,
+        token=None, trusted_workflow_sha=None):
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
     plan, receipt_path = Path(plan), Path(metadata_receipt_path)
@@ -159,9 +196,16 @@ def verified_original_sdk_facade_metadata(plan, metadata_receipt_path, *, artifa
     if tuple(receipt[name] for name in ("product", "component", "phase", "target")) != ("sdk", "sdk-core", "metadata", "common"):
         raise ValueError("Core metadata recovery requires its exact selected receipt")
     records = _records(validations)
+    if capture_root is not None and any("captureRoot" not in record for record in records.values()):
+        raise ValueError("Retained Core metadata requires all eleven caller-authenticated retained validations")
     archives = _native_archives(records)
     files = {plan, receipt_path, Path(tooling_public_key), Path(java_executable)}
     trees = {Path(tooling_evidence)}
+    if capture_root is not None:
+        if not capture_root.is_absolute() or capture_root.resolve(strict=True) != capture_root:
+            raise ValueError("Retained Core metadata capture must be absolute, normalized and non-symbolic")
+        trees.add(capture_root)
+        trees.update(Path(record["captureRoot"]) for record in records.values())
     compatibility = {}
     for record in records.values():
         path = Path(record["facadeRequest"])
@@ -203,9 +247,16 @@ def verified_original_sdk_facade_metadata(plan, metadata_receipt_path, *, artifa
         try:
             unchanged()
             capture = private / "capture"
-            transport = capture_sdk_facade_metadata_upload(plan, capture, metadata_receipt_path=selected,
-                artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
-                repository_root=root, environ=environ, token=token)
+            if capture_root is None:
+                transport = capture_sdk_facade_metadata_upload(plan, capture, metadata_receipt_path=selected,
+                    artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
+                    repository_root=root, environ=environ, token=token)
+            else:
+                snapshot_regular_tree(capture_root, capture, allow_empty=True)
+                if _inventory(capture, allow_empty=True) != before_trees[capture_root]:
+                    raise ValueError("Retained Core metadata capture changed during snapshot")
+                verify_retained_sdk_phase_upload(capture, raw)
+                transport = _json(capture / "capture-transport.json")
             transport_before = canonical_json_bytes(transport)
             if (transport["metadataReceiptSha256"] != sha256_bytes(raw) or transport["captureProducer"] != receipt["producer"]
                     or _read(capture / "capture-transport.json") != canonical_json_bytes(transport)):

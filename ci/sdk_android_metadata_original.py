@@ -18,7 +18,8 @@ import product_reuse
 from products.inventory import (
     canonical_json_bytes, git_product_versions, load_canonical_json_bytes,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys,
-    require_integer, run_git, sha256_bytes, write_canonical_json,
+    require_integer, run_git, sha256_bytes, snapshot_regular_tree,
+    write_canonical_json,
 )
 from products.plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST, plan_phase
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
@@ -31,7 +32,9 @@ from products.selection import phase_git_inventory
 from products.signing_isolation import require_no_signing_secret
 from products import sdk_android_validation_phase as validation_phase
 from sdk_android_original_validation import verified_retained_android_validation
-from sdk_facade_capture import capture_sdk_android_metadata_upload
+from sdk_facade_capture import (
+    capture_sdk_android_metadata_upload, verify_retained_sdk_phase_upload,
+)
 
 
 _INSTANCE = PhaseInstanceId("sdk", "sdk-android", "metadata", "android")
@@ -160,7 +163,76 @@ def verified_original_sdk_android_metadata(
         java_executable, apkanalyzer_executable, policy_revision,
         required_trust_domain, repository_root, environ, token,
         tooling_keyring=None, tooling_keys_directory=None):
-    """Hold exact metadata transport and the existing full validation replay."""
+    """Observe one exact upload and hold the complete metadata replay."""
+    with _verified_sdk_android_metadata(
+            plan, metadata_receipt_path, metadata_capture=None,
+            artifact_id=artifact_id, artifact_sha256=artifact_sha256,
+            trusted_workflow_sha=trusted_workflow_sha, token=token,
+            validation_capture=validation_capture,
+            package_stage=package_stage, package_receipt=package_receipt,
+            binary_stage=binary_stage, binary_receipt=binary_receipt,
+            compatibility_request=compatibility_request,
+            binary_contract_evidence=binary_contract_evidence,
+            trusted_source_commit=trusted_source_commit,
+            trusted_source_tree=trusted_source_tree,
+            original_context=original_context,
+            tooling_evidence=tooling_evidence,
+            tooling_public_key=tooling_public_key,
+            java_executable=java_executable,
+            apkanalyzer_executable=apkanalyzer_executable,
+            policy_revision=policy_revision,
+            required_trust_domain=required_trust_domain,
+            repository_root=repository_root, environ=environ,
+            tooling_keyring=tooling_keyring,
+            tooling_keys_directory=tooling_keys_directory) as value:
+        yield value
+
+
+@contextmanager
+def verified_retained_sdk_android_metadata(
+        plan, metadata_receipt_path, *, metadata_capture, validation_capture,
+        package_stage, package_receipt, binary_stage, binary_receipt,
+        compatibility_request, binary_contract_evidence,
+        trusted_source_commit, trusted_source_tree, original_context,
+        tooling_evidence, tooling_public_key, java_executable,
+        apkanalyzer_executable, policy_revision, required_trust_domain,
+        repository_root, environ, tooling_keyring=None,
+        tooling_keys_directory=None):
+    """Replay a caller-authenticated retained carrier; it grants no trust."""
+    with _verified_sdk_android_metadata(
+            plan, metadata_receipt_path,
+            metadata_capture=Path(metadata_capture),
+            validation_capture=validation_capture,
+            package_stage=package_stage, package_receipt=package_receipt,
+            binary_stage=binary_stage, binary_receipt=binary_receipt,
+            compatibility_request=compatibility_request,
+            binary_contract_evidence=binary_contract_evidence,
+            trusted_source_commit=trusted_source_commit,
+            trusted_source_tree=trusted_source_tree,
+            original_context=original_context,
+            tooling_evidence=tooling_evidence,
+            tooling_public_key=tooling_public_key,
+            java_executable=java_executable,
+            apkanalyzer_executable=apkanalyzer_executable,
+            policy_revision=policy_revision,
+            required_trust_domain=required_trust_domain,
+            repository_root=repository_root, environ=environ,
+            tooling_keyring=tooling_keyring,
+            tooling_keys_directory=tooling_keys_directory) as value:
+        yield value
+
+
+@contextmanager
+def _verified_sdk_android_metadata(
+        plan, metadata_receipt_path, *, metadata_capture,
+        validation_capture, package_stage, package_receipt, binary_stage,
+        binary_receipt, compatibility_request, binary_contract_evidence,
+        trusted_source_commit, trusted_source_tree, original_context,
+        tooling_evidence, tooling_public_key, java_executable,
+        apkanalyzer_executable, policy_revision, required_trust_domain,
+        repository_root, environ, tooling_keyring=None,
+        tooling_keys_directory=None, artifact_id=None, artifact_sha256=None,
+        trusted_workflow_sha=None, token=None):
     require_no_signing_secret(environ)
     if (tooling_keyring is None) != (tooling_keys_directory is None):
         raise ValueError("Android metadata tooling keyring and directory must be paired")
@@ -188,6 +260,8 @@ def verified_original_sdk_android_metadata(
     if tooling_keyring is not None:
         files["toolingKeyring"] = Path(tooling_keyring).absolute()
         trees["toolingKeys"] = Path(tooling_keys_directory).absolute()
+    if metadata_capture is not None:
+        trees["retainedMetadata"] = metadata_capture.absolute()
     raw = _read(receipt_path)
     receipt = validate_phase_receipt(load_canonical_json_bytes(raw))
     if tuple(receipt[name] for name in ("product", "component", "phase", "target")) != (
@@ -230,11 +304,19 @@ def verified_original_sdk_android_metadata(
         try:
             unchanged()
             capture = private / "capture"
-            transport = capture_sdk_android_metadata_upload(
-                plan, capture, metadata_receipt_path=selected,
-                artifact_id=artifact_id, artifact_sha256=artifact_sha256,
-                trusted_workflow_sha=trusted_workflow_sha,
-                repository_root=root, environ=environ, token=token)
+            if metadata_capture is None:
+                transport = capture_sdk_android_metadata_upload(
+                    plan, capture, metadata_receipt_path=selected,
+                    artifact_id=artifact_id, artifact_sha256=artifact_sha256,
+                    trusted_workflow_sha=trusted_workflow_sha,
+                    repository_root=root, environ=environ, token=token)
+            else:
+                snapshot_regular_tree(metadata_capture, capture, allow_empty=True)
+                if (regular_file_inventory(capture, allow_empty=True) !=
+                        before_trees["retainedMetadata"]):
+                    raise ValueError("Retained Android metadata changed during private capture")
+                verify_retained_sdk_phase_upload(capture, raw)
+                transport = _json(capture / "capture-transport.json")
             transport_bytes = canonical_json_bytes(transport)
             if (transport.get("captureProducer") != receipt["producer"]
                     or transport.get("metadataReceiptSha256") != sha256_bytes(raw)
