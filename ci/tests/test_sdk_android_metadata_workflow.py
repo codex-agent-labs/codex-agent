@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from ci import sdk_android_metadata_workflow as workflow
+from ci import sdk_android_firebase_original as firebase_reader
 from ci import sdk_android_original_validation as original_reader
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory,
@@ -202,7 +203,19 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
         self.reader_arguments = kwargs
         self.assertEqual(self.plan, plan)
         self.assertEqual(self.validation_receipt.read_bytes(), Path(receipt).read_bytes())
-        self.assertEqual(self.original_capture, kwargs["validation_capture"])
+        if "validation_capture" in kwargs:
+            self.assertEqual(self.original_capture, kwargs["validation_capture"])
+        else:
+            self.assertEqual(17, kwargs["validation_artifact_id"])
+            self.assertEqual("sha256:" + "7" * 64,
+                             kwargs["validation_artifact_sha256"])
+            self.assertEqual("8" * 40, kwargs["trusted_workflow_sha"])
+            self.assertEqual("9" * 40, kwargs["trusted_android_workflow_sha"])
+            self.assertEqual(self.validation_producer["runId"],
+                             kwargs["expected_original_run_id"])
+            self.assertEqual(self.validation_producer["runAttempt"],
+                             kwargs["expected_original_run_attempt"])
+            self.assertEqual("observation-token", kwargs["token"])
         if self.reader_enter_failure is not None:
             raise self.reader_enter_failure
         selected = Path(receipt).parent
@@ -248,6 +261,8 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
                 patch.object(workflow, "verify_phase_shard", side_effect=verify_shard), \
                 patch.object(original_reader, "verified_retained_android_validation",
                              side_effect=self.verified_reader), \
+                patch.object(firebase_reader, "verified_original_android_firebase_validation",
+                             side_effect=self.verified_reader), \
                 patch.object(workflow, "_execute_metadata", side_effect=self.execute_metadata), \
                 patch.object(workflow.product_reuse, "_runtime_worker_checkout"), \
                 patch.object(workflow.product_reuse, "finalize_phase_object", side_effect=self.finalize):
@@ -266,6 +281,71 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
         self.assertEqual((self.validation_content["releaseAarSha256"],
                           self.validation_content["bundledRuntimeSha256"]),
                          (request["releaseAarSha256"], request["bundledRuntimeSha256"]))
+
+    def test_observed_original_reader_uses_explicit_caller_pins_and_run(self):
+        result = self.call(
+            original_validation_capture=None,
+            validation_artifact_id=17,
+            validation_artifact_sha256="sha256:" + "7" * 64,
+            trusted_workflow_sha="8" * 40,
+            trusted_android_workflow_sha="9" * 40,
+            expected_original_run_id=self.validation_producer["runId"],
+            expected_original_run_attempt=self.validation_producer["runAttempt"],
+            token="observation-token")
+        self.assertEqual(["state", "materialize", "reader-enter", "execute", "reader-exit",
+                          "finalize"], self.events)
+        self.assertEqual(self.package_stage, self.reader_arguments["package_stage"])
+        self.assertEqual(regular_file_inventory(self.original_capture),
+                         regular_file_inventory(result["originals"] / "validation"))
+
+    def test_original_reader_modes_are_complete_and_mutually_exclusive(self):
+        cases = (
+            {"original_validation_capture": None},
+            {"validation_artifact_id": 17},
+            {"original_validation_capture": None, "validation_artifact_id": 17},
+            {"validation_artifact_id": 17,
+             "validation_artifact_sha256": "sha256:" + "7" * 64,
+             "trusted_workflow_sha": "8" * 40,
+             "trusted_android_workflow_sha": "9" * 40,
+             "expected_original_run_id": 9,
+             "expected_original_run_attempt": 2},
+        )
+        for index, changes in enumerate(cases):
+            self.events.clear()
+            with self.subTest(index=index), self.assertRaisesRegex(
+                    ValueError, "exactly one complete original validation mode"):
+                self.call(destination=self.root / f"invalid-mode-{index}", **changes)
+            self.assertNotIn("state", self.events)
+        observed = dict(
+            original_validation_capture=None, validation_artifact_id=17,
+            validation_artifact_sha256="sha256:" + "7" * 64,
+            trusted_workflow_sha="8" * 40, trusted_android_workflow_sha="9" * 40,
+            expected_original_run_id=9, expected_original_run_attempt=2, token="")
+        with self.assertRaisesRegex(ValueError, "observation token"):
+            self.call(destination=self.root / "missing-token", **observed)
+        self.assertNotIn("state", self.events)
+
+    def test_observed_reader_failure_or_exit_never_publishes(self):
+        observed = dict(
+            original_validation_capture=None, validation_artifact_id=17,
+            validation_artifact_sha256="sha256:" + "7" * 64,
+            trusted_workflow_sha="8" * 40, trusted_android_workflow_sha="9" * 40,
+            expected_original_run_id=9, expected_original_run_attempt=2,
+            token="observation-token")
+        self.reader_enter_failure = ValueError("official observation rejected")
+        destination = self.root / "observed-enter-failure"
+        with self.assertRaisesRegex(ValueError, "official observation rejected"):
+            self.call(destination=destination, **observed)
+        self.assertNotIn("finalize", self.events)
+        self.assertFalse((destination / "shard").exists())
+        self.events.clear()
+        self.reader_enter_failure = None
+        self.reader_exit_failure = ValueError("official observation changed")
+        destination = self.root / "observed-exit-failure"
+        with self.assertRaisesRegex(ValueError, "official observation changed"):
+            self.call(destination=destination, **observed)
+        self.assertNotIn("finalize", self.events)
+        self.assertFalse((destination / "shard").exists())
 
     def test_gate_failure_or_late_original_mutation_never_finalizes(self):
         self.reader_enter_failure = ValueError("full replay failed")
@@ -393,6 +473,23 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
         self.assertEqual(self.original_capture,
                          execute.call_args.kwargs["original_validation_capture"])
         self.assertEqual(self.contract_evidence, execute.call_args.kwargs["binary_contract_evidence"])
+        observed_argv = [value for pair in zip(argv[::2], argv[1::2])
+                         if pair[0] != "--original-validation-capture" for value in pair]
+        for name, value in {
+            "validation-artifact-id": 17,
+            "validation-artifact-sha256": "sha256:" + "7" * 64,
+            "trusted-workflow-sha": "8" * 40,
+            "trusted-android-workflow-sha": "9" * 40,
+            "expected-original-run-id": 9,
+            "expected-original-run-attempt": 2,
+        }.items():
+            observed_argv.extend(("--" + name, str(value)))
+        with patch.dict(workflow.os.environ, {"GITHUB_TOKEN": "observation-token"}), \
+                patch.object(workflow, "execute") as observed_execute:
+            self.assertEqual(0, workflow.main(observed_argv))
+        self.assertIsNone(observed_execute.call_args.kwargs["original_validation_capture"])
+        self.assertEqual(17, observed_execute.call_args.kwargs["validation_artifact_id"])
+        self.assertEqual("observation-token", observed_execute.call_args.kwargs["token"])
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
             workflow.main([*argv, "--unknown"])
         self.assertEqual(2, error.exception.code)

@@ -38,18 +38,26 @@ class FacadeMetadataInputsTest(unittest.TestCase):
                                     "artifactId": index + 1, "artifactSha256": "sha256:" + f"{index + 1:064x}"}
         self.active, self.events = set(), []
         self.exit_failure = None
+        self.exit_callback = None
         self.wrong_receipt = None
         self.reader = self.enterContext(patch.object(inputs, "verified_original_sdk_facade_validation", side_effect=self.original))
+        self.retained_reader = self.enterContext(patch.object(inputs, "verified_retained_sdk_facade_validation", side_effect=self.original))
 
     @contextmanager
     def original(self, plan, receipt_path, **kwargs):
         target = load_canonical_json_bytes(receipt_path.read_bytes())["target"]
         self.assertEqual(self.plan, plan)
         record = self.records[target]
-        self.assertEqual(record["artifactId"], kwargs["artifact_id"])
-        self.assertEqual(record["artifactSha256"], kwargs["artifact_sha256"])
+        if "captureRoot" in record:
+            self.assertEqual(record["captureRoot"], kwargs["capture_root"])
+            self.assertFalse({"artifact_id", "artifact_sha256", "trusted_workflow_sha", "token"} & set(kwargs))
+        else:
+            self.assertEqual(record["artifactId"], kwargs["artifact_id"])
+            self.assertEqual(record["artifactSha256"], kwargs["artifact_sha256"])
+            self.assertEqual("explicit-caller-token", kwargs["token"])
+            self.assertEqual("f" * 40, kwargs["trusted_workflow_sha"])
+            self.assertNotIn("capture_root", kwargs)
         self.assertEqual(record["facadeRequest"], kwargs["facade_request"])
-        self.assertEqual("explicit-caller-token", kwargs["token"])
         self.assertEqual("e" * 40, kwargs["policy_revision"])
         self.assertEqual("development", kwargs["required_trust_domain"])
         self.events.append(("enter", target))
@@ -62,9 +70,12 @@ class FacadeMetadataInputsTest(unittest.TestCase):
             raw = receipt_path.read_bytes()
             receipt.write_bytes(raw)
             capture = root / "capture"
-            (capture / "original").mkdir(parents=True)
-            (capture / "transport.zip").write_bytes(b"opaque original ZIP; official gate mocked")
-            (capture / "original/gradle.log").write_bytes(b"")
+            if "captureRoot" in record:
+                snapshot_regular_tree(record["captureRoot"], capture, allow_empty=True)
+            else:
+                (capture / "original").mkdir(parents=True)
+                (capture / "transport.zip").write_bytes(b"opaque original ZIP; official gate mocked")
+                (capture / "original/gradle.log").write_bytes(b"")
             value = {"stage": stage, "receiptPath": receipt, "receiptBytes": raw,
                      "receipt": load_canonical_json_bytes(raw), "capture": capture,
                      "original": capture / "original", "transport": {"fixture": target}}
@@ -75,6 +86,8 @@ class FacadeMetadataInputsTest(unittest.TestCase):
             finally:
                 self.events.append(("exit", target))
                 self.active.remove(target)
+                if self.exit_callback is not None:
+                    self.exit_callback(target)
                 if self.exit_failure == target:
                     raise ValueError("original reader exit rejected")
 
@@ -86,6 +99,73 @@ class FacadeMetadataInputsTest(unittest.TestCase):
             java_executable=self.f.root / "java", policy_revision="e" * 40, required_trust_domain="development")
         arguments.update(changes)
         return inputs.verified_facade_metadata_inputs(**arguments)
+
+    def retain(self, targets):
+        for target in targets:
+            capture = self.f.root / (target + "-caller-capture")
+            (capture / "original").mkdir(parents=True)
+            (capture / "original/gradle.log").write_bytes(b"")
+            (capture / "transport.zip").write_bytes(b"caller-authenticated capture fixture; reader mocked")
+            self.records[target] = {key: self.records[target][key] for key in ("validationReceipt", "facadeRequest")}
+            self.records[target]["captureRoot"] = capture
+
+    def test_mixed_acquisition_modes_preserve_all_eleven_gates_and_original_producers(self):
+        targets = SDK_FACADE_TARGETS[::2]
+        self.retain(targets)
+        mixed = load_canonical_json_bytes(self.f.receipts[targets[0]].read_bytes())
+        mixed["producer"]["commit"] = "c" * 40
+        self.f.receipts[targets[0]].write_bytes(canonical_json_bytes(mixed))
+        with self.call() as value:
+            self.assertEqual(set(SDK_FACADE_TARGETS), self.active)
+            self.assertEqual(len(targets), self.retained_reader.call_count)
+            self.assertEqual(11 - len(targets), self.reader.call_count)
+            self.assertEqual("c" * 40, value["validations"][targets[0]]["receipt"]["producer"]["commit"])
+            self.assertEqual(11, len(value["expectedContent"]["validations"]))
+            for target in targets:
+                self.assertNotEqual(self.records[target]["captureRoot"], value["validations"][target]["capture"])
+        self.assertFalse(self.active)
+        self.assertEqual([("exit", target) for target in reversed(SDK_FACADE_TARGETS)], self.events[-11:])
+
+    def test_all_retained_modes_need_no_observation_token_and_still_require_every_exit(self):
+        self.retain(SDK_FACADE_TARGETS)
+        with self.call(token=None, trusted_workflow_sha=None):
+            self.assertEqual(11, len(self.active))
+        self.reader.assert_not_called()
+        self.assertEqual(11, self.retained_reader.call_count)
+        self.exit_failure = SDK_FACADE_TARGETS[0]
+        with self.assertRaisesRegex(ValueError, "reader exit rejected"), self.call(token=None, trusted_workflow_sha=None):
+            pass
+        self.assertFalse(self.active)
+
+    def test_retained_records_reject_mixed_incomplete_or_unsafe_acquisition_before_any_reader(self):
+        self.retain(("jvm",))
+        symbolic = self.f.root / "symbolic-capture"
+        symbolic.symlink_to(self.records["jvm"]["captureRoot"], target_is_directory=True)
+        for change in ("mixed", "partial", "unknown", "relative", "file", "symbolic"):
+            records = deepcopy(self.records)
+            if change == "mixed": records["jvm"].update(artifactId=1, artifactSha256="sha256:" + "a" * 64)
+            elif change == "partial": records["jvm"]["artifactId"] = 1
+            elif change == "unknown": records["jvm"]["policy"] = {}
+            elif change == "relative": records["jvm"]["captureRoot"] = Path("relative")
+            elif change == "file": records["jvm"]["captureRoot"] = self.records["jvm"]["validationReceipt"]
+            else: records["jvm"]["captureRoot"] = symbolic
+            with self.subTest(change=change), self.assertRaises(ValueError), self.call(validations=records):
+                pass
+        self.reader.assert_not_called()
+        self.retained_reader.assert_not_called()
+
+    def test_retained_source_inventory_remains_guarded_after_its_reader_closes(self):
+        self.retain(SDK_FACADE_TARGETS)
+        earlier_closed = SDK_FACADE_TARGETS[-1]
+        source = self.records[earlier_closed]["captureRoot"] / "transport.zip"
+        def mutate(last):
+            if last == SDK_FACADE_TARGETS[0]:
+                self.assertNotIn(earlier_closed, self.active)
+                source.write_bytes(b"changed after earlier reader exit")
+        self.exit_callback = mutate
+        with self.assertRaisesRegex(ValueError, "changed"), self.call(token=None, trusted_workflow_sha=None):
+            self.assertEqual(11, len(self.active))
+        self.assertFalse(self.active)
 
     def test_all_original_gates_live_through_exact_canonical_join_and_cleanup(self):
         mixed = load_canonical_json_bytes(self.f.receipts["jvm"].read_bytes())

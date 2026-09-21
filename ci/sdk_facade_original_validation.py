@@ -18,6 +18,7 @@ import product_reuse
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
     require_array, require_exact_keys, require_integer, require_regular_directory, sha256_bytes,
+    snapshot_regular_tree,
 )
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
 from products.registry import PhaseInstanceId, SDK_FACADE_TARGETS
@@ -30,7 +31,7 @@ from products.sdk_facade_validation_admission import _context, verify_sdk_facade
 from products.sdk_package import _require_capability_output_separate
 from products.sdk_validation_inputs import _request_inventory
 from products.signing_isolation import require_no_signing_secret
-from sdk_facade_capture import capture_sdk_facade_validation_upload
+from sdk_facade_capture import capture_sdk_facade_validation_upload, verify_retained_sdk_phase_upload
 from sdk_phase import route
 
 
@@ -120,6 +121,45 @@ def verified_original_sdk_facade_validation(
     independently validated at its receipt commit. Caller facade_request supplies
     authenticated current replay paths/policy, never retained original paths.
     """
+    with _verified_sdk_facade_validation(plan, validation_receipt_path, capture_root=None,
+            artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
+            facade_request=facade_request, repository_root=repository_root, environ=environ, token=token,
+            tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
+            java_executable=java_executable, policy_revision=policy_revision,
+            required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
+            tooling_keys_directory=tooling_keys_directory) as result:
+        yield result
+
+
+@contextmanager
+def verified_retained_sdk_facade_validation(
+    plan, validation_receipt_path, *, capture_root, facade_request, repository_root, environ,
+    tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
+    tooling_keyring=None, tooling_keys_directory=None,
+):
+    """Replay a complete caller-authenticated retained capture without network.
+
+    The caller must independently authenticate the enclosing carrier. Stored
+    transport observations are consistency records, not fresh official proof.
+    Current caller facade_request/tooling policy remains mandatory and is never
+    recovered from the capture. All live-reader semantic/source gates are shared.
+    """
+    with _verified_sdk_facade_validation(plan, validation_receipt_path, capture_root=Path(capture_root),
+            facade_request=facade_request, repository_root=repository_root, environ=environ,
+            tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
+            java_executable=java_executable, policy_revision=policy_revision,
+            required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
+            tooling_keys_directory=tooling_keys_directory) as result:
+        yield result
+
+
+@contextmanager
+def _verified_sdk_facade_validation(
+    plan, validation_receipt_path, *, capture_root, facade_request, repository_root, environ,
+    tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
+    tooling_keyring, tooling_keys_directory, artifact_id=None, artifact_sha256=None,
+    trusted_workflow_sha=None, token=None,
+):
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
     plan, receipt_path, request_path = map(Path, (plan, validation_receipt_path, facade_request))
@@ -133,6 +173,8 @@ def verified_original_sdk_facade_validation(
             or Path(value["repository"]) != root):
         raise ValueError("Core caller request differs from the selected validation identity")
     _, trees, files = _sources(value)
+    if capture_root is not None:
+        trees["retainedCapture"] = capture_root
     trees["tooling"] = Path(tooling_evidence)
     files.update({"plan": plan, "receipt": receipt_path, "request": request_path,
                   "toolingPublicKey": Path(tooling_public_key), "java": Path(java_executable)})
@@ -145,6 +187,11 @@ def verified_original_sdk_facade_validation(
         reject_symlink_parents=True) for name, path in files.items()}
     compatibility = _request_inventory(Path(value["compatibilityRequest"]))
     captured = {}
+    result = result_bytes = transport = transport_bytes = None
+
+    def view(record):
+        return canonical_json_bytes({key: str(member) if isinstance(member, Path) else
+            member.hex() if isinstance(member, bytes) else member for key, member in record.items()})
 
     def unchanged():
         require_no_signing_secret(environ)
@@ -153,7 +200,9 @@ def verified_original_sdk_facade_validation(
                 or any(read_regular_file_bytes(path, max_bytes=128 * 1024 * 1024,
                     reject_symlink_parents=True) != before_files[name] for name, path in files.items())
                 or _request_inventory(Path(value["compatibilityRequest"])) != compatibility
-                or any(_inventory(path, allow_empty=True) != inventory for path, inventory in captured.items())):
+                or any(_inventory(path, allow_empty=True) != inventory for path, inventory in captured.items())
+                or (transport is not None and canonical_json_bytes(transport) != transport_bytes)
+                or (result is not None and view(result) != result_bytes)):
             raise ValueError("Original Core validation inputs changed during recovery")
 
     with tempfile.TemporaryDirectory(prefix="original-core-validation-") as temporary:
@@ -164,9 +213,16 @@ def verified_original_sdk_facade_validation(
         try:
             unchanged()
             capture = private / "capture"
-            transport = capture_sdk_facade_validation_upload(plan, capture, validation_receipt_path=selected,
-                artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
-                repository_root=root, environ=environ, token=token)
+            if capture_root is None:
+                transport = capture_sdk_facade_validation_upload(plan, capture, validation_receipt_path=selected,
+                    artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
+                    repository_root=root, environ=environ, token=token)
+            else:
+                snapshot_regular_tree(capture_root, capture, allow_empty=True)
+                if _inventory(capture, allow_empty=True) != before_trees["retainedCapture"]:
+                    raise ValueError("Original Core retained capture changed during snapshot")
+                verify_retained_sdk_phase_upload(capture, raw)
+                transport = _json(capture / "capture-transport.json")
             transport_bytes = canonical_json_bytes(transport)
             if (transport["validationReceiptSha256"] != sha256_bytes(raw)
                     or canonical_json_bytes(transport["captureProducer"]) != canonical_json_bytes(receipt["producer"])
@@ -236,10 +292,10 @@ def verified_original_sdk_facade_validation(
             if verified_bytes != raw or canonical_json_bytes(verified) != raw or _read(selected) != raw:
                 raise ValueError("Core full replay returned a different original receipt")
             unchanged()
-            yield {"stage": stage, "receiptPath": selected, "receiptBytes": raw, "receipt": receipt,
-                   "original": original, "capture": capture, "transport": transport}
-            if canonical_json_bytes(transport) != transport_bytes:
-                raise ValueError("Core capture transport changed during recovery")
+            result = {"stage": stage, "receiptPath": selected, "receiptBytes": raw, "receipt": receipt,
+                      "original": original, "capture": capture, "transport": transport}
+            result_bytes = view(result)
+            yield result
         finally:
             unchanged()
             if _read(selected) != raw:

@@ -125,6 +125,91 @@ class OriginalFacadeValidationTest(unittest.TestCase):
             tooling_evidence=self.tooling, tooling_public_key=self.key, java_executable=self.java,
             policy_revision="e" * 40, required_trust_domain="development")
 
+    def prepare_retained(self):
+        # Produce a genuine bounded ZIP/shard capture through the fixture's
+        # separately mocked official API. Retained replay itself must not call it.
+        self.f.files = deepcopy(self.files)
+        self.f.archive()
+        self.f.call()
+        self.retained = self.f.output
+        self.full_gate.side_effect = self.retained_replay
+        self.no_network = self.enterContext(patch("reuse.api_request",
+            side_effect=AssertionError("retained replay must not contact the original service")))
+
+    def retained_replay(self, **kwargs):
+        self.captured = kwargs["prepared_inputs"].parents[2]
+        self.assertNotEqual(self.retained, self.captured)
+        return self.replay(**kwargs)
+
+    def retained_context(self):
+        return original.verified_retained_sdk_facade_validation(self.f.plan_path, self.f.receipt_path,
+            capture_root=self.retained, facade_request=self.i.request, repository_root=self.root,
+            environ=self.environment, tooling_evidence=self.tooling, tooling_public_key=self.key,
+            java_executable=self.java, policy_revision="e" * 40, required_trust_domain="development")
+
+    def test_retained_capture_reuses_full_gate_without_network_or_rewriting_originals(self):
+        self.prepare_retained()
+        before = regular_file_inventory(self.retained, allow_empty=True)
+        with self.retained_context() as value:
+            self.assertEqual(before, regular_file_inventory(value["capture"], allow_empty=True))
+            self.assertEqual(self.f.receipt_bytes, value["receiptBytes"])
+            self.assertEqual((self.retained / "transport.zip").read_bytes(),
+                             (value["capture"] / "transport.zip").read_bytes())
+            self.assertEqual({"stage", "receiptPath", "receiptBytes", "receipt", "original", "capture", "transport"}, set(value))
+            self.full_gate.assert_called_once()
+            self.observation_gate.assert_called_once()
+            private = value["capture"]
+        self.capture.assert_not_called()
+        self.no_network.assert_not_called()
+        self.assertFalse(private.exists())
+        self.assertEqual(before, regular_file_inventory(self.retained, allow_empty=True))
+
+    def test_retained_zip_or_selected_receipt_mismatch_rejects_before_full_gate(self):
+        self.prepare_retained()
+        archive = self.retained / "transport.zip"
+        before = archive.read_bytes()
+        archive.write_bytes(before + b"changed original transport")
+        with self.assertRaises(ValueError), self.retained_context():
+            self.fail("changed ZIP must not yield")
+        self.full_gate.assert_not_called()
+        self.capture.assert_not_called()
+        archive.write_bytes(before)
+        self.f.receipt_path.write_bytes(canonical_json_bytes({**self.f.receipt, "trustDomain": "release"}))
+        with self.assertRaisesRegex(ValueError, "exact original receipt"), self.retained_context():
+            self.fail("cross-paired original receipt must not yield")
+        self.full_gate.assert_not_called()
+
+    def test_retained_original_private_capture_and_yielded_identity_mutations_reject(self):
+        self.prepare_retained()
+        source = self.retained / "original/worker/gradle.log"
+        for kind in ("source", "private", "record", "policy"):
+            with self.subTest(kind=kind):
+                source_before, key_before = source.read_bytes(), self.key.read_bytes()
+                try:
+                    with self.assertRaisesRegex(ValueError, "changed during recovery"):
+                        with self.retained_context() as value:
+                            if kind == "source": source.write_bytes(b"mutated caller capture")
+                            elif kind == "private":
+                                (value["capture"] / "original/worker/gradle.log").write_bytes(b"mutated private capture")
+                            elif kind == "record": value["extra"] = "cannot become an admission marker"
+                            else: self.key.write_bytes(b"mutated independent caller key")
+                finally:
+                    source.write_bytes(source_before)
+                    self.key.write_bytes(key_before)
+        self.capture.assert_not_called()
+
+    def test_retained_observation_or_semantic_failure_cannot_yield(self):
+        self.prepare_retained()
+        self.observation_gate.side_effect = ValueError("retained host observation rejected")
+        with self.assertRaisesRegex(ValueError, "retained host observation rejected"), self.retained_context():
+            self.fail("observation failure must not yield")
+        self.full_gate.assert_not_called()
+        self.observation_gate.side_effect = None
+        self.full_gate.side_effect = ValueError("retained complete replay rejected")
+        with self.assertRaisesRegex(ValueError, "retained complete replay rejected"), self.retained_context():
+            self.fail("full replay failure must not yield")
+        self.capture.assert_not_called()
+
     def test_full_gate_holds_observed_originals_and_restored_receipt_through_context(self):
         with self.context_manager() as value:
             self.assertEqual(self.f.receipt_bytes, value["receiptBytes"])

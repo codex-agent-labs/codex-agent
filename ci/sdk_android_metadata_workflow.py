@@ -1,10 +1,11 @@
 """Produce elected Android metadata after exact original validation replay.
 
-The retained validation capture must come from an independently authenticated
-carrier.  Its bytes grant no authority: caller-owned package, binary, S858,
-Contract, tooling and source policy remain mandatory and are compared before
-the existing full replay is run.  This controller executes no Firebase work,
-compiles no product, and finalizes only after every original check has exited.
+A retained capture must come from an independently authenticated carrier; the
+alternative observed mode re-observes the caller-selected official artifacts.
+Neither capture grants authority: caller-owned package, binary, S858, Contract,
+tooling and source policy remain mandatory. This controller executes no
+Firebase work, compiles no product, and finalizes only after every original
+check has exited.
 """
 
 import argparse
@@ -240,17 +241,43 @@ def _execute_metadata(plan, *, producer, sdk_version, request, repository_root,
 
 
 def execute(plan, discovery, state, destination, *, expected_build_key,
-            original_validation_capture, package_stage, package_receipt,
+            package_stage, package_receipt,
             binary_stage, binary_receipt, compatibility_request,
             binary_contract_evidence, trusted_source_commit, trusted_source_tree,
             tooling_evidence, tooling_public_key, java_executable,
             apkanalyzer_executable, policy_revision, required_trust_domain,
             repository_root, environ, tooling_keyring=None,
-            tooling_keys_directory=None, sdk_apple_validation_policy=None):
-    """Finalize metadata after selected original validation and full replay agree."""
+            tooling_keys_directory=None, sdk_apple_validation_policy=None,
+            original_validation_capture=None, validation_artifact_id=None,
+            validation_artifact_sha256=None, trusted_workflow_sha=None,
+            trusted_android_workflow_sha=None, expected_original_run_id=None,
+            expected_original_run_attempt=None, token=None):
+    """Finalize metadata after selected original validation and full replay agree.
+
+    Retained mode requires a caller-authenticated enclosing carrier and grants
+    no hosted authority. Observed mode independently re-observes the validation
+    worker plus both nested official Android/Firebase artifacts.
+    """
     require_no_signing_secret(environ)
     if (tooling_keyring is None) != (tooling_keys_directory is None):
         raise ValueError("Android metadata tooling keyring and directory must be paired")
+    observed_values = (
+        validation_artifact_id, validation_artifact_sha256,
+        trusted_workflow_sha, trusted_android_workflow_sha,
+        expected_original_run_id, expected_original_run_attempt,
+    )
+    retained_mode = original_validation_capture is not None
+    observed_mode = all(value is not None for value in observed_values)
+    if retained_mode == observed_mode or (any(
+            value is not None for value in observed_values) and not observed_mode):
+        raise ValueError("Android metadata requires exactly one complete original validation mode")
+    if not retained_mode:
+        require_integer(validation_artifact_id, "Original Android validation artifact ID", 1)
+        require_sha256(validation_artifact_sha256, "Original Android validation artifact digest")
+        require_integer(expected_original_run_id, "Original Android validation run ID", 1)
+        require_integer(expected_original_run_attempt, "Original Android validation run attempt", 1)
+        if type(token) is not str or not token:
+            raise ValueError("Observed Android metadata admission requires an observation token")
     root = Path(repository_root).resolve(strict=True)
     plan = Path(plan).absolute()
     discovery, state, destination = product_reuse._product_materialization_paths(
@@ -259,10 +286,11 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         raise ValueError("Android metadata destination must not exist")
     trees = {
         "discovery": discovery, "state": state,
-        "originalValidationCapture": Path(original_validation_capture).absolute(),
         "package": Path(package_stage).absolute(), "binary": Path(binary_stage).absolute(),
         "tooling": Path(tooling_evidence).absolute(),
     }
+    if retained_mode:
+        trees["originalValidationCapture"] = Path(original_validation_capture).absolute()
     files = {
         "plan": plan, "packageReceipt": Path(package_receipt).absolute(),
         "binaryReceipt": Path(binary_receipt).absolute(),
@@ -296,6 +324,15 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         "trustedSourceTree": trusted_source_tree, "policyRevision": policy_revision,
         "requiredTrustDomain": required_trust_domain,
         "sdkAppleValidationPolicy": sdk_apple_validation_policy,
+        "originalMode": {
+            "retained": retained_mode,
+            "validationArtifactId": validation_artifact_id,
+            "validationArtifactSha256": validation_artifact_sha256,
+            "trustedWorkflowSha": trusted_workflow_sha,
+            "trustedAndroidWorkflowSha": trusted_android_workflow_sha,
+            "expectedOriginalRunId": expected_original_run_id,
+            "expectedOriginalRunAttempt": expected_original_run_attempt,
+        },
     })
     retained = {}
     bindings = {"ready": None, "producer": None, "materialized": None,
@@ -314,6 +351,15 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
                     "trustedSourceTree": trusted_source_tree, "policyRevision": policy_revision,
                     "requiredTrustDomain": required_trust_domain,
                     "sdkAppleValidationPolicy": sdk_apple_validation_policy,
+                    "originalMode": {
+                        "retained": retained_mode,
+                        "validationArtifactId": validation_artifact_id,
+                        "validationArtifactSha256": validation_artifact_sha256,
+                        "trustedWorkflowSha": trusted_workflow_sha,
+                        "trustedAndroidWorkflowSha": trusted_android_workflow_sha,
+                        "expectedOriginalRunId": expected_original_run_id,
+                        "expectedOriginalRunAttempt": expected_original_run_attempt,
+                    },
                 }) != policy_before
                 or (bindings["ready"] is not None and
                     canonical_json_bytes(bindings["ready"]) != bindings["readyBytes"])
@@ -377,32 +423,49 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         if selected_manifest["outputs"] != validation["outputs"]:
             raise ValueError("Android metadata selected validation differs from its receipt")
 
-        # Local import avoids a module cycle while the original reader reuses
-        # the two retained-input helpers above.
+        # Local imports avoid the reader cycle while both modes share one
+        # downstream metadata production and finalization body.
         if __package__:
             from .sdk_android_original_validation import verified_retained_android_validation
+            from .sdk_android_firebase_original import verified_original_android_firebase_validation
         else:
             from sdk_android_original_validation import verified_retained_android_validation
+            from sdk_android_firebase_original import verified_original_android_firebase_validation
+        common_original = dict(
+            package_stage=trees["package"], package_receipt=files["packageReceipt"],
+            binary_stage=trees["binary"], binary_receipt=files["binaryReceipt"],
+            compatibility_request=files["compatibilityRequest"],
+            binary_contract_evidence=binary_contract_evidence,
+            trusted_source_commit=trusted_source_commit,
+            trusted_source_tree=trusted_source_tree,
+            tooling_evidence=trees["tooling"],
+            tooling_public_key=files["toolingPublicKey"],
+            java_executable=files["java"],
+            apkanalyzer_executable=files["apkanalyzer"],
+            policy_revision=policy_revision,
+            required_trust_domain=required_trust_domain,
+            repository_root=root, environ=environ,
+            tooling_keyring=tooling_keyring,
+            tooling_keys_directory=tooling_keys_directory,
+        )
+        if retained_mode:
+            original_context = verified_retained_android_validation(
+                plan, selected_receipt_path,
+                validation_capture=trees["originalValidationCapture"],
+                **common_original)
+        else:
+            original_context = verified_original_android_firebase_validation(
+                plan, selected_receipt_path,
+                validation_artifact_id=validation_artifact_id,
+                validation_artifact_sha256=validation_artifact_sha256,
+                trusted_workflow_sha=trusted_workflow_sha,
+                trusted_android_workflow_sha=trusted_android_workflow_sha,
+                expected_original_run_id=expected_original_run_id,
+                expected_original_run_attempt=expected_original_run_attempt,
+                token=token, **common_original)
         with tempfile.TemporaryDirectory(prefix="sdk-android-metadata-") as temporary:
             private = Path(temporary).resolve()
-            with verified_retained_android_validation(
-                    plan, selected_receipt_path,
-                    validation_capture=trees["originalValidationCapture"],
-                    package_stage=trees["package"], package_receipt=files["packageReceipt"],
-                    binary_stage=trees["binary"], binary_receipt=files["binaryReceipt"],
-                    compatibility_request=files["compatibilityRequest"],
-                    binary_contract_evidence=binary_contract_evidence,
-                    trusted_source_commit=trusted_source_commit,
-                    trusted_source_tree=trusted_source_tree,
-                    tooling_evidence=trees["tooling"],
-                    tooling_public_key=files["toolingPublicKey"],
-                    java_executable=files["java"],
-                    apkanalyzer_executable=files["apkanalyzer"],
-                    policy_revision=policy_revision,
-                    required_trust_domain=required_trust_domain,
-                    repository_root=root, environ=environ,
-                    tooling_keyring=tooling_keyring,
-                    tooling_keys_directory=tooling_keys_directory) as original:
+            with original_context as original:
                 if (original["receiptBytes"] != selected_bytes
                         or canonical_json_bytes(original["receipt"]) != selected_bytes
                         or regular_file_inventory(original["stage"]) !=
@@ -426,7 +489,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
                 original_inventory = regular_file_inventory(original["capture"], allow_empty=True)
                 snapshot_regular_tree(original["capture"], originals, allow_empty=True)
                 if regular_file_inventory(originals, allow_empty=True) != original_inventory:
-                    raise ValueError("Retained Android validation capture changed during snapshot")
+                    raise ValueError("Original Android validation capture changed during snapshot")
                 retained[originals] = original_inventory
                 unchanged()
                 result = _execute_metadata(
@@ -474,7 +537,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in (
-        "plan", "destination", "original-validation-capture", "package-stage", "package-receipt",
+        "plan", "destination", "package-stage", "package-receipt",
         "binary-stage", "binary-receipt", "compatibility-request", "binary-contract-evidence",
         "tooling-evidence", "tooling-public-key", "java-executable", "apkanalyzer-executable",
         "repository-root",
@@ -488,6 +551,12 @@ def main(argv=None):
     parser.add_argument("--tooling-keyring", type=Path)
     parser.add_argument("--tooling-keys-directory", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
+    parser.add_argument("--original-validation-capture", type=Path)
+    parser.add_argument("--validation-artifact-id", type=int)
+    for name in ("validation-artifact-sha256", "trusted-workflow-sha", "trusted-android-workflow-sha"):
+        parser.add_argument("--" + name)
+    parser.add_argument("--expected-original-run-id", type=int)
+    parser.add_argument("--expected-original-run-attempt", type=int)
     arguments = vars(parser.parse_args(argv))
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
         parser.error("Android metadata tooling keyring and directory must be paired")
@@ -498,7 +567,7 @@ def main(argv=None):
         if policy is not None:
             arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
                 policy, "Caller Apple validation policy")
-        execute(**arguments, environ=os.environ)
+        execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

@@ -15,7 +15,7 @@ if __package__:
 
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
-    require_exact_keys, require_integer, require_sha256, snapshot_regular_tree,
+    require_exact_keys, require_integer, require_regular_directory, require_sha256, snapshot_regular_tree,
     write_canonical_json,
 )
 from products.receipt import validate_phase_receipt
@@ -25,7 +25,9 @@ from products.sdk_facade_validation import _inventory
 from products.sdk_package import _require_capability_output_separate
 from products.sdk_platform_metadata import write_facade_metadata_content
 from products.signing_isolation import require_no_signing_secret
-from sdk_facade_original_validation import verified_original_sdk_facade_validation
+from sdk_facade_original_validation import (
+    verified_original_sdk_facade_validation, verified_retained_sdk_facade_validation,
+)
 
 
 def _read(path):
@@ -35,14 +37,19 @@ def _read(path):
 def _records(validations):
     result = {}
     for target, value in require_exact_keys(validations, SDK_FACADE_TARGETS, "Core metadata original validations").items():
-        record = require_exact_keys(value, {"validationReceipt", "artifactId", "artifactSha256", "facadeRequest"},
+        retained = type(value) is dict and set(value) == {"validationReceipt", "captureRoot", "facadeRequest"}
+        fields = {"validationReceipt", "facadeRequest"}
+        record = require_exact_keys(value, fields | ({"captureRoot"} if retained else {"artifactId", "artifactSha256"}),
                                     "Core metadata original validation locator")
-        result[target] = {"artifactId": require_integer(record["artifactId"], "Core validation artifact ID", 1),
+        result[target] = {} if retained else {
+            "artifactId": require_integer(record["artifactId"], "Core validation artifact ID", 1),
             "artifactSha256": require_sha256(record["artifactSha256"], "Core validation artifact digest")}
-        for field in ("validationReceipt", "facadeRequest"):
+        for field in ("validationReceipt", "facadeRequest", *(("captureRoot",) if retained else ())):
             path = Path(record[field])
             if not path.is_absolute() or path.resolve(strict=True) != path:
                 raise ValueError("Core metadata caller paths must be absolute, normalized and non-symbolic")
+            if field == "captureRoot":
+                require_regular_directory(path, "Caller-authenticated Core capture")
             result[target][field] = str(path)
     return result
 
@@ -62,11 +69,15 @@ def verified_facade_metadata_inputs(*, plan, validations, contract_digest, compo
     Caller-owned facade requests supply replay policy. Retained request paths
     never replace it. Distinct validation producers are permitted, but all must
     consume exactly the same original package receipt and SDK version.
+    Each retained capture requires independently authenticated enclosing carrier
+    bytes; stored transport records never replace that caller obligation.
     """
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
     records = _records(validations)
     record_bytes = canonical_json_bytes(records)
+    retained_sources = {Path(record["captureRoot"]): _inventory(Path(record["captureRoot"]), allow_empty=True)
+                        for record in records.values() if "captureRoot" in record}
     require_sha256(contract_digest, "Core metadata expected Contract digest")
     components = require_exact_keys(component_digests, set(SDK_FACADE_CONTRACT_COMPONENTS.values()),
                                     "Core metadata expected Contract components")
@@ -102,6 +113,7 @@ def verified_facade_metadata_inputs(*, plan, validations, contract_digest, compo
                 or canonical_json_bytes(_records(validations)) != record_bytes
                 or canonical_json_bytes(component_digests) != component_bytes
                 or any(_read(path) != raw for path, raw in original_files.items())
+                or any(_inventory(path, allow_empty=True) != before for path, before in retained_sources.items())
                 or any(_inventory(path, allow_empty=True) != before for path, before in trees.items())
                 or any(_view(held[target]) != before for target, before in held_before.items())
                 or (package is not None and _view(package) != package_before)
@@ -110,20 +122,25 @@ def verified_facade_metadata_inputs(*, plan, validations, contract_digest, compo
 
     with tempfile.TemporaryDirectory(prefix="core-metadata-inputs-") as temporary:
         private = Path(temporary).resolve()
-        _require_capability_output_separate(private, [root, *original_files,
+        _require_capability_output_separate(private, [root, *original_files, *retained_sources,
             *(Path(value["packageStage"]) for value in request_values.values())])
         try:
             with ExitStack() as stack:
                 for target in SDK_FACADE_TARGETS:
                     record = records[target]
-                    verified = stack.enter_context(verified_original_sdk_facade_validation(
-                        plan, Path(record["validationReceipt"]), artifact_id=record["artifactId"],
-                        artifact_sha256=record["artifactSha256"], trusted_workflow_sha=trusted_workflow_sha,
-                        facade_request=Path(record["facadeRequest"]), repository_root=root, environ=environ, token=token,
+                    arguments = dict(facade_request=Path(record["facadeRequest"]), repository_root=root, environ=environ,
                         tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
                         java_executable=java_executable, policy_revision=policy_revision,
                         required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
-                        tooling_keys_directory=tooling_keys_directory))
+                        tooling_keys_directory=tooling_keys_directory)
+                    if "captureRoot" in record:
+                        context = verified_retained_sdk_facade_validation(plan, Path(record["validationReceipt"]),
+                            capture_root=Path(record["captureRoot"]), **arguments)
+                    else:
+                        context = verified_original_sdk_facade_validation(plan, Path(record["validationReceipt"]),
+                            artifact_id=record["artifactId"], artifact_sha256=record["artifactSha256"],
+                            trusted_workflow_sha=trusted_workflow_sha, token=token, **arguments)
+                    verified = stack.enter_context(context)
                     if (verified["receiptBytes"] != selected_receipts[target]
                             or canonical_json_bytes(verified["receipt"]) != selected_receipts[target]
                             or _read(verified["receiptPath"]) != selected_receipts[target]):

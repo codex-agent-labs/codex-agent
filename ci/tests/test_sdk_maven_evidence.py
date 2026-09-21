@@ -15,6 +15,7 @@ from ci.tests import test_sdk_facade_capture as fixtures
 from products.inventory import (
     regular_file_inventory, snapshot_regular_tree, write_canonical_json,
 )
+from products.restore import PHASE_PLAN_KEYS, finalize_phase_object
 
 
 class MavenEvidenceTest(unittest.TestCase):
@@ -47,6 +48,8 @@ class MavenEvidenceTest(unittest.TestCase):
         self.events = []
         self.on_exit = None
         self.wrong_receipt = False
+        self.elected = {name: deepcopy(fixture.receipt[name]) for name in PHASE_PLAN_KEYS}
+        self.expected_producer = deepcopy(fixture.producer)
 
     @contextmanager
     def reader(self, plan, receipt_path, **kwargs):
@@ -75,7 +78,7 @@ class MavenEvidenceTest(unittest.TestCase):
             if self.on_exit is not None:
                 self.on_exit()
 
-    def call(self, **changes):
+    def arguments(self):
         kwargs = dict(binary_contract_evidence=self.contract, original_context=self.context,
                       repository_root=self.fixture.root, environ={})
         if self.fixture.phase == "package":
@@ -83,12 +86,24 @@ class MavenEvidenceTest(unittest.TestCase):
                           binary_original_context=self.binary_context)
         if self.fixture.component == "sdk-android":
             kwargs["android_runtime_archive"] = self.archive
+        return kwargs
+
+    def call(self, **changes):
+        kwargs = self.arguments()
         kwargs.update(changes)
         with patch.object(evidence, "verified_retained_maven_phase", side_effect=self.reader) as held:
             result = evidence.stage_sdk_maven_evidence(self.fixture.plan_path, self.fixture.receipt_path,
                 self.fixture.output, self.destination, **kwargs)
             held.assert_called_once()
             return result
+
+    def collected(self, **changes):
+        kwargs = {**self.arguments(), "expected_phase_plan": self.elected,
+                  "expected_producer": self.expected_producer,
+                  "expected_sdk_version": self.fixture.receipt["productVersion"]}
+        kwargs.update(changes)
+        return evidence.stage_collected_sdk_maven_evidence(self.fixture.plan_path,
+            self.fixture.receipt_path.parent, self.fixture.output, self.destination, **kwargs)
 
     def test_four_routes_preserve_complete_originals_without_policy_serialization(self):
         for fixture_type in (fixtures.CoreBinaryCaptureTest, fixtures.AndroidBinaryCaptureTest,
@@ -230,6 +245,112 @@ class MavenEvidenceTest(unittest.TestCase):
         path.symlink_to(self.fixture.output / "original/worker/gradle.log")
         with self.assertRaises(ValueError):
             evidence.load_sdk_maven_evidence(self.destination)
+
+    def test_collected_four_routes_bind_full_election_then_hold_existing_replay(self):
+        for fixture_type in (fixtures.CoreBinaryCaptureTest, fixtures.AndroidBinaryCaptureTest,
+                             fixtures.CorePackageCaptureTest, fixtures.AndroidPackageCaptureTest):
+            with self.subTest(route=fixture_type.__name__):
+                self.prepare(fixture_type)
+                before = regular_file_inventory(self.fixture.output, allow_empty=True)
+                with patch.object(evidence, "verified_retained_maven_phase", side_effect=self.reader) as held:
+                    records = self.collected()
+                held.assert_called_once()
+                self.assertEqual(["enter", "exit"], self.events)
+                self.assertEqual(records, evidence.load_sdk_maven_evidence(self.destination))
+                record, = records
+                self.assertEqual(self.fixture.receipt_bytes, (self.destination / record["receipt"]).read_bytes())
+                self.assertEqual(before, regular_file_inventory(self.destination / record["capture"], allow_empty=True))
+                self.assertEqual({"component", "phase", "target", "receiptSha256", "receipt", "capture"}, set(record))
+
+    def test_collected_rejects_independent_plan_producer_and_version_mismatch_before_replay(self):
+        self.prepare()
+        altered_inputs = deepcopy(self.elected)
+        altered_inputs["inputs"]["untrustedAdditionalInput"] = "same build key is insufficient"
+        cases = (
+            {"expected_phase_plan": altered_inputs},
+            {"expected_phase_plan": {**self.elected, "buildKey": "sha256:" + "0" * 64}},
+            {"expected_phase_plan": {**self.elected, "phase": "validation"}},
+            {"expected_producer": {**self.expected_producer, "runAttempt": 77}},
+            {"expected_sdk_version": "0.8.1"},
+        )
+        for changes in cases:
+            with self.subTest(changes=changes), \
+                    patch.object(evidence, "verified_retained_maven_phase") as held, \
+                    self.assertRaises(ValueError):
+                self.collected(**changes)
+            held.assert_not_called()
+            self.assertFalse(self.destination.exists())
+
+    def test_collected_rejects_wrong_trust_even_for_a_valid_worker_shard(self):
+        self.prepare()
+        shard = self.fixture.root / "wrong-trust-shard"
+        finalize_phase_object(stage_root=self.fixture.root / "original-stage-common",
+            phase_plan=self.elected, producer=self.expected_producer,
+            product_version=self.fixture.receipt["productVersion"], trust_domain="release", destination=shard)
+        self.fixture.receipt_path = shard / "phase-receipt.json"
+        with patch.object(evidence, "verified_retained_maven_phase") as held, \
+                self.assertRaisesRegex(ValueError, "independent elected plan or producer"):
+            self.collected()
+        held.assert_not_called()
+        self.assertFalse(self.destination.exists())
+
+    def test_collected_capture_must_contain_the_exact_elected_original_shard(self):
+        self.prepare()
+        different = self.fixture.root / "different-shard"
+        finalize_phase_object(stage_root=self.fixture.root / "original-stage-common",
+            phase_plan=self.elected, producer={**self.expected_producer, "runAttempt": 99},
+            product_version=self.fixture.receipt["productVersion"], trust_domain="development", destination=different)
+        # Replace only fixture-owned shard bytes, leaving the independently elected shard unchanged.
+        captured = self.fixture.output / "original/shard"
+        for item in captured.rglob("*"):
+            if item.is_file():
+                item.unlink()
+        for item in different.rglob("*"):
+            if item.is_file():
+                output = captured / item.relative_to(different)
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_bytes(item.read_bytes())
+        with patch.object(evidence, "verified_retained_maven_phase") as held, \
+                self.assertRaisesRegex(ValueError, "exact selected receipt and object"):
+            self.collected()
+        held.assert_not_called()
+        self.assertFalse(self.destination.exists())
+
+    def test_collected_late_election_shard_or_policy_mutation_never_publishes(self):
+        for changed in ("plan", "producer", "shard", "policy"):
+            with self.subTest(changed=changed):
+                self.prepare()
+                def mutate():
+                    if changed == "plan":
+                        self.elected["inputs"]["untrustedAdditionalInput"] = "late mutation"
+                    elif changed == "producer":
+                        self.expected_producer["runAttempt"] += 1
+                    elif changed == "shard":
+                        (self.fixture.receipt_path.parent / "phase-object.json").write_bytes(b"changed")
+                    else:
+                        Path(self.contract["publicKey"]).write_bytes(b"changed caller key")
+                self.on_exit = mutate
+                with patch.object(evidence, "verified_retained_maven_phase", side_effect=self.reader), \
+                        self.assertRaisesRegex(ValueError, "changed"):
+                    self.collected()
+                self.assertFalse(self.destination.exists())
+
+    def test_collected_reader_exit_failure_retains_no_public_carrier(self):
+        self.prepare()
+        def reject():
+            raise ValueError("original exit failed")
+        self.on_exit = reject
+        with patch.object(evidence, "verified_retained_maven_phase", side_effect=self.reader), \
+                self.assertRaisesRegex(ValueError, "original exit failed"):
+            self.collected()
+        self.assertFalse(self.destination.exists())
+
+    def test_collected_destination_cannot_overlap_worker_shard(self):
+        self.prepare()
+        self.destination = self.fixture.receipt_path.parent / "carrier"
+        with patch.object(evidence, "verified_retained_maven_phase") as held, self.assertRaises(ValueError):
+            self.collected()
+        held.assert_not_called()
 
 
 if __name__ == "__main__":
