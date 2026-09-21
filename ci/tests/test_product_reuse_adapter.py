@@ -157,6 +157,34 @@ class ContractProducerRunTest(unittest.TestCase):
         self.assertEqual(4, query.call_count)
         self.assertEqual(before, self.producers)
 
+    def test_dispatch_opt_in_requires_fixed_authorization_job_and_exact_tested_commit(self):
+        producer = {**self.producer, "event": "workflow_dispatch", "pullRequest": None}
+        run = {**self.run, "event": "workflow_dispatch", "head_sha": COMMIT, "pull_requests": []}
+        jobs = [{**job, "head_sha": COMMIT} for job in self.jobs]
+        authorization = {**jobs[0], "id": 99, "name": "product-validation / dispatch-authorization"}
+        arguments = dict(producers={"binary": producer},
+            jobs_by_phase={"binary": jobs[0]["name"]}, trusted_workflow_sha=self.pin, token="unused")
+        with mock.patch.object(product_reuse, "api_json") as query:
+            with self.assertRaises(ValueError):
+                product_reuse._observe_ci_producer_jobs(**arguments)
+            query.assert_not_called()
+        for selected in (jobs, jobs + [authorization, authorization],
+                         jobs + [{**authorization, "conclusion": "failure"}]):
+            with self.subTest(jobs=selected), \
+                    mock.patch.object(product_reuse, "api_json", side_effect=[run, self.commit]), \
+                    mock.patch.object(product_reuse, "paginated_items", return_value=selected):
+                with self.assertRaises(ValueError):
+                    product_reuse._observe_ci_producer_jobs(**arguments, allow_protected_dispatch=True)
+        with mock.patch.object(product_reuse, "api_json", side_effect=[run, self.commit]), \
+                mock.patch.object(product_reuse, "paginated_items", return_value=jobs + [authorization]):
+            self.assertEqual(run, product_reuse._observe_ci_producer_jobs(
+                **arguments, allow_protected_dispatch=True)[0]["run"])
+        with mock.patch.object(product_reuse, "api_json", side_effect=[{**run, "head_sha": "d" * 40}, self.commit]), \
+                mock.patch.object(product_reuse, "paginated_items") as listing:
+            with self.assertRaises(ValueError):
+                product_reuse._observe_ci_producer_jobs(**arguments, allow_protected_dispatch=True)
+            listing.assert_not_called()
+
     def test_invalid_claims_fail_before_any_api_call(self):
         cases = [{**self.producers, "extra": self.producer},
                  {phase: value for phase, value in self.producers.items() if phase != "binary"}]

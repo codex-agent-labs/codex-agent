@@ -69,6 +69,24 @@ class AndroidUploadLocatorTest(unittest.TestCase):
         self.assertEqual(1, sum(value.endswith("/actions/artifacts/701") for value in self.requests))
         self.assertEqual(self.f.plan_path.read_bytes(), locator.canonical_json_bytes(self.f.plan))
 
+    def test_dispatch_locator_requires_successful_original_authorization(self):
+        commit = self.f.plan["validationCommit"]
+        self.f.plan.update(event="workflow_dispatch", pullRequest=None,
+            remoteBuildAuthorizationReason="workflow-dispatch")
+        self.f.plan_path.write_bytes(locator.canonical_json_bytes(self.f.plan))
+        self.f.run.update(event="workflow_dispatch", head_sha=commit, pull_requests=[])
+        self.f.artifact["workflow_run"]["head_sha"] = commit
+        self.listing = [deepcopy(self.f.artifact)]
+        for job in self.f.jobs:
+            job["head_sha"] = commit
+        self.f.jobs.append({**self.f.jobs[0], "id": 83,
+            "name": "product-validation / dispatch-authorization",
+            "started_at": "2026-09-11T08:00:00Z", "completed_at": "2026-09-11T08:30:00Z"})
+        self.assertEqual(701, self.call()["artifact_id"])
+        self.f.jobs[-1]["conclusion"] = "failure"
+        with self.assertRaises(ValueError):
+            self.call()
+
     def test_pre_attach_upload_and_failed_missing_ambiguous_or_reordered_jobs_reject(self):
         baseline = deepcopy((self.f.jobs, self.f.artifact))
         for case in ("pre-attach", "firebase-failed", "attach-failed", "missing", "ambiguous", "reordered"):
@@ -111,7 +129,7 @@ class AndroidUploadLocatorTest(unittest.TestCase):
         changes = (
             {"remoteBuildAuthorized": False}, {"androidEvidenceRequired": False},
             {"lanes": {"android": {"build": False, "test": False, "metadata": False}}},
-            {"event": "workflow_dispatch", "pullRequest": None},
+            {"event": "push", "pullRequest": None},
         )
         for change in changes:
             self.f.plan = {**baseline, **change}

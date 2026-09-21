@@ -85,6 +85,17 @@ class FacadePartialCompilerPolicyTest(unittest.TestCase):
         # Unpinned AGP/JDK/implementation fixture hashes were intentionally not authenticated.
         self.assertTrue(self.blobs.called)
 
+    def test_shared_inventory_parser_preserves_empty_and_cross_inventory_rules(self):
+        observed = {}
+        row = self.row("/original/compiler.jar")
+        self.assertEqual([row], policy.compiler_observation_inventory(self.inventory(row), observed=observed))
+        self.assertEqual([row], policy.compiler_observation_inventory(self.inventory(row), observed=observed))
+        with self.assertRaisesRegex(ValueError, "Contradictory"):
+            policy.compiler_observation_inventory(self.inventory({**row, "bytes": 124}), observed=observed)
+        self.assertEqual([], policy.compiler_observation_inventory(self.inventory(), observed=observed, empty=True))
+        with self.assertRaisesRegex(ValueError, "must not be empty"):
+            policy.compiler_observation_inventory(self.inventory(), observed=observed)
+
     def test_native_and_wrong_explicit_policy_revision_reject(self):
         self.revision = "a" * 64
         self.assertIsNone(self.call())
@@ -116,6 +127,36 @@ class FacadePartialCompilerPolicyTest(unittest.TestCase):
             self.save()
             with self.subTest(kind=kind), self.assertRaises(ValueError):
                 self.call()
+
+    def test_android_version_uses_explicit_catalog_without_claiming_artifact_authentication(self):
+        self.value = self.observation("android")
+        self.save()
+        self.assertIsNone(self.call())
+        self.value["agpVersion"] = "9.1.0"
+        self.save()
+        with self.assertRaisesRegex(ValueError, "Observed AGP version differs"):
+            self.call()
+        self.value = self.observation("android")
+        self.save()
+        original = self.sources[policy.VERSION_CATALOG]
+        for catalog in (b'[versions]\nkotlin="2.3.10"\n',
+                        b'[versions]\nkotlin="2.3.10"\nagp="9.1.0"\n'):
+            self.sources[policy.VERSION_CATALOG] = catalog
+            with self.subTest(catalog=catalog), self.assertRaises(ValueError):
+                self.call()
+        self.sources[policy.VERSION_CATALOG] = original
+        # The fixture AGP hash is not a reviewed pin. Version equality must not
+        # be described as validation of this transformed implementation artifact.
+        self.assertEqual("b" * 64, self.value["tools"]["android"]["files"][0]["sha256"])
+
+    def test_transformed_compiler_artifact_is_not_relabelled_as_original_pinned_jar(self):
+        row = self.value["tools"]["compiler"]["files"][0]
+        row["path"] = "/transformed/instrumented-" + self.compiler_name
+        # Even reusing the original published hash cannot supply original identity.
+        self.value["tools"]["compiler"] = self.inventory(row)
+        self.save()
+        with self.assertRaisesRegex(ValueError, "verification metadata lacks"):
+            self.call()
 
     def test_inventory_unknown_fields_contradictions_and_duplicate_json_reject(self):
         original = deepcopy(self.value)

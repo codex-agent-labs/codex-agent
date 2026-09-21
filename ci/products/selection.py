@@ -576,7 +576,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
                 "gradle/build-logic/src/main/kotlin/SdkFacadeMetadataTasks.kt"}:
         return _from_phase("sdk", "sdk-core", "metadata")
     if path in {"ci/products/sdk_facade_source.py", "ci/sdk_facade_validation_phase.py",
-                "ci/products/sdk_facade_compiler_policy.py",
+                "ci/products/sdk_facade_compiler_policy.py", "ci/products/sdk_facade_native_policy.py",
                 "ci/products/sdk_facade_execution_observation.py",
                 "ci/sdk_facade_original_validation.py", "ci/sdk_facade_workflow.py",
                 "ci/products/sdk_facade_validation_admission.py",
@@ -587,7 +587,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
                 "gradle/build-logic/src/main/kotlin/ImportedSdkFacadePublicationVerification.kt",
                 "gradle/build-logic/src/main/kotlin/SdkFacadeValidationTasks.kt"}:
         return _from_phase("sdk", "sdk-core", "validation")
-    if path in {"ci/sdk_android_upload_locator.py", "ci/sdk_android_evidence_capture.py",
+    if path in {"ci/sdk_android_upload_locator.py", "ci/sdk_android_dispatch_observer.py", "ci/sdk_android_evidence_capture.py",
                 "ci/products/sdk_android_validation_phase.py",
                 "ci/products/sdk_android_validation_admission.py",
                 "ci/sdk_android_firebase_capture.py", "ci/products/sdk_android_observation.py",
@@ -695,7 +695,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _is_control_only(path: str) -> bool:
-    if path in {"ci/sdk_maven_evidence.py", "ci/sdk_android_firebase_original.py", "ci/products/sdk_facade_compiler_policy.py"}:
+    if path in {"ci/sdk_maven_evidence.py", "ci/sdk_android_firebase_original.py", "ci/products/sdk_facade_compiler_policy.py",
+                "ci/products/sdk_facade_native_policy.py"}:
         return True  # Original evidence/policy composition, never reusable payload bytes.
     if path == "ci/products/gradle_bootstrap.py":
         return True  # Offline bootstrap precondition, not product bytes.
@@ -720,7 +721,7 @@ def _is_control_only(path: str) -> bool:
                 "gradle/build-logic/src/main/kotlin/SdkFacadeCompilerCapture.kt",
                 "gradle/build-logic/src/main/kotlin/SdkFacadeOriginalExecution.kt"}:
         return True  # Original source capture authenticates evidence, not product bytes.
-    if path in {"ci/sdk_android_upload_locator.py", "ci/sdk_android_evidence_capture.py",
+    if path in {"ci/sdk_android_upload_locator.py", "ci/sdk_android_dispatch_observer.py", "ci/sdk_android_evidence_capture.py",
                 "ci/products/sdk_android_validation_phase.py",
                 "ci/products/sdk_android_validation_admission.py",
                 "ci/sdk_android_firebase_capture.py", "ci/products/sdk_android_observation.py",

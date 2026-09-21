@@ -46,8 +46,8 @@ def locate_android_validation_upload(
     """Return the final post-attach upload locator, never content authority.
 
     Protected workflow execution and the downloaded seven-file Firebase closure
-    still require independent admission. Protected dispatch is intentionally not
-    accepted until its environment approval has an official observer contract.
+    still require independent admission. Protected dispatch additionally requires
+    the exact-attempt, caller-pinned environment-gated job observation.
     """
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
@@ -64,19 +64,25 @@ def locate_android_validation_upload(
         plan = products._validate_plan(captured, candidate, expected_revision=expected_revision)
         android = plan.get("lanes", {}).get("android", {}) if isinstance(plan.get("lanes"), dict) else {}
         if (plan.get("remoteBuildAuthorized") is not True
-                or plan.get("event") not in {"pull_request", "merge_group"}
+                or plan.get("event") not in {"pull_request", "merge_group", "workflow_dispatch"}
                 or plan.get("androidEvidenceRequired") is not True
                 or type(android) is not dict
                 or not any(android.get(action) is True for action in ("build", "test", "metadata"))):
             raise ValueError("Android upload locator requires authorized Android evidence work")
         plan_bytes = canonical_json_bytes(plan)
         producer = products.validate_producer(products._consumer(plan, environment)["producer"])
-        observation = products._observe_ci_producer_jobs(
-            {"firebase": producer, "attach": producer},
-            jobs_by_phase={"firebase": FIREBASE_JOB, "attach": ATTACH_JOB},
-            trusted_workflow_sha=trusted_workflow_sha,
-            token=token,
-        )[0]
+        if producer["event"] == "workflow_dispatch":
+            from sdk_android_dispatch_observer import observe_android_protected_dispatch
+            observation = observe_android_protected_dispatch(producer,
+                trusted_workflow_sha=trusted_workflow_sha,
+                trusted_android_workflow_sha=trusted_android_workflow_sha, token=token)
+        else:
+            observation = products._observe_ci_producer_jobs(
+                {"firebase": producer, "attach": producer},
+                jobs_by_phase={"firebase": FIREBASE_JOB, "attach": ATTACH_JOB},
+                trusted_workflow_sha=trusted_workflow_sha,
+                token=token,
+            )[0]
         references = require_array(
             observation["run"].get("referenced_workflows"),
             "Android original workflow references",

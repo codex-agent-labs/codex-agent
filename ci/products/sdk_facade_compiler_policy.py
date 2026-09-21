@@ -5,7 +5,10 @@ capture, then composes the existing original source/task/process replay. Only
 observed compiler and compiler-plugin JARs are compared here with existing exact
 Runtime verification metadata. This neither promotes Runtime producer profiles
 to Core policy nor authenticates transformed KGP, AGP, JDK, Android SDK or native
-installations. No local cache, submitted hash or current checkout supplies pins.
+installations. Android's observed AGP version is also compared with the explicit
+policy catalog declaration; no reviewed AGP artifact checksum exists here, so
+that comparison is not artifact authentication. No local cache, submitted hash
+or current checkout supplies pins.
 """
 
 from pathlib import Path, PureWindowsPath
@@ -25,6 +28,30 @@ _LIMIT = 16 * 1024 * 1024
 _TOP = {"schemaVersion", "target", "task", "taskClass", "family", "kotlinVersion", "agpVersion",
         "javaExecutable", "nativeHome", "arguments", "tools", "inputs", "outcome"}
 _TOOLS = {"implementation", "compiler", "compilerPlugins", "java", "native", "android"}
+
+
+def compiler_observation_inventory(item, *, observed, empty=False):
+    """Validate raw inventory framing and cross-inventory consistency, not trust."""
+    item = require_exact_keys(item, {"files", "sha256"}, "Compiler inventory")
+    rows = require_array(item["files"], "Compiler inventory files")
+    if not rows and not empty:
+        raise ValueError("Compiler inventory must not be empty")
+    paths, encoded = [], bytearray()
+    for row in rows:
+        row = require_exact_keys(row, {"path", "bytes", "sha256"}, "Compiler inventory row")
+        name = _original_path(row["path"], "Original compiler input")
+        size = require_integer(row["bytes"], "Compiler input size", 0)
+        digest = row["sha256"]
+        if type(digest) is not str or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValueError("Compiler input digest must be lowercase SHA256")
+        if name in observed and observed[name] != row:
+            raise ValueError("Contradictory observed compiler inventories")
+        observed[name] = row
+        paths.append(name)
+        encoded.extend(f"{name}\0{size}\0{digest}\n".encode("utf-8"))
+    if paths != sorted(set(paths)) or item["sha256"] != sha256_bytes(bytes(encoded)).removeprefix("sha256:"):
+        raise ValueError("Compiler inventory digest/order differs")
+    return rows
 
 
 def verify_facade_kotlin_compiler_artifacts(*, repository, policy_revision, compiler_inputs) -> None:
@@ -54,26 +81,7 @@ def verify_facade_kotlin_compiler_artifacts(*, repository, policy_revision, comp
     observed = {}
 
     def inventory(item, *, empty=False):
-        item = require_exact_keys(item, {"files", "sha256"}, "Compiler inventory")
-        rows = require_array(item["files"], "Compiler inventory files")
-        if not rows and not empty:
-            raise ValueError("Compiler inventory must not be empty")
-        paths, encoded = [], bytearray()
-        for row in rows:
-            row = require_exact_keys(row, {"path", "bytes", "sha256"}, "Compiler inventory row")
-            name = _original_path(row["path"], "Original compiler input")
-            size = require_integer(row["bytes"], "Compiler input size", 0)
-            digest = row["sha256"]
-            if type(digest) is not str or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
-                raise ValueError("Compiler input digest must be lowercase SHA256")
-            if name in observed and observed[name] != row:
-                raise ValueError("Contradictory observed compiler inventories")
-            observed[name] = row
-            paths.append(name)
-            encoded.extend(f"{name}\0{size}\0{digest}\n".encode("utf-8"))
-        if paths != sorted(set(paths)) or item["sha256"] != sha256_bytes(bytes(encoded)).removeprefix("sha256:"):
-            raise ValueError("Compiler inventory digest/order differs")
-        return rows
+        return compiler_observation_inventory(item, observed=observed, empty=empty)
 
     tools = require_exact_keys(value["tools"], _TOOLS, "Selected compiler tools")
     inventory(tools["implementation"])
@@ -112,6 +120,10 @@ def verify_facade_kotlin_compiler_artifacts(*, repository, policy_revision, comp
         version = require_semver(catalog.get("versions", {}).get("kotlin"), "Pinned Kotlin version")
         if require_string(value["kotlinVersion"], "Observed Kotlin version") != version:
             raise ValueError("Observed Kotlin version differs from explicit policy source")
+        if target == "android":
+            agp = require_semver(catalog.get("versions", {}).get("agp"), "Policy AGP version")
+            if value["agpVersion"] != agp:
+                raise ValueError("Observed AGP version differs from explicit policy source")
         names = {}
         for row in compiler + plugins:
             artifact = PureWindowsPath(row["path"]).name

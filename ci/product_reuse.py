@@ -233,6 +233,7 @@ def _prepare_destination(destination: Path, repository_root: Path) -> Path:
 def _observe_tested_commit(
     run: Mapping[str, Any], *, api: str, repository: str, token: str,
     expected_commit: str, expected_tree: str, pull_request: int | None,
+    allow_dispatch: bool = False,
 ) -> dict[str, Any]:
     """Observe tested Git identity separately from the triggering workflow head."""
     if any(not isinstance(value, str) or _OID.fullmatch(value) is None
@@ -259,7 +260,8 @@ def _observe_tested_commit(
         if ([value.get("sha") if isinstance(value, dict) else None for value in parents] != identities
                 or run.get("head_sha") not in {identities[1], expected_commit}):
             raise ValueError("Tested merge does not bind the original CI pull-request base/head")
-    elif run.get("event") != "merge_group" or run.get("head_sha") != expected_commit:
+    elif (run.get("event") not in ({"merge_group", "workflow_dispatch"} if allow_dispatch else {"merge_group"})
+          or run.get("head_sha") != expected_commit):
         raise ValueError("Merge-group attempt does not match its tested commit")
     return commit
 
@@ -325,7 +327,7 @@ def _observe_contract_producer_runs(
 
 
 def _observe_ci_producer_jobs(
-    producers, *, jobs_by_phase, trusted_workflow_sha, token,
+    producers, *, jobs_by_phase, trusted_workflow_sha, token, allow_protected_dispatch=False,
 ) -> list[dict[str, Any]]:
     # Both callers choose fixed job names; transported data cannot select a job.
     require_exact_keys(producers, set(jobs_by_phase), "Contract phase producers")
@@ -338,7 +340,8 @@ def _observe_ci_producer_jobs(
         producer = validate_producer(producers[phase], f"Contract {phase} producer")
         if (producer["repository"] != repository
                 or producer["workflowPath"] != ".github/workflows/ci.yml"
-                or producer["event"] not in {"pull_request", "merge_group"}):
+                or producer["event"] not in ({"pull_request", "merge_group", "workflow_dispatch"}
+                    if allow_protected_dispatch else {"pull_request", "merge_group"})):
             raise ValueError("Contract producer is not an eligible original CI producer")
         identity = producer["runId"], producer["runAttempt"]
         if identity in attempts and attempts[identity]["producer"] != producer:
@@ -371,11 +374,13 @@ def _observe_ci_producer_jobs(
         commit = _observe_tested_commit(
             run, api="https://api.github.com", repository=repository, token=token,
             expected_commit=producer["commit"], expected_tree=producer["tree"],
-            pull_request=producer["pullRequest"])
+            pull_request=producer["pullRequest"], allow_dispatch=allow_protected_dispatch)
         jobs = paginated_items(f"{url}/jobs", "jobs", token)
         if any(not isinstance(job, dict) for job in jobs):
             raise ValueError("Contract original CI jobs are malformed")
         names = {jobs_by_phase[phase] for phase in original["phases"]}
+        if producer["event"] == "workflow_dispatch":
+            names.add("product-validation / dispatch-authorization")
         for name in sorted(names):
             selected_jobs = [job for job in jobs if job.get("name") == name]
             if len(selected_jobs) != 1:

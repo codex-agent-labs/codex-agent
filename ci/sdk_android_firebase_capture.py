@@ -234,10 +234,16 @@ def capture_android_firebase_evidence(
                 raise ValueError("Firebase capture plan, producer, or final Android capture changed")
 
         unchanged()
-        observation = products._observe_ci_producer_jobs(
-            {"firebase": producer}, jobs_by_phase={"firebase": upload_locator.FIREBASE_JOB},
-            trusted_workflow_sha=trusted_workflow_sha, token=token,
-        )[0]
+        if producer["event"] == "workflow_dispatch":
+            from sdk_android_dispatch_observer import observe_android_protected_dispatch
+            observation = observe_android_protected_dispatch(producer,
+                trusted_workflow_sha=trusted_workflow_sha,
+                trusted_android_workflow_sha=trusted_android_workflow_sha, token=token)
+        else:
+            observation = products._observe_ci_producer_jobs(
+                {"firebase": producer}, jobs_by_phase={"firebase": upload_locator.FIREBASE_JOB},
+                trusted_workflow_sha=trusted_workflow_sha, token=token,
+            )[0]
         unchanged()
         api = f"https://api.github.com/repos/{upload_locator.REPOSITORY}/actions"
         name = f"codex-agent-ci-android-firebase-{producer['commit']}"
