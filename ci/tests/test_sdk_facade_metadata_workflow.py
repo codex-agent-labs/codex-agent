@@ -132,6 +132,16 @@ class FacadeMetadataWorkflowTest(unittest.TestCase):
         self.finalize.assert_not_called()
         self.assertFalse((self.destination / "shard").exists())
 
+    def test_native_archive_mutation_after_last_reader_exit_blocks_publication(self):
+        def mutate(target):
+            if not self.f.active:
+                self.f.archive.write_bytes(b"caller archive changed at final original exit")
+        self.f.exit_callback = mutate
+        with self.assertRaisesRegex(ValueError, "changed"):
+            workflow.execute(**self.arguments())
+        self.finalize.assert_not_called()
+        self.assertFalse((self.destination / "shard").exists())
+
     def test_process_failure_retains_diagnostics_without_receipt(self):
         self.process.side_effect = lambda *args, **kwargs: SimpleNamespace(returncode=23)
         with self.assertRaisesRegex(ValueError, "exit code 23"):
@@ -205,6 +215,8 @@ class FacadeMetadataWorkflowTest(unittest.TestCase):
             self.assertEqual(0, workflow.main(argv))
             self.assertEqual("cli-token", execute.call_args.kwargs["token"])
             self.assertEqual(self.f.f.request["componentDigests"], execute.call_args.kwargs["component_digests"])
+            self.assertEqual(str(self.f.archive),
+                execute.call_args.kwargs["validations"]["ios-arm64"]["nativeCompilerArchive"])
             for extra in (["--token", "not-allowed"], ["--tooling-keyring", str(self.key)], ["--unknown"]):
                 with self.subTest(extra=extra), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                     workflow.main(argv + extra)

@@ -5,13 +5,17 @@ No fixture claims an observed worker, authentic signed inputs or compilation.
 
 from copy import deepcopy
 from pathlib import Path
+import sys
 import unittest
 from unittest.mock import patch
+
+# The fixed worker route uses the existing top-level CI adapter imports.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ci.products import contract_projection, sdk_facade_validation_admission as admission
 from ci.products import sdk_facade_inputs, sdk_facade_validation
 from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, sha256_bytes, sha256_file
-from ci.products.receipt import write_output_manifest
+from ci.products.receipt import write_output_manifest, compute_build_key
 from ci.products.registry import PhaseInstanceId
 from ci.tests import test_sdk_facade_inputs as fixtures
 from ci.tests.product_chain_support import write_receipt
@@ -129,6 +133,73 @@ class FacadeOriginalContentTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "compiler pin differs"):
             self.verify()
         self.tooling.assert_not_called()
+
+    def native_identity(self, target):
+        value = load_canonical_json_bytes(self.f.request.read_bytes())
+        value["target"] = target
+        self.f.request.write_bytes(canonical_json_bytes(value))
+        receipt = deepcopy(self.receipt)
+        receipt["target"] = target
+        receipt["buildKey"] = compute_build_key(product="sdk", component="sdk-core", phase="validation",
+                                                target=target, inputs=receipt["inputs"])
+        self.receipt_path.write_bytes(canonical_json_bytes(receipt))
+        self.compiler_inputs.write_bytes(canonical_json_bytes({"schemaVersion": 2}))
+        archive = self.root / "independent-native.tar.gz"
+        archive.write_bytes(b"caller archive fixture; archive verifier mocked")
+        return archive
+
+    def test_native_policy_requires_caller_archive_v2_and_fixed_original_route(self):
+        archive = self.native_identity("ios-arm64")
+        with self.assertRaisesRegex(ValueError, "requires an independent"):
+            self.verify()
+        with patch.object(admission, "verify_facade_native_compiler_artifacts",
+                          side_effect=ValueError("bounded policy sentinel")) as gate:
+            for target, host in (("ios-arm64", "macos-arm64"), ("ios-simulator-arm64", "macos-arm64"),
+                                 ("macos-arm64", "macos-arm64"), ("macos-x64", "macos-x64"),
+                                 ("linux-arm64", "linux-arm64"), ("linux-x64", "linux-x64"),
+                                 ("windows-x64", "windows-x64")):
+                archive = self.native_identity(target)
+                with self.subTest(target=target), self.assertRaisesRegex(ValueError, "bounded policy sentinel"):
+                    self.verify(native_compiler_archive=archive)
+                self.assertEqual(host, gate.call_args.kwargs["expected_host"])
+                self.assertEqual(archive, gate.call_args.kwargs["native_archive"])
+            gate.reset_mock()
+            self.compiler_inputs.write_bytes(b'{"schemaVersion":1}\n')
+            with self.assertRaisesRegex(ValueError, "schemaVersion 2"):
+                self.verify(native_compiler_archive=archive)
+            gate.assert_not_called()
+        self.tooling.assert_not_called()
+        self.compiler_policy.assert_not_called()
+
+    def test_native_archive_is_streamed_and_mutation_after_partial_gate_rejects(self):
+        archive = self.native_identity("macos-arm64")
+        with archive.open("wb") as stream:
+            stream.truncate(17 * 1024 * 1024)
+        def mutate(**kwargs):
+            self.assertEqual(archive, kwargs["native_archive"])
+            archive.write_bytes(b"mutated archive")
+            raise ValueError("policy sentinel")
+        with patch.object(admission, "verify_facade_native_compiler_artifacts", side_effect=mutate), \
+                self.assertRaisesRegex(ValueError, "changed during replay"):
+            self.verify(native_compiler_archive=archive)
+
+    def test_unpinned_native_host_remains_fail_closed(self):
+        archive = self.native_identity("linux-x64")
+        with self.assertRaisesRegex(ValueError, "supports only.*macos-arm64"):
+            self.verify(native_compiler_archive=archive)
+        self.tooling.assert_not_called()
+
+    def test_nonnative_rejects_native_archive_and_native_paths_are_strict(self):
+        archive = self.root / "caller.tar.gz"
+        archive.write_bytes(b"fixture")
+        with self.assertRaisesRegex(ValueError, "Nonnative"):
+            self.verify(native_compiler_archive=archive)
+        self.native_identity("macos-arm64")
+        symbolic = self.root / "symbolic.tar.gz"
+        symbolic.symlink_to(archive)
+        for value in (Path("relative.tar.gz"), symbolic, self.root):
+            with self.subTest(path=value), self.assertRaises(ValueError):
+                self.verify(native_compiler_archive=value)
 
     def test_immutable_source_versions_plan_or_predecessor_mismatch_reject(self):
         for name, replacement in (("run_git", "f" * 40),

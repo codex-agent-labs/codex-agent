@@ -408,6 +408,16 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
                 inputs / "producer.json", "Elected Android metadata producer"))) != producer_bytes:
             raise ValueError("Materialized Android metadata producer differs from authenticated state")
         retained[inputs] = regular_file_inventory(inputs, allow_empty=True)
+        selection = destination / "selection"
+        selection.mkdir()
+        (selection / "impact-plan.json").write_bytes(file_before["plan"])
+        write_canonical_json(selection / "phase-plan.json", ready)
+        write_canonical_json(selection / "producer.json", producer)
+        if (_read(selection / "impact-plan.json") != file_before["plan"]
+                or _read(selection / "phase-plan.json") != ready_bytes
+                or _read(selection / "producer.json") != producer_bytes):
+            raise ValueError("Retained Android metadata selection differs from authenticated election")
+        retained[selection] = regular_file_inventory(selection)
 
         selected = inputs / "sdk-sdk-android-validation-android"
         selected_receipt_path = selected / PHASE_RECEIPT_NAME

@@ -14,9 +14,9 @@ import tempfile
 import tomllib
 
 from .inventory import (
-    canonical_json_bytes, git_product_versions, git_regular_blob_bytes, load_canonical_json_bytes,
+    canonical_json_bytes, git_product_versions, git_regular_blob_bytes, load_canonical_json_bytes, load_json_bytes,
     read_regular_file_bytes, require_exact_keys, require_string, run_git,
-    sha256_bytes, snapshot_regular_tree,
+    sha256_bytes, sha256_file, snapshot_regular_tree,
 )
 from .plan import (
     NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST,
@@ -28,6 +28,7 @@ from .sdk_apple_content import _verify_sdk_apple_with_tooling
 from .sdk_facade_inputs import OUTPUT_KIND, OUTPUT_PATH, _request, _sources, prepare_facade_validation_inputs
 from .sdk_facade_source import capture_facade_validation_sources
 from .sdk_facade_compiler_policy import verify_facade_kotlin_compiler_artifacts
+from .sdk_facade_native_policy import verify_facade_native_compiler_artifacts
 from .sdk_facade_validation import _inventory, _original_path, verify_facade_consumer_evidence
 from .sdk_package import _require_capability_output_separate
 from .sdk_validation_inputs import _request_inventory
@@ -36,6 +37,33 @@ from .signing_isolation import require_no_signing_secret
 
 
 _LIMIT = 16 * 1024 * 1024
+_NON_NATIVE_TARGETS = frozenset({"jvm", "android", "node-js", "node-wasm"})
+
+
+def _native_archive_path(target, archive):
+    """Require independent caller policy, never a captured path or cache lookup."""
+    if target not in SDK_FACADE_TARGETS:
+        raise ValueError("Unknown Core validation target")
+    if target in _NON_NATIVE_TARGETS:
+        if archive is not None:
+            raise ValueError("Nonnative Core validation must not supply a native compiler archive")
+        return None
+    if archive is None:
+        raise ValueError("Native Core validation requires an independent native compiler archive")
+    path = Path(archive)
+    if not path.is_absolute() or path.resolve(strict=True) != path or not path.is_file():
+        raise ValueError("Native compiler archive must be a regular absolute normalized non-symbolic file")
+    return path
+
+
+def _native_archive_digest(path):
+    # Large archives remain streamed; never feed them to the bounded JSON reader.
+    if path.resolve(strict=True) != path or not path.is_file():
+        raise ValueError("Native compiler archive path changed or is unsafe")
+    digest = sha256_file(path)
+    if path.resolve(strict=True) != path:
+        raise ValueError("Native compiler archive path changed during hashing")
+    return digest
 
 
 def _read(path):
@@ -77,6 +105,7 @@ def verify_sdk_facade_validation_original_content(
     tooling_evidence: Path, tooling_public_key: Path, java_executable: Path,
     policy_revision: str, required_trust_domain: str,
     tooling_keyring: Path | None = None, tooling_keys_directory: Path | None = None,
+    native_compiler_archive: Path | None = None,
 ) -> tuple[dict, bytes]:
     """Replay complete content with explicit original context, not hosted proof.
 
@@ -89,6 +118,9 @@ def verify_sdk_facade_validation_original_content(
     successful Java-wrapper invocation;
     all nested command paths derive from the committed fixed producer layout.
     Current replay paths are not substituted into original process evidence.
+    Native replay additionally requires an independent caller archive and raw v2
+    selection evidence. The partial pinned archive check is not complete host or
+    tool-policy admission; unsupported native hosts fail closed.
     """
     require_no_signing_secret(os.environ)
     repository = Path(repository).resolve(strict=True)
@@ -104,6 +136,8 @@ def verify_sdk_facade_validation_original_content(
             or receipt["target"] != value["target"] or receipt["productVersion"] != value["sdkVersion"]):
         raise ValueError("Facade original validation receipt has the wrong identity or version")
     context_bytes = canonical_json_bytes(original_context)
+    archive = _native_archive_path(receipt["target"], native_compiler_archive)
+    archive_digest = _native_archive_digest(archive) if archive is not None else None
     process_context, execution_path, forbidden_path, android_sdk = _context(original_context, receipt)
     trees = {"stage": Path(validation_stage), "inputs": Path(prepared_inputs),
              "execution": Path(execution_directory), "consumer": Path(consumer_inputs)}
@@ -120,6 +154,7 @@ def verify_sdk_facade_validation_original_content(
     def unchanged():
         require_no_signing_secret(os.environ)
         if (_read(receipt_path) != raw or _read(request) != request_bytes
+                or (archive is not None and _native_archive_digest(archive) != archive_digest)
                 or canonical_json_bytes(original_context) != context_bytes
                 or any(_inventory(path, allow_empty=name != "stage") != before[name] for name, path in trees.items())
                 or any(_inventory(path, allow_empty=True) != tree_before[name] for name, path in original_trees.items())
@@ -128,9 +163,20 @@ def verify_sdk_facade_validation_original_content(
             raise ValueError("Original facade inputs, receipt or caller context changed during replay")
 
     try:
-        if receipt["target"] in {"jvm", "android", "node-js", "node-wasm"}:
+        if archive is None:
             verify_facade_kotlin_compiler_artifacts(repository=repository, policy_revision=policy_revision,
                 compiler_inputs=original_files["compilerInputs"])
+        else:
+            from sdk_phase import route
+            observation = load_json_bytes(file_before["compilerInputs"])
+            if type(observation) is not dict or type(observation.get("schemaVersion")) is not int or observation["schemaVersion"] != 2:
+                raise ValueError("Native Core replay requires compiler observation schemaVersion 2")
+            selected_route = route(receipt)
+            host = {"macOS": "macos", "Linux": "linux", "Windows": "windows"}[selected_route["runnerOs"]]
+            expected_host = host + "-" + selected_route["runnerArch"].lower()
+            verify_facade_native_compiler_artifacts(repository=repository, policy_revision=policy_revision,
+                compiler_inputs=original_files["compilerInputs"], native_archive=archive,
+                expected_host=expected_host)
         commit, tree = receipt["producer"]["commit"], receipt["producer"]["tree"]
         try:
             actual_commit = run_git(repository, "rev-parse", f"{commit}^{{commit}}").strip()
@@ -152,6 +198,8 @@ def verify_sdk_facade_validation_original_content(
                 *original_trees.values(), *original_files.values(), *compatibility_before,
                 Path(tooling_evidence), Path(tooling_public_key), Path(java_executable),
                 *(Path(path) for path in (tooling_keyring, tooling_keys_directory) if path is not None)])
+            if archive is not None:
+                _require_capability_output_separate(private, [archive])
             captured = {}
             for name, path in trees.items():
                 captured[name] = private / name

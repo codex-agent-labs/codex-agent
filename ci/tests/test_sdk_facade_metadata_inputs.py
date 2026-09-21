@@ -29,6 +29,8 @@ class FacadeMetadataInputsTest(unittest.TestCase):
         self.records = {}
         self.plan = self.f.root / "plan.json"
         self.plan.write_bytes(b"{}\n")
+        self.archive = self.f.root / "caller-native.tar.gz"
+        self.archive.write_bytes(b"independent archive fixture; native policy gate mocked")
         for index, target in enumerate(SDK_FACADE_TARGETS):
             request = self.f.root / (target + "-request.json")
             request.write_bytes(canonical_json_bytes({**self.r.value, "target": target,
@@ -36,6 +38,8 @@ class FacadeMetadataInputsTest(unittest.TestCase):
                 "packageReceipt": str(self.f.receipts["package"])}))
             self.records[target] = {"validationReceipt": self.f.receipts[target], "facadeRequest": request,
                                     "artifactId": index + 1, "artifactSha256": "sha256:" + f"{index + 1:064x}"}
+            if target not in inputs._NON_NATIVE_TARGETS:
+                self.records[target]["nativeCompilerArchive"] = self.archive
         self.active, self.events = set(), []
         self.exit_failure = None
         self.exit_callback = None
@@ -48,6 +52,10 @@ class FacadeMetadataInputsTest(unittest.TestCase):
         target = load_canonical_json_bytes(receipt_path.read_bytes())["target"]
         self.assertEqual(self.plan, plan)
         record = self.records[target]
+        if "nativeCompilerArchive" in record:
+            self.assertEqual(Path(record["nativeCompilerArchive"]), kwargs["native_compiler_archive"])
+        else:
+            self.assertNotIn("native_compiler_archive", kwargs)
         if "captureRoot" in record:
             self.assertEqual(record["captureRoot"], kwargs["capture_root"])
             self.assertFalse({"artifact_id", "artifact_sha256", "trusted_workflow_sha", "token"} & set(kwargs))
@@ -106,8 +114,35 @@ class FacadeMetadataInputsTest(unittest.TestCase):
             (capture / "original").mkdir(parents=True)
             (capture / "original/gradle.log").write_bytes(b"")
             (capture / "transport.zip").write_bytes(b"caller-authenticated capture fixture; reader mocked")
-            self.records[target] = {key: self.records[target][key] for key in ("validationReceipt", "facadeRequest")}
+            self.records[target] = {key: value for key, value in self.records[target].items()
+                                    if key in {"validationReceipt", "facadeRequest", "nativeCompilerArchive"}}
             self.records[target]["captureRoot"] = capture
+
+    def test_native_archive_is_required_caller_policy_and_held_through_all_exits(self):
+        for target, action in (("ios-arm64", "missing"), ("jvm", "extra")):
+            records = deepcopy(self.records)
+            if action == "missing":
+                del records[target]["nativeCompilerArchive"]
+            else:
+                records[target]["nativeCompilerArchive"] = self.archive
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                with self.call(validations=records):
+                    self.fail("invalid archive policy yielded")
+        self.reader.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "changed"):
+            with self.call() as value:
+                self.assertNotIn("nativeCompilerArchive", value["expectedContent"])
+                self.assertNotIn(str(self.archive), value["request"].read_text())
+                self.archive.write_bytes(b"mutated independent archive")
+
+    def test_native_archive_mutation_after_original_readers_exit_is_rejected(self):
+        def mutate(target):
+            if not self.active:
+                self.archive.write_bytes(b"late archive mutation")
+        self.exit_callback = mutate
+        with self.assertRaisesRegex(ValueError, "changed"):
+            with self.call():
+                pass
 
     def test_mixed_acquisition_modes_preserve_all_eleven_gates_and_original_producers(self):
         targets = SDK_FACADE_TARGETS[::2]

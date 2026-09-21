@@ -277,6 +277,12 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
         self.assertEqual(self.contract_evidence, self.reader_arguments["binary_contract_evidence"])
         self.assertEqual(regular_file_inventory(self.original_capture),
                          regular_file_inventory(result["originals"] / "validation"))
+        selection = self.destination / "selection"
+        self.assertEqual(self.plan.read_bytes(), (selection / "impact-plan.json").read_bytes())
+        self.assertEqual(self.metadata_plan,
+                         load_canonical_json_bytes((selection / "phase-plan.json").read_bytes()))
+        self.assertEqual(self.current,
+                         load_canonical_json_bytes((selection / "producer.json").read_bytes()))
         request = load_canonical_json_bytes((self.destination / "metadata-request.json").read_bytes())
         self.assertEqual((self.validation_content["releaseAarSha256"],
                           self.validation_content["bundledRuntimeSha256"]),
@@ -407,6 +413,17 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
         def mutate(plan, **kwargs):
             result = original_execute(plan, **kwargs)
             plan["buildKey"] = "sha256:" + "9" * 64
+            return result
+        with patch.object(self, "execute_metadata", side_effect=mutate), \
+                self.assertRaisesRegex(ValueError, "changed"):
+            self.call()
+        self.assertNotIn("finalize", self.events)
+
+    def test_retained_original_selection_mutation_rejects_before_finalization(self):
+        original_execute = self.execute_metadata
+        def mutate(plan, **kwargs):
+            result = original_execute(plan, **kwargs)
+            (self.destination / "selection/impact-plan.json").write_bytes(b"changed plan")
             return result
         with patch.object(self, "execute_metadata", side_effect=mutate), \
                 self.assertRaisesRegex(ValueError, "changed"):

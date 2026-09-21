@@ -67,6 +67,16 @@ def capture_sdk_android_validation_upload(
         trusted_workflow_sha=trusted_workflow_sha, repository_root=repository_root, environ=environ, token=token)
 
 
+def capture_sdk_android_metadata_upload(
+    plan_path, destination, *, metadata_receipt_path, artifact_id, artifact_sha256,
+    trusted_workflow_sha, repository_root=None, environ=None, token,
+):
+    """Preserve exact Android metadata originals; full replay remains mandatory."""
+    return _capture_sdk_upload(plan_path, destination, family="android-metadata",
+        receipt_path=metadata_receipt_path, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
+        trusted_workflow_sha=trusted_workflow_sha, repository_root=repository_root, environ=environ, token=token)
+
+
 def capture_sdk_maven_upload(
     plan_path, destination, *, receipt_path, artifact_id, artifact_sha256,
     trusted_workflow_sha, repository_root=None, environ=None, token,
@@ -86,6 +96,8 @@ def _capture_route(receipt, family=None):
         selected, runner, directories = "facade-metadata", "ubuntu-24.04", ("shard", "worker", "selection", "originals", "inputs")
     elif identity == ("sdk", "sdk-android", "validation", "android"):
         selected, runner, directories = "android-validation", "ubuntu-24.04", ("shard", "inputs", "originals", "stage")
+    elif identity == ("sdk", "sdk-android", "metadata", "android"):
+        selected, runner, directories = "android-metadata", "ubuntu-24.04", ("shard", "worker", "selection", "originals", "inputs")
     elif identity in {("sdk", name, step, host) for name, host in
             (("sdk-core", "common"), ("sdk-android", "android")) for step in ("binary", "package")}:
         selected = "maven"

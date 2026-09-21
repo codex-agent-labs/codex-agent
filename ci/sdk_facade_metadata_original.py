@@ -32,7 +32,7 @@ from products.sdk_validation_inputs import _request_inventory
 from products.selection import phase_git_inventory
 from products.signing_isolation import require_no_signing_secret
 from sdk_facade_capture import capture_sdk_facade_metadata_upload
-from sdk_facade_metadata_inputs import _records, _view, verified_facade_metadata_inputs
+from sdk_facade_metadata_inputs import _records, _view, _native_archives, verified_facade_metadata_inputs
 
 
 _INSTANCE = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
@@ -159,6 +159,7 @@ def verified_original_sdk_facade_metadata(plan, metadata_receipt_path, *, artifa
     if tuple(receipt[name] for name in ("product", "component", "phase", "target")) != ("sdk", "sdk-core", "metadata", "common"):
         raise ValueError("Core metadata recovery requires its exact selected receipt")
     records = _records(validations)
+    archives = _native_archives(records)
     files = {plan, receipt_path, Path(tooling_public_key), Path(java_executable)}
     trees = {Path(tooling_evidence)}
     compatibility = {}
@@ -186,6 +187,7 @@ def verified_original_sdk_facade_metadata(plan, metadata_receipt_path, *, artifa
     def unchanged():
         require_no_signing_secret(environ)
         if (policy() != before_policy or canonical_json_bytes(receipt) != raw or _read(receipt_path) != raw
+                or _native_archives(records) != archives
                 or any(_read(path) != value for path, value in before_files.items())
                 or any(_inventory(path, allow_empty=True) != value for path, value in before_trees.items())
                 or any(_request_inventory(path) != value for path, value in compatibility.items())
@@ -195,7 +197,7 @@ def verified_original_sdk_facade_metadata(plan, metadata_receipt_path, *, artifa
             raise ValueError("Original Core metadata inputs, outputs or caller authority changed")
     with tempfile.TemporaryDirectory(prefix="original-core-metadata-") as temporary:
         private = Path(temporary).resolve()
-        _require_capability_output_separate(private, [root, *files, *trees, *compatibility])
+        _require_capability_output_separate(private, [root, *files, *trees, *compatibility, *archives])
         selected = private / "selected-receipt.json"
         selected.write_bytes(raw)
         try:

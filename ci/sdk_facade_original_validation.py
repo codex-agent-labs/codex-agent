@@ -27,7 +27,9 @@ from products.sdk_facade_inputs import _request, _sources
 from products.sdk_facade_source import capture_facade_validation_sources
 from products.sdk_facade_execution_observation import verify_facade_execution_observation
 from products.sdk_facade_validation import _inventory, _original_path
-from products.sdk_facade_validation_admission import _context, verify_sdk_facade_validation_original_content
+from products.sdk_facade_validation_admission import (
+    _context, _native_archive_path, _native_archive_digest, verify_sdk_facade_validation_original_content,
+)
 from products.sdk_package import _require_capability_output_separate
 from products.sdk_validation_inputs import _request_inventory
 from products.signing_isolation import require_no_signing_secret
@@ -113,13 +115,15 @@ def verified_original_sdk_facade_validation(
     plan, validation_receipt_path, *, artifact_id, artifact_sha256, trusted_workflow_sha,
     facade_request, repository_root, environ, token, tooling_evidence, tooling_public_key,
     java_executable, policy_revision, required_trust_domain,
-    tooling_keyring=None, tooling_keys_directory=None,
+    tooling_keyring=None, tooling_keys_directory=None, native_compiler_archive=None,
 ):
     """Hold the selected observed upload and all original inputs through use.
 
     The current plan authorizes capture; the retained original impact plan is
     independently validated at its receipt commit. Caller facade_request supplies
     authenticated current replay paths/policy, never retained original paths.
+    native_compiler_archive is likewise independent caller policy for native
+    targets; neither the upload nor the replay machine's cache may select it.
     """
     with _verified_sdk_facade_validation(plan, validation_receipt_path, capture_root=None,
             artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
@@ -127,7 +131,7 @@ def verified_original_sdk_facade_validation(
             tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
             java_executable=java_executable, policy_revision=policy_revision,
             required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
-            tooling_keys_directory=tooling_keys_directory) as result:
+            tooling_keys_directory=tooling_keys_directory, native_compiler_archive=native_compiler_archive) as result:
         yield result
 
 
@@ -135,7 +139,7 @@ def verified_original_sdk_facade_validation(
 def verified_retained_sdk_facade_validation(
     plan, validation_receipt_path, *, capture_root, facade_request, repository_root, environ,
     tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
-    tooling_keyring=None, tooling_keys_directory=None,
+    tooling_keyring=None, tooling_keys_directory=None, native_compiler_archive=None,
 ):
     """Replay a complete caller-authenticated retained capture without network.
 
@@ -143,13 +147,14 @@ def verified_retained_sdk_facade_validation(
     transport observations are consistency records, not fresh official proof.
     Current caller facade_request/tooling policy remains mandatory and is never
     recovered from the capture. All live-reader semantic/source gates are shared.
+    Native archive policy is supplied separately, never from retained paths.
     """
     with _verified_sdk_facade_validation(plan, validation_receipt_path, capture_root=Path(capture_root),
             facade_request=facade_request, repository_root=repository_root, environ=environ,
             tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
             java_executable=java_executable, policy_revision=policy_revision,
             required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
-            tooling_keys_directory=tooling_keys_directory) as result:
+            tooling_keys_directory=tooling_keys_directory, native_compiler_archive=native_compiler_archive) as result:
         yield result
 
 
@@ -158,7 +163,7 @@ def _verified_sdk_facade_validation(
     plan, validation_receipt_path, *, capture_root, facade_request, repository_root, environ,
     tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
     tooling_keyring, tooling_keys_directory, artifact_id=None, artifact_sha256=None,
-    trusted_workflow_sha=None, token=None,
+    trusted_workflow_sha=None, token=None, native_compiler_archive=None,
 ):
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
@@ -168,6 +173,8 @@ def _verified_sdk_facade_validation(
     if ((receipt["product"], receipt["component"], receipt["phase"]) != ("sdk", "sdk-core", "validation")
             or receipt["target"] not in SDK_FACADE_TARGETS):
         raise ValueError("Original Core validation requires its exact selected receipt")
+    archive = _native_archive_path(receipt["target"], native_compiler_archive)
+    archive_digest = _native_archive_digest(archive) if archive is not None else None
     value, request_bytes = _request(request_path)
     if (value["target"] != receipt["target"] or value["sdkVersion"] != receipt["productVersion"]
             or Path(value["repository"]) != root):
@@ -196,6 +203,7 @@ def _verified_sdk_facade_validation(
     def unchanged():
         require_no_signing_secret(environ)
         if (_read(receipt_path) != raw or canonical_json_bytes(receipt) != raw or _read(request_path) != request_bytes
+                or (archive is not None and _native_archive_digest(archive) != archive_digest)
                 or any(_inventory(path, allow_empty=True) != before_trees[name] for name, path in trees.items())
                 or any(read_regular_file_bytes(path, max_bytes=128 * 1024 * 1024,
                     reject_symlink_parents=True) != before_files[name] for name, path in files.items())
@@ -208,6 +216,8 @@ def _verified_sdk_facade_validation(
     with tempfile.TemporaryDirectory(prefix="original-core-validation-") as temporary:
         private = Path(temporary).resolve()
         _require_capability_output_separate(private, [root, *trees.values(), *files.values(), *compatibility])
+        if archive is not None:
+            _require_capability_output_separate(private, [archive])
         selected = private / "selected-receipt.json"
         selected.write_bytes(raw)
         try:
@@ -285,6 +295,7 @@ def _verified_sdk_facade_validation(
                 repository=root, validation_stage=stage, validation_receipt=selected,
                 facade_request=request_path, prepared_inputs=work / "inputs", execution_directory=work / "execution",
                 consumer_inputs=work / "consumer-inputs", compiler_inputs=work / "compiler-inputs.json", original_context=context,
+                native_compiler_archive=archive,
                 tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
                 java_executable=java_executable, policy_revision=policy_revision,
                 required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,

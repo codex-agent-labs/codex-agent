@@ -4,6 +4,7 @@ These fixtures provide no genuine hosted, signing or native-execution evidence.
 """
 
 from copy import deepcopy
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -145,6 +146,15 @@ class FacadeMetadataOriginalTest(unittest.TestCase):
         self.plan.return_value["remoteBuildAuthorized"] = False
         with self.assertRaisesRegex(ValueError, "not authorized"), self.call():
             pass
+
+    def test_original_metadata_holds_independent_archives_outside_retained_payload(self):
+        archive = self.f.f.archive
+        with self.assertRaisesRegex(ValueError, "changed"):
+            with self.call() as value:
+                self.assertEqual(archive, Path(
+                    self.held.call_args.kwargs["validations"]["ios-arm64"]["nativeCompilerArchive"]))
+                self.assertNotIn(str(archive), (value["stage"] / original.OUTPUT_PATH).read_text())
+                archive.write_bytes(b"caller archive substituted during metadata use")
 
     def test_real_planner_binds_each_selected_validation_output(self):
         original._replan(self.root, self.receipt, self.validation_receipts)

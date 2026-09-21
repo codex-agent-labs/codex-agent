@@ -4,6 +4,7 @@ Fixture checksums stand in for caller-reviewed immutable Git policy; they are no
 claimed as genuine Kotlin distributions, hosted observations or tool authority.
 """
 
+from copy import deepcopy
 import hashlib
 import io
 import json
@@ -17,6 +18,34 @@ from ci.products import sdk_facade_native_policy as policy
 
 
 class FacadeNativePolicyTest(unittest.TestCase):
+    def test_v2_fingerprint_is_bound_to_pinned_archive_without_admitting_dependencies(self):
+        self.value["schemaVersion"] = 2
+        self.value["nativeSelection"] = {
+            "dataDirectory": "/original/konan", "dependenciesDirectory": "/original/konan/dependencies",
+            "host": "macos_arm64", "target": "macos_arm64",
+            "fingerprint": self.inventory({"konan/compiler.fingerprint": b"not yet captured by Core"}),
+            "dependencies": {"opaque": "full original gate owns dependency proof"},
+        }
+        self.save()
+        self.assertIsNone(self.call())
+        original = deepcopy(self.value)
+        for change in ("digest", "path", "host", "target", "missing", "extra"):
+            self.value = deepcopy(original)
+            selected = self.value["nativeSelection"]
+            if change == "digest":
+                selected["fingerprint"] = self.inventory({"konan/compiler.fingerprint": b"wrong fingerprint"})
+            elif change == "path":
+                selected["fingerprint"] = self.inventory({"other/compiler.fingerprint": b"not yet captured by Core"})
+            elif change in {"host", "target"}:
+                selected[change] = "linux_x64"
+            elif change == "missing":
+                del selected["fingerprint"]
+            else:
+                selected["unexpected"] = True
+            self.save()
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.call()
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

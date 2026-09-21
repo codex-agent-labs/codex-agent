@@ -18,8 +18,11 @@ from products.inventory import (
 from products.receipt import validate_producer, write_phase_receipt
 from products.registry import PhaseInstanceId, SDK_FACADE_TARGETS
 from products.sdk_facade_inputs import _request, _sources
+from products.sdk_facade_native_policy import _TARGETS as _PINNED_NATIVE_TARGETS
 from products.sdk_facade_validation import _inventory
-from products.sdk_facade_validation_admission import _context, verify_sdk_facade_validation_original_content
+from products.sdk_facade_validation_admission import (
+    _context, _native_archive_path, _native_archive_digest, verify_sdk_facade_validation_original_content,
+)
 from products.sdk_inputs import REQUEST_NAME, stage_sdk_inputs
 from products.sdk_package import _require_capability_output_separate
 from products.sdk_validation_inputs import _request_inventory
@@ -80,7 +83,7 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
             facade_request, android_sdk_directory, tooling_evidence, tooling_public_key,
             java_executable, policy_revision, required_trust_domain, repository_root,
             environ, consumer_java_executable=None, tooling_keyring=None,
-            tooling_keys_directory=None, sdk_apple_validation_policy=None):
+            tooling_keys_directory=None, sdk_apple_validation_policy=None, native_compiler_archive=None):
     """Use existing election and full gates; retain external originals before receipt.
 
     Explicit caller paths/policy are not a downloaded request. Android SDK and
@@ -96,6 +99,12 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
     if destination.exists() or destination.is_symlink() or destination.resolve(strict=False) != destination:
         raise ValueError("Core validation destination must be fresh and normalized")
     request = Path(facade_request).absolute()
+    archive = _native_archive_path(target, native_compiler_archive)
+    if archive is not None and target not in _PINNED_NATIVE_TARGETS:
+        raise ValueError("Core native target has no supported pinned compiler archive policy")
+    archive_digest = _native_archive_digest(archive) if archive is not None else None
+    if archive is not None:
+        _require_capability_output_separate(destination, [archive])
     value, request_bytes = _request(request)
     if value["target"] != target or Path(value["repository"]) != root:
         raise ValueError("Core request differs from its selected repository or target")
@@ -119,6 +128,7 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
     def unchanged():
         require_no_signing_secret(environ)
         if (_read(request) != request_bytes
+                or (archive is not None and _native_archive_digest(archive) != archive_digest)
                 or any(_inventory(path, allow_empty=True) != before_trees[name] for name, path in trees.items())
                 or any(_read(path) != before_files[name] for name, path in files.items())
                 or _request_inventory(Path(value["compatibilityRequest"])) != compatibility_before
@@ -138,6 +148,10 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
             expected_build_key=expected_build_key, repository_root=root, environ=environ,
             sdk_validation_tooling=tooling, sdk_apple_validation_policy=sdk_apple_validation_policy)
         producer = validate_producer(load_canonical_json_bytes(_read(inputs / "producer.json")), "Core producer")
+        if archive is not None:
+            for output in (root / f"build/product-stage/sdk/sdk-core/validation/{target}",
+                           root / f"build/imported-sdk-facade-validation/{producer['tree']}/{target}"):
+                _require_capability_output_separate(output, [archive])
         ready_bytes, producer_bytes = canonical_json_bytes(ready), canonical_json_bytes(producer)
         if _read(inputs / "phase-plan.json") != ready_bytes:
             raise ValueError("Core retained election differs from its selected plan")
@@ -193,6 +207,7 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
                 facade_request=invocation, prepared_inputs=result["inputs"], execution_directory=result["execution"],
                 consumer_inputs=result["consumerInputs"], compiler_inputs=result["work"] / "compiler-inputs.json",
                 original_context=original_context,
+                native_compiler_archive=archive,
                 tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
                 java_executable=java_executable, policy_revision=policy_revision,
                 required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
@@ -225,7 +240,8 @@ def main(argv=None):
     for name in ("expected-build-key", "policy-revision", "android-sdk-directory"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--required-trust-domain", choices=("development", "release"), required=True)
-    for name in ("consumer-java-executable", "tooling-keyring", "tooling-keys-directory", "sdk-apple-validation-policy"):
+    for name in ("consumer-java-executable", "tooling-keyring", "tooling-keys-directory", "sdk-apple-validation-policy",
+                 "native-compiler-archive"):
         parser.add_argument("--" + name, type=Path)
     arguments = vars(parser.parse_args(argv))
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):

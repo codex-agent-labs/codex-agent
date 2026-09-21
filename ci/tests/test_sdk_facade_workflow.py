@@ -36,6 +36,10 @@ class FacadeWorkflowTest(unittest.TestCase):
             self.assertEqual("", execute.call_args.kwargs["android_sdk_directory"])
             self.assertEqual(self.f.request, execute.call_args.kwargs["facade_request"])
             self.assertNotIn("sdk_apple_validation_policy", execute.call_args.kwargs)
+            archive = self.root / "explicit-native.tar.gz"
+            self.assertEqual(0, workflow.main([*argv, "--target", "ios-arm64",
+                                             "--native-compiler-archive", str(archive)]))
+            self.assertEqual(archive, execute.call_args.kwargs["native_compiler_archive"])
             for invalid in ([*argv, "--tooling-keyring", "unpaired"],
                             [*argv, "--target", "browser"],
                             ["--pl" if arg == "--plan" else arg for arg in argv]):
@@ -145,6 +149,45 @@ class FacadeWorkflowTest(unittest.TestCase):
         self.assertEqual(original_request, self.f.request.read_bytes())
         self.assertEqual({"inputs", "originals", "worker", "selection", "context", "retained-execution", "shard"},
                          {path.name for path in self.destination.iterdir()})
+
+    def test_archive_role_guard_precedes_election_and_does_not_infer_cache(self):
+        archive = self.root / "caller.tar.gz"
+        archive.write_bytes(b"fixture")
+        with self.assertRaisesRegex(ValueError, "Nonnative"):
+            self.call(native_compiler_archive=archive)
+        with self.assertRaisesRegex(ValueError, "requires an independent"):
+            self.call(target="ios-arm64")
+        self.materialize.assert_not_called()
+        self.finalize.assert_not_called()
+
+    def test_unsupported_native_policy_rejects_before_materialization_or_producer(self):
+        archive = self.root / "independent-native.tar.gz"
+        archive.write_bytes(b"caller archive cannot establish unsupported host policy")
+        for target in ("macos-x64", "linux-arm64", "linux-x64", "windows-x64"):
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, "no supported pinned"):
+                self.call(target=target, native_compiler_archive=archive)
+        self.materialize.assert_not_called()
+        self.finalize.assert_not_called()
+        self.full.assert_not_called()
+        self.worker.assert_not_called()
+
+    def test_external_archive_forwarding_and_late_mutation_never_finalize(self):
+        archive = self.root / "caller-native.tar.gz"
+        with archive.open("wb") as stream:
+            stream.truncate(17 * 1024 * 1024)
+        def mutate(**kwargs):
+            self.assertEqual(archive, kwargs["native_compiler_archive"])
+            result = self.replay(**kwargs)
+            archive.write_bytes(b"changed after replay")
+            return result
+        self.full.side_effect = mutate
+        # Only the target-role boundary is mocked to reuse the real JVM stage
+        # fixture. This checks controller forwarding/lifetime, not native policy.
+        with patch.object(workflow, "_native_archive_path", return_value=archive), \
+                patch.object(workflow, "_PINNED_NATIVE_TARGETS", {"jvm"}), \
+                self.assertRaisesRegex(ValueError, "changed"):
+            self.call(native_compiler_archive=archive)
+        self.finalize.assert_not_called()
 
     def test_election_failure_cannot_run_worker_or_finalize(self):
         self.materialize.side_effect = ValueError("not elected")

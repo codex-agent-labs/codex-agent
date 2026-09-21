@@ -22,6 +22,7 @@ from products.receipt import validate_phase_receipt
 from products.registry import SDK_FACADE_CONTRACT_COMPONENTS, SDK_FACADE_TARGETS
 from products.sdk_facade_inputs import _request
 from products.sdk_facade_validation import _inventory
+from products.sdk_facade_validation_admission import _native_archive_path, _native_archive_digest, _NON_NATIVE_TARGETS
 from products.sdk_package import _require_capability_output_separate
 from products.sdk_platform_metadata import write_facade_metadata_content
 from products.signing_isolation import require_no_signing_secret
@@ -37,13 +38,17 @@ def _read(path):
 def _records(validations):
     result = {}
     for target, value in require_exact_keys(validations, SDK_FACADE_TARGETS, "Core metadata original validations").items():
-        retained = type(value) is dict and set(value) == {"validationReceipt", "captureRoot", "facadeRequest"}
-        fields = {"validationReceipt", "facadeRequest"}
+        retained = type(value) is dict and "captureRoot" in value
+        fields = {"validationReceipt", "facadeRequest"} | (
+            {"nativeCompilerArchive"} if target not in _NON_NATIVE_TARGETS else set())
         record = require_exact_keys(value, fields | ({"captureRoot"} if retained else {"artifactId", "artifactSha256"}),
                                     "Core metadata original validation locator")
         result[target] = {} if retained else {
             "artifactId": require_integer(record["artifactId"], "Core validation artifact ID", 1),
             "artifactSha256": require_sha256(record["artifactSha256"], "Core validation artifact digest")}
+        archive = _native_archive_path(target, record.get("nativeCompilerArchive"))
+        if archive is not None:
+            result[target]["nativeCompilerArchive"] = str(archive)
         for field in ("validationReceipt", "facadeRequest", *(("captureRoot",) if retained else ())):
             path = Path(record[field])
             if not path.is_absolute() or path.resolve(strict=True) != path:
@@ -52,6 +57,12 @@ def _records(validations):
                 require_regular_directory(path, "Caller-authenticated Core capture")
             result[target][field] = str(path)
     return result
+
+
+def _native_archives(records):
+    """Stream each distinct caller archive once per held-boundary check."""
+    return {path: _native_archive_digest(path) for path in
+            {Path(record["nativeCompilerArchive"]) for record in records.values() if "nativeCompilerArchive" in record}}
 
 
 def _view(record):
@@ -71,11 +82,15 @@ def verified_facade_metadata_inputs(*, plan, validations, contract_digest, compo
     consume exactly the same original package receipt and SDK version.
     Each retained capture requires independently authenticated enclosing carrier
     bytes; stored transport records never replace that caller obligation.
+    Every native target record requires nativeCompilerArchive from independent
+    caller policy, in either acquisition mode. This path is not retained in the
+    metadata request/payload; unsupported host archive policies remain failures.
     """
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
     records = _records(validations)
     record_bytes = canonical_json_bytes(records)
+    archives = _native_archives(records)
     retained_sources = {Path(record["captureRoot"]): _inventory(Path(record["captureRoot"]), allow_empty=True)
                         for record in records.values() if "captureRoot" in record}
     require_sha256(contract_digest, "Core metadata expected Contract digest")
@@ -111,6 +126,7 @@ def verified_facade_metadata_inputs(*, plan, validations, contract_digest, compo
         require_no_signing_secret(environ)
         if (set(held) != set(held_before)
                 or canonical_json_bytes(_records(validations)) != record_bytes
+                or _native_archives(records) != archives
                 or canonical_json_bytes(component_digests) != component_bytes
                 or any(_read(path) != raw for path, raw in original_files.items())
                 or any(_inventory(path, allow_empty=True) != before for path, before in retained_sources.items())
@@ -122,7 +138,7 @@ def verified_facade_metadata_inputs(*, plan, validations, contract_digest, compo
 
     with tempfile.TemporaryDirectory(prefix="core-metadata-inputs-") as temporary:
         private = Path(temporary).resolve()
-        _require_capability_output_separate(private, [root, *original_files, *retained_sources,
+        _require_capability_output_separate(private, [root, *original_files, *retained_sources, *archives,
             *(Path(value["packageStage"]) for value in request_values.values())])
         try:
             with ExitStack() as stack:
@@ -133,6 +149,8 @@ def verified_facade_metadata_inputs(*, plan, validations, contract_digest, compo
                         java_executable=java_executable, policy_revision=policy_revision,
                         required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
                         tooling_keys_directory=tooling_keys_directory)
+                    if "nativeCompilerArchive" in record:
+                        arguments["native_compiler_archive"] = Path(record["nativeCompilerArchive"])
                     if "captureRoot" in record:
                         context = verified_retained_sdk_facade_validation(plan, Path(record["validationReceipt"]),
                             capture_root=Path(record["captureRoot"]), **arguments)

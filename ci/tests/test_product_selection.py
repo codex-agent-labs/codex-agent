@@ -163,6 +163,14 @@ class ProductSelectionTest(unittest.TestCase):
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((path,) if instance in expected else (), phase_inventory_paths([path], instance))
 
+    def test_android_original_metadata_replans_only_metadata_without_payload_bytes(self):
+        path = "ci/sdk_android_metadata_original.py"
+        result = classify_paths([path])
+        self.assertEqual({PhaseInstanceId("sdk", "sdk-android", "metadata", "android")}, identities(result))
+        self.assertEqual((), result.unknown_paths)
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((), phase_inventory_paths([path], instance))
+
     def test_platform_metadata_producers_own_only_their_metadata_phase(self) -> None:
         for path, component, target in (
             ("ci/products/sdk_android_metadata.py", "sdk-android", "android"),

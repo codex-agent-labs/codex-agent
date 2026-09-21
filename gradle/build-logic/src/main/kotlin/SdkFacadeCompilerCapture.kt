@@ -16,7 +16,7 @@ internal fun sdkFacadeCompilerCaptureScript(target: String, output: String): Str
     val task = sdkFacadeConsumerCompileTasks[target] ?: error("Unsupported facade compiler target")
     requireFacadeCompilerPath(output)
     fun literal(value: String) = JsonPrimitive(value).toString().replace("$", "\\$")
-    return """
+    val script = """
         // Selected task inputs, not a compiler invocation or reviewed tool-policy attestation.
         val codexCompilerTarget = ${literal(target)}
         val codexCompilerTask = ${literal(task)}
@@ -144,6 +144,101 @@ internal fun sdkFacadeCompilerCaptureScript(target: String, output: String): Str
             }
         })
     """.trimIndent() + "\n"
+    // Preserve schema-1 non-native emitted bytes. Native source now emits a
+    // distinct schema; historical native schema 1 is not complete new evidence.
+    return if (target in setOf("jvm", "android", "node-js", "node-wasm")) script
+        else sdkFacadeNativeCompilerScript(script)
+}
+
+private fun sdkFacadeNativeCompilerScript(script: String): String {
+    val helpers = """
+        fun codexNativeSelection(task: org.gradle.api.Task, home: java.io.File,
+                arguments: List<*>, classes: ClassLoader): Map<String, Any> {
+            check(arguments.none { value ->
+                val flag = value.toString().substringBefore('=')
+                flag in setOf("-Xoverride-konan-properties", "-Xkonan-properties", "-Xkonan-profile", "-Xoverride-konan-properties-file", "-Xllvm-variant")
+            }) { "Unsupported native compiler property or directory override" }
+            fun directory(file: java.io.File): java.io.File {
+                codexCompilerSafe(file)
+                check(file.isAbsolute && file.isDirectory && file.absoluteFile == file.canonicalFile) {
+                    "Native selection directory must be exact and nonsymbolic"
+                }
+                return file
+            }
+            val data = directory(java.io.File(codexCompilerProvider(codexCompilerGet(task, "getKonanDataDir")).toString()))
+            directory(home)
+            val target = codexCompilerGet(task, "getKonanTarget\${'$'}kotlin_gradle_plugin_common")
+            val targetName = codexCompilerGet(target, "getName").toString()
+            for ((flag, expected) in mapOf("-Xkonan-data-dir" to data.absolutePath, "-Xkonan-home" to home.absolutePath,
+                    "-kotlin-home" to home.absolutePath, "-target" to targetName)) {
+                val indexes = arguments.indices.filter { arguments[it].toString().substringBefore('=') == flag }
+                check(if (flag == "-target") indexes.size == 1 else indexes.size <= 1) {
+                    "Missing or duplicate native selection argument"
+                }
+                for (index in indexes) {
+                    val argument = arguments[index].toString()
+                    val selected = if ('=' in argument) argument.substringAfter('=') else arguments.getOrNull(index + 1)
+                    check(selected == expected) { "Native argument differs from task selection" }
+                }
+            }
+            val distributionClass = classes.loadClass("org.jetbrains.kotlin.konan.target.Distribution")
+            val distribution = distributionClass.constructors.single { it.parameterCount == 5 }
+                .newInstance(home.absolutePath, false, data.absolutePath, null, null)
+            val dependencies = directory(java.io.File(codexCompilerGet(distribution, "getDependenciesDir").toString()))
+            check(dependencies == data.resolve("dependencies")) { "Unexpected selected native dependency directory" }
+            val managerClass = classes.loadClass("org.jetbrains.kotlin.konan.target.PlatformManager")
+            val manager = managerClass.getConstructor(distributionClass).newInstance(distribution)
+            val loader = managerClass.methods.single { it.name == "loader" && it.parameterCount == 1 }.invoke(manager, target)
+            val hostPlatform = codexCompilerGet(manager, "getHostPlatform")
+            val host = codexCompilerGet(codexCompilerGet(hostPlatform, "getTarget"), "getName").toString()
+            fun selectedRoot(path: String): java.io.File {
+                val root = directory(java.io.File(path))
+                check(root.parentFile == dependencies && root.name.matches(Regex("[A-Za-z0-9_.-]+")) &&
+                    root.name !in setOf(".", "..")) { "Native dependency is outside the selected directory" }
+                return root
+            }
+            val names = codexCompilerGet(loader, "getDependencies") as List<*>
+            check(names.all { it is String && it.matches(Regex("[A-Za-z0-9_.-]+")) && it !in setOf(".", "..") }) {
+                "Unsafe selected native dependency name"
+            }
+            val absolute = loader.javaClass.methods.single { it.name == "absolute" && it.parameterCount == 1 }
+            val llvm = selectedRoot(codexCompilerGet(loader, "getAbsoluteLlvmHome").toString())
+            val libffi = selectedRoot(absolute.invoke(loader, codexCompilerGet(loader, "getLibffiDir")).toString())
+            val roots = (names.map { selectedRoot(dependencies.resolve(it.toString()).absolutePath) } + llvm + libffi)
+                .distinctBy { it.name }.sortedBy { it.name }
+            check(roots.isNotEmpty()) { "Missing selected native dependencies" }
+            val rows = roots.map { root ->
+                val regular = mutableListOf<java.io.File>()
+                val links = mutableListOf<Map<String, String>>()
+                java.nio.file.Files.walk(root.toPath()).use { entries ->
+                    entries.sorted().forEach { path ->
+                        check(path.toString().none(Char::isISOControl)) { "Unsafe native dependency path" }
+                        if (java.nio.file.Files.isSymbolicLink(path)) {
+                            val link = java.nio.file.Files.readSymbolicLink(path)
+                            check(!link.isAbsolute && link.toString().isNotEmpty() && link.toString().none(Char::isISOControl) &&
+                                path.parent.resolve(link).normalize().startsWith(root.toPath()) &&
+                                path.toRealPath().startsWith(root.toPath())) { "Unsafe native dependency symbolic link" }
+                            links.add(linkedMapOf("path" to path.toString(), "target" to link.toString()))
+                        } else if (!java.nio.file.Files.isDirectory(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                            check(java.nio.file.Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                                "Unsupported native dependency entry"
+                            }
+                            regular.add(path.toFile())
+                        }
+                    }
+                }
+                check(regular.isNotEmpty()) { "Empty selected native dependency" }
+                linkedMapOf<String, Any>("name" to root.name, "root" to root.absolutePath,
+                    "inventory" to codexCompilerInventory(regular), "symlinks" to links.sortedBy { it.getValue("path") })
+            }
+            return linkedMapOf("dataDirectory" to data.absolutePath, "dependenciesDirectory" to dependencies.absolutePath,
+                "host" to host, "target" to targetName,
+                "fingerprint" to codexCompilerInventory(listOf(home.resolve("konan/compiler.fingerprint"))),
+                "dependencies" to rows)
+        }
+    """.trimIndent() + "\n"
+    return script.replace("fun codexCompilerSnapshot(", helpers + "fun codexCompilerSnapshot(")
+        .replace("\"schemaVersion\" to 1,", "\"schemaVersion\" to 2, \"nativeSelection\" to codexNativeSelection(task, nativeHome!!, arguments, implementation.classLoader),")
 }
 
 private fun requireFacadeCompilerPath(value: String) {
@@ -168,6 +263,7 @@ internal fun verifySdkFacadeCompilerCapture(file: File, target: String, kotlinVe
     val before = file.readBytes()
     val value = file.readReleaseObject()
     val observedRows = mutableMapOf<String, JsonObject>()
+    val observedLinks = mutableSetOf<String>()
     fun text(obj: JsonObject, key: String): String {
         val primitive = obj[key] as? JsonPrimitive ?: error("Missing compiler capture field: $key")
         check(primitive.isString && primitive.content.isNotEmpty()) { "Malformed compiler capture field: $key" }
@@ -202,11 +298,13 @@ internal fun verifySdkFacadeCompilerCapture(file: File, target: String, kotlinVe
         val task = sdkFacadeConsumerCompileTasks[target] ?: error("Unsupported facade compiler target")
         val family = when (target) { "jvm", "android" -> "jvm"; "node-js", "node-wasm" -> "js"; else -> "native" }
         val type = when (family) { "native" -> "KotlinNativeCompile"; "js" -> "Kotlin2JsCompile"; else -> "KotlinCompile" }
-        check(value.keys == setOf("schemaVersion", "target", "task", "taskClass", "family", "kotlinVersion",
-            "agpVersion", "javaExecutable", "nativeHome", "arguments", "tools", "inputs", "outcome")) {
+        val native = family == "native"
+        check(value.keys == (setOf("schemaVersion", "target", "task", "taskClass", "family", "kotlinVersion",
+            "agpVersion", "javaExecutable", "nativeHome", "arguments", "tools", "inputs", "outcome") +
+            if (native) setOf("nativeSelection") else emptySet())) {
             "Unknown or missing compiler capture fields"
         }
-        check(value["schemaVersion"] == JsonPrimitive(1) && text(value, "target") == target && text(value, "task") == task &&
+        check(value["schemaVersion"] == JsonPrimitive(if (native) 2 else 1) && text(value, "target") == target && text(value, "task") == task &&
             text(value, "family") == family && text(value, "taskClass") == "org.jetbrains.kotlin.gradle.tasks.$type") {
             "Compiler capture target or task family differs"
         }
@@ -242,10 +340,99 @@ internal fun verifySdkFacadeCompilerCapture(file: File, target: String, kotlinVe
                 "$home${separator}konan${separator}konan.properties" in nativePaths && compiler.all { it in nativePaths }) {
                 "Native compiler inventory is outside selected distribution"
             }
+            val selection = value["nativeSelection"] as? JsonObject ?: error("Native schema 1 lacks selected dependency evidence")
+            check(selection.keys == setOf("dataDirectory", "dependenciesDirectory", "host", "target", "fingerprint", "dependencies")) {
+                "Unknown native selection fields"
+            }
+            val data = text(selection, "dataDirectory").also(::requireFacadeCompilerPath)
+            val dependenciesRoot = text(selection, "dependenciesDirectory").also(::requireFacadeCompilerPath)
+            check(dependenciesRoot == data + separator + "dependencies") { "Native dependency directory differs from selected data directory" }
+            val argumentValues = arguments.map { (it as JsonPrimitive).content }
+            check(argumentValues.none { it.substringBefore('=') in setOf("-Xoverride-konan-properties",
+                "-Xkonan-properties", "-Xkonan-profile", "-Xoverride-konan-properties-file", "-Xllvm-variant") }) { "Unsupported native property override" }
+            for ((flag, expected) in mapOf("-Xkonan-data-dir" to data, "-Xkonan-home" to home,
+                    "-kotlin-home" to home, "-target" to text(selection, "target"))) {
+                val indexes = argumentValues.indices.filter { argumentValues[it].substringBefore('=') == flag }
+                check(if (flag == "-target") indexes.size == 1 else indexes.size <= 1) {
+                    "Missing or duplicate native selection argument"
+                }
+                indexes.forEach { index ->
+                    val argument = argumentValues[index]
+                    val selected = if ('=' in argument) argument.substringAfter('=') else argumentValues.getOrNull(index + 1)
+                    check(selected == expected) { "Native argument differs from selection" }
+                }
+            }
+            val konanTarget = when (target) {
+                "ios-simulator-arm64" -> "ios_simulator_arm64"
+                "windows-x64" -> "mingw_x64"
+                else -> target.replace('-', '_')
+            }
+            check(text(selection, "target") == konanTarget && text(selection, "host") in
+                setOf("macos_arm64", "macos_x64", "linux_x64", "linux_arm64", "mingw_x64")) { "Invalid native host or target selection" }
+            check(inventory(selection["fingerprint"]) == listOf("$home${separator}konan${separator}compiler.fingerprint")) {
+                "Native compiler fingerprint differs from selected distribution"
+            }
+            val records = selection["dependencies"] as? JsonArray ?: error("Missing native dependencies")
+            check(records.isNotEmpty()) { "Empty selected native dependencies" }
+            val names = records.map { record ->
+                val dependency = record as? JsonObject ?: error("Invalid native dependency")
+                check(dependency.keys == setOf("name", "root", "inventory", "symlinks")) { "Unknown native dependency fields" }
+                val name = text(dependency, "name")
+                check(name.matches(Regex("[A-Za-z0-9_.-]+")) && name !in setOf(".", "..")) { "Unsafe native dependency name" }
+                val root = text(dependency, "root").also(::requireFacadeCompilerPath)
+                check(root == dependenciesRoot + separator + name) { "Native dependency root differs from selection" }
+                val files = inventory(dependency["inventory"])
+                check(files.all { it.startsWith(root + separator) }) { "Native dependency inventory escapes its root" }
+                val links = dependency["symlinks"] as? JsonArray ?: error("Missing native symbolic link inventory")
+                val linkMap = linkedMapOf<String, String>()
+                links.forEach { item ->
+                    val link = item as? JsonObject ?: error("Invalid native symbolic link")
+                    check(link.keys == setOf("path", "target")) { "Unknown native symbolic link fields" }
+                    val path = text(link, "path").also(::requireFacadeCompilerPath)
+                    check(path.startsWith(root + separator) && path !in files && path !in observedRows && observedLinks.add(path) &&
+                        linkMap.put(path, text(link, "target")) == null) { "Invalid native symbolic link path" }
+                }
+                check(linkMap.keys.toList() == linkMap.keys.sorted()) { "Native symbolic links must be sorted" }
+                check(files.none { file -> linkMap.keys.any { file.startsWith(it + separator) } } &&
+                    linkMap.keys.none { link -> linkMap.keys.any { it != link && link.startsWith(it + separator) } }) {
+                    "Native inventory traverses a symbolic link"
+                }
+                fun resolveLink(path: String, visited: Set<String>): String {
+                    check(path !in visited) { "Cyclic native symbolic link" }
+                    val targetPath = linkMap.getValue(path)
+                    check(targetPath.none(Char::isISOControl) && !targetPath.startsWith('/') && !targetPath.startsWith('\\') &&
+                        !Regex("^[A-Za-z]:").containsMatchIn(targetPath) &&
+                        (if (separator == "\\") '/' !in targetPath else '\\' !in targetPath)) { "Unsafe native symbolic link target" }
+                    var resolved = path.substringBeforeLast(separator)
+                    targetPath.split(separator).forEach { part ->
+                        when (part) {
+                            "", "." -> Unit
+                            ".." -> {
+                                check(resolved != root) { "Native symbolic link escapes dependency" }
+                                resolved = resolved.substringBeforeLast(separator)
+                            }
+                            else -> {
+                                resolved += separator + part
+                                if (resolved in linkMap) resolved = resolveLink(resolved, visited + path)
+                            }
+                        }
+                    }
+                    check(resolved == root || resolved in files || files.any { it.startsWith(resolved + separator) }) {
+                        "Native symbolic link target is not inventoried"
+                    }
+                    return resolved
+                }
+                linkMap.keys.forEach { resolveLink(it, emptySet()) }
+                name
+            }
+            check(names == names.distinct().sorted()) { "Native dependencies must be sorted and unique" }
         } else check(value["nativeHome"] == JsonNull && tools["native"] == JsonNull) { "Unexpected native compiler family" }
         if (target == "android") { check(expectedAgpVersion.isNotBlank()); inventory(tools["android"]) }
         else check(tools["android"] == JsonNull) { "Unexpected Android compiler family" }
         inventory(value["inputs"])
+        check(observedRows.keys.none { file -> observedLinks.any { link ->
+            file == link || file.startsWith(link + if ('\\' in link) "\\" else "/")
+        } }) { "Compiler input inventory traverses a native symbolic link" }
         val outcome = value["outcome"] as? JsonObject ?: error("Compiler task did not complete")
         check(outcome.keys == setOf("task", "didWork", "upToDate", "skipped", "skipMessage", "failure") &&
             text(outcome, "task") == task && outcome["failure"] == JsonNull &&

@@ -557,7 +557,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path in {"ci/sdk_facade_metadata_inputs.py", "ci/sdk_facade_metadata_workflow.py",
                 "ci/sdk_facade_metadata_original.py"}:
         return _from_phase("sdk", "sdk-core", "metadata")
-    if path == "ci/sdk_android_metadata_workflow.py":
+    if path in {"ci/sdk_android_metadata_workflow.py", "ci/sdk_android_metadata_original.py"}:
         return _from_phase("sdk", "sdk-android", "metadata")
     if path in {"ci/sdk_maven_binary_workflow.py", "ci/sdk_maven_original.py", "ci/sdk_facade_capture.py", "ci/sdk_maven_evidence.py"}:
         return _from_phase("sdk", "sdk-core", "binary") | _from_phase("sdk", "sdk-android", "binary")
@@ -703,7 +703,7 @@ def _is_control_only(path: str) -> bool:
     if path in {"ci/sdk_facade_metadata_inputs.py", "ci/sdk_facade_metadata_workflow.py", "ci/sdk_maven_package_workflow.py",
                 "ci/sdk_maven_original.py", "ci/sdk_android_original_validation.py", "ci/sdk_facade_capture.py",
                 "ci/sdk_facade_metadata_original.py", "ci/sdk_android_metadata_workflow.py", "ci/sdk_maven_binary_workflow.py",
-                "ci/sdk_android_validation_workflow.py"}:
+                "ci/sdk_android_validation_workflow.py", "ci/sdk_android_metadata_original.py"}:
         return True  # Authenticated execution/receipt composition, not product content.
     if path == "ci/sdk_maven_phase.py":
         return True  # Fixed execution controller; tracked producers own product bytes.

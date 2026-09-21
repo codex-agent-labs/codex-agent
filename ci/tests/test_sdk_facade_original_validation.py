@@ -118,12 +118,12 @@ class OriginalFacadeValidationTest(unittest.TestCase):
         self.assertEqual("e" * 40, kwargs["policy_revision"])
         return deepcopy(self.f.receipt), self.f.receipt_bytes
 
-    def context_manager(self):
+    def context_manager(self, **changes):
         return original.verified_original_sdk_facade_validation(self.f.plan_path, self.f.receipt_path,
             artifact_id=701, artifact_sha256=self.f.artifact["digest"], trusted_workflow_sha=self.f.pin,
             facade_request=self.i.request, repository_root=self.root, environ=self.environment, token="synthetic-token",
             tooling_evidence=self.tooling, tooling_public_key=self.key, java_executable=self.java,
-            policy_revision="e" * 40, required_trust_domain="development")
+            policy_revision="e" * 40, required_trust_domain="development", **changes)
 
     def prepare_retained(self):
         # Produce a genuine bounded ZIP/shard capture through the fixture's
@@ -141,11 +141,34 @@ class OriginalFacadeValidationTest(unittest.TestCase):
         self.assertNotEqual(self.retained, self.captured)
         return self.replay(**kwargs)
 
-    def retained_context(self):
+    def retained_context(self, **changes):
         return original.verified_retained_sdk_facade_validation(self.f.plan_path, self.f.receipt_path,
             capture_root=self.retained, facade_request=self.i.request, repository_root=self.root,
             environ=self.environment, tooling_evidence=self.tooling, tooling_public_key=self.key,
-            java_executable=self.java, policy_revision="e" * 40, required_trust_domain="development")
+            java_executable=self.java, policy_revision="e" * 40, required_trust_domain="development", **changes)
+
+    def test_native_archive_live_and_retained_forwarding_and_lifetime(self):
+        self.setup_upload("ios-arm64")
+        archive = self.root / "caller-native.tar.gz"
+        archive.write_bytes(b"independent native archive fixture; semantic gate mocked")
+        with self.assertRaisesRegex(ValueError, "requires an independent"), self.context_manager():
+            pass
+        self.capture.assert_not_called()
+        with self.context_manager(native_compiler_archive=archive):
+            self.assertEqual(archive, self.full_gate.call_args.kwargs["native_compiler_archive"])
+        self.prepare_retained()
+        with self.retained_context(native_compiler_archive=archive):
+            self.assertEqual(archive, self.full_gate.call_args.kwargs["native_compiler_archive"])
+        with self.assertRaisesRegex(ValueError, "changed during recovery"):
+            with self.retained_context(native_compiler_archive=archive):
+                archive.write_bytes(b"changed caller archive")
+
+    def test_nonnative_archive_cannot_become_transported_policy(self):
+        archive = self.root / "native.tar.gz"
+        archive.write_bytes(b"fixture")
+        with self.assertRaisesRegex(ValueError, "Nonnative"), self.context_manager(native_compiler_archive=archive):
+            pass
+        self.capture.assert_not_called()
 
     def test_retained_capture_reuses_full_gate_without_network_or_rewriting_originals(self):
         self.prepare_retained()
@@ -244,12 +267,14 @@ class OriginalFacadeValidationTest(unittest.TestCase):
 
     def test_windows_original_java_command_is_checked_independently_of_replay_host(self):
         self.setup_upload("windows-x64", windows=True)
-        with self.context_manager() as value:
+        archive = self.root / "independent-windows.tar.gz"
+        archive.write_bytes(b"caller archive; full semantic policy explicitly mocked")
+        with self.context_manager(native_compiler_archive=archive) as value:
             self.assertEqual("windows-x64", value["receipt"]["target"])
         self.assertEqual(r"C:\Java17\bin\java.exe", self.execution["command"][0])
         self.execution["command"][0] = r"C:\other\java.exe"
         self.files["worker/execution.json"] = canonical_json_bytes(self.execution)
-        with self.assertRaisesRegex(ValueError, "fixed root command"), self.context_manager():
+        with self.assertRaisesRegex(ValueError, "fixed root command"), self.context_manager(native_compiler_archive=archive):
             pass
 
     def test_execution_identity_argv_success_and_context_path_are_not_advisory(self):

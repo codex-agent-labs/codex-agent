@@ -205,6 +205,12 @@ class AndroidValidationCaptureTest(FacadeCaptureTest):
     required_directories = ("inputs", "originals", "stage")
 
 
+class AndroidMetadataCaptureTest(AndroidValidationCaptureTest):
+    phase = "metadata"
+    capture_name = "capture_sdk_android_metadata_upload"
+    required_directories = ("worker", "selection", "originals", "inputs")
+
+
 class CoreBinaryCaptureTest(FacadeCaptureTest):
     phase = "binary"
     capture_name = "capture_sdk_maven_upload"

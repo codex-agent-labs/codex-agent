@@ -30,7 +30,7 @@ from products.sdk_package import _require_capability_output_separate
 from products.sdk_platform_metadata import OUTPUT_KIND, OUTPUT_PATH
 from products.sdk_validation_inputs import _request_inventory
 from products.signing_isolation import require_no_signing_secret
-from sdk_facade_metadata_inputs import _records, verified_facade_metadata_inputs
+from sdk_facade_metadata_inputs import _records, _native_archives, verified_facade_metadata_inputs
 
 
 _INSTANCE = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
@@ -51,6 +51,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
     discovery, state, destination = product_reuse._product_materialization_paths(root, discovery, state, destination)
     stage = root / "build/product-stage/sdk/sdk-core/metadata/common"
     records = _records(validations)
+    archives = _native_archives(records)
     trees = {discovery, state, Path(tooling_evidence)}
     files = {plan, Path(tooling_public_key), Path(java_executable)}
     compatibility = {}
@@ -73,7 +74,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
             if isinstance(path, Path):
                 (trees if path.is_dir() else files).add(path)
     for output, other in ((destination, stage), (stage, destination)):
-        _require_capability_output_separate(output, [other, *trees, *files,
+        _require_capability_output_separate(output, [other, *trees, *files, *archives,
             *(path for inventory in compatibility.values() for path in inventory)])
         if (root not in output.parents or output.resolve(strict=False) != output
                 or output.exists() or output.is_symlink()):
@@ -92,6 +93,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
     def unchanged():
         require_no_signing_secret(environ)
         if (policy_bytes() != policy
+                or _native_archives(records) != archives
                 or any(_read(path) != raw for path, raw in before_files.items())
                 or any(_inventory(path, allow_empty=True) != before for path, before in before_trees.items())
                 or any(_request_inventory(path) != inventory for path, inventory in compatibility.items())

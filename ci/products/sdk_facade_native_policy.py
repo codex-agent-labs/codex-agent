@@ -1,8 +1,8 @@
 """Compare the captured native compiler subset with one immutable archive pin.
 
 Only macOS ARM64 has a reviewed archive in the existing verification metadata.
-The current Core capture covers konan/lib/** and konan/konan.properties, not the
-complete installation, compiler fingerprint, LLVM/libffi/sysroot dependencies,
+Schema 1 covers konan/lib/** and konan/konan.properties; schema 2 also binds the
+compiler fingerprint. Neither comparison authenticates the complete installation, LLVM/libffi/sysroot dependencies,
 JDK, or hosted execution. Successful comparison grants none of those authorities.
 The caller independently binds the original capture, host and policy revision.
 """
@@ -34,7 +34,7 @@ _TARGETS = {"macos-arm64", "ios-arm64", "ios-simulator-arm64"}
 _LIMITS = {**OBJECT_ZIP_LIMITS, "max_members": 65_536, "max_headers": 131_072}
 
 
-def _archive_subset(stream, version):
+def _archive_subset(stream, version, *, include_fingerprint=False):
     prefix = f"kotlin-native-prebuilt-macos-aarch64-{version}"
     archive_bytes = os.fstat(stream.fileno()).st_size
     headers, total = 0, 0
@@ -85,7 +85,8 @@ def _archive_subset(stream, version):
                 directories.update(parent.as_posix() for parent in path.parents)
                 (directories if member.isdir() else files).add(name)
                 relative = path.relative_to(prefix).as_posix()
-                if member.isfile() and (relative == "konan/konan.properties" or relative.startswith("konan/lib/")):
+                if member.isfile() and (relative == "konan/konan.properties" or relative.startswith("konan/lib/")
+                        or include_fingerprint and relative == "konan/compiler.fingerprint"):
                     source = archive.extractfile(member)
                     if source is None:
                         raise ValueError("Native archive selected member lacks its payload")
@@ -102,7 +103,8 @@ def _archive_subset(stream, version):
     except (tarfile.TarError, EOFError) as error:
         raise ValueError("Native compiler archive is malformed") from error
     if ("konan/konan.properties" not in selected
-            or "konan/lib/kotlin-native-compiler-embeddable.jar" not in selected):
+            or "konan/lib/kotlin-native-compiler-embeddable.jar" not in selected
+            or include_fingerprint and "konan/compiler.fingerprint" not in selected):
         raise ValueError("Pinned native archive lacks the selected compiler subset")
     return selected
 
@@ -119,11 +121,15 @@ def verify_facade_native_compiler_artifacts(*, repository, policy_revision,
         raise ValueError("Native compiler policy repository must be absolute and normalized")
     observation_path = Path(compiler_inputs)
     raw = read_regular_file_bytes(observation_path, max_bytes=_LIMIT, reject_symlink_parents=True)
-    value = require_exact_keys(load_json_bytes(raw), _TOP, "Native compiler observation")
+    value = load_json_bytes(raw)
+    schema = require_integer(value.get("schemaVersion") if type(value) is dict else None,
+                             "Native compiler observation schema", 1)
+    value = require_exact_keys(value, _TOP | ({"nativeSelection"} if schema == 2 else set()),
+                               "Native compiler observation")
     target = value["target"]
     if type(target) is not str or target not in _TARGETS:
         raise ValueError("Native compiler observation target differs from the supported host route")
-    if (require_integer(value["schemaVersion"], "Native compiler observation schema", 1) != 1
+    if (schema not in {1, 2}
             or value["family"] != "native" or value["task"] != FACADE_CONSUMER_TASKS[target]
             or value["taskClass"] != "org.jetbrains.kotlin.gradle.tasks.KotlinNativeCompile"):
         raise ValueError("Native compiler observation differs from the fixed task family")
@@ -142,6 +148,18 @@ def verify_facade_native_compiler_artifacts(*, repository, policy_revision,
         if not row["path"].startswith(home + "/"):
             raise ValueError("Observed native inventory escapes the selected distribution")
         selected[row["path"][len(home) + 1:]] = {key: row[key] for key in ("bytes", "sha256")}
+    if schema == 2:
+        selection = require_exact_keys(value["nativeSelection"],
+            {"dataDirectory", "dependenciesDirectory", "host", "target", "fingerprint", "dependencies"},
+            "Native selected tool context")
+        if selection["host"] != "macos_arm64" or selection["target"] != target.replace("-", "_"):
+            raise ValueError("Native selected tool context differs from its host/target route")
+        fingerprint = compiler_observation_inventory(selection["fingerprint"], observed=observed)
+        if len(fingerprint) != 1 or fingerprint[0]["path"] != home + "/konan/compiler.fingerprint":
+            raise ValueError("Native compiler fingerprint differs from its selected distribution")
+        selected["konan/compiler.fingerprint"] = {key: fingerprint[0][key] for key in ("bytes", "sha256")}
+        # Full original replay owns dependency-root/link semantics and provenance;
+        # this partial archive policy authenticates distribution members only.
     sources = {}
     actual = None
     descriptor, before = _open_regular_file(Path(native_archive), "Caller native archive", reject_symlink_parents=True)
@@ -163,7 +181,9 @@ def verify_facade_native_compiler_artifacts(*, repository, policy_revision,
             if actual != expected:
                 raise ValueError("Caller native archive differs from the immutable artifact pin")
             stream.seek(0)
-            if selected != _archive_subset(stream, version):
+            expected_subset = (_archive_subset(stream, version, include_fingerprint=True) if schema == 2
+                               else _archive_subset(stream, version))
+            if selected != expected_subset:
                 raise ValueError("Observed native compiler subset differs from the pinned archive")
         finally:
             stream.seek(0)
