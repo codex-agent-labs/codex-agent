@@ -72,7 +72,7 @@ def _context(value, receipt):
 def verify_sdk_facade_validation_original_content(
     *, repository: Path, validation_stage: Path, validation_receipt: Path,
     facade_request: Path, prepared_inputs: Path, execution_directory: Path,
-    consumer_inputs: Path, original_context: dict,
+    consumer_inputs: Path, compiler_inputs: Path, original_context: dict,
     tooling_evidence: Path, tooling_public_key: Path, java_executable: Path,
     policy_revision: str, required_trust_domain: str,
     tooling_keyring: Path | None = None, tooling_keys_directory: Path | None = None,
@@ -108,6 +108,7 @@ def verify_sdk_facade_validation_original_content(
              "execution": Path(execution_directory), "consumer": Path(consumer_inputs)}
     before = {name: _inventory(path, allow_empty=name != "stage") for name, path in trees.items()}
     _, original_trees, original_files = _sources(value)
+    original_files["compilerInputs"] = Path(compiler_inputs)
     tree_before = {name: _inventory(path, allow_empty=True) for name, path in original_trees.items()}
     file_before = {name: _read(path) for name, path in original_files.items()}
     compatibility_before = _request_inventory(Path(value["compatibilityRequest"]))
@@ -184,10 +185,12 @@ def verify_sdk_facade_validation_original_content(
                                     ["versions"]["kotlin"], "Original Kotlin version")
             _verify_sdk_apple_with_tooling(
                 sources={"source": (source, False), "consumer": (captured["consumer"], True),
-                         "package": (regenerated / "package-stage", False)}, expected_paths={},
+                         "package": (regenerated / "package-stage", False)},
+                expected_paths={"compiler-inputs": original_files["compilerInputs"]},
                 command_name="verify-original-sdk-facade-consumer-inputs",
                 argument_builder=lambda snapshots, expected, work: {
                     "source-snapshot": snapshots["source"], "consumer-inputs": snapshots["consumer"],
+                    "compiler-inputs": expected["compiler-inputs"],
                     "package-stage": snapshots["package"], "target": receipt["target"],
                     "contract-version": value["contractVersion"], "runtime-version": value["runtimeVersion"],
                     "sdk-version": value["sdkVersion"], "kotlin-version": kotlin,

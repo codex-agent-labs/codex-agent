@@ -61,9 +61,11 @@ class FacadeOriginalContentTest(unittest.TestCase):
         self.consumer = self.root / "consumer-inputs"
         self.consumer.mkdir()
         (self.consumer / "retained.kt").write_bytes(b"mocked only at signed source/init gate\n")
+        self.compiler_inputs = self.root / "compiler-inputs.json"
+        self.compiler_inputs.write_bytes(b"mocked only at signed compiler-input gate\n")
         self.arguments = dict(repository=self.root, validation_stage=self.stage, validation_receipt=self.receipt_path,
             facade_request=self.f.request, prepared_inputs=self.inputs, execution_directory=self.f.f.evidence,
-            consumer_inputs=self.consumer, original_context=self.context,
+            consumer_inputs=self.consumer, compiler_inputs=self.compiler_inputs, original_context=self.context,
             tooling_evidence=self.root / "tooling", tooling_public_key=self.root / "tooling.pub",
             java_executable=self.root / "java", policy_revision="e" * 40, required_trust_domain="development")
         self.enterContext(patch.object(admission, "run_git", side_effect=lambda root, cmd, rev:
@@ -97,7 +99,8 @@ class FacadeOriginalContentTest(unittest.TestCase):
         self.assertEqual(self.arguments["policy_revision"], kwargs["policy_revision"])
         self.assertEqual("development", kwargs["required_trust_domain"])
         snapshots = {key: pair[0] for key, pair in kwargs["sources"].items()}
-        values = kwargs["argument_builder"](snapshots, {}, self.root / "mocked-tooling-work")
+        values = kwargs["argument_builder"](snapshots, kwargs["expected_paths"], self.root / "mocked-tooling-work")
+        self.assertEqual(self.compiler_inputs, values["compiler-inputs"])
         self.assertEqual(self.original_execution, values["original-execution-directory"])
         self.assertEqual(self.context["androidSdkDirectory"], values["android-sdk-directory"])
         self.assertEqual("2.2.0", values["kotlin-version"])

@@ -1,7 +1,7 @@
 """Android metadata orchestration tests; native and hosted boundaries are mocked."""
 
 from copy import deepcopy
-from contextlib import redirect_stderr
+from contextlib import contextmanager, redirect_stderr
 import io
 from pathlib import Path
 import shutil
@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from ci import sdk_android_metadata_workflow as workflow
+from ci import sdk_android_original_validation as original_reader
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory,
     sha256_file, write_canonical_json,
@@ -131,15 +132,26 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
             "attestationSignature": "/historical/contract/auth/signature/signature",
             "publicKey": "/historical/contract/auth/public-key/public.pub",
         })
+        self.original_capture = self.root / "original-validation-capture"
+        shutil.copytree(self.original, self.original_capture / "original")
+        (self.original_capture / "plan").mkdir()
+        (self.original_capture / "plan/impact-plan.json").write_bytes(self.plan.read_bytes())
+        (self.original_capture / "transport.zip").write_bytes(b"authenticated transport fixture")
+        write_canonical_json(self.original_capture / "capture-transport.json", {
+            "artifact": {"id": 1}, "captureProducer": self.validation_producer,
+            "observed": [], "validationReceiptSha256": sha256_file(self.validation_receipt),
+        })
         self.tooling = self.root / "caller/tooling"; self.tooling.mkdir()
         (self.tooling / "evidence").write_bytes(b"tooling")
         self.tooling_key = self.root / "caller/tooling.pub"; self.tooling_key.write_bytes(b"key")
         self.java = self.root / "caller/java"; self.java.write_bytes(b"java")
         self.analyzer = self.root / "caller/apkanalyzer"; self.analyzer.write_bytes(b"analyzer")
         self.events = []
-        self.phase_arguments = None
+        self.reader_arguments = None
+        self.reader_enter_failure = self.reader_exit_failure = None
+        self.reader_stage = None
         self.arguments = dict(expected_build_key=self.metadata_plan["buildKey"],
-            original_validation_root=self.original, package_stage=self.package_stage,
+            original_validation_capture=self.original_capture, package_stage=self.package_stage,
             package_receipt=self.package_receipt, binary_stage=self.binary_stage,
             binary_receipt=self.binary_receipt, compatibility_request=self.compatibility,
             binary_contract_evidence=self.contract_evidence, trusted_source_commit="e" * 40,
@@ -184,16 +196,24 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
         write_canonical_json(destination / "producer.json", self.current)
         return deepcopy(self.metadata_plan)
 
-    def restore(self, object_path, stage, **kwargs):
-        self.events.append("restore")
-        shutil.copytree(self.validation_stage, stage)
-        return {"receiptBytes": self.validation_receipt.read_bytes()}
-
-    def replay(self, **kwargs):
-        self.events.append("replay")
-        self.phase_arguments = kwargs
-        shutil.copytree(self.validation_stage, kwargs["destination"])
-        return load_canonical_json_bytes((kwargs["destination"] / "output-manifest.json").read_bytes())
+    @contextmanager
+    def verified_reader(self, plan, receipt, **kwargs):
+        self.events.append("reader-enter")
+        self.reader_arguments = kwargs
+        self.assertEqual(self.plan, plan)
+        self.assertEqual(self.validation_receipt.read_bytes(), Path(receipt).read_bytes())
+        self.assertEqual(self.original_capture, kwargs["validation_capture"])
+        if self.reader_enter_failure is not None:
+            raise self.reader_enter_failure
+        selected = Path(receipt).parent
+        try:
+            yield {"stage": self.reader_stage or selected / "stage",
+                "receiptPath": Path(receipt), "receiptBytes": Path(receipt).read_bytes(),
+                "receipt": deepcopy(self.validation), "capture": self.original_capture}
+        finally:
+            self.events.append("reader-exit")
+            if self.reader_exit_failure is not None:
+                raise self.reader_exit_failure
 
     def execute_metadata(self, plan, **kwargs):
         self.events.append("execute")
@@ -221,34 +241,26 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
         finalized = {"receipt": {"buildKey": self.metadata_plan["buildKey"]}}
         def verify_shard(root, instance):
             return shard if instance == workflow._VALIDATION else deepcopy(finalized)
-        compare = workflow._compare_original_inputs
-        def compare_inputs(*args, **kwargs):
-            self.events.append("compare")
-            return compare(*args, **kwargs)
         with patch.object(workflow, "_request_inventory",
                           side_effect=lambda path: {Path(path): sha256_file(Path(path))}), \
-                patch.object(workflow, "stage_sdk_inputs", side_effect=self.stage_inputs), \
                 patch.object(workflow.product_reuse, "_verified_product_state", side_effect=self.verified_state), \
                 patch.object(workflow.product_reuse, "materialize_product_predecessors", side_effect=self.materialize), \
                 patch.object(workflow, "verify_phase_shard", side_effect=verify_shard), \
-                patch.object(workflow, "restore_object", side_effect=self.restore), \
-                patch.object(workflow, "_compare_original_inputs", side_effect=compare_inputs), \
-                patch.object(workflow, "_replan", side_effect=lambda *a, **k: self.events.append("replan")), \
-                patch.object(workflow.validation_phase, "produce_sdk_android_validation_phase",
-                             side_effect=self.replay), \
+                patch.object(original_reader, "verified_retained_android_validation",
+                             side_effect=self.verified_reader), \
                 patch.object(workflow, "_execute_metadata", side_effect=self.execute_metadata), \
                 patch.object(workflow.product_reuse, "_runtime_worker_checkout"), \
                 patch.object(workflow.product_reuse, "finalize_phase_object", side_effect=self.finalize):
             return workflow.execute(self.plan, self.discovery, self.state,
                 changes.pop("destination", self.destination), **{**self.arguments, **changes})
 
-    def test_full_original_replay_precedes_metadata_and_final_receipt(self):
+    def test_verified_original_reader_exits_before_metadata_final_receipt(self):
         result = self.call()
-        self.assertEqual(["state", "materialize", "compare", "replan", "restore", "replay",
-                          "execute", "finalize"], self.events)
-        self.assertEqual(self.validation_producer, self.phase_arguments["expected_capture_producer"])
-        self.assertEqual(self.binary_producer, self.phase_arguments["expected_original_producer"])
-        self.assertEqual(regular_file_inventory(self.original),
+        self.assertEqual(["state", "materialize", "reader-enter", "execute", "reader-exit",
+                          "finalize"], self.events)
+        self.assertEqual(self.package_stage, self.reader_arguments["package_stage"])
+        self.assertEqual(self.contract_evidence, self.reader_arguments["binary_contract_evidence"])
+        self.assertEqual(regular_file_inventory(self.original_capture),
                          regular_file_inventory(result["originals"] / "validation"))
         request = load_canonical_json_bytes((self.destination / "metadata-request.json").read_bytes())
         self.assertEqual((self.validation_content["releaseAarSha256"],
@@ -256,15 +268,16 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
                          (request["releaseAarSha256"], request["bundledRuntimeSha256"]))
 
     def test_gate_failure_or_late_original_mutation_never_finalizes(self):
-        with patch.object(self, "replay", side_effect=ValueError("full replay failed")), \
-                self.assertRaisesRegex(ValueError, "full replay failed"):
+        self.reader_enter_failure = ValueError("full replay failed")
+        with self.assertRaisesRegex(ValueError, "full replay failed"):
             self.call(destination=self.root / "failure")
         self.assertNotIn("finalize", self.events)
         self.events.clear()
+        self.reader_enter_failure = None
         original_execute = self.execute_metadata
         def mutate(*args, **kwargs):
             result = original_execute(*args, **kwargs)
-            (self.original / "originals/final/evidence").write_bytes(b"changed")
+            (self.original_capture / "original/originals/final/evidence").write_bytes(b"changed")
             return result
         with patch.object(self, "execute_metadata", side_effect=mutate), \
                 self.assertRaisesRegex(ValueError, "changed"):
@@ -273,13 +286,29 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
 
         self.events.clear()
         def fail_after_mutation(*args, **kwargs):
-            (self.original / "originals/final/evidence").write_bytes(b"failed mutation")
+            (self.original_capture / "original/originals/final/evidence").write_bytes(b"failed mutation")
             raise ValueError("worker failed")
         with patch.object(self, "execute_metadata", side_effect=fail_after_mutation), \
                 self.assertRaisesRegex(ValueError, "changed"):
             self.call(destination=self.root / "failed-mutation")
         self.assertNotIn("finalize", self.events)
         self.assertFalse((self.root / "failed-mutation/shard").exists())
+
+    def test_reader_exit_must_succeed_before_finalization(self):
+        self.reader_exit_failure = ValueError("reader exit rejected")
+        destination = self.root / "reader-exit-failure"
+        with self.assertRaisesRegex(ValueError, "reader exit rejected"):
+            self.call(destination=destination)
+        self.assertNotIn("finalize", self.events)
+        self.assertFalse((destination / "shard").exists())
+
+    def test_reader_stage_must_equal_selected_predecessor(self):
+        self.reader_stage = self.root / "different-validation-stage"
+        shutil.copytree(self.validation_stage, self.reader_stage)
+        (self.reader_stage / workflow.validation_phase.OUTPUT_PATH).write_bytes(b"different")
+        with self.assertRaisesRegex(ValueError, "differs from selected predecessor"):
+            self.call()
+        self.assertNotIn("execute", self.events)
 
     def test_finalizer_mutation_does_not_publish_candidate(self):
         finalize = self.finalize
@@ -345,7 +374,7 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
         contract = self.root / "contract.json"; write_canonical_json(contract, self.contract_evidence)
         argv = []
         paths = {"plan": self.plan, "discovery-root": self.discovery, "state-root": self.state,
-            "destination": self.destination, "original-validation-root": self.original,
+            "destination": self.destination, "original-validation-capture": self.original_capture,
             "package-stage": self.package_stage, "package-receipt": self.package_receipt,
             "binary-stage": self.binary_stage, "binary-receipt": self.binary_receipt,
             "compatibility-request": self.compatibility, "binary-contract-evidence": contract,
@@ -361,6 +390,8 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
             self.assertEqual(0, workflow.main(argv))
         self.assertEqual(self.discovery, execute.call_args.kwargs["discovery"])
         self.assertEqual(self.state, execute.call_args.kwargs["state"])
+        self.assertEqual(self.original_capture,
+                         execute.call_args.kwargs["original_validation_capture"])
         self.assertEqual(self.contract_evidence, execute.call_args.kwargs["binary_contract_evidence"])
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
             workflow.main([*argv, "--unknown"])

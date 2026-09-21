@@ -212,6 +212,7 @@ internal fun Project.registerSdkFacadeValidationTasks(
         consumerDirectory.set(consumerRoot)
         resultFile.set(work.map { it.file("report.json") })
         executionCaptureDirectory.set(evidence)
+        compilerInputsCaptureFile.set(work.map { it.file("compiler-inputs.json") })
     }
     val content = tasks.register<WriteSdkFacadeValidationContentTask>("writeSdkCoreValidationContent") {
         dependsOn(consumer)

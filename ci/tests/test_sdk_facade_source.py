@@ -19,6 +19,7 @@ _FILES = {
     "gradle/build-logic/src/main/kotlin/KmpConsumerVerificationTask.kt": "original base/init generator\n",
     "gradle/build-logic/src/main/kotlin/ReleaseToolingGradleTasks.kt": "original appended capture generator\n",
     "gradle/build-logic/src/main/kotlin/SdkFacadeValidationTasks.kt": "original target mapping and registration\n",
+    "gradle/build-logic/src/main/kotlin/SdkFacadeCompilerCapture.kt": "original selected compiler capture generator\n",
     "gradle/build-logic/build.gradle.kts": "original generator dependency declaration\n",
     "gradle/build-logic/settings.gradle.kts": "original version catalog binding\n",
     "gradle/libs.versions.toml": 'kotlinx-serialization = "original"\n',

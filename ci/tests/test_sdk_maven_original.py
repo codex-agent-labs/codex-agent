@@ -54,6 +54,7 @@ class MavenOriginalTest(unittest.TestCase):
         self.archive = self.base / "runtime.tar.gz"
         self.archive.write_bytes(b"original Android pinned archive")
         self.context = {"repositoryRoot": "/old/checkout", "workerRoot": "/old/checkout/build/upload"}
+        self.binary_context = {"repositoryRoot": "/old/checkout", "workerRoot": "/old/checkout/build/binary-upload"}
         self.events, self.exit_failure = [], False
         self.capture = self.enterContext(patch.object(original, "capture_sdk_maven_upload", side_effect=self.capture_upload))
         self.transport = self.enterContext(patch.object(original, "verify_retained_sdk_phase_upload"))
@@ -143,6 +144,7 @@ class MavenOriginalTest(unittest.TestCase):
                 "id": 1, "digest": "sha256:" + "c" * 64,
                 "name": f"codex-agent-sdk-inputs-{self.producer['tree']}-attempt-1"},
                 "captureProducer": self.producer, "observed": [], "sdkRuntimeSource": "current-runtime"})
+            self.prepare_binary_capture()
         worker = self.original / "worker"
         worker.mkdir()
         fields = {"codexAgent." + name: self.receipt[name] for name in ("product", "component", "phase", "target")}
@@ -167,6 +169,59 @@ class MavenOriginalTest(unittest.TestCase):
                                                                   build_directory=".", platform_name="posix")
         write_canonical_json(worker / "execution.json", {"schemaVersion": 1, "producer": self.producer,
             "buildKey": self.receipt["buildKey"], "command": command, "returnCode": 0, "launchError": None, "elapsedNs": 10})
+        (worker / "gradle.log").write_bytes(b"")
+
+    def prepare_binary_capture(self):
+        """Real nested original shard/layout; same explicitly mocked trust gates."""
+        retained = self.original / "binary-original"
+        retained.mkdir()
+        write_canonical_json(retained / "context.json", self.binary_context)
+        capture = retained / "capture"
+        (capture / "plan").mkdir(parents=True)
+        (capture / "plan/impact-plan.json").write_bytes(self.plan.read_bytes())
+        (capture / "capture-transport.json").write_bytes(b"{}\n")
+        (capture / "transport.zip").write_bytes(b"opaque original binary upload")
+        binary_root = capture / "original"
+        inputs = binary_root / "inputs/predecessors"
+        inputs.mkdir(parents=True)
+        selection = binary_root / "selection"
+        selection.mkdir()
+        (selection / "impact-plan.json").write_bytes(self.plan.read_bytes())
+        receipt = self.binary["receipt"]
+        for directory in (selection, inputs):
+            write_canonical_json(directory / "phase-plan.json", {name: receipt[name] for name in original.PHASE_PLAN_KEYS})
+            write_canonical_json(directory / "producer.json", self.producer)
+        for phase, record in self.contracts.items():
+            directory = inputs / f"contract-contract-{phase}-common"
+            snapshot_regular_tree(record["stage"], directory / "stage")
+            (directory / "phase-receipt.json").write_bytes(record["receiptPath"].read_bytes())
+        handoff = binary_root / "inputs/contract-input"
+        snapshot_regular_tree(self.auth, handoff)
+        stem = "codex-agent-contract-0.8.7"
+        (handoff / (stem + ".zip")).write_bytes((self.contracts["metadata"]["stage"] / "outputs" / (stem + ".zip")).read_bytes())
+        finalize_phase_object(stage_root=self.binary["stage"],
+            phase_plan={name: receipt[name] for name in original.PHASE_PLAN_KEYS}, producer=self.producer,
+            product_version="0.8.7", trust_domain="development", destination=binary_root / "shard")
+        origin = Path(self.binary_context["workerRoot"])
+        fields = {"codexAgent." + name: receipt[name] for name in ("product", "component", "phase", "target")}
+        fields.update({"codexAgent.sdkVersion": "0.8.7", "codexAgent.candidateCommit": self.producer["commit"],
+            "codexAgent.candidateTree": self.producer["tree"], "codexAgent.contractVersion": "0.8.7",
+            "codexAgent.contractMetadataReceipt": str(origin / "inputs/predecessors/contract-contract-metadata-common/phase-receipt.json"),
+            "codexAgent.contractPayload": str(origin / "inputs/contract-input" / (stem + ".zip")),
+            "codexAgent.contractAttestation": str(origin / "inputs/contract-input" / (stem + ".attestation.json")),
+            "codexAgent.contractAttestationSignature": str(origin / "inputs/contract-input" / (stem + ".attestation.sig")),
+            "codexAgent.contractPublicKey": str(origin / "inputs/contract-input/public-key.pub")})
+        if self.component == "sdk-android":
+            archive = binary_root / "android-original" / self.archive.name
+            archive.parent.mkdir()
+            archive.write_bytes(self.archive.read_bytes())
+            fields["codexAgent.codexArchiveFile"] = str(origin / "android-original" / self.archive.name)
+        worker = binary_root / "worker"
+        worker.mkdir()
+        write_canonical_json(worker / "execution.json", {"schemaVersion": 1, "producer": self.producer,
+            "buildKey": receipt["buildKey"], "command": original.product_reuse._runtime_worker_command(
+                Path(self.binary_context["repositoryRoot"]) / "gradlew", fields, {}, build_directory=".", platform_name="posix"),
+            "returnCode": 0, "launchError": None, "elapsedNs": 10})
         (worker / "gradle.log").write_bytes(b"")
 
     def capture_upload(self, plan, destination, **kwargs):
@@ -198,8 +253,8 @@ class MavenOriginalTest(unittest.TestCase):
         kwargs = dict(binary_contract_evidence=self.evidence, original_context=self.context,
                       repository_root=self.root, environ={"GITHUB_RUN_ID": "999"})
         if self.phase == "package":
-            kwargs.update(keyring=self.keyring, keys_directory=self.keys)
-        if (self.component, self.phase) == ("sdk-android", "binary"):
+            kwargs.update(keyring=self.keyring, keys_directory=self.keys, binary_original_context=self.binary_context)
+        if self.component == "sdk-android":
             kwargs["android_runtime_archive"] = self.archive
         kwargs.update(changes)
         if retained:
@@ -225,7 +280,7 @@ class MavenOriginalTest(unittest.TestCase):
                                 self.assertEqual(["sdk-enter", "package-gate"], fixture.events)
                         self.assertFalse(stage.exists())
                         fixture.capture.assert_called_once()
-                        fixture.transport.assert_called_once()
+                        self.assertEqual(1 if phase == "binary" else 2, fixture.transport.call_count)
                         if phase == "binary":
                             fixture.replan.assert_called_once()
                             fixture.binary_gate.assert_called_once()
@@ -301,6 +356,17 @@ class MavenOriginalTest(unittest.TestCase):
         self.exit_failure = False
         with self.assertRaisesRegex(ValueError, "changed"), self.call() as result:
             (result["original"] / "sdk-inputs-original/transport.zip").write_bytes(b"replaced")
+
+    def test_package_requires_independent_nested_binary_context_and_full_gate(self):
+        self.prepare(phase="package")
+        for context in (None, {**self.binary_context, "workerRoot": "/old/checkout/other"}):
+            with self.subTest(context=context), self.assertRaises(ValueError), self.call(binary_original_context=context):
+                pass
+        self.package_gate.assert_not_called()
+        self.binary_gate.side_effect = ValueError("original binary rejected")
+        with self.assertRaisesRegex(ValueError, "original binary rejected"), self.call():
+            pass
+        self.package_gate.assert_not_called()
 
     def test_secret_or_wrong_phase_policy_fails_before_capture(self):
         self.prepare()

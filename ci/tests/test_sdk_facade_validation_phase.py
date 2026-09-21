@@ -104,7 +104,7 @@ class FacadeValidationPhaseTest(unittest.TestCase):
         for directory in ("inputs", "consumer", "consumer-inputs", "execution/process"):
             (self.work / directory).mkdir(parents=True)
         for name in ("inputs/inputs.json", "inputs/maven-inventory.json", "consumer/build.gradle.kts",
-                     "publication-metadata.json", "report.json"):
+                     "publication-metadata.json", "report.json", "compiler-inputs.json"):
             (self.work / name).write_bytes(b"mock producer bytes\n")
         template = self.destination / "source/gradle/release/sdk-facade-consumer-template"
         names = {row["relativePath"] for row in phase._inventory(template)}

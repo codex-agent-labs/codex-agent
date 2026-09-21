@@ -373,6 +373,8 @@ abstract class VerifyStagedKmpConsumerTask @Inject constructor(
     @get:Optional @get:OutputDirectory abstract val executionCaptureDirectory: DirectoryProperty
     /** Exact prepared inputs retained separately from the five-file process capture. */
     @get:Optional @get:OutputDirectory abstract val consumerInputsCaptureDirectory: DirectoryProperty
+    /** Raw selected compiler-task observation; excluded from reusable product bytes. */
+    @get:Optional @get:OutputFile abstract val compilerInputsCaptureFile: RegularFileProperty
 
     init {
         consumerInputsCaptureDirectory.convention(project.layout.dir(executionCaptureDirectory.locationOnly.map {
@@ -386,6 +388,16 @@ abstract class VerifyStagedKmpConsumerTask @Inject constructor(
         val consumer = consumerDirectory.get().asFile
         val repository = repositoryDirectory.get().asFile
         val capture = executionCaptureDirectory.orNull?.asFile
+        val compilerCapture = compilerInputsCaptureFile.orNull?.asFile
+        check(compilerCapture == null || capture != null) {
+            "Compiler input capture requires execution capture"
+        }
+        if (compilerCapture != null) {
+            check(buildTasks.get() == listOf(sdkFacadeConsumerCompileTasks[targetName.get()]
+                ?: error("Unsupported compiler capture target"))) {
+                "Compiler input capture requires the exact facade compiler task"
+            }
+        }
         check(capture != null || !consumerInputsCaptureDirectory.isPresent) {
             "Consumer input capture requires execution capture"
         }
@@ -399,6 +411,7 @@ abstract class VerifyStagedKmpConsumerTask @Inject constructor(
             else emptyList()
         var originals: List<Map<String, String>>? = null
         var preparedInputs: Map<String, String>? = null
+        var compilerDigest: String? = null
         fun inputInventory() = sources.map { source ->
             requireApplePackagePathWithoutSymlinks(source, "KMP consumer input")
             if (source.isDirectory) verifiedRegularFiles(source).mapValues { (_, file) -> file.releaseDigest() }
@@ -408,7 +421,7 @@ abstract class VerifyStagedKmpConsumerTask @Inject constructor(
             }
         }
         if (capture != null) {
-            val owned = listOf(capture, checkNotNull(consumerInputs), consumer, report)
+            val owned = listOf(capture, checkNotNull(consumerInputs), consumer, report) + listOfNotNull(compilerCapture)
             (owned + sources).forEach { requireApplePackagePathWithoutSymlinks(it, "KMP consumer capture") }
             owned.forEachIndexed { index, output ->
                 requireOriginalAppleSnapshotDisjoint(output, sources + owned.filterIndexed { other, _ -> other != index })
@@ -420,6 +433,11 @@ abstract class VerifyStagedKmpConsumerTask @Inject constructor(
                 "KMP consumer input capture must be fresh"
             }
             originals = inputInventory()
+            compilerCapture?.let {
+                check(!Files.exists(it.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    "Compiler input capture must be fresh"
+                }
+            }
             Files.deleteIfExists(report.toPath())
             Files.createDirectories(capture.toPath())
             capture.resolve("task-outcomes.json").atomicWriteJson(buildJsonObject {
@@ -428,6 +446,13 @@ abstract class VerifyStagedKmpConsumerTask @Inject constructor(
             })
         }
         fun unchanged() {
+            compilerDigest?.let { expected ->
+                val file = checkNotNull(compilerCapture)
+                requireApplePackagePathWithoutSymlinks(file, "KMP compiler input capture")
+                check(file.isFile && file.releaseDigest() == expected) {
+                    "KMP compiler input capture changed after execution"
+                }
+            }
             if (capture != null) {
                 requireApplePackagePathWithoutSymlinks(capture, "KMP consumer capture")
                 requireApplePackagePathWithoutSymlinks(report, "KMP consumer result")
@@ -452,7 +477,8 @@ abstract class VerifyStagedKmpConsumerTask @Inject constructor(
             val requestedTasks = buildTasks.get()
             val outcomeInitScript = consumer.resolve(".codex-consumer-task-outcomes.init.gradle.kts").apply {
                 writeText(stagedConsumerOutcomeInitScript(requestedTasks) +
-                    capture?.let { stagedConsumerExecutionCaptureScript(it.resolve("task-outcomes.json")) }.orEmpty())
+                    capture?.let { stagedConsumerExecutionCaptureScript(it.resolve("task-outcomes.json")) }.orEmpty() +
+                    compilerCapture?.let { sdkFacadeCompilerCaptureScript(targetName.get(), it) }.orEmpty())
             }
             if (consumerInputs != null) {
                 val files = verifiedRegularFiles(consumer)
@@ -486,6 +512,11 @@ abstract class VerifyStagedKmpConsumerTask @Inject constructor(
                         workingDirectory = consumer, environmentVariables = emptyMap(),
                         captureDirectory = capture.resolve("process"))
                 } finally { unchanged() }
+            }
+            compilerCapture?.let {
+                requireApplePackagePathWithoutSymlinks(it, "KMP compiler input capture")
+                check(it.isFile && it.length() > 0) { "Compiler input capture is missing" }
+                compilerDigest = it.releaseDigest()
             }
             report.atomicWriteJson(buildJsonObject {
                 val inventory = mavenInventory.get().asFile.readReleaseObject()

@@ -82,6 +82,7 @@ class OriginalFacadeValidationTest(unittest.TestCase):
             "retained-execution/consumer-inputs/build.gradle.kts": b"opaque captured consumer\n",
             "retained-execution/execution/process/stderr.bin": b"",
             "retained-execution/publication-metadata.json": b"opaque metadata\n",
+            "retained-execution/compiler-inputs.json": b"opaque compiler fixture, separately verified\n",
             "retained-execution/report.json": b"opaque report\n"})
 
     def capture_upload(self, plan, destination, **kwargs):

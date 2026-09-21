@@ -52,7 +52,7 @@ class SdkFacadeOriginalExecutionTest {
 
     @Test
     fun `changed template generated files inventory context and publication are rejected without rewrites`() {
-        for (mutation in listOf("template", "local", "init", "extra", "missing", "package", "context", "sdk")) fixture { f ->
+        for (mutation in listOf("template", "local", "init", "extra", "missing", "package", "context", "sdk", "compiler")) fixture { f ->
             f.prepare("jvm")
             when (mutation) {
                 "template" -> f.consumer.resolve("src/commonMain/kotlin/Consumer.kt").appendText("changed")
@@ -60,6 +60,7 @@ class SdkFacadeOriginalExecutionTest {
                 "init" -> f.consumer.resolve(".codex-consumer-task-outcomes.init.gradle.kts").appendText("changed")
                 "extra" -> f.consumer.resolve("extra.init.gradle.kts").writeText("unrequested")
                 "missing" -> f.consumer.resolve("settings.gradle.kts").delete()
+                "compiler" -> f.root.resolve("compiler-inputs.json").writeText("{}\n")
                 "package" -> f.stage.resolve("outputs/maven/io/github/codex-agent-labs/codex-agent-jvm/3.4.5/codex-agent-jvm-3.4.5.pom").apply {
                     writeText(readText().replace("<version>1.2.3</version>", "<version>9.9.9</version>"))
                 }
@@ -144,6 +145,42 @@ class SdkFacadeOriginalExecutionTest {
 
     private fun inventory(root: File) = verifiedRegularFiles(root).mapValues { it.value.releaseDigest() }
 
+    @Test
+    fun `compiler capture is mandatory when enabled and never enters process or product report`() {
+        for (present in listOf(false, true)) fixture { f ->
+            val raw = f.root.resolve("compiler-inputs.json")
+            val task = f.task {
+                if (present) raw.atomicWriteJson(facadeCompilerCaptureFixture())
+            }
+            task.compilerInputsCaptureFile.set(raw)
+            if (present) {
+                task.verify()
+                assertTrue(raw.isFile)
+                assertEquals(setOf("task-outcomes.json", "report.json", "process/execution.json", "process/stdout.bin",
+                    "process/stderr.bin"), verifiedRegularFiles(f.execution).keys)
+                assertFalse(f.root.resolve("report.json").readText().contains("compiler"))
+            } else {
+                assertFailsWith<IllegalStateException> { task.verify() }
+                assertFalse(f.root.resolve("report.json").exists())
+                assertFalse(f.execution.resolve("report.json").exists())
+            }
+        }
+    }
+
+    @Test
+    fun `stale or overlapping compiler capture fails before process`() {
+        for (overlap in listOf(false, true)) fixture { f ->
+            val task = f.task { error("must not execute") }
+            val raw = if (overlap) f.template.resolve("build.gradle.kts")
+                else f.root.resolve("compiler-inputs.json").apply { writeText("original") }
+            val before = raw.readBytes()
+            task.compilerInputsCaptureFile.set(raw)
+            assertFailsWith<IllegalStateException> { task.verify() }
+            assertContentEquals(before, raw.readBytes())
+            assertFalse(f.execution.exists())
+        }
+    }
+
     private fun fixture(block: (Fixture) -> Unit) {
         val root = createTempDirectory("facade-original-").toFile().canonicalFile
         try { block(Fixture(root)) } finally { root.deleteRecursively() }
@@ -156,7 +193,7 @@ class SdkFacadeOriginalExecutionTest {
         val stage = root.resolve("package-stage")
         val execution = root.resolve("execution")
         init {
-            mapOf("build.gradle.kts" to "plugins {}\n", "settings.gradle.kts" to "rootProject.name = \"fixture\"\n",
+            mapOf("build.gradle.kts" to "plugins { id(\"com.android.kotlin.multiplatform.library\") version \"9.2.1\" apply false }\n", "settings.gradle.kts" to "rootProject.name = \"fixture\"\n",
                 "src/commonMain/kotlin/Consumer.kt" to "fun consumer() = Unit\n").forEach { (path, text) ->
                 template.resolve(path).apply { parentFile.mkdirs(); writeText(text) }
             }
@@ -178,12 +215,15 @@ class SdkFacadeOriginalExecutionTest {
             val separator = if (original.startsWith('/')) "/" else "\\"
             consumer.resolve(".codex-consumer-task-outcomes.init.gradle.kts").writeText(
                 stagedConsumerOutcomeInitScript(listOf(sdkFacadeConsumerCompileTasks.getValue(target))) +
-                    stagedConsumerExecutionCaptureScript(original + separator + "task-outcomes.json"))
+                    stagedConsumerExecutionCaptureScript(original + separator + "task-outcomes.json") +
+                    sdkFacadeCompilerCaptureScript(target, original.substringBeforeLast(separator) + separator + "compiler-inputs.json"))
+            root.resolve("compiler-inputs.json").atomicWriteJson(facadeCompilerCaptureFixture(target, "2.2.20"))
         }
 
         fun verify(target: String, original: String = "/original/execution", android: String = "/original/sdk",
                    consumerInputs: File = consumer) = verifyOriginalSdkFacadeConsumerInputs(
-            source, consumerInputs, stage, target, "1.2.3", "2.3.4", "3.4.5", "2.2.20", original, android)
+            source, consumerInputs, stage, target, "1.2.3", "2.3.4", "3.4.5", "2.2.20", original, android,
+            root.resolve("compiler-inputs.json"))
 
         fun task(onProcess: () -> Unit): VerifyStagedKmpConsumerTask {
             val processes = Proxy.newProxyInstance(ExecOperations::class.java.classLoader,

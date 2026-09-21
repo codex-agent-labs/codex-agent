@@ -92,7 +92,7 @@ def _capture_route(receipt, family=None):
         runner = "macos-26" if (component, phase) == ("sdk-core", "binary") else "ubuntu-24.04"
         directories = ("shard", "worker", "selection", "inputs")
         if phase == "package":
-            directories += ("sdk-inputs-original", "binary-contract-original")
+            directories += ("sdk-inputs-original", "binary-contract-original", "binary-original")
         elif component == "sdk-android":
             directories += ("android-original",)
     else:

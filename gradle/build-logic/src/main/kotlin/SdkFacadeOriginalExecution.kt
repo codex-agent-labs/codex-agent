@@ -18,11 +18,18 @@ internal fun verifyOriginalSdkFacadeConsumerInputs(
     kotlinVersion: String,
     originalExecutionDirectory: String,
     androidSdkDirectory: String,
+    compilerInputs: File,
     forbiddenPath: String = "",
 ) {
     val task = sdkFacadeConsumerCompileTasks[target] ?: error("Unsupported original facade target")
     val outcomes = originalFacadeOutcomePath(originalExecutionDirectory)
+    val separator = if (originalExecutionDirectory.startsWith('/')) '/' else '\\'
+    val originalCompiler = originalExecutionDirectory.substringBeforeLast(separator) + separator + "compiler-inputs.json"
+    requireApplePackagePathWithoutSymlinks(compilerInputs, "original facade compiler inputs")
+    check(compilerInputs.isFile) { "Original facade compiler inputs are missing" }
+    val compilerBefore = compilerInputs.releaseDigest()
     val inputs = listOf(sourceSnapshot, consumerInputs, packageStage)
+    requireOriginalAppleSnapshotDisjoint(compilerInputs, inputs)
     fun inventories() = inputs.map { directory ->
         requireApplePackagePathWithoutSymlinks(directory, "original facade input")
         check(directory.isDirectory) { "Original facade input directory is missing" }
@@ -55,14 +62,22 @@ internal fun verifyOriginalSdkFacadeConsumerInputs(
             "Original facade local.properties differs from independent Android SDK context"
         }
         val expectedScript = stagedConsumerOutcomeInitScript(listOf(task)) +
-            stagedConsumerExecutionCaptureScript(outcomes)
+            stagedConsumerExecutionCaptureScript(outcomes) + sdkFacadeCompilerCaptureScript(target, originalCompiler)
         check(retained.getValue(initName).readBytes().contentEquals(expectedScript.toByteArray(Charsets.UTF_8))) {
             "Original facade init script differs from the fixed task and original capture path"
         }
         verifyImportedSdkFacadePublicationMetadata(packageStage, contractVersion, runtimeVersion,
             sdkVersion, kotlinVersion, forbiddenPath)
+        val agp = Regex("id\\(\"com\\.android\\.kotlin\\.multiplatform\\.library\"\\) version \"([^\"]+)\"")
+            .findAll(templateFiles.getValue("build.gradle.kts").readText()).toList().singleOrNull()
+            ?.groupValues?.get(1) ?: error("Original facade Android plugin version is not exact")
+        verifySdkFacadeCompilerCapture(compilerInputs, target, kotlinVersion, agp)
     } finally {
         check(inventories() == before) { "Original facade inputs changed during replay" }
+        requireApplePackagePathWithoutSymlinks(compilerInputs, "original facade compiler inputs")
+        check(compilerInputs.isFile && compilerInputs.releaseDigest() == compilerBefore) {
+            "Original facade compiler inputs changed during replay"
+        }
     }
 }
 

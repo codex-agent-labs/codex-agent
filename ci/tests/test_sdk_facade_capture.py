@@ -220,7 +220,7 @@ class AndroidBinaryCaptureTest(CoreBinaryCaptureTest):
 
 class CorePackageCaptureTest(CoreBinaryCaptureTest):
     phase = "package"
-    required_directories = (*CoreBinaryCaptureTest.required_directories, "sdk-inputs-original", "binary-contract-original")
+    required_directories = (*CoreBinaryCaptureTest.required_directories, "sdk-inputs-original", "binary-contract-original", "binary-original")
 
 
 class AndroidPackageCaptureTest(CorePackageCaptureTest):

@@ -1,6 +1,7 @@
 """Compose elected Core/Android packages without inventing original authority."""
 
 import argparse
+from contextlib import ExitStack
 import os
 from pathlib import Path
 import sys
@@ -14,7 +15,8 @@ import sdk_workflow
 from products.contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
-    read_regular_file_bytes, require_exact_keys, snapshot_regular_tree, write_canonical_json,
+    read_regular_file_bytes, require_exact_keys, require_integer, require_sha256,
+    snapshot_regular_tree, write_canonical_json,
 )
 from products.registry import PhaseInstanceId
 from products.restore import PHASE_RECEIPT_NAME, verify_phase_shard
@@ -26,6 +28,7 @@ from products.sdk_package import _require_capability_output_separate, verify_sdk
 from products.signing_isolation import require_no_signing_secret
 from sdk_ios_package import _record
 from sdk_maven_phase import execute as execute_package
+from sdk_maven_original import _context, verified_original_maven_phase, verified_retained_maven_phase
 
 
 _TARGETS = {"sdk-core": "common", "sdk-android": "android"}
@@ -38,7 +41,9 @@ def _read(path):
 
 def execute(plan, discovery, state, destination, *, component, expected_build_key,
             sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
-            keyring, keys_directory, binary_contract_evidence, repository_root, environ, token,
+            keyring, keys_directory, binary_contract_evidence, binary_original_context,
+            repository_root, environ, token, binary_artifact_id=None, binary_artifact_sha256=None,
+            binary_capture_root=None, android_runtime_archive=None,
             sdk_validation_tooling=None, sdk_apple_validation_policy=None):
     """Publish one shard only after full original gates and successful context exit.
 
@@ -46,11 +51,23 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
     the currently selected Contract is equivalent. The existing full package
     gate authenticates that original binary plan and compares its components to
     the current S858 Contract. No receipt or original producer is substituted.
+    The selected binary's full original upload reader must remain held through
+    consumption and provisional finalization. Retained mode requires the caller
+    to authenticate its enclosing carrier; uploaded context is not caller policy.
     Retained captures and invocation paths stay outside deterministic content.
     """
     require_no_signing_secret(environ)
     if component not in _TARGETS:
         raise ValueError("Maven package controller requires Core or Android")
+    _context(binary_original_context, "binary")
+    binary_context_bytes = canonical_json_bytes(binary_original_context)
+    if (binary_capture_root is None) == (binary_artifact_id is None and binary_artifact_sha256 is None):
+        raise ValueError("Maven package requires exactly one original binary upload or retained capture")
+    if binary_capture_root is None:
+        require_integer(binary_artifact_id, "Original binary upload ID", 1)
+        require_sha256(binary_artifact_sha256, "Original binary upload digest")
+    if (android_runtime_archive is not None) != (component == "sdk-android"):
+        raise ValueError("Maven package requires the original Android archive only for Android binary replay")
     target = _TARGETS[component]
     instance = PhaseInstanceId("sdk", component, "package", target)
     identity = dict(product="sdk", component=component, phase="package", target=target)
@@ -76,6 +93,10 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
     trees = {"discovery": discovery, "state": state, "keys": Path(keys_directory), "binaryContract": stage,
              "binaryClosure": Path(evidence["attestation"]).parent / CONTRACT_EXECUTION_CLOSURE_DIRECTORY}
     files = {"plan": plan, "keyring": Path(keyring)}
+    if binary_capture_root is not None:
+        trees["binaryCapture"] = _path(str(binary_capture_root), "Caller-authenticated original binary capture")
+    if android_runtime_archive is not None:
+        files["androidArchive"] = _path(str(android_runtime_archive), "Caller original Android archive")
     for name in ("phaseReceipt", "attestation", "attestationSignature", "publicKey", "keyring"):
         if evidence[name] is not None:
             files["binaryContract/" + name] = Path(evidence[name])
@@ -104,6 +125,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
     def unchanged():
         require_no_signing_secret(environ)
         if (canonical_json_bytes(evidence) != evidence_bytes or canonical_json_bytes(policies) != policy_bytes
+                or canonical_json_bytes(binary_original_context) != binary_context_bytes
                 or any(_inventory(path, allow_empty=True) != before_trees[name] for name, path in trees.items())
                 or any(_read(path) != before_files[name] for name, path in files.items())
                 or any(_inventory(path, allow_empty=True) != inventory for path, inventory in retained.items())
@@ -119,7 +141,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             with sdk_workflow.verified_inputs(plan, discovery, state,
                     artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                     trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-                    repository_root=root, environ=environ, token=token, **policies) as sdk_inputs:
+                    repository_root=root, environ=environ, token=token, **policies) as sdk_inputs, ExitStack() as binary_contexts:
                 selection = sdk_inputs["selection"]
                 values.append((selection, canonical_json_bytes(selection)))
                 if identity not in selection["consumers"]:
@@ -145,6 +167,36 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 arguments = sdk_inputs["sdk"]["arguments"]
                 if _read(current_contract["receiptPath"]) != _read(arguments["contract_metadata_receipt"]):
                     raise ValueError("Current elected Contract differs from authenticated SDK inputs")
+                unchanged()
+
+                binary_arguments = dict(binary_contract_evidence=evidence,
+                    original_context=binary_original_context, repository_root=root, environ=environ)
+                if android_runtime_archive is not None:
+                    binary_arguments["android_runtime_archive"] = files["androidArchive"]
+                if binary_capture_root is None:
+                    original_binary = binary_contexts.enter_context(verified_original_maven_phase(
+                        plan, binary["receiptPath"], artifact_id=binary_artifact_id,
+                        artifact_sha256=binary_artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
+                        token=token, **binary_arguments))
+                else:
+                    original_binary = binary_contexts.enter_context(verified_retained_maven_phase(
+                        plan, binary["receiptPath"], capture_root=trees["binaryCapture"], **binary_arguments))
+                binary_receipt_bytes = _read(binary["receiptPath"])
+                if (original_binary["receiptBytes"] != binary_receipt_bytes
+                        or canonical_json_bytes(original_binary["receipt"]) != binary_receipt_bytes
+                        or _read(original_binary["receiptPath"]) != binary_receipt_bytes
+                        or _inventory(original_binary["stage"]) != _inventory(binary["stage"])):
+                    raise ValueError("Original Maven binary proof differs from the elected predecessor")
+                binary_capture = Path(original_binary["capture"])
+                binary_capture_inventory = _inventory(binary_capture, allow_empty=True)
+                binary_original = destination / "binary-original"
+                snapshot_regular_tree(binary_capture, binary_original / "capture", allow_empty=True)
+                write_canonical_json(binary_original / "context.json", binary_original_context)
+                if (_inventory(binary_capture, allow_empty=True) != binary_capture_inventory
+                        or _inventory(binary_original / "capture", allow_empty=True) != binary_capture_inventory
+                        or _read(binary_original / "context.json") != binary_context_bytes):
+                    raise ValueError("Original Maven binary capture changed during retention")
+                retained[binary_original] = _inventory(binary_original, allow_empty=True)
                 unchanged()
 
                 capture = Path(sdk_inputs["capture"])
@@ -203,6 +255,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 unchanged()
                 if _inventory(capture, allow_empty=True) != capture_inventory:
                     raise ValueError("Maven package SDK capture changed before context exit")
+                if _inventory(binary_capture, allow_empty=True) != binary_capture_inventory:
+                    raise ValueError("Maven package original binary capture changed before context exit")
             unchanged()
             product_reuse._runtime_worker_checkout(root, producer)
             if (_inventory(candidate) != candidate_inventory or verify_phase_shard(candidate, instance) != provisional):
@@ -220,7 +274,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "destination", "keyring", "keys-directory", "repository-root",
-                 "binary-contract-evidence"):
+                 "binary-contract-evidence", "binary-original-context"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--discovery-root", dest="discovery", type=Path, required=True)
     parser.add_argument("--state-root", dest="state", type=Path, required=True)
@@ -228,11 +282,20 @@ def main(argv=None):
     for name in ("expected-build-key", "sdk-inputs-artifact-sha256", "trusted-workflow-sha"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--sdk-inputs-artifact-id", type=int, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--binary-artifact-id", type=int)
+    source.add_argument("--binary-capture-root", type=Path)
+    parser.add_argument("--binary-artifact-sha256")
+    parser.add_argument("--android-runtime-archive", type=Path)
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
         parser.add_argument("--" + name, type=Path)
     arguments = vars(parser.parse_args(argv))
+    if (arguments["binary_artifact_id"] is None) != (arguments["binary_artifact_sha256"] is None):
+        parser.error("Original binary upload ID and digest must be supplied together")
+    if (arguments["android_runtime_archive"] is not None) != (arguments["component"] == "sdk-android"):
+        parser.error("Original Android archive is required only for Android binary replay")
     try:
-        for name in ("binary_contract_evidence", "sdk_validation_tooling", "sdk_apple_validation_policy"):
+        for name in ("binary_contract_evidence", "binary_original_context", "sdk_validation_tooling", "sdk_apple_validation_policy"):
             path = arguments.pop(name)
             if path is not None:
                 arguments[name] = product_reuse._canonical_control(path, "Caller " + name)

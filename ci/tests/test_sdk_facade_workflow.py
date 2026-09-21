@@ -111,7 +111,7 @@ class FacadeWorkflowTest(unittest.TestCase):
         for name in ("inputs", "execution", "consumer-inputs", "consumer"):
             (work / name).mkdir(parents=True)
             (work / name / "fixture.json").write_bytes(b"{}\n")
-        for name in ("publication-metadata.json", "report.json"):
+        for name in ("publication-metadata.json", "report.json", "compiler-inputs.json"):
             (work / name).write_bytes(b"{}\n")
         return {"stage": self.stage, "outputInventory": workflow._inventory(self.stage), "work": work,
                 "inputs": work / "inputs", "execution": work / "execution", "consumerInputs": work / "consumer-inputs"}

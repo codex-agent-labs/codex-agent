@@ -37,7 +37,15 @@ class MavenPackageWorkflowTest(unittest.TestCase):
             "event": "pull_request", "workflowPath": ".github/workflows/product-validation.yml",
             "runId": 10, "runAttempt": 1, "pullRequest": 2}
         self.component, self.target = "sdk-core", "common"
-        self.events, self.exit_mutation = [], None
+        self.events, self.exit_mutation, self.binary_exit_mutation = [], None, None
+        self.binary_held = False
+        self.binary_context = {"repositoryRoot": "/original/checkout", "workerRoot": "/original/checkout/build/binary"}
+        self.binary_capture = self.root / "binary-capture"
+        (self.binary_capture / "original").mkdir(parents=True)
+        (self.binary_capture / "original/raw.bin").write_bytes(b"")
+        (self.binary_capture / "transport.zip").write_bytes(b"exact original binary upload")
+        self.android_archive = self.root / "android-runtime.tar.gz"
+        self.android_archive.write_bytes(b"caller original Android archive")
         self.original_contract = self.record("original-contract", "contract", "contract", "metadata", "common")
         self.current_contract = self.record("current-contract", "contract", "contract", "metadata", "common")
         evidence = self.root / "original-contract-evidence"
@@ -65,6 +73,8 @@ class MavenPackageWorkflowTest(unittest.TestCase):
                                                           side_effect=self.materialize))
         self.worker = self.enterContext(patch.object(workflow, "execute_package", side_effect=self.execute_worker))
         self.gate = self.enterContext(patch.object(workflow, "verify_sdk_package_inputs", side_effect=self.full_gate))
+        self.binary_reader = self.enterContext(patch.object(workflow, "verified_original_maven_phase", side_effect=self.binary_inputs))
+        self.retained_reader = self.enterContext(patch.object(workflow, "verified_retained_maven_phase", side_effect=self.binary_inputs))
         self.checkout = self.enterContext(patch.object(workflow.product_reuse, "_runtime_worker_checkout"))
         self.publish = self.enterContext(patch.object(workflow, "publish_regular_tree", wraps=workflow.publish_regular_tree))
 
@@ -100,6 +110,36 @@ class MavenPackageWorkflowTest(unittest.TestCase):
             self.exit_mutation()
         self.events.append("closed")
 
+    @contextmanager
+    def binary_inputs(self, plan, receipt, **kwargs):
+        self.events.append("binary-enter")
+        self.assertEqual(self.plan, plan)
+        self.assertEqual(self.binary["receiptPath"].read_bytes(), receipt.read_bytes())
+        self.assertIs(self.evidence, kwargs["binary_contract_evidence"])
+        self.assertIs(self.binary_context, kwargs["original_context"])
+        self.assertNotIn("keyring", kwargs)
+        self.assertNotIn("keys_directory", kwargs)
+        if self.component == "sdk-android":
+            self.assertEqual(self.android_archive, kwargs["android_runtime_archive"])
+        else:
+            self.assertNotIn("android_runtime_archive", kwargs)
+        if "capture_root" in kwargs:
+            self.assertEqual(self.binary_capture, kwargs["capture_root"])
+            self.assertNotIn("token", kwargs)
+        else:
+            self.assertEqual((7, "sha256:" + "b" * 64, "e" * 40, "fixture-token"),
+                tuple(kwargs[key] for key in ("artifact_id", "artifact_sha256", "trusted_workflow_sha", "token")))
+        self.binary_held = True
+        try:
+            yield {**self.binary, "receiptBytes": self.binary["receiptPath"].read_bytes(), "capture": self.binary_capture}
+        finally:
+            self.events.append("binary-exit")
+            self.assertFalse((self.destination / "shard").exists())
+            self.binary_held = False
+            if self.binary_exit_mutation:
+                self.binary_exit_mutation()
+            self.events.append("binary-closed")
+
     def materialize(self, plan, discovery, state, instance, destination, **kwargs):
         self.assertEqual(self.component, instance.component)
         self.assertEqual(self.ready["buildKey"], kwargs["expected_build_key"])
@@ -115,10 +155,12 @@ class MavenPackageWorkflowTest(unittest.TestCase):
 
     def execute_worker(self, ready, **kwargs):
         self.events.append("worker")
+        self.assertTrue(self.binary_held)
         self.assertEqual(self.ready, ready)
         self.assertEqual("0.8.7", kwargs["sdk_version"])
         self.assertEqual(self.sdk / workflow.REQUEST_NAME, kwargs["compatibility_request"])
         self.assertNotIn("contract_metadata", kwargs)
+        self.assertNotIn("android_runtime_archive", kwargs)
         kwargs["destination"].mkdir()
         (kwargs["destination"] / "gradle.log").write_bytes(b"")
         (kwargs["destination"] / "execution.json").write_bytes(b"{}\n")
@@ -127,6 +169,7 @@ class MavenPackageWorkflowTest(unittest.TestCase):
 
     def full_gate(self, root, stage, receipt, request, **kwargs):
         self.events.append("gate")
+        self.assertTrue(self.binary_held)
         self.assertNotIn("exit", self.events)
         self.assertFalse((self.destination / "shard").exists())
         self.candidate = receipt.parent
@@ -146,7 +189,10 @@ class MavenPackageWorkflowTest(unittest.TestCase):
             **{**dict(component=self.component, expected_build_key=self.ready["buildKey"],
                 sdk_inputs_artifact_id=3, sdk_inputs_artifact_sha256="sha256:" + "d" * 64,
                 trusted_workflow_sha="e" * 40, keyring=self.keyring, keys_directory=self.keys,
-                binary_contract_evidence=self.evidence, repository_root=self.root, environ={}, token="fixture-token"),
+                binary_contract_evidence=self.evidence, binary_original_context=self.binary_context,
+                binary_artifact_id=7, binary_artifact_sha256="sha256:" + "b" * 64,
+                android_runtime_archive=self.android_archive if self.component == "sdk-android" else None,
+                repository_root=self.root, environ={}, token="fixture-token"),
                **changes})
 
     def test_both_families_publish_only_after_context_and_keep_originals_external(self):
@@ -158,10 +204,14 @@ class MavenPackageWorkflowTest(unittest.TestCase):
                     if component == "sdk-android": fixture.configure(component)
                     result = fixture.invoke()
                     self.assertEqual(component, result["receipt"]["component"])
-                    self.assertEqual(["enter", "worker", "gate", "exit", "closed"], fixture.events)
+                    self.assertEqual(["enter", "binary-enter", "worker", "gate", "binary-exit", "binary-closed", "exit", "closed"], fixture.events)
                     self.assertEqual(fixture.capture.joinpath("original-upload.zip").read_bytes(),
                         (fixture.destination / "sdk-inputs-original/original-upload.zip").read_bytes())
                     self.assertEqual({"artifact.bin"}, {path.name for path in (fixture.package["stage"] / "outputs").iterdir()})
+                    self.assertEqual(fixture.binary_capture.joinpath("transport.zip").read_bytes(),
+                        (fixture.destination / "binary-original/capture/transport.zip").read_bytes())
+                    self.assertEqual(canonical_json_bytes(fixture.binary_context),
+                        (fixture.destination / "binary-original/context.json").read_bytes())
                     fixture.publish.assert_called_once()
                     self.assertNotIn("sdk_validation_tooling", fixture.verified.call_args.kwargs)
                     self.assertNotIn("sdk_apple_validation_policy", fixture.materialized.call_args.kwargs)
@@ -223,21 +273,80 @@ class MavenPackageWorkflowTest(unittest.TestCase):
         self.publish.assert_not_called()
         self.assertFalse((self.destination / "shard").exists())
 
+    def test_retained_binary_mode_preserves_same_gates_without_observation(self):
+        self.invoke(binary_artifact_id=None, binary_artifact_sha256=None, binary_capture_root=self.binary_capture)
+        self.binary_reader.assert_not_called()
+        self.retained_reader.assert_called_once()
+        self.assertIn("binary-closed", self.events)
+
+    def test_missing_mixed_or_partial_original_proof_fails_before_state_replay(self):
+        for changes in ({"binary_artifact_id": None, "binary_artifact_sha256": None},
+                        {"binary_capture_root": self.binary_capture},
+                        {"binary_artifact_sha256": None}, {"binary_artifact_id": True},
+                        {"binary_original_context": {}}, {"android_runtime_archive": self.android_archive}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.invoke(**changes)
+        self.verified.assert_not_called()
+        self.worker.assert_not_called()
+
+    def test_original_binary_mismatch_rejects_before_package_consumption(self):
+        @contextmanager
+        def mismatch(*args, **kwargs):
+            yield {**self.binary, "receiptBytes": b"different selected receipt", "capture": self.binary_capture}
+        self.binary_reader.side_effect = mismatch
+        with self.assertRaisesRegex(ValueError, "elected predecessor"):
+            self.invoke()
+        self.worker.assert_not_called()
+        self.publish.assert_not_called()
+
+    def test_binary_exit_failure_or_retained_mutation_never_publishes(self):
+        for case in ("failure", "capture", "context"):
+            with self.subTest(case=case):
+                fixture = MavenPackageWorkflowTest(methodName="runTest")
+                fixture.setUp()
+                try:
+                    def mutate():
+                        if case == "failure":
+                            raise ValueError("binary original reader exit failed")
+                        path = fixture.destination / "binary-original" / (
+                            "capture/transport.zip" if case == "capture" else "context.json")
+                        path.write_bytes(b"changed")
+                    fixture.binary_exit_mutation = mutate
+                    with self.assertRaises(ValueError):
+                        fixture.invoke()
+                    self.assertFalse((fixture.destination / "shard").exists())
+                    self.assertTrue((fixture.destination / "worker/gradle.log").exists())
+                    fixture.publish.assert_not_called()
+                finally:
+                    fixture.doCleanups()
+
     def test_cli_canonical_evidence_policies_and_environment_token(self):
         evidence = self.root / "caller-evidence.json"
         write_canonical_json(evidence, self.evidence)
+        context = self.root / "binary-context.json"
+        write_canonical_json(context, self.binary_context)
         argv = []
         for name, value in {"plan": self.plan, "destination": self.destination, "keyring": self.keyring,
             "keys-directory": self.keys, "repository-root": self.root, "binary-contract-evidence": evidence,
             "discovery-root": self.discovery, "state-root": self.discovery, "component": "sdk-core",
             "expected-build-key": self.ready["buildKey"], "sdk-inputs-artifact-id": 3,
-            "sdk-inputs-artifact-sha256": "sha256:" + "d" * 64, "trusted-workflow-sha": "e" * 40}.items():
+            "sdk-inputs-artifact-sha256": "sha256:" + "d" * 64, "trusted-workflow-sha": "e" * 40,
+            "binary-original-context": context, "binary-artifact-id": 7,
+            "binary-artifact-sha256": "sha256:" + "b" * 64}.items():
             argv.extend(["--" + name, str(value)])
         with patch.object(workflow, "execute") as execute, patch.dict(workflow.os.environ, {"GITHUB_TOKEN": "env-token"}):
             self.assertEqual(0, workflow.main(argv))
             self.assertEqual(self.evidence, execute.call_args.kwargs["binary_contract_evidence"])
+            self.assertEqual(self.binary_context, execute.call_args.kwargs["binary_original_context"])
+            self.assertEqual(7, execute.call_args.kwargs["binary_artifact_id"])
             self.assertEqual("env-token", execute.call_args.kwargs["token"])
             self.assertNotIn("sdk_validation_tooling", execute.call_args.kwargs)
+            retained_argv = [item for name, value in zip(argv[::2], argv[1::2])
+                             if name not in {"--binary-artifact-id", "--binary-artifact-sha256"}
+                             for item in (name, value)]
+            self.assertEqual(0, workflow.main([*retained_argv, "--binary-capture-root", str(self.binary_capture)]))
+            self.assertEqual(self.binary_capture, execute.call_args.kwargs["binary_capture_root"])
+            self.assertIsNone(execute.call_args.kwargs["binary_artifact_id"])
             policy = self.root / "caller-policy.json"
             write_canonical_json(policy, {"fixture": "caller-only"})
             self.assertEqual(0, workflow.main([*argv, "--sdk-validation-tooling", str(policy),
@@ -245,10 +354,15 @@ class MavenPackageWorkflowTest(unittest.TestCase):
             self.assertEqual({"fixture": "caller-only"}, execute.call_args.kwargs["sdk_validation_tooling"])
             self.assertEqual({"fixture": "caller-only"}, execute.call_args.kwargs["sdk_apple_validation_policy"])
             for bad in ([*argv, "--token", "injected"], [*argv, "--component", "sdk-ios"],
-                        ["--pl" if arg == "--plan" else arg for arg in argv]):
+                        ["--pl" if arg == "--plan" else arg for arg in argv],
+                        [*argv, "--binary-capture-root", str(self.binary_capture)],
+                        argv[:-4], argv[:-2]):
                 execute.reset_mock()
                 with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit): workflow.main(bad)
                 execute.assert_not_called()
+            context.write_bytes(context.read_bytes() + b" ")
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit): workflow.main(argv)
+            write_canonical_json(context, self.binary_context)
             evidence.write_bytes(evidence.read_bytes() + b" ")
             with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit): workflow.main(argv)
 

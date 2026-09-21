@@ -1,6 +1,6 @@
 """Produce elected Android metadata after exact original validation replay.
 
-The retained validation root must come from an independently authenticated
+The retained validation capture must come from an independently authenticated
 carrier.  Its bytes grant no authority: caller-owned package, binary, S858,
 Contract, tooling and source policy remain mandatory and are compared before
 the existing full replay is run.  This controller executes no Firebase work,
@@ -28,7 +28,7 @@ from products.inventory import (
 from products.plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST, plan_phase
 from products.receipt import validate_producer, verify_output_manifest_identity
 from products.registry import PhaseInstanceId
-from products.restore import PHASE_PLAN_KEYS, PHASE_RECEIPT_NAME, restore_object, verify_phase_shard
+from products.restore import PHASE_PLAN_KEYS, PHASE_RECEIPT_NAME, verify_phase_shard
 from products.sdk_android_metadata import (
     OUTPUT_KIND, OUTPUT_PATH, write_android_metadata_content,
 )
@@ -240,7 +240,7 @@ def _execute_metadata(plan, *, producer, sdk_version, request, repository_root,
 
 
 def execute(plan, discovery, state, destination, *, expected_build_key,
-            original_validation_root, package_stage, package_receipt,
+            original_validation_capture, package_stage, package_receipt,
             binary_stage, binary_receipt, compatibility_request,
             binary_contract_evidence, trusted_source_commit, trusted_source_tree,
             tooling_evidence, tooling_public_key, java_executable,
@@ -259,7 +259,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         raise ValueError("Android metadata destination must not exist")
     trees = {
         "discovery": discovery, "state": state,
-        "originalValidation": Path(original_validation_root).absolute(),
+        "originalValidationCapture": Path(original_validation_capture).absolute(),
         "package": Path(package_stage).absolute(), "binary": Path(binary_stage).absolute(),
         "tooling": Path(tooling_evidence).absolute(),
     }
@@ -377,89 +377,68 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         if selected_manifest["outputs"] != validation["outputs"]:
             raise ValueError("Android metadata selected validation differs from its receipt")
 
-        original = trees["originalValidation"]
-        if {path.name for path in original.iterdir()} != {"inputs", "originals", "stage", "shard"}:
-            raise ValueError("Original Android validation has an unexpected retained layout")
-        shard = verify_phase_shard(original / "shard", _VALIDATION)
-        if shard["receiptBytes"] != selected_bytes:
-            raise ValueError("Original Android validation shard differs from selected receipt")
-        if (regular_file_inventory(original / "stage") != regular_file_inventory(selected / "stage")
-                or _read(original / "shard/phase-receipt.json") != selected_bytes):
-            raise ValueError("Original Android validation stage differs from selected predecessor")
-        original_plan = product_reuse._canonical_control(
-            original / "inputs/phase-plan.json", "Original Android validation plan")
-        original_producer = product_reuse.validate_producer(product_reuse._canonical_control(
-            original / "inputs/producer.json", "Original Android validation producer"))
-        if (canonical_json_bytes(original_plan) != canonical_json_bytes(
-                {name: validation[name] for name in PHASE_PLAN_KEYS})
-                or canonical_json_bytes(original_producer) != canonical_json_bytes(validation["producer"])):
-            raise ValueError("Original Android validation selection differs from its receipt")
-        package = product_reuse.validate_phase_receipt(load_canonical_json_bytes(file_before["packageReceipt"]))
-        binary = product_reuse.validate_phase_receipt(load_canonical_json_bytes(file_before["binaryReceipt"]))
-        _compare_original_inputs(original, package_stage=trees["package"],
-            package_receipt=files["packageReceipt"], binary_stage=trees["binary"],
-            binary_receipt=files["binaryReceipt"], compatibility_request=files["compatibilityRequest"],
-            binary_contract_evidence=binary_contract_evidence)
-        _replan(root, validation, package)
-        unchanged()
-
+        # Local import avoids a module cycle while the original reader reuses
+        # the two retained-input helpers above.
+        if __package__:
+            from .sdk_android_original_validation import verified_retained_android_validation
+        else:
+            from sdk_android_original_validation import verified_retained_android_validation
         with tempfile.TemporaryDirectory(prefix="sdk-android-metadata-") as temporary:
             private = Path(temporary).resolve()
-            restored = restore_object(
-                original / "shard" / shard["objectPath"], private / "validation-stage",
-                build_key=shard["buildKey"], receipt_sha256=shard["receiptSha256"],
-                object_sha256=shard["objectSha256"])
-            if (restored["receiptBytes"] != selected_bytes
-                    or regular_file_inventory(private / "validation-stage") !=
-                       regular_file_inventory(selected / "stage")):
-                raise ValueError("Original Android validation object differs from selected predecessor")
-            replay_stage = private / "replay-stage"
-            validation_phase.produce_sdk_android_validation_phase(
-                repository=root, package_stage=trees["package"], package_receipt=files["packageReceipt"],
-                binary_stage=trees["binary"], binary_receipt=files["binaryReceipt"],
-                compatibility_request=files["compatibilityRequest"],
-                binary_contract_evidence=binary_contract_evidence,
-                final_capture=original / "originals/final",
-                protected_capture=original / "originals/protected",
-                expected_capture_producer=dict(validation["producer"]),
-                expected_original_producer=dict(binary["producer"]),
-                trusted_source_commit=trusted_source_commit, trusted_source_tree=trusted_source_tree,
-                tooling_evidence=trees["tooling"], tooling_public_key=files["toolingPublicKey"],
-                java_executable=files["java"], apkanalyzer_executable=files["apkanalyzer"],
-                policy_revision=policy_revision, required_trust_domain=required_trust_domain,
-                destination=replay_stage, tooling_keyring=tooling_keyring,
-                tooling_keys_directory=tooling_keys_directory,
-            )
-            if regular_file_inventory(replay_stage) != regular_file_inventory(selected / "stage"):
-                raise ValueError("Full Android validation replay differs from selected original stage")
-            validation_content = validate_android_validation_content(load_canonical_json_bytes(
-                _read(replay_stage / validation_phase.OUTPUT_PATH)))
-            request = destination / "metadata-request.json"
-            write_canonical_json(request, {
-                "sdkVersion": version, "packageStage": str(trees["package"]),
-                "packageReceipt": str(files["packageReceipt"]),
-                "validationStage": str(selected / "stage"),
-                "validationReceipt": str(selected_receipt_path),
-                "releaseAarSha256": validation_content["releaseAarSha256"],
-                "bundledRuntimeSha256": validation_content["bundledRuntimeSha256"],
-            })
-            request_bytes = _read(request)
-            expected_path = private / "expected-metadata.json"
-            expected = write_android_metadata_content(request, expected_path)
-            unchanged()
-            result = _execute_metadata(
-                ready, producer=producer, sdk_version=version, request=request,
-                repository_root=root, destination=destination / "worker", environ=environ)
-            if (_read(result["content"]) != canonical_json_bytes(expected)
-                    or regular_file_inventory(result["stage"]) != result["outputInventory"]):
-                raise ValueError("Android metadata producer differs from fully replayed originals")
-            output_inventory = result["outputInventory"]
-            diagnostics_inventory = regular_file_inventory(result["diagnostics"], allow_empty=True)
-            unchanged()
-        # No receipt exists until every private original/replay context has exited.
-        originals = destination / "originals/validation"
-        snapshot_regular_tree(original, originals, allow_empty=True)
-        retained[originals] = tree_before["originalValidation"]
+            with verified_retained_android_validation(
+                    plan, selected_receipt_path,
+                    validation_capture=trees["originalValidationCapture"],
+                    package_stage=trees["package"], package_receipt=files["packageReceipt"],
+                    binary_stage=trees["binary"], binary_receipt=files["binaryReceipt"],
+                    compatibility_request=files["compatibilityRequest"],
+                    binary_contract_evidence=binary_contract_evidence,
+                    trusted_source_commit=trusted_source_commit,
+                    trusted_source_tree=trusted_source_tree,
+                    tooling_evidence=trees["tooling"],
+                    tooling_public_key=files["toolingPublicKey"],
+                    java_executable=files["java"],
+                    apkanalyzer_executable=files["apkanalyzer"],
+                    policy_revision=policy_revision,
+                    required_trust_domain=required_trust_domain,
+                    repository_root=root, environ=environ,
+                    tooling_keyring=tooling_keyring,
+                    tooling_keys_directory=tooling_keys_directory) as original:
+                if (original["receiptBytes"] != selected_bytes
+                        or canonical_json_bytes(original["receipt"]) != selected_bytes
+                        or regular_file_inventory(original["stage"]) !=
+                           regular_file_inventory(selected / "stage")):
+                    raise ValueError("Verified Android validation differs from selected predecessor")
+                validation_content = validate_android_validation_content(load_canonical_json_bytes(
+                    _read(original["stage"] / validation_phase.OUTPUT_PATH)))
+                request = destination / "metadata-request.json"
+                write_canonical_json(request, {
+                    "sdkVersion": version, "packageStage": str(trees["package"]),
+                    "packageReceipt": str(files["packageReceipt"]),
+                    "validationStage": str(selected / "stage"),
+                    "validationReceipt": str(selected_receipt_path),
+                    "releaseAarSha256": validation_content["releaseAarSha256"],
+                    "bundledRuntimeSha256": validation_content["bundledRuntimeSha256"],
+                })
+                request_bytes = _read(request)
+                expected_path = private / "expected-metadata.json"
+                expected = write_android_metadata_content(request, expected_path)
+                originals = destination / "originals/validation"
+                original_inventory = regular_file_inventory(original["capture"], allow_empty=True)
+                snapshot_regular_tree(original["capture"], originals, allow_empty=True)
+                if regular_file_inventory(originals, allow_empty=True) != original_inventory:
+                    raise ValueError("Retained Android validation capture changed during snapshot")
+                retained[originals] = original_inventory
+                unchanged()
+                result = _execute_metadata(
+                    ready, producer=producer, sdk_version=version, request=request,
+                    repository_root=root, destination=destination / "worker", environ=environ)
+                if (_read(result["content"]) != canonical_json_bytes(expected)
+                        or regular_file_inventory(result["stage"]) != result["outputInventory"]):
+                    raise ValueError("Android metadata producer differs from verified originals")
+                output_inventory = result["outputInventory"]
+                diagnostics_inventory = regular_file_inventory(result["diagnostics"], allow_empty=True)
+                unchanged()
+        # No receipt exists until the verified original-reader context has exited.
         unchanged()
         if (regular_file_inventory(result["stage"]) != output_inventory
                 or regular_file_inventory(result["diagnostics"], allow_empty=True) != diagnostics_inventory
@@ -495,7 +474,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in (
-        "plan", "destination", "original-validation-root", "package-stage", "package-receipt",
+        "plan", "destination", "original-validation-capture", "package-stage", "package-receipt",
         "binary-stage", "binary-receipt", "compatibility-request", "binary-contract-evidence",
         "tooling-evidence", "tooling-public-key", "java-executable", "apkanalyzer-executable",
         "repository-root",

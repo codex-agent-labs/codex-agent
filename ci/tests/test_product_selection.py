@@ -121,6 +121,7 @@ class ProductSelectionTest(unittest.TestCase):
             ("ci/sdk_facade_workflow.py", "sdk-core", False),
             ("ci/sdk_facade_validation_phase.py", "sdk-core", False),
             ("gradle/build-logic/src/main/kotlin/SdkFacadeOriginalExecution.kt", "sdk-core", False),
+            ("gradle/build-logic/src/main/kotlin/SdkFacadeCompilerCapture.kt", "sdk-core", False),
             ("gradle/build-logic/src/main/kotlin/SdkFacadeValidationTasks.kt", "sdk-core", True),
             ("gradle/build-logic/src/main/kotlin/ImportedSdkFacadePublicationVerification.kt", "sdk-core", True),
             ("ci/sdk_android_upload_locator.py", "sdk-android", False),

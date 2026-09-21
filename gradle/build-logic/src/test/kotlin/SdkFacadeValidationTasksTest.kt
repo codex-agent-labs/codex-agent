@@ -65,6 +65,8 @@ class SdkFacadeValidationTasksTest {
             assertEquals("/sdk", consumer.androidSdkDirectory.get())
             assertEquals(work.resolve("consumer"), consumer.consumerDirectory.get().asFile)
             assertEquals(work.resolve("execution"), consumer.executionCaptureDirectory.get().asFile)
+            assertEquals(work.resolve("compiler-inputs.json"), consumer.compilerInputsCaptureFile.get().asFile)
+            assertFalse(consumer.compilerInputsCaptureFile.get().asFile.toPath().startsWith(stage.toPath()))
             assertEquals(work.resolve("report.json"), consumer.resultFile.get().asFile)
             assertEquals(listOf("python3", "-m", "ci.products.sdk_facade_inputs", "content", "--request", request.path,
                 "--inputs", work.resolve("inputs").path, "--evidence", work.resolve("execution").path,

@@ -185,7 +185,7 @@ def execute(plan: Mapping, *, producer: Mapping, repository_root: Path,
             raise ValueError("Core validation consumer input capture is incomplete")
         if any(sha256_file(work / "consumer" / row["relativePath"]) != row["sha256"] for row in captured_inputs):
             raise ValueError("Core validation consumer inputs changed after their capture")
-        for name in ("inputs/inputs.json", "inputs/maven-inventory.json", "publication-metadata.json", "report.json"):
+        for name in ("inputs/inputs.json", "inputs/maven-inventory.json", "publication-metadata.json", "report.json", "compiler-inputs.json"):
             if not _read(work / name):
                 raise ValueError("Core validation retained input or report is empty")
         if _read(work / "report.json") != _read(evidence / "report.json"):

@@ -180,7 +180,7 @@ def verified_original_sdk_facade_validation(
                 original / "selection": {"impact-plan.json", "phase-plan.json", "producer.json"},
                 original / "context": {"execution-context.json"},
                 original / "retained-execution": {"inputs", "consumer", "consumer-inputs", "execution",
-                                                     "publication-metadata.json", "report.json"},
+                                                     "publication-metadata.json", "report.json", "compiler-inputs.json"},
             }
             for directory, names in layouts.items():
                 require_regular_directory(directory, "Original Core retained directory")
@@ -228,7 +228,7 @@ def verified_original_sdk_facade_validation(
             verified, verified_bytes = verify_sdk_facade_validation_original_content(
                 repository=root, validation_stage=stage, validation_receipt=selected,
                 facade_request=request_path, prepared_inputs=work / "inputs", execution_directory=work / "execution",
-                consumer_inputs=work / "consumer-inputs", original_context=context,
+                consumer_inputs=work / "consumer-inputs", compiler_inputs=work / "compiler-inputs.json", original_context=context,
                 tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
                 java_executable=java_executable, policy_revision=policy_revision,
                 required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,

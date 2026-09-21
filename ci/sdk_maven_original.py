@@ -161,29 +161,31 @@ def _contract(original, receipt, evidence):
 @contextmanager
 def verified_original_maven_phase(plan, receipt_path, *, artifact_id, artifact_sha256, trusted_workflow_sha,
         binary_contract_evidence, original_context, repository_root, environ, token,
-        keyring=None, keys_directory=None, android_runtime_archive=None):
+        keyring=None, keys_directory=None, android_runtime_archive=None, binary_original_context=None):
     with _verified_maven_phase(plan, receipt_path, capture_root=None,
             artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
             binary_contract_evidence=binary_contract_evidence, original_context=original_context,
             repository_root=repository_root, environ=environ, token=token,
-            keyring=keyring, keys_directory=keys_directory, android_runtime_archive=android_runtime_archive) as result:
+            keyring=keyring, keys_directory=keys_directory, android_runtime_archive=android_runtime_archive,
+            binary_original_context=binary_original_context) as result:
         yield result
 
 
 @contextmanager
 def verified_retained_maven_phase(plan, receipt_path, *, capture_root, binary_contract_evidence,
-        original_context, repository_root, environ, keyring=None, keys_directory=None, android_runtime_archive=None):
+        original_context, repository_root, environ, keyring=None, keys_directory=None, android_runtime_archive=None,
+        binary_original_context=None):
     """Caller authenticates the complete retained carrier; transport JSON cannot."""
     with _verified_maven_phase(plan, receipt_path, capture_root=Path(capture_root),
             binary_contract_evidence=binary_contract_evidence, original_context=original_context,
             repository_root=repository_root, environ=environ, keyring=keyring, keys_directory=keys_directory,
-            android_runtime_archive=android_runtime_archive) as result:
+            android_runtime_archive=android_runtime_archive, binary_original_context=binary_original_context) as result:
         yield result
 
 
 @contextmanager
 def _verified_maven_phase(plan, receipt_path, *, capture_root, binary_contract_evidence, original_context,
-        repository_root, environ, keyring, keys_directory, android_runtime_archive,
+        repository_root, environ, keyring, keys_directory, android_runtime_archive, binary_original_context,
         artifact_id=None, artifact_sha256=None, trusted_workflow_sha=None, token=None):
     require_no_signing_secret(environ)
     root, plan, receipt_path = Path(repository_root).resolve(strict=True), Path(plan), Path(receipt_path)
@@ -195,9 +197,12 @@ def _verified_maven_phase(plan, receipt_path, *, capture_root, binary_contract_e
         raise ValueError("Original Maven reader requires Core/Android binary or package")
     if ((phase == "package") != (keyring is not None and keys_directory is not None)
             or (keyring is None) != (keys_directory is None)
-            or (android_runtime_archive is not None) != (component == "sdk-android" and phase == "binary")):
+            or (android_runtime_archive is not None) != (component == "sdk-android")
+            or (binary_original_context is not None) != (phase == "package")):
         raise ValueError("Original Maven phase requires its exact caller policy and archive inputs")
     context = _context(original_context, phase)
+    if binary_original_context is not None:
+        _context(binary_original_context, "binary")
     evidence = require_exact_keys(binary_contract_evidence, _EVIDENCE_FIELDS, "Caller original binary Contract")
     if (evidence["expectedTrustDomain"] not in {"development", "release"}
             or (phase == "binary" and evidence["expectedTrustDomain"] != "release")
@@ -219,7 +224,7 @@ def _verified_maven_phase(plan, receipt_path, *, capture_root, binary_contract_e
         files["archive"] = Path(android_runtime_archive)
     files_before = {name: _read(path) for name, path in files.items()}
     trees_before = {name: _inventory(path, allow_empty=True) for name, path in trees.items()}
-    policy_bytes = canonical_json_bytes({"context": context, "contract": evidence})
+    policy_bytes = canonical_json_bytes({"context": context, "contract": evidence, "binaryContext": binary_original_context})
     retained, result = {}, None
     result_bytes = None
 
@@ -230,7 +235,8 @@ def _verified_maven_phase(plan, receipt_path, *, capture_root, binary_contract_e
     def unchanged():
         require_no_signing_secret(environ)
         if (_read(receipt_path) != raw or canonical_json_bytes(receipt) != raw
-                or canonical_json_bytes({"context": original_context, "contract": binary_contract_evidence}) != policy_bytes
+                or canonical_json_bytes({"context": original_context, "contract": binary_contract_evidence,
+                                         "binaryContext": binary_original_context}) != policy_bytes
                 or any(_read(path) != files_before[name] for name, path in files.items())
                 or any(_inventory(path, allow_empty=True) != trees_before[name] for name, path in trees.items())
                 or any(_inventory(path, allow_empty=True) != before for path, before in retained.items())
@@ -257,7 +263,7 @@ def _verified_maven_phase(plan, receipt_path, *, capture_root, binary_contract_e
             retained[capture] = _inventory(capture, allow_empty=True)
             original = capture / "original"
             names = {"inputs", "selection", "worker", "shard"}
-            names.update({"sdk-inputs-original", "binary-contract-original"} if phase == "package" else
+            names.update({"sdk-inputs-original", "binary-contract-original", "binary-original"} if phase == "package" else
                          {"android-original"} if component == "sdk-android" else set())
             _layout(original, names)
             instance = PhaseInstanceId("sdk", component, phase, target)
@@ -280,7 +286,7 @@ def _verified_maven_phase(plan, receipt_path, *, capture_root, binary_contract_e
                     raise ValueError("Original Maven retained election differs from its receipt")
             contract_version = _contract(original, receipt, evidence)
             archive_name = None
-            if android_runtime_archive is not None:
+            if android_runtime_archive is not None and phase == "binary":
                 archive_name = Path(android_runtime_archive).name
                 _layout(original / "android-original", {archive_name})
                 if _read(original / "android-original" / archive_name) != files_before["archive"]:
@@ -308,6 +314,9 @@ def _verified_maven_phase(plan, receipt_path, *, capture_root, binary_contract_e
                 unchanged()
             else:
                 binary = _predecessor(inputs, "sdk", component, "binary", target)
+                _layout(original / "binary-original", {"capture", "context.json"})
+                if canonical_json_bytes(_json(original / "binary-original/context.json")) != canonical_json_bytes(binary_original_context):
+                    raise ValueError("Retained Maven binary context differs from independent caller context")
                 current_contract = _predecessor(inputs, "contract", "contract", "metadata", "common")
                 bundles = [row for row in current_contract["receipt"]["outputs"] if row["kind"] == "contract-bundle"]
                 if len(bundles) != 1:
@@ -327,7 +336,14 @@ def _verified_maven_phase(plan, receipt_path, *, capture_root, binary_contract_e
                     raise ValueError("Original Maven SDK inputs differ from original producer/plan")
                 with verified_apple_original_inputs(sdk_capture, expected_source=source, keyring=Path(keyring),
                         keys_directory=Path(keys_directory), selection_repository_root=root,
-                        selection_revision=producer["commit"], expected_contract_payload_sha256=bundles[0]["sha256"]) as joined:
+                        selection_revision=producer["commit"], expected_contract_payload_sha256=bundles[0]["sha256"]) as joined, \
+                        verified_retained_maven_phase(plan, binary["receiptPath"],
+                            capture_root=original / "binary-original/capture", binary_contract_evidence=evidence,
+                            original_context=binary_original_context, repository_root=root, environ=environ,
+                            android_runtime_archive=android_runtime_archive) as binary_original:
+                    if (binary_original["receiptBytes"] != _read(binary["receiptPath"])
+                            or _inventory(binary_original["stage"]) != _inventory(binary["stage"])):
+                        raise ValueError("Original Maven package selected a different authenticated binary")
                     arguments = joined["sdk"]["arguments"]
                     if _read(current_contract["receiptPath"]) != _read(arguments["contract_metadata_receipt"]):
                         raise ValueError("Original Maven current Contract differs from signed SDK inputs")

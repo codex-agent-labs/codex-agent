@@ -48,12 +48,13 @@ internal fun runReleaseTooling(arguments: Array<String>) {
         "verify-original-sdk-facade-consumer-inputs" -> {
             options.requireOnly("source-snapshot", "consumer-inputs", "package-stage", "target",
                 "contract-version", "runtime-version", "sdk-version", "kotlin-version",
-                "original-execution-directory", "android-sdk-directory", "forbidden-path")
+                "original-execution-directory", "android-sdk-directory", "compiler-inputs", "forbidden-path")
             verifyOriginalSdkFacadeConsumerInputs(
                 options.file("source-snapshot"), options.file("consumer-inputs"), options.file("package-stage"),
                 options.required("target"), options.required("contract-version"), options.required("runtime-version"),
                 options.required("sdk-version"), options.required("kotlin-version"),
                 options.required("original-execution-directory"), options.supplied("android-sdk-directory"),
+                options.file("compiler-inputs"),
                 options.required("forbidden-path"),
             )
         }

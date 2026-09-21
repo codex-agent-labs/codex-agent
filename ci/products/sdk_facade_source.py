@@ -20,6 +20,7 @@ _FILES = (
     "gradle/build-logic/src/main/kotlin/KmpConsumerVerificationTask.kt",
     "gradle/build-logic/src/main/kotlin/ReleaseToolingGradleTasks.kt",
     "gradle/build-logic/src/main/kotlin/SdkFacadeValidationTasks.kt",
+    "gradle/build-logic/src/main/kotlin/SdkFacadeCompilerCapture.kt",
     "gradle/build-logic/build.gradle.kts", "gradle/build-logic/settings.gradle.kts", "gradle/libs.versions.toml",
 )
 
