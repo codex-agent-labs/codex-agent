@@ -61,6 +61,8 @@ from .runtime_adapter_content import (
 from .receipt import build_key_payload
 from .sdk_validation import VerifiedSdkValidationProjection, decode_sdk_validation_records, sdk_validation_provider
 from .sdk_apple_validation_admission import AppleValidationAdmission
+from .sdk_facade_metadata_admission import FacadeMetadataAdmission
+from .sdk_android_metadata_admission import AndroidMetadataAdmission
 from .registry import (
     NATIVE_TARGETS,
     PHASE_INSTANCE_IDS,
@@ -1064,6 +1066,8 @@ def plan_reuse_wave(
     *,
     build_plan_consumer: Callable[[PhaseInstanceId, dict[str, Any]], None] | None = None,
     sdk_runtime_consumer: Callable[[dict[str, Any]], None] | None = None,
+    sdk_facade_metadata_admission: FacadeMetadataAdmission | None = None,
+    sdk_android_metadata_admission: AndroidMetadataAdmission | None = None,
 ) -> dict[str, Any]:
     """Decode one strict control request and delegate all resolution to advance_reuse."""
     if sdk_runtime_consumer is not None and not callable(sdk_runtime_consumer):
@@ -1443,6 +1447,8 @@ def plan_reuse_wave(
             native_runtime_projection_provider=native_runtime_projection_provider,
             sdk_validation_projection_provider=sdk_projection_provider,
             sdk_apple_validation_admission=apple_admission,
+            sdk_facade_metadata_admission=sdk_facade_metadata_admission,
+            sdk_android_metadata_admission=sdk_android_metadata_admission,
             build_plan_consumer=build_plan_consumer,
         )
         unused_evidence = set(runtime_validation_evidence) - consumed_runtime_validation_evidence
@@ -1546,6 +1552,8 @@ def advance_reuse(
     ] | None = None,
     build_plan_consumer: Callable[[PhaseInstanceId, dict[str, Any]], None] | None = None,
     sdk_apple_validation_admission: AppleValidationAdmission | None = None,
+    sdk_facade_metadata_admission: FacadeMetadataAdmission | None = None,
+    sdk_android_metadata_admission: AndroidMetadataAdmission | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
     """Resolve verified reuse and return only the next dependency-ready build wave.
 
@@ -1557,8 +1565,13 @@ def advance_reuse(
         raise ValueError("Reuse resolution requires a LookupSession")
     if sdk_apple_validation_admission is not None and type(sdk_apple_validation_admission) is not AppleValidationAdmission:
         raise ValueError("Apple validation admission requires the concrete full verifier")
+    for admission, expected in (
+            (sdk_facade_metadata_admission, FacadeMetadataAdmission),
+            (sdk_android_metadata_admission, AndroidMetadataAdmission)):
+        if admission is not None and type(admission) is not expected:
+            raise ValueError("SDK metadata admission requires the concrete full verifier")
 
-    def admit_apple(instance, envelope):
+    def admit_sdk(instance, envelope):
         if (instance.product, instance.component, instance.phase) == ("sdk", "sdk-ios", "validation"):
             if sdk_apple_validation_admission is None:
                 raise ValueError("Apple validation reuse lacks authenticated original evidence")
@@ -1567,6 +1580,15 @@ def advance_reuse(
             if sdk_apple_validation_admission is None:
                 raise ValueError("Apple metadata reuse lacks authenticated original evidence")
             sdk_apple_validation_admission.verify_metadata(envelope, tuple(
+                dependency_envelope(instance, dependency)
+                for dependency in phase_instance_dependencies(instance)))
+        elif instance in (PhaseInstanceId("sdk", "sdk-core", "metadata", "common"),
+                          PhaseInstanceId("sdk", "sdk-android", "metadata", "android")):
+            admission = (sdk_facade_metadata_admission if instance.component == "sdk-core"
+                         else sdk_android_metadata_admission)
+            if admission is None:
+                raise ValueError("SDK metadata reuse lacks authenticated original evidence")
+            admission.verify_metadata(envelope, tuple(
                 dependency_envelope(instance, dependency)
                 for dependency in phase_instance_dependencies(instance)))
     if (repository_root is None) != (repository_revision is None):
@@ -1748,7 +1770,7 @@ def advance_reuse(
                 except ValueError:
                     del envelopes[instance]
                 else:
-                    admit_apple(instance, envelope)
+                    admit_sdk(instance, envelope)
                     resolved[instance] = envelope
                     states[instance] = {
                         "plan": plan,
@@ -1766,7 +1788,7 @@ def advance_reuse(
                 if outcome.envelope is None:
                     misses.append({"source": source, "reason": outcome.reason})
                     continue
-                admit_apple(instance, outcome.envelope)
+                admit_sdk(instance, outcome.envelope)
                 envelopes[instance] = outcome.envelope
                 resolved[instance] = outcome.envelope
                 states[instance] = {

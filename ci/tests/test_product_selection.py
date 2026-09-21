@@ -171,6 +171,20 @@ class ProductSelectionTest(unittest.TestCase):
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((), phase_inventory_paths([path], instance))
 
+    def test_metadata_admission_and_carrier_are_control_only(self):
+        core = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
+        android = PhaseInstanceId("sdk", "sdk-android", "metadata", "android")
+        for path, expected in (
+                ("ci/products/sdk_facade_metadata_admission.py", {core}),
+                ("ci/products/sdk_android_metadata_admission.py", {android}),
+                ("ci/sdk_metadata_evidence.py", {core, android})):
+            with self.subTest(path=path):
+                result = classify_paths([path])
+                self.assertEqual(expected, identities(result))
+                self.assertEqual((), result.unknown_paths)
+                for instance in PHASE_INSTANCE_IDS:
+                    self.assertEqual((), phase_inventory_paths([path], instance))
+
     def test_platform_metadata_producers_own_only_their_metadata_phase(self) -> None:
         for path, component, target in (
             ("ci/products/sdk_android_metadata.py", "sdk-android", "android"),

@@ -172,6 +172,7 @@ class Catalog:
     runtime_aggregate_evidence_root: Path | None = None
     sdk_apple_validation_evidence_root: Path | None = None
     sdk_maven_evidence_root: Path | None = None
+    sdk_metadata_evidence_root: Path | None = None
 
 
 def _identity(value: Mapping[str, Any]) -> PhaseInstanceId:
@@ -1017,6 +1018,18 @@ def _read_catalog_directory(source, extracted, destination, release_trust, *, re
         controls.update(f"sdk-maven-evidence/{path}" for path in _catalog_files(maven_root))
     else:
         maven_root = None
+    metadata_root = extracted / "sdk-metadata-evidence"
+    if metadata_root.exists() or metadata_root.is_symlink():
+        from sdk_metadata_evidence import load_sdk_metadata_evidence
+        metadata_records = load_sdk_metadata_evidence(metadata_root)
+        indexed = {(entry["receiptSha256"], entry["component"], entry["phase"], entry["target"])
+                   for entry in index["entries"] if entry["product"] == "sdk"}
+        if any((record["receiptSha256"], record["component"], record["phase"], record["target"])
+               not in indexed for record in metadata_records):
+            raise ValueError("Metadata catalog evidence lacks its exact indexed original receipt")
+        controls.update(f"sdk-metadata-evidence/{path}" for path in _catalog_files(metadata_root))
+    else:
+        metadata_root = None
     aggregate_root = extracted / "runtime-aggregate-release-evidence"
     if aggregate_root.exists():
         aggregate_records = load_runtime_aggregate_release_evidence(aggregate_root)
@@ -1112,6 +1125,7 @@ def _read_catalog_directory(source, extracted, destination, release_trust, *, re
         aggregate_root,
         apple_root,
         maven_root,
+        metadata_root,
     )
 
 
@@ -2044,6 +2058,22 @@ def _capture_maven_handoffs(evidence_roots, destination):
                 or regular_file_inventory(target, allow_empty=True) != before
                 or regular_file_inventory(source, allow_empty=True) != before):
             raise ValueError("Maven evidence carrier changed during retention")
+
+
+def _capture_metadata_handoffs(evidence_roots, destination):
+    """Preserve complete metadata transport; caller replay policy stays separate."""
+    from sdk_metadata_evidence import load_sdk_metadata_evidence
+    offset = len(list(destination.iterdir())) if destination.exists() else 0
+    for index, source in enumerate(evidence_roots, offset):
+        source = Path(source)
+        before = regular_file_inventory(source, allow_empty=True)
+        records = load_sdk_metadata_evidence(source)
+        target = destination / str(index)
+        snapshot_regular_tree(source, target, allow_empty=True)
+        if (load_sdk_metadata_evidence(target) != records
+                or regular_file_inventory(target, allow_empty=True) != before
+                or regular_file_inventory(source, allow_empty=True) != before):
+            raise ValueError("Metadata evidence carrier changed during retention")
 
 
 def _verify_discovery_sdk_records(request, discovery_root):
@@ -3968,6 +3998,7 @@ def advance_products(
     sdk_evidence_roots: tuple[Path, ...] = (),
     sdk_apple_evidence_roots: tuple[Path, ...] = (),
     sdk_maven_evidence_roots: tuple[Path, ...] = (),
+    sdk_metadata_evidence_roots: tuple[Path, ...] = (),
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     aggregate_evidence_roots: tuple[Path, ...] = (),
     sdk_validation_tooling: Mapping[str, Any] | None = None,
@@ -4151,6 +4182,12 @@ def advance_products(
             require_regular_directory(prior_maven, "Retained Maven evidence carriers")
             _capture_maven_handoffs(tuple(sorted(prior_maven.iterdir())), maven_destination)
         _capture_maven_handoffs(sdk_maven_evidence_roots, maven_destination)
+        metadata_destination = temporary_root / "result/sdk-metadata-evidence"
+        prior_metadata = state_root / "sdk-metadata-evidence"
+        if prior_metadata.exists() or prior_metadata.is_symlink():
+            require_regular_directory(prior_metadata, "Retained metadata evidence carriers")
+            _capture_metadata_handoffs(tuple(sorted(prior_metadata.iterdir())), metadata_destination)
+        _capture_metadata_handoffs(sdk_metadata_evidence_roots, metadata_destination)
         aggregate_destination = temporary_root / "result/runtime-aggregate-release-evidence"
         prior_aggregate = state_root / "runtime-aggregate-release-evidence"
         if prior_aggregate.exists():
@@ -5171,6 +5208,10 @@ def resume_products(
         if maven_discovery.exists() or maven_discovery.is_symlink():
             require_regular_directory(maven_discovery, "Discovered Maven evidence carriers")
             _capture_maven_handoffs(tuple(sorted(maven_discovery.iterdir())), prepared / "sdk-maven-evidence")
+        metadata_discovery = prepared / "discovery/sdk-metadata-evidence"
+        if metadata_discovery.exists() or metadata_discovery.is_symlink():
+            require_regular_directory(metadata_discovery, "Discovered metadata evidence carriers")
+            _capture_metadata_handoffs(tuple(sorted(metadata_discovery.iterdir())), prepared / "sdk-metadata-evidence")
         snapshot_regular_tree(state_root, prepared / "contract-state", allow_empty=True)
         complete = advance_contract(
             captured_plan, prepared / "discovery", prepared / "contract-state", [],
@@ -5255,6 +5296,7 @@ def discover(
     sdk_evidence_roots: tuple[Path, ...] = (),
     sdk_apple_evidence_roots: tuple[Path, ...] = (),
     sdk_maven_evidence_roots: tuple[Path, ...] = (),
+    sdk_metadata_evidence_roots: tuple[Path, ...] = (),
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     aggregate_evidence_roots: tuple[Path, ...] = (),
     sdk_validation_tooling: Mapping[str, Any] | None = None,
@@ -5384,6 +5426,13 @@ def discover(
             for instance in closure))
     _capture_maven_handoffs((*catalog_maven_roots, *sdk_maven_evidence_roots),
         destination / "sdk-maven-evidence")
+    catalog_metadata_roots = tuple(catalog.sdk_metadata_evidence_root
+        for catalog in sorted(catalogs, key=lambda value: SOURCES.index(value.source))
+        if catalog.sdk_metadata_evidence_root is not None and any(
+            instance.product == "sdk" and instance.component in {"sdk-core", "sdk-android"}
+            and instance.phase == "metadata" for instance in closure))
+    _capture_metadata_handoffs((*catalog_metadata_roots, *sdk_metadata_evidence_roots),
+        destination / "sdk-metadata-evidence")
     catalog_aggregate_roots = tuple(catalog.runtime_aggregate_evidence_root
         for catalog in sorted(catalogs, key=lambda value: SOURCES.index(value.source))
         if catalog.runtime_aggregate_evidence_root is not None)
@@ -5593,6 +5642,7 @@ def parser() -> argparse.ArgumentParser:
     sdk_metadata.add_argument("--expected-build-key", required=True)
     for command in (discover_command, products_command):
         command.add_argument("--sdk-maven-evidence", type=Path, action="append", default=[])
+        command.add_argument("--sdk-metadata-evidence", type=Path, action="append", default=[])
         command.add_argument("--sdk-validation-evidence", type=Path, action="append", default=[])
         command.add_argument("--sdk-apple-validation-evidence", type=Path, action="append", default=[])
         command.add_argument("--runtime-aggregate-release-evidence", type=Path, action="append", default=[])
@@ -5673,6 +5723,8 @@ def main(argv: list[str] | None = None) -> int:
                      **apple_options,
                      **({"sdk_maven_evidence_roots": tuple(arguments.sdk_maven_evidence)}
                         if arguments.sdk_maven_evidence else {}),
+                     **({"sdk_metadata_evidence_roots": tuple(arguments.sdk_metadata_evidence)}
+                        if arguments.sdk_metadata_evidence else {}),
                      **({"sdk_apple_evidence_roots": tuple(arguments.sdk_apple_validation_evidence)}
                         if arguments.sdk_apple_validation_evidence else {}),
                      **({"tooling_java_executable": arguments.tooling_java_executable,
@@ -5706,6 +5758,8 @@ def main(argv: list[str] | None = None) -> int:
                 **apple_options,
                 **({"sdk_maven_evidence_roots": tuple(arguments.sdk_maven_evidence)}
                    if arguments.sdk_maven_evidence else {}),
+                **({"sdk_metadata_evidence_roots": tuple(arguments.sdk_metadata_evidence)}
+                   if arguments.sdk_metadata_evidence else {}),
                 **({"sdk_apple_evidence_roots": tuple(arguments.sdk_apple_validation_evidence)}
                    if arguments.sdk_apple_validation_evidence else {}),
                 failed_instances=tuple(PhaseInstanceId(*value) for value in arguments.failed_phase),

@@ -706,6 +706,22 @@ class ProductReuseTest(unittest.TestCase):
             },
         }
 
+    def test_metadata_admission_is_explicit_invocation_authority_not_transport(self) -> None:
+        from ci.products.reuse import FacadeMetadataAdmission, AndroidMetadataAdmission
+        repository, revision = self.reuse_wave_repository()
+        request = self.reuse_wave_request(repository, revision)
+        core = object.__new__(FacadeMetadataAdmission)
+        android = object.__new__(AndroidMetadataAdmission)
+        with mock.patch("ci.products.reuse.advance_reuse", return_value=({"ok": True}, ())) as delegated:
+            self.assertEqual({"ok": True}, plan_reuse_wave(request,
+                sdk_facade_metadata_admission=core, sdk_android_metadata_admission=android))
+        self.assertIs(core, delegated.call_args.kwargs["sdk_facade_metadata_admission"])
+        self.assertIs(android, delegated.call_args.kwargs["sdk_android_metadata_admission"])
+        for name in ("sdkFacadeMetadataAdmission", "sdkAndroidMetadataAdmission",
+                     "sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                plan_reuse_wave({**request, name: {"transported": "not authority"}})
+
     def test_aggregate_external_transport_never_changes_product_plan_identity(self) -> None:
         repository, revision = self.reuse_wave_repository()
         request = self.reuse_wave_request(repository, revision)
