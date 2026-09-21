@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -147,6 +148,12 @@ class AndroidFirebaseCaptureTest(unittest.TestCase):
             (self.output / "original/lane-receipt.json").read_bytes())["runAttempt"])
         self.assertNotIn("admission", canonical_json_bytes(result).decode())
         self.assertNotIn("trustedSourceCommit", canonical_json_bytes(result).decode())
+
+    def test_original_commit_is_replayed_after_checkout_head_advances(self):
+        revision = self.final.plan["validationCommit"]
+        subprocess.run(["git", "commit", "--allow-empty", "-qm", "later consumer"], cwd=self.root, check=True)
+        result = self.call(expected_revision=revision)
+        self.assertEqual(revision, result["captureProducer"]["commit"])
 
     def test_binding_source_receipt_and_old_layout_reject(self):
         baseline = {path.relative_to(self.original).as_posix(): path.read_bytes()

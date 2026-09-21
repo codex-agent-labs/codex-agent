@@ -93,6 +93,7 @@ def capture_android_evidence(
     trusted_android_workflow_sha: str,
     environ: Mapping[str, str] | None = None,
     token: str,
+    expected_revision: str | None = None,
 ) -> dict:
     """Retain one fixed final upload; return transport metadata, not admission."""
     environment = os.environ if environ is None else environ
@@ -128,13 +129,14 @@ def capture_android_evidence(
         captured_inventories.mkdir(parents=True)
         for name, contents in inventory_bytes.items():
             (captured_inventories / name).write_bytes(contents)
-        plan = products._validate_plan(captured_plan, root)
+        plan = products._validate_plan(captured_plan, root, expected_revision=expected_revision)
         plan_value = canonical_json_bytes(plan)
         producer = products.validate_producer(products._consumer(plan, environment)["producer"])
         locator = upload_locator.locate_android_validation_upload(
             source, root, trusted_workflow_sha=trusted_workflow_sha,
             trusted_android_workflow_sha=trusted_android_workflow_sha,
             environ=environment, token=token,
+            expected_revision=expected_revision,
         )
         artifact_id = require_integer(locator.get("artifact_id"), "Android artifact ID", 1)
         artifact_sha256 = require_sha256(locator.get("artifact_sha256"), "Android artifact digest")
@@ -149,7 +151,7 @@ def capture_android_evidence(
                            or read_regular_file_bytes(captured_inventories / name) != contents
                            for name, contents in inventory_bytes.items())
                     or canonical_json_bytes(plan) != plan_value
-                    or canonical_json_bytes(products._validate_plan(captured_plan, root)) != plan_value
+                    or canonical_json_bytes(products._validate_plan(captured_plan, root, expected_revision=expected_revision)) != plan_value
                     or products.validate_producer(products._consumer(plan, environment)["producer"]) != producer):
                 raise ValueError("Android capture plan or current producer changed")
 

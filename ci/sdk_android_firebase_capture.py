@@ -111,6 +111,7 @@ def capture_android_firebase_evidence(
     trusted_source_tree: str,
     environ: Mapping[str, str] | None = None,
     token: str,
+    expected_revision: str | None = None,
 ) -> dict:
     """Retain one protected intermediate upload and its final-capture linkage."""
     environment = os.environ if environ is None else environ
@@ -168,13 +169,14 @@ def capture_android_firebase_evidence(
         captured_inventories.mkdir(parents=True)
         for name, contents in inventory_bytes.items():
             (captured_inventories / name).write_bytes(contents)
-        plan = products._validate_plan(captured_plan, root)
+        plan = products._validate_plan(captured_plan, root, expected_revision=expected_revision)
         plan_value = canonical_json_bytes(plan)
         producer = products.validate_producer(products._consumer(plan, environment)["producer"])
         final_locator = upload_locator.locate_android_validation_upload(
             source, root, trusted_workflow_sha=trusted_workflow_sha,
             trusted_android_workflow_sha=trusted_android_workflow_sha,
             environ=environment, token=token,
+            expected_revision=expected_revision,
         )
         final_locator = {
             "artifact_id": require_integer(final_locator.get("artifact_id"), "Final Android artifact ID", 1),
@@ -219,7 +221,7 @@ def capture_android_firebase_evidence(
                            or read_regular_file_bytes(captured_inventories / name) != contents
                            for name, contents in inventory_bytes.items())
                     or canonical_json_bytes(plan) != plan_value
-                    or canonical_json_bytes(products._validate_plan(captured_plan, root)) != plan_value
+                    or canonical_json_bytes(products._validate_plan(captured_plan, root, expected_revision=expected_revision)) != plan_value
                     or products.validate_producer(products._consumer(plan, environment)["producer"]) != producer
                     or regular_file_inventory(final, allow_empty=True) != final_inventory
                     or regular_file_inventory(final_original_path, allow_empty=True)

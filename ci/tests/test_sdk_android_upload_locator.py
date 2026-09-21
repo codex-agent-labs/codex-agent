@@ -141,7 +141,7 @@ class AndroidUploadLocatorTest(unittest.TestCase):
             self.f.plan = deepcopy(baseline)
             captured = []
             self.environment["GITHUB_RUN_ATTEMPT"] = "2"
-            def validate(path, root):
+            def validate(path, root, *, expected_revision=None):
                 captured.append(path)
                 return self.f.plan
             def mutate(*args):

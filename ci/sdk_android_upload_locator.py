@@ -41,6 +41,7 @@ def locate_android_validation_upload(
     trusted_android_workflow_sha: str,
     environ: Mapping[str, str] | None = None,
     token: str,
+    expected_revision: str | None = None,
 ) -> dict[str, object]:
     """Return the final post-attach upload locator, never content authority.
 
@@ -60,7 +61,7 @@ def locate_android_validation_upload(
     with tempfile.TemporaryDirectory(prefix="android-upload-locator-") as temporary:
         captured = Path(temporary).resolve() / "impact-plan.json"
         captured.write_bytes(source_bytes)
-        plan = products._validate_plan(captured, candidate)
+        plan = products._validate_plan(captured, candidate, expected_revision=expected_revision)
         android = plan.get("lanes", {}).get("android", {}) if isinstance(plan.get("lanes"), dict) else {}
         if (plan.get("remoteBuildAuthorized") is not True
                 or plan.get("event") not in {"pull_request", "merge_group"}

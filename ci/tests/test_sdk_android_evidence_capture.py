@@ -116,9 +116,16 @@ class AndroidEvidenceCaptureTest(unittest.TestCase):
         locate.assert_called_once_with(
             self.plan_path, self.root, trusted_workflow_sha=self.workflow_pin,
             trusted_android_workflow_sha=self.android_pin,
-            environ=self.environment, token="synthetic-token")
+            environ=self.environment, token="synthetic-token", expected_revision=None)
         self.assertEqual(1, self.requests.count(self.artifact["archive_download_url"]))
         self.assertNotIn("admission", canonical_json_bytes(result).decode())
+
+    def test_original_commit_is_replayed_after_checkout_head_advances(self):
+        revision = self.plan["validationCommit"]
+        subprocess.run(["git", "commit", "--allow-empty", "-qm", "later consumer"], cwd=self.root, check=True)
+        result, locate = self.call(expected_revision=revision)
+        self.assertEqual(revision, result["captureProducer"]["commit"])
+        self.assertEqual(revision, locate.call_args.kwargs["expected_revision"])
 
     def test_transport_detail_digest_unsafe_archive_and_incomplete_closure_reject(self):
         baseline_artifact, baseline_raw = deepcopy(self.artifact), self.raw
