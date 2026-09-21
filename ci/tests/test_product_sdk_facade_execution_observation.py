@@ -46,6 +46,7 @@ class FacadeExecutionObservationTest(unittest.TestCase):
         self.system = self.enterContext(patch.object(observation.platform, "system", return_value="Linux"))
         self.machine = self.enterContext(patch.object(observation.platform, "machine", return_value="x86_64"))
         self.process = self.enterContext(patch.object(observation.subprocess, "run", side_effect=self.probe))
+        self.bootstrap = self.enterContext(patch.object(observation, "require_preprovisioned_gradle"))
         self.gradle_version = "9.1.0"
         self.java_arch = "amd64"
 
@@ -83,6 +84,14 @@ class FacadeExecutionObservationTest(unittest.TestCase):
                              {path.name for path in self.output.iterdir()})
             self.assertNotIn("compiler", value)
         self.assertEqual(2, self.process.call_count)
+        self.bootstrap.assert_called_once_with(self.sources[observation.WRAPPER_PROPERTIES], self.environment)
+
+    def test_missing_preprovisioned_distribution_blocks_every_probe(self):
+        self.bootstrap.side_effect = ValueError("distribution is not provisioned")
+        with self.assertRaisesRegex(ValueError, "not provisioned"), self.call():
+            self.fail("must not yield")
+        self.process.assert_not_called()
+        self.assertFalse(self.output.exists())
 
     def test_all_eleven_routes_use_actual_platform_not_caller_runner_labels(self):
         for index, target in enumerate(SDK_FACADE_TARGETS):

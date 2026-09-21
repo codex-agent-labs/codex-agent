@@ -23,6 +23,7 @@ from .sdk_package import _require_capability_output_separate
 from .signing_isolation import require_no_signing_secret
 from .toolchain import _authority, _match, _properties, WRAPPER_PROPERTIES
 from .tooling_local import _execution
+from .gradle_bootstrap import require_preprovisioned_gradle
 
 
 @contextmanager
@@ -96,6 +97,7 @@ def capture_facade_execution_observation(*, repository, producer, target, enviro
             raise ValueError("Core original launcher/source observation changed")
 
     unchanged()
+    require_preprovisioned_gradle(sources[WRAPPER_PROPERTIES], environment)
     output.mkdir(parents=True)
     prefix = _runtime_worker_command(wrapper, {}, environment, build_directory=".", platform_name="nt" if windows else "posix")
     prefix = prefix[:prefix.index("--offline")]

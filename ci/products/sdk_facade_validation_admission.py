@@ -27,6 +27,7 @@ from .registry import PhaseInstanceId, SDK_FACADE_TARGETS
 from .sdk_apple_content import _verify_sdk_apple_with_tooling
 from .sdk_facade_inputs import OUTPUT_KIND, OUTPUT_PATH, _request, _sources, prepare_facade_validation_inputs
 from .sdk_facade_source import capture_facade_validation_sources
+from .sdk_facade_compiler_policy import verify_facade_kotlin_compiler_artifacts
 from .sdk_facade_validation import _inventory, _original_path, verify_facade_consumer_evidence
 from .sdk_package import _require_capability_output_separate
 from .sdk_validation_inputs import _request_inventory
@@ -127,6 +128,9 @@ def verify_sdk_facade_validation_original_content(
             raise ValueError("Original facade inputs, receipt or caller context changed during replay")
 
     try:
+        if receipt["target"] in {"jvm", "android", "node-js", "node-wasm"}:
+            verify_facade_kotlin_compiler_artifacts(repository=repository, policy_revision=policy_revision,
+                compiler_inputs=original_files["compilerInputs"])
         commit, tree = receipt["producer"]["commit"], receipt["producer"]["tree"]
         try:
             actual_commit = run_git(repository, "rev-parse", f"{commit}^{{commit}}").strip()

@@ -13,6 +13,7 @@ from ci.products.inventory import load_canonical_json, regular_file_inventory
 from ci.products.receipt import write_output_manifest
 from ci.tests import test_runtime_resumed_phase as fixture
 from ci.tests.test_runtime_evidence import write_zip
+from ci.tests.test_gradle_bootstrap import PROPERTIES
 
 
 adapter = fixture.adapter
@@ -35,6 +36,7 @@ class RuntimePhaseExecutionTest(unittest.TestCase):
             launcher = repository / "gradle/wrapper/gradle-wrapper.jar"
             launcher.parent.mkdir(parents=True)
             launcher.write_bytes(b"synthetic tracked Gradle launcher\n")
+            launcher.with_name("gradle-wrapper.properties").write_bytes(PROPERTIES)
             (repository / ".gitignore").write_text(
                 "runtime/ignored-source.pyc\n"
                 "/sitecustomize.py\n"
@@ -47,6 +49,7 @@ class RuntimePhaseExecutionTest(unittest.TestCase):
                 "gradlew",
                 "gradlew.bat",
                 "gradle/wrapper/gradle-wrapper.jar",
+                "gradle/wrapper/gradle-wrapper.properties",
                 ".gitignore",
             ),
                            cwd=repository, check=True)
@@ -76,6 +79,11 @@ class RuntimePhaseExecutionTest(unittest.TestCase):
             / "codex-agent-runtime-desktop/build/product-stage/runtime/jvm/binary"
         )
         self.addCleanup(shutil.rmtree, self.stage, ignore_errors=True)
+        cache = self.scratch / "gradle-user-home/wrapper/dists/gradle-9.4.1-bin/arn2x92ynaizyzdaamcbpbhtj"
+        launcher = cache / "gradle-9.4.1/lib/gradle-launcher-9.4.1.jar"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_bytes(b"synthetic installed launcher; never executed")
+        (cache / "gradle-9.4.1-bin.zip.ok").touch()
 
     def execution_environment(self):
         return {

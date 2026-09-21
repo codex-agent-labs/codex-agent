@@ -552,16 +552,18 @@ def _native_metadata_owners(path: str) -> set[PhaseInstanceId]:
 
 
 def _control_selection(path: str) -> set[PhaseInstanceId] | None:
+    if path == "ci/products/gradle_bootstrap.py":
+        return set(ALL_INSTANCES)
     if path in {"ci/sdk_facade_metadata_inputs.py", "ci/sdk_facade_metadata_workflow.py",
                 "ci/sdk_facade_metadata_original.py"}:
         return _from_phase("sdk", "sdk-core", "metadata")
     if path == "ci/sdk_android_metadata_workflow.py":
         return _from_phase("sdk", "sdk-android", "metadata")
-    if path in {"ci/sdk_maven_binary_workflow.py", "ci/sdk_maven_original.py", "ci/sdk_facade_capture.py"}:
+    if path in {"ci/sdk_maven_binary_workflow.py", "ci/sdk_maven_original.py", "ci/sdk_facade_capture.py", "ci/sdk_maven_evidence.py"}:
         return _from_phase("sdk", "sdk-core", "binary") | _from_phase("sdk", "sdk-android", "binary")
     if path == "ci/sdk_maven_package_workflow.py":
         return _from_phase("sdk", "sdk-core", "package") | _from_phase("sdk", "sdk-android", "package")
-    if path in {"ci/sdk_android_validation_workflow.py", "ci/sdk_android_original_validation.py"}:
+    if path in {"ci/sdk_android_validation_workflow.py", "ci/sdk_android_original_validation.py", "ci/sdk_android_firebase_original.py"}:
         return _from_phase("sdk", "sdk-android", "validation")
     if path == "ci/sdk_maven_phase.py":
         return _from_phase("sdk", "sdk-core", "binary") | _from_phase("sdk", "sdk-android", "binary")
@@ -574,6 +576,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
                 "gradle/build-logic/src/main/kotlin/SdkFacadeMetadataTasks.kt"}:
         return _from_phase("sdk", "sdk-core", "metadata")
     if path in {"ci/products/sdk_facade_source.py", "ci/sdk_facade_validation_phase.py",
+                "ci/products/sdk_facade_compiler_policy.py",
                 "ci/products/sdk_facade_execution_observation.py",
                 "ci/sdk_facade_original_validation.py", "ci/sdk_facade_workflow.py",
                 "ci/products/sdk_facade_validation_admission.py",
@@ -692,6 +695,10 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _is_control_only(path: str) -> bool:
+    if path in {"ci/sdk_maven_evidence.py", "ci/sdk_android_firebase_original.py", "ci/products/sdk_facade_compiler_policy.py"}:
+        return True  # Original evidence/policy composition, never reusable payload bytes.
+    if path == "ci/products/gradle_bootstrap.py":
+        return True  # Offline bootstrap precondition, not product bytes.
     if path in {"ci/sdk_facade_metadata_inputs.py", "ci/sdk_facade_metadata_workflow.py", "ci/sdk_maven_package_workflow.py",
                 "ci/sdk_maven_original.py", "ci/sdk_android_original_validation.py", "ci/sdk_facade_capture.py",
                 "ci/sdk_facade_metadata_original.py", "ci/sdk_android_metadata_workflow.py", "ci/sdk_maven_binary_workflow.py",

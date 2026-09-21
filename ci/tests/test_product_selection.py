@@ -59,6 +59,12 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_bootstrap_guard_rechecks_all_plans_without_changing_payload_keys(self):
+        result = classify_paths(("ci/products/gradle_bootstrap.py",))
+        self.assertEqual(set(PHASE_INSTANCE_IDS), set(result.instances))
+        self.assertEqual((), result.inventory_paths)
+        self.assertEqual((), result.unknown_paths)
+
     def test_original_transport_and_signing_controls_do_not_change_payload_keys(self) -> None:
         paths = (
             "ci/products/signing_isolation.py", "ci/runtime_preparation_capture.py",

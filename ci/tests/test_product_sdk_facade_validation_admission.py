@@ -78,6 +78,7 @@ class FacadeOriginalContentTest(unittest.TestCase):
         self.enterContext(patch.object(admission, "_request_inventory", side_effect=lambda path: {path: sha256_file(path)}))
         self.capture = self.enterContext(patch.object(admission, "capture_facade_validation_sources", side_effect=self.capture_source))
         self.tooling = self.enterContext(patch.object(admission, "_verify_sdk_apple_with_tooling", side_effect=self.verify_tooling))
+        self.compiler_policy = self.enterContext(patch.object(admission, "verify_facade_kotlin_compiler_artifacts"))
 
     def content_arguments(self):
         return dict(evidence_directory=self.f.f.evidence, target="jvm", sdk_version="0.8.7", runtime_version="0.8.9",
@@ -117,9 +118,17 @@ class FacadeOriginalContentTest(unittest.TestCase):
         self.assertEqual(self.receipt_path.read_bytes(), raw)
         self.assertEqual(self.receipt, verified)
         self.tooling.assert_called_once()
+        self.compiler_policy.assert_called_once_with(repository=self.root,
+            policy_revision=self.arguments["policy_revision"], compiler_inputs=self.compiler_inputs)
         self.projection_gate.assert_called_once()
         self.assertEqual(before, admission._inventory(self.root, allow_empty=True))
         self.assertIs(type(verified), dict)
+
+    def test_unpinned_compiler_rejects_before_semantic_tool_execution(self):
+        self.compiler_policy.side_effect = ValueError("compiler pin differs")
+        with self.assertRaisesRegex(ValueError, "compiler pin differs"):
+            self.verify()
+        self.tooling.assert_not_called()
 
     def test_immutable_source_versions_plan_or_predecessor_mismatch_reject(self):
         for name, replacement in (("run_git", "f" * 40),

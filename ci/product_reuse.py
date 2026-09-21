@@ -3350,6 +3350,7 @@ def _runtime_worker_command(wrapper, properties, environment, *, build_directory
 
 
 def _runtime_worker_environment(root, producer, destination, environ):
+    from products.gradle_bootstrap import require_preprovisioned_gradle
     environment = dict(environ)
     _runtime_worker_checkout(root, producer)
     for name in environment:
@@ -3379,6 +3380,11 @@ def _runtime_worker_environment(root, producer, destination, environ):
         if read_regular_file_bytes(root / launcher, reject_symlink_parents=True) != git_regular_blob_bytes(
                 root, producer["commit"], launcher, max_bytes=1024 * 1024):
             raise ValueError("Runtime worker launcher differs from its exact Git source")
+    properties_path = "gradle/wrapper/gradle-wrapper.properties"
+    properties = read_regular_file_bytes(root / properties_path, reject_symlink_parents=True)
+    if properties != git_regular_blob_bytes(root, producer["commit"], properties_path, max_bytes=64 * 1024):
+        raise ValueError("Runtime worker wrapper properties differ from exact Git source")
+    require_preprovisioned_gradle(properties, environment)
     return environment, wrapper
 
 
