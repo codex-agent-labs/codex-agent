@@ -17,7 +17,7 @@ if __package__:
 import product_reuse
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
-    regular_file_inventory, snapshot_regular_tree, write_canonical_json,
+    publish_regular_tree, regular_file_inventory, snapshot_regular_tree, write_canonical_json,
 )
 from products.registry import PhaseInstanceId
 from products.sdk_apple_validation_admission import apple_validation_policy_arguments
@@ -305,10 +305,23 @@ def execute(
 
     product_reuse._runtime_worker_checkout(root, producer)
     trust = "development" if producer["event"] == "pull_request" else "release"
-    shard = product_reuse.finalize_phase_object(
-        stage_root=stage, phase_plan=ready, producer=producer,
-        product_version=version, trust_domain=trust, destination=destination / "shard")
-    unchanged()
+    try:
+        with tempfile.TemporaryDirectory(prefix="sdk-android-validation-candidate-") as temporary:
+            candidate = Path(temporary).resolve() / "shard"
+            shard = product_reuse.finalize_phase_object(
+                stage_root=stage, phase_plan=ready, producer=producer,
+                product_version=version, trust_domain=trust, destination=candidate)
+            inventory = regular_file_inventory(candidate)
+            if product_reuse.verify_phase_shard(candidate, _INSTANCE) != shard:
+                raise ValueError("Android validation candidate differs from its finalized shard")
+            unchanged()
+            if regular_file_inventory(candidate) != inventory:
+                raise ValueError("Android validation candidate changed before publication")
+            publish_regular_tree(candidate, destination / "shard")
+        if product_reuse.verify_phase_shard(destination / "shard", _INSTANCE) != shard:
+            raise ValueError("Published Android validation shard differs from its private candidate")
+    finally:
+        unchanged()
     return {"stage": stage, "manifest": manifest, "shard": shard,
             "originals": destination / "originals"}
 

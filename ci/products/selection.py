@@ -557,11 +557,11 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         return _from_phase("sdk", "sdk-core", "metadata")
     if path == "ci/sdk_android_metadata_workflow.py":
         return _from_phase("sdk", "sdk-android", "metadata")
-    if path == "ci/sdk_maven_binary_workflow.py":
+    if path in {"ci/sdk_maven_binary_workflow.py", "ci/sdk_maven_original.py", "ci/sdk_facade_capture.py"}:
         return _from_phase("sdk", "sdk-core", "binary") | _from_phase("sdk", "sdk-android", "binary")
     if path == "ci/sdk_maven_package_workflow.py":
         return _from_phase("sdk", "sdk-core", "package") | _from_phase("sdk", "sdk-android", "package")
-    if path == "ci/sdk_android_validation_workflow.py":
+    if path in {"ci/sdk_android_validation_workflow.py", "ci/sdk_android_original_validation.py"}:
         return _from_phase("sdk", "sdk-android", "validation")
     if path == "ci/sdk_maven_phase.py":
         return _from_phase("sdk", "sdk-core", "binary") | _from_phase("sdk", "sdk-android", "binary")
@@ -574,7 +574,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
                 "gradle/build-logic/src/main/kotlin/SdkFacadeMetadataTasks.kt"}:
         return _from_phase("sdk", "sdk-core", "metadata")
     if path in {"ci/products/sdk_facade_source.py", "ci/sdk_facade_validation_phase.py",
-                "ci/sdk_facade_capture.py",
+                "ci/products/sdk_facade_execution_observation.py",
                 "ci/sdk_facade_original_validation.py", "ci/sdk_facade_workflow.py",
                 "ci/products/sdk_facade_validation_admission.py",
                 "gradle/build-logic/src/main/kotlin/SdkFacadeOriginalExecution.kt"}:
@@ -692,6 +692,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 
 def _is_control_only(path: str) -> bool:
     if path in {"ci/sdk_facade_metadata_inputs.py", "ci/sdk_facade_metadata_workflow.py", "ci/sdk_maven_package_workflow.py",
+                "ci/sdk_maven_original.py", "ci/sdk_android_original_validation.py", "ci/sdk_facade_capture.py",
                 "ci/sdk_facade_metadata_original.py", "ci/sdk_android_metadata_workflow.py", "ci/sdk_maven_binary_workflow.py",
                 "ci/sdk_android_validation_workflow.py"}:
         return True  # Authenticated execution/receipt composition, not product content.
@@ -705,7 +706,7 @@ def _is_control_only(path: str) -> bool:
                 "ci/products/sdk_platform_metadata.py"}:
         return False  # Defines deterministic eleven-target Core metadata bytes.
     if path in {"ci/products/sdk_facade_source.py", "ci/sdk_facade_validation_phase.py",
-                "ci/sdk_facade_capture.py",
+                "ci/products/sdk_facade_execution_observation.py",
                 "ci/sdk_facade_original_validation.py", "ci/sdk_facade_workflow.py",
                 "ci/products/sdk_facade_validation_admission.py",
                 "gradle/build-logic/src/main/kotlin/SdkFacadeOriginalExecution.kt"}:

@@ -1,6 +1,7 @@
 """Mocked process/source boundaries, real file/manifest guards; no compilation."""
 
 from copy import deepcopy
+from contextlib import contextmanager
 from pathlib import Path
 import shutil
 import subprocess
@@ -38,6 +39,27 @@ class FacadeValidationPhaseTest(unittest.TestCase):
         self.process = self.enterContext(patch.object(phase.subprocess, "run", side_effect=self.run_producer))
         self.source_capture = self.enterContext(patch.object(phase, "capture_facade_validation_sources",
             side_effect=self.capture_source))
+        self.observation_active = False
+        self.observation_exit_failure = False
+        self.observation = self.enterContext(patch.object(phase, "capture_facade_execution_observation",
+            side_effect=self.observe))
+
+    @contextmanager
+    def observe(self, **kwargs):
+        self.assertEqual(self.root, kwargs["repository"])
+        self.assertEqual(self.producer, kwargs["producer"])
+        self.assertEqual(self.plan["target"], kwargs["target"])
+        self.assertEqual(self.environment, kwargs["environment"])
+        self.assertEqual(self.destination / "host-observation", kwargs["destination"])
+        kwargs["destination"].mkdir()
+        (kwargs["destination"] / "observation.json").write_bytes(b"mocked fixed-probe boundary\n")
+        self.observation_active = True
+        try:
+            yield {}
+        finally:
+            self.observation_active = False
+            if self.observation_exit_failure:
+                raise ValueError("launcher observation changed on exit")
 
     def capture_source(self, repository, revision, destination):
         self.assertEqual((self.root, self.producer["commit"]), (repository, revision))
@@ -60,6 +82,7 @@ class FacadeValidationPhaseTest(unittest.TestCase):
         return self.root / f"build/product-stage/sdk/sdk-core/validation/{self.plan['target']}"
 
     def run_producer(self, command, **kwargs):
+        self.assertTrue(self.observation_active)
         self.assertEqual(self.root, kwargs["cwd"])
         self.assertEqual(self.environment, kwargs["env"])
         self.assertIs(False, kwargs["check"])
@@ -121,6 +144,8 @@ class FacadeValidationPhaseTest(unittest.TestCase):
                 self.assertEqual(self.request.read_bytes(), result["request"].read_bytes())
                 self.assertNotIn("receipt", result)
                 self.assertNotIn("shard", result)
+                self.assertFalse(self.observation_active)
+                self.assertEqual(self.destination / "host-observation", result["hostObservation"])
                 record = load_canonical_json_bytes((self.destination / "execution.json").read_bytes())
                 self.assertEqual(self.producer, record["producer"])
                 self.assertEqual(0, record["returnCode"])
@@ -128,6 +153,13 @@ class FacadeValidationPhaseTest(unittest.TestCase):
                 shutil.rmtree(self.stage)
                 shutil.rmtree(self.work)
                 shutil.rmtree(self.destination)
+
+    def test_launcher_observation_exit_failure_rejects_worker_success(self):
+        self.observation_exit_failure = True
+        with self.assertRaisesRegex(ValueError, "launcher observation changed on exit"):
+            self.execute()
+        self.assertFalse(self.observation_active)
+        self.assertTrue((self.destination / "execution.json").is_file())
 
     def test_wrong_identity_request_host_or_secret_rejects_before_execution(self):
         for field, value in (("phase", "metadata"), ("target", "desktop"), ("schemaVersion", True)):

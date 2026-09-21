@@ -194,7 +194,7 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
         destination = kwargs["destination"]
         destination.mkdir()
         (destination / "shard.json").write_bytes(b"finalized")
-        return {"receipt": {"buildKey": self.ready["buildKey"]}, "destination": destination}
+        return {"receipt": {"buildKey": self.ready["buildKey"]}}
 
     def call(self, *, final_capture=None, phase=None, **changes):
         with patch.object(workflow, "_request_inventory",
@@ -208,6 +208,8 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
                 patch.object(workflow.validation_phase, "produce_sdk_android_validation_phase",
                              side_effect=self.produce if phase is None else phase), \
                 patch.object(workflow.product_reuse, "_runtime_worker_checkout"), \
+                patch.object(workflow.product_reuse, "verify_phase_shard",
+                             side_effect=lambda *args: {"receipt": {"buildKey": self.ready["buildKey"]}}), \
                 patch.object(workflow.product_reuse, "finalize_phase_object",
                              side_effect=self.finalize) as finalize:
             result = workflow.execute(self.plan, self.discovery, self.state,
@@ -341,6 +343,25 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
                 workflow.execute(self.plan, self.discovery, self.state, destination, **self.arguments)
             finalize.assert_not_called()
             restore()
+
+    def test_finalizer_mutation_or_failure_never_publishes_a_shard(self):
+        original_finalize = self.finalize
+        for failure in (False, True):
+            destination = self.root / f"finalizer-{failure}"
+            before = self.compatibility.read_bytes()
+            def finalize(**kwargs):
+                result = original_finalize(**kwargs)
+                self.compatibility.write_bytes(b"changed by finalizer")
+                if failure:
+                    raise ValueError("finalizer failed")
+                return result
+            try:
+                with patch.object(self, "finalize", side_effect=finalize), \
+                        self.assertRaisesRegex(ValueError, "changed"):
+                    self.call(destination=destination)
+                self.assertFalse((destination / "shard").exists())
+            finally:
+                self.compatibility.write_bytes(before)
 
     def test_cli_forwards_canonical_contract_policy_and_rejects_partial_keyring(self):
         evidence = self.root / "contract-evidence.json"

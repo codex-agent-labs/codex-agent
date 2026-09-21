@@ -29,6 +29,7 @@ from products.registry import PHASE_INSTANCE_IDS, SDK_FACADE_TARGETS, PhaseInsta
 from products.restore import PHASE_PLAN_KEYS
 from products.sdk_facade_inputs import OUTPUT_KIND, OUTPUT_PATH, _request, _sources
 from products.sdk_facade_source import capture_facade_validation_sources
+from products.sdk_facade_execution_observation import capture_facade_execution_observation
 from products.sdk_facade_validation import _FILES, _inventory, validate_facade_validation_content
 from products.sdk_package import _require_capability_output_separate
 from products.sdk_validation_inputs import _request_inventory
@@ -141,60 +142,62 @@ def execute(plan: Mapping, *, producer: Mapping, repository_root: Path,
     unchanged()
     if any(path.exists() or path.is_symlink() for path in (stage, work)):
         raise ValueError("Core validation output appeared before execution")
-    started = time.monotonic_ns()
-    return_code, launch_error = None, None
-    try:
-        with (destination / "gradle.log").open("xb") as log:
-            process = subprocess.run(command, cwd=root, env=environment, stdout=log,
-                                     stderr=subprocess.STDOUT, check=False)
-            return_code = process.returncode
-    except OSError as error:
-        launch_error = str(error)
-        raise
-    finally:
-        write_canonical_json(destination / "execution.json", {
-            "schemaVersion": 1, "producer": dict(current), "buildKey": selected["buildKey"],
-            "command": command, "returnCode": return_code, "launchError": launch_error,
-            "elapsedNs": time.monotonic_ns() - started,
-        })
-        unchanged()
-    if return_code != 0:
-        raise ValueError(f"Core validation failed with exit code {return_code}; see {destination / 'gradle.log'}")
+    with capture_facade_execution_observation(repository=root, producer=current, target=target,
+            environment=environment, destination=destination / "host-observation"):
+        started = time.monotonic_ns()
+        return_code, launch_error = None, None
+        try:
+            with (destination / "gradle.log").open("xb") as log:
+                process = subprocess.run(command, cwd=root, env=environment, stdout=log,
+                                         stderr=subprocess.STDOUT, check=False)
+                return_code = process.returncode
+        except OSError as error:
+            launch_error = str(error)
+            raise
+        finally:
+            write_canonical_json(destination / "execution.json", {
+                "schemaVersion": 1, "producer": dict(current), "buildKey": selected["buildKey"],
+                "command": command, "returnCode": return_code, "launchError": launch_error,
+                "elapsedNs": time.monotonic_ns() - started,
+            })
+            unchanged()
+        if return_code != 0:
+            raise ValueError(f"Core validation failed with exit code {return_code}; see {destination / 'gradle.log'}")
 
-    manifest = verify_output_manifest_identity(stage, "sdk", "sdk-core", "validation", target, value["sdkVersion"])
-    if (len(manifest["outputs"]) != 1 or manifest["outputs"][0]["kind"] != OUTPUT_KIND
-            or manifest["outputs"][0]["relativePath"] != OUTPUT_PATH):
-        raise ValueError("Core validation canonical output is missing or ambiguous")
-    content = validate_facade_validation_content(load_canonical_json_bytes(_read(stage / OUTPUT_PATH)))
-    if content["target"] != target or content["sdkVersion"] != value["sdkVersion"]:
-        raise ValueError("Core validation content differs from its elected identity")
-    evidence = work / "execution"
-    if {row["relativePath"] for row in _inventory(evidence, allow_empty=True)} != _FILES:
-        raise ValueError("Core validation raw execution evidence is incomplete")
-    for name in ("inputs", "consumer"):
-        _inventory(work / name, allow_empty=True)
-    consumer_inputs = work / "consumer-inputs"
-    captured_inputs = _inventory(consumer_inputs, allow_empty=True)
-    expected_names = {row["relativePath"] for row in
-                      _inventory(source / "gradle/release/sdk-facade-consumer-template")}
-    expected_names.update({"local.properties", ".codex-consumer-task-outcomes.init.gradle.kts"})
-    if {row["relativePath"] for row in captured_inputs} != expected_names:
-        raise ValueError("Core validation consumer input capture is incomplete")
-    if any(sha256_file(work / "consumer" / row["relativePath"]) != row["sha256"] for row in captured_inputs):
-        raise ValueError("Core validation consumer inputs changed after their capture")
-    for name in ("inputs/inputs.json", "inputs/maven-inventory.json", "publication-metadata.json", "report.json"):
-        if not _read(work / name):
-            raise ValueError("Core validation retained input or report is empty")
-    if _read(work / "report.json") != _read(evidence / "report.json"):
-        raise ValueError("Core validation retained reports differ")
-    inventories = {"stage": _inventory(stage), "work": _inventory(work, allow_empty=True),
-                   "diagnostics": _inventory(destination, allow_empty=True)}
-    unchanged()
-    if any(_inventory(path, allow_empty=name != "stage") != inventories[name] for name, path in
-           (("stage", stage), ("work", work), ("diagnostics", destination))):
-        raise ValueError("Core validation output changed during verification")
-    return {"stage": stage, "diagnostics": destination, "outputInventory": inventories["stage"],
-            "work": work, "workInventory": inventories["work"], "request": retained_request,
-            "source": source, "consumerInputs": consumer_inputs,
-            "inputs": work / "inputs", "execution": evidence, "consumer": work / "consumer",
-            "report": work / "report.json", "publicationMetadata": work / "publication-metadata.json"}
+        manifest = verify_output_manifest_identity(stage, "sdk", "sdk-core", "validation", target, value["sdkVersion"])
+        if (len(manifest["outputs"]) != 1 or manifest["outputs"][0]["kind"] != OUTPUT_KIND
+                or manifest["outputs"][0]["relativePath"] != OUTPUT_PATH):
+            raise ValueError("Core validation canonical output is missing or ambiguous")
+        content = validate_facade_validation_content(load_canonical_json_bytes(_read(stage / OUTPUT_PATH)))
+        if content["target"] != target or content["sdkVersion"] != value["sdkVersion"]:
+            raise ValueError("Core validation content differs from its elected identity")
+        evidence = work / "execution"
+        if {row["relativePath"] for row in _inventory(evidence, allow_empty=True)} != _FILES:
+            raise ValueError("Core validation raw execution evidence is incomplete")
+        for name in ("inputs", "consumer"):
+            _inventory(work / name, allow_empty=True)
+        consumer_inputs = work / "consumer-inputs"
+        captured_inputs = _inventory(consumer_inputs, allow_empty=True)
+        expected_names = {row["relativePath"] for row in
+                          _inventory(source / "gradle/release/sdk-facade-consumer-template")}
+        expected_names.update({"local.properties", ".codex-consumer-task-outcomes.init.gradle.kts"})
+        if {row["relativePath"] for row in captured_inputs} != expected_names:
+            raise ValueError("Core validation consumer input capture is incomplete")
+        if any(sha256_file(work / "consumer" / row["relativePath"]) != row["sha256"] for row in captured_inputs):
+            raise ValueError("Core validation consumer inputs changed after their capture")
+        for name in ("inputs/inputs.json", "inputs/maven-inventory.json", "publication-metadata.json", "report.json"):
+            if not _read(work / name):
+                raise ValueError("Core validation retained input or report is empty")
+        if _read(work / "report.json") != _read(evidence / "report.json"):
+            raise ValueError("Core validation retained reports differ")
+        inventories = {"stage": _inventory(stage), "work": _inventory(work, allow_empty=True),
+                       "diagnostics": _inventory(destination, allow_empty=True)}
+        unchanged()
+        if any(_inventory(path, allow_empty=name != "stage") != inventories[name] for name, path in
+               (("stage", stage), ("work", work), ("diagnostics", destination))):
+            raise ValueError("Core validation output changed during verification")
+        return {"stage": stage, "diagnostics": destination, "outputInventory": inventories["stage"],
+                "work": work, "workInventory": inventories["work"], "request": retained_request,
+                "source": source, "consumerInputs": consumer_inputs, "hostObservation": destination / "host-observation",
+                "inputs": work / "inputs", "execution": evidence, "consumer": work / "consumer",
+                "report": work / "report.json", "publicationMetadata": work / "publication-metadata.json"}

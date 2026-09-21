@@ -40,6 +40,7 @@ class OriginalFacadeValidationTest(unittest.TestCase):
         self.consumer = self.enterContext(patch.object(original.product_reuse, "_consumer", return_value={"producer": self.f.producer}))
         self.source_gate = self.enterContext(patch.object(original, "capture_facade_validation_sources", side_effect=self.capture_source))
         self.full_gate = self.enterContext(patch.object(original, "verify_sdk_facade_validation_original_content", side_effect=self.replay))
+        self.observation_gate = self.enterContext(patch.object(original, "verify_facade_execution_observation"))
 
     def setup_upload(self, target="jvm", windows=False):
         self.f.select(target)
@@ -67,6 +68,7 @@ class OriginalFacadeValidationTest(unittest.TestCase):
         self.files = {name: raw for name, raw in self.f.files.items() if name.startswith("shard/")}
         self.source_files = {"gradle/template.kt": b"immutable original source fixture\n"}
         self.files.update({"worker/execution.json": canonical_json_bytes(self.execution), "worker/gradle.log": b"",
+            "worker/host-observation/observation.json": b"opaque separately tested host observation fixture\n",
             "worker/facade-request.json": canonical_json_bytes(self.request_record),
             **{"worker/source/" + name: raw for name, raw in self.source_files.items()},
             "selection/impact-plan.json": canonical_json_bytes(self.f.plan),
@@ -129,9 +131,30 @@ class OriginalFacadeValidationTest(unittest.TestCase):
             self.assertEqual(self.f.receipt, value["receipt"])
             self.assertIs(type(value["receipt"]), dict)
             self.full_gate.assert_called_once()
+            self.observation_gate.assert_called_once_with(value["original"] / "worker/host-observation",
+                repository=self.root, producer=self.f.producer, target=self.f.receipt["target"],
+                original_repository_root=self.context["repositoryRoot"],
+                original_java_executable=self.context.get("javaExecutable"))
             self.assertEqual({"expected_revision": self.f.producer["commit"]}, self.plan_gate.call_args.kwargs)
             stage = value["stage"]
         self.assertFalse(stage.exists())
+
+    def test_observation_is_mandatory_and_setup_cannot_replace_selected_receipt(self):
+        self.observation_gate.side_effect = ValueError("original observation rejected")
+        with self.assertRaisesRegex(ValueError, "original observation rejected"), self.context_manager():
+            pass
+        self.full_gate.assert_not_called()
+        self.observation_gate.side_effect = None
+        sources = original._sources
+        def mutate(value):
+            result = sources(value)
+            self.f.receipt_path.write_bytes(canonical_json_bytes({**self.f.receipt, "trustDomain": "release"}))
+            return result
+        self.capture.reset_mock()
+        with patch.object(original, "_sources", side_effect=mutate), \
+                self.assertRaisesRegex(ValueError, "changed during recovery"), self.context_manager():
+            pass
+        self.capture.assert_not_called()
 
     def test_windows_original_java_command_is_checked_independently_of_replay_host(self):
         self.setup_upload("windows-x64", windows=True)

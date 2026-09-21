@@ -24,6 +24,7 @@ from products.registry import PhaseInstanceId, SDK_FACADE_TARGETS
 from products.restore import PHASE_PLAN_KEYS, restore_object, verify_phase_shard
 from products.sdk_facade_inputs import _request, _sources
 from products.sdk_facade_source import capture_facade_validation_sources
+from products.sdk_facade_execution_observation import verify_facade_execution_observation
 from products.sdk_facade_validation import _inventory, _original_path
 from products.sdk_facade_validation_admission import _context, verify_sdk_facade_validation_original_content
 from products.sdk_package import _require_capability_output_separate
@@ -147,7 +148,7 @@ def verified_original_sdk_facade_validation(
 
     def unchanged():
         require_no_signing_secret(environ)
-        if (canonical_json_bytes(receipt) != raw or _read(request_path) != request_bytes
+        if (_read(receipt_path) != raw or canonical_json_bytes(receipt) != raw or _read(request_path) != request_bytes
                 or any(_inventory(path, allow_empty=True) != before_trees[name] for name, path in trees.items())
                 or any(read_regular_file_bytes(path, max_bytes=128 * 1024 * 1024,
                     reject_symlink_parents=True) != before_files[name] for name, path in files.items())
@@ -161,6 +162,7 @@ def verified_original_sdk_facade_validation(
         selected = private / "selected-receipt.json"
         selected.write_bytes(raw)
         try:
+            unchanged()
             capture = private / "capture"
             transport = capture_sdk_facade_validation_upload(plan, capture, validation_receipt_path=selected,
                 artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
@@ -174,7 +176,7 @@ def verified_original_sdk_facade_validation(
             original = capture / "original"
             layouts = {
                 original: {"shard", "worker", "selection", "context", "retained-execution", "inputs", "originals"},
-                original / "worker": {"execution.json", "gradle.log", "facade-request.json", "source"},
+                original / "worker": {"execution.json", "gradle.log", "facade-request.json", "source", "host-observation"},
                 original / "selection": {"impact-plan.json", "phase-plan.json", "producer.json"},
                 original / "context": {"execution-context.json"},
                 original / "retained-execution": {"inputs", "consumer", "consumer-inputs", "execution",
@@ -212,6 +214,10 @@ def verified_original_sdk_facade_validation(
                        canonical_json_bytes({name: receipt[name] for name in PHASE_PLAN_KEYS})):
                 raise ValueError("Original Core selection differs from its receipt and producer")
             context = _execution_context(original, receipt, value)
+            verify_facade_execution_observation(original / "worker/host-observation",
+                repository=root, producer=producer, target=receipt["target"],
+                original_repository_root=context["repositoryRoot"],
+                original_java_executable=context.get("javaExecutable"))
             source = private / "immutable-source"
             source_record = capture_facade_validation_sources(root, producer["commit"], source)
             if (source_record["tree"] != producer["tree"] or _inventory(source) != source_record["files"]

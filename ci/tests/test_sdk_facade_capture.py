@@ -20,7 +20,9 @@ from products.restore import PHASE_PLAN_KEYS, finalize_phase_object
 
 
 class FacadeCaptureTest(unittest.TestCase):
+    component = "sdk-core"
     phase = "validation"
+    capture_name = "capture_sdk_facade_validation_upload"
     targets = SDK_FACADE_TARGETS
     required_directories = ("worker", "context")
     api = fixture.RuntimeAggregateUploadTest.api
@@ -29,7 +31,7 @@ class FacadeCaptureTest(unittest.TestCase):
     def setUp(self):
         fixture.RuntimeAggregateUploadTest.setUp(self)
         self.records = {}
-        self.select("jvm" if self.phase == "validation" else "common")
+        self.select(self.targets[0])
         self.original_plan = self.plan_path.read_bytes()
 
     def select(self, target):
@@ -37,9 +39,9 @@ class FacadeCaptureTest(unittest.TestCase):
             stage = self.root / f"original-stage-{target}"
             (stage / "outputs").mkdir(parents=True)
             (stage / "outputs/result.json").write_bytes(b'{"synthetic":"no content proof"}\n')
-            manifest = write_output_manifest(stage, "sdk", "sdk-core", self.phase, target, "0.8.0",
+            manifest = write_output_manifest(stage, "sdk", self.component, self.phase, target, "0.8.0",
                                              {f"sdk-facade-{self.phase}-content": "outputs"})
-            selected = write_receipt(self.root / f"selected-{target}.json", product="sdk", component="sdk-core",
+            selected = write_receipt(self.root / f"selected-{target}.json", product="sdk", component=self.component,
                 phase=self.phase, target=target, outputs=manifest["outputs"], upstream=[], version="0.8.0",
                 version_identity="0.8.0", context={"producer": self.producer})
             shard = self.root / f"shard-{target}"
@@ -51,12 +53,13 @@ class FacadeCaptureTest(unittest.TestCase):
                 "context/execution.json": b'{"opaque":"caller must authenticate"}\n',
                 "retained-execution/process/stderr.bin": b"", "selection/phase.json": canonical_json_bytes(selected),
                 "inputs/original.bin": b"full original bytes preserved\x00\xff",
-                "originals/original.bin": b"opaque full original proof"})
+                "originals/original.bin": b"opaque full original proof",
+                **{directory + "/retained.bin": b"opaque retained proof" for directory in self.required_directories}})
             self.records[target] = (shard / "phase-receipt.json", descriptor["receiptBytes"], selected, files)
         self.receipt_path, self.receipt_bytes, self.receipt, self.files = deepcopy(self.records[target])
-        self.jobs[0].update(name=f"product-validation / sdk-sdk-core-{self.phase}-{target}", runner_id=19,
-                            labels=[facade.route(self.receipt)["runner"] if self.phase == "validation" else "ubuntu-24.04"])
-        self.artifact["name"] = (f"codex-agent-sdk-worker-sdk-core-{self.phase}-{target}-"
+        self.jobs[0].update(name=f"product-validation / sdk-{self.component}-{self.phase}-{target}", runner_id=19,
+                            labels=[facade._capture_route(self.receipt)[1]])
+        self.artifact["name"] = (f"codex-agent-sdk-worker-{self.component}-{self.phase}-{target}-"
             f"{self.receipt['buildKey'].removeprefix('sha256:')}-{self.producer['tree']}-attempt-{self.producer['runAttempt']}")
         self.archive()
 
@@ -65,12 +68,12 @@ class FacadeCaptureTest(unittest.TestCase):
             artifact_sha256=self.artifact["digest"], trusted_workflow_sha=self.pin,
             repository_root=self.root, environ={"GITHUB_RUN_ID": "999", "GITHUB_RUN_ATTEMPT": "99"},
             token="synthetic-token")
-        arguments[self.phase + "_receipt_path"] = self.receipt_path
+        arguments["receipt_path" if self.capture_name == "capture_sdk_maven_upload" else
+                  self.phase + "_receipt_path"] = self.receipt_path
         arguments.update(changes)
         with patch.object(facade.products, "_validate_plan", return_value=self.plan), \
              patch("reuse.api_request", side_effect=self.api):
-            capture = (facade.capture_sdk_facade_validation_upload if self.phase == "validation"
-                       else facade.capture_sdk_facade_metadata_upload)
+            capture = getattr(facade, self.capture_name)
             return capture(self.plan_path, self.output, **arguments)
 
     def test_all_targets_retain_original_producer_complete_upload_and_official_observation(self):
@@ -90,6 +93,7 @@ class FacadeCaptureTest(unittest.TestCase):
                 for name, raw in self.files.items():
                     self.assertEqual(raw, (self.output / "original" / name).read_bytes())
                 self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
+                facade.verify_retained_sdk_phase_upload(self.output, self.receipt_bytes)
                 shutil.rmtree(self.output)
 
     def test_fixed_job_attempt_source_pin_runner_and_window_are_mandatory(self):
@@ -101,7 +105,7 @@ class FacadeCaptureTest(unittest.TestCase):
             elif case == "attempt": self.run["run_attempt"] += 1
             elif case == "pin": self.run["referenced_workflows"][0]["sha"] = "d" * 40
             elif case == "tree": self.commit["tree"]["sha"] = "f" * 40
-            elif case == "runner": self.jobs[0]["labels"] = ["macos-26"]
+            elif case == "runner": self.jobs[0]["labels"] = ["unrelated-runner"]
             elif case == "missing-runner": self.jobs[0].pop("labels")
             elif case == "runner-id": self.jobs[0]["runner_id"] = 0
             elif case == "boolean-id": self.jobs[0]["runner_id"] = True
@@ -161,6 +165,7 @@ class FacadeCaptureTest(unittest.TestCase):
                     self.assertRaises(ValueError):
                 self.call(**changes)
             observe.assert_not_called()
+
         self.plan["remoteBuildAuthorized"] = False
         with patch.object(facade.products, "_observe_ci_producer_jobs") as observe, self.assertRaises(ValueError):
             self.call()
@@ -173,8 +178,51 @@ class FacadeCaptureTest(unittest.TestCase):
                 self.call()
             observe.assert_not_called()
 
+    def test_retained_carrier_is_read_only_and_rejects_replacement(self):
+        self.call()
+        before = regular_file_inventory(self.output, allow_empty=True)
+        with patch.object(facade.products, "_observe_ci_producer_jobs") as observe:
+            facade.verify_retained_sdk_phase_upload(self.output, self.receipt_bytes)
+        observe.assert_not_called()
+        self.assertEqual(before, regular_file_inventory(self.output, allow_empty=True))
+        path = self.output / "original/worker/gradle.log"
+        path.write_bytes(b"changed")
+        with self.assertRaisesRegex(ValueError, "original archive"):
+            facade.verify_retained_sdk_phase_upload(self.output, self.receipt_bytes)
+
 
 class FacadeMetadataCaptureTest(FacadeCaptureTest):
     phase = "metadata"
+    capture_name = "capture_sdk_facade_metadata_upload"
     targets = ("common",)
     required_directories = ("worker", "selection", "originals", "inputs")
+
+
+class AndroidValidationCaptureTest(FacadeCaptureTest):
+    component = "sdk-android"
+    capture_name = "capture_sdk_android_validation_upload"
+    targets = ("android",)
+    required_directories = ("inputs", "originals", "stage")
+
+
+class CoreBinaryCaptureTest(FacadeCaptureTest):
+    phase = "binary"
+    capture_name = "capture_sdk_maven_upload"
+    targets = ("common",)
+    required_directories = ("inputs", "worker", "selection")
+
+
+class AndroidBinaryCaptureTest(CoreBinaryCaptureTest):
+    component = "sdk-android"
+    targets = ("android",)
+    required_directories = (*CoreBinaryCaptureTest.required_directories, "android-original")
+
+
+class CorePackageCaptureTest(CoreBinaryCaptureTest):
+    phase = "package"
+    required_directories = (*CoreBinaryCaptureTest.required_directories, "sdk-inputs-original", "binary-contract-original")
+
+
+class AndroidPackageCaptureTest(CorePackageCaptureTest):
+    component = "sdk-android"
+    targets = ("android",)

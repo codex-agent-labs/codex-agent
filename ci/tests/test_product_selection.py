@@ -116,7 +116,7 @@ class ProductSelectionTest(unittest.TestCase):
             ("ci/products/sdk_facade_inputs.py", "sdk-core", True),
             ("ci/products/sdk_facade_source.py", "sdk-core", False),
             ("ci/products/sdk_facade_validation_admission.py", "sdk-core", False),
-            ("ci/sdk_facade_capture.py", "sdk-core", False),
+            ("ci/products/sdk_facade_execution_observation.py", "sdk-core", False),
             ("ci/sdk_facade_original_validation.py", "sdk-core", False),
             ("ci/sdk_facade_workflow.py", "sdk-core", False),
             ("ci/sdk_facade_validation_phase.py", "sdk-core", False),
@@ -184,8 +184,11 @@ class ProductSelectionTest(unittest.TestCase):
             ("ci/sdk_facade_metadata_original.py", {"sdk-core"}, {"metadata"}),
             ("ci/sdk_android_metadata_workflow.py", {"sdk-android"}, {"metadata"}),
             ("ci/sdk_maven_binary_workflow.py", {"sdk-core", "sdk-android"}, {"binary", "package", "validation", "metadata"}),
+            ("ci/sdk_maven_original.py", {"sdk-core", "sdk-android"}, {"binary", "package", "validation", "metadata"}),
+            ("ci/sdk_facade_capture.py", {"sdk-core", "sdk-android"}, {"binary", "package", "validation", "metadata"}),
             ("ci/sdk_maven_package_workflow.py", {"sdk-core", "sdk-android"}, {"package", "validation", "metadata"}),
             ("ci/sdk_android_validation_workflow.py", {"sdk-android"}, {"validation", "metadata"}),
+            ("ci/sdk_android_original_validation.py", {"sdk-android"}, {"validation", "metadata"}),
         ):
             with self.subTest(path=path):
                 result = classify_paths([path])
