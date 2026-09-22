@@ -20,6 +20,7 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import product_reuse
+from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from products.inventory import (
     canonical_json_bytes, git_product_versions, load_canonical_json_bytes,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys,
@@ -573,17 +574,20 @@ def main(argv=None):
         parser.add_argument("--" + name)
     parser.add_argument("--expected-original-run-id", type=int)
     parser.add_argument("--expected-original-run-attempt", type=int)
+    add_metadata_admission_arguments(parser)
     arguments = vars(parser.parse_args(argv))
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
         parser.error("Android metadata tooling keyring and directory must be paired")
     try:
-        arguments["binary_contract_evidence"] = product_reuse._canonical_control(
-            arguments["binary_contract_evidence"], "Caller Android binary Contract evidence")
-        policy = arguments.pop("sdk_apple_validation_policy")
-        if policy is not None:
-            arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
-                policy, "Caller Apple validation policy")
-        execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+        with metadata_admission_options(arguments) as admissions:
+            arguments["binary_contract_evidence"] = product_reuse._canonical_control(
+                arguments["binary_contract_evidence"], "Caller Android binary Contract evidence")
+            policy = arguments.pop("sdk_apple_validation_policy")
+            if policy is not None:
+                arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
+                    policy, "Caller Apple validation policy")
+            execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""),
+                    **admissions)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

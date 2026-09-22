@@ -1,8 +1,10 @@
 """Controller-order tests; authority, tooling, and host execution are mocked."""
 
-from contextlib import contextmanager, ExitStack
+from contextlib import contextmanager, ExitStack, redirect_stderr
+import io
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -342,6 +344,57 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         for name in admissions:
             self.assertNotIn(name.encode(), retained)
             self.assertNotIn(name.encode(), context)
+
+    def test_cli_metadata_policy_context_wraps_execute_and_fails_closed(self):
+        for mode in ("absent", "present", "error"):
+            policy = self.root / (mode + ".json") if mode != "absent" else None
+            parsed = SimpleNamespace(plan=self.plan, repository_root=self.root,
+                tooling_keyring=None, tooling_keys_directory=None,
+                sdk_apple_validation_policy=None,
+                sdk_facade_metadata_policy=policy, sdk_android_metadata_policy=policy)
+            admissions = ({"sdk_facade_metadata_admission": object(),
+                           "sdk_android_metadata_admission": object()}
+                          if mode == "present" else {})
+            events = []
+
+            @contextmanager
+            def options(arguments):
+                self.assertIs(self.plan, arguments["plan"])
+                self.assertIs(self.root, arguments["repository_root"])
+                arguments.pop("sdk_facade_metadata_policy")
+                arguments.pop("sdk_android_metadata_policy")
+                if mode == "error":
+                    raise ValueError("metadata policy rejected")
+                events.append("enter")
+                try:
+                    yield admissions
+                finally:
+                    events.append("exit")
+
+            def run(**arguments):
+                self.assertEqual(["enter"], events)
+                for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
+                    if name in admissions:
+                        self.assertIs(admissions[name], arguments[name])
+                    else:
+                        self.assertNotIn(name, arguments)
+                self.assertNotIn("sdk_facade_metadata_policy", arguments)
+                self.assertNotIn("sdk_android_metadata_policy", arguments)
+                events.append("execute")
+
+            with self.subTest(mode=mode), \
+                    patch.object(workflow.argparse.ArgumentParser, "parse_args", return_value=parsed), \
+                    patch.object(workflow, "add_metadata_admission_arguments") as add, \
+                    patch.object(workflow, "metadata_admission_options", side_effect=options), \
+                    patch.object(workflow, "execute", side_effect=run) as execute:
+                if mode == "error":
+                    with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                        workflow.main([])
+                    execute.assert_not_called()
+                else:
+                    self.assertEqual(0, workflow.main([]))
+                    self.assertEqual(["enter", "execute", "exit"], events)
+                add.assert_called_once()
 
     def test_current_contract_receipt_must_match_authenticated_sdk_inputs(self):
         self.contract_mismatch = True

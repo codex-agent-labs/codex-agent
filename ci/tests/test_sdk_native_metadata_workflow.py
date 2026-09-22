@@ -272,6 +272,9 @@ class SdkNativeMetadataWorkflowTest(unittest.TestCase):
 
 
 class SdkNativeMetadataCliTest(unittest.TestCase):
+    def test_metadata_policy_cli_preserves_objects_and_context_lifetime(self):
+        fixture.assert_metadata_cli_context(self, workflow, self.argv)
+
     def setUp(self):
         self.values = {name: Path("/synthetic") / name for name in
             ("plan", "discovery", "state", "destination", "preparation_state", "keyring", "keys_directory",

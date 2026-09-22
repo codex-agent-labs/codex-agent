@@ -12,6 +12,7 @@ from unittest.mock import patch
 from ci import sdk_facade_metadata_workflow as workflow
 from ci.tests import test_sdk_facade_metadata_inputs as fixtures
 from ci.tests.product_chain_support import write_receipt
+from ci.tests.test_sdk_facade_workflow import assert_metadata_cli_context
 from products.inventory import canonical_json_bytes, load_canonical_json_bytes, snapshot_regular_tree
 from products.plan import _upstream_record
 from products.receipt import write_output_manifest
@@ -226,6 +227,7 @@ class FacadeMetadataWorkflowTest(unittest.TestCase):
         arguments = {**self.arguments(), "validations": validations, "component_digests": components}
         argv = [item for key, value in arguments.items() if key not in {"environ", "token"}
                 for item in ("--" + key.replace("_", "-") + ("-root" if key in {"discovery", "state"} else ""), str(value))]
+        assert_metadata_cli_context(self, workflow, argv)
         with patch.object(workflow, "execute") as execute, patch.dict(os.environ, {"GITHUB_TOKEN": "cli-token"}):
             self.assertEqual(0, workflow.main(argv))
             self.assertEqual("cli-token", execute.call_args.kwargs["token"])

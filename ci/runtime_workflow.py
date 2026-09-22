@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import product_reuse as products
+from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from products.inventory import canonical_json_bytes, require_sha256, snapshot_regular_tree
 from products.registry import NATIVE_TARGETS, PhaseInstanceId
 from reuse import github_output
@@ -268,6 +269,7 @@ def main(argv=None):
     collected.add_argument("--sdk-validation-tooling", type=Path)
     for command in (show, final, captured, collected):
         command.add_argument("--sdk-apple-validation-policy", type=Path)
+        add_metadata_admission_arguments(command)
     trust = commands.add_parser("variant-trust")
     trust.add_argument("--variant-handoff", action="append", required=True, metavar="TARGET=PATH")
     for name in ("destination", "keyring", "keys-directory"):
@@ -280,24 +282,30 @@ def main(argv=None):
         if args.command == "matrix":
             tooling = ({} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
                 products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")})
-            matrix(args.plan, args.discovery_root, args.state_root, args.github_output, **tooling, **apple_policy)
+            with metadata_admission_options(args) as admissions:
+                matrix(args.plan, args.discovery_root, args.state_root, args.github_output,
+                       **tooling, **apple_policy, **admissions)
         elif args.command == "continuation":
             tooling = (None if args.sdk_validation_tooling is None else
                        products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy"))
-            continuation(args.plan, args.discovery_root, args.state_root, args.github_output,
-                         sdk_validation_tooling=tooling, **({"if_selected": True} if args.if_selected else {}),
-                         **({"require_completed": True} if args.require_completed else {}), **apple_policy)
+            with metadata_admission_options(args) as admissions:
+                continuation(args.plan, args.discovery_root, args.state_root, args.github_output,
+                             sdk_validation_tooling=tooling, **({"if_selected": True} if args.if_selected else {}),
+                             **({"require_completed": True} if args.require_completed else {}),
+                             **apple_policy, **admissions)
         elif args.command == "capture":
             tooling = ({} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
                 products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")})
             values = (args.component, args.phase, args.target, args.expected_build_key)
             if any(value is not None for value in values) and any(value is None for value in values):
                 raise ValueError("All four elected worker arguments are required")
-            capture(args.plan, Path(os.path.abspath(args.destination)), args.github_output,
-                    artifact_id=args.artifact_id, artifact_sha256=args.artifact_sha256,
-                    trusted_workflow_sha=args.trusted_workflow_sha, state_wave=args.state_wave,
-                    instance=PhaseInstanceId("runtime", *values[:3]) if all(values) else None,
-                    expected_build_key=args.expected_build_key, token=os.environ.get("GITHUB_TOKEN", ""), **tooling, **apple_policy)
+            with metadata_admission_options(args) as admissions:
+                capture(args.plan, Path(os.path.abspath(args.destination)), args.github_output,
+                        artifact_id=args.artifact_id, artifact_sha256=args.artifact_sha256,
+                        trusted_workflow_sha=args.trusted_workflow_sha, state_wave=args.state_wave,
+                        instance=PhaseInstanceId("runtime", *values[:3]) if all(values) else None,
+                        expected_build_key=args.expected_build_key, token=os.environ.get("GITHUB_TOKEN", ""),
+                        **tooling, **apple_policy, **admissions)
         elif args.command == "variant-trust":
             from products.runtime_variant_trust import stage_runtime_variant_trust
             handoffs = {}
@@ -311,10 +319,12 @@ def main(argv=None):
         else:
             tooling = ({} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
                 products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")})
-            collect(Path(os.path.abspath(args.input_root)), Path(os.path.abspath(args.destination)), args.github_output,
-                    wave=args.wave, trusted_workflow_sha=args.trusted_workflow_sha,
-                    token=os.environ.get("GITHUB_TOKEN", ""),
-                    **({"state_wave": args.state_wave} if args.state_wave is not None else {}), **tooling, **apple_policy)
+            with metadata_admission_options(args) as admissions:
+                collect(Path(os.path.abspath(args.input_root)), Path(os.path.abspath(args.destination)), args.github_output,
+                        wave=args.wave, trusted_workflow_sha=args.trusted_workflow_sha,
+                        token=os.environ.get("GITHUB_TOKEN", ""),
+                        **({"state_wave": args.state_wave} if args.state_wave is not None else {}),
+                        **tooling, **apple_policy, **admissions)
     except (ValueError, OSError) as error:
         parser.error(str(error))
     return 0

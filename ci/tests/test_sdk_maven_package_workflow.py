@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from ci import sdk_maven_package_workflow as workflow
 from ci.tests.product_chain_support import write_receipt
+from ci.tests.test_sdk_facade_workflow import assert_metadata_cli_context
 from products.inventory import canonical_json_bytes, load_canonical_json_bytes, snapshot_regular_tree, write_canonical_json
 from products.receipt import write_output_manifest
 from products.restore import PHASE_PLAN_KEYS
@@ -349,6 +350,7 @@ class MavenPackageWorkflowTest(unittest.TestCase):
             "binary-original-context": context, "binary-artifact-id": 7,
             "binary-artifact-sha256": "sha256:" + "b" * 64}.items():
             argv.extend(["--" + name, str(value)])
+        assert_metadata_cli_context(self, workflow, argv)
         with patch.object(workflow, "execute") as execute, patch.dict(workflow.os.environ, {"GITHUB_TOKEN": "env-token"}):
             self.assertEqual(0, workflow.main(argv))
             self.assertEqual(self.evidence, execute.call_args.kwargs["binary_contract_evidence"])

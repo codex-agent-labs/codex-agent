@@ -238,6 +238,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
 
 
 def main(argv=None):
+    from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
+
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "destination", "validations", "component-digests", "repository-root",
                  "tooling-evidence", "tooling-public-key", "java-executable"):
@@ -249,6 +251,7 @@ def main(argv=None):
     parser.add_argument("--required-trust-domain", choices=("development", "release"), required=True)
     for name in ("tooling-keyring", "tooling-keys-directory", "sdk-apple-validation-policy"):
         parser.add_argument("--" + name, type=Path)
+    add_metadata_admission_arguments(parser)
     arguments = vars(parser.parse_args(argv))
     try:
         require_no_signing_secret(os.environ)
@@ -258,7 +261,8 @@ def main(argv=None):
             path = arguments[field]
             if path is not None:
                 arguments[field] = product_reuse._canonical_control(path, "Caller Core metadata " + field)
-        execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+        with metadata_admission_options(arguments) as admissions:
+            execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

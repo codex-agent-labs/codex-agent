@@ -14,6 +14,7 @@ if __package__:
 
 import product_reuse
 import sdk_handoff
+from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
     regular_file_inventory, sha256_bytes, snapshot_regular_tree, publish_regular_tree,
@@ -571,6 +572,7 @@ def _workflow_main(argv):
         command.add_argument("--repository-root", type=Path)
         command.add_argument("--sdk-validation-tooling", type=Path)
         command.add_argument("--sdk-apple-validation-policy", type=Path)
+        add_metadata_admission_arguments(command)
         if name == "matrix":
             for flag, dest in (("plan", "plan"), ("discovery-root", "discovery"), ("state-root", "state")):
                 command.add_argument(f"--{flag}", dest=dest, type=Path, required=True)
@@ -588,14 +590,15 @@ def _workflow_main(argv):
     arguments = vars(parser.parse_args(argv))
     command = arguments.pop("command")
     try:
-        policy = arguments.pop("sdk_validation_tooling")
-        if policy is not None:
-            arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
-        apple_policy = arguments.pop("sdk_apple_validation_policy")
-        if apple_policy is not None:
-            arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(apple_policy, "Caller Apple validation policy")
-        return {"matrix": matrix, "capture": capture, "collect": collect}[command](**arguments,
-            environ=os.environ, **({"token": os.environ.get("GITHUB_TOKEN", "")} if command != "matrix" else {}))
+        with metadata_admission_options(arguments) as admissions:
+            policy = arguments.pop("sdk_validation_tooling")
+            if policy is not None:
+                arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
+            apple_policy = arguments.pop("sdk_apple_validation_policy")
+            if apple_policy is not None:
+                arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(apple_policy, "Caller Apple validation policy")
+            return {"matrix": matrix, "capture": capture, "collect": collect}[command](**arguments, **admissions,
+                environ=os.environ, **({"token": os.environ.get("GITHUB_TOKEN", "")} if command != "matrix" else {}))
     except (OSError, ValueError) as error:
         parser.error(str(error))
 
@@ -612,22 +615,24 @@ def _ios_binary_main(argv):
         parser.add_argument(f"--{lane}-artifact-sha256", required=True)
     parser.add_argument("--sdk-validation-tooling", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
+    add_metadata_admission_arguments(parser)
     arguments = vars(parser.parse_args(argv))
     uploads = {f"ios-{lane}": {
         "artifactId": arguments.pop(lane.replace("-", "_") + "_artifact_id"),
         "artifactSha256": arguments.pop(lane.replace("-", "_") + "_artifact_sha256"),
     } for lane in lanes}
-    plan, discovery, state, destination = (arguments.pop(name) for name in (
-        "plan", "discovery_root", "state_root", "destination"))
     try:
-        policy = arguments.pop("sdk_validation_tooling")
-        if policy is not None:
-            arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
-        apple_policy = arguments.pop("sdk_apple_validation_policy")
-        if apple_policy is not None:
-            arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(apple_policy, "Caller Apple validation policy")
-        execute_ios_binary(plan, discovery, state, destination, **arguments,
-            native_uploads=uploads, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+        with metadata_admission_options(arguments) as admissions:
+            plan, discovery, state, destination = (arguments.pop(name) for name in (
+                "plan", "discovery_root", "state_root", "destination"))
+            policy = arguments.pop("sdk_validation_tooling")
+            if policy is not None:
+                arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
+            apple_policy = arguments.pop("sdk_apple_validation_policy")
+            if apple_policy is not None:
+                arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(apple_policy, "Caller Apple validation policy")
+            execute_ios_binary(plan, discovery, state, destination, **arguments, **admissions,
+                native_uploads=uploads, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0
@@ -700,18 +705,20 @@ def main(argv=None):
         parser.add_argument("--expected-metadata-receipt-sha256")
     parser.add_argument("--sdk-validation-tooling", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
+    add_metadata_admission_arguments(parser)
     arguments = vars(parser.parse_args(argv))
-    plan, discovery, state, destination = (arguments.pop(name) for name in ("plan", "discovery_root", "state_root", "destination"))
     try:
-        action = prepare_native if native_prepare else execute_javascript if javascript else stage
-        policy = arguments.pop("sdk_validation_tooling")
-        if policy is not None:
-            arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
-        apple_policy = arguments.pop("sdk_apple_validation_policy")
-        if apple_policy is not None:
-            arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(apple_policy, "Caller Apple validation policy")
-        action(plan, discovery, state, destination, **arguments,
-            environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+        with metadata_admission_options(arguments) as admissions:
+            plan, discovery, state, destination = (arguments.pop(name) for name in ("plan", "discovery_root", "state_root", "destination"))
+            action = prepare_native if native_prepare else execute_javascript if javascript else stage
+            policy = arguments.pop("sdk_validation_tooling")
+            if policy is not None:
+                arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
+            apple_policy = arguments.pop("sdk_apple_validation_policy")
+            if apple_policy is not None:
+                arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(apple_policy, "Caller Apple validation policy")
+            action(plan, discovery, state, destination, **arguments, **admissions,
+                environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

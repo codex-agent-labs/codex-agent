@@ -234,6 +234,8 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
 
 
 def main(argv=None):
+    from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
+
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "destination", "repository-root", "facade-request",
                  "tooling-evidence", "tooling-public-key", "java-executable"):
@@ -247,6 +249,7 @@ def main(argv=None):
     for name in ("consumer-java-executable", "tooling-keyring", "tooling-keys-directory", "sdk-apple-validation-policy",
                  "native-compiler-archive"):
         parser.add_argument("--" + name, type=Path)
+    add_metadata_admission_arguments(parser)
     arguments = vars(parser.parse_args(argv))
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
         parser.error("Core tooling keyring and directory must be supplied together")
@@ -255,7 +258,8 @@ def main(argv=None):
         if policy is not None:
             arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
                 policy, "Caller Apple validation policy")
-        execute(**arguments, environ=os.environ)
+        with metadata_admission_options(arguments) as admissions:
+            execute(**arguments, environ=os.environ, **admissions)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

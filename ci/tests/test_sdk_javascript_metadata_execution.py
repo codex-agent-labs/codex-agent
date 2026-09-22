@@ -12,7 +12,9 @@ from unittest.mock import patch
 
 from ci import sdk_javascript_metadata_workflow as workflow
 from ci.tests import test_sdk_javascript_workflow as fixture
-from ci.tests.test_sdk_native_package_execution import caller_apple_policy, caller_metadata_admissions
+from ci.tests.test_sdk_native_package_execution import (
+    caller_apple_policy, caller_metadata_admissions, assert_metadata_cli_context,
+)
 from ci.tests.product_chain_support import write_receipt
 from products.inventory import (
     load_canonical_json_bytes, regular_file_inventory,
@@ -250,6 +252,13 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
         self.assertNotIn("sdkAppleValidationPolicy", result["receipt"])
         self.assertNotIn("sdk_apple_validation_policy", result["receipt"])
         self.assertEqual(["enter", "materialize", "capture", "package", "worker", "admission", "exit-check", "exited"], self.events)
+
+    def test_metadata_policy_cli_preserves_objects_and_context_lifetime(self):
+        from ci.tests import test_sdk_javascript_metadata_cli as cli_fixture
+        cli = cli_fixture.SdkJavaScriptMetadataCliTest(methodName="runTest")
+        cli.setUp()
+        self.addCleanup(cli.doCleanups)
+        assert_metadata_cli_context(self, workflow, cli.argv())
 
     def test_missing_locator_uses_only_selected_original_then_runs_unchanged_capture(self):
         self.arguments.pop("validation_artifact_id")

@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import time
 from typing import Any, Mapping
+from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 
 from impact import validate_legacy_lane_projection, validate_remote_build_authorization
 from receipt import safe_extract
@@ -5736,165 +5737,172 @@ def parser() -> argparse.ArgumentParser:
     originals_command.add_argument("--release-handoff", type=Path, action="append", default=[])
     originals_command.add_argument("--keyring", type=Path)
     originals_command.add_argument("--keys-directory", type=Path)
+    for name in ("discover", "advance-products", "resume-products", "collect-runtime-workers",
+                 "runtime-worker-matrix", "execute-runtime-supervisor", "execute-sdk-metadata",
+                 "execute-runtime-aggregate", "materialize-product-predecessors",
+                 "prepare-runtime-phase", "execute-runtime-phase"):
+        add_metadata_admission_arguments(commands.choices[name])
     return result
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = parser().parse_args(argv)
     try:
-        tooling = None
-        if getattr(arguments, "sdk_validation_tooling", None) is not None:
-            tooling = _canonical_control(arguments.sdk_validation_tooling, "Caller SDK tooling policy")
-        apple_options = {}
-        if getattr(arguments, "sdk_apple_validation_policy", None) is not None:
-            apple_options["sdk_apple_validation_policy"] = _canonical_control(
-                arguments.sdk_apple_validation_policy, "Caller Apple validation policy")
-        if arguments.command == "stage-release-catalog":
-            stage_release_catalog(arguments.source_root, arguments.destination,
-                repository=arguments.repository, source=arguments.source,
-                keyring=arguments.keyring, keys_directory=arguments.keys_directory)
-        elif arguments.command == "discover":
-            discover(arguments.plan, arguments.destination, arguments.github_output,
-                     native_evidence_roots=tuple(arguments.native_runtime_evidence),
-                     aggregate_evidence_roots=tuple(arguments.runtime_aggregate_release_evidence),
-                     adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),
-                     sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling,
-                     **apple_options,
-                     **({"sdk_maven_evidence_roots": tuple(arguments.sdk_maven_evidence)}
-                        if arguments.sdk_maven_evidence else {}),
-                     **({"sdk_metadata_evidence_roots": tuple(arguments.sdk_metadata_evidence)}
-                        if arguments.sdk_metadata_evidence else {}),
-                     **({"sdk_apple_evidence_roots": tuple(arguments.sdk_apple_validation_evidence)}
-                        if arguments.sdk_apple_validation_evidence else {}),
-                     **({"tooling_java_executable": arguments.tooling_java_executable,
-                         "tooling_workflow_sha": arguments.tooling_workflow_sha}
-                        if arguments.tooling_java_executable is not None or arguments.tooling_workflow_sha is not None else {}))
-            if arguments.handoff is not None:
-                publish_regular_tree(arguments.destination, arguments.handoff, allow_empty=True)
-        elif arguments.command == "advance-contract":
-            advance_contract(
-                arguments.plan,
-                arguments.discovery_root,
-                arguments.state_root,
-                arguments.phase_shard,
-                arguments.destination,
-                arguments.github_output,
-                sdk_validation_tooling=tooling,
-                **apple_options,
-            )
-        elif arguments.command == "advance-products":
-            advance_products(
-                arguments.plan,
-                arguments.discovery_root,
-                arguments.state_root,
-                arguments.phase_shard,
-                arguments.destination,
-                arguments.github_output,
-                native_evidence_roots=tuple(arguments.native_runtime_evidence),
-                aggregate_evidence_roots=tuple(arguments.runtime_aggregate_release_evidence),
-                adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),
-                sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling,
-                **apple_options,
-                **({"sdk_maven_evidence_roots": tuple(arguments.sdk_maven_evidence)}
-                   if arguments.sdk_maven_evidence else {}),
-                **({"sdk_metadata_evidence_roots": tuple(arguments.sdk_metadata_evidence)}
-                   if arguments.sdk_metadata_evidence else {}),
-                **({"sdk_apple_evidence_roots": tuple(arguments.sdk_apple_validation_evidence)}
-                   if arguments.sdk_apple_validation_evidence else {}),
-                failed_instances=tuple(PhaseInstanceId(*value) for value in arguments.failed_phase),
-                **({"runtime_workers_only": True} if arguments.runtime_workers_only else {}),
-            )
-        elif arguments.command == "collect-runtime-workers":
-            collect_runtime_workers(
-                arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,
-                trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""),
-                sdk_validation_tooling=tooling, **apple_options)
-        elif arguments.command == "runtime-worker-matrix":
-            github_output(arguments.github_output, {"runtime_matrix": '{"include":[]}', "runtime_workers_required": False})
-            matrix = runtime_worker_matrix(
-                arguments.plan, arguments.discovery_root, arguments.state_root,
-                sdk_validation_tooling=tooling, **apple_options)
-            github_output(arguments.github_output, {"runtime_matrix": canonical_json_bytes(matrix).decode("utf-8").strip(),
-                                                   "runtime_workers_required": bool(matrix["include"])})
-        elif arguments.command == "capture-contract-ci":
-            capture_contract_ci_artifact(
-                arguments.destination, artifact_id=arguments.artifact_id,
-                artifact_sha256=arguments.artifact_sha256,
-                transport_producer=_canonical_control(arguments.transport_producer, "Caller capture producer"),
-                trusted_workflow_sha=arguments.trusted_workflow_sha,
-                contract_version=arguments.contract_version, token=os.environ.get("GITHUB_TOKEN", ""))
-        elif arguments.command == "execute-runtime-supervisor":
-            execute_runtime_supervisor(
-                arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,
-                expected_build_key=arguments.expected_build_key, sdk_validation_tooling=tooling, **apple_options)
-        elif arguments.command == "capture-runtime-supervisor-upload":
-            capture_runtime_supervisor_upload(
-                arguments.plan, arguments.destination, artifact_id=arguments.artifact_id,
-                artifact_sha256=arguments.artifact_sha256, expected_build_key=arguments.expected_build_key,
-                trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""))
-        elif arguments.command == "capture-runtime-resume-upload":
-            capture_runtime_resume_upload(
-                arguments.plan, arguments.destination, artifact_id=arguments.artifact_id,
-                artifact_sha256=arguments.artifact_sha256,
-                trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""),
-                **({"state_wave": arguments.state_wave} if arguments.state_wave else {}))
-        elif arguments.command == "capture-product-resume-inputs":
-            capture_product_resume_inputs(
-                arguments.plan, arguments.destination,
-                uploads={name: {"artifactId": getattr(arguments, f"{name}_artifact_id"),
-                                "artifactSha256": getattr(arguments, f"{name}_artifact_sha256")}
-                         for name in ("plan", "state", "release")},
-                trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""))
-        elif arguments.command == "resume-products":
-            resume_products(
-                arguments.plan, arguments.discovery_root, arguments.state_root,
-                arguments.contract_handoff, arguments.destination, arguments.github_output,
-                sdk_validation_tooling=tooling, **apple_options)
-        elif arguments.command == "execute-sdk-metadata":
-            execute_sdk_metadata(
-                arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,
-                component=arguments.component, expected_build_key=arguments.expected_build_key,
-                compatibility_request=arguments.compatibility_request, runtime_stages=arguments.runtime_stages,
-                staged_sdks=arguments.staged_sdks, sdk_validation_tooling=tooling, **apple_options)
-        elif arguments.command == "execute-runtime-aggregate":
-            execute_runtime_aggregate(
-                arguments.plan, arguments.discovery_root, arguments.state_root,
-                arguments.destination, expected_build_key=arguments.expected_build_key,
-                variant_trust_root=arguments.variant_trust_root, sdk_validation_tooling=tooling, **apple_options)
-        elif arguments.command in {"materialize-product-predecessors", "prepare-runtime-phase", "execute-runtime-phase"}:
-            operation = {"materialize-product-predecessors": materialize_product_predecessors,
-                         "prepare-runtime-phase": prepare_runtime_phase,
-                         "execute-runtime-phase": execute_runtime_phase}[arguments.command]
-            additional = {}
-            if arguments.command == "execute-runtime-phase":
-                if arguments.app_server_archive is not None:
-                    additional["app_server_archive"] = arguments.app_server_archive
-                values = (arguments.supervisor_artifact_id, arguments.supervisor_artifact_sha256,
-                          arguments.supervisor_trusted_workflow_sha)
-                if any(value is not None for value in values):
-                    if any(value is None for value in values):
-                        raise ValueError("All three caller-bound supervisor upload arguments are required")
-                    additional["supervisor_upload"] = dict(zip(
-                        ("artifactId", "artifactSha256", "trustedWorkflowSha"), values))
-            operation(
-                arguments.plan, arguments.discovery_root, arguments.state_root,
-                PhaseInstanceId(arguments.product, arguments.component, arguments.phase, arguments.target),
-                arguments.destination, expected_build_key=arguments.expected_build_key,
-                sdk_validation_tooling=tooling, **apple_options, **additional)
-        elif arguments.command == "capture-contract-original-ci":
-            capture_contract_original_ci_phases(
-                arguments.capture_root, arguments.destination, contract_version=arguments.contract_version,
-                trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""),
-                release_handoffs=tuple(arguments.release_handoff),
-                keyring=arguments.keyring, keys_directory=arguments.keys_directory)
-        else:
-            materialize_contract(
-                arguments.plan,
-                arguments.state_root,
-                arguments.phase,
-                arguments.destination,
-                with_receipt=arguments.with_receipt,
-            )
+        with metadata_admission_options(arguments) as admissions:
+            tooling = None
+            if getattr(arguments, "sdk_validation_tooling", None) is not None:
+                tooling = _canonical_control(arguments.sdk_validation_tooling, "Caller SDK tooling policy")
+            apple_options = {}
+            if getattr(arguments, "sdk_apple_validation_policy", None) is not None:
+                apple_options["sdk_apple_validation_policy"] = _canonical_control(
+                    arguments.sdk_apple_validation_policy, "Caller Apple validation policy")
+            apple_options.update(admissions)
+            if arguments.command == "stage-release-catalog":
+                stage_release_catalog(arguments.source_root, arguments.destination,
+                    repository=arguments.repository, source=arguments.source,
+                    keyring=arguments.keyring, keys_directory=arguments.keys_directory)
+            elif arguments.command == "discover":
+                discover(arguments.plan, arguments.destination, arguments.github_output,
+                         native_evidence_roots=tuple(arguments.native_runtime_evidence),
+                         aggregate_evidence_roots=tuple(arguments.runtime_aggregate_release_evidence),
+                         adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),
+                         sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling,
+                         **apple_options,
+                         **({"sdk_maven_evidence_roots": tuple(arguments.sdk_maven_evidence)}
+                            if arguments.sdk_maven_evidence else {}),
+                         **({"sdk_metadata_evidence_roots": tuple(arguments.sdk_metadata_evidence)}
+                            if arguments.sdk_metadata_evidence else {}),
+                         **({"sdk_apple_evidence_roots": tuple(arguments.sdk_apple_validation_evidence)}
+                            if arguments.sdk_apple_validation_evidence else {}),
+                         **({"tooling_java_executable": arguments.tooling_java_executable,
+                             "tooling_workflow_sha": arguments.tooling_workflow_sha}
+                            if arguments.tooling_java_executable is not None or arguments.tooling_workflow_sha is not None else {}))
+                if arguments.handoff is not None:
+                    publish_regular_tree(arguments.destination, arguments.handoff, allow_empty=True)
+            elif arguments.command == "advance-contract":
+                advance_contract(
+                    arguments.plan,
+                    arguments.discovery_root,
+                    arguments.state_root,
+                    arguments.phase_shard,
+                    arguments.destination,
+                    arguments.github_output,
+                    sdk_validation_tooling=tooling,
+                    **apple_options,
+                )
+            elif arguments.command == "advance-products":
+                advance_products(
+                    arguments.plan,
+                    arguments.discovery_root,
+                    arguments.state_root,
+                    arguments.phase_shard,
+                    arguments.destination,
+                    arguments.github_output,
+                    native_evidence_roots=tuple(arguments.native_runtime_evidence),
+                    aggregate_evidence_roots=tuple(arguments.runtime_aggregate_release_evidence),
+                    adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),
+                    sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling,
+                    **apple_options,
+                    **({"sdk_maven_evidence_roots": tuple(arguments.sdk_maven_evidence)}
+                       if arguments.sdk_maven_evidence else {}),
+                    **({"sdk_metadata_evidence_roots": tuple(arguments.sdk_metadata_evidence)}
+                       if arguments.sdk_metadata_evidence else {}),
+                    **({"sdk_apple_evidence_roots": tuple(arguments.sdk_apple_validation_evidence)}
+                       if arguments.sdk_apple_validation_evidence else {}),
+                    failed_instances=tuple(PhaseInstanceId(*value) for value in arguments.failed_phase),
+                    **({"runtime_workers_only": True} if arguments.runtime_workers_only else {}),
+                )
+            elif arguments.command == "collect-runtime-workers":
+                collect_runtime_workers(
+                    arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,
+                    trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""),
+                    sdk_validation_tooling=tooling, **apple_options)
+            elif arguments.command == "runtime-worker-matrix":
+                github_output(arguments.github_output, {"runtime_matrix": '{"include":[]}', "runtime_workers_required": False})
+                matrix = runtime_worker_matrix(
+                    arguments.plan, arguments.discovery_root, arguments.state_root,
+                    sdk_validation_tooling=tooling, **apple_options)
+                github_output(arguments.github_output, {"runtime_matrix": canonical_json_bytes(matrix).decode("utf-8").strip(),
+                                                       "runtime_workers_required": bool(matrix["include"])})
+            elif arguments.command == "capture-contract-ci":
+                capture_contract_ci_artifact(
+                    arguments.destination, artifact_id=arguments.artifact_id,
+                    artifact_sha256=arguments.artifact_sha256,
+                    transport_producer=_canonical_control(arguments.transport_producer, "Caller capture producer"),
+                    trusted_workflow_sha=arguments.trusted_workflow_sha,
+                    contract_version=arguments.contract_version, token=os.environ.get("GITHUB_TOKEN", ""))
+            elif arguments.command == "execute-runtime-supervisor":
+                execute_runtime_supervisor(
+                    arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,
+                    expected_build_key=arguments.expected_build_key, sdk_validation_tooling=tooling, **apple_options)
+            elif arguments.command == "capture-runtime-supervisor-upload":
+                capture_runtime_supervisor_upload(
+                    arguments.plan, arguments.destination, artifact_id=arguments.artifact_id,
+                    artifact_sha256=arguments.artifact_sha256, expected_build_key=arguments.expected_build_key,
+                    trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""))
+            elif arguments.command == "capture-runtime-resume-upload":
+                capture_runtime_resume_upload(
+                    arguments.plan, arguments.destination, artifact_id=arguments.artifact_id,
+                    artifact_sha256=arguments.artifact_sha256,
+                    trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""),
+                    **({"state_wave": arguments.state_wave} if arguments.state_wave else {}))
+            elif arguments.command == "capture-product-resume-inputs":
+                capture_product_resume_inputs(
+                    arguments.plan, arguments.destination,
+                    uploads={name: {"artifactId": getattr(arguments, f"{name}_artifact_id"),
+                                    "artifactSha256": getattr(arguments, f"{name}_artifact_sha256")}
+                             for name in ("plan", "state", "release")},
+                    trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""))
+            elif arguments.command == "resume-products":
+                resume_products(
+                    arguments.plan, arguments.discovery_root, arguments.state_root,
+                    arguments.contract_handoff, arguments.destination, arguments.github_output,
+                    sdk_validation_tooling=tooling, **apple_options)
+            elif arguments.command == "execute-sdk-metadata":
+                execute_sdk_metadata(
+                    arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,
+                    component=arguments.component, expected_build_key=arguments.expected_build_key,
+                    compatibility_request=arguments.compatibility_request, runtime_stages=arguments.runtime_stages,
+                    staged_sdks=arguments.staged_sdks, sdk_validation_tooling=tooling, **apple_options)
+            elif arguments.command == "execute-runtime-aggregate":
+                execute_runtime_aggregate(
+                    arguments.plan, arguments.discovery_root, arguments.state_root,
+                    arguments.destination, expected_build_key=arguments.expected_build_key,
+                    variant_trust_root=arguments.variant_trust_root, sdk_validation_tooling=tooling, **apple_options)
+            elif arguments.command in {"materialize-product-predecessors", "prepare-runtime-phase", "execute-runtime-phase"}:
+                operation = {"materialize-product-predecessors": materialize_product_predecessors,
+                             "prepare-runtime-phase": prepare_runtime_phase,
+                             "execute-runtime-phase": execute_runtime_phase}[arguments.command]
+                additional = {}
+                if arguments.command == "execute-runtime-phase":
+                    if arguments.app_server_archive is not None:
+                        additional["app_server_archive"] = arguments.app_server_archive
+                    values = (arguments.supervisor_artifact_id, arguments.supervisor_artifact_sha256,
+                              arguments.supervisor_trusted_workflow_sha)
+                    if any(value is not None for value in values):
+                        if any(value is None for value in values):
+                            raise ValueError("All three caller-bound supervisor upload arguments are required")
+                        additional["supervisor_upload"] = dict(zip(
+                            ("artifactId", "artifactSha256", "trustedWorkflowSha"), values))
+                operation(
+                    arguments.plan, arguments.discovery_root, arguments.state_root,
+                    PhaseInstanceId(arguments.product, arguments.component, arguments.phase, arguments.target),
+                    arguments.destination, expected_build_key=arguments.expected_build_key,
+                    sdk_validation_tooling=tooling, **apple_options, **additional)
+            elif arguments.command == "capture-contract-original-ci":
+                capture_contract_original_ci_phases(
+                    arguments.capture_root, arguments.destination, contract_version=arguments.contract_version,
+                    trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""),
+                    release_handoffs=tuple(arguments.release_handoff),
+                    keyring=arguments.keyring, keys_directory=arguments.keys_directory)
+            else:
+                materialize_contract(
+                    arguments.plan,
+                    arguments.state_root,
+                    arguments.phase,
+                    arguments.destination,
+                    with_receipt=arguments.with_receipt,
+                )
     except (OSError, ValueError) as error:
         parser().error(str(error))
     return 0

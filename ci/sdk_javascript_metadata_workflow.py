@@ -11,6 +11,7 @@ if __package__:
 
 import product_reuse
 import sdk_workflow
+from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
     read_regular_file_bytes,
@@ -223,7 +224,10 @@ def main(argv=None) -> int:
     parser.add_argument("--tooling-keyring", type=Path)
     parser.add_argument("--tooling-keys-directory", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
-    arguments = vars(parser.parse_args(argv))
+    add_metadata_admission_arguments(parser)
+    args = parser.parse_args(argv)
+    arguments = {name: value for name, value in vars(args).items()
+                 if name not in {"sdk_facade_metadata_policy", "sdk_android_metadata_policy"}}
     if (arguments["validation_artifact_id"] is None) != (arguments["validation_artifact_sha256"] is None):
         parser.error("JavaScript validation upload ID and digest must be supplied together")
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
@@ -233,7 +237,8 @@ def main(argv=None) -> int:
         if apple_policy is not None:
             arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
                 apple_policy, "Caller Apple validation policy")
-        execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+        with metadata_admission_options(args) as admissions:
+            execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

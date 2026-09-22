@@ -200,6 +200,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
 
 
 def main(argv=None):
+    from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
+
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "destination", "repository-root"):
         parser.add_argument("--" + name, type=Path, required=True)
@@ -210,13 +212,15 @@ def main(argv=None):
     parser.add_argument("--android-runtime-archive", type=Path)
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
         parser.add_argument("--" + name, type=Path)
+    add_metadata_admission_arguments(parser)
     arguments = vars(parser.parse_args(argv))
     try:
         for name in ("sdk_validation_tooling", "sdk_apple_validation_policy"):
             path = arguments.pop(name)
             if path is not None:
                 arguments[name] = product_reuse._canonical_control(path, "Caller " + name)
-        execute(**arguments, environ=os.environ)
+        with metadata_admission_options(arguments) as admissions:
+            execute(**arguments, environ=os.environ, **admissions)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

@@ -4,7 +4,7 @@ These tests prove orchestration only, not genuine compiler or hosted execution.
 """
 
 from copy import deepcopy
-from contextlib import redirect_stderr
+from contextlib import contextmanager, redirect_stderr
 import io
 from pathlib import Path
 import unittest
@@ -19,6 +19,54 @@ from products.restore import PHASE_PLAN_KEYS, verify_phase_shard
 from products.registry import PhaseInstanceId
 
 
+def assert_metadata_cli_context(test, controller, argv):
+    """Mock only caller assembly/execution: no signature or hosted authority."""
+    policies = {"sdk_facade_metadata_policy": test.root / "facade caller.json",
+                "sdk_android_metadata_policy": test.root / "android caller.json"}
+    for selected, failure in (((), None), (("sdk_facade_metadata_policy",), None),
+            (("sdk_android_metadata_policy",), None), (tuple(policies), None),
+            (tuple(policies), "enter"), (tuple(policies), "exit")):
+        events = []
+        admissions = {name.replace("_policy", "_admission"): object() for name in selected}
+
+        @contextmanager
+        def held(arguments):
+            test.assertEqual(test.plan if hasattr(test, "plan") else test.f.plan, arguments["plan"])
+            test.assertEqual(test.root, arguments["repository_root"])
+            for name, path in policies.items():
+                test.assertEqual(path if name in selected else None, arguments.pop(name))
+            events.append("enter")
+            if failure == "enter":
+                raise ValueError("caller admission rejected")
+            yield admissions
+            events.append("exit")
+            if failure == "exit":
+                raise ValueError("caller admission changed at exit")
+
+        def execute(**arguments):
+            test.assertEqual(["enter"], events)
+            for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
+                if name in admissions:
+                    test.assertIs(admissions[name], arguments[name])
+                else:
+                    test.assertNotIn(name, arguments)
+            test.assertFalse(set(policies) & set(arguments))
+            events.append("execute")
+
+        options = [item for name in selected
+                   for item in ("--" + name.replace("_", "-"), str(policies[name]))]
+        with test.subTest(selected=selected, failure=failure), \
+                patch("sdk_metadata_policy.metadata_admission_options", side_effect=held), \
+                patch.object(controller, "execute", side_effect=execute) as worker:
+            if failure:
+                with redirect_stderr(io.StringIO()), test.assertRaises(SystemExit):
+                    controller.main([*argv, *options])
+            else:
+                test.assertEqual(0, controller.main([*argv, *options]))
+            test.assertEqual(["enter"] if failure == "enter" else ["enter", "execute", "exit"], events)
+            test.assertEqual(0 if failure == "enter" else 1, worker.call_count)
+
+
 class FacadeWorkflowTest(unittest.TestCase):
     def test_cli_requires_explicit_context_and_forwards_policy_without_inference(self):
         argv = []
@@ -31,6 +79,7 @@ class FacadeWorkflowTest(unittest.TestCase):
             "android-sdk-directory": "", "required-trust-domain": "development",
         }.items():
             argv.extend(["--" + name, str(value)])
+        assert_metadata_cli_context(self, workflow, argv)
         with patch.object(workflow, "execute") as execute:
             self.assertEqual(0, workflow.main(argv))
             self.assertEqual("", execute.call_args.kwargs["android_sdk_directory"])

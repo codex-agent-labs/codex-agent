@@ -9,6 +9,7 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import product_reuse as products
+from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from products.inventory import (
     canonical_json_bytes, require_array, require_boolean, require_exact_keys,
     require_integer, require_object, require_sha256, require_string,
@@ -68,18 +69,20 @@ def main(argv=None):
         parser.add_argument("--" + name, type=Path, required=True)
     for name in ("state-root", "sdk-validation-tooling", "sdk-apple-validation-policy", "github-output"):
         parser.add_argument("--" + name, type=Path)
+    add_metadata_admission_arguments(parser)
     args = parser.parse_args(argv)
     try:
-        tooling = {} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
-            products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")}
-        apple = {} if args.sdk_apple_validation_policy is None else {"sdk_apple_validation_policy":
-            products._canonical_control(args.sdk_apple_validation_policy, "Caller Apple validation policy")}
-        result = require_sdk_completion(args.plan, args.discovery_root, args.state_root,
-            repository_root=args.repository_root, environ=os.environ, **tooling, **apple)
-        if args.github_output is None:
-            print(canonical_json_bytes(result).decode().strip())
-        else:
-            github_output(args.github_output, result)
+        with metadata_admission_options(args) as admissions:
+            tooling = {} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
+                products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")}
+            apple = {} if args.sdk_apple_validation_policy is None else {"sdk_apple_validation_policy":
+                products._canonical_control(args.sdk_apple_validation_policy, "Caller Apple validation policy")}
+            result = require_sdk_completion(args.plan, args.discovery_root, args.state_root,
+                repository_root=args.repository_root, environ=os.environ, **tooling, **apple, **admissions)
+            if args.github_output is None:
+                print(canonical_json_bytes(result).decode().strip())
+            else:
+                github_output(args.github_output, result)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

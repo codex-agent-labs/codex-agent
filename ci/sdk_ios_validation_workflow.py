@@ -15,6 +15,7 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import product_reuse
+from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from products.inventory import (
     canonical_json_bytes, read_regular_file_bytes, regular_file_inventory,
     require_integer, require_sha256, sha256_file, snapshot_regular_tree, write_canonical_json,
@@ -253,6 +254,7 @@ def main(argv=None) -> int:
     parser.add_argument("--tooling-keyring", type=Path)
     parser.add_argument("--tooling-keys-directory", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
+    add_metadata_admission_arguments(parser)
     arguments = vars(parser.parse_args(argv))
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
         parser.error("Apple tooling keyring and keys directory must be supplied together")
@@ -260,11 +262,13 @@ def main(argv=None) -> int:
         if (arguments[f"{phase}_artifact_id"] is None) != (arguments[f"{phase}_artifact_sha256"] is None):
             parser.error("Apple original upload ID and digest must be supplied together")
     try:
-        apple_policy = arguments.pop("sdk_apple_validation_policy")
-        if apple_policy is not None:
-            arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
-                apple_policy, "Caller Apple validation policy")
-        execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+        with metadata_admission_options(arguments) as admissions:
+            apple_policy = arguments.pop("sdk_apple_validation_policy")
+            if apple_policy is not None:
+                arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
+                    apple_policy, "Caller Apple validation policy")
+            execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""),
+                    **admissions)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

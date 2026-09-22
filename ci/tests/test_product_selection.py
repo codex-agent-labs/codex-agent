@@ -177,7 +177,8 @@ class ProductSelectionTest(unittest.TestCase):
         for path, expected in (
                 ("ci/products/sdk_facade_metadata_admission.py", {core}),
                 ("ci/products/sdk_android_metadata_admission.py", {android}),
-                ("ci/sdk_metadata_evidence.py", {core, android})):
+                ("ci/sdk_metadata_evidence.py", {core, android}),
+                ("ci/sdk_metadata_policy.py", {core, android})):
             with self.subTest(path=path):
                 result = classify_paths([path])
                 self.assertEqual(expected, identities(result))

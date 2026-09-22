@@ -276,6 +276,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
 
 
 def main(argv=None):
+    from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
+
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "destination", "keyring", "keys-directory", "repository-root",
                  "binary-contract-evidence", "binary-original-context"):
@@ -293,6 +295,7 @@ def main(argv=None):
     parser.add_argument("--android-runtime-archive", type=Path)
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
         parser.add_argument("--" + name, type=Path)
+    add_metadata_admission_arguments(parser)
     arguments = vars(parser.parse_args(argv))
     if (arguments["binary_artifact_id"] is None) != (arguments["binary_artifact_sha256"] is None):
         parser.error("Original binary upload ID and digest must be supplied together")
@@ -303,7 +306,8 @@ def main(argv=None):
             path = arguments.pop(name)
             if path is not None:
                 arguments[name] = product_reuse._canonical_control(path, "Caller " + name)
-        execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+        with metadata_admission_options(arguments) as admissions:
+            execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

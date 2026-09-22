@@ -1,7 +1,8 @@
 """Runtime caller-policy forwarding only; mocked gates grant no Apple authority."""
 
-from contextlib import redirect_stderr
+from contextlib import contextmanager, redirect_stderr
 import io
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -139,6 +140,105 @@ class RuntimeApplePolicyForwardingTest(unittest.TestCase):
                     workflow.main(self.cli_arguments(command) + ["--sdk-apple-validation-policy", str(self.policy_path)])
                 self.assertEqual(2, failure.exception.code)
                 called.assert_not_called()
+
+    def test_metadata_cli_context_covers_each_replay_and_its_output(self):
+        for command in ("matrix", "continuation", "capture", "collect"):
+            for selected in ((), *[(name,) for name in self.admissions], tuple(self.admissions)):
+                options = {name: self.admissions[name] for name in selected}
+                flags = [part for name in selected for part in (
+                    "--" + name.replace("_admission", "_policy").replace("_", "-"),
+                    "/caller/" + name + ".json")]
+                events = []
+
+                @contextmanager
+                def context(args):
+                    events.append("enter")
+                    self.assertEqual(command, args.command)
+                    for name in self.admissions:
+                        self.assertEqual(Path("/caller/" + name + ".json") if name in selected else None,
+                                         getattr(args, name.replace("_admission", "_policy")))
+                    if command == "collect":
+                        self.assertEqual(self.case.input, args.input_root)
+                        self.assertFalse(hasattr(args, "plan"))
+                    try:
+                        yield options
+                    finally:
+                        self.assertEqual(["enter", "execute"], events)
+                        self.assertEqual("published inside caller context", self.case.output.read_text())
+                        events.append("exit")
+
+                def execute(*args, **kwargs):
+                    self.assertEqual(["enter"], events)
+                    for name, value in self.admissions.items():
+                        if name in selected:
+                            self.assertIs(value, kwargs[name])
+                        else:
+                            self.assertNotIn(name, kwargs)
+                        self.assertNotIn(name.replace("_admission", "_policy"), kwargs)
+                    self.case.output.write_text("published inside caller context")
+                    events.append("execute")
+
+                with self.subTest(command=command, selected=selected), \
+                        patch.object(workflow, "metadata_admission_options", side_effect=context), \
+                        patch.object(workflow, command, side_effect=execute) as called:
+                    self.assertEqual(0, workflow.main([*self.cli_arguments(command), *flags]))
+                called.assert_called_once()
+                self.assertEqual(["enter", "execute", "exit"], events)
+
+    def test_metadata_cli_context_errors_propagate_and_object_flags_are_rejected(self):
+        flags = ["--sdk-facade-metadata-policy", "/caller/core.json",
+                 "--sdk-android-metadata-policy", "/caller/android.json"]
+        for command in ("matrix", "continuation", "capture", "collect"):
+            for failure in ("entry", "execute", "exit"):
+                events = []
+
+                @contextmanager
+                def context(args):
+                    events.append("enter")
+                    try:
+                        if failure == "entry":
+                            raise ValueError("caller policy rejected")
+                        yield self.admissions
+                    finally:
+                        events.append("exit")
+                    if failure == "exit":
+                        raise ValueError("caller policy changed")
+
+                def execute(*args, **kwargs):
+                    self.assertEqual(["enter"], events)
+                    events.append("execute")
+                    if failure == "execute":
+                        raise ValueError("replay rejected")
+
+                with self.subTest(command=command, failure=failure), redirect_stderr(io.StringIO()), \
+                        patch.object(workflow, "metadata_admission_options", side_effect=context), \
+                        patch.object(workflow, command, side_effect=execute) as called, \
+                        self.assertRaises(SystemExit) as error:
+                    workflow.main([*self.cli_arguments(command), *flags])
+                self.assertEqual(2, error.exception.code)
+                self.assertEqual(0 if failure == "entry" else 1, called.call_count)
+                self.assertEqual(["enter", "exit"] if failure == "entry" else ["enter", "execute", "exit"], events)
+            for name in self.admissions:
+                with self.subTest(command=command, object_flag=name), redirect_stderr(io.StringIO()), \
+                        patch.object(workflow, "metadata_admission_options") as context, self.assertRaises(SystemExit):
+                    workflow.main([*self.cli_arguments(command), "--" + name.replace("_", "-"), "/object.json"])
+                context.assert_not_called()
+
+    def test_variant_trust_does_not_accept_or_construct_metadata_admissions(self):
+        argv = ["variant-trust", "--variant-handoff", "linux-x64=/original/handoff",
+                "--destination", "/fresh/trust", "--keyring", "/caller/keyring.json",
+                "--keys-directory", "/caller/keys"]
+        with patch.object(workflow, "metadata_admission_options") as context, \
+                patch("products.runtime_variant_trust.stage_runtime_variant_trust") as trust:
+            self.assertEqual(0, workflow.main(argv))
+            trust.assert_called_once()
+            context.assert_not_called()
+            for family in ("facade", "android"):
+                trust.reset_mock()
+                with self.subTest(family=family), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    workflow.main([*argv, "--sdk-" + family + "-metadata-policy", "/caller/policy.json"])
+                trust.assert_not_called()
+                context.assert_not_called()
 
 
 if __name__ == "__main__":

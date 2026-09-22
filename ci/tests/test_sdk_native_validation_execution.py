@@ -250,6 +250,13 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
         self.assertEqual(["enter", "inspect", "capture", "materialize", "package-gate", "worker",
                           "validation-gate", "exit-check", "exited"], self.events)
 
+    def test_metadata_policy_cli_preserves_objects_and_context_lifetime(self):
+        from ci.tests import test_sdk_native_validation_cli as cli_fixture
+        cli = cli_fixture.SdkNativeValidationCliTest(methodName="runTest")
+        cli.setUp()
+        self.addCleanup(cli.doCleanups)
+        fixture.assert_metadata_cli_context(self, workflow, cli.argv)
+
     def test_wrong_original_preparation_or_host_prevents_capture(self):
         for failure in ("missing-preparation", "duplicate-preparation", "wrong-key", "wrong-host"):
             with self.subTest(failure=failure):

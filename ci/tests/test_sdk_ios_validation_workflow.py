@@ -1,6 +1,7 @@
 """Selected caller orchestration only; mocked gates do not prove Apple acceptance."""
 
-from contextlib import contextmanager, ExitStack
+from contextlib import contextmanager, ExitStack, redirect_stderr
+import io
 import json
 import os
 from pathlib import Path
@@ -290,6 +291,59 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
             self.assertNotIn(name.encode(),
                 (self.destination / "context/execution-context.json").read_bytes())
             self.assertNotIn(name.encode(), (self.destination / "worker/execution.json").read_bytes())
+
+    def test_cli_metadata_policy_context_wraps_execute_and_fails_closed(self):
+        for mode in ("absent", "present", "error"):
+            policy = self.root / (mode + ".json") if mode != "absent" else None
+            parsed = SimpleNamespace(plan=self.plan, repository_root=self.root,
+                tooling_keyring=None, tooling_keys_directory=None,
+                package_artifact_id=None, package_artifact_sha256=None,
+                binary_artifact_id=None, binary_artifact_sha256=None,
+                sdk_apple_validation_policy=None,
+                sdk_facade_metadata_policy=policy, sdk_android_metadata_policy=policy)
+            admissions = ({"sdk_facade_metadata_admission": object(),
+                           "sdk_android_metadata_admission": object()}
+                          if mode == "present" else {})
+            events = []
+
+            @contextmanager
+            def options(arguments):
+                self.assertIs(self.plan, arguments["plan"])
+                self.assertIs(self.root, arguments["repository_root"])
+                arguments.pop("sdk_facade_metadata_policy")
+                arguments.pop("sdk_android_metadata_policy")
+                if mode == "error":
+                    raise ValueError("metadata policy rejected")
+                events.append("enter")
+                try:
+                    yield admissions
+                finally:
+                    events.append("exit")
+
+            def run(**arguments):
+                self.assertEqual(["enter"], events)
+                for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
+                    if name in admissions:
+                        self.assertIs(admissions[name], arguments[name])
+                    else:
+                        self.assertNotIn(name, arguments)
+                self.assertNotIn("sdk_facade_metadata_policy", arguments)
+                self.assertNotIn("sdk_android_metadata_policy", arguments)
+                events.append("execute")
+
+            with self.subTest(mode=mode), \
+                    patch.object(workflow.argparse.ArgumentParser, "parse_args", return_value=parsed), \
+                    patch.object(workflow, "add_metadata_admission_arguments") as add, \
+                    patch.object(workflow, "metadata_admission_options", side_effect=options), \
+                    patch.object(workflow, "execute", side_effect=run) as execute:
+                if mode == "error":
+                    with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                        workflow.main([])
+                    execute.assert_not_called()
+                else:
+                    self.assertEqual(0, workflow.main([]))
+                    self.assertEqual(["enter", "execute", "exit"], events)
+                add.assert_called_once()
 
     def test_missing_original_locators_use_selected_package_then_its_exact_binary_predecessor(self):
         cases = (

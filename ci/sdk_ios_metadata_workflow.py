@@ -12,6 +12,7 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import product_reuse
+from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys,
@@ -299,13 +300,15 @@ def main(argv=None):
     parser.add_argument("--state-root", dest="state", type=Path, required=True)
     parser.add_argument("--expected-build-key", required=True)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
+    add_metadata_admission_arguments(parser)
     arguments = vars(parser.parse_args(argv))
     try:
-        policy = arguments.pop("sdk_apple_validation_policy")
-        if policy is not None:
-            arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
-                policy, "Caller Apple validation policy")
-        execute(**arguments, environ=os.environ)
+        with metadata_admission_options(arguments) as admissions:
+            policy = arguments.pop("sdk_apple_validation_policy")
+            if policy is not None:
+                arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
+                    policy, "Caller Apple validation policy")
+            execute(**arguments, environ=os.environ, **admissions)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

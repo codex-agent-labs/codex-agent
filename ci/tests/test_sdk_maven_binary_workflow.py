@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from ci import sdk_maven_binary_workflow as workflow
 from ci.tests.product_chain_support import write_receipt
+from ci.tests.test_sdk_facade_workflow import assert_metadata_cli_context
 from products.inventory import snapshot_regular_tree, write_canonical_json
 from products.receipt import write_output_manifest
 from products.restore import PHASE_PLAN_KEYS
@@ -215,6 +216,7 @@ class MavenBinaryWorkflowTest(unittest.TestCase):
             "--repository-root", str(self.root), "--component", "sdk-core", "--expected-build-key", self.ready["buildKey"]]
         policy = self.root / "caller.json"
         write_canonical_json(policy, {"caller": "policy"})
+        assert_metadata_cli_context(self, workflow, arguments)
         with patch.object(workflow, "execute") as execute:
             self.assertEqual(0, workflow.main(arguments))
             self.assertNotIn("sdk_validation_tooling", execute.call_args.kwargs)

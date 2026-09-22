@@ -40,6 +40,79 @@ def caller_apple_policy(root):
         "toolingKeysDirectory": str(root / "tooling/keys")}
 
 
+def assert_metadata_cli_context(case, module, argv):
+    """Shared mocked CLI lifetime check, never a semantic admission fixture."""
+    available = caller_metadata_admissions()
+    for selected in ((), *[(name,) for name in available], tuple(available)):
+        admissions = {name: available[name] for name in selected}
+        flags = [part for name in selected for part in (
+            "--" + name.replace("_admission", "_policy").replace("_", "-"),
+            "/caller/" + name + ".json")]
+        events = []
+
+        @contextmanager
+        def options(args):
+            events.append("enter")
+            for name in available:
+                field = name.replace("_admission", "_policy")
+                case.assertEqual(Path("/caller/" + name + ".json") if name in selected else None,
+                                 getattr(args, field))
+            try:
+                yield admissions
+            finally:
+                events.append("exit")
+
+        def execute(**kwargs):
+            case.assertEqual(["enter"], events)
+            events.append("execute")
+            for name, value in available.items():
+                if name in selected:
+                    case.assertIs(value, kwargs[name])
+                else:
+                    case.assertNotIn(name, kwargs)
+                case.assertNotIn(name.replace("_admission", "_policy"), kwargs)
+
+        with case.subTest(selected=selected), patch.object(module, "metadata_admission_options", side_effect=options), \
+                patch.object(module, "execute", side_effect=execute) as called:
+            case.assertEqual(0, module.main([*argv, *flags]))
+        called.assert_called_once()
+        case.assertEqual(["enter", "execute", "exit"], events)
+
+    for failure in ("entry", "execute", "exit"):
+        events = []
+
+        @contextmanager
+        def failing_options(args):
+            events.append("enter")
+            try:
+                if failure == "entry":
+                    raise ValueError("caller policy entry rejected")
+                yield available
+            finally:
+                events.append("exit")
+            if failure == "exit":
+                raise ValueError("caller policy changed on exit")
+
+        def failing_execute(**kwargs):
+            case.assertEqual(["enter"], events)
+            events.append("execute")
+            if failure == "execute":
+                raise ValueError("worker rejected")
+
+        with case.subTest(failure=failure), redirect_stderr(io.StringIO()), \
+                patch.object(module, "metadata_admission_options", side_effect=failing_options), \
+                patch.object(module, "execute", side_effect=failing_execute) as called, case.assertRaises(SystemExit) as error:
+            module.main([*argv, *flags])
+        case.assertEqual(2, error.exception.code)
+        case.assertEqual(["enter", "exit"] if failure == "entry" else ["enter", "execute", "exit"], events)
+        case.assertEqual(0 if failure == "entry" else 1, called.call_count)
+    for name in available:
+        with case.subTest(object_flag=name), redirect_stderr(io.StringIO()), \
+                patch.object(module, "metadata_admission_options") as options, case.assertRaises(SystemExit):
+            module.main([*argv, "--" + name.replace("_", "-"), "/untrusted/object.json"])
+        options.assert_not_called()
+
+
 class SdkNativePackageExecutionTest(unittest.TestCase):
     materialize = fixture.SdkNativePrepareWorkflowTest.materialize
     tearDown = fixture.SdkNativePrepareWorkflowTest.tearDown
@@ -294,6 +367,9 @@ class SdkNativePackageExecutionTest(unittest.TestCase):
 
 
 class SdkNativePackageCliTest(unittest.TestCase):
+    def test_metadata_policy_cli_preserves_objects_and_context_lifetime(self):
+        assert_metadata_cli_context(self, workflow, self.argv)
+
     def setUp(self):
         self.arguments = {name: Path("/synthetic") / name for name in
             ("plan", "discovery", "state", "destination", "preparation_state", "keyring", "keys_directory", "repository_root")}

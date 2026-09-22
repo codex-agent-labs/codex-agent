@@ -560,7 +560,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path in {"ci/sdk_android_metadata_workflow.py", "ci/sdk_android_metadata_original.py",
                 "ci/products/sdk_android_metadata_admission.py"}:
         return _from_phase("sdk", "sdk-android", "metadata")
-    if path == "ci/sdk_metadata_evidence.py":
+    if path in {"ci/sdk_metadata_evidence.py", "ci/sdk_metadata_policy.py"}:
         return _from_phase("sdk", "sdk-core", "metadata") | _from_phase("sdk", "sdk-android", "metadata")
     if path in {"ci/sdk_maven_binary_workflow.py", "ci/sdk_maven_original.py", "ci/sdk_facade_capture.py", "ci/sdk_maven_evidence.py"}:
         return _from_phase("sdk", "sdk-core", "binary") | _from_phase("sdk", "sdk-android", "binary")
@@ -698,7 +698,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _is_control_only(path: str) -> bool:
-    if path in {"ci/sdk_maven_evidence.py", "ci/sdk_metadata_evidence.py",
+    if path in {"ci/sdk_maven_evidence.py", "ci/sdk_metadata_evidence.py", "ci/sdk_metadata_policy.py",
                 "ci/products/sdk_facade_metadata_admission.py", "ci/products/sdk_android_metadata_admission.py",
                 "ci/sdk_android_firebase_original.py", "ci/products/sdk_facade_compiler_policy.py",
                 "ci/products/sdk_facade_native_policy.py"}:
