@@ -5,6 +5,7 @@ import ast
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -142,6 +143,205 @@ class ImportedPackageVerifierTest(unittest.TestCase):
         self.assertFalse(any(path.name.startswith(".cpp-imported-package-") for path in self.root.iterdir()))
         self.assertEqual(original_program, verifier.VERIFIER.read_bytes())
         self.assertEqual(original_package, self.snapshot(self.package))
+
+    def test_corrupted_package_copy_is_rejected_before_any_configure(self):
+        original = self.snapshot(self.package)
+        copytree = shutil.copytree
+
+        def corrupt_copy(source, destination, *args, **kwargs):
+            result = copytree(source, destination, *args, **kwargs)
+            if Path(source) == self.package:
+                Path(destination, self.library).write_bytes(b"unrelated copied library")
+            return result
+
+        with patch.object(verifier.shutil, "copytree", side_effect=corrupt_copy), \
+                patch.object(subprocess, "run") as run, \
+                self.assertRaisesRegex(ValueError, "Copied C\\+\\+ package"):
+            self.invoke()
+        run.assert_not_called()
+        self.assertEqual(original, self.snapshot(self.package))
+        self.assertFalse(self.output.exists())
+
+    def test_empty_package_files_are_preserved_and_compared(self):
+        empty = self.package / "share/empty-marker"
+        empty.write_bytes(b"")
+        original = verifier._package_inventory(self.package)
+        with patch.object(subprocess, "run", side_effect=self.configure_fixture):
+            self.invoke()
+        self.assertEqual(b"", (self.output / "baseline/share/empty-marker").read_bytes())
+        self.assertEqual(original, verifier._package_inventory(self.output / "baseline"))
+        empty.write_bytes(b"no longer empty")
+        self.assertNotEqual(original, verifier._package_inventory(self.package))
+
+    def test_inventory_stays_on_opened_directory_when_path_is_replaced(self):
+        expected = verifier._package_inventory(self.package)
+        alternate = self.root / "alternate"
+        alternate.mkdir()
+        (alternate / "unrelated").write_bytes(b"not the imported package")
+        original = self.root / "held-original"
+        inventory = verifier._directory_inventory
+
+        def replace_after_open(descriptor, **kwargs):
+            self.package.rename(original)
+            self.package.symlink_to(alternate, target_is_directory=True)
+            try:
+                return inventory(descriptor, **kwargs)
+            finally:
+                self.package.unlink()
+                original.rename(self.package)
+
+        with patch.object(verifier, "_directory_inventory", side_effect=replace_after_open):
+            self.assertEqual(expected, verifier._package_inventory(self.package))
+
+    def test_package_source_and_baseline_mutations_after_configure_publish_nothing(self):
+        original = self.snapshot(self.package)
+        program = self.root / "original-test-program.py"
+        source = verifier.VERIFIER.read_bytes()
+        for kind in ("package", "source", "baseline"):
+            self.calls.clear()
+            program.write_bytes(source)
+            for name, contents in original.items():
+                (self.package / name).write_bytes(contents)
+
+            def configure(command, **kwargs):
+                result = self.configure_fixture(command, **kwargs)
+                if len(self.calls) == 7:
+                    build = Path(command[command.index("-B") + 1])
+                    path = {"package": self.package / self.library, "source": program,
+                            "baseline": build.parent / "baseline" / self.library}[kind]
+                    with path.open("ab") as stream:
+                        stream.write(b"changed after configuration")
+                return result
+
+            with self.subTest(kind=kind), patch.object(verifier, "VERIFIER", program), \
+                    patch.object(subprocess, "run", side_effect=configure), \
+                    self.assertRaisesRegex(ValueError, "changed during verification"):
+                self.invoke()
+            self.assertEqual(7, len(self.calls))
+            self.assertFalse(self.output.exists())
+            self.assertFalse(any(path.name.startswith(".cpp-imported-package-") for path in self.root.iterdir()))
+
+    def test_failed_configure_still_checks_original_inputs(self):
+        def failed(command, **kwargs):
+            (self.package / self.library).write_bytes(b"changed during failed configure")
+            raise RuntimeError("configure process failed")
+
+        with patch.object(subprocess, "run", side_effect=failed), \
+                self.assertRaisesRegex(ValueError, "Original C\\+\\+ package"):
+            self.invoke()
+        self.assertFalse(self.output.exists())
+
+    def test_publication_time_original_mutation_preserves_failed_diagnostics_or_replacement(self):
+        original = (self.package / self.library).read_bytes()
+        rename = Path.rename
+        for replace in (False, True):
+            self.calls.clear()
+            (self.package / self.library).write_bytes(original)
+
+            def publish(path, target):
+                result = rename(path, target)
+                if Path(target) == self.output:
+                    if replace:
+                        rename(self.output, self.root / "original-publication")
+                        shutil.copytree(self.root / "original-publication", self.output)
+                        (self.output / "independent-marker").write_bytes(b"caller replacement")
+                    (self.package / self.library).write_bytes(b"changed at publication")
+                return result
+
+            with self.subTest(replace=replace), patch.object(Path, "rename", publish), \
+                    patch.object(subprocess, "run", side_effect=self.configure_fixture), \
+                    self.assertRaisesRegex(ValueError, "Original C\\+\\+ package"):
+                self.invoke()
+            if replace:
+                self.assertEqual(b"caller replacement", (self.output / "independent-marker").read_bytes())
+            else:
+                self.assertTrue(self.output.exists())  # Failed raw diagnostics, not accepted evidence.
+
+    def test_final_input_check_cannot_accept_or_delete_late_replacement(self):
+        inventory = verifier._package_inventory
+        original = self.snapshot(self.package)
+        for kind in ("identical", "empty", "changed-log"):
+            self.calls.clear()
+            output_checked = replaced = False
+
+            def replace_during_final_input_check(path):
+                nonlocal output_checked, replaced
+                if Path(path) == self.output:
+                    output_checked = True
+                if Path(path) == self.package and output_checked and not replaced:
+                    if kind == "changed-log":
+                        (self.output / "configure-baseline.log").write_bytes(b"late log mutation")
+                    else:
+                        moved = self.root / ("owned-" + kind)
+                        self.output.rename(moved)
+                        if kind == "identical":
+                            shutil.copytree(moved, self.output)
+                        else:
+                            self.output.mkdir()
+                    replaced = True
+                return inventory(path)
+
+            with self.subTest(kind=kind), \
+                    patch.object(verifier, "_package_inventory", side_effect=replace_during_final_input_check), \
+                    patch.object(subprocess, "run", side_effect=self.configure_fixture), \
+                    self.assertRaisesRegex(ValueError, "after final input check"):
+                self.invoke()
+            self.assertTrue(replaced)
+            self.assertEqual(original, self.snapshot(self.package))
+            self.assertTrue(self.output.is_dir())
+            if kind == "empty":
+                self.assertEqual([], list(self.output.iterdir()))
+            elif kind == "changed-log":
+                self.assertEqual(b"late log mutation", (self.output / "configure-baseline.log").read_bytes())
+            else:
+                self.assertEqual(self.snapshot(self.root / "owned-identical"), self.snapshot(self.output))
+
+    def test_publication_checks_entire_evidence_and_identity(self):
+        rename = Path.rename
+        for replacement in (False, True):
+            self.calls.clear()
+
+            def publish(path, target):
+                result = rename(path, target)
+                if Path(target) == self.output:
+                    if replacement:
+                        rename(self.output, self.root / "unchanged-owned-publication")
+                        shutil.copytree(self.root / "unchanged-owned-publication", self.output)
+                    else:
+                        (self.output / "configure-baseline.log").write_bytes(b"changed log")
+                return result
+
+            with self.subTest(replacement=replacement), patch.object(Path, "rename", publish), \
+                    patch.object(subprocess, "run", side_effect=self.configure_fixture), \
+                    self.assertRaisesRegex(ValueError, "evidence changed during publication"):
+                self.invoke()
+            self.assertTrue(self.output.is_dir())
+
+    def test_direct_and_packaged_read_only_cli_resolve_existing_inventory_helper(self):
+        with patch.object(subprocess, "run", side_effect=self.configure_fixture):
+            self.invoke()
+        before = self.snapshot(self.output)
+        extracted = self.root / "packaged"
+        script = extracted / "codex-agent-bindings/cpp/tools/verify_imported_package.py"
+        script.parent.mkdir(parents=True)
+        shutil.copyfile(SCRIPT, script)
+        products = extracted / "ci/products"
+        products.mkdir(parents=True)
+        (extracted / "ci/__init__.py").write_bytes(b"")
+        (products / "__init__.py").write_bytes(b"")
+        shutil.copyfile(verifier.CHECKOUT / "ci/products/inventory.py", products / "inventory.py")
+        arguments = ["verify-evidence", "--evidence", str(self.output),
+                     "--expected-test-program", str(verifier.VERIFIER)]
+        # Mirrors the isolated packaged bootstrap; only the structural reader
+        # runs, never CMake, a compiler, source packaging, or receipt admission.
+        bootstrap = "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_path(sys.argv.pop(1),run_name='__main__')"
+        for command in ([sys.executable, "-B", str(SCRIPT), *arguments],
+                        [sys.executable, "-I", "-S", "-B", "-c", bootstrap,
+                         str(extracted), str(script), *arguments]):
+            with self.subTest(command=command):
+                result = subprocess.run(command, cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.assertEqual(0, result.returncode, result.stderr.decode())
+        self.assertEqual(before, self.snapshot(self.output))
 
     def test_invalid_original_program_preserves_prior_output_before_capture(self):
         empty_program = self.root / "empty-program.py"

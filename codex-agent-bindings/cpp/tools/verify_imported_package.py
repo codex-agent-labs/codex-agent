@@ -22,6 +22,11 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKOUT = ROOT.parents[1]
+# The trusted standalone checkout and packaged Python extraction both include
+# this existing filesystem helper; it grants no package/source authority.
+sys.path.insert(0, str(CHECKOUT))
+from ci.products.inventory import _directory_inventory, _open_directory
+
 VERIFIER = ROOT / "tests/test_installed_package_tamper.py"
 CASE_IDS = tuple(sorted(("baseline", "tampered-0", "tampered-1", "tampered-2", "tampered-3",
                          "missing-sidecar", "missing-loader")))
@@ -42,6 +47,15 @@ def _tree(path: Path) -> None:
     _regular(path, directory=True)
     if any(item.is_symlink() or not (item.is_file() or item.is_dir()) for item in path.rglob("*")):
         raise ValueError("Imported package/evidence contains a symbolic or special member")
+
+
+def _package_inventory(root: Path) -> tuple:
+    """Compare exact local package bytes, not receipt or archive authority."""
+    descriptor = _open_directory(root, "Imported C++ package")
+    try:
+        return _directory_inventory(descriptor, allow_empty=True)
+    finally:
+        os.close(descriptor)
 
 
 def _relative(value: str) -> str:
@@ -154,32 +168,68 @@ def verify_imported_package(package_root: Path, output: Path, *, cmake: str,
                    "share/CodexAgent/loader/native_loader.cpp",
                    f"{libdir}/cmake/CodexAgent/CodexAgentConfig.cmake"):
         _regular(package / member)
-    _tree(package)
+    original_package = _package_inventory(package)
     original_program = _evidence_bytes(VERIFIER)
+
+    def unchanged():
+        if _package_inventory(package) != original_package or _evidence_bytes(VERIFIER) != original_program:
+            raise ValueError("Original C++ package or test source changed during verification")
+
     output = _output(output, package)
     # Invalid inputs never discard prior evidence. Only the task-owned output
     # may be replaced once the complete preflight has succeeded.
     if output.exists():
         shutil.rmtree(output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".cpp-imported-package-", dir=output.parent) as temporary:
-        evidence = Path(temporary).resolve() / "evidence"
-        evidence.mkdir()
-        baseline = evidence / "baseline"
-        shutil.copytree(package, baseline, symlinks=True)
-        _tree(baseline)
-        verifier = evidence / "test-program.py"
-        shutil.copyfile(VERIFIER, verifier)
-        if _evidence_bytes(verifier) != original_program:
-            raise ValueError("Copied C++ test program differs from its original source")
-        # Execute the retained exact program, not a second negative-test model.
-        cases = runpy.run_path(str(verifier))["verify_package"](cmake, baseline, evidence, libdir, library)
-        contents = RESULT_HEADER + "\n" + "".join(
-            "\t".join(map(str, case)) + "\n" for case in cases
-        )
-        (evidence / "package-tamper-results.tsv").write_bytes(contents.encode("utf-8"))
-        verify_imported_package_evidence(evidence, original_program)
-        evidence.rename(output)
+    published = None
+    try:
+        try:
+            with tempfile.TemporaryDirectory(prefix=".cpp-imported-package-", dir=output.parent) as temporary:
+                evidence = Path(temporary).resolve() / "evidence"
+                evidence.mkdir()
+                baseline = evidence / "baseline"
+                shutil.copytree(package, baseline, symlinks=True)
+                if _package_inventory(baseline) != original_package:
+                    raise ValueError("Copied C++ package differs from its original input")
+                verifier = evidence / "test-program.py"
+                shutil.copyfile(VERIFIER, verifier)
+                if _evidence_bytes(verifier) != original_program:
+                    raise ValueError("Copied C++ test program differs from its original source")
+                unchanged()
+                try:
+                    # Execute the retained exact program, not a second negative-test model.
+                    cases = runpy.run_path(str(verifier))["verify_package"](cmake, baseline, evidence, libdir, library)
+                    contents = RESULT_HEADER + "\n" + "".join(
+                        "\t".join(map(str, case)) + "\n" for case in cases
+                    )
+                    (evidence / "package-tamper-results.tsv").write_bytes(contents.encode("utf-8"))
+                    verify_imported_package_evidence(evidence, original_program)
+                finally:
+                    if _package_inventory(baseline) != original_package:
+                        raise ValueError("Retained C++ baseline changed during verification")
+                    unchanged()
+                identity = evidence.stat()
+                published = identity.st_dev, identity.st_ino
+                evidence_inventory = _package_inventory(evidence)
+                evidence.rename(output)
+                observed = _regular(output, directory=True).stat()
+                if ((observed.st_dev, observed.st_ino) != published
+                        or _package_inventory(output) != evidence_inventory):
+                    raise ValueError("Retained C++ evidence changed during publication")
+        finally:
+            unchanged()
+        descriptor = _open_directory(output, "Published C++ evidence final check")
+        try:
+            observed = os.fstat(descriptor)
+            if ((observed.st_dev, observed.st_ino) != published
+                    or _directory_inventory(descriptor, allow_empty=True) != evidence_inventory):
+                raise ValueError("Retained C++ evidence changed after final input check")
+        finally:
+            os.close(descriptor)
+    except BaseException:
+        # No atomic compare-inode-and-remove primitive is available. Retain
+        # failed raw diagnostics rather than risk deleting a replacement.
+        raise
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
