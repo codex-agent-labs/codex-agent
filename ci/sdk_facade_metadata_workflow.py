@@ -43,7 +43,8 @@ def _read(path):
 def execute(plan, discovery, state, destination, *, expected_build_key, validations,
         contract_digest, component_digests, repository_root, environ, token, trusted_workflow_sha,
         tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
-        tooling_keyring=None, tooling_keys_directory=None, sdk_apple_validation_policy=None):
+        tooling_keyring=None, tooling_keys_directory=None, sdk_apple_validation_policy=None,
+        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Finalize only after exact election, content comparison and clean reader exit."""
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
@@ -106,6 +107,9 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
         "keyring": str(Path(tooling_keyring).absolute()) if tooling_keyring is not None else None,
         "keysDirectory": str(Path(tooling_keys_directory).absolute()) if tooling_keys_directory is not None else None}
     optional = {"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}
+    optional.update({name: value for name, value in (
+        ("sdk_facade_metadata_admission", sdk_facade_metadata_admission),
+        ("sdk_android_metadata_admission", sdk_android_metadata_admission)) if value is not None})
     try:
         elected = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling, **optional)
         ready = elected.prior_ready_plans.get(_INSTANCE)

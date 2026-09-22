@@ -12,11 +12,14 @@ from reuse import github_output
 
 
 def matrix(plan_path, discovery_root, state_root, github_output_path, *, repository_root=None, environ=None,
-           sdk_validation_tooling=None, sdk_apple_validation_policy=None):
+           sdk_validation_tooling=None, sdk_apple_validation_policy=None,
+           sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     value = products.runtime_worker_matrix(
         plan_path, discovery_root, state_root, repository_root=repository_root, environ=environ,
         **({"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}),
-        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
+        **({"sdk_facade_metadata_admission": sdk_facade_metadata_admission} if sdk_facade_metadata_admission is not None else {}),
+        **({"sdk_android_metadata_admission": sdk_android_metadata_admission} if sdk_android_metadata_admission is not None else {}))
     supervisors = [row["buildKey"] for row in value["include"]
                    if products._identity(row) == PhaseInstanceId("runtime", "linux-arm64", "binary", "linux-arm64")]
     if len(supervisors) > 1:
@@ -31,7 +34,8 @@ def matrix(plan_path, discovery_root, state_root, github_output_path, *, reposit
 
 def continuation(plan_path, discovery_root, state_root, github_output_path, *,
                  repository_root=None, environ=None, sdk_validation_tooling=None,
-                 require_completed=False, if_selected=False, sdk_apple_validation_policy=None):
+                 require_completed=False, if_selected=False, sdk_apple_validation_policy=None,
+                 sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Route the final fully materialized Runtime closure, not early native fanout.
 
     The sole replay supplies every identity/key/receipt. A completed aggregate
@@ -44,7 +48,9 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
     inspected = products.inspect_products(plan_path, discovery_root, state_root,
         repository_root=repository_root, environ=environ,
         sdk_validation_tooling=sdk_validation_tooling, include_sdk_selection=True,
-        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
+        **({"sdk_facade_metadata_admission": sdk_facade_metadata_admission} if sdk_facade_metadata_admission is not None else {}),
+        **({"sdk_android_metadata_admission": sdk_android_metadata_admission} if sdk_android_metadata_admission is not None else {}))
     sdk = inspected.get("sdkInputSelection")
     sdk_outputs = {"sdk_handoff_required": sdk is not None,
                    "sdk_input_selection": canonical_json_bytes(sdk).decode().strip()}
@@ -122,10 +128,15 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
 
 def capture(plan_path, destination, github_output_path, *, artifact_id, artifact_sha256,
             trusted_workflow_sha, state_wave=0, instance=None, expected_build_key=None,
-            repository_root=None, environ=None, token, sdk_validation_tooling=None, sdk_apple_validation_policy=None):
+            repository_root=None, environ=None, token, sdk_validation_tooling=None, sdk_apple_validation_policy=None,
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
     if sdk_apple_validation_policy is not None:
         tooling["sdk_apple_validation_policy"] = sdk_apple_validation_policy
+    if sdk_facade_metadata_admission is not None:
+        tooling["sdk_facade_metadata_admission"] = sdk_facade_metadata_admission
+    if sdk_android_metadata_admission is not None:
+        tooling["sdk_android_metadata_admission"] = sdk_android_metadata_admission
     products.capture_runtime_resume_upload(
         plan_path, destination, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
         trusted_workflow_sha=trusted_workflow_sha, state_wave=state_wave,
@@ -159,10 +170,15 @@ def capture(plan_path, destination, github_output_path, *, artifact_id, artifact
 
 def collect(input_root, destination, github_output_path, *, wave, trusted_workflow_sha,
             repository_root=None, environ=None, token, state_wave=None, sdk_validation_tooling=None,
-            sdk_apple_validation_policy=None):
+            sdk_apple_validation_policy=None, sdk_facade_metadata_admission=None,
+            sdk_android_metadata_admission=None):
     tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
     if sdk_apple_validation_policy is not None:
         tooling["sdk_apple_validation_policy"] = sdk_apple_validation_policy
+    if sdk_facade_metadata_admission is not None:
+        tooling["sdk_facade_metadata_admission"] = sdk_facade_metadata_admission
+    if sdk_android_metadata_admission is not None:
+        tooling["sdk_android_metadata_admission"] = sdk_android_metadata_admission
     if type(wave) is not int or not 1 <= wave <= 5:
         raise ValueError("Runtime workflow wave must be one through five")
     # Aggregate may already be ready in initial reuse, before any native wave.

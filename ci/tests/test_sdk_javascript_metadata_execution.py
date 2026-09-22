@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from ci import sdk_javascript_metadata_workflow as workflow
 from ci.tests import test_sdk_javascript_workflow as fixture
-from ci.tests.test_sdk_native_package_execution import caller_apple_policy
+from ci.tests.test_sdk_native_package_execution import caller_apple_policy, caller_metadata_admissions
 from ci.tests.product_chain_support import write_receipt
 from products.inventory import (
     load_canonical_json_bytes, regular_file_inventory,
@@ -226,10 +226,14 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
         policy = caller_apple_policy(self.root / "caller")
         before = dict(policy)
         self.arguments["sdk_apple_validation_policy"] = policy
+        admissions = caller_metadata_admissions()
+        self.arguments.update(admissions)
 
         def forwarded(delegate):
             def invoke(*args, **kwargs):
                 self.assertIs(policy, kwargs.pop("sdk_apple_validation_policy"))
+                for name, admission in admissions.items():
+                    self.assertIs(admission, kwargs.pop(name))
                 return delegate(*args, **kwargs)
             return invoke
 
@@ -239,6 +243,9 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
         for replay in (verified, materialize):
             replay.assert_called_once()
             self.assertIs(policy, replay.call_args.kwargs["sdk_apple_validation_policy"])
+            for name, admission in admissions.items():
+                self.assertIs(admission, replay.call_args.kwargs[name])
+                self.assertNotIn(name, result["receipt"])
         self.assertEqual(before, policy)
         self.assertNotIn("sdkAppleValidationPolicy", result["receipt"])
         self.assertNotIn("sdk_apple_validation_policy", result["receipt"])

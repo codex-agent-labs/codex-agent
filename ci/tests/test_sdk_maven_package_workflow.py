@@ -215,6 +215,9 @@ class MavenPackageWorkflowTest(unittest.TestCase):
                     fixture.publish.assert_called_once()
                     self.assertNotIn("sdk_validation_tooling", fixture.verified.call_args.kwargs)
                     self.assertNotIn("sdk_apple_validation_policy", fixture.materialized.call_args.kwargs)
+                    for call in (fixture.verified.call_args, fixture.materialized.call_args):
+                        for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
+                            self.assertNotIn(name, call.kwargs)
                 finally:
                     fixture.doCleanups()
 
@@ -225,6 +228,18 @@ class MavenPackageWorkflowTest(unittest.TestCase):
             self.assertIs(tooling, call.kwargs["sdk_validation_tooling"])
             self.assertIs(apple, call.kwargs["sdk_apple_validation_policy"])
         self.assertNotIn("sdk_validation_tooling", self.worker.call_args.kwargs)
+
+    def test_metadata_admission_objects_forward_to_both_state_replays_only(self):
+        admissions = {"sdk_facade_metadata_admission": object(), "sdk_android_metadata_admission": object()}
+        self.invoke(**admissions)
+        for name, value in admissions.items():
+            for call in (self.verified.call_args, self.materialized.call_args):
+                self.assertIs(value, call.kwargs[name])
+            for call in (self.worker.call_args, self.binary_reader.call_args, self.gate.call_args):
+                self.assertNotIn(name, call.kwargs)
+            for path in self.destination.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(name.encode(), path.read_bytes(), str(path))
 
     def test_gate_rejection_and_context_exit_failures_never_publish(self):
         self.gate.side_effect = ValueError("full original lineage rejected")
@@ -341,6 +356,8 @@ class MavenPackageWorkflowTest(unittest.TestCase):
             self.assertEqual(7, execute.call_args.kwargs["binary_artifact_id"])
             self.assertEqual("env-token", execute.call_args.kwargs["token"])
             self.assertNotIn("sdk_validation_tooling", execute.call_args.kwargs)
+            for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
+                self.assertNotIn(name, execute.call_args.kwargs)
             retained_argv = [item for name, value in zip(argv[::2], argv[1::2])
                              if name not in {"--binary-artifact-id", "--binary-artifact-sha256"}
                              for item in (name, value)]
@@ -356,6 +373,8 @@ class MavenPackageWorkflowTest(unittest.TestCase):
             for bad in ([*argv, "--token", "injected"], [*argv, "--component", "sdk-ios"],
                         ["--pl" if arg == "--plan" else arg for arg in argv],
                         [*argv, "--binary-capture-root", str(self.binary_capture)],
+                        [*argv, "--sdk-facade-metadata-admission", "transport.json"],
+                        [*argv, "--sdk-android-metadata-admission", "transport.json"],
                         argv[:-4], argv[:-2]):
                 execute.reset_mock()
                 with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit): workflow.main(bad)

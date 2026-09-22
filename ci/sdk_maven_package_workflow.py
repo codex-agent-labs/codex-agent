@@ -44,7 +44,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             keyring, keys_directory, binary_contract_evidence, binary_original_context,
             repository_root, environ, token, binary_artifact_id=None, binary_artifact_sha256=None,
             binary_capture_root=None, android_runtime_archive=None,
-            sdk_validation_tooling=None, sdk_apple_validation_policy=None):
+            sdk_validation_tooling=None, sdk_apple_validation_policy=None,
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Publish one shard only after full original gates and successful context exit.
 
     The binary's original Contract evidence is mandatory caller policy, even if
@@ -133,6 +134,9 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             raise ValueError("Maven package original inputs, selection or retained evidence changed")
 
     destination = product_reuse._prepare_destination(destination, root)
+    admissions = {name: value for name, value in (
+        ("sdk_facade_metadata_admission", sdk_facade_metadata_admission),
+        ("sdk_android_metadata_admission", sdk_android_metadata_admission)) if value is not None}
     try:
         with tempfile.TemporaryDirectory(prefix="sdk-maven-package-") as temporary:
             private = Path(temporary).resolve()
@@ -141,14 +145,14 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             with sdk_workflow.verified_inputs(plan, discovery, state,
                     artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                     trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-                    repository_root=root, environ=environ, token=token, **policies) as sdk_inputs, ExitStack() as binary_contexts:
+                    repository_root=root, environ=environ, token=token, **policies, **admissions) as sdk_inputs, ExitStack() as binary_contexts:
                 selection = sdk_inputs["selection"]
                 values.append((selection, canonical_json_bytes(selection)))
                 if identity not in selection["consumers"]:
                     raise ValueError("Maven SDK package is not selected")
                 prepared = destination / "inputs"
                 ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
-                    expected_build_key=expected_build_key, repository_root=root, environ=environ, **policies)
+                    expected_build_key=expected_build_key, repository_root=root, environ=environ, **policies, **admissions)
                 retained[prepared] = _inventory(prepared, allow_empty=True)
                 producer = product_reuse.validate_producer(load_canonical_json_bytes(_read(prepared / "producer.json")))
                 values.extend((value, canonical_json_bytes(value)) for value in (ready, producer))

@@ -21,6 +21,15 @@ from products.receipt import compute_build_key, write_output_manifest
 from products.registry import NATIVE_TARGETS, PhaseInstanceId
 
 
+def caller_metadata_admissions():
+    # Concrete instances, deliberately uninitialized: these tests exercise only
+    # identity-preserving orchestration, never successful semantic admission.
+    from products.sdk_facade_metadata_admission import FacadeMetadataAdmission
+    from products.sdk_android_metadata_admission import AndroidMetadataAdmission
+    return {"sdk_facade_metadata_admission": object.__new__(FacadeMetadataAdmission),
+            "sdk_android_metadata_admission": object.__new__(AndroidMetadataAdmission)}
+
+
 def caller_apple_policy(root):
     # Routing fixture only: real signature/source admission is mocked below.
     return {"plan": str(root / "plan.json"), "attestationPublicKey": None,
@@ -189,10 +198,13 @@ class SdkNativePackageExecutionTest(unittest.TestCase):
     def test_explicit_apple_policy_reaches_all_three_replays_without_becoming_product_data(self):
         policy = caller_apple_policy(self.root / "caller")
         before = deepcopy(policy)
+        admissions = caller_metadata_admissions()
 
         def forwarded(delegate):
             def invoke(*args, **kwargs):
                 self.assertIs(policy, kwargs.pop("sdk_apple_validation_policy"))
+                for name, admission in admissions.items():
+                    self.assertIs(admission, kwargs.pop(name))
                 # Keep the original fixture's exact no-policy argument checks.
                 return delegate(*args, **kwargs)
             return invoke
@@ -204,10 +216,13 @@ class SdkNativePackageExecutionTest(unittest.TestCase):
                 patch.object(workflow, "execute_package", side_effect=self.worker), \
                 patch.object(workflow, "verify_sdk_package_inputs", side_effect=self.gate):
             result = workflow.execute(self.plan_path, self.discovery, self.state, self.destination,
-                                      **self.arguments, sdk_apple_validation_policy=policy)
+                                      **self.arguments, sdk_apple_validation_policy=policy, **admissions)
         for replay in (verified, inspected, materialized):
             replay.assert_called_once()
             self.assertIs(policy, replay.call_args.kwargs["sdk_apple_validation_policy"])
+            for name, admission in admissions.items():
+                self.assertIs(admission, replay.call_args.kwargs[name])
+                self.assertNotIn(name, result["receipt"])
         self.assertEqual(before, policy)
         self.assertNotIn("sdkAppleValidationPolicy", result["receipt"])
         self.assertNotIn("sdk_apple_validation_policy", result["receipt"])

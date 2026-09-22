@@ -168,7 +168,8 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
             java_executable, policy_revision, required_trust_domain, tooling_keyring=None,
             tooling_keys_directory=None, dotnet_executable=None, dart_executable=None,
             dart_package_config=None, preparation_phase="package", preparation_target="desktop",
-            sdk_apple_validation_policy=None):
+            sdk_apple_validation_policy=None, sdk_facade_metadata_admission=None,
+            sdk_android_metadata_admission=None):
     """Admit a validation and established evidence carrier, without restaging SDKs.
 
     Original preparation election is independently replayed. Only the existing
@@ -186,6 +187,10 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
         "keyring": str(tooling_keyring) if tooling_keyring is not None else None,
         "keysDirectory": str(tooling_keys_directory) if tooling_keys_directory is not None else None}
     apple = {} if sdk_apple_validation_policy is None else {"sdk_apple_validation_policy": sdk_apple_validation_policy}
+    if sdk_facade_metadata_admission is not None:
+        apple["sdk_facade_metadata_admission"] = sdk_facade_metadata_admission
+    if sdk_android_metadata_admission is not None:
+        apple["sdk_android_metadata_admission"] = sdk_android_metadata_admission
     protected = [plan, discovery, state, preparation_state, Path(keyring), Path(keys_directory),
         Path(tooling_evidence), Path(tooling_public_key), Path(java_executable),
         *(Path(value) for value in (tooling_keyring, tooling_keys_directory,

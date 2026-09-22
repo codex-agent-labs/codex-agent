@@ -111,6 +111,21 @@ class FacadeMetadataWorkflowTest(unittest.TestCase):
         self.finalize.assert_called_once()
         self.assertFalse(self.f.active)
         self.assertEqual(b"", (result["diagnostics"] / "gradle.log").read_bytes())
+        for call in (self.election.call_args, self.materialize.call_args):
+            for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
+                self.assertNotIn(name, call.kwargs)
+
+    def test_metadata_admission_objects_forward_to_both_state_replays_only(self):
+        admissions = {"sdk_facade_metadata_admission": object(), "sdk_android_metadata_admission": object()}
+        workflow.execute(**self.arguments(), **admissions)
+        for name, value in admissions.items():
+            for call in (self.election.call_args, self.materialize.call_args):
+                self.assertIs(value, call.kwargs[name])
+            self.assertNotIn(name, self.held.call_args.kwargs)
+            self.assertNotIn(name, self.process.call_args.kwargs)
+            for path in self.destination.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(name.encode(), path.read_bytes(), str(path))
 
     def test_unelected_or_wrong_materialized_package_never_runs_producer(self):
         with self.assertRaisesRegex(ValueError, "not ready"):
@@ -214,9 +229,13 @@ class FacadeMetadataWorkflowTest(unittest.TestCase):
         with patch.object(workflow, "execute") as execute, patch.dict(os.environ, {"GITHUB_TOKEN": "cli-token"}):
             self.assertEqual(0, workflow.main(argv))
             self.assertEqual("cli-token", execute.call_args.kwargs["token"])
+            for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
+                self.assertNotIn(name, execute.call_args.kwargs)
             self.assertEqual(self.f.f.request["componentDigests"], execute.call_args.kwargs["component_digests"])
             self.assertEqual(str(self.f.archive),
                 execute.call_args.kwargs["validations"]["ios-arm64"]["nativeCompilerArchive"])
-            for extra in (["--token", "not-allowed"], ["--tooling-keyring", str(self.key)], ["--unknown"]):
+            for extra in (["--token", "not-allowed"], ["--tooling-keyring", str(self.key)], ["--unknown"],
+                          ["--sdk-facade-metadata-admission", "transport.json"],
+                          ["--sdk-android-metadata-admission", "transport.json"]):
                 with self.subTest(extra=extra), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                     workflow.main(argv + extra)

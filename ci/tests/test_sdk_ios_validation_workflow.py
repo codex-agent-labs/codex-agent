@@ -19,17 +19,24 @@ SIGNING_SECRET = "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY"
 class SdkIosValidationWorkflowTest(unittest.TestCase):
     def test_caller_apple_policy_reaches_original_state_admission_before_execution(self):
         policy = {"synthetic": "independent caller policy"}
+        core_admission, android_admission = object(), object()
         discovery = self.root / "discovery"
         discovery.mkdir()
         for supplied in (False, True):
+            forwarded = ({"sdk_apple_validation_policy": policy,
+                          "sdk_facade_metadata_admission": core_admission,
+                          "sdk_android_metadata_admission": android_admission}
+                         if supplied else {})
             with self.subTest(supplied=supplied), \
                     patch.object(workflow, "_original_directory", return_value=Path("/original/Xcode")), \
                     patch.object(workflow.product_reuse, "_verified_product_state", side_effect=ValueError("admission stop")) as gate, \
                     patch.object(workflow, "execute_validation") as worker, \
                     self.assertRaisesRegex(ValueError, "admission stop"):
                 workflow.execute(self.plan, discovery, None, self.destination, **self.arguments,
-                    **({"sdk_apple_validation_policy": policy} if supplied else {}))
-            self.assertEqual({"sdk_apple_validation_policy": policy} if supplied else {}, gate.call_args.kwargs)
+                    **forwarded)
+            self.assertEqual(set(forwarded), set(gate.call_args.kwargs))
+            for name, value in forwarded.items():
+                self.assertIs(value, gate.call_args.kwargs[name])
             worker.assert_not_called()
             self.assertFalse(self.destination.exists())
 
@@ -74,6 +81,7 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         self.capture_inventories = {name: workflow.regular_file_inventory(path, allow_empty=True)
                                     for name, path in self.captures.items()}
         self.events = []
+        self.state_options = None
         self.mutation = None
         self.arguments = dict(target="ios-arm64", expected_build_key=self.ready["buildKey"],
             package_artifact_id=17, package_artifact_sha256="sha256:" + "2" * 64,
@@ -234,11 +242,15 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
             shutil.rmtree(self.destination)
         self.events.clear()
 
+    def verified_state(self, *args, **options):
+        self.state_options = options
+        return self.verified
+
     def execute(self, **changes):
         with ExitStack() as stack:
             for owner, name, options in (
                 (workflow.product_reuse, "_product_materialization_paths", {"return_value": (self.root, self.root, self.destination)}),
-                (workflow.product_reuse, "_verified_product_state", {"return_value": self.verified}),
+                (workflow.product_reuse, "_verified_product_state", {"side_effect": self.verified_state}),
                 (workflow, "verify_object", {"return_value": {"receipt": self.receipt, "receiptBytes": b"original receipt"}}),
                 (workflow, "capture_apple_validation_sources", {"side_effect": self.capture}),
                 (workflow, "verified_original_ios_package", {"side_effect": self.originals}),
@@ -267,6 +279,17 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         self.assertEqual(b"original worker diagnostics\n", (self.destination / "worker/gradle.log").read_bytes())
         for name, inventory in self.capture_inventories.items():
             self.assertEqual(inventory, workflow.regular_file_inventory(self.captures[name], allow_empty=True))
+
+    def test_metadata_admissions_reach_state_only_and_are_not_serialized(self):
+        admissions = {"sdk_facade_metadata_admission": object(),
+                      "sdk_android_metadata_admission": object()}
+        result = self.execute(**admissions)
+        self.assertEqual({"fixture": "finalized"}, result["shard"])
+        for name, value in admissions.items():
+            self.assertIs(value, self.state_options[name])
+            self.assertNotIn(name.encode(),
+                (self.destination / "context/execution-context.json").read_bytes())
+            self.assertNotIn(name.encode(), (self.destination / "worker/execution.json").read_bytes())
 
     def test_missing_original_locators_use_selected_package_then_its_exact_binary_predecessor(self):
         cases = (

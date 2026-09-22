@@ -248,6 +248,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             apkanalyzer_executable, policy_revision, required_trust_domain,
             repository_root, environ, tooling_keyring=None,
             tooling_keys_directory=None, sdk_apple_validation_policy=None,
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
             original_validation_capture=None, validation_artifact_id=None,
             validation_artifact_sha256=None, trusted_workflow_sha=None,
             trusted_android_workflow_sha=None, expected_original_run_id=None,
@@ -381,11 +382,15 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
     }
     apple = ({} if sdk_apple_validation_policy is None else
              {"sdk_apple_validation_policy": sdk_apple_validation_policy})
+    admissions = {name: value for name, value in (
+        ("sdk_facade_metadata_admission", sdk_facade_metadata_admission),
+        ("sdk_android_metadata_admission", sdk_android_metadata_admission),
+    ) if value is not None}
     try:
         # Keep the whole selected flow under one lifetime guard.  In particular,
         # failures before publication must still recheck every caller-owned input.
         verified = product_reuse._verified_product_state(
-            plan, discovery, state, root, environ, tooling, **apple)
+            plan, discovery, state, root, environ, tooling, **apple, **admissions)
         ready = verified.prior_ready_plans.get(_INSTANCE)
         if ready is None or ready["buildKey"] != expected_build_key:
             raise ValueError("Android metadata is not ready with the elected build key")
@@ -399,7 +404,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         inputs = destination / "inputs"
         materialized = product_reuse.materialize_product_predecessors(
             plan, discovery, state, _INSTANCE, inputs, expected_build_key=expected_build_key,
-            repository_root=root, environ=environ, sdk_validation_tooling=tooling, **apple)
+            repository_root=root, environ=environ, sdk_validation_tooling=tooling,
+            **apple, **admissions)
         materialized_bytes = canonical_json_bytes(materialized)
         bindings.update(materialized=materialized, materializedBytes=materialized_bytes)
         if materialized != ready or _read(inputs / "phase-plan.json") != ready_bytes:

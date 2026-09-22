@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from ci.tests import test_runtime_workflow as fixture
+from ci.tests.test_sdk_native_package_execution import caller_metadata_admissions
 
 
 workflow = fixture.workflow
@@ -18,11 +19,17 @@ class RuntimeApplePolicyForwardingTest(unittest.TestCase):
         self.addCleanup(self.case.doCleanups)
         self.policy = {"caller-policy": "opaque forwarding fixture, not admission"}
         self.tooling = {"caller-tooling": "independent policy fixture"}
+        self.admissions = caller_metadata_admissions()
         self.paths = tuple(self.case.root / name for name in ("plan", "discovery", "state"))
         self.policy_path = self.case.root / "apple-policy.json"
         self.policy_path.write_bytes(workflow.canonical_json_bytes(self.policy))
 
     def assert_policy(self, call, supplied):
+        for name, admission in self.admissions.items():
+            if supplied:
+                self.assertIs(admission, call.call_args.kwargs[name])
+            else:
+                self.assertNotIn(name, call.call_args.kwargs)
         if supplied:
             self.assertIs(self.policy, call.call_args.kwargs["sdk_apple_validation_policy"])
         else:
@@ -30,7 +37,7 @@ class RuntimeApplePolicyForwardingTest(unittest.TestCase):
 
     def test_matrix_and_continuation_forward_policy_without_changing_legacy_omission(self):
         for supplied in (False, True):
-            optional = {"sdk_apple_validation_policy": self.policy} if supplied else {}
+            optional = {"sdk_apple_validation_policy": self.policy, **self.admissions} if supplied else {}
             with self.subTest(supplied=supplied), patch.object(workflow.products, "runtime_worker_matrix",
                     return_value={"include": []}) as matrix, patch.object(workflow.products, "inspect_products",
                     return_value=self.case.final_fixture("retained")) as inspect:
@@ -44,7 +51,7 @@ class RuntimeApplePolicyForwardingTest(unittest.TestCase):
 
     def test_capture_forwards_to_matrix_and_aggregate_but_never_transport(self):
         for supplied in (False, True):
-            optional = {"sdk_apple_validation_policy": self.policy} if supplied else {}
+            optional = {"sdk_apple_validation_policy": self.policy, **self.admissions} if supplied else {}
             with self.subTest(supplied=supplied), patch.object(workflow.products, "capture_runtime_resume_upload") as transport, \
                     patch.object(workflow, "matrix", return_value={"include": []}) as matrix, \
                     patch.object(workflow, "continuation", return_value={"aggregate": {
@@ -56,16 +63,38 @@ class RuntimeApplePolicyForwardingTest(unittest.TestCase):
             transport.assert_called_once()
             self.assertNotIn("sdk_apple_validation_policy", transport.call_args.kwargs)
             self.assertNotIn("sdk_validation_tooling", transport.call_args.kwargs)
+            for name in self.admissions:
+                self.assertNotIn(name, transport.call_args.kwargs)
+                self.assertNotIn(name, result)
             for replay in (matrix, continuation):
                 replay.assert_called_once()
                 self.assert_policy(replay, supplied)
                 self.assertIs(self.tooling, replay.call_args.kwargs["sdk_validation_tooling"])
             self.assertNotIn("sdk_apple_validation_policy", result)
 
+    def test_metadata_admissions_are_independently_optional_and_explicit_none_is_omitted(self):
+        for selected in (None, *self.admissions):
+            optional = {name: admission if name == selected else None
+                        for name, admission in self.admissions.items()}
+            with self.subTest(selected=selected), patch.object(workflow.products,
+                    "runtime_worker_matrix", return_value={"include": []}) as matrix, \
+                    patch.object(workflow.products, "inspect_products",
+                        return_value=self.case.final_fixture("retained")) as inspect:
+                workflow.matrix(*self.paths, self.case.output, **optional)
+                workflow.continuation(*self.paths, self.case.output, **optional)
+            for replay in (matrix, inspect):
+                for name, admission in self.admissions.items():
+                    if name == selected:
+                        self.assertIs(admission, replay.call_args.kwargs[name])
+                    else:
+                        self.assertNotIn(name, replay.call_args.kwargs)
+            for name in self.admissions:
+                self.assertNotIn(name, self.case.output.read_text())
+
     def test_all_collection_waves_forward_policy_through_advance_and_final_replay(self):
         for wave in range(1, 6):
             for supplied in (False, True):
-                optional = {"sdk_apple_validation_policy": self.policy} if supplied else {}
+                optional = {"sdk_apple_validation_policy": self.policy, **self.admissions} if supplied else {}
                 destination = self.case.root / f"wave-{wave}-{supplied}"
                 with self.subTest(wave=wave, supplied=supplied), patch.object(workflow.products,
                         "collect_runtime_workers", side_effect=self.case.aggregate_collection if wave == 5 else self.case.collection) as collector, \

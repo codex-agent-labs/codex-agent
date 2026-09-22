@@ -36,12 +36,16 @@ class FacadeWorkflowTest(unittest.TestCase):
             self.assertEqual("", execute.call_args.kwargs["android_sdk_directory"])
             self.assertEqual(self.f.request, execute.call_args.kwargs["facade_request"])
             self.assertNotIn("sdk_apple_validation_policy", execute.call_args.kwargs)
+            for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
+                self.assertNotIn(name, execute.call_args.kwargs)
             archive = self.root / "explicit-native.tar.gz"
             self.assertEqual(0, workflow.main([*argv, "--target", "ios-arm64",
                                              "--native-compiler-archive", str(archive)]))
             self.assertEqual(archive, execute.call_args.kwargs["native_compiler_archive"])
             for invalid in ([*argv, "--tooling-keyring", "unpaired"],
                             [*argv, "--target", "browser"],
+                            [*argv, "--sdk-facade-metadata-admission", "transport.json"],
+                            [*argv, "--sdk-android-metadata-admission", "transport.json"],
                             ["--pl" if arg == "--plan" else arg for arg in argv]):
                 execute.reset_mock()
                 with self.subTest(argv=invalid), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -138,7 +142,7 @@ class FacadeWorkflowTest(unittest.TestCase):
 
     def test_retains_original_bytes_and_finalizes_only_after_full_replay(self):
         original_request = self.f.request.read_bytes()
-        result = self.call()
+        result = self.call(sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None)
         self.assertEqual(1, len(self.full_calls))
         self.finalize.assert_called_once()
         verified = verify_phase_shard(self.destination / "shard", PhaseInstanceId("sdk", "sdk-core", "validation", "jvm"))
@@ -149,6 +153,19 @@ class FacadeWorkflowTest(unittest.TestCase):
         self.assertEqual(original_request, self.f.request.read_bytes())
         self.assertEqual({"inputs", "originals", "worker", "selection", "context", "retained-execution", "shard"},
                          {path.name for path in self.destination.iterdir()})
+        for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
+            self.assertNotIn(name, self.materialize.call_args.kwargs)
+
+    def test_metadata_admission_objects_forward_only_to_state_replay(self):
+        admissions = {"sdk_facade_metadata_admission": object(), "sdk_android_metadata_admission": object()}
+        self.call(**admissions)
+        for name, value in admissions.items():
+            self.assertIs(value, self.materialize.call_args.kwargs[name])
+            self.assertNotIn(name, self.worker.call_args.kwargs)
+            self.assertNotIn(name, self.full.call_args.kwargs)
+            for path in self.destination.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(name.encode(), path.read_bytes(), str(path))
 
     def test_archive_role_guard_precedes_election_and_does_not_infer_cache(self):
         archive = self.root / "caller.tar.gz"

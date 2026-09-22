@@ -165,6 +165,17 @@ class MavenBinaryWorkflowTest(unittest.TestCase):
         self.assertEqual({"impact-plan.json", "phase-plan.json", "producer.json"},
                          {path.name for path in (self.destination / "selection").iterdir()})
 
+    def test_metadata_admission_objects_forward_only_to_state_replay(self):
+        admissions = {"sdk_facade_metadata_admission": object(), "sdk_android_metadata_admission": object()}
+        self.invoke(**admissions)
+        self.assertEqual(admissions, self.state.call_args.kwargs)
+        for name, value in admissions.items():
+            self.assertIs(value, self.state.call_args.kwargs[name])
+            self.assertNotIn(name, self.worker.call_args.kwargs)
+            for path in self.destination.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(name.encode(), path.read_bytes(), str(path))
+
     def test_not_ready_wrong_archive_and_missing_release_authority_fail_before_worker(self):
         for changes in ({"expected_build_key": "sha256:" + "0" * 64},
                         {"android_runtime_archive": self.archive}):
@@ -208,6 +219,13 @@ class MavenBinaryWorkflowTest(unittest.TestCase):
             self.assertEqual(0, workflow.main(arguments))
             self.assertNotIn("sdk_validation_tooling", execute.call_args.kwargs)
             self.assertNotIn("sdk_apple_validation_policy", execute.call_args.kwargs)
+            for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
+                self.assertNotIn(name, execute.call_args.kwargs)
+            for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
+                execute.reset_mock()
+                with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    workflow.main(arguments + ["--" + name.replace("_", "-"), "transport.json"])
+                execute.assert_not_called()
             self.assertEqual(0, workflow.main(arguments + ["--sdk-validation-tooling", str(policy),
                                                            "--sdk-apple-validation-policy", str(policy)]))
             self.assertEqual({"caller": "policy"}, execute.call_args.kwargs["sdk_validation_tooling"])

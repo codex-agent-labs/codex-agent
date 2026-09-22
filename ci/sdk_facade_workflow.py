@@ -83,7 +83,8 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
             facade_request, android_sdk_directory, tooling_evidence, tooling_public_key,
             java_executable, policy_revision, required_trust_domain, repository_root,
             environ, consumer_java_executable=None, tooling_keyring=None,
-            tooling_keys_directory=None, sdk_apple_validation_policy=None, native_compiler_archive=None):
+            tooling_keys_directory=None, sdk_apple_validation_policy=None, native_compiler_archive=None,
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Use existing election and full gates; retain external originals before receipt.
 
     Explicit caller paths/policy are not a downloaded request. Android SDK and
@@ -141,12 +142,15 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
         "keyring": str(Path(tooling_keyring).absolute()) if tooling_keyring is not None else None,
         "keysDirectory": str(Path(tooling_keys_directory).absolute()) if tooling_keys_directory is not None else None}
     destination = product_reuse._prepare_destination(destination, root)
+    admissions = {name: value for name, value in (
+        ("sdk_facade_metadata_admission", sdk_facade_metadata_admission),
+        ("sdk_android_metadata_admission", sdk_android_metadata_admission)) if value is not None}
     try:
         inputs = destination / "inputs"
         ready = product_reuse.materialize_product_predecessors(
             Path(plan), discovery, state, PhaseInstanceId("sdk", "sdk-core", "validation", target), inputs,
             expected_build_key=expected_build_key, repository_root=root, environ=environ,
-            sdk_validation_tooling=tooling, sdk_apple_validation_policy=sdk_apple_validation_policy)
+            sdk_validation_tooling=tooling, sdk_apple_validation_policy=sdk_apple_validation_policy, **admissions)
         producer = validate_producer(load_canonical_json_bytes(_read(inputs / "producer.json")), "Core producer")
         if archive is not None:
             for output in (root / f"build/product-stage/sdk/sdk-core/validation/{target}",

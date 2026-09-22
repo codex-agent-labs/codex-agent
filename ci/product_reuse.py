@@ -1988,6 +1988,13 @@ def _relocated_wave_control(path, label, root):
     return {**value, "repositoryRoot": str(root), "artifactRoot": str(root / "build/product-reuse")}
 
 
+def _metadata_admissions(facade, android):
+    """Forward caller-owned verifier objects only; never serialize authority."""
+    return {name: value for name, value in (
+        ("sdk_facade_metadata_admission", facade),
+        ("sdk_android_metadata_admission", android)) if value is not None}
+
+
 def _plan_with_sdk_tooling(request, tooling, *, apple_policy=None, **kwargs):
     # Never serialize invocation authority into retained control or evidence.
     if {"sdkValidationTooling", "sdkAppleValidationPolicy"} & request.keys():
@@ -2576,6 +2583,7 @@ def _verified_product_state(
     plan_path: Path, discovery_root: Path, state_root: Path, root: Path,
     environment: Mapping[str, str], sdk_validation_tooling: Mapping[str, Any] | None,
     *, sdk_runtime_consumer=None, sdk_apple_validation_policy=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ) -> _VerifiedProductState:
     plan = _validate_plan(plan_path, root)
     if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
@@ -2669,7 +2677,7 @@ def _verified_product_state(
         **({"sdk_runtime_consumer": sdk_runtime_consumer}
            if sdk_runtime_consumer is not None and state_root == discovery_root else {}),
         apple_policy=sdk_apple_validation_policy,
-    )
+        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     initial = _canonical_control(discovery_root / "reuse-wave-result.json", "Initial reuse result")
     if replay != initial:
         raise ValueError("Initial reuse result is not reproducible from its authenticated request")
@@ -2734,7 +2742,7 @@ def _verified_product_state(
                 ),
                 **({"sdk_runtime_consumer": sdk_runtime_consumer} if sdk_runtime_consumer is not None else {}),
                 apple_policy=sdk_apple_validation_policy,
-            )
+                **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
         state_by_instance = {_identity(phase): phase for phase in state_replay["phases"]}
         if any(state_by_instance[instance]["state"] != "retained" for instance in prior_materialized):
             raise ValueError("A prior carrier object was not retained by the recomputed plan")
@@ -2799,6 +2807,7 @@ def inspect_products(
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     include_sdk_selection: bool = False,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ) -> dict[str, Any]:
     """Re-elect ready plans before target setup without admitting new shards."""
     if type(include_sdk_selection) is not bool:
@@ -2814,7 +2823,8 @@ def inspect_products(
     state = _verified_product_state(
         plan_path, discovery_root, state_root, root,
         os.environ if environ is None else environ, sdk_validation_tooling,
-        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
+        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     request = dict(state.rebased_request)
     _merge_native_comparison_records(request, _retained_aggregate_handoffs(state_root, root), key=_AGGREGATE_REQUEST_KEY)
     return {"result": state.prior,
@@ -2865,6 +2875,7 @@ def runtime_worker_matrix(
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ) -> dict[str, Any]:
     """Route only authenticated ready standalone phases, never the cheap aggregate.
 
@@ -2874,7 +2885,8 @@ def runtime_worker_matrix(
     inspected = inspect_products(
         plan_path, discovery_root, state_root, repository_root=repository_root,
         environ=environ, sdk_validation_tooling=sdk_validation_tooling,
-        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
+        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     from runtime_adapter_phase import route as adapter_route
     from runtime_native_phase import route as native_route
 
@@ -2996,6 +3008,7 @@ def materialize_product_predecessors(
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ) -> dict[str, Any]:
     """Restore the full original closure, not new evidence or execution authority."""
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
@@ -3008,7 +3021,8 @@ def materialize_product_predecessors(
             os.environ if environ is None else environ, sdk_validation_tooling,
             **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
             sdk_runtime_consumer=lambda selected: originals.update(
-                _capture_sdk_runtime_predecessors(selected, Path(temporary) / "originals")))
+                _capture_sdk_runtime_predecessors(selected, Path(temporary) / "originals")),
+            **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
         return _materialize_product_predecessors(state, instance, destination, expected_build_key, root,
                                                 sdk_runtime_originals=originals)
 
@@ -3017,6 +3031,7 @@ def materialize_sdk_default_inputs(
     plan_path, discovery_root, state_root, destination, *, keyring, keys_directory,
     repository_root=None, environ=None, sdk_validation_tooling=None,
     sdk_apple_validation_policy=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ):
     """Stage the elected SDK default, preserving both original provenance chains."""
     from products.runtime_sdk_handoff import stage_runtime_sdk_handoff
@@ -3047,7 +3062,8 @@ def materialize_sdk_default_inputs(
         state = _verified_product_state(plan_path, discovery_root, state_root, root,
             os.environ if environ is None else environ, sdk_validation_tooling,
             **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
-            sdk_runtime_consumer=capture)
+            sdk_runtime_consumer=capture,
+            **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
         selection = _sdk_input_selection(state, root)
         if selection is None or selection["source"] != "released-default" or not captured:
             raise ValueError("SDK default inputs require selected released-default consumer work")
@@ -3072,13 +3088,15 @@ def materialize_runtime_aggregate_release_evidence(
     plan_path, discovery_root, state_root, destination, *, expected_build_key,
     keyring, keys_directory, repository_root=None, environ=None, sdk_validation_tooling=None,
     sdk_apple_validation_policy=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ):
     """Select the complete original carrier; selected-stage equality is checked by the caller."""
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     discovery_root, state_root, destination = _product_materialization_paths(root, discovery_root, state_root, destination)
     state = _verified_product_state(plan_path, discovery_root, state_root, root,
         os.environ if environ is None else environ, sdk_validation_tooling,
-        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
+        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     instance = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
     selected = state.prior_by_instance.get(instance)
     if (selected is None or instance not in state.sources or instance not in state.prior_carrier_phases
@@ -3101,6 +3119,7 @@ def prepare_runtime_phase(
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ) -> dict[str, str]:
     """Prepare original worker inputs; never execute or grant hosted acceptance."""
     if instance not in PHASE_INSTANCE_IDS or instance.product != "runtime" or instance.component == "runtime-aggregate":
@@ -3111,7 +3130,8 @@ def prepare_runtime_phase(
     state = _verified_product_state(
         plan_path, discovery_root, state_root, root,
         os.environ if environ is None else environ, sdk_validation_tooling,
-        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
+        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     return _prepare_runtime_phase(state, instance, destination, expected_build_key, root)[0]
 
 
@@ -3123,6 +3143,7 @@ def materialize_runtime_attestation_inputs(
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     retained_release_keyring: Path | None = None,
     retained_release_keys_directory: Path | None = None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ) -> dict[str, Any]:
     """Restore a completed native or aggregate closure, not a new build election.
 
@@ -3142,7 +3163,8 @@ the complete product semantics. This selection never grants signing authority.
         raise ValueError("Runtime attestation selection destination must not exist")
     state = _verified_product_state(plan_path, discovery_root, state_root, root,
         os.environ if environ is None else environ, sdk_validation_tooling,
-        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
+        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     _runtime_worker_checkout(root, state.producer)
     metadata = PhaseInstanceId("runtime", "runtime-aggregate" if target == "aggregate" else target, "metadata", target)
     selected = state.prior_by_instance.get(metadata)
@@ -3458,6 +3480,7 @@ def execute_runtime_supervisor(
     expected_build_key: str, repository_root: Path | None = None,
     environ: Mapping[str, str] | None = None, sdk_validation_tooling: Mapping[str, Any] | None = None,
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ) -> dict[str, Any]:
     from native_wrappers import host_classifier
     from runtime_supervisor import execute_supervisor
@@ -3468,7 +3491,8 @@ def execute_runtime_supervisor(
         raise ValueError("Runtime supervisor worker destination must not exist")
     environment = dict(os.environ if environ is None else environ)
     state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
-        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
+        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     instance = PhaseInstanceId("runtime", "linux-arm64", "binary", "linux-arm64")
     ready = state.prior_ready_plans.get(instance)
     if ready is None or ready["buildKey"] != expected_build_key:
@@ -3494,6 +3518,7 @@ def execute_runtime_phase(
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     supervisor_upload: Mapping[str, Any] | None = None,
     app_server_archive: Path | None = None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ) -> dict[str, Any]:
     """Execute the fixed phase, retaining diagnostics separately from its shard.
 
@@ -3512,7 +3537,8 @@ def execute_runtime_phase(
         raise ValueError("Runtime execution destination must not exist")
     environment = dict(os.environ if environ is None else environ)
     state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
-        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
+        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     ready = state.prior_ready_plans.get(instance)
     if ready is None or ready["buildKey"] != expected_build_key:
         raise ValueError("Runtime worker is not ready with the expected elected build key")
@@ -3599,6 +3625,7 @@ def execute_sdk_metadata(
     runtime_stages: Path, staged_sdks: Path, sdk_validation_tooling: Mapping[str, Any],
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ) -> dict[str, Any]:
     """Execute only an exact metadata election after replaying its original SDK hosts."""
     from sdk_metadata_phase import execute
@@ -3619,7 +3646,8 @@ def execute_sdk_metadata(
         state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
             **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
             sdk_runtime_consumer=lambda selected: originals.update(
-                _capture_sdk_runtime_predecessors(selected, Path(temporary) / "originals")))
+                _capture_sdk_runtime_predecessors(selected, Path(temporary) / "originals")),
+            **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
         ready = state.prior_ready_plans.get(instance)
         if ready is None or ready["buildKey"] != require_sha256(expected_build_key, "SDK metadata elected key"):
             raise ValueError("SDK metadata is not ready with the expected elected build key")
@@ -3669,6 +3697,7 @@ def execute_runtime_aggregate(
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ) -> dict[str, Any]:
     """Produce deterministic metadata from originals; never sign or rebuild inputs."""
     from runtime_aggregate_phase import collect_inputs, collect_maven_outputs
@@ -3684,7 +3713,8 @@ def execute_runtime_aggregate(
         raise ValueError("Runtime aggregate destination must not exist")
     environment = dict(os.environ if environ is None else environ)
     state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
-        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
+        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     ready = state.prior_ready_plans.get(instance)
     if ready is None or ready["buildKey"] != expected_build_key:
         raise ValueError("Runtime aggregate is not ready with the expected elected build key")
@@ -3796,6 +3826,7 @@ def collect_runtime_workers(
     sdk_javascript_only: bool = False,
     sdk_ios_binary_only: bool = False,
     sdk_family: str | None = None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ) -> dict[str, Any]:
     """Collect elected Runtime or JavaScript SDK rows without erasing originals.
 
@@ -3814,7 +3845,8 @@ def collect_runtime_workers(
         raise ValueError("Runtime collection destination must not exist")
     environment = os.environ if environ is None else environ
     state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
-        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
+        **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
+        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     producer = state.producer
     selected = [(instance, ready) for instance, ready in sorted(state.prior_ready_plans.items())
                 if (_sdk_family_worker_instance(instance, sdk_family) if sdk_family is not None else
@@ -4008,6 +4040,7 @@ def advance_products(
     sdk_javascript_only: bool = False,
     sdk_ios_binary_only: bool = False,
     sdk_family: str | None = None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ) -> dict[str, Any]:
     github_output(github_output_path, {
         "full_reuse": False,
@@ -4034,7 +4067,8 @@ def advance_products(
     state = _verified_product_state(
         plan_path, discovery_root, state_root, root,
         os.environ if environ is None else environ, sdk_validation_tooling,
-        sdk_apple_validation_policy=sdk_apple_validation_policy)
+        sdk_apple_validation_policy=sdk_apple_validation_policy,
+        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     plan = state.plan
     producer = state.producer
     consumer = state.consumer
@@ -4201,7 +4235,7 @@ def advance_products(
             advanced_request, sdk_validation_tooling,
             apple_policy=sdk_apple_validation_policy,
             build_plan_consumer=lambda instance, value: _retain_product_plan(ready_plans, instance, value),
-        )
+            **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
         supplied = set(sources)
         advanced_by_instance = {_identity(phase): phase for phase in advanced["phases"]}
         if any(advanced_by_instance[instance]["state"] != "retained" for instance in supplied):
@@ -4282,7 +4316,8 @@ def advance_products(
             ),
         } for instance, phase in zip(selected, selected_phases, strict=True)]
         staged_replay = _plan_with_sdk_tooling(staged_request, sdk_validation_tooling,
-            apple_policy=sdk_apple_validation_policy)
+            apple_policy=sdk_apple_validation_policy,
+            **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
         staged_by_instance = {_identity(phase): phase for phase in staged_replay["phases"]}
         for instance in selected:
             staged_by_instance[instance].update({
@@ -5182,6 +5217,7 @@ def resume_products(
     environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ) -> dict[str, Any]:
     """Resume the original discovery after Contract signing, with no new lookup."""
     github_output(github_output_path, {"full_reuse": False, "target_jobs_required": True,
@@ -5253,7 +5289,8 @@ def resume_products(
             ready_plans[instance] = phase_plan
 
         reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling, apple_policy=sdk_apple_validation_policy,
-            build_plan_consumer=retain)
+            build_plan_consumer=retain,
+            **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
         _, selected, phases = _validate_reuse_result(reuse, requested, require_complete=False,
             sdk_runtime_external=wave.get("sdkRuntimeSource") == "released-default")
         by_id = {_identity(phase): phase for phase in phases}
@@ -5302,6 +5339,7 @@ def discover(
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     tooling_java_executable: Path | None = None,
     tooling_workflow_sha: str | None = None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ) -> dict[str, Any]:
     automatic_tooling = tooling_java_executable is not None or tooling_workflow_sha is not None
     if automatic_tooling and (tooling_java_executable is None or tooling_workflow_sha is None
@@ -5515,7 +5553,8 @@ def discover(
         ready_plans[instance] = phase_plan
 
     reuse = _plan_with_sdk_tooling(wave_request, sdk_validation_tooling, apple_policy=sdk_apple_validation_policy,
-        build_plan_consumer=retain_ready_plan)
+        build_plan_consumer=retain_ready_plan,
+        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     _write_ready_plans(destination, ready_plans)
     # Evidence-only waits still need original workflow control provenance when
     # advance-products resumes them; an empty build matrix must not lose it.

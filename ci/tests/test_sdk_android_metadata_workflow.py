@@ -148,6 +148,7 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
         self.java = self.root / "caller/java"; self.java.write_bytes(b"java")
         self.analyzer = self.root / "caller/apkanalyzer"; self.analyzer.write_bytes(b"analyzer")
         self.events = []
+        self.admissions = {}
         self.reader_arguments = None
         self.reader_enter_failure = self.reader_exit_failure = None
         self.reader_stage = None
@@ -184,11 +185,13 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
 
     def verified_state(self, *args, **kwargs):
         self.events.append("state")
+        self.assert_admissions(kwargs)
         return SimpleNamespace(prior_ready_plans={workflow._INSTANCE: deepcopy(self.metadata_plan)},
             producer=deepcopy(self.current), expected_fixed={"versions": {"sdk": self.version}})
 
     def materialize(self, plan, discovery, state, instance, destination, **kwargs):
         self.events.append("materialize")
+        self.assert_admissions(kwargs)
         destination.mkdir(parents=True)
         selected = destination / "sdk-sdk-android-validation-android"
         shutil.copytree(self.validation_stage, selected / "stage")
@@ -196,6 +199,13 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
         write_canonical_json(destination / "phase-plan.json", self.metadata_plan)
         write_canonical_json(destination / "producer.json", self.current)
         return deepcopy(self.metadata_plan)
+
+    def assert_admissions(self, options):
+        actual = {name: options[name] for name in (
+            "sdk_facade_metadata_admission", "sdk_android_metadata_admission") if name in options}
+        self.assertEqual(set(self.admissions), set(actual))
+        for name, value in self.admissions.items():
+            self.assertIs(value, actual[name])
 
     @contextmanager
     def verified_reader(self, plan, receipt, **kwargs):
@@ -287,6 +297,15 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
         self.assertEqual((self.validation_content["releaseAarSha256"],
                           self.validation_content["bundledRuntimeSha256"]),
                          (request["releaseAarSha256"], request["bundledRuntimeSha256"]))
+
+    def test_metadata_admissions_reach_state_and_materializer_without_serialization(self):
+        self.admissions = {
+            "sdk_facade_metadata_admission": object(),
+            "sdk_android_metadata_admission": object(),
+        }
+        result = self.call(**self.admissions)
+        self.assertEqual(self.metadata_plan["buildKey"], result["shard"]["receipt"]["buildKey"])
+        self.assertNotIn("metadata_admission", (self.destination / "selection/phase-plan.json").read_text())
 
     def test_observed_original_reader_uses_explicit_caller_pins_and_run(self):
         result = self.call(

@@ -80,6 +80,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         self.tooling_key = self.root / "tooling.pub"; self.tooling_key.write_bytes(b"public\n")
         self.java = self.root / "java"; self.java.write_bytes(b"java\n")
         self.events = []
+        self.admissions = {}
         self.context_failure = None
         self.gate_failure = False
         self.contract_mismatch = False
@@ -89,6 +90,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
     def verified_inputs(self, *args, **kwargs):
         self.assertEqual(self.tooling_policy, kwargs["sdk_validation_tooling"])
         self.assert_apple_policy(kwargs)
+        self.assert_admissions(kwargs)
         self.events.append("sdk-enter")
         try:
             yield self.sdk_inputs
@@ -113,6 +115,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
     def materialize(self, *args, **kwargs):
         self.assertEqual(self.tooling_policy, kwargs["sdk_validation_tooling"])
         self.assert_apple_policy(kwargs)
+        self.assert_admissions(kwargs)
         self.events.append("materialize")
         prepared = args[4]
         prepared.mkdir(parents=True)
@@ -149,6 +152,13 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         if self.contract_mismatch:
             self.arguments["contract_metadata_receipt"].write_bytes(b"different Contract receipt\n")
         return self.ready
+
+    def assert_admissions(self, options):
+        actual = {name: options[name] for name in (
+            "sdk_facade_metadata_admission", "sdk_android_metadata_admission") if name in options}
+        self.assertEqual(set(self.admissions), set(actual))
+        for name, value in self.admissions.items():
+            self.assertIs(value, actual[name])
 
     def assert_apple_policy(self, arguments):
         if self.apple_policy is None:
@@ -250,6 +260,8 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
             "keysDirectory": None,
         }
         self.apple_policy = changes.get("sdk_apple_validation_policy")
+        self.admissions = {name: changes[name] for name in (
+            "sdk_facade_metadata_admission", "sdk_android_metadata_admission") if name in changes}
         arguments = dict(
             expected_build_key=self.expected_key,
             sdk_inputs_artifact_id=11,
@@ -319,6 +331,17 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         result = self.invoke(sdk_apple_validation_policy=policy)
         self.assertEqual(self.finalized, result)
         self.assertNotIn("sdkAppleValidationPolicy", (self.destination / "original-plan/impact-plan.json").read_text())
+
+    def test_metadata_admissions_reach_both_replay_seams_without_serialization(self):
+        admissions = {"sdk_facade_metadata_admission": object(),
+                      "sdk_android_metadata_admission": object()}
+        result = self.invoke(**admissions)
+        self.assertEqual(self.finalized, result)
+        retained = (self.destination / "original-plan/impact-plan.json").read_bytes()
+        context = (self.destination / "apple-package-execution.json").read_bytes()
+        for name in admissions:
+            self.assertNotIn(name.encode(), retained)
+            self.assertNotIn(name.encode(), context)
 
     def test_current_contract_receipt_must_match_authenticated_sdk_inputs(self):
         self.contract_mismatch = True

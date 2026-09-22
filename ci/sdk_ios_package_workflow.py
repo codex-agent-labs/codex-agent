@@ -38,6 +38,7 @@ def execute(
     required_trust_domain: str,
     tooling_keyring: Path | None = None, tooling_keys_directory: Path | None = None,
     sdk_apple_validation_policy=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ) -> dict:
     """Build and admit one elected package; publish only after all contexts close."""
     root = Path(repository_root).resolve(strict=True)
@@ -60,6 +61,10 @@ def execute(
         "keysDirectory": str(Path(tooling_keys_directory).absolute()) if tooling_keys_directory is not None else None}
     apple = ({} if sdk_apple_validation_policy is None else
              {"sdk_apple_validation_policy": sdk_apple_validation_policy})
+    admissions = {name: value for name, value in (
+        ("sdk_facade_metadata_admission", sdk_facade_metadata_admission),
+        ("sdk_android_metadata_admission", sdk_android_metadata_admission),
+    ) if value is not None}
     with tempfile.TemporaryDirectory(prefix="sdk-ios-package-candidate-") as temporary:
         candidate = Path(temporary).resolve() / "shard"
         with sdk_workflow.verified_inputs(
@@ -67,7 +72,8 @@ def execute(
             artifact_sha256=sdk_inputs_artifact_sha256,
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
             keys_directory=keys_directory, repository_root=root,
-            environ=environ, token=token, sdk_validation_tooling=tooling, **apple,
+            environ=environ, token=token, sdk_validation_tooling=tooling,
+            **apple, **admissions,
         ) as sdk_inputs:
             selection = sdk_inputs["selection"]
             selected = {"product": "sdk", "component": "sdk-ios", "phase": "package", "target": "ios"}
@@ -77,7 +83,8 @@ def execute(
             ready = product_reuse.materialize_product_predecessors(
                 plan, discovery, state, _INSTANCE, prepared,
                 expected_build_key=expected_build_key,
-                repository_root=root, environ=environ, sdk_validation_tooling=tooling, **apple,
+                repository_root=root, environ=environ, sdk_validation_tooling=tooling,
+                **apple, **admissions,
             )
             prepared_inventory = regular_file_inventory(prepared, allow_empty=True)
             producer = product_reuse.validate_producer(product_reuse._canonical_control(

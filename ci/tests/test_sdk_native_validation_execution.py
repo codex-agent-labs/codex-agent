@@ -224,20 +224,26 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
     def test_explicit_apple_policy_reaches_current_and_preparation_replays(self):
         policy = fixture.caller_apple_policy(self.root / "caller")
         before = dict(policy)
+        admissions = fixture.caller_metadata_admissions()
 
         def forwarded(delegate):
             def invoke(*args, **kwargs):
                 self.assertIs(policy, kwargs.pop("sdk_apple_validation_policy"))
+                for name, admission in admissions.items():
+                    self.assertIs(admission, kwargs.pop(name))
                 return delegate(*args, **kwargs)
             return invoke
 
         with patch.object(self, "verified", side_effect=forwarded(self.verified)) as verified, \
                 patch.object(self, "inspect", side_effect=forwarded(self.inspect)) as inspect, \
                 patch.object(self, "materialize", side_effect=forwarded(self.materialize)) as materialize:
-            result = self.invoke(sdk_apple_validation_policy=policy)
+            result = self.invoke(sdk_apple_validation_policy=policy, **admissions)
         for replay in (verified, inspect, materialize):
             replay.assert_called_once()
             self.assertIs(policy, replay.call_args.kwargs["sdk_apple_validation_policy"])
+            for name, admission in admissions.items():
+                self.assertIs(admission, replay.call_args.kwargs[name])
+                self.assertNotIn(name, result["receipt"])
         self.assertEqual(before, policy)
         self.assertNotIn("sdkAppleValidationPolicy", result["receipt"])
         self.assertNotIn("sdk_apple_validation_policy", result["receipt"])

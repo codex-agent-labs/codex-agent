@@ -108,6 +108,7 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
         self.environment = {"GITHUB_RUN_ID": "17", "GITHUB_RUN_ATTEMPT": "2"}
         self.events = []
         self.phase_arguments = None
+        self.admissions = {}
         self.arguments = dict(
             expected_build_key=self.ready["buildKey"], package_stage=self.package_stage,
             package_receipt=self.package_receipt, binary_stage=self.binary_stage,
@@ -140,6 +141,11 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
         self.assertEqual(workflow._INSTANCE, instance)
         self.assertEqual(self.ready["buildKey"], kwargs["expected_build_key"])
         self.assertIs(self.apple_policy, kwargs["sdk_apple_validation_policy"])
+        actual = {name: kwargs[name] for name in (
+            "sdk_facade_metadata_admission", "sdk_android_metadata_admission") if name in kwargs}
+        self.assertEqual(set(self.admissions), set(actual))
+        for name, value in self.admissions.items():
+            self.assertIs(value, actual[name])
         destination.mkdir(parents=True)
         for phase, source, raw in (("package", self.selected_package, self.selected_package_bytes),
                                    ("binary", self.selected_binary, self.selected_binary_bytes)):
@@ -245,6 +251,16 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
         _, original_files = workflow.validation_phase._contract_sources(self.contract_evidence)
         self.assertTrue(all(files[name].read_bytes() == original_files[name].read_bytes()
                             for name in files))
+
+    def test_metadata_admissions_are_forwarded_by_identity_only_when_supplied(self):
+        self.admissions = {
+            "sdk_facade_metadata_admission": object(),
+            "sdk_android_metadata_admission": object(),
+        }
+        result, _ = self.call(**self.admissions)
+        self.assertEqual(self.ready["buildKey"], result["shard"]["receipt"]["buildKey"])
+        for name in self.admissions:
+            self.assertNotIn(name, self.phase_arguments)
 
     def test_candidate_identity_mismatch_or_selected_original_mismatch_rejects_before_capture(self):
         changed = self.producer(1, commit="9" * 40)

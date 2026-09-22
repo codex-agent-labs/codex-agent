@@ -31,7 +31,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             tooling_evidence, tooling_public_key, java_executable, policy_revision,
             required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
             validation_artifact_id=None, validation_artifact_sha256=None,
-            sdk_apple_validation_policy=None):
+            sdk_apple_validation_policy=None, sdk_facade_metadata_admission=None,
+            sdk_android_metadata_admission=None):
     """Finalize once privately; publish only after full input and content gates.
 
     The observed original validation upload supplies the consumer directory.
@@ -69,6 +70,10 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         "keyring": str(Path(tooling_keyring).absolute()) if tooling_keyring is not None else None,
         "keysDirectory": str(Path(tooling_keys_directory).absolute()) if tooling_keys_directory is not None else None}
     apple = {} if sdk_apple_validation_policy is None else {"sdk_apple_validation_policy": sdk_apple_validation_policy}
+    if sdk_facade_metadata_admission is not None:
+        apple["sdk_facade_metadata_admission"] = sdk_facade_metadata_admission
+    if sdk_android_metadata_admission is not None:
+        apple["sdk_android_metadata_admission"] = sdk_android_metadata_admission
     instance = PhaseInstanceId("sdk", "javascript", "metadata", "node")
     identity = dict(product="sdk", component="javascript", phase="metadata", target="node")
     with tempfile.TemporaryDirectory(prefix="sdk-javascript-metadata-") as temporary:

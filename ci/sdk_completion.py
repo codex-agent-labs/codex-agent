@@ -18,7 +18,8 @@ from reuse import github_output
 
 def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
                            repository_root=None, environ=None, sdk_validation_tooling=None,
-                           sdk_apple_validation_policy=None):
+                           sdk_apple_validation_policy=None,
+                           sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Check the full replayed SDK closure, not a family matrix or new election.
 
     Existing inspection authenticates the exact result schema, requested closure,
@@ -31,7 +32,8 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
         repository_root=repository_root, environ=environ,
         **({"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy}
-           if sdk_apple_validation_policy is not None else {}))
+           if sdk_apple_validation_policy is not None else {}),
+        **products._metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     result = require_exact_keys(require_object(inspected, "SDK completion inspection").get("result"),
                                 products._REUSE_RESULT_KEYS, "SDK completion replay result")
     if (require_integer(result["schemaVersion"], "SDK completion result schema", 1) != 1

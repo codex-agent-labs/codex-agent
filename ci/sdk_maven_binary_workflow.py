@@ -37,7 +37,8 @@ def _read(path):
 
 def execute(plan, discovery, state, destination, *, component, expected_build_key,
             repository_root, environ, android_runtime_archive=None,
-            sdk_validation_tooling=None, sdk_apple_validation_policy=None):
+            sdk_validation_tooling=None, sdk_apple_validation_policy=None,
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Finalize only after signed input replay and binary output/lifetime checks.
 
     The existing producer owns primary-inventory generation. This caller checks
@@ -83,9 +84,12 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 or any(canonical_json_bytes(value) != raw for value, raw in values)):
             raise ValueError("Maven binary originals, selection or retained evidence changed")
 
+    admissions = {name: value for name, value in (
+        ("sdk_facade_metadata_admission", sdk_facade_metadata_admission),
+        ("sdk_android_metadata_admission", sdk_android_metadata_admission)) if value is not None}
     try:
         verified = product_reuse._verified_product_state(plan, discovery, state, root, environ,
-            sdk_validation_tooling, **sdk_workflow._caller_policies(None, sdk_apple_validation_policy))
+            sdk_validation_tooling, **sdk_workflow._caller_policies(None, sdk_apple_validation_policy), **admissions)
         elected = verified.prior_ready_plans.get(instance)
         if elected is None or elected["buildKey"] != expected_build_key:
             raise ValueError("Maven binary is not ready with the expected elected key")

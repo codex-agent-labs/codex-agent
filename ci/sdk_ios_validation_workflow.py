@@ -37,7 +37,8 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
             keyring, keys_directory, tooling_evidence, tooling_public_key,
             java_executable, policy_revision, required_trust_domain,
             repository_root, environ, token, tooling_keyring=None, tooling_keys_directory=None,
-            sdk_apple_validation_policy=None):
+            sdk_apple_validation_policy=None, sdk_facade_metadata_admission=None,
+            sdk_android_metadata_admission=None):
     """Finalize elected validation only after replay and immutable original retention."""
     require_no_signing_secret(environ)
     for artifact_id, digest in ((package_artifact_id, package_artifact_sha256),
@@ -62,9 +63,13 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
         "requiredTrustDomain": required_trust_domain,
         "keyring": str(Path(tooling_keyring).absolute()) if tooling_keyring is not None else None,
         "keysDirectory": str(Path(tooling_keys_directory).absolute()) if tooling_keys_directory is not None else None}
+    admissions = {name: value for name, value in (
+        ("sdk_facade_metadata_admission", sdk_facade_metadata_admission),
+        ("sdk_android_metadata_admission", sdk_android_metadata_admission),
+    ) if value is not None}
     verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling,
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy}
-           if sdk_apple_validation_policy is not None else {}))
+           if sdk_apple_validation_policy is not None else {}), **admissions)
     instance = PhaseInstanceId("sdk", "sdk-ios", "validation", target)
     ready = verified.prior_ready_plans.get(instance)
     if ready is None or ready["buildKey"] != expected_build_key:

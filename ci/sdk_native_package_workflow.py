@@ -27,7 +27,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             prepared_artifact_id, prepared_artifact_sha256,
             sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
             keyring, keys_directory, repository_root, environ, token, sdk_validation_tooling=None,
-            sdk_apple_validation_policy=None):
+            sdk_apple_validation_policy=None, sdk_facade_metadata_admission=None,
+            sdk_android_metadata_admission=None):
     """Admit one package inside full S858/original Runtime input verification.
 
     Preparation identity comes from replaying its original control state, never
@@ -64,6 +65,10 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
     tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
     if sdk_apple_validation_policy is not None:
         tooling["sdk_apple_validation_policy"] = sdk_apple_validation_policy
+    if sdk_facade_metadata_admission is not None:
+        tooling["sdk_facade_metadata_admission"] = sdk_facade_metadata_admission
+    if sdk_android_metadata_admission is not None:
+        tooling["sdk_android_metadata_admission"] = sdk_android_metadata_admission
     with tempfile.TemporaryDirectory(prefix="sdk-native-package-") as temporary:
         private = Path(temporary).resolve()
         candidate, capture = private / "shard", private / "prepared-upload"

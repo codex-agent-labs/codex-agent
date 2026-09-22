@@ -88,6 +88,21 @@ class SdkCompletionTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "original evidence rejected"):
                 completion.require_sdk_completion(*self.paths, sdk_apple_validation_policy=apple)
 
+    def test_metadata_admissions_are_independent_opaque_caller_objects(self):
+        admissions = {name: object() for name in (
+            "sdk_facade_metadata_admission", "sdk_android_metadata_admission")}
+        for selected in ((), tuple(admissions), *((name,) for name in admissions)):
+            with self.subTest(selected=selected):
+                optional = {name: value if name in selected else None
+                            for name, value in admissions.items()}
+                self.assertEqual({"complete": True, "phaseCount": 0, "fullReuse": True},
+                                 self.call(inspected([]), **optional))
+                for name, value in admissions.items():
+                    if name in selected:
+                        self.assertIs(value, self.inspect.call_args.kwargs[name])
+                    else:
+                        self.assertNotIn(name, self.inspect.call_args.kwargs)
+
     def test_completed_apple_validations_do_not_complete_unresolved_ios_metadata(self):
         validations = sorted(identity for identity in self.sdk
                              if identity.component == "sdk-ios" and identity.phase == "validation")

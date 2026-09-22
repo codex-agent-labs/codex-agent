@@ -28,7 +28,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             keyring, keys_directory, repository_root, environ, token,
             tooling_evidence, tooling_public_key, java_executable,
             required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
-            preparation_phase="package", preparation_target="desktop", sdk_apple_validation_policy=None):
+            preparation_phase="package", preparation_target="desktop", sdk_apple_validation_policy=None,
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Run the existing five-host metadata caller and publish its shard last."""
     if component not in NATIVE_BINDINGS or preparation_component not in NATIVE_BINDINGS:
         raise ValueError("Native metadata execution requires fixed native language components")
@@ -65,6 +66,10 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
         "keysDirectory": str(Path(tooling_keys_directory).absolute()) if tooling_keys_directory is not None else None}
 
     apple = {} if sdk_apple_validation_policy is None else {"sdk_apple_validation_policy": sdk_apple_validation_policy}
+    if sdk_facade_metadata_admission is not None:
+        apple["sdk_facade_metadata_admission"] = sdk_facade_metadata_admission
+    if sdk_android_metadata_admission is not None:
+        apple["sdk_android_metadata_admission"] = sdk_android_metadata_admission
     instance = PhaseInstanceId("sdk", component, "metadata", "desktop")
     identity = {"product": "sdk", "component": component, "phase": "metadata", "target": "desktop"}
     preparation_identity = {"product": "sdk", "component": preparation_component,

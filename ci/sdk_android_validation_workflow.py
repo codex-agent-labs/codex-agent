@@ -110,6 +110,8 @@ def execute(
     tooling_keyring: Path | None = None,
     tooling_keys_directory: Path | None = None,
     sdk_apple_validation_policy=None,
+    sdk_facade_metadata_admission=None,
+    sdk_android_metadata_admission=None,
 ) -> dict:
     """Finalize one elected Android validation only after all original checks."""
     require_no_signing_secret(environ)
@@ -204,11 +206,15 @@ def execute(
     }
     apple = ({} if sdk_apple_validation_policy is None else
              {"sdk_apple_validation_policy": sdk_apple_validation_policy})
+    admissions = {name: value for name, value in (
+        ("sdk_facade_metadata_admission", sdk_facade_metadata_admission),
+        ("sdk_android_metadata_admission", sdk_android_metadata_admission),
+    ) if value is not None}
     destination = product_reuse._prepare_destination(destination, root)
     ready = product_reuse.materialize_product_predecessors(
         plan, discovery, state, _INSTANCE, destination / "inputs",
         expected_build_key=expected_build_key, repository_root=root, environ=environ,
-        sdk_validation_tooling=tooling, **apple)
+        sdk_validation_tooling=tooling, **apple, **admissions)
     selected_inventory = regular_file_inventory(destination / "inputs", allow_empty=True)
     producer = product_reuse.validate_producer(product_reuse._canonical_control(
         destination / "inputs/producer.json", "Elected Android validation producer"))

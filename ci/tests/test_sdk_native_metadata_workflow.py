@@ -189,10 +189,13 @@ class SdkNativeMetadataWorkflowTest(unittest.TestCase):
     def test_same_apple_policy_reaches_all_replays_and_existing_metadata_controller(self):
         policy = fixture.caller_apple_policy(self.root / "caller")
         before = dict(policy)
+        admissions = fixture.caller_metadata_admissions()
 
         def forwarded(delegate):
             def invoke(*args, **kwargs):
                 self.assertIs(policy, kwargs.pop("sdk_apple_validation_policy"))
+                for name, admission in admissions.items():
+                    self.assertIs(admission, kwargs.pop(name))
                 return delegate(*args, **kwargs)
             return invoke
 
@@ -200,10 +203,13 @@ class SdkNativeMetadataWorkflowTest(unittest.TestCase):
                 patch.object(self, "inspect", side_effect=forwarded(self.inspect)) as inspect, \
                 patch.object(self, "materialize", side_effect=forwarded(self.materialize)) as materialize, \
                 patch.object(self, "metadata", side_effect=forwarded(self.metadata)) as metadata:
-            result = self.invoke(sdk_apple_validation_policy=policy)
+            result = self.invoke(sdk_apple_validation_policy=policy, **admissions)
         for replay in (verified, inspect, materialize, metadata):
             replay.assert_called_once()
             self.assertIs(policy, replay.call_args.kwargs["sdk_apple_validation_policy"])
+            for name, admission in admissions.items():
+                self.assertIs(admission, replay.call_args.kwargs[name])
+                self.assertNotIn(name, result["receipt"])
         self.assertEqual(before, policy)
         self.assertNotIn("sdkAppleValidationPolicy", result["receipt"])
         self.assertNotIn("sdk_apple_validation_policy", result["receipt"])

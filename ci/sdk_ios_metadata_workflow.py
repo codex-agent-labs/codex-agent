@@ -137,7 +137,8 @@ def _execute_metadata(plan, *, producer, sdk_version, package_stage, validation_
 
 
 def execute(plan, discovery, state, destination, *, expected_build_key,
-            repository_root, environ, sdk_apple_validation_policy=None):
+            repository_root, environ, sdk_apple_validation_policy=None,
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Finalize only after both signed validation gates and package lineage agree."""
     require_no_signing_secret(environ)
     if sdk_apple_validation_policy is None:
@@ -150,6 +151,10 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
     if destination.exists() or destination.is_symlink():
         raise ValueError("iOS metadata destination must not exist")
     tooling, policy_paths = _tooling(sdk_apple_validation_policy)
+    admissions = {name: value for name, value in (
+        ("sdk_facade_metadata_admission", sdk_facade_metadata_admission),
+        ("sdk_android_metadata_admission", sdk_android_metadata_admission),
+    ) if value is not None}
     controls = [plan, discovery, state,
                 *(path for path in policy_paths.values() if isinstance(path, Path))]
     _require_capability_output_separate(destination, controls)
@@ -175,7 +180,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             raise ValueError("iOS metadata election state or caller policy changed")
 
     verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling,
-        sdk_apple_validation_policy=sdk_apple_validation_policy)
+        sdk_apple_validation_policy=sdk_apple_validation_policy, **admissions)
     ready = verified.prior_ready_plans.get(_INSTANCE)
     if ready is None or ready["buildKey"] != expected_build_key:
         raise ValueError("iOS metadata is not ready with the elected build key")
@@ -187,7 +192,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
     prepared = destination / "inputs"
     materialized = product_reuse.materialize_product_predecessors(plan, discovery, state, _INSTANCE, prepared,
         expected_build_key=expected_build_key, repository_root=root, environ=environ,
-        sdk_validation_tooling=tooling, sdk_apple_validation_policy=sdk_apple_validation_policy)
+        sdk_validation_tooling=tooling, sdk_apple_validation_policy=sdk_apple_validation_policy,
+        **admissions)
     controls_unchanged()
     if canonical_json_bytes(ready) != ready_bytes or canonical_json_bytes(producer) != producer_bytes:
         raise ValueError("iOS metadata election changed during predecessor materialization")
