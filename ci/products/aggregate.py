@@ -1364,8 +1364,9 @@ def validate_product_index(value: Any) -> dict[str, Any]:
         release_assets.setdefault(_release_identity(entry), []).append(entry)
     for identity, assets in release_assets.items():
         logical = [_logical_asset_identity(entry) for entry in assets]
-        names = [entry["artifactName"] for entry in assets]
-        if len(logical) != len(set(logical)) or len(names) != len(set(names)):
+        # artifactName is relative to each phase object, not a global release
+        # asset path: distinct validation targets may name the same inner file.
+        if len(logical) != len(set(logical)):
             raise ValueError(f"Product index contains duplicate release assets for {identity}")
     signing = validate_signing_metadata(index["signing"])
     if index["trustDomain"] not in {"development", "release"} or signing["trustDomain"] != index["trustDomain"]:

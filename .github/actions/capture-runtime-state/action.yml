@@ -31,6 +31,12 @@ inputs:
   sdk-apple-validation-policy:
     default: ''
     description: Caller-provisioned Apple validation policy path; never obtained from the captured state.
+  sdk-facade-metadata-policy:
+    default: ''
+    description: Caller-provisioned Core metadata policy path; never obtained from the captured state.
+  sdk-android-metadata-policy:
+    default: ''
+    description: Caller-provisioned Android metadata policy path; never obtained from the captured state.
   component:
     default: ''
     description: Optional elected Runtime component.
@@ -78,6 +84,8 @@ runs:
         SDK_FAMILY: ${{ inputs.sdk-family }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
         COMPONENT: ${{ inputs.component }}
         PHASE: ${{ inputs.phase }}
         TARGET: ${{ inputs.target }}
@@ -115,6 +123,15 @@ runs:
         fi
         if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
           selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
+        fi
+        if [ -n "${SDK_FACADE_METADATA_POLICY:-}${SDK_ANDROID_METADATA_POLICY:-}" ]; then
+          test "$STATE_PRODUCT" != runtime
+        fi
+        if [ -n "${SDK_FACADE_METADATA_POLICY:-}" ]; then
+          selected+=(--sdk-facade-metadata-policy "$SDK_FACADE_METADATA_POLICY")
+        fi
+        if [ -n "${SDK_ANDROID_METADATA_POLICY:-}" ]; then
+          selected+=(--sdk-android-metadata-policy "$SDK_ANDROID_METADATA_POLICY")
         fi
         "${command[@]}" \
           --plan build/runtime-plan/impact-plan.json --destination build/runtime-input \

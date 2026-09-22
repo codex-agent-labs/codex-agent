@@ -105,6 +105,24 @@ class SdkFamilyActionsTest(unittest.TestCase):
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertEqual(self.capture_arguments(output, selected, sdk=sdk), args)
 
+    def test_capture_forwards_only_explicit_sdk_metadata_caller_policies(self):
+        before = self.capture.split("    - id: capture\n", 1)[1]
+        for name in ("facade", "android"):
+            self.assertIn(f"SDK_{name.upper()}_METADATA_POLICY: ${{{{ inputs.sdk-{name}-metadata-policy }}}}", before)
+        for product in ("sdk", "sdk-ios-binary"):
+            with self.subTest(product=product):
+                result, args, _, output = self.run_action("capture", STATE_PRODUCT=product,
+                    SDK_FACADE_METADATA_POLICY="/caller policy/core.json",
+                    SDK_ANDROID_METADATA_POLICY="/caller policy/android.json")
+                self.assertEqual(0, result.returncode, result.stderr)
+                expected = ["--ios-binary"] if product == "sdk-ios-binary" else []
+                expected += ["--sdk-facade-metadata-policy", "/caller policy/core.json",
+                             "--sdk-android-metadata-policy", "/caller policy/android.json"]
+                self.assertEqual(self.capture_arguments(output, expected, sdk=True), args)
+        result, args, _, _ = self.run_action("capture", SDK_FACADE_METADATA_POLICY="/caller/core.json")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIsNone(args)
+
     def test_capture_invalid_or_mixed_scopes_reject_before_python(self):
         cases = [{"STATE_PRODUCT": "unknown"}, {"SDK_STATE_WAVE": "2"}, {"SDK_FAMILY": "native-package"},
                  {"STATE_PRODUCT": "sdk", "SDK_FAMILY": "unknown"},

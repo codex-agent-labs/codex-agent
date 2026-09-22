@@ -950,6 +950,26 @@ class ProductIndexTest(unittest.TestCase):
                     stable_history=None,
                 )
 
+    def test_distinct_targets_may_share_a_phase_object_relative_artifact_name(self) -> None:
+        first = source("validation", product="sdk", component="sdk-core", target="jvm",
+                       trust_domain="development")
+        second = source("validation", product="sdk", component="sdk-core", target="linux-x64",
+                        trust_domain="development")
+        index = build_product_index([first, second], repository=REPOSITORY,
+            context=context("development"), trust_domain="development",
+            signing=self.development_signing, producer=producer("development"), stable_history=None)
+        entries = index["entries"]
+        self.assertEqual({"jvm", "linux-x64"}, {entry["target"] for entry in entries})
+        self.assertEqual(1, len({entry["artifactName"] for entry in entries}))
+        self.assertIs(index, validate_product_index(index))
+
+        duplicate_target = source("validation", product="sdk", component="sdk-core", target="jvm",
+                                  flags_digest=DIGEST_B, trust_domain="development")
+        with self.assertRaisesRegex(ValueError, "duplicate release assets"):
+            build_product_index([first, duplicate_target], repository=REPOSITORY,
+                context=context("development"), trust_domain="development",
+                signing=self.development_signing, producer=producer("development"), stable_history=None)
+
     def test_prior_stable_same_version_with_different_bytes_is_rejected(self) -> None:
         first = self.root / "first" / "product-index.json"
         first.parent.mkdir()

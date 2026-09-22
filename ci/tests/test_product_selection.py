@@ -179,6 +179,8 @@ class ProductSelectionTest(unittest.TestCase):
                 ("ci/products/sdk_android_metadata_admission.py", {android}),
                 ("ci/sdk_facade_metadata_policy.py", {core}),
                 ("ci/sdk_android_metadata_policy.py", {android}),
+                ("ci/sdk_facade_metadata_selection.py", {core}),
+                ("ci/sdk_android_metadata_selection.py", {android}),
                 ("ci/sdk_metadata_evidence.py", {core, android}),
                 ("ci/sdk_metadata_policy.py", {core, android})):
             with self.subTest(path=path):
