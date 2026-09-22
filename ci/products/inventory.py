@@ -896,9 +896,9 @@ def publish_regular_tree(source: Path, destination: Path, *, allow_empty: bool =
             os.close(parent_descriptor)
 
 
-def _regular_file_digest(path: Path) -> tuple[int, str]:
+def _regular_file_digest(path: Path, *, reject_symlink_parents: bool = False) -> tuple[int, str]:
     path = Path(path)
-    descriptor, before = _open_regular_file(path, "Digest input")
+    descriptor, before = _open_regular_file(path, "Digest input", reject_symlink_parents=reject_symlink_parents)
     try:
         digest = hashlib.sha256()
         remaining = before.st_size
@@ -920,8 +920,8 @@ def _regular_file_digest(path: Path) -> tuple[int, str]:
         os.close(descriptor)
 
 
-def sha256_file(path: Path) -> str:
-    return _regular_file_digest(path)[1]
+def sha256_file(path: Path, *, reject_symlink_parents: bool = False) -> str:
+    return _regular_file_digest(path, reject_symlink_parents=reject_symlink_parents)[1]
 
 
 def require_sha256(value: Any, label: str) -> str:

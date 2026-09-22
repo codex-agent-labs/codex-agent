@@ -177,6 +177,8 @@ class ProductSelectionTest(unittest.TestCase):
         for path, expected in (
                 ("ci/products/sdk_facade_metadata_admission.py", {core}),
                 ("ci/products/sdk_android_metadata_admission.py", {android}),
+                ("ci/sdk_facade_metadata_policy.py", {core}),
+                ("ci/sdk_android_metadata_policy.py", {android}),
                 ("ci/sdk_metadata_evidence.py", {core, android}),
                 ("ci/sdk_metadata_policy.py", {core, android})):
             with self.subTest(path=path):
