@@ -40,9 +40,14 @@ legacy CLI invocations keep their existing behavior and rejection boundaries.
 """
     values = vars(args) if not isinstance(args, dict) else args
     paths = {name: values.get(name) for name in _OPTIONS if values.get(name) is not None}
+    expected = values.get("expected_policy_bytes")
     if isinstance(args, dict):
         for name in _OPTIONS:
             args.pop(name, None)
+        args.pop("expected_policy_bytes", None)
+    if expected is not None and (type(expected) is not dict or set(expected) != set(paths)
+            or any(type(raw) is not bytes for raw in expected.values())):
+        raise ValueError("Metadata caller policy requires exact pinned invocation bytes")
     if not paths:
         yield {}
         return
@@ -65,6 +70,8 @@ legacy CLI invocations keep their existing behavior and rejection boundaries.
     if any(path.resolve(strict=True) != path for path in paths.values()):
         raise ValueError("Metadata caller policy paths must be normalized and non-symbolic")
     originals = {name: _read(path) for name, path in paths.items()}
+    if expected is not None and any(originals[name] != raw for name, raw in expected.items()):
+        raise ValueError("Metadata caller policy differs from the pinned invocation bytes")
 
     def unchanged():
         require_no_signing_secret(os.environ)

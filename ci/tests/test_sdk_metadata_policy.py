@@ -64,6 +64,17 @@ class MetadataPolicyTest(unittest.TestCase):
         with policy.metadata_admission_options(args):
             self.assertEqual({"plan": self.plan, "repository_root": self.root}, args)
 
+    def test_pinned_policy_bytes_reject_intervening_optional_parse(self):
+        name = "sdk_android_metadata_policy"
+        original = self.paths[name].read_bytes()
+        args = vars(self.args(**{name: self.paths[name]}))
+        args["expected_policy_bytes"] = {name: original}
+        self.paths[name].write_bytes(canonical_json_bytes({**self.descriptor, "policy": {"changed": True}}))
+        with self.assertRaisesRegex(ValueError, "differs from the pinned invocation bytes"):
+            with policy.metadata_admission_options(args):
+                self.fail("Changed Android policy reached execution")
+        self.adapters[1].assert_not_called()
+
     def test_collector_uses_exact_original_plan_location(self):
         original = self.root / "product-resume-inputs/plan/impact-plan.json"
         original.parent.mkdir(parents=True)

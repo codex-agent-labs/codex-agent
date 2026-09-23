@@ -43,6 +43,7 @@ def snapshot_policy_closure(kind, path):
                                   reject_symlink_parents=True)
     policy = load_canonical_json_bytes(raw)
     paths = {path}
+    bootstrap = None
     if kind == "apple-validation":
         arguments = apple_validation_policy_arguments(policy)
         paths.update(value for value in arguments.values() if isinstance(value, Path))
@@ -63,6 +64,11 @@ def snapshot_policy_closure(kind, path):
             paths.update(trees.values())
             paths.update(files.values())
             paths.update(_request_inventory(Path(request["compatibilityRequest"])))
+    elif kind == "core-metadata-bootstrap":
+        from ci.sdk_facade_original_inputs import _fresh_policy_sources
+        bootstrap = _fresh_policy_sources(policy)
+        paths.update(bootstrap[0])
+        paths.update(bootstrap[1])
     elif kind == "android-metadata":
         descriptor = require_exact_keys(policy, {"evidenceRoot", "records", "policy"}, "Android metadata descriptor")
         arguments = android_arguments(descriptor["policy"])
@@ -75,6 +81,10 @@ def snapshot_policy_closure(kind, path):
     else:
         raise ValueError("Unsupported SDK caller policy kind")
     digest = _snapshot(paths)
+    if bootstrap is not None and _snapshot(paths) != digest:
+        raise ValueError("Fresh Core bootstrap closure changed during snapshot")
+    if bootstrap is not None and _fresh_policy_sources(policy) != bootstrap:
+        raise ValueError("Fresh Core bootstrap policy changed during snapshot")
     if read_regular_file_bytes(path, max_bytes=16 * 1024 * 1024,
                                reject_symlink_parents=True) != raw:
         raise ValueError("SDK caller policy changed during snapshot")

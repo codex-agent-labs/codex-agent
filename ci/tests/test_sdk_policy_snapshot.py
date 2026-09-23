@@ -45,6 +45,43 @@ class SdkPolicySnapshotTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unsupported SDK caller policy kind"):
                 snapshot_policy_closure("unreviewed", path)
 
+    def test_fresh_core_bootstrap_pins_raw_policy_and_typed_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            policy, nested = root / "policy.json", root / "native.tar.gz"
+            policy.write_bytes(canonical_json_bytes({"validations": "caller-selected"}))
+            nested.write_bytes(b"first")
+            def sources(_policy):
+                return {nested: snapshot.sha256_file(nested)}, {}
+            with patch("ci.sdk_facade_original_inputs._fresh_policy_sources", side_effect=sources):
+                first = snapshot_policy_closure("core-metadata-bootstrap", policy)
+                nested.write_bytes(b"second")
+                self.assertNotEqual(first, snapshot_policy_closure("core-metadata-bootstrap", policy))
+                policy.write_bytes(canonical_json_bytes({"validations": "changed"}))
+                self.assertNotEqual(first, snapshot_policy_closure("core-metadata-bootstrap", policy))
+                before = snapshot._snapshot
+                def mutate(paths):
+                    value = before(paths)
+                    nested.write_bytes(b"changed-after-snapshot")
+                    return value
+                with patch.object(snapshot, "_snapshot", side_effect=mutate), self.assertRaisesRegex(
+                        ValueError, "changed during snapshot"):
+                    snapshot_policy_closure("core-metadata-bootstrap", policy)
+                nested.write_bytes(b"stable")
+                calls = 0
+                def aba(paths):
+                    nonlocal calls
+                    calls += 1
+                    if calls == 1:
+                        nested.write_bytes(b"transient")
+                        value = before(paths)
+                        nested.write_bytes(b"stable")
+                        return value
+                    return before(paths)
+                with patch.object(snapshot, "_snapshot", side_effect=aba), self.assertRaisesRegex(
+                        ValueError, "closure changed during snapshot"):
+                    snapshot_policy_closure("core-metadata-bootstrap", policy)
+
     def test_core_policy_tracks_nested_facade_and_compatibility_inputs(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

@@ -2,6 +2,7 @@
 
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 import re
 import sys
@@ -65,7 +66,7 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
             with patch.dict(os.environ, values, clear=True), self.assertRaisesRegex(ValueError, "external"):
                 exec(compile(source, "core-policy", "exec"), {})
 
-    def test_fresh_policy_rejects_self_referential_metadata_receipt(self):
+    def test_fresh_policy_rejects_prebuilt_metadata_descriptor(self):
         source = self.source("policy")
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -76,11 +77,9 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
                 "records": [{"receiptSha256": KEY, "captureRoot": "metadata"}], "policy": {}}))
             values = {"GITHUB_WORKSPACE": str(workspace), "GITHUB_OUTPUT": str(root / "github-output"),
                 "SDK_STATE_WAVE": "13", "CORE_POLICY": str(policy), "APPLE_POLICY": "", "ANDROID_POLICY": ""}
-            with patch.dict(os.environ, values, clear=True), patch(
-                    "ci.sdk_policy_snapshot.snapshot_policy_closure") as snapshot, \
-                    self.assertRaisesRegex(ValueError, "must not claim a metadata receipt"):
+            with patch.dict(os.environ, values, clear=True), self.assertRaisesRegex(
+                    ValueError, "Fresh Core metadata policy"):
                 exec(compile(source, "core-policy", "exec"), {})
-            snapshot.assert_not_called()
 
     def test_exact_common_election_and_linux_host(self):
         source = self.source("identity")
@@ -100,7 +99,7 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
             transitive.write_bytes(b"original")
             def snapshot(_kind, path):
                 return sha256_bytes(Path(path).read_bytes() + transitive.read_bytes())
-            values["POLICY_SHA256"] = sha256_bytes(canonical_json_bytes({"CORE_POLICY": snapshot("core-metadata-fresh", policy)}))
+            values["POLICY_SHA256"] = sha256_bytes(canonical_json_bytes({"CORE_POLICY": snapshot("core-metadata-bootstrap", policy)}))
             with patch.dict(os.environ, values, clear=True), patch("native_wrappers.host_classifier", return_value="linux-x64"), \
                     patch("ci.sdk_policy_snapshot.snapshot_policy_closure", side_effect=snapshot):
                 exec(compile(source, "core-identity", "exec"), {})
@@ -134,17 +133,22 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
         source = self.action.split("- name: Execute exact Core metadata controller", 1)[1]
         compile(textwrap.dedent(source.split("        python3 -B - <<'PY'\n", 1)[1].split("\n        PY", 1)[0]),
                 "core-metadata-execute", "exec")
-        for required in ("metadata_admission_options(options)", "execute(plan=plan", "validations=policy['validations']",
+        for required in ("metadata_admission_options(options)", "held_fresh_facade_metadata_policy(plan,", "execute(plan=plan", "validations=policy['validations']",
                          "contract_digest=policy['contract_digest']", "component_digests=policy['component_digests']",
                          "policy_revision=current['validationCommit']", "**admissions"):
             self.assertIn(required, source)
         self.assertNotIn("'sdk_facade_metadata_policy': policy_path", source)
         self.assertIn("if descriptor['records'] != []:", source)
         self.assertIn("fresh_metadata_arguments(descriptor['policy'])", source)
+        self.assertLess(source.index("as descriptor_path:"), source.index("if held_policy_digest() != os.environ['POLICY_SHA256'] or"))
+        self.assertLess(source.index("if held_policy_digest() != os.environ['POLICY_SHA256'] or"), source.index("execute(plan=plan"))
+        self.assertIn("load_canonical_json_bytes(optional_raw['APPLE_POLICY'])", source)
+        self.assertIn("options['expected_policy_bytes'] = {'sdk_android_metadata_policy': optional_raw['ANDROID_POLICY']}", source)
+        self.assertIn("for name, pinned in optional_raw.items()", source)
         self.assertNotIn("from products.sdk_facade_metadata_admission import _arguments", source)
-        self.assertEqual(3, self.action.count("('CORE_POLICY', 'core-metadata-fresh')"))
+        self.assertEqual(3, self.action.count("('CORE_POLICY', 'core-metadata-bootstrap')"))
         self.assertGreaterEqual(self.action.count("snapshot_policy_closure(kind, "), 3)
-        self.assertIn("if: always() && steps.identity.outcome == 'success'", self.action)
+        self.assertIn("if: success() && steps.identity.outcome == 'success'", self.action)
         self.assertIn("attempt-${{ github.run_attempt }}", self.action)
         for forbidden in ("secrets.", "PRIVATE_KEY", "ssh-keygen", "gradlew "):
             self.assertNotIn(forbidden, self.action)
@@ -159,21 +163,32 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
             current, other = root / "current.json", root / "other.json"
             current.write_bytes(canonical_json_bytes({"version": 1}))
             other.write_bytes(canonical_json_bytes({"version": 2}))
+            bootstrap = root / "bootstrap.json"
+            bootstrap.write_bytes(canonical_json_bytes({"plan": str(current)}))
             descriptor = root / "fresh.json"
             descriptor.write_bytes(canonical_json_bytes({"evidenceRoot": str(root / "evidence"),
                 "records": [], "policy": {}}))
             snapshot = sha256_bytes(b"typed closure")
-            values = {"GITHUB_WORKSPACE": str(workspace), "CORE_POLICY": str(descriptor),
+            values = {"GITHUB_WORKSPACE": str(workspace), "CORE_POLICY": str(bootstrap),
                 "APPLE_POLICY": "", "ANDROID_POLICY": "", "PLAN": str(current),
+                "DISCOVERY": str(root / "discovery"), "STATE": str(root / "state"),
+                "BUILD_KEY": KEY, "TRUSTED_WORKFLOW_SHA": TREE, "GITHUB_TOKEN": "test",
                 "POLICY_SHA256": sha256_bytes(canonical_json_bytes({"CORE_POLICY": snapshot}))}
+            @contextmanager
+            def held(*_args, **_kwargs):
+                yield descriptor
+            @contextmanager
+            def options(*_args, **_kwargs):
+                yield {}
             with patch.dict(os.environ, values, clear=True), patch(
                     "ci.sdk_policy_snapshot.snapshot_policy_closure", return_value=snapshot), patch(
                     "products.sdk_facade_metadata_admission.fresh_metadata_arguments",
                     return_value={"plan": other}), patch(
-                    "product_reuse._validate_plan") as validate, self.assertRaisesRegex(
+                    "product_reuse._validate_plan", return_value={"validationCommit": TREE}), patch(
+                    "sdk_metadata_policy.metadata_admission_options", side_effect=options), patch(
+                    "sdk_facade_original_inputs.held_fresh_facade_metadata_policy", side_effect=held), self.assertRaisesRegex(
                     ValueError, "differs from the current authenticated plan"):
                 exec(compile(source, "core-metadata-plan-binding", "exec"), {})
-            validate.assert_not_called()
 
 
 if __name__ == "__main__":
