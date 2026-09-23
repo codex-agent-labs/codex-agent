@@ -22,9 +22,42 @@ inputs:
   tree:
     required: true
     description: Exact tested source tree.
-  sdk-facade-metadata-policy:
+  sdk-inputs-id:
     required: true
-    description: Caller-owned raw replay policy with eleven original validation locators and no capture roots.
+    description: Official original S858 upload ID.
+  sdk-inputs-sha256:
+    required: true
+    description: Exact original S858 upload digest.
+  sdk-validation-tooling:
+    required: true
+    description: Independently captured signed six-field validation tooling policy.
+  keyring:
+    required: true
+    description: Independently supplied release keyring path.
+  keys-directory:
+    required: true
+    description: Independently supplied release keys directory.
+  native-compiler-archive-ios-arm64:
+    required: true
+    description: Caller-owned Git-pinned iOS Arm64 Kotlin/Native archive.
+  native-compiler-archive-ios-simulator-arm64:
+    required: true
+    description: Caller-owned Git-pinned iOS Simulator Arm64 Kotlin/Native archive.
+  native-compiler-archive-linux-arm64:
+    required: true
+    description: Caller-owned Git-pinned Linux Arm64 Kotlin/Native archive.
+  native-compiler-archive-linux-x64:
+    required: true
+    description: Caller-owned Git-pinned Linux X64 Kotlin/Native archive.
+  native-compiler-archive-macos-arm64:
+    required: true
+    description: Caller-owned Git-pinned macOS Arm64 Kotlin/Native archive.
+  native-compiler-archive-macos-x64:
+    required: true
+    description: Caller-owned Git-pinned macOS X64 Kotlin/Native archive.
+  native-compiler-archive-windows-x64:
+    required: true
+    description: Caller-owned Git-pinned Windows X64 Kotlin/Native archive.
   sdk-apple-validation-policy:
     default: ''
     description: Optional independently supplied Apple replay policy.
@@ -32,6 +65,12 @@ inputs:
     default: ''
     description: Optional independently supplied Android metadata replay policy.
 outputs:
+  sdk-facade-metadata-policy:
+    description: Raw eleven-validation caller policy generated from this job's authenticated wave-13 capture.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.bootstrap.outputs.policy_path || '' }}
   metadata-original-context:
     description: Successful original Core metadata invocation context, captured by the caller before upload.
     value: >-
@@ -59,11 +98,74 @@ outputs:
 runs:
   using: composite
   steps:
-    - id: policy
-      name: Hold independent eleven-target policy before state capture
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: sdk
+        sdk-family: core-metadata
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        sdk-state-wave: ${{ inputs.sdk-state-wave }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+        sdk-android-metadata-policy: ${{ inputs.sdk-android-metadata-policy }}
+    - id: bootstrap
+      name: Construct raw eleven-validation policy from captured wave 13
       shell: bash
       env:
-        CORE_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        KEYRING: ${{ inputs.keyring }}
+        KEYS_DIRECTORY: ${{ inputs.keys-directory }}
+        IOS_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-ios-arm64 }}
+        IOS_SIMULATOR_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-ios-simulator-arm64 }}
+        LINUX_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-linux-arm64 }}
+        LINUX_X64_ARCHIVE: ${{ inputs.native-compiler-archive-linux-x64 }}
+        MACOS_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-macos-arm64 }}
+        MACOS_X64_ARCHIVE: ${{ inputs.native-compiler-archive-macos-x64 }}
+        WINDOWS_X64_ARCHIVE: ${{ inputs.native-compiler-archive-windows-x64 }}
+        APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        test "$SDK_STATE_WAVE" = 13
+        bootstrap_dir=$(mktemp -d "$RUNNER_TEMP/core-metadata-bootstrap.XXXXXXXX")
+        policy_path="$bootstrap_dir/policy.json"
+        options=()
+        if [ -n "$APPLE_POLICY" ]; then options+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
+        python3 -B -m ci.sdk_core_metadata_bootstrap \
+          --plan "$PLAN" --discovery "$DISCOVERY" --state "$STATE" \
+          --requests-root "$GITHUB_WORKSPACE/build/sdk-core-metadata-bootstrap-requests" \
+          --destination "$policy_path" --expected-build-key "$BUILD_KEY" \
+          --sdk-inputs-artifact-id "$SDK_INPUTS_ID" \
+          --sdk-inputs-artifact-sha256 "$SDK_INPUTS_SHA256" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --sdk-validation-tooling "$SDK_VALIDATION_TOOLING" \
+          --keyring "$KEYRING" --keys-directory "$KEYS_DIRECTORY" \
+          --repository-root "$GITHUB_WORKSPACE" \
+          --native-compiler-archive "ios-arm64=$IOS_ARM64_ARCHIVE" \
+          --native-compiler-archive "ios-simulator-arm64=$IOS_SIMULATOR_ARM64_ARCHIVE" \
+          --native-compiler-archive "linux-arm64=$LINUX_ARM64_ARCHIVE" \
+          --native-compiler-archive "linux-x64=$LINUX_X64_ARCHIVE" \
+          --native-compiler-archive "macos-arm64=$MACOS_ARM64_ARCHIVE" \
+          --native-compiler-archive "macos-x64=$MACOS_X64_ARCHIVE" \
+          --native-compiler-archive "windows-x64=$WINDOWS_X64_ARCHIVE" \
+          "${options[@]}"
+        printf 'policy_path=%s\n' "$policy_path" >> "$GITHUB_OUTPUT"
+    - id: policy
+      name: Hold independent eleven-target policy after bootstrap
+      shell: bash
+      env:
+        CORE_POLICY: ${{ steps.bootstrap.outputs.policy_path }}
         APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         ANDROID_POLICY: ${{ inputs.sdk-android-metadata-policy }}
         SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
@@ -95,18 +197,6 @@ runs:
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('policy_sha256=' + sha256_bytes(canonical_json_bytes(digests)) + '\n')
         PY
-    - id: captured
-      uses: ./.github/actions/capture-runtime-state
-      with:
-        product: sdk
-        sdk-family: core-metadata
-        plan-id: ${{ inputs.plan-id }}
-        artifact-id: ${{ inputs.artifact-id }}
-        artifact-sha256: ${{ inputs.artifact-sha256 }}
-        sdk-state-wave: ${{ inputs.sdk-state-wave }}
-        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
-        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
-        sdk-android-metadata-policy: ${{ inputs.sdk-android-metadata-policy }}
     - id: identity
       name: Require exact elected Core metadata row before setup
       shell: bash
@@ -116,7 +206,7 @@ runs:
         PLAN: ${{ steps.captured.outputs.plan-path }}
         BUILD_KEY: ${{ inputs.build-key }}
         TREE: ${{ inputs.tree }}
-        CORE_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        CORE_POLICY: ${{ steps.bootstrap.outputs.policy_path }}
         APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         ANDROID_POLICY: ${{ inputs.sdk-android-metadata-policy }}
         POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
@@ -165,7 +255,7 @@ runs:
         DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
         STATE: ${{ steps.captured.outputs.state-root }}
         BUILD_KEY: ${{ inputs.build-key }}
-        CORE_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        CORE_POLICY: ${{ steps.bootstrap.outputs.policy_path }}
         APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         ANDROID_POLICY: ${{ inputs.sdk-android-metadata-policy }}
         POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}

@@ -32,14 +32,31 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
         compile(source, "core-metadata-" + step, "exec")
         return source
 
-    def test_independent_policy_and_wave_gate_before_capture_and_setup(self):
-        self.assertLess(self.action.index("- id: policy"), self.action.index("- id: captured"))
-        self.assertLess(self.action.index("- id: captured"), self.action.index("- id: identity"))
+    def test_same_job_bootstrap_and_policy_hold_before_setup(self):
+        self.assertLess(self.action.index("- id: captured"), self.action.index("- id: bootstrap"))
+        self.assertLess(self.action.index("- id: bootstrap"), self.action.index("- id: policy"))
+        self.assertLess(self.action.index("- id: policy"), self.action.index("- id: identity"))
         self.assertLess(self.action.index("- id: identity"), self.action.index("uses: ./.github/actions/setup-kmp"))
+        self.assertEqual(1, self.action.count("uses: ./.github/actions/capture-runtime-state"))
         self.assertIn("sdk-family: core-metadata", self.action)
         self.assertIn("sdk-state-wave: ${{ inputs.sdk-state-wave }}", self.action)
-        capture = self.action.split("- id: captured", 1)[1].split("- id: identity", 1)[0]
+        capture = self.action.split("- id: captured", 1)[1].split("- id: bootstrap", 1)[0]
         self.assertNotIn("sdk-facade-metadata-policy:", capture)
+        self.assertIn("sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}", capture)
+        bootstrap = self.action.split("- id: bootstrap", 1)[1].split("- id: policy", 1)[0]
+        self.assertIn("--plan \"$PLAN\" --discovery \"$DISCOVERY\" --state \"$STATE\"", bootstrap)
+        self.assertIn("--sdk-inputs-artifact-id \"$SDK_INPUTS_ID\"", bootstrap)
+        self.assertIn("--sdk-inputs-artifact-sha256 \"$SDK_INPUTS_SHA256\"", bootstrap)
+        self.assertIn("--sdk-validation-tooling \"$SDK_VALIDATION_TOOLING\"", bootstrap)
+        self.assertIn("--keyring \"$KEYRING\" --keys-directory \"$KEYS_DIRECTORY\"", bootstrap)
+        for target in ("ios-arm64", "ios-simulator-arm64", "linux-arm64", "linux-x64",
+                       "macos-arm64", "macos-x64", "windows-x64"):
+            self.assertIn("native-compiler-archive-" + target + ":\n    required: true", self.action)
+            self.assertIn('--native-compiler-archive "' + target + '=$', bootstrap)
+        self.assertIn("CORE_POLICY: ${{ steps.bootstrap.outputs.policy_path }}", self.action)
+        self.assertNotIn("CORE_POLICY: ${{ inputs.sdk-facade-metadata-policy }}", self.action)
+        self.assertIn("sdk-facade-metadata-policy:\n    description: Raw", self.action)
+        self.assertIn("steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&", self.action)
         source = self.source("policy")
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
