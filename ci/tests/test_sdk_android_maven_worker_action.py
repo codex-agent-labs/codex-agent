@@ -47,7 +47,8 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
         self.assertLess(action.index("- id: identity"), action.index("uses: ./.github/actions/setup-kmp"))
         self.assertLess(action.index("- id: identity"), action.index("uses: android-actions/setup-android@"))
         for field in ("plan-id", "artifact-id", "artifact-sha256", "trusted-workflow-sha",
-                      "core13-artifact-id", "core14-artifact-id", "core14-metadata-receipt"):
+                      "core13-artifact-id", "core14-artifact-id", "core14-metadata-receipt",
+                      "core14-metadata-artifact-id", "core14-metadata-artifact-sha256"):
             self.assertIn(f"inputs.{field}", action)
         identity = self.script("id: identity")
         for check in ("host_classifier() != 'linux-x64'", "len(rows) != 1",
@@ -138,6 +139,8 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
                 "CORE14_BUILD_KEY": KEY,
                 "CORE14_METADATA_RECEIPT": str(core_receipt),
                 "CORE14_METADATA_RECEIPT_SHA256": sha256_bytes(core_receipt.read_bytes()),
+                "CORE14_METADATA_ARTIFACT_ID": "73",
+                "CORE14_METADATA_ARTIFACT_SHA256": KEY,
                 "CORE14_REPLAY_POLICY": str(core_policy),
                 "CORE14_ORIGINAL_CONTEXT": str(core_context),
                 "ARCHIVE_SHA256": actual_digest if not bad_digest else KEY,
@@ -166,6 +169,8 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
                 "CORE14_BUILD_KEY": KEY,
                 "CORE14_METADATA_RECEIPT": str(root / "core-receipt.json"),
                 "CORE14_METADATA_RECEIPT_SHA256": sha256_bytes(canonical_json_bytes({})),
+                "CORE14_METADATA_ARTIFACT_ID": "73",
+                "CORE14_METADATA_ARTIFACT_SHA256": KEY,
                 "CORE14_REPLAY_POLICY": str(root / "core-policy.json"),
                 "CORE14_ORIGINAL_CONTEXT": str(root / "core-context.json"),
                 "SDK_INPUTS_ID": "", "SDK_INPUTS_SHA256": "", "BINARY_ARTIFACT_ID": "",
@@ -207,6 +212,8 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
                 if phase == "binary":
                     self.assertIn("--before-state-root", args)
                     self.assertIn("--expected-metadata-receipt-sha256", args)
+                    self.assertIn("--expected-metadata-artifact-id", args)
+                    self.assertIn("--expected-metadata-artifact-sha256", args)
                     for flag in ("--sdk-inputs-artifact-id", "--binary-artifact-id",
                                  "--binary-contract-evidence", "--binary-original-context"):
                         self.assertNotIn(flag, args)
