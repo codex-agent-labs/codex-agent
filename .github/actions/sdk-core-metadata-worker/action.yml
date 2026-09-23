@@ -38,6 +38,12 @@ outputs:
       ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
           steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
           steps.execute.outputs.original_context != '' && steps.execute.outputs.original_context || '' }}
+  metadata-receipt-sha256:
+    description: Verified original metadata phase receipt digest, exposed only after successful execution and upload.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.execute.outputs.receipt_sha256 != '' && steps.execute.outputs.receipt_sha256 || '' }}
   metadata-artifact-id:
     description: Official original metadata upload ID, exposed only after successful execution and upload.
     value: >-
@@ -171,7 +177,7 @@ runs:
         from pathlib import Path
         sys.path.insert(0, str(Path.cwd() / 'ci'))
         import product_reuse
-        from products.inventory import canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes
+        from products.inventory import canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, require_sha256, sha256_bytes
         from products.sdk_facade_metadata_admission import fresh_metadata_arguments
         from products.signing_isolation import require_no_signing_secret
         from sdk_facade_original_inputs import held_fresh_facade_metadata_policy
@@ -243,6 +249,7 @@ runs:
             raise ValueError('Core metadata caller policy closure changed after original reader exit')
         require_no_signing_secret(os.environ)
         context = original_metadata_context(result['originalContext'])
+        receipt_sha256 = require_sha256(result['shard']['receiptSha256'], 'Core metadata phase receipt')
         if context['repositoryRoot'] != str(root):
             raise ValueError('Core metadata controller returned an invalid caller context')
         value = canonical_json_bytes(context).decode('utf-8').strip()
@@ -250,6 +257,7 @@ runs:
             raise ValueError('Core metadata context must fit one output line')
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('original_context=' + value + '\n')
+            output.write('receipt_sha256=' + receipt_sha256 + '\n')
         PY
     - id: upload
       if: always() && steps.identity.outcome == 'success'

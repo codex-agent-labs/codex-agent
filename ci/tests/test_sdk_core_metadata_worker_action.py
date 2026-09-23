@@ -152,7 +152,8 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
             self.assertNotIn(forbidden, self.action)
 
     def test_original_context_and_upload_identity_expose_success_only(self):
-        for name in ("metadata-original-context", "metadata-artifact-id", "metadata-artifact-sha256"):
+        for name in ("metadata-original-context", "metadata-receipt-sha256",
+                     "metadata-artifact-id", "metadata-artifact-sha256"):
             block = re.search(rf"(?ms)^  {name}:\n(.*?)(?=^  [a-z][a-z0-9-]*:|^runs:)",
                               self.action).group(1)
             self.assertIn("steps.execute.outcome == 'success'", block)
@@ -164,6 +165,7 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
         self.assertLess(self.action.index("- id: execute"), self.action.index("- id: upload"))
         self.assertIn("result = execute(plan=plan", self.source("execute"))
         self.assertIn("original_metadata_context(result['originalContext'])", self.source("execute"))
+        self.assertIn("require_sha256(result['shard']['receiptSha256']", self.source("execute"))
 
         source = self.source("execute")
         with tempfile.TemporaryDirectory() as temporary:
@@ -198,7 +200,8 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
             def execute(*_args, **_kwargs):
                 self.assertFalse(exited)
                 return {"originalContext": {"repositoryRoot": str(workspace),
-                    "metadataRequest": str(root / "private/metadata-request.json")}}
+                    "metadataRequest": str(root / "private/metadata-request.json")},
+                    "shard": {"receiptSha256": KEY}}
 
             policy = {"plan": plan, "validations": {}, "contract_digest": KEY,
                 "component_digests": {}, "tooling_evidence": root, "tooling_public_key": plan,
@@ -215,7 +218,8 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
             self.assertEqual([True], exited)
             self.assertEqual("original_context=" + canonical_json_bytes({
                 "repositoryRoot": str(workspace),
-                "metadataRequest": str(root / "private/metadata-request.json")}).decode().strip() + "\n",
+                "metadataRequest": str(root / "private/metadata-request.json")}).decode().strip() + "\n" +
+                "receipt_sha256=" + KEY + "\n",
                 output.read_text())
 
     def test_fresh_policy_must_bind_exact_current_plan_before_controller(self):
