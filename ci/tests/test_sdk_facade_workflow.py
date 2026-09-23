@@ -77,6 +77,7 @@ class FacadeWorkflowTest(unittest.TestCase):
             "discovery-root": self.discovery, "state-root": self.discovery, "target": "jvm",
             "expected-build-key": self.ready["buildKey"], "policy-revision": "a" * 40,
             "android-sdk-directory": "", "required-trust-domain": "development",
+            "trusted-workflow-sha": "e" * 40,
         }.items():
             argv.extend(["--" + name, str(value)])
         assert_metadata_cli_context(self, workflow, argv)
@@ -84,6 +85,7 @@ class FacadeWorkflowTest(unittest.TestCase):
             self.assertEqual(0, workflow.main(argv))
             self.assertEqual("", execute.call_args.kwargs["android_sdk_directory"])
             self.assertEqual(self.f.request, execute.call_args.kwargs["facade_request"])
+            self.assertEqual("e" * 40, execute.call_args.kwargs["trusted_workflow_sha"])
             self.assertNotIn("sdk_apple_validation_policy", execute.call_args.kwargs)
             for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
                 self.assertNotIn(name, execute.call_args.kwargs)
@@ -185,13 +187,15 @@ class FacadeWorkflowTest(unittest.TestCase):
         arguments = dict(target="jvm", expected_build_key=self.ready["buildKey"], facade_request=self.f.request,
             android_sdk_directory="", tooling_evidence=self.tooling,
             tooling_public_key=Path(self.f.evidence["publicKey"]), java_executable=self.java,
-            policy_revision="a" * 40, required_trust_domain="development", repository_root=self.root, environ={})
+            policy_revision="a" * 40, required_trust_domain="development", repository_root=self.root, environ={},
+            trusted_workflow_sha="e" * 40)
         arguments.update(changes)
         return workflow.execute(self.plan, self.discovery, None, self.destination, **arguments)
 
     def test_retains_original_bytes_and_finalizes_only_after_full_replay(self):
         original_request = self.f.request.read_bytes()
         result = self.call(sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None)
+        self.assertEqual("e" * 40, self.materialize.call_args.kwargs["sdk_original_workflow_sha"])
         self.assertEqual(1, len(self.full_calls))
         self.finalize.assert_called_once()
         verified = verify_phase_shard(self.destination / "shard", PhaseInstanceId("sdk", "sdk-core", "validation", "jvm"))

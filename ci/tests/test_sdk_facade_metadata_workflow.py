@@ -101,6 +101,8 @@ class FacadeMetadataWorkflowTest(unittest.TestCase):
 
     def test_fixed_producer_retains_all_originals_and_finalizes_after_contexts_close(self):
         result = workflow.execute(**self.arguments())
+        self.assertEqual("f" * 40, self.election.call_args.kwargs["sdk_original_workflow_sha"])
+        self.assertEqual("f" * 40, self.materialize.call_args.kwargs["sdk_original_workflow_sha"])
         self.assertEqual(canonical_json_bytes(self.expected), result["content"].read_bytes())
         self.assertEqual(result["shard"], verify_phase_shard(self.destination / "shard", workflow._INSTANCE))
         self.assertEqual({"inputs", "selection", "worker", "originals", "shard"},

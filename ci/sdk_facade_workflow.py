@@ -82,7 +82,7 @@ def _retain_request(request, value, destination):
 def execute(plan, discovery, state, destination, *, target, expected_build_key,
             facade_request, android_sdk_directory, tooling_evidence, tooling_public_key,
             java_executable, policy_revision, required_trust_domain, repository_root,
-            environ, consumer_java_executable=None, tooling_keyring=None,
+            environ, trusted_workflow_sha, consumer_java_executable=None, tooling_keyring=None,
             tooling_keys_directory=None, sdk_apple_validation_policy=None, native_compiler_archive=None,
             sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Use existing election and full gates; retain external originals before receipt.
@@ -150,7 +150,8 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
         ready = product_reuse.materialize_product_predecessors(
             Path(plan), discovery, state, PhaseInstanceId("sdk", "sdk-core", "validation", target), inputs,
             expected_build_key=expected_build_key, repository_root=root, environ=environ,
-            sdk_validation_tooling=tooling, sdk_apple_validation_policy=sdk_apple_validation_policy, **admissions)
+            sdk_validation_tooling=tooling, sdk_apple_validation_policy=sdk_apple_validation_policy,
+            sdk_original_workflow_sha=trusted_workflow_sha, **admissions)
         producer = validate_producer(load_canonical_json_bytes(_read(inputs / "producer.json")), "Core producer")
         if archive is not None:
             for output in (root / f"build/product-stage/sdk/sdk-core/validation/{target}",
@@ -243,7 +244,7 @@ def main(argv=None):
     parser.add_argument("--discovery-root", dest="discovery", type=Path, required=True)
     parser.add_argument("--state-root", dest="state", type=Path, required=True)
     parser.add_argument("--target", choices=SDK_FACADE_TARGETS, required=True)
-    for name in ("expected-build-key", "policy-revision", "android-sdk-directory"):
+    for name in ("expected-build-key", "policy-revision", "android-sdk-directory", "trusted-workflow-sha"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--required-trust-domain", choices=("development", "release"), required=True)
     for name in ("consumer-java-executable", "tooling-keyring", "tooling-keys-directory", "sdk-apple-validation-policy",

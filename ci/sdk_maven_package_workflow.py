@@ -152,7 +152,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                     raise ValueError("Maven SDK package is not selected")
                 prepared = destination / "inputs"
                 ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
-                    expected_build_key=expected_build_key, repository_root=root, environ=environ, **policies, **admissions)
+                    expected_build_key=expected_build_key, repository_root=root, environ=environ,
+                    sdk_original_workflow_sha=trusted_workflow_sha, **policies, **admissions)
                 retained[prepared] = _inventory(prepared, allow_empty=True)
                 producer = product_reuse.validate_producer(load_canonical_json_bytes(_read(prepared / "producer.json")))
                 values.extend((value, canonical_json_bytes(value)) for value in (ready, producer))

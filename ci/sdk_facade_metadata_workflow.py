@@ -111,7 +111,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
         ("sdk_facade_metadata_admission", sdk_facade_metadata_admission),
         ("sdk_android_metadata_admission", sdk_android_metadata_admission)) if value is not None})
     try:
-        elected = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling, **optional)
+        elected = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling,
+            sdk_original_workflow_sha=trusted_workflow_sha, **optional)
         ready = elected.prior_ready_plans.get(_INSTANCE)
         if ready is None or ready["buildKey"] != expected_build_key:
             raise ValueError("Core metadata is not ready with its exact elected build key")
@@ -123,7 +124,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
         prepared = destination / "inputs"
         materialized = product_reuse.materialize_product_predecessors(plan, discovery, state, _INSTANCE, prepared,
             expected_build_key=expected_build_key, repository_root=root, environ=environ,
-            sdk_validation_tooling=tooling, **optional)
+            sdk_validation_tooling=tooling, sdk_original_workflow_sha=trusted_workflow_sha, **optional)
         if (materialized != ready or _read(prepared / "phase-plan.json") != canonical_json_bytes(ready)
                 or _read(prepared / "producer.json") != canonical_json_bytes(producer)):
             raise ValueError("Core metadata materialized election differs from authenticated state")

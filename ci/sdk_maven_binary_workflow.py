@@ -36,7 +36,7 @@ def _read(path):
 
 
 def execute(plan, discovery, state, destination, *, component, expected_build_key,
-            repository_root, environ, android_runtime_archive=None,
+            repository_root, environ, trusted_workflow_sha, android_runtime_archive=None,
             sdk_validation_tooling=None, sdk_apple_validation_policy=None,
             sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Finalize only after signed input replay and binary output/lifetime checks.
@@ -89,7 +89,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
         ("sdk_android_metadata_admission", sdk_android_metadata_admission)) if value is not None}
     try:
         verified = product_reuse._verified_product_state(plan, discovery, state, root, environ,
-            sdk_validation_tooling, **sdk_workflow._caller_policies(None, sdk_apple_validation_policy), **admissions)
+            sdk_validation_tooling, sdk_original_workflow_sha=trusted_workflow_sha,
+            **sdk_workflow._caller_policies(None, sdk_apple_validation_policy), **admissions)
         elected = verified.prior_ready_plans.get(instance)
         if elected is None or elected["buildKey"] != expected_build_key:
             raise ValueError("Maven binary is not ready with the expected elected key")
@@ -209,6 +210,7 @@ def main(argv=None):
     parser.add_argument("--state-root", dest="state", type=Path, required=True)
     parser.add_argument("--component", choices=tuple(_TARGETS), required=True)
     parser.add_argument("--expected-build-key", required=True)
+    parser.add_argument("--trusted-workflow-sha", required=True)
     parser.add_argument("--android-runtime-archive", type=Path)
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
         parser.add_argument("--" + name, type=Path)

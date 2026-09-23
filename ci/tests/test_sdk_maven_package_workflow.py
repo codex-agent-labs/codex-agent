@@ -196,6 +196,10 @@ class MavenPackageWorkflowTest(unittest.TestCase):
                 repository_root=self.root, environ={}, token="fixture-token"),
                **changes})
 
+    def test_original_workflow_pin_reaches_state_replay(self):
+        self.invoke()
+        self.assertEqual("e" * 40, self.materialized.call_args.kwargs["sdk_original_workflow_sha"])
+
     def test_both_families_publish_only_after_context_and_keep_originals_external(self):
         for component in ("sdk-core", "sdk-android"):
             with self.subTest(component=component):

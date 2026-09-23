@@ -128,7 +128,7 @@ class MavenBinaryWorkflowTest(unittest.TestCase):
 
     def invoke(self, **changes):
         arguments = dict(component=self.component, expected_build_key=self.ready["buildKey"],
-                         repository_root=self.root, environ={})
+                         repository_root=self.root, environ={}, trusted_workflow_sha="e" * 40)
         if self.component == "sdk-android":
             arguments["android_runtime_archive"] = self.archive
         return workflow.execute(self.plan, self.discovery, self.discovery, self.destination,
@@ -147,7 +147,7 @@ class MavenBinaryWorkflowTest(unittest.TestCase):
             "inputs/contract-input/execution-closure/original.json").read_bytes())
         self.assertEqual(workflow.required_contract_components(self.instance),
                          self.projection.call_args.kwargs["required_components"])
-        self.assertEqual({}, self.state.call_args.kwargs)
+        self.assertEqual({"sdk_original_workflow_sha": "e" * 40}, self.state.call_args.kwargs)
         self.assertIsNone(self.state.call_args.args[-1])
         self.finalize.assert_called_once()
 
@@ -162,14 +162,15 @@ class MavenBinaryWorkflowTest(unittest.TestCase):
         tooling, apple = {"test": "tooling"}, {"test": "apple"}
         self.invoke(sdk_validation_tooling=tooling, sdk_apple_validation_policy=apple)
         self.assertIs(tooling, self.state.call_args.args[-1])
-        self.assertEqual({"sdk_apple_validation_policy": apple}, self.state.call_args.kwargs)
+        self.assertEqual({"sdk_apple_validation_policy": apple,
+                          "sdk_original_workflow_sha": "e" * 40}, self.state.call_args.kwargs)
         self.assertEqual({"impact-plan.json", "phase-plan.json", "producer.json"},
                          {path.name for path in (self.destination / "selection").iterdir()})
 
     def test_metadata_admission_objects_forward_only_to_state_replay(self):
         admissions = {"sdk_facade_metadata_admission": object(), "sdk_android_metadata_admission": object()}
         self.invoke(**admissions)
-        self.assertEqual(admissions, self.state.call_args.kwargs)
+        self.assertEqual({**admissions, "sdk_original_workflow_sha": "e" * 40}, self.state.call_args.kwargs)
         for name, value in admissions.items():
             self.assertIs(value, self.state.call_args.kwargs[name])
             self.assertNotIn(name, self.worker.call_args.kwargs)
@@ -213,12 +214,14 @@ class MavenBinaryWorkflowTest(unittest.TestCase):
     def test_cli_canonical_forwarding_omission_and_malformed_policy(self):
         arguments = ["--plan", str(self.plan), "--discovery-root", str(self.discovery),
             "--state-root", str(self.discovery), "--destination", str(self.destination),
-            "--repository-root", str(self.root), "--component", "sdk-core", "--expected-build-key", self.ready["buildKey"]]
+            "--repository-root", str(self.root), "--component", "sdk-core", "--expected-build-key", self.ready["buildKey"],
+            "--trusted-workflow-sha", "e" * 40]
         policy = self.root / "caller.json"
         write_canonical_json(policy, {"caller": "policy"})
         assert_metadata_cli_context(self, workflow, arguments)
         with patch.object(workflow, "execute") as execute:
             self.assertEqual(0, workflow.main(arguments))
+            self.assertEqual("e" * 40, execute.call_args.kwargs["trusted_workflow_sha"])
             self.assertNotIn("sdk_validation_tooling", execute.call_args.kwargs)
             self.assertNotIn("sdk_apple_validation_policy", execute.call_args.kwargs)
             for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
