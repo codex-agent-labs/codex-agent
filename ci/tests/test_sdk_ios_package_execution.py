@@ -116,6 +116,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
 
     def materialize(self, *args, **kwargs):
         self.assertEqual(self.tooling_policy, kwargs["sdk_validation_tooling"])
+        self.assertEqual("f" * 40, kwargs["sdk_original_workflow_sha"])
         self.assert_apple_policy(kwargs)
         self.assert_admissions(kwargs)
         self.events.append("materialize")

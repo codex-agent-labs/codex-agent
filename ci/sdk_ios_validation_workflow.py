@@ -69,6 +69,7 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
         ("sdk_android_metadata_admission", sdk_android_metadata_admission),
     ) if value is not None}
     verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling,
+        sdk_original_workflow_sha=trusted_workflow_sha,
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy}
            if sdk_apple_validation_policy is not None else {}), **admissions)
     instance = PhaseInstanceId("sdk", "sdk-ios", "validation", target)

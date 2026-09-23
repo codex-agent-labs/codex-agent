@@ -138,7 +138,7 @@ def _execute_metadata(plan, *, producer, sdk_version, package_stage, validation_
 
 
 def execute(plan, discovery, state, destination, *, expected_build_key,
-            repository_root, environ, sdk_apple_validation_policy=None,
+            repository_root, environ, trusted_workflow_sha, sdk_apple_validation_policy=None,
             sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Finalize only after both signed validation gates and package lineage agree."""
     require_no_signing_secret(environ)
@@ -181,6 +181,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             raise ValueError("iOS metadata election state or caller policy changed")
 
     verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling,
+        sdk_original_workflow_sha=trusted_workflow_sha,
         sdk_apple_validation_policy=sdk_apple_validation_policy, **admissions)
     ready = verified.prior_ready_plans.get(_INSTANCE)
     if ready is None or ready["buildKey"] != expected_build_key:
@@ -194,6 +195,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
     materialized = product_reuse.materialize_product_predecessors(plan, discovery, state, _INSTANCE, prepared,
         expected_build_key=expected_build_key, repository_root=root, environ=environ,
         sdk_validation_tooling=tooling, sdk_apple_validation_policy=sdk_apple_validation_policy,
+        sdk_original_workflow_sha=trusted_workflow_sha,
         **admissions)
     controls_unchanged()
     if canonical_json_bytes(ready) != ready_bytes or canonical_json_bytes(producer) != producer_bytes:
@@ -299,6 +301,7 @@ def main(argv=None):
     parser.add_argument("--discovery-root", dest="discovery", type=Path, required=True)
     parser.add_argument("--state-root", dest="state", type=Path, required=True)
     parser.add_argument("--expected-build-key", required=True)
+    parser.add_argument("--trusted-workflow-sha", required=True)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
     arguments = vars(parser.parse_args(argv))

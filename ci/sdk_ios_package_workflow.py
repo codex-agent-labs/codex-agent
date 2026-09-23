@@ -85,6 +85,7 @@ def execute(
                 plan, discovery, state, _INSTANCE, prepared,
                 expected_build_key=expected_build_key,
                 repository_root=root, environ=environ, sdk_validation_tooling=tooling,
+                sdk_original_workflow_sha=trusted_workflow_sha,
                 **apple, **admissions,
             )
             prepared_inventory = regular_file_inventory(prepared, allow_empty=True)

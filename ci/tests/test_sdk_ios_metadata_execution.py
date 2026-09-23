@@ -31,6 +31,7 @@ class SdkIosMetadataExecutionTest(unittest.TestCase):
             "workflowPath": ".github/workflows/ci.yml", "commit": "a" * 40, "tree": "b" * 40,
             "event": "pull_request", "runId": 19, "runAttempt": 2, "pullRequest": 7}
         self.version = "0.8.0"
+        self.workflow_sha = "c" * 40
         policy_root = self.root / "policy"
         for name in ("product-keys", "tooling", "tooling-keys"):
             (policy_root / name).mkdir(parents=True)
@@ -86,6 +87,7 @@ class SdkIosMetadataExecutionTest(unittest.TestCase):
             self.assertIs(value, actual[name])
 
     def verified_state(self, *args, **options):
+        self.assertEqual(self.workflow_sha, options["sdk_original_workflow_sha"])
         self.assert_admissions(options)
         return self.verified
 
@@ -93,6 +95,7 @@ class SdkIosMetadataExecutionTest(unittest.TestCase):
         self.assertEqual(workflow._INSTANCE, instance)
         self.assertEqual(self.ready["buildKey"], options["expected_build_key"])
         self.assertEqual(self.policy, options["sdk_apple_validation_policy"])
+        self.assertEqual(self.workflow_sha, options["sdk_original_workflow_sha"])
         self.assert_admissions(options)
         destination.mkdir(parents=True)
         (destination / "producer.json").write_bytes(workflow.canonical_json_bytes(self.producer))
@@ -197,7 +200,8 @@ class SdkIosMetadataExecutionTest(unittest.TestCase):
                 patch.object(workflow, "verify_phase_shard", side_effect=self.verify_shard):
             return workflow.execute(self.plan, self.discovery, self.state, self.destination,
                 expected_build_key=self.ready["buildKey"], repository_root=self.root,
-                environ={}, sdk_apple_validation_policy=self.policy, **changes)
+                environ={}, trusted_workflow_sha=self.workflow_sha,
+                sdk_apple_validation_policy=self.policy, **changes)
 
     def test_two_full_original_gates_exit_before_final_receipt_and_publication(self):
         result = self.run_controller()
@@ -245,7 +249,8 @@ class SdkIosMetadataExecutionTest(unittest.TestCase):
     def test_missing_policy_readiness_and_exact_signed_target_record_fail_closed(self):
         with self.assertRaisesRegex(ValueError, "caller-owned"):
             workflow.execute(self.plan, self.discovery, self.state, self.destination,
-                expected_build_key=self.ready["buildKey"], repository_root=self.root, environ={})
+                expected_build_key=self.ready["buildKey"], repository_root=self.root, environ={},
+                trusted_workflow_sha=self.workflow_sha)
         original = self.verified.prior_ready_plans
         self.verified.prior_ready_plans = {}
         with self.assertRaisesRegex(ValueError, "not ready"):
@@ -262,6 +267,7 @@ class SdkIosMetadataExecutionTest(unittest.TestCase):
             workflow.execute(self.plan, self.discovery, self.state, self.destination,
                 expected_build_key=self.ready["buildKey"], repository_root=self.root,
                 environ={"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": ""},
+                trusted_workflow_sha=self.workflow_sha,
                 sdk_apple_validation_policy=self.policy)
         state.assert_not_called()
         self.assertFalse(self.destination.exists())
@@ -275,6 +281,7 @@ class SdkIosMetadataCliTest(unittest.TestCase):
         arguments = ["--plan", "/absolute/plan.json", "--discovery-root", "/absolute/discovery",
             "--state-root", "/absolute/state", "--destination", "/absolute/output",
             "--expected-build-key", "sha256:" + "1" * 64, "--repository-root", str(root),
+            "--trusted-workflow-sha", "c" * 40,
             "--sdk-apple-validation-policy", str(policy)]
         with patch.object(workflow.product_reuse, "_canonical_control", return_value=value) as load, \
                 patch.object(workflow, "execute") as execute:
@@ -283,11 +290,13 @@ class SdkIosMetadataCliTest(unittest.TestCase):
         execute.assert_called_once_with(plan=Path("/absolute/plan.json"),
             discovery=Path("/absolute/discovery"), state=Path("/absolute/state"),
             destination=Path("/absolute/output"), expected_build_key="sha256:" + "1" * 64,
-            repository_root=root, sdk_apple_validation_policy=value, environ=os.environ)
+            repository_root=root, trusted_workflow_sha="c" * 40,
+            sdk_apple_validation_policy=value, environ=os.environ)
 
     def test_cli_is_strict_and_reports_controller_errors_as_usage(self):
         base = ["--plan", "/p", "--discovery-root", "/d", "--state-root", "/s",
-                "--destination", "/o", "--expected-build-key", "key", "--repository-root", "/r"]
+                "--destination", "/o", "--expected-build-key", "key", "--repository-root", "/r",
+                "--trusted-workflow-sha", "c" * 40]
         for extra in (["--legacy-validation-artifact-id", "1"], ["--unknown", "value"]):
             with self.subTest(extra=extra), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stopped:
                 workflow.main([*base, *extra])

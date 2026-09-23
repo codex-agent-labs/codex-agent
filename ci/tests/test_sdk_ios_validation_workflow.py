@@ -35,7 +35,9 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
                     self.assertRaisesRegex(ValueError, "admission stop"):
                 workflow.execute(self.plan, discovery, None, self.destination, **self.arguments,
                     **forwarded)
-            self.assertEqual(set(forwarded), set(gate.call_args.kwargs))
+            self.assertEqual({*forwarded, "sdk_original_workflow_sha"}, set(gate.call_args.kwargs))
+            self.assertEqual(self.arguments["trusted_workflow_sha"],
+                             gate.call_args.kwargs["sdk_original_workflow_sha"])
             for name, value in forwarded.items():
                 self.assertIs(value, gate.call_args.kwargs[name])
             worker.assert_not_called()
@@ -244,6 +246,7 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         self.events.clear()
 
     def verified_state(self, *args, **options):
+        self.assertEqual(self.arguments["trusted_workflow_sha"], options["sdk_original_workflow_sha"])
         self.state_options = options
         return self.verified
 
