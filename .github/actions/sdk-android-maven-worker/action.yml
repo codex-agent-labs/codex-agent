@@ -61,6 +61,23 @@ inputs:
   sdk-android-metadata-policy:
     default: ''
     description: Optional caller-authenticated Android metadata policy for replayed state.
+outputs:
+  binary-original-context:
+    description: Binary only; caller-owned canonical original checkout and worker paths.
+    value: ${{ steps.context.outputs.value }}
+  binary-artifact-id:
+    description: Binary only; official original upload ID, usable only after successful phase collection.
+    value: >-
+      ${{ inputs.phase == 'binary' && steps.execute.outcome == 'success' &&
+          steps.upload.outcome == 'success' && steps.upload.outputs.artifact-id != '' &&
+          steps.upload.outputs.artifact-digest != '' && steps.upload.outputs.artifact-id || '' }}
+  binary-artifact-sha256:
+    description: Binary only; official original upload digest, usable only after successful phase collection.
+    value: >-
+      ${{ inputs.phase == 'binary' && steps.execute.outcome == 'success' &&
+          steps.upload.outcome == 'success' && steps.upload.outputs.artifact-id != '' &&
+          steps.upload.outputs.artifact-digest != '' &&
+          format('sha256:{0}', steps.upload.outputs.artifact-digest) || '' }}
 runs:
   using: composite
   steps:
@@ -238,12 +255,34 @@ runs:
             output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
             output.write('archive_sha256=' + archive_digest + '\n')
         PY
+    - id: context
+      if: inputs.phase == 'binary'
+      name: Record caller-owned original Android binary invocation context
+      shell: bash
+      run: |
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        from ci.products.inventory import canonical_json_bytes
+        from ci.products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        if root.as_posix() != os.environ['GITHUB_WORKSPACE']:
+            raise ValueError('Android Maven checkout must have one canonical original path')
+        value = canonical_json_bytes({
+            'repositoryRoot': root.as_posix(),
+            'workerRoot': (root / 'build/sdk-android-maven-worker').as_posix(),
+        }).decode().strip()
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('value=' + value + '\n')
+        PY
     - uses: ./.github/actions/setup-kmp
       with:
         cache-read-only: 'true'
         product-worker: 'true'
     - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
-    - name: Execute exact Android Maven phase with held original inputs
+    - id: execute
+      name: Execute exact Android Maven phase with held original inputs
       shell: bash
       env:
         PLAN: ${{ steps.captured.outputs.plan-path }}
@@ -302,7 +341,8 @@ runs:
             --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys")
         fi
         python3 -B -m ci.sdk_workflow "maven-$PHASE" "${args[@]}"
-    - if: always() && steps.identity.outcome == 'success'
+    - id: upload
+      if: always() && steps.identity.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-sdk-worker-sdk-android-${{ inputs.phase }}-android-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}

@@ -9,6 +9,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 
 from ci.products.inventory import canonical_json_bytes, sha256_bytes
 
@@ -51,7 +52,38 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
             self.assertIn(check, identity)
         self.assertIn("require_no_signing_secret(os.environ)", self.script("id: policy"))
         self.assertIn("sha256_bytes(canonical_json_bytes(pins))", self.script(
-            "name: Execute exact Android Maven phase with held original inputs"))
+            "id: execute"))
+
+    def test_binary_original_context_and_upload_outputs_require_success(self):
+        self.assertLess(self.action.index("- id: identity"), self.action.index("- id: context"))
+        self.assertLess(self.action.index("- id: context"), self.action.index("uses: ./.github/actions/setup-kmp"))
+        self.assertIn("if: inputs.phase == 'binary'", self.action)
+        outputs = self.action.split("\noutputs:\n", 1)[1].split("\nruns:\n", 1)[0]
+        self.assertIn("steps.context.outputs.value", outputs)
+        for name in ("binary-artifact-id", "binary-artifact-sha256"):
+            expression = outputs.split("  " + name + ":", 1)[1].split("\n  binary-", 1)[0]
+            for guard in ("inputs.phase == 'binary'", "steps.execute.outcome == 'success'",
+                          "steps.upload.outcome == 'success'",
+                          "steps.upload.outputs.artifact-id != ''",
+                          "steps.upload.outputs.artifact-digest != ''"):
+                self.assertIn(guard, expression)
+        self.assertIn("- id: execute", self.action)
+        self.assertIn("- id: upload", self.action)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = root / "github-output"
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(root), "GITHUB_OUTPUT": str(output)}, clear=True):
+                source = self.script("id: context").split("python3 -B - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+                exec(compile(source, "android-context", "exec"), {})
+            self.assertEqual(canonical_json_bytes({
+                "repositoryRoot": str(root),
+                "workerRoot": str(root / "build/sdk-android-maven-worker"),
+            }), output.read_text().removeprefix("value=").encode())
+            alias = root / "checkout-alias"
+            alias.symlink_to(root, target_is_directory=True)
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(alias), "GITHUB_OUTPUT": str(output)}, clear=True):
+                with self.assertRaisesRegex(ValueError, "canonical original path"):
+                    exec(compile(source, "android-context", "exec"), {})
 
     def run_execution(self, phase, *, bad_digest=False):
         with tempfile.TemporaryDirectory(prefix="android-maven-action-", dir=ROOT / "build") as temporary:
@@ -91,7 +123,7 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
                 "SDK_FACADE_METADATA_POLICY": "", "SDK_ANDROID_METADATA_POLICY": "",
                 "TRUSTED_WORKFLOW_SHA": "c" * 40}
             result = subprocess.run([self.shell, "--noprofile", "--norc", "-c",
-                self.script("name: Execute exact Android Maven phase with held original inputs")],
+                self.script("id: execute")],
                 cwd=root, env=environment, capture_output=True, text=True, check=False)
             arguments = record.read_bytes().decode().split("\0")[:-1] if record.exists() else None
             return result, arguments
