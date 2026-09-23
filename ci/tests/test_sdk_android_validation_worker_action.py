@@ -173,6 +173,43 @@ class AndroidValidationWorkerActionTest(unittest.TestCase):
         for forbidden in ("secrets.", "PRIVATE_KEY", "ssh-keygen", "gradlew ", "firebase deploy"):
             self.assertNotIn(forbidden, self.action)
 
+    def test_original_handoff_requires_successful_execution_upload_and_current_producer(self):
+        source = self.script("execute")
+        handoff = source[source.index("subprocess.run(command, cwd=root, check=True)"):]
+        for name in ("validation-receipt-sha256", "validation-artifact-id",
+                     "validation-artifact-sha256", "validation-run-id", "validation-run-attempt"):
+            self.assertIn("  " + name + ":", self.action)
+        self.assertEqual(self.action.count("steps.execute.outcome == 'success' && steps.upload.outcome == 'success'"), 5)
+        self.assertIn("steps.upload.outputs.artifact-id != ''", self.action)
+        self.assertIn("steps.upload.outputs.artifact-digest != ''", self.action)
+        self.assertIn("steps.execute.outputs.receipt_sha256 != ''", self.action)
+        self.assertIn("- id: upload", self.action)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = root / "output"
+            values = {"BUILD_KEY": KEY, "TREE": TREE, "POLICY_REVISION": "d" * 40,
+                      "GITHUB_RUN_ID": "23", "GITHUB_RUN_ATTEMPT": "2",
+                      "GITHUB_OUTPUT": str(output)}
+            shard = {"buildKey": KEY, "receiptSha256": "sha256:" + "c" * 64,
+                     "receipt": {"producer": {"tree": TREE, "commit": "d" * 40,
+                                               "runId": 23, "runAttempt": 2}}}
+            import subprocess
+            from products.registry import PhaseInstanceId
+            with patch.dict(os.environ, values, clear=True), patch.object(subprocess, "run"), \
+                    patch("products.restore.verify_phase_shard", return_value=shard) as verified:
+                scope = {"subprocess": subprocess, "command": [], "root": root, "os": os,
+                         "require_no_signing_secret": lambda _: None,
+                         "PhaseInstanceId": PhaseInstanceId,
+                         "verify_phase_shard": verified,
+                         "validate_producer": lambda value, _: value}
+                exec(compile(handoff, "android-handoff", "exec"), scope)
+                self.assertEqual(output.read_text(), "receipt_sha256=sha256:" + "c" * 64 + "\n")
+                output.unlink()
+                shard["receipt"]["producer"]["runAttempt"] = 1
+                with self.assertRaisesRegex(ValueError, "current producer"):
+                    exec(compile(handoff, "android-handoff", "exec"), scope)
+                self.assertFalse(output.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

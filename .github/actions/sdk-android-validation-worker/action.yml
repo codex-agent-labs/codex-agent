@@ -70,6 +70,37 @@ inputs:
   sdk-android-metadata-policy:
     default: ''
     description: Optional independently provisioned Android metadata policy for predecessor replay.
+outputs:
+  validation-receipt-sha256:
+    description: Verified original phase receipt digest after successful validation and official upload.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.execute.outputs.receipt_sha256 != '' && steps.execute.outputs.receipt_sha256 || '' }}
+  validation-artifact-id:
+    description: Official original validation upload ID after successful validation.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.execute.outputs.receipt_sha256 != '' && steps.upload.outputs.artifact-id || '' }}
+  validation-artifact-sha256:
+    description: Official original validation upload digest after successful validation.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.execute.outputs.receipt_sha256 != '' && format('sha256:{0}', steps.upload.outputs.artifact-digest) || '' }}
+  validation-run-id:
+    description: Original validation producer run ID after successful validation and official upload.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.execute.outputs.receipt_sha256 != '' && github.run_id || '' }}
+  validation-run-attempt:
+    description: Original validation producer run attempt after successful validation and official upload.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.execute.outputs.receipt_sha256 != '' && github.run_attempt || '' }}
 runs:
   using: composite
   steps:
@@ -367,6 +398,9 @@ runs:
         from products.sdk_android_metadata_admission import _policy_arguments as android_metadata_arguments
         from products.sdk_validation_inputs import _request_inventory
         from products.signing_isolation import require_no_signing_secret
+        from products.receipt import validate_producer
+        from products.registry import PhaseInstanceId
+        from products.restore import verify_phase_shard
         require_no_signing_secret(os.environ)
         if any(re.fullmatch(r'[0-9a-f]{40}', os.environ[name]) is None for name in
                ('TRUSTED_WORKFLOW_SHA', 'TRUSTED_ANDROID_WORKFLOW_SHA', 'TRUSTED_SOURCE_COMMIT',
@@ -457,8 +491,20 @@ runs:
         command += [part for flag, value in fields.items() for part in (flag, value)]
         subprocess.run(command, cwd=root, check=True)
         require_no_signing_secret(os.environ)
+        shard = verify_phase_shard(root / 'build/sdk-android-validation-worker/shard',
+            PhaseInstanceId('sdk', 'sdk-android', 'validation', 'android'))
+        producer = validate_producer(shard['receipt']['producer'], 'Android validation producer')
+        if (shard['buildKey'] != os.environ['BUILD_KEY'] or
+                producer['tree'] != os.environ['TREE'] or
+                producer['commit'] != os.environ['POLICY_REVISION'] or
+                producer['runId'] != int(os.environ['GITHUB_RUN_ID']) or
+                producer['runAttempt'] != int(os.environ['GITHUB_RUN_ATTEMPT'])):
+            raise ValueError('Android validation result differs from elected key or current producer')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('receipt_sha256=' + shard['receiptSha256'] + '\n')
         PY
-    - if: always() && steps.identity.outcome == 'success'
+    - id: upload
+      if: always() && steps.identity.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-sdk-worker-sdk-android-validation-android-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
