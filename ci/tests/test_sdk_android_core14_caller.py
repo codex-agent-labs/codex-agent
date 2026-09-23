@@ -1,16 +1,137 @@
 import tempfile
+import io
 import os
 import unittest
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from ci import sdk_android_core14_caller as caller
-from ci.products.inventory import canonical_json_bytes, sha256_file
+from ci.products.inventory import canonical_json_bytes, sha256_bytes, sha256_file
 
 
 class AndroidCore14CallerTest(unittest.TestCase):
+    def test_reused_cli_rejects_replay_controls_from_carrier_or_checkout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            carrier, checkout = root / "carrier", root / "checkout"
+            carrier.mkdir()
+            checkout.mkdir()
+            catalog, digests, key = (root / name for name in
+                ("catalog.json", "digests.json", "caller.pub"))
+            catalog.write_bytes(canonical_json_bytes({}))
+            digests.write_bytes(canonical_json_bytes({}))
+            key.write_bytes(b"caller key")
+            common = ["preflight", "--plan", str(root / "plan"),
+                "--discovery-root", str(root / "discovery"),
+                "--before-state-root", str(root / "before"),
+                "--after-state-root", str(root / "after"),
+                "--metadata-receipt", str(root / "receipt"),
+                "--repository-root", str(checkout),
+                "--android-runtime-archive", str(root / "archive"),
+                "--expected-build-key", "sha256:" + "a" * 64,
+                "--expected-metadata-build-key", "sha256:" + "b" * 64,
+                "--expected-metadata-receipt-sha256", "sha256:" + "c" * 64,
+                "--trusted-workflow-sha", "d" * 40,
+                "--reused-catalog", str(catalog),
+                "--reused-catalog-root", str(carrier),
+                "--reused-catalog-source", "same-pr",
+                "--reused-receipt-sha256", str(digests),
+                "--reused-public-key", str(key)]
+            with (patch.object(caller, "with_core14") as execute,
+                  patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"})):
+                for control in ("replay-policy", "original-context"):
+                    for source in (carrier, checkout):
+                        with self.subTest(control=control, source=source):
+                            replay, context = root / "replay.json", root / "context.json"
+                            if control == "replay-policy":
+                                replay = source / "replay.json"
+                            else:
+                                context = source / "context.json"
+                            replay.write_bytes(canonical_json_bytes({}))
+                            context.write_bytes(canonical_json_bytes({}))
+                            with redirect_stderr(io.StringIO()) as error:
+                                with self.assertRaises(SystemExit):
+                                    caller.main([*common, "--replay-policy", str(replay),
+                                        "--original-context", str(context)])
+                            self.assertIn("independent of retained carriers", error.getvalue())
+                execute.assert_not_called()
+
+    def test_reused_core_requires_signed_original_selection_and_matching_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            carrier = root / "carrier"
+            carrier.mkdir()
+            archive, receipt_path, descriptor = (root / name for name in
+                ("android.tar.gz", "metadata-receipt.json", "policy.json"))
+            manifest = carrier / "product-index.json"
+            archive.write_bytes(b"pinned archive")
+            manifest.write_bytes(b"signed index bytes")
+            (root / "caller.pub").write_bytes(b"caller key")
+            receipt_path.write_bytes(canonical_json_bytes({"selected": "original"}))
+            policy = {"toolingEvidence": "evidence", "toolingPublicKey": "key",
+                "javaExecutable": "java", "toolingTrustDomain": "release",
+                "toolingKeyring": "keyring", "toolingKeysDirectory": "keys"}
+            descriptor.write_bytes(canonical_json_bytes({"evidenceRoot": "originals",
+                "records": [], "policy": policy}))
+            digests = {"common": sha256_bytes(receipt_path.read_bytes()), "native": "sha256:" + "f" * 64}
+            key = "sha256:" + "b" * 64
+            metadata_key = "sha256:" + "d" * 64
+            catalog = caller.RemoteCatalog(manifest, root / "product-index.sig", {},
+                public_key=root / "caller.pub")
+            active = []
+
+            @contextmanager
+            def held(*args, **kwargs):
+                self.assertEqual(kwargs["expected_receipt_sha256"], digests)
+                self.assertEqual(kwargs["replay_policy"], {"validations": {},
+                    "originalContext": {"original": "context"}})
+                active.append(True)
+                try:
+                    yield descriptor
+                finally:
+                    active.pop()
+
+            state_row = {"state": "reused", "source": "same-pr",
+                "transportSource": {"indexSha256": sha256_file(manifest)},
+                "buildKey": metadata_key, "receiptSha256": digests["common"]}
+            verified = SimpleNamespace(prior_by_instance={caller.PhaseInstanceId(
+                "sdk", "sdk-core", "metadata", "common"): state_row},
+                prior_ready_plans={caller._BINARY: {"buildKey": key}},
+                plan={"validationCommit": "c" * 40})
+            arguments = dict(plan=root / "plan", discovery=root / "discovery",
+                before_state=root / "before", after_state=root / "after",
+                metadata_receipt=receipt_path, expected_build_key=key,
+                expected_metadata_build_key=metadata_key,
+                expected_metadata_receipt_sha256=digests["common"],
+                replay_policy={"validations": {}}, original_context={"original": "context"},
+                trusted_workflow_sha="e" * 40, repository_root=root,
+                android_runtime_archive=archive, token="token", environ={},
+                reused_catalog=catalog, reused_catalog_root=carrier,
+                reused_catalog_source="same-pr",
+                reused_receipt_sha256=digests)
+            with (patch.object(caller, "held_original_facade_metadata_policy", held),
+                  patch.object(caller, "held_same_campaign_core_metadata_policy") as fresh,
+                  patch.object(caller, "validate_phase_receipt", return_value={
+                      "product": "sdk", "component": "sdk-core", "phase": "metadata",
+                      "target": "common", "buildKey": metadata_key}),
+                  patch.object(caller, "FacadeMetadataAdmission", return_value=object()),
+                  patch.object(caller.product_reuse, "_validate_plan",
+                      return_value={"validationCommit": "c" * 40}),
+                  patch.object(caller.product_reuse, "_verified_product_state", return_value=verified),
+                  patch.object(caller, "git_regular_blob_bytes", return_value=b"pins"),
+                  patch.object(caller, "_properties", return_value={
+                      "codexAgent.codexArchiveSha256": sha256_file(archive).split(":", 1)[1]})):
+                self.assertEqual(caller.with_core14(**arguments)["buildKey"], key)
+                self.assertFalse(active)
+                fresh.assert_not_called()
+                state_row["transportSource"]["indexSha256"] = "sha256:" + "0" * 64
+                with self.assertRaisesRegex(ValueError, "signed reused election"):
+                    caller.with_core14(**arguments)
+                with self.assertRaisesRegex(ValueError, "twelve pinned receipts"):
+                    caller.with_core14(**{**arguments, "reused_receipt_sha256": None})
+
     def test_preflight_and_execution_each_hold_concrete_core_admission(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
