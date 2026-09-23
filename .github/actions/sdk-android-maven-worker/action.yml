@@ -31,6 +31,27 @@ inputs:
   android-runtime-archive:
     required: true
     description: Caller-provisioned Codex ARM64 archive, checked against the original Git pin.
+  core13-artifact-id:
+    default: ''
+    description: Binary only; independently pinned SDK wave 13 state upload ID.
+  core13-artifact-sha256:
+    default: ''
+    description: Binary only; exact SDK wave 13 state upload digest.
+  core14-build-key:
+    default: ''
+    description: Binary only; exact elected Core metadata build key.
+  core14-metadata-receipt:
+    default: ''
+    description: Binary only; independently supplied original Core metadata receipt.
+  core14-metadata-receipt-sha256:
+    default: ''
+    description: Binary only; caller-pinned original Core metadata receipt digest.
+  core14-replay-policy:
+    default: ''
+    description: Binary only; independent eleven-target Core original replay policy.
+  core14-original-context:
+    default: ''
+    description: Binary only; original Core metadata invocation context.
   sdk-inputs-id:
     default: ''
     description: Package-only exact authenticated SDK inputs upload ID.
@@ -87,6 +108,13 @@ runs:
       env:
         PHASE: ${{ inputs.phase }}
         ANDROID_ARCHIVE: ${{ inputs.android-runtime-archive }}
+        CORE13_ARTIFACT_ID: ${{ inputs.core13-artifact-id }}
+        CORE13_ARTIFACT_SHA256: ${{ inputs.core13-artifact-sha256 }}
+        CORE14_BUILD_KEY: ${{ inputs.core14-build-key }}
+        CORE14_METADATA_RECEIPT: ${{ inputs.core14-metadata-receipt }}
+        CORE14_METADATA_RECEIPT_SHA256: ${{ inputs.core14-metadata-receipt-sha256 }}
+        CORE14_REPLAY_POLICY: ${{ inputs.core14-replay-policy }}
+        CORE14_ORIGINAL_CONTEXT: ${{ inputs.core14-original-context }}
         SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
         SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
         BINARY_ARTIFACT_ID: ${{ inputs.binary-artifact-id }}
@@ -110,11 +138,33 @@ runs:
         phase = os.environ['PHASE']
         if phase not in ('binary', 'package'):
             raise ValueError('Android Maven worker requires binary or package')
+        pins = {}
         package = ('SDK_INPUTS_ID', 'SDK_INPUTS_SHA256', 'BINARY_ARTIFACT_ID',
                    'BINARY_ARTIFACT_SHA256', 'BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT')
         if ((phase == 'binary' and any(os.environ[name] for name in package)) or
                 (phase == 'package' and not all(os.environ[name] for name in package))):
             raise ValueError('Android Maven package requires all original inputs; binary accepts none')
+        core = ('CORE13_ARTIFACT_ID', 'CORE13_ARTIFACT_SHA256', 'CORE14_BUILD_KEY',
+                'CORE14_METADATA_RECEIPT', 'CORE14_METADATA_RECEIPT_SHA256',
+                'CORE14_REPLAY_POLICY', 'CORE14_ORIGINAL_CONTEXT')
+        if ((phase == 'binary' and not all(os.environ[name] for name in core)) or
+                (phase == 'package' and any(os.environ[name] for name in core))):
+            raise ValueError('Android binary requires complete Core wave 13/14 caller authority; package accepts none')
+        if phase == 'binary' and (os.environ['SDK_FACADE_METADATA_POLICY'] or
+                                  os.environ['SDK_ANDROID_METADATA_POLICY']):
+            raise ValueError('Android binary must replay Core wave 14 in-process, not import a descriptor')
+        if phase == 'binary':
+            if not re.fullmatch(r'[1-9][0-9]*', os.environ['CORE13_ARTIFACT_ID']):
+                raise ValueError('Core wave 13 upload ID must be positive decimal')
+            for name in ('CORE13_ARTIFACT_SHA256', 'CORE14_BUILD_KEY', 'CORE14_METADATA_RECEIPT_SHA256'):
+                require_sha256(os.environ[name], name)
+            for name in ('CORE14_METADATA_RECEIPT', 'CORE14_REPLAY_POLICY', 'CORE14_ORIGINAL_CONTEXT'):
+                path = Path(os.environ[name])
+                if not path.is_absolute() or path.resolve(strict=True) != path:
+                    raise ValueError('Core caller control must be absolute and non-symbolic: ' + name)
+                pins[name] = sha256_bytes(read_regular_file_bytes(path, reject_symlink_parents=True))
+            if pins['CORE14_METADATA_RECEIPT'] != os.environ['CORE14_METADATA_RECEIPT_SHA256']:
+                raise ValueError('Core metadata receipt differs from the caller pin')
         if phase == 'package':
             for name in ('SDK_INPUTS_ID', 'BINARY_ARTIFACT_ID'):
                 if not re.fullmatch(r'[1-9][0-9]*', os.environ[name]):
@@ -124,7 +174,7 @@ runs:
         archive = Path(os.environ['ANDROID_ARCHIVE'])
         if not archive.is_absolute() or archive.resolve(strict=True) != archive:
             raise ValueError('Android archive requires an absolute non-symbolic caller path')
-        pins = {'ANDROID_ARCHIVE': sha256_file(archive, reject_symlink_parents=True)}
+        pins['ANDROID_ARCHIVE'] = sha256_file(archive, reject_symlink_parents=True)
         for name in ('BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT', 'SDK_VALIDATION_TOOLING',
                      'SDK_APPLE_VALIDATION_POLICY', 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY'):
             if not os.environ[name]:
@@ -142,7 +192,83 @@ runs:
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('policy_sha256=' + sha256_bytes(canonical_json_bytes(pins)) + '\n')
         PY
+    - if: inputs.phase == 'binary'
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        artifact-ids: ${{ inputs.plan-id }}
+        path: build/sdk-android-core14-plan
+        merge-multiple: true
+    - id: core13
+      if: inputs.phase == 'binary'
+      name: Capture exact original Core validation state transport
+      shell: bash
+      env:
+        ARTIFACT_ID: ${{ inputs.core13-artifact-id }}
+        ARTIFACT_SHA256: ${{ inputs.core13-artifact-sha256 }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        python3 -B -m ci.sdk_workflow capture-transport \
+          --plan build/sdk-android-core14-plan/impact-plan.json \
+          --destination build/sdk-android-core13-transport \
+          --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
+          --sdk-state-wave 13 --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT"
+    - id: core14
+      if: inputs.phase == 'binary'
+      name: Capture exact original Core metadata state transport
+      shell: bash
+      env:
+        ARTIFACT_ID: ${{ inputs.artifact-id }}
+        ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        if [ '${{ inputs.sdk-state-wave }}' != 14 ]; then
+          echo 'Android binary requires exact Core metadata wave 14' >&2
+          exit 1
+        fi
+        python3 -B -m ci.sdk_workflow capture-transport \
+          --plan build/sdk-android-core14-plan/impact-plan.json \
+          --destination build/sdk-android-core14-transport \
+          --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
+          --sdk-state-wave 14 --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT"
+    - id: core14_admitted
+      if: inputs.phase == 'binary'
+      name: Re-observe Core metadata originals and elect Android before setup
+      shell: bash
+      env:
+        PLAN: ${{ steps.core14.outputs.plan_path }}
+        DISCOVERY: ${{ steps.core14.outputs.discovery_root }}
+        BEFORE_STATE: ${{ steps.core13.outputs.state_root }}
+        AFTER_STATE: ${{ steps.core14.outputs.state_root }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        METADATA_KEY: ${{ inputs.core14-build-key }}
+        METADATA_RECEIPT: ${{ inputs.core14-metadata-receipt }}
+        METADATA_RECEIPT_SHA256: ${{ inputs.core14-metadata-receipt-sha256 }}
+        REPLAY_POLICY: ${{ inputs.core14-replay-policy }}
+        ORIGINAL_CONTEXT: ${{ inputs.core14-original-context }}
+        WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        ANDROID_ARCHIVE: ${{ inputs.android-runtime-archive }}
+        APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        args=(--plan "$PLAN" --discovery-root "$DISCOVERY" \
+          --before-state-root "$BEFORE_STATE" --after-state-root "$AFTER_STATE" \
+          --metadata-receipt "$METADATA_RECEIPT" \
+          --expected-build-key "$BUILD_KEY" --expected-metadata-build-key "$METADATA_KEY" \
+          --expected-metadata-receipt-sha256 "$METADATA_RECEIPT_SHA256" \
+          --replay-policy "$REPLAY_POLICY" --original-context "$ORIGINAL_CONTEXT" \
+          --trusted-workflow-sha "$WORKFLOW_SHA" --repository-root "$GITHUB_WORKSPACE" \
+          --android-runtime-archive "$ANDROID_ARCHIVE" --github-output "$GITHUB_OUTPUT")
+        if [ -n "$APPLE_POLICY" ]; then args+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
+        python3 -B -m ci.sdk_android_core14_caller preflight "${args[@]}"
     - id: captured
+      if: inputs.phase == 'package'
       uses: ./.github/actions/capture-runtime-state
       with:
         product: sdk
@@ -161,14 +287,17 @@ runs:
       name: Require exact Android election and independent caller inputs before setup
       shell: bash
       env:
-        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
-        REQUIRED: ${{ steps.captured.outputs.sdk-workers-required }}
-        PLAN: ${{ steps.captured.outputs.plan-path }}
-        STATE: ${{ steps.captured.outputs.state-root }}
+        MATRIX: ${{ inputs.phase == 'binary' && steps.core14_admitted.outputs.sdk_matrix || steps.captured.outputs.sdk-matrix }}
+        REQUIRED: ${{ inputs.phase == 'binary' && steps.core14_admitted.outputs.sdk_workers_required || steps.captured.outputs.sdk-workers-required }}
+        PLAN: ${{ inputs.phase == 'binary' && steps.core14.outputs.plan_path || steps.captured.outputs.plan-path }}
+        STATE: ${{ inputs.phase == 'binary' && steps.core14.outputs.state_root || steps.captured.outputs.state-root }}
         PHASE: ${{ inputs.phase }}
         BUILD_KEY: ${{ inputs.build-key }}
         TREE: ${{ inputs.tree }}
         ANDROID_ARCHIVE: ${{ inputs.android-runtime-archive }}
+        CORE14_METADATA_RECEIPT: ${{ inputs.core14-metadata-receipt }}
+        CORE14_REPLAY_POLICY: ${{ inputs.core14-replay-policy }}
+        CORE14_ORIGINAL_CONTEXT: ${{ inputs.core14-original-context }}
         SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
         SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
         BINARY_ARTIFACT_ID: ${{ inputs.binary-artifact-id }}
@@ -217,6 +346,10 @@ runs:
             raise ValueError('Android archive must be a separate caller-provisioned regular file')
         archive_digest = sha256_file(archive, reject_symlink_parents=True)
         pins = {'ANDROID_ARCHIVE': archive_digest}
+        if phase == 'binary':
+            for name in ('CORE14_METADATA_RECEIPT', 'CORE14_REPLAY_POLICY', 'CORE14_ORIGINAL_CONTEXT'):
+                pins[name] = sha256_bytes(read_regular_file_bytes(Path(os.environ[name]),
+                    reject_symlink_parents=True))
         for name in ('BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT', 'SDK_VALIDATION_TOOLING',
                      'SDK_APPLE_VALIDATION_POLICY', 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY'):
             if os.environ[name]:
@@ -285,12 +418,18 @@ runs:
       name: Execute exact Android Maven phase with held original inputs
       shell: bash
       env:
-        PLAN: ${{ steps.captured.outputs.plan-path }}
-        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
-        STATE: ${{ steps.captured.outputs.state-root }}
+        PLAN: ${{ inputs.phase == 'binary' && steps.core14.outputs.plan_path || steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ inputs.phase == 'binary' && steps.core14.outputs.discovery_root || steps.captured.outputs.discovery-root }}
+        STATE: ${{ inputs.phase == 'binary' && steps.core14.outputs.state_root || steps.captured.outputs.state-root }}
+        BEFORE_STATE: ${{ steps.core13.outputs.state_root }}
         PHASE: ${{ inputs.phase }}
         BUILD_KEY: ${{ inputs.build-key }}
         ANDROID_ARCHIVE: ${{ inputs.android-runtime-archive }}
+        CORE14_BUILD_KEY: ${{ inputs.core14-build-key }}
+        CORE14_METADATA_RECEIPT: ${{ inputs.core14-metadata-receipt }}
+        CORE14_METADATA_RECEIPT_SHA256: ${{ inputs.core14-metadata-receipt-sha256 }}
+        CORE14_REPLAY_POLICY: ${{ inputs.core14-replay-policy }}
+        CORE14_ORIGINAL_CONTEXT: ${{ inputs.core14-original-context }}
         ARCHIVE_SHA256: ${{ steps.identity.outputs.archive_sha256 }}
         SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
         SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
@@ -314,6 +453,10 @@ runs:
         from ci.products.signing_isolation import require_no_signing_secret
         require_no_signing_secret(os.environ)
         pins = {'ANDROID_ARCHIVE': sha256_file(Path(os.environ['ANDROID_ARCHIVE']), reject_symlink_parents=True)}
+        if os.environ['PHASE'] == 'binary':
+            for name in ('CORE14_METADATA_RECEIPT', 'CORE14_REPLAY_POLICY', 'CORE14_ORIGINAL_CONTEXT'):
+                pins[name] = sha256_bytes(read_regular_file_bytes(Path(os.environ[name]),
+                    reject_symlink_parents=True))
         for name in ('BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT', 'SDK_VALIDATION_TOOLING',
                      'SDK_APPLE_VALIDATION_POLICY', 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY'):
             if os.environ[name]:
@@ -340,7 +483,21 @@ runs:
             --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
             --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys")
         fi
-        python3 -B -m ci.sdk_workflow "maven-$PHASE" "${args[@]}"
+        if [ "$PHASE" = binary ]; then
+          core=(--plan "$PLAN" --discovery-root "$DISCOVERY" \
+            --before-state-root "$BEFORE_STATE" --after-state-root "$STATE" \
+            --metadata-receipt "$CORE14_METADATA_RECEIPT" \
+            --expected-build-key "$BUILD_KEY" --expected-metadata-build-key "$CORE14_BUILD_KEY" \
+            --expected-metadata-receipt-sha256 "$CORE14_METADATA_RECEIPT_SHA256" \
+            --replay-policy "$CORE14_REPLAY_POLICY" --original-context "$CORE14_ORIGINAL_CONTEXT" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --repository-root "$GITHUB_WORKSPACE" \
+            --android-runtime-archive "$ANDROID_ARCHIVE" \
+            --destination "$GITHUB_WORKSPACE/build/sdk-android-maven-worker")
+          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then core+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+          python3 -B -m ci.sdk_android_core14_caller execute "${core[@]}"
+        else
+          python3 -B -m ci.sdk_workflow maven-package "${args[@]}"
+        fi
     - id: upload
       if: always() && steps.identity.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

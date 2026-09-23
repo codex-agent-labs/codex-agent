@@ -35,6 +35,13 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
     def test_current_state_is_captured_before_any_platform_setup(self):
         action = self.action
         self.assertLess(action.index("- id: policy"), action.index("- id: captured"))
+        for earlier, later in (("- id: core13", "- id: core14"),
+                               ("- id: core14", "- id: core14_admitted"),
+                               ("- id: core14_admitted", "uses: ./.github/actions/setup-kmp")):
+            self.assertLess(action.index(earlier), action.index(later))
+        self.assertIn("--sdk-state-wave 13", self.script("id: core13"))
+        self.assertIn("--sdk-state-wave 14", self.script("id: core14"))
+        self.assertIn("ci.sdk_android_core14_caller preflight", self.script("id: core14_admitted"))
         self.assertLess(action.index("- id: captured"), action.index("- id: identity"))
         self.assertLess(action.index("- id: identity"), action.index("uses: ./.github/actions/setup-kmp"))
         self.assertLess(action.index("- id: identity"), action.index("uses: android-actions/setup-android@"))
@@ -102,17 +109,31 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
             contract, context = root / "contract.json", root / "context.json"
             contract.write_bytes(canonical_json_bytes({}))
             context.write_bytes(canonical_json_bytes({}))
+            core_receipt, core_policy, core_context = (root / name for name in
+                ("core-receipt.json", "core-policy.json", "core-context.json"))
+            for path in (core_receipt, core_policy, core_context):
+                path.write_bytes(canonical_json_bytes({}))
             actual_digest = sha256_bytes(archive.read_bytes())
             pins = {"ANDROID_ARCHIVE": actual_digest}
             if phase == "package":
                 pins.update(BINARY_CONTRACT_EVIDENCE=sha256_bytes(contract.read_bytes()),
                             BINARY_ORIGINAL_CONTEXT=sha256_bytes(context.read_bytes()))
+            else:
+                pins.update(CORE14_METADATA_RECEIPT=sha256_bytes(core_receipt.read_bytes()),
+                            CORE14_REPLAY_POLICY=sha256_bytes(core_policy.read_bytes()),
+                            CORE14_ORIGINAL_CONTEXT=sha256_bytes(core_context.read_bytes()))
             environment = {"PATH": str(binary) + os.pathsep + os.environ["PATH"],
                 "RECORDED_ARGS": str(record), "REAL_PYTHON": sys.executable,
                 "PYTHONPATH": str(ROOT),
                 "GITHUB_WORKSPACE": str(root), "PLAN": str(root / "plan.json"),
                 "DISCOVERY": str(root / "discovery"), "STATE": str(root / "state"),
+                "BEFORE_STATE": str(root / "before-state"),
                 "PHASE": phase, "BUILD_KEY": KEY, "ANDROID_ARCHIVE": str(archive),
+                "CORE14_BUILD_KEY": KEY,
+                "CORE14_METADATA_RECEIPT": str(core_receipt),
+                "CORE14_METADATA_RECEIPT_SHA256": sha256_bytes(core_receipt.read_bytes()),
+                "CORE14_REPLAY_POLICY": str(core_policy),
+                "CORE14_ORIGINAL_CONTEXT": str(core_context),
                 "ARCHIVE_SHA256": actual_digest if not bad_digest else KEY,
                 "POLICY_SHA256": sha256_bytes(canonical_json_bytes(pins)),
                 "SDK_INPUTS_ID": "71", "SDK_INPUTS_SHA256": KEY,
@@ -134,20 +155,34 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
             archive, output = root / "archive.tar.gz", root / "output"
             archive.write_bytes(b"original archive")
             environment = {**os.environ, "PHASE": "binary", "ANDROID_ARCHIVE": str(archive),
+                "CORE13_ARTIFACT_ID": "71", "CORE13_ARTIFACT_SHA256": KEY,
+                "CORE14_BUILD_KEY": KEY,
+                "CORE14_METADATA_RECEIPT": str(root / "core-receipt.json"),
+                "CORE14_METADATA_RECEIPT_SHA256": sha256_bytes(canonical_json_bytes({})),
+                "CORE14_REPLAY_POLICY": str(root / "core-policy.json"),
+                "CORE14_ORIGINAL_CONTEXT": str(root / "core-context.json"),
                 "SDK_INPUTS_ID": "", "SDK_INPUTS_SHA256": "", "BINARY_ARTIFACT_ID": "",
                 "BINARY_ARTIFACT_SHA256": "", "BINARY_CONTRACT_EVIDENCE": "",
                 "BINARY_ORIGINAL_CONTEXT": "", "SDK_VALIDATION_TOOLING": "",
                 "SDK_APPLE_VALIDATION_POLICY": "", "SDK_FACADE_METADATA_POLICY": "",
                 "SDK_ANDROID_METADATA_POLICY": "", "GITHUB_OUTPUT": str(output)}
+            for name in ("core-receipt.json", "core-policy.json", "core-context.json"):
+                (root / name).write_bytes(canonical_json_bytes({}))
             script = self.script("id: policy")
             command = [self.shell, "--noprofile", "--norc", "-c", script]
             good = subprocess.run(command, cwd=ROOT,
                 env=environment, capture_output=True, text=True, check=False)
             self.assertEqual(0, good.returncode, good.stderr)
             self.assertRegex(output.read_text(), r"^policy_sha256=sha256:[0-9a-f]{64}\n$")
+            absent_core = subprocess.run(command, cwd=ROOT,
+                env={**environment, "CORE14_METADATA_RECEIPT": ""},
+                capture_output=True, text=True, check=False)
+            self.assertNotEqual(0, absent_core.returncode)
+            self.assertIn("Core wave 13/14 caller authority", absent_core.stderr)
             missing = subprocess.run(command, cwd=ROOT,
                 env={**environment, "PHASE": "package"}, capture_output=True, text=True, check=False)
             self.assertNotEqual(0, missing.returncode)
+            self.assertIn("package requires all original inputs", missing.stderr)
             secret = subprocess.run(command, cwd=ROOT,
                 env={**environment, "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": ""},
                 capture_output=True, text=True, check=False)
@@ -158,17 +193,19 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
             with self.subTest(phase=phase):
                 result, args = self.run_execution(phase)
                 self.assertEqual(0, result.returncode, result.stderr)
-                self.assertEqual(["-B", "-m", "ci.sdk_workflow", "maven-" + phase], args[:4])
+                self.assertEqual(["-B", "-m", "ci.sdk_android_core14_caller", "execute"]
+                    if phase == "binary" else ["-B", "-m", "ci.sdk_workflow", "maven-package"], args[:4])
                 self.assertIn("--expected-build-key", args)
                 self.assertIn("--android-runtime-archive", args)
-                self.assertIn("--component", args)
-                self.assertEqual("sdk-android", args[args.index("--component") + 1])
                 self.assertEqual("c" * 40, args[args.index("--trusted-workflow-sha") + 1])
                 if phase == "binary":
+                    self.assertIn("--before-state-root", args)
+                    self.assertIn("--expected-metadata-receipt-sha256", args)
                     for flag in ("--sdk-inputs-artifact-id", "--binary-artifact-id",
                                  "--binary-contract-evidence", "--binary-original-context"):
                         self.assertNotIn(flag, args)
                 else:
+                    self.assertEqual("sdk-android", args[args.index("--component") + 1])
                     for flag in ("--sdk-inputs-artifact-id", "--binary-artifact-id",
                                  "--binary-contract-evidence", "--binary-original-context",
                                  "--trusted-workflow-sha", "--keyring", "--keys-directory"):
