@@ -39,12 +39,24 @@ class CoreValidationPolicyTests(unittest.TestCase):
         return values
 
     def test_unknown_and_unpinned_native_targets_fail_before_state_replay(self):
+        archive = self.root / "native-compiler.tar.gz"
+        archive.write_bytes(b"fixture")
         with patch.object(policy.product_reuse, "_verified_product_state") as verified:
-            for target in ("unknown", "linux-x64", "windows-x64"):
+            for target in ("unknown", "macos-x64", "linux-arm64", "linux-x64", "windows-x64"):
                 with self.subTest(target=target), self.assertRaises(ValueError):
-                    policy.prepare(**self.args(target=target))
+                    policy.prepare(**self.args(target=target, native_compiler_archive=archive))
             verified.assert_not_called()
         self.assertFalse(self.destination.exists())
+
+    def test_three_reviewed_macos_arm64_host_targets_reach_authenticated_replay(self):
+        archive = self.root / "native-compiler.tar.gz"
+        archive.write_bytes(b"fixture")
+        for target in ("macos-arm64", "ios-arm64", "ios-simulator-arm64"):
+            with self.subTest(target=target), patch.object(policy.product_reuse,
+                    "_verified_product_state", side_effect=RuntimeError("replay reached")) as replay:
+                with self.assertRaisesRegex(RuntimeError, "replay reached"):
+                    policy.prepare(**self.args(target=target, native_compiler_archive=archive))
+                replay.assert_called_once()
 
     def test_retained_package_and_binary_are_required_before_sdk_upload(self):
         selected = policy.PhaseInstanceId("sdk", "sdk-core", "validation", "jvm")
