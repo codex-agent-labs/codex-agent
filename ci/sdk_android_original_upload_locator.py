@@ -1,8 +1,8 @@
-"""Locate one official SDK Android validation upload from its selected receipt.
+"""Locate one official SDK Android upload from its selected receipt.
 
 This is transport lookup only. The caller independently authenticates the
-selected receipt; the original Firebase reader still downloads and verifies
-the upload, nested protected evidence, source, tooling and semantics.
+selected receipt; the phase-specific original reader still downloads and
+verifies the upload, nested validation, source, tooling and semantics.
 """
 
 import os
@@ -28,23 +28,46 @@ _REPOSITORY = "codex-agent-labs/codex-agent"
 def locate_sdk_android_validation_upload(plan_path, validation_receipt_path, *,
         expected_receipt_sha256, trusted_workflow_sha, repository_root,
         environ=None, token):
-    """Return the exact original artifact ID/digest; never admit its bytes."""
+    """Return the exact original validation artifact ID/digest; never admit its bytes."""
+    return _locate_sdk_android_upload(
+        plan_path, validation_receipt_path, phase="validation",
+        expected_receipt_sha256=expected_receipt_sha256,
+        trusted_workflow_sha=trusted_workflow_sha, repository_root=repository_root,
+        environ=environ, token=token)
+
+
+def locate_sdk_android_metadata_upload(plan_path, metadata_receipt_path, *,
+        expected_receipt_sha256, trusted_workflow_sha, repository_root,
+        environ=None, token):
+    """Return the exact original metadata artifact ID/digest; never admit its bytes."""
+    return _locate_sdk_android_upload(
+        plan_path, metadata_receipt_path, phase="metadata",
+        expected_receipt_sha256=expected_receipt_sha256,
+        trusted_workflow_sha=trusted_workflow_sha, repository_root=repository_root,
+        environ=environ, token=token)
+
+
+def _locate_sdk_android_upload(plan_path, receipt_path, *, phase,
+        expected_receipt_sha256, trusted_workflow_sha, repository_root,
+        environ, token):
+    """Locate only; the phase-specific original reader must still verify content."""
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
     if environment is not os.environ:
         require_no_signing_secret(os.environ)
-    require_sha256(expected_receipt_sha256, "Caller-selected Android validation receipt")
+    require_sha256(expected_receipt_sha256, f"Caller-selected Android {phase} receipt")
     if type(token) is not str or not token:
         raise ValueError("Android original upload locator requires an observation token")
     root = Path(repository_root).resolve(strict=True)
-    plan_path, receipt_path = Path(plan_path).absolute(), Path(validation_receipt_path).absolute()
+    plan_path, receipt_path = Path(plan_path).absolute(), Path(receipt_path).absolute()
     plan_bytes = read_regular_file_bytes(plan_path, max_bytes=_LIMIT, reject_symlink_parents=True)
     receipt_bytes = read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True)
     if sha256_bytes(receipt_bytes) != expected_receipt_sha256:
-        raise ValueError("Android validation receipt differs from independent caller selection")
+        raise ValueError(f"Android {phase} receipt differs from independent caller selection")
     receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
-    _, runner, _, job, name, _ = _capture_route(receipt, family="android-validation")
-    producer = validate_producer(receipt["producer"], "Original Android validation producer")
+    family = f"android-{phase}"
+    _, runner, _, job, name, _ = _capture_route(receipt, family=family)
+    producer = validate_producer(receipt["producer"], f"Original Android {phase} producer")
     if producer["repository"] != _REPOSITORY:
         raise ValueError("Android original producer differs from the fixed repository")
     with tempfile.TemporaryDirectory(prefix="sdk-android-upload-locator-") as temporary:
@@ -67,7 +90,7 @@ def locate_sdk_android_validation_upload(plan_path, validation_receipt_path, *,
 
         unchanged()
         observation = products._observe_ci_producer_jobs(
-            {"android-validation": producer}, jobs_by_phase={"android-validation": job},
+            {family: producer}, jobs_by_phase={family: job},
             trusted_workflow_sha=trusted_workflow_sha, token=token)[0]
         jobs = [value for value in observation["jobs"] if value.get("name") == job]
         if len(jobs) != 1:

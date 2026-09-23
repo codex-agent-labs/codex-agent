@@ -43,7 +43,7 @@ class AndroidOriginalUploadLocatorTest(unittest.TestCase):
         arguments.update(changes)
         with patch.object(locator.products, "_validate_plan", return_value=self.plan), patch(
                 "reuse.api_request", side_effect=official):
-            result = locator.locate_sdk_android_validation_upload(
+            result = getattr(locator, f"locate_sdk_android_{self.phase}_upload")(
                 self.plan_path, self.receipt_path, **arguments)
         return result, requested
 
@@ -61,7 +61,8 @@ class AndroidOriginalUploadLocatorTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "independent caller selection"):
             self.call(expected_receipt_sha256="sha256:" + "0" * 64)
         original = self.receipt_path.read_bytes()
-        self.receipt_path.write_bytes(canonical_json_bytes({**self.receipt, "phase": "metadata"}))
+        other_phase = "metadata" if self.phase == "validation" else "validation"
+        self.receipt_path.write_bytes(canonical_json_bytes({**self.receipt, "phase": other_phase}))
         try:
             with self.assertRaises(ValueError):
                 self.call(expected_receipt_sha256=sha256_bytes(self.receipt_path.read_bytes()))
@@ -102,6 +103,11 @@ class AndroidOriginalUploadLocatorTest(unittest.TestCase):
             self.call(listed=[self.artifact, deepcopy(self.artifact)])
         with self.assertRaisesRegex(ValueError, "detail"):
             self.call(detail={**self.artifact, "digest": "sha256:" + "0" * 64})
+
+
+class AndroidMetadataOriginalUploadLocatorTest(AndroidOriginalUploadLocatorTest):
+    phase = "metadata"
+    required_directories = ("worker", "selection", "originals", "inputs")
 
 
 if __name__ == "__main__":
