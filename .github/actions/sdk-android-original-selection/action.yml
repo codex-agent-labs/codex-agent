@@ -280,8 +280,8 @@ runs:
                   'expectedOriginalRunId': control['expectedOriginalRunId'],
                   'expectedOriginalRunAttempt': control['expectedOriginalRunAttempt']}
         output = Path(os.environ['RUNNER_TEMP']).resolve(strict=True) / 'sdk-android-metadata-original-policy.json'
-        if output == root or root in output.parents:
-            raise ValueError('Android original policy output must be outside the checkout')
+        if not independent(output):
+            raise ValueError('Android original policy output must be outside source and retained state')
         if output.exists() or output.is_symlink():
             raise ValueError('Android original policy output must be fresh')
         descriptor = canonical_json_bytes(policy)

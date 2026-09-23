@@ -78,12 +78,32 @@ class AndroidOriginalSelectionActionTest(unittest.TestCase):
         self.assertLess(source.index("with verified_original_android_firebase_validation("),
                         source.index("with output.open('xb')"))
         self.assertLess(source.index("with output.open('xb')"), source.index("original_policy_path="))
-        self.assertIn("if output == root or root in output.parents:", source)
-        self.assertLess(source.index("if output == root or root in output.parents:"),
+        self.assertIn("if not independent(output):", source)
+        self.assertLess(source.index("if not independent(output):"),
                         source.index("with output.open('xb')"))
         self.assertIn("snapshot_policy_closure(kind, option_paths[name])", source)
         self.assertIn("regular_file_inventory(prepared, allow_empty=True) != selected_before", source)
         self.assertNotIn("locate_android_validation_upload", source)  # Current-run locator cannot authorize historical reuse.
+
+    def test_generated_policy_never_becomes_retained_or_checkout_authority(self):
+        source = self.source()
+        guard = source[source.index("output = Path(os.environ['RUNNER_TEMP'])"):
+                       source.index("if output.exists() or output.is_symlink():")]
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            workspace, discovery, state, independent_root = (
+                base / name for name in ("workspace", "discovery", "state", "independent"))
+            for path in (workspace, discovery, state, independent_root):
+                path.mkdir()
+            retained = (discovery, state)
+            independent = lambda path: all(path != directory and directory not in path.parents
+                                           for directory in (workspace, *retained))
+            for destination in (workspace, discovery, state):
+                with self.subTest(destination=destination), patch.dict(os.environ, {"RUNNER_TEMP": str(destination)}), \
+                        self.assertRaisesRegex(ValueError, "outside source and retained state"):
+                    exec(guard, {"Path": Path, "os": os, "independent": independent})
+            with patch.dict(os.environ, {"RUNNER_TEMP": str(independent_root)}):
+                exec(guard, {"Path": Path, "os": os, "independent": independent})
 
     def test_all_original_control_authority_paths_exclude_retained_state(self):
         source = self.source()
