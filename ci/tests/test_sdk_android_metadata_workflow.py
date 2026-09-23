@@ -316,6 +316,7 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
             original_validation_capture=None,
             validation_artifact_id=17,
             validation_artifact_sha256="sha256:" + "7" * 64,
+            expected_validation_receipt_sha256=sha256_file(self.validation_receipt),
             trusted_workflow_sha="8" * 40,
             trusted_android_workflow_sha="9" * 40,
             expected_original_run_id=self.validation_producer["runId"],
@@ -334,6 +335,7 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
             {"original_validation_capture": None, "validation_artifact_id": 17},
             {"validation_artifact_id": 17,
              "validation_artifact_sha256": "sha256:" + "7" * 64,
+             "expected_validation_receipt_sha256": sha256_file(self.validation_receipt),
              "trusted_workflow_sha": "8" * 40,
              "trusted_android_workflow_sha": "9" * 40,
              "expected_original_run_id": 9,
@@ -348,6 +350,7 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
         observed = dict(
             original_validation_capture=None, validation_artifact_id=17,
             validation_artifact_sha256="sha256:" + "7" * 64,
+            expected_validation_receipt_sha256=sha256_file(self.validation_receipt),
             trusted_workflow_sha="8" * 40, trusted_android_workflow_sha="9" * 40,
             expected_original_run_id=9, expected_original_run_attempt=2, token="")
         with self.assertRaisesRegex(ValueError, "observation token"):
@@ -359,6 +362,7 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
         observed = dict(
             original_validation_capture=None, validation_artifact_id=17,
             validation_artifact_sha256="sha256:" + "7" * 64,
+            expected_validation_receipt_sha256=sha256_file(self.validation_receipt),
             trusted_workflow_sha="8" * 40, trusted_android_workflow_sha="9" * 40,
             expected_original_run_id=9, expected_original_run_attempt=2,
             token="observation-token")
@@ -376,6 +380,21 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
             self.call(destination=destination, **observed)
         self.assertNotIn("finalize", self.events)
         self.assertFalse((destination / "shard").exists())
+
+    def test_successful_worker_receipt_must_match_selected_validation(self):
+        self.expected_pin = "8" * 40
+        with self.assertRaisesRegex(ValueError, "successful worker output"):
+            self.call(
+                destination=self.root / "cross-paired-validation",
+                original_validation_capture=None, validation_artifact_id=17,
+                validation_artifact_sha256="sha256:" + "7" * 64,
+                expected_validation_receipt_sha256="sha256:" + "0" * 64,
+                trusted_workflow_sha="8" * 40,
+                trusted_android_workflow_sha="9" * 40,
+                expected_original_run_id=9, expected_original_run_attempt=2,
+                token="observation-token")
+        self.assertNotIn("reader-enter", self.events)
+        self.assertNotIn("execute", self.events)
 
     def test_gate_failure_or_late_original_mutation_never_finalizes(self):
         self.reader_enter_failure = ValueError("full replay failed")

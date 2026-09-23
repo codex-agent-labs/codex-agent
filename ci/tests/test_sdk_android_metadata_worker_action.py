@@ -47,6 +47,7 @@ class AndroidMetadataWorkerActionTest(unittest.TestCase):
             "javaExecutable": str(path), "apkanalyzerExecutable": str(path),
             "toolingTrustDomain": "development", "toolingKeyring": None, "toolingKeysDirectory": None,
             "validationArtifactId": 12, "validationArtifactSha256": KEY,
+            "validationReceiptSha256": "sha256:" + "f" * 64,
             "trustedAndroidWorkflowSha": "e" * 40, "expectedOriginalRunId": 23,
             "expectedOriginalRunAttempt": 2,
         }
@@ -78,7 +79,8 @@ class AndroidMetadataWorkerActionTest(unittest.TestCase):
             with patch.dict(os.environ, values, clear=True), self.assertRaisesRegex(ValueError, "wave 17"):
                 exec(compile(source, "android-policy", "exec"), {})
             values["SDK_STATE_WAVE"] = "17"
-            for field in ("validationArtifactId", "validationArtifactSha256", "trustedAndroidWorkflowSha",
+            for field in ("validationArtifactId", "validationArtifactSha256", "validationReceiptSha256",
+                          "trustedAndroidWorkflowSha",
                           "expectedOriginalRunId", "expectedOriginalRunAttempt", "binaryContractEvidence"):
                 policy = {key: value for key, value in original.items() if key != field}
                 Path(values["ORIGINAL_POLICY"]).write_bytes(canonical_json_bytes(policy))
@@ -106,14 +108,29 @@ class AndroidMetadataWorkerActionTest(unittest.TestCase):
             digest = (root / "github-output").read_text().strip().split("=", 1)[1]
             plan = root / "plan.json"
             plan.write_text(json.dumps({"validationTree": TREE}))
+            state = root / "state"
+            state.mkdir()
+            (state / "reuse-wave-result.json").write_bytes(canonical_json_bytes({"phases": [{
+                "product": "sdk", "component": "sdk-android", "phase": "validation",
+                "target": "android", "receiptSha256": original["validationReceiptSha256"]}]}))
             row = {"product": "sdk", "component": "sdk-android", "phase": "metadata", "target": "android",
                    "runner": "ubuntu-24.04", "runnerOs": "Linux", "runnerArch": "X64", "buildKey": KEY}
             values.update(MATRIX=json.dumps({"include": [row]}), REQUIRED="true", PLAN=str(plan),
-                          BUILD_KEY=KEY, TREE=TREE, POLICY_SHA256=digest)
+                          STATE=str(state), BUILD_KEY=KEY, TREE=TREE, POLICY_SHA256=digest)
             with patch.dict(os.environ, values, clear=True), patch("native_wrappers.host_classifier", return_value="linux-x64"), patch(
                     "products.sdk_validation_inputs._request_inventory", return_value={}), patch(
                     "products.sdk_android_validation_phase._contract_sources", return_value=({}, {})):
                 exec(compile(source, "android-identity", "exec"), {})
+            (state / "reuse-wave-result.json").write_bytes(canonical_json_bytes({"phases": [{
+                "product": "sdk", "component": "sdk-android", "phase": "validation",
+                "target": "android", "receiptSha256": "sha256:" + "0" * 64}]}))
+            with patch.dict(os.environ, values, clear=True), patch("native_wrappers.host_classifier", return_value="linux-x64"), patch(
+                    "products.sdk_validation_inputs._request_inventory", return_value={}), patch(
+                    "products.sdk_android_validation_phase._contract_sources", return_value=({}, {})), self.assertRaisesRegex(ValueError, "successful worker output"):
+                exec(compile(source, "android-identity", "exec"), {})
+            (state / "reuse-wave-result.json").write_bytes(canonical_json_bytes({"phases": [{
+                "product": "sdk", "component": "sdk-android", "phase": "validation",
+                "target": "android", "receiptSha256": original["validationReceiptSha256"]}]}))
             for changed in ({"target": "common"}, {"runner": "ubuntu-latest"}, {"buildKey": "sha256:" + "0" * 64}):
                 values["MATRIX"] = json.dumps({"include": [{**row, **changed}]})
                 with patch.dict(os.environ, values, clear=True), patch("native_wrappers.host_classifier", return_value="linux-x64"), patch(
@@ -162,6 +179,7 @@ class AndroidMetadataWorkerActionTest(unittest.TestCase):
         script = textwrap.dedent(block.split("        python3 -B - <<'PY'\n", 1)[1].split("\n        PY", 1)[0])
         compile(script, "android-metadata-execute", "exec")
         for flag in ("--validation-artifact-id", "--validation-artifact-sha256",
+                     "--expected-validation-receipt-sha256",
                      "--trusted-workflow-sha", "--trusted-android-workflow-sha",
                      "--expected-original-run-id", "--expected-original-run-attempt",
                      "--binary-contract-evidence", "--trusted-source-commit", "--trusted-source-tree"):

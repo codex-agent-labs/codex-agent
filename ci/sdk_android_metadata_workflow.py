@@ -24,7 +24,7 @@ from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admis
 from products.inventory import (
     canonical_json_bytes, git_product_versions, load_canonical_json_bytes,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys,
-    require_integer, require_semver, require_sha256, run_git,
+    require_integer, require_semver, require_sha256, run_git, sha256_bytes,
     publish_regular_tree, snapshot_regular_tree, write_canonical_json,
 )
 from products.plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST, plan_phase
@@ -251,7 +251,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             tooling_keys_directory=None, sdk_apple_validation_policy=None,
             sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
             original_validation_capture=None, validation_artifact_id=None,
-            validation_artifact_sha256=None, trusted_workflow_sha=None,
+            validation_artifact_sha256=None, expected_validation_receipt_sha256=None,
+            trusted_workflow_sha=None,
             trusted_android_workflow_sha=None, expected_original_run_id=None,
             expected_original_run_attempt=None, token=None):
     """Finalize metadata after selected original validation and full replay agree.
@@ -265,6 +266,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         raise ValueError("Android metadata tooling keyring and directory must be paired")
     observed_values = (
         validation_artifact_id, validation_artifact_sha256,
+        expected_validation_receipt_sha256,
         trusted_workflow_sha, trusted_android_workflow_sha,
         expected_original_run_id, expected_original_run_attempt,
     )
@@ -276,6 +278,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
     if not retained_mode:
         require_integer(validation_artifact_id, "Original Android validation artifact ID", 1)
         require_sha256(validation_artifact_sha256, "Original Android validation artifact digest")
+        require_sha256(expected_validation_receipt_sha256, "Original Android validation receipt")
         require_integer(expected_original_run_id, "Original Android validation run ID", 1)
         require_integer(expected_original_run_attempt, "Original Android validation run attempt", 1)
         if type(token) is not str or not token:
@@ -330,6 +333,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             "retained": retained_mode,
             "validationArtifactId": validation_artifact_id,
             "validationArtifactSha256": validation_artifact_sha256,
+            "validationReceiptSha256": expected_validation_receipt_sha256,
             "trustedWorkflowSha": trusted_workflow_sha,
             "trustedAndroidWorkflowSha": trusted_android_workflow_sha,
             "expectedOriginalRunId": expected_original_run_id,
@@ -357,6 +361,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
                         "retained": retained_mode,
                         "validationArtifactId": validation_artifact_id,
                         "validationArtifactSha256": validation_artifact_sha256,
+                        "validationReceiptSha256": expected_validation_receipt_sha256,
                         "trustedWorkflowSha": trusted_workflow_sha,
                         "trustedAndroidWorkflowSha": trusted_android_workflow_sha,
                         "expectedOriginalRunId": expected_original_run_id,
@@ -430,6 +435,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         selected = inputs / "sdk-sdk-android-validation-android"
         selected_receipt_path = selected / PHASE_RECEIPT_NAME
         selected_bytes = _read(selected_receipt_path)
+        if not retained_mode and sha256_bytes(selected_bytes) != expected_validation_receipt_sha256:
+            raise ValueError("Android validation predecessor differs from successful worker output")
         validation = product_reuse.validate_phase_receipt(load_canonical_json_bytes(selected_bytes))
         bindings.update(validation=validation, validationBytes=selected_bytes)
         if (tuple(validation[name] for name in ("product", "component", "phase", "target")) !=
@@ -571,6 +578,7 @@ def main(argv=None):
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     parser.add_argument("--original-validation-capture", type=Path)
     parser.add_argument("--validation-artifact-id", type=int)
+    parser.add_argument("--expected-validation-receipt-sha256")
     for name in ("validation-artifact-sha256", "trusted-workflow-sha", "trusted-android-workflow-sha"):
         parser.add_argument("--" + name)
     parser.add_argument("--expected-original-run-id", type=int)

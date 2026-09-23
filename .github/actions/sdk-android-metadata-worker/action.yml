@@ -81,13 +81,15 @@ runs:
             'compatibilityRequest', 'binaryContractEvidence', 'trustedSourceCommit', 'trustedSourceTree',
             'toolingEvidence', 'toolingPublicKey', 'javaExecutable', 'apkanalyzerExecutable',
             'toolingTrustDomain', 'toolingKeyring', 'toolingKeysDirectory', 'validationArtifactId',
-            'validationArtifactSha256', 'trustedAndroidWorkflowSha', 'expectedOriginalRunId',
+            'validationArtifactSha256', 'validationReceiptSha256',
+            'trustedAndroidWorkflowSha', 'expectedOriginalRunId',
             'expectedOriginalRunAttempt'}, 'Android metadata original policy')
         if type(policy['schemaVersion']) is not int or policy['schemaVersion'] != 1:
             raise ValueError('Android metadata original policy schema is unsupported')
         for field in ('validationArtifactId', 'expectedOriginalRunId', 'expectedOriginalRunAttempt'):
             require_integer(policy[field], 'Android metadata ' + field, 1)
         require_sha256(policy['validationArtifactSha256'], 'Android original validation artifact')
+        require_sha256(policy['validationReceiptSha256'], 'Android original validation receipt')
         for field in ('trustedSourceCommit', 'trustedSourceTree', 'trustedAndroidWorkflowSha'):
             if type(policy[field]) is not str or re.fullmatch(r'[0-9a-f]{40}', policy[field]) is None:
                 raise ValueError('Android metadata source and workflow pins must be exact Git SHAs')
@@ -154,6 +156,7 @@ runs:
         MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
         REQUIRED: ${{ steps.captured.outputs.sdk-workers-required }}
         PLAN: ${{ steps.captured.outputs.plan-path }}
+        STATE: ${{ steps.captured.outputs.state-root }}
         BUILD_KEY: ${{ inputs.build-key }}
         TREE: ${{ inputs.tree }}
         ORIGINAL_POLICY: ${{ inputs.original-policy }}
@@ -212,6 +215,14 @@ runs:
         with open(os.environ['PLAN']) as source:
             if json.load(source)['validationTree'] != tree:
                 raise ValueError('Android metadata tree differs from authenticated plan')
+        selected = load_canonical_json_bytes(read_regular_file_bytes(
+            Path(os.environ['STATE']) / 'reuse-wave-result.json', reject_symlink_parents=True))
+        validation = [row for row in selected['phases'] if
+            tuple(row.get(field) for field in ('product', 'component', 'phase', 'target')) ==
+            ('sdk', 'sdk-android', 'validation', 'android')]
+        if (len(validation) != 1 or validation[0].get('receiptSha256') !=
+                original['validationReceiptSha256']):
+            raise ValueError('Android validation receipt differs from successful worker output')
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
         PY
@@ -290,6 +301,7 @@ runs:
             '--required-trust-domain': original['toolingTrustDomain'],
             '--validation-artifact-id': str(original['validationArtifactId']),
             '--validation-artifact-sha256': original['validationArtifactSha256'],
+            '--expected-validation-receipt-sha256': original['validationReceiptSha256'],
             '--trusted-android-workflow-sha': original['trustedAndroidWorkflowSha'],
             '--expected-original-run-id': str(original['expectedOriginalRunId']),
             '--expected-original-run-attempt': str(original['expectedOriginalRunAttempt'])}
