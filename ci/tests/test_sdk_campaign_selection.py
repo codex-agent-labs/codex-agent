@@ -8,7 +8,7 @@ from ci.products.index import IndexEntrySource
 from ci.products.receipt import write_output_manifest
 from ci.products.restore import finalize_phase_object
 from ci.products.sdk_campaign_selection import (
-    SDK_CAMPAIGN_INSTANCES, verify_sdk_campaign_selection,
+    SDK_CAMPAIGN_INSTANCES, held_sdk_campaign_selection, verify_sdk_campaign_selection,
 )
 from ci.tests.product_chain_support import write_receipt
 
@@ -82,6 +82,38 @@ class SdkCampaignSelectionTest(unittest.TestCase):
                     self.archives, self.stages)
         finally:
             file.write_bytes(original)
+
+    def test_held_selection_uses_private_exact_stages_and_detects_late_change(self):
+        first = min(SDK_CAMPAIGN_INSTANCES)
+        with held_sdk_campaign_selection(self.sources, self.envelopes,
+                self.archives, self.stages) as (sources, envelopes, stages, receipts):
+            self.assertEqual(set(stages), SDK_CAMPAIGN_INSTANCES)
+            self.assertEqual(sources[first].receipt_bytes, self.sources[first].receipt_bytes)
+            self.assertEqual(envelopes[first], self.envelopes[first])
+            self.assertEqual(receipts[first]["productVersion"], "0.8.0")
+            self.assertNotEqual(stages[first], self.stages[first])
+            self.assertEqual((stages[first] / "outputs/fixture/content.bin").read_bytes(),
+                             (self.stages[first] / "outputs/fixture/content.bin").read_bytes())
+        with self.assertRaisesRegex(ValueError, "Held SDK campaign selection changed"):
+            with held_sdk_campaign_selection(self.sources, self.envelopes,
+                    self.archives, self.stages) as (_, _, stages, _):
+                (stages[first] / "outputs/fixture/content.bin").write_bytes(b"changed")
+        extra = self.stages[first] / "unrelated-file"
+        try:
+            with self.assertRaisesRegex(ValueError, "Held SDK campaign selection changed"):
+                with held_sdk_campaign_selection(self.sources, self.envelopes,
+                        self.archives, self.stages):
+                    extra.write_bytes(b"late")
+        finally:
+            extra.unlink(missing_ok=True)
+        original_digest = self.envelopes[first]["objectSha256"]
+        try:
+            with self.assertRaises(ValueError):
+                with held_sdk_campaign_selection(self.sources, self.envelopes,
+                        self.archives, self.stages):
+                    self.envelopes[first]["objectSha256"] = "sha256:" + "0" * 64
+        finally:
+            self.envelopes[first]["objectSha256"] = original_digest
 
 
 if __name__ == "__main__":

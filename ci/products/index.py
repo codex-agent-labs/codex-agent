@@ -689,15 +689,17 @@ def build_product_index(
         "producer": producer,
     })
     if index["context"]["kind"] == "pull-request":
-        if index["trustDomain"] != "development":
-            raise ValueError("Pull-request product index requires development trust")
-        pull_request = index["context"]["pullRequest"]
-        if any(
-            receipt["producer"]["event"] != "pull_request"
-            or receipt["producer"]["pullRequest"] != pull_request
-            for _, receipt, _ in pairs
-        ):
-            raise ValueError("Pull-request product index contains a receipt from another context")
+        if index["trustDomain"] == "release":
+            if not all(release_admitted for _, _, release_admitted in pairs):
+                raise ValueError("Release-trust pull-request index requires every SDK phase to be admitted")
+        else:
+            pull_request = index["context"]["pullRequest"]
+            if any(
+                receipt["producer"]["event"] != "pull_request"
+                or receipt["producer"]["pullRequest"] != pull_request
+                for _, receipt, _ in pairs
+            ):
+                raise ValueError("Pull-request product index contains a receipt from another context")
     elif any(
         receipt["producer"]["event"] != "push" and not release_admitted
         for _, receipt, release_admitted in pairs

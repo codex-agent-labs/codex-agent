@@ -1002,6 +1002,24 @@ class ProductIndexTest(unittest.TestCase):
             build_product_index(sdk_sources, repository=REPOSITORY,
                 context=context("development"), trust_domain="release",
                 signing=self.release_signing, producer=producer("development"), stable_history=None)
+        admitted = []
+        for position, original in enumerate(sdk_sources):
+            value = load_canonical_json_bytes(original.receipt_bytes)
+            if position == 0:
+                value["producer"] = producer("release")
+                original = IndexEntrySource(canonical_json_bytes(value), original.artifact_path)
+            identity = tuple(value[field] for field in ("product", "component", "phase", "target"))
+            token = product_index._mint_release_admission(original, value, original.receipt_bytes, identity)
+            admitted.append(IndexEntrySource(original.receipt_bytes, original.artifact_path, token))
+        campaign = build_product_index(admitted, repository=REPOSITORY,
+            context=context("development"), trust_domain="release",
+            signing=self.release_signing, producer=producer("development"), stable_history=None)
+        self.assertEqual("release", campaign["trustDomain"])
+        self.assertEqual(len(sdk_sources), len(campaign["entries"]))
+        with self.assertRaisesRegex(ValueError, "receipt trust domain does not match"):
+            build_product_index([*admitted[:-1], sdk_sources[-1]], repository=REPOSITORY,
+                context=context("development"), trust_domain="release",
+                signing=self.release_signing, producer=producer("development"), stable_history=None)
 
     def test_prior_stable_same_version_with_different_bytes_is_rejected(self) -> None:
         first = self.root / "first" / "product-index.json"
