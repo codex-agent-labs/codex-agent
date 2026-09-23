@@ -1,9 +1,12 @@
 """Synthetic sidecar checks, not protected-run or real PGP acceptance."""
 
 import hashlib
+import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -11,7 +14,9 @@ from unittest.mock import patch
 from ci.products.inventory import sha256_bytes
 from ci.products.inventory import snapshot_regular_tree as actual_snapshot_regular_tree
 from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
-from ci.products.runtime_phase10_maven import verify_runtime_phase10_maven
+from ci.products.runtime_phase10_maven import (
+    produce_runtime_phase10_maven_sidecars, verify_runtime_phase10_maven,
+)
 from ci.tests.test_product_runtime_aggregate import Fixture
 
 
@@ -105,6 +110,50 @@ class RuntimePhase10MavenTest(unittest.TestCase):
                 )
             gpg.assert_not_called()
 
+    def test_producer_rejects_changed_snapshot_without_publishing(self):
+        primary = next(source for source in self.fixture.maven_inputs if source["role"] != "checksum")
+        output = self.sidecars.with_name("unpublished-sidecars")
+
+        def substitute(source, destination):
+            actual_snapshot_regular_tree(source, destination)
+            (Path(destination) / primary["path"]).write_bytes(b"different snapshot bytes\n")
+
+        with patch("ci.products.runtime_phase10_maven.snapshot_regular_tree", side_effect=substitute), \
+                patch("ci.products.runtime_phase10_maven.subprocess.run") as gpg:
+            with self.assertRaisesRegex(ValueError, "snapshot differs"):
+                produce_runtime_phase10_maven_sidecars(
+                    self.payload, self.manifest, output, self.key,
+                    sha256_bytes(self.key.read_bytes()), self.payload.parent,
+                    _FINGERPRINT, "",
+                )
+            gpg.assert_not_called()
+        self.assertFalse(output.exists())
+
+    def test_producer_rejects_invalid_payload_before_using_signer(self):
+        checksum = next(source for source in self.fixture.maven_inputs if source["role"] == "checksum")
+        (self.payload / checksum["path"]).write_bytes(b"stale checksum\n")
+        output = self.sidecars.with_name("unpublished-sidecars")
+        with patch("ci.products.runtime_phase10_maven.subprocess.run") as gpg:
+            with self.assertRaisesRegex(ValueError, "Maven bytes"):
+                produce_runtime_phase10_maven_sidecars(
+                    self.payload, self.manifest, output, self.key,
+                    sha256_bytes(self.key.read_bytes()), self.payload.parent,
+                    _FINGERPRINT, "",
+                )
+            gpg.assert_not_called()
+        self.assertFalse(output.exists())
+
+    def test_cli_help_needs_no_pythonpath(self):
+        environment = os.environ.copy()
+        environment.pop("PYTHONPATH", None)
+        result = subprocess.run(
+            [sys.executable, "-m", "ci.products.runtime_phase10_maven", "--help"],
+            cwd=Path(__file__).resolve().parents[2], env=environment,
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("--signing-fingerprint", result.stdout)
+
     def test_changed_primary_and_unpinned_key_fail(self):
         with self.assertRaisesRegex(ValueError, "pinned bytes"):
             verify_runtime_phase10_maven(
@@ -141,7 +190,7 @@ class RuntimePhase10MavenTest(unittest.TestCase):
             )
 
     @unittest.skipUnless(shutil.which("gpg"), "GnuPG unavailable")
-    def test_real_gpg_round_trip_and_mutated_signature(self):
+    def test_real_gpg_produces_external_sidecars_without_rewriting_payload(self):
         home = Path(self.temporary.name) / "fixture-gnupg"
         home.mkdir(mode=0o700)
         command = ["gpg", "--homedir", str(home), "--batch", "--no-tty",
@@ -156,27 +205,40 @@ class RuntimePhase10MavenTest(unittest.TestCase):
             check=True, capture_output=True, timeout=60,
         ).stdout
         self.key.write_bytes(exported)
-        signatures = []
-        for source in self.fixture.maven_inputs:
-            if source["role"] == "checksum":
-                continue
-            signature = self.sidecars / (source["path"] + ".asc")
-            signed = subprocess.run(
-                [*command, "--yes", "--armor", "--detach-sign", "--output", str(signature),
-                 str(self.payload / source["path"])],
-                capture_output=True, timeout=60,
-            )
-            self.assertEqual(0, signed.returncode, signed.stderr.decode())
-            signatures.append(signature)
-            for suffix in CONTRACT_CHECKSUM_SUFFIXES:
-                signature.with_name(signature.name + suffix).write_bytes(
-                    (hashlib.new(suffix[1:], signature.read_bytes()).hexdigest() + "\n").encode(),
-                )
-        result = verify_runtime_phase10_maven(
-            self.payload, self.manifest, self.sidecars, self.key, sha256_bytes(exported),
+        fingerprint_listing = subprocess.run(
+            [*command, "--with-colons", "--fingerprint", "--list-secret-keys"],
+            check=True, capture_output=True, timeout=60,
+        ).stdout.decode()
+        fingerprint = next(line.split(":")[9] for line in fingerprint_listing.splitlines()
+                           if line.startswith("fpr:"))
+        original_payload = {path.relative_to(self.payload): path.read_bytes()
+                            for path in self.payload.rglob("*") if path.is_file()}
+        produced = self.sidecars.with_name("produced-sidecars")
+        environment = os.environ.copy()
+        environment.pop("PYTHONPATH", None)
+        executed = subprocess.run(
+            [sys.executable, "-m", "ci.products.runtime_phase10_maven",
+             "--payload", str(self.payload), "--aggregate-manifest", str(self.manifest),
+             "--sidecars", str(produced), "--pgp-public-key", str(self.key),
+             "--pgp-public-key-sha256", sha256_bytes(exported),
+             "--signing-home", str(home), "--signing-fingerprint", fingerprint],
+            cwd=Path(__file__).resolve().parents[2], env=environment,
+            input="", capture_output=True, text=True, timeout=120,
         )
-        self.assertEqual(len(signatures) * 5, len(result["sidecarFiles"]))
-        damaged = signatures[0]
+        self.assertEqual(0, executed.returncode, executed.stderr)
+        result = json.loads(executed.stdout)
+        self.assertEqual(original_payload, {path.relative_to(self.payload): path.read_bytes()
+                                            for path in self.payload.rglob("*") if path.is_file()})
+        self.assertEqual(fingerprint, result["pgpPublicKey"]["fingerprint"])
+        self.assertEqual(result["sidecarFiles"], verify_runtime_phase10_maven(
+            self.payload, self.manifest, produced, self.key, sha256_bytes(exported),
+        )["sidecarFiles"])
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            produce_runtime_phase10_maven_sidecars(
+                self.payload, self.manifest, produced, self.key, sha256_bytes(exported),
+                home, fingerprint, "",
+            )
+        damaged = next(produced.rglob("*.asc"))
         damaged.write_bytes(damaged.read_bytes().replace(b"A", b"B", 1))
         for suffix in CONTRACT_CHECKSUM_SUFFIXES:
             damaged.with_name(damaged.name + suffix).write_bytes(
@@ -184,7 +246,7 @@ class RuntimePhase10MavenTest(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "PGP verification failed"):
             verify_runtime_phase10_maven(
-                self.payload, self.manifest, self.sidecars, self.key, sha256_bytes(exported),
+                self.payload, self.manifest, produced, self.key, sha256_bytes(exported),
             )
 
 
