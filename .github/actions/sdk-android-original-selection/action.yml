@@ -63,6 +63,10 @@ runs:
             regular_file_inventory, require_exact_keys, require_integer, require_sha256, sha256_bytes, sha256_file)
         from products.registry import PhaseInstanceId
         from products.sdk_android_validation_phase import _contract_sources
+        from products.sdk_android_metadata_admission import _policy_arguments as android_metadata_arguments
+        from products.sdk_apple_validation_admission import apple_validation_policy_arguments
+        from products.sdk_facade_inputs import _request as facade_request
+        from products.sdk_facade_metadata_admission import _arguments as core_metadata_arguments
         from products.sdk_validation_inputs import _request_inventory
         from products.signing_isolation import require_no_signing_secret
         from ci.sdk_policy_snapshot import snapshot_policy_closure
@@ -73,18 +77,57 @@ runs:
         if host_classifier() != 'linux-x64':
             raise ValueError('Android original selection requires the exact Linux X64 host')
         root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        retained = (Path(os.environ['DISCOVERY']).resolve(strict=True),
+                    Path(os.environ['STATE']).resolve(strict=True))
+        def independent(path):
+            return all(path != directory and directory not in path.parents
+                       for directory in (root, *retained))
         source = Path(os.environ['ORIGINAL_CONTROL'])
-        if not source.is_absolute() or source.resolve(strict=True) != source or source == root or root in source.parents:
-            raise ValueError('Android original control must be independently supplied outside source')
+        if not source.is_absolute() or source.resolve(strict=True) != source or not independent(source):
+            raise ValueError('Android original control must be independently supplied outside source and retained state')
         names = {'APPLE_POLICY': 'apple-validation', 'CORE_METADATA_POLICY': 'core-metadata',
                  'ANDROID_METADATA_POLICY': 'android-metadata'}
         option_paths = {}
         for name in names:
             if os.environ[name]:
                 path = Path(os.environ[name])
-                if not path.is_absolute() or path.resolve(strict=True) != path or path == root or root in path.parents:
-                    raise ValueError('Android original admission policy must be external')
+                if not path.is_absolute() or path.resolve(strict=True) != path or not independent(path):
+                    raise ValueError('Android original admission policy must be external to source and retained state')
                 option_paths[name] = path
+        def optional_authorities(kind, path):
+            policy = load_canonical_json_bytes(read_regular_file_bytes(path, reject_symlink_parents=True))
+            if kind == 'apple-validation':
+                arguments = apple_validation_policy_arguments(policy)
+                return {value for name, value in arguments.items()
+                        if name != 'plan' and isinstance(value, Path)}
+            descriptor = require_exact_keys(policy, {'evidenceRoot', 'records', 'policy'},
+                                            'Android original optional admission descriptor')
+            if kind == 'android-metadata':
+                arguments = android_metadata_arguments(descriptor['policy'])
+                selected = {arguments[name] for name in (
+                    'compatibility_request', 'tooling_evidence', 'tooling_public_key',
+                    'java_executable', 'apkanalyzer_executable', 'tooling_keyring',
+                    'tooling_keys_directory') if arguments[name] is not None}
+                trees, files = _contract_sources(arguments['binary_contract_evidence'])
+                selected.update((*trees.values(), *files.values()))
+                selected.update(_request_inventory(arguments['compatibility_request']))
+                return selected
+            arguments = core_metadata_arguments(descriptor['policy'])
+            selected = {arguments[name] for name in (
+                'tooling_evidence', 'tooling_public_key', 'java_executable',
+                'tooling_keyring', 'tooling_keys_directory') if arguments[name] is not None}
+            for original in arguments['validations'].values():
+                request_path = Path(original['facadeRequest'])
+                selected.add(request_path)
+                if 'nativeCompilerArchive' in original:
+                    selected.add(Path(original['nativeCompilerArchive']))
+                request, _ = facade_request(request_path)
+                selected.add(Path(request['compatibilityRequest']))
+                selected.update(_request_inventory(Path(request['compatibilityRequest'])))
+                for name in ('binaryContractEvidence', 'validationContractEvidence'):
+                    trees, files = _contract_sources(request[name])
+                    selected.update((*trees.values(), *files.values()))
+            return selected
         raw = read_regular_file_bytes(source, reject_symlink_parents=True)
         control = require_exact_keys(load_canonical_json_bytes(raw), {
             'schemaVersion', 'validationReceiptSha256', 'validationArtifactId', 'validationArtifactSha256',
@@ -109,16 +152,16 @@ runs:
         for name in ('compatibilityRequest', 'binaryContractEvidence', 'toolingEvidence',
                      'toolingPublicKey', 'javaExecutable', 'apkanalyzerExecutable'):
             path = Path(control[name]) if type(control[name]) is str else None
-            if path is None or not path.is_absolute() or path.resolve(strict=True) != path:
-                raise ValueError('Android original caller paths must be absolute and non-symbolic')
+            if path is None or not path.is_absolute() or path.resolve(strict=True) != path or not independent(path):
+                raise ValueError('Android original caller authority must be external to source and retained state')
         for name in ('toolingKeyring', 'toolingKeysDirectory'):
             if control[name] is not None:
                 path = Path(control[name]) if type(control[name]) is str else None
-                if path is None or not path.is_absolute() or path.resolve(strict=True) != path:
-                    raise ValueError('Android original tooling key paths must be absolute and non-symbolic')
+                if path is None or not path.is_absolute() or path.resolve(strict=True) != path or not independent(path):
+                    raise ValueError('Android original tooling authority must be external to source and retained state')
         contract = Path(control['binaryContractEvidence'])
-        if contract == root or root in contract.parents:
-            raise ValueError('Android original Contract authority must be outside source')
+        if not independent(contract):
+            raise ValueError('Android original Contract authority must be outside source and retained state')
         plan = Path(os.environ['PLAN'])
         current = product_reuse._validate_plan(plan, root)
         if (current['validationTree'] != os.environ['TREE']
@@ -139,8 +182,12 @@ runs:
                 trees.add(Path(control['toolingKeysDirectory']))
             files.update(_request_inventory(Path(control['compatibilityRequest'])))
             for path in trees | files:
-                if not path.is_absolute() or path.resolve(strict=True) != path:
-                    raise ValueError('Android original transitive caller path changed')
+                if not path.is_absolute() or path.resolve(strict=True) != path or not independent(path):
+                    raise ValueError('Android original transitive caller authority must be external to source and retained state')
+            for name, kind in names.items():
+                if name in option_paths and any(not independent(path)
+                        for path in optional_authorities(kind, option_paths[name])):
+                    raise ValueError('Android original optional admission authority must be external to source and retained state')
             snapshot = {'files': {str(path): sha256_file(path, reject_symlink_parents=True) for path in sorted(files)},
                         'trees': {str(path): regular_file_inventory(path, allow_empty=True) for path in sorted(trees)},
                         'admissions': {name: snapshot_policy_closure(kind, option_paths[name])
