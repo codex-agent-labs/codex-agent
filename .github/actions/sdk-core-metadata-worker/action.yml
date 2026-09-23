@@ -24,7 +24,7 @@ inputs:
     description: Exact tested source tree.
   sdk-facade-metadata-policy:
     required: true
-    description: Caller-owned descriptor produced from a signed catalog and all eleven original validations.
+    description: Caller-owned fresh policy with eleven original validations and no metadata receipt locator.
   sdk-apple-validation-policy:
     default: ''
     description: Optional independently supplied Apple replay policy.
@@ -47,7 +47,7 @@ runs:
         import os, sys
         from pathlib import Path
         sys.path.insert(0, str(Path.cwd() / 'ci'))
-        from products.inventory import canonical_json_bytes, sha256_bytes
+        from products.inventory import canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes
         from products.signing_isolation import require_no_signing_secret
         from ci.sdk_policy_snapshot import snapshot_policy_closure
         require_no_signing_secret(os.environ)
@@ -66,6 +66,11 @@ runs:
             path = Path(value)
             if not path.is_absolute() or path.resolve(strict=True) != path or path == root or root in path.parents:
                 raise ValueError('Core metadata caller policy must be external, absolute and non-symbolic')
+            if name == 'CORE_POLICY':
+                descriptor = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(path,
+                    reject_symlink_parents=True)), {'evidenceRoot', 'records', 'policy'}, 'Fresh Core metadata descriptor')
+                if descriptor['records'] != []:
+                    raise ValueError('Fresh Core metadata must not claim a metadata receipt or reuse admission')
             digests[name] = snapshot_policy_closure(kind, path)
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('policy_sha256=' + sha256_bytes(canonical_json_bytes(digests)) + '\n')
@@ -80,7 +85,6 @@ runs:
         artifact-sha256: ${{ inputs.artifact-sha256 }}
         sdk-state-wave: ${{ inputs.sdk-state-wave }}
         trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
-        sdk-facade-metadata-policy: ${{ inputs.sdk-facade-metadata-policy }}
         sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
         sdk-android-metadata-policy: ${{ inputs.sdk-android-metadata-policy }}
     - id: identity
@@ -171,10 +175,15 @@ runs:
         if held_policy_digest() != os.environ['POLICY_SHA256']:
             raise ValueError('Core metadata caller policy changed before execution')
         descriptor = require_exact_keys(load_canonical_json_bytes(raw), {'evidenceRoot', 'records', 'policy'}, 'Core metadata descriptor')
+        if descriptor['records'] != []:
+            raise ValueError('Fresh Core metadata must not claim a metadata receipt or reuse admission')
         policy = _arguments(descriptor['policy'])
         plan = Path(os.environ['PLAN'])
         current = product_reuse._validate_plan(plan, root)
-        options = {'plan': plan, 'repository_root': root, 'sdk_facade_metadata_policy': policy_path}
+        # The fresh metadata phase has no selected metadata receipt yet. Keep
+        # the reuse-only Core admission out of both state capture and replay;
+        # the controller joins and replays all eleven elected validations.
+        options = {'plan': plan, 'repository_root': root}
         if os.environ['ANDROID_POLICY']:
             options['sdk_android_metadata_policy'] = Path(os.environ['ANDROID_POLICY'])
         apple = (product_reuse._canonical_control(Path(os.environ['APPLE_POLICY']), 'Caller Apple validation policy')

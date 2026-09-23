@@ -37,6 +37,8 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
         self.assertLess(self.action.index("- id: identity"), self.action.index("uses: ./.github/actions/setup-kmp"))
         self.assertIn("sdk-family: core-metadata", self.action)
         self.assertIn("sdk-state-wave: ${{ inputs.sdk-state-wave }}", self.action)
+        capture = self.action.split("- id: captured", 1)[1].split("- id: identity", 1)[0]
+        self.assertNotIn("sdk-facade-metadata-policy:", capture)
         source = self.source("policy")
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -62,6 +64,23 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
             Path(values["CORE_POLICY"]).write_bytes(policy.read_bytes())
             with patch.dict(os.environ, values, clear=True), self.assertRaisesRegex(ValueError, "external"):
                 exec(compile(source, "core-policy", "exec"), {})
+
+    def test_fresh_policy_rejects_self_referential_metadata_receipt(self):
+        source = self.source("policy")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            workspace = root / "workspace"
+            workspace.mkdir()
+            policy = root / "policy.json"
+            policy.write_bytes(canonical_json_bytes({"evidenceRoot": str(root / "evidence"),
+                "records": [{"receiptSha256": KEY, "captureRoot": "metadata"}], "policy": {}}))
+            values = {"GITHUB_WORKSPACE": str(workspace), "GITHUB_OUTPUT": str(root / "github-output"),
+                "SDK_STATE_WAVE": "13", "CORE_POLICY": str(policy), "APPLE_POLICY": "", "ANDROID_POLICY": ""}
+            with patch.dict(os.environ, values, clear=True), patch(
+                    "ci.sdk_policy_snapshot.snapshot_policy_closure") as snapshot, \
+                    self.assertRaisesRegex(ValueError, "must not claim a metadata receipt"):
+                exec(compile(source, "core-policy", "exec"), {})
+            snapshot.assert_not_called()
 
     def test_exact_common_election_and_linux_host(self):
         source = self.source("identity")
@@ -119,6 +138,8 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
                          "contract_digest=policy['contract_digest']", "component_digests=policy['component_digests']",
                          "policy_revision=current['validationCommit']", "**admissions"):
             self.assertIn(required, source)
+        self.assertNotIn("'sdk_facade_metadata_policy': policy_path", source)
+        self.assertIn("if descriptor['records'] != []:", source)
         self.assertGreaterEqual(self.action.count("snapshot_policy_closure(kind, "), 3)
         self.assertIn("if: always() && steps.identity.outcome == 'success'", self.action)
         self.assertIn("attempt-${{ github.run_attempt }}", self.action)

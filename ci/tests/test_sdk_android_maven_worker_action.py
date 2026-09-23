@@ -131,10 +131,10 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
                 self.assertIn("--android-runtime-archive", args)
                 self.assertIn("--component", args)
                 self.assertEqual("sdk-android", args[args.index("--component") + 1])
+                self.assertEqual("c" * 40, args[args.index("--trusted-workflow-sha") + 1])
                 if phase == "binary":
                     for flag in ("--sdk-inputs-artifact-id", "--binary-artifact-id",
-                                 "--binary-contract-evidence", "--binary-original-context",
-                                 "--trusted-workflow-sha"):
+                                 "--binary-contract-evidence", "--binary-original-context"):
                         self.assertNotIn(flag, args)
                 else:
                     for flag in ("--sdk-inputs-artifact-id", "--binary-artifact-id",
