@@ -158,6 +158,32 @@ def _contract(original, receipt, evidence):
     return version
 
 
+def _binary_origin(original, context, evidence, contract_version):
+    """Bind producer-recorded paths and Contract locators to independent proof."""
+    selected = original / "selection"
+    if _json(selected / "original-context.json") != context:
+        raise ValueError("Original Maven binary context differs from the producer record")
+    locator = require_exact_keys(_json(selected / "original-contract-locator.json"),
+        {"contractVersion", "sourceEvidence", "handoffRelativePath", "handoffInventory",
+         "metadataStageRelativePath", "metadataStageInventory", "metadataReceiptRelativePath",
+         "metadataReceiptSha256"}, "Original Maven Contract locator")
+    handoff = original / "inputs/contract-input"
+    metadata = original / "inputs/predecessors/contract-contract-metadata-common"
+    source = require_exact_keys(locator["sourceEvidence"], _EVIDENCE_FIELDS,
+                                "Original Maven producer Contract source")
+    if (locator["contractVersion"] != contract_version
+            or source["expectedTrustDomain"] != evidence["expectedTrustDomain"]
+            or locator["handoffRelativePath"] != "inputs/contract-input"
+            or locator["metadataStageRelativePath"] !=
+               "inputs/predecessors/contract-contract-metadata-common/stage"
+            or locator["metadataReceiptRelativePath"] !=
+               "inputs/predecessors/contract-contract-metadata-common/phase-receipt.json"
+            or locator["handoffInventory"] != _inventory(handoff)
+            or locator["metadataStageInventory"] != _inventory(metadata / "stage")
+            or locator["metadataReceiptSha256"] != sha256_file(metadata / "phase-receipt.json")):
+        raise ValueError("Original Maven binary Contract locator differs from independent proof")
+
+
 @contextmanager
 def verified_original_maven_phase(plan, receipt_path, *, artifact_id, artifact_sha256, trusted_workflow_sha,
         binary_contract_evidence, original_context, repository_root, environ, token,
@@ -285,6 +311,8 @@ def _verified_maven_phase(plan, receipt_path, *, capture_root, binary_contract_e
                         or _json(directory / "producer.json") != receipt["producer"]):
                     raise ValueError("Original Maven retained election differs from its receipt")
             contract_version = _contract(original, receipt, evidence)
+            if phase == "binary":
+                _binary_origin(original, context, evidence, contract_version)
             archive_name = None
             if android_runtime_archive is not None and phase == "binary":
                 archive_name = Path(android_runtime_archive).name

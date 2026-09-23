@@ -89,6 +89,21 @@ class MavenOriginalTest(unittest.TestCase):
             upstream=[], context={"producer": self.producer})
         return {"stage": stage, "receiptPath": receipt_path, "receipt": receipt}
 
+    def binary_locators(self, binary_root, context):
+        selected = binary_root / "selection"
+        metadata = binary_root / "inputs/predecessors/contract-contract-metadata-common"
+        handoff = binary_root / "inputs/contract-input"
+        write_canonical_json(selected / "original-context.json", context)
+        write_canonical_json(selected / "original-contract-locator.json", {
+            "contractVersion": "0.8.7", "sourceEvidence": self.evidence,
+            "handoffRelativePath": "inputs/contract-input",
+            "handoffInventory": original._inventory(handoff),
+            "metadataStageRelativePath": "inputs/predecessors/contract-contract-metadata-common/stage",
+            "metadataStageInventory": original._inventory(metadata / "stage"),
+            "metadataReceiptRelativePath": "inputs/predecessors/contract-contract-metadata-common/phase-receipt.json",
+            "metadataReceiptSha256": sha256_file(metadata / "phase-receipt.json"),
+        })
+
     def prepare(self, component="sdk-core", phase="binary"):
         self.component, self.phase = component, phase
         target = "common" if component == "sdk-core" else "android"
@@ -124,6 +139,7 @@ class MavenOriginalTest(unittest.TestCase):
             handoff = self.original / "inputs/contract-input"
             snapshot_regular_tree(self.auth, handoff)
             (handoff / (stem + ".zip")).write_bytes((self.contracts["metadata"]["stage"] / "outputs" / (stem + ".zip")).read_bytes())
+            self.binary_locators(self.original, self.context)
             if component == "sdk-android":
                 archive = self.original / "android-original" / self.archive.name
                 archive.parent.mkdir()
@@ -199,6 +215,7 @@ class MavenOriginalTest(unittest.TestCase):
         snapshot_regular_tree(self.auth, handoff)
         stem = "codex-agent-contract-0.8.7"
         (handoff / (stem + ".zip")).write_bytes((self.contracts["metadata"]["stage"] / "outputs" / (stem + ".zip")).read_bytes())
+        self.binary_locators(binary_root, self.binary_context)
         finalize_phase_object(stage_root=self.binary["stage"],
             phase_plan={name: receipt[name] for name in original.PHASE_PLAN_KEYS}, producer=self.producer,
             product_version="0.8.7", trust_domain="development", destination=binary_root / "shard")
@@ -299,7 +316,7 @@ class MavenOriginalTest(unittest.TestCase):
 
     def test_fixed_command_requires_independent_original_context(self):
         self.prepare()
-        with self.assertRaisesRegex(ValueError, "fixed offline command"), self.call(
+        with self.assertRaisesRegex(ValueError, "producer record"), self.call(
                 original_context={**self.context, "repositoryRoot": "/old"}):
             pass
         self.binary_gate.assert_not_called()
@@ -309,6 +326,26 @@ class MavenOriginalTest(unittest.TestCase):
         write_canonical_json(path, value)
         with self.assertRaisesRegex(ValueError, "fixed offline command"), self.call():
             pass
+
+    def test_binary_producer_locator_must_match_original_contract_and_context(self):
+        self.prepare()
+        selected = self.original / "selection"
+        context = selected / "original-context.json"
+        locator = selected / "original-contract-locator.json"
+        for path, change in ((context, lambda value: {**value, "workerRoot": "/wrong"}),
+                             (locator, lambda value: {**value, "metadataReceiptSha256": "sha256:" + "0" * 64}),
+                             (locator, lambda value: {**value, "handoffInventory": []})):
+            with self.subTest(path=path, change=change):
+                raw = path.read_bytes()
+                write_canonical_json(path, change(original._json(path)))
+                with self.assertRaisesRegex(ValueError, "producer record|Contract locator"), self.call():
+                    pass
+                path.write_bytes(raw)
+        locator.unlink()
+        with self.assertRaises((OSError, ValueError)):
+            with self.call():
+                pass
+        self.binary_gate.assert_not_called()
 
     def test_caller_contract_and_android_archive_cannot_be_replaced(self):
         self.prepare("sdk-android")
