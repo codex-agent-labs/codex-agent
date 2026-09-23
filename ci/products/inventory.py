@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import ctypes
+import errno
 import fnmatch
 import hashlib
 import json
@@ -11,6 +13,7 @@ import secrets
 import stat
 import struct
 import subprocess
+import sys
 import tempfile
 from typing import Any, Iterable, NoReturn
 import zipfile
@@ -776,28 +779,23 @@ def snapshot_regular_tree(source: Path, destination: Path, *, allow_empty: bool 
             os.close(parent_descriptor)
 
 
-def _remove_directory_contents(descriptor: int) -> None:
-    for name in os.listdir(descriptor):
-        metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
-            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-            child = os.open(name, flags, dir_fd=descriptor)
-            try:
-                _remove_directory_contents(child)
-            finally:
-                os.close(child)
-            os.rmdir(name, dir_fd=descriptor)
-        else:
-            os.unlink(name, dir_fd=descriptor)
-
-
-def _remove_directory_link(parent: int, descriptor: int) -> None:
-    identity = os.fstat(descriptor)
-    for name in os.listdir(parent):
-        metadata = os.stat(name, dir_fd=parent, follow_symlinks=False)
-        if (metadata.st_dev, metadata.st_ino) == (identity.st_dev, identity.st_ino):
-            os.rmdir(name, dir_fd=parent)
-            return
+def _rename_directory_noreplace(source_name: str, destination_name: str, parent: int) -> None:
+    """Atomically publish in one held directory, failing closed on unsupported hosts."""
+    if sys.platform == "darwin":
+        symbol, flag = "renameatx_np", 0x4  # RENAME_EXCL
+    elif sys.platform.startswith("linux"):
+        symbol, flag = "renameat2", 0x1  # RENAME_NOREPLACE
+    else:
+        raise OSError(errno.ENOTSUP, "Atomic no-replace directory rename is unavailable")
+    library = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(library, symbol, None)
+    if rename is None:
+        raise OSError(errno.ENOTSUP, "Atomic no-replace directory rename is unavailable")
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    if rename(parent, os.fsencode(source_name), parent, os.fsencode(destination_name), flag) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), destination_name)
 
 
 def publish_regular_tree(source: Path, destination: Path, *, allow_empty: bool = False) -> None:
@@ -816,7 +814,6 @@ def publish_regular_tree(source: Path, destination: Path, *, allow_empty: bool =
     parent_descriptor: int | None = None
     staged_descriptor: int | None = None
     staged_name: str | None = None
-    published = False
     try:
         source_inventory = _directory_inventory(source_descriptor, allow_empty=allow_empty)
         parent_descriptor = _open_directory(destination.parent, "Snapshot destination", create=True)
@@ -856,41 +853,22 @@ def publish_regular_tree(source: Path, destination: Path, *, allow_empty: bool =
             pass
         else:
             raise ValueError(f"Snapshot destination must not exist: {destination}")
-        os.rename(
-            staged_name,
-            destination.name,
-            src_dir_fd=parent_descriptor,
-            dst_dir_fd=parent_descriptor,
-        )
+        try:
+            _rename_directory_noreplace(staged_name, destination.name, parent_descriptor)
+        except FileExistsError as error:
+            raise ValueError("Snapshot destination appeared during publication") from error
         published_named = os.stat(
             destination.name, dir_fd=parent_descriptor, follow_symlinks=False,
         )
         if _stat_identity(published_named) != _stat_identity(os.fstat(staged_descriptor)):
-            rejected_descriptor = os.open(
-                destination.name,
-                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-                dir_fd=parent_descriptor,
-            )
-            try:
-                if _stat_identity(published_named) == _stat_identity(os.fstat(rejected_descriptor)):
-                    _remove_directory_contents(rejected_descriptor)
-            finally:
-                os.close(rejected_descriptor)
-            try:
-                os.rmdir(destination.name, dir_fd=parent_descriptor)
-            except FileNotFoundError:
-                pass
             raise ValueError("Snapshot staging directory changed during publication")
         if _directory_inventory(staged_descriptor, allow_empty=allow_empty) != staged_inventory:
             raise ValueError("Snapshot contents changed during publication")
-        published = True
     finally:
         os.close(source_descriptor)
         if staged_descriptor is not None:
-            if not published:
-                _remove_directory_contents(staged_descriptor)
-                if parent_descriptor is not None:
-                    _remove_directory_link(parent_descriptor, staged_descriptor)
+            # A name can be replaced after an inode check. Retain failed
+            # staging diagnostics rather than delete an unrelated directory.
             os.close(staged_descriptor)
         if parent_descriptor is not None:
             os.close(parent_descriptor)

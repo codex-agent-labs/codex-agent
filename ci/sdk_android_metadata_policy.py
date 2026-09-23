@@ -17,8 +17,7 @@ if __package__:
 
 import product_reuse
 from products.inventory import (
-    _directory_inventory, _open_directory, _remove_directory_contents,
-    _remove_directory_link, _stat_identity,
+    _directory_inventory, _open_directory, _stat_identity,
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_regular_directory,
     write_canonical_json,
@@ -266,28 +265,8 @@ def create_sdk_android_metadata_policy(
             finally:
                 os.close(published_descriptor)
         except BaseException as error:
-            # The destination was proven fresh and this invocation published it.
-            # Remove only its still-open exact inode if the held official reader
-            # rejects during exit; never erase a replaced or mutated path.
-            if published_identity is not None:
-                published_descriptor = parent_descriptor = None
-                try:
-                    published_descriptor = _open_directory(
-                        output, "Published Android metadata policy rollback")
-                    if (_stat_identity(os.fstat(published_descriptor)) == published_identity
-                            and _directory_inventory(published_descriptor) ==
-                            published_descriptor_inventory):
-                        parent_descriptor = _open_directory(
-                            output.parent, "Android metadata policy output parent")
-                        _remove_directory_contents(published_descriptor)
-                        _remove_directory_link(parent_descriptor, published_descriptor)
-                except (FileNotFoundError, ValueError):
-                    pass
-                finally:
-                    if published_descriptor is not None:
-                        os.close(published_descriptor)
-                    if parent_descriptor is not None:
-                        os.close(parent_descriptor)
+            # No atomic compare-and-rmdir exists here. A rejected publication
+            # stays as diagnostics; consumers must use only a successful return.
             try:
                 unchanged()
             except BaseException as mutation:

@@ -3278,7 +3278,9 @@ class ProductReuseAdapterTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "interrupted snapshot"):
                 product_inventory.publish_regular_tree(source, destination)
         self.assertFalse(destination.exists())
-        self.assertEqual([], list(root.glob(".published-snapshot-*")))
+        failed = list(root.glob(".published-snapshot-*"))
+        self.assertEqual(1, len(failed))
+        self.assertEqual(b"partial", (failed[0] / "partial.txt").read_bytes())
 
         product_inventory.publish_regular_tree(source, destination)
         self.assertEqual(b"complete", (destination / "complete.txt").read_bytes())
@@ -3307,7 +3309,9 @@ class ProductReuseAdapterTest(unittest.TestCase):
         ), self.assertRaisesRegex(ValueError, "parent changed"):
             product_inventory.publish_regular_tree(source, destination)
         self.assertFalse((outside / "published").exists())
-        self.assertEqual([], list(moved_parent.iterdir()))
+        failed = list(moved_parent.glob(".published-snapshot-*"))
+        self.assertEqual(1, len(failed))
+        self.assertEqual(b"complete", (failed[0] / "complete.txt").read_bytes())
 
     def test_contract_advance_publication_rejects_a_replaced_staging_entry(self) -> None:
         root = self.root.resolve()
@@ -3318,12 +3322,14 @@ class ProductReuseAdapterTest(unittest.TestCase):
         parent.mkdir()
         destination = parent / "published"
         real_rename = os.rename
+        publish = product_inventory._rename_directory_noreplace
 
-        def replace_staging(source_name, destination_name, **kwargs) -> None:
+        def replace_staging(source_name, destination_name, parent_descriptor) -> None:
             held_name = f"{source_name}-held"
-            real_rename(source_name, held_name, **kwargs)
+            real_rename(source_name, held_name, src_dir_fd=parent_descriptor,
+                        dst_dir_fd=parent_descriptor)
             staged = product_inventory._open_created_directory(
-                kwargs["src_dir_fd"], source_name, 0o700, "replacement",
+                parent_descriptor, source_name, 0o700, "replacement",
             )
             try:
                 evil = os.open(
@@ -3333,13 +3339,49 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 os.close(evil)
             finally:
                 os.close(staged)
-            real_rename(source_name, destination_name, **kwargs)
+            publish(source_name, destination_name, parent_descriptor)
 
-        with mock.patch.object(os, "rename", side_effect=replace_staging), \
+        with mock.patch.object(product_inventory, "_rename_directory_noreplace", side_effect=replace_staging), \
                 self.assertRaisesRegex(ValueError, "changed during publication"):
             product_inventory.publish_regular_tree(source, destination)
-        self.assertFalse(destination.exists())
-        self.assertEqual([], list(parent.iterdir()))
+        self.assertEqual(b"evil", (destination / "evil").read_bytes())
+        held = list(parent.glob(".published-snapshot-*-held"))
+        self.assertEqual(1, len(held))
+        self.assertEqual(b"complete", (held[0] / "complete.txt").read_bytes())
+
+    def test_contract_advance_publication_preserves_empty_foreign_directory(self) -> None:
+        root = self.root.resolve()
+        source = root / "source-empty-replacement"
+        source.mkdir()
+        (source / "complete.txt").write_bytes(b"complete")
+        parent = root / "empty-replacement-parent"
+        parent.mkdir()
+        destination = parent / "published"
+        real_rename = os.rename
+        publish = product_inventory._rename_directory_noreplace
+        foreign_identity = None
+
+        def replace_with_empty(source_name, destination_name, parent_descriptor):
+            nonlocal foreign_identity
+            real_rename(source_name, f"{source_name}-held", src_dir_fd=parent_descriptor,
+                        dst_dir_fd=parent_descriptor)
+            foreign = product_inventory._open_created_directory(
+                parent_descriptor, source_name, 0o700, "foreign replacement")
+            try:
+                foreign_identity = os.fstat(foreign).st_ino
+            finally:
+                os.close(foreign)
+            publish(source_name, destination_name, parent_descriptor)
+
+        with mock.patch.object(product_inventory, "_rename_directory_noreplace", side_effect=replace_with_empty), \
+                self.assertRaisesRegex(ValueError, "changed during publication"):
+            product_inventory.publish_regular_tree(source, destination)
+        self.assertTrue(destination.is_dir())
+        self.assertEqual(foreign_identity, destination.stat().st_ino)
+        self.assertEqual([], list(destination.iterdir()))
+        held = list(parent.glob(".published-snapshot-*-held"))
+        self.assertEqual(1, len(held))
+        self.assertEqual(b"complete", (held[0] / "complete.txt").read_bytes())
 
     def test_contract_advance_publication_rejects_staging_content_mutation(self) -> None:
         root = self.root.resolve()
@@ -3349,23 +3391,22 @@ class ProductReuseAdapterTest(unittest.TestCase):
         parent = root / "content-parent"
         parent.mkdir()
         destination = parent / "published"
-        real_rename = os.rename
+        publish = product_inventory._rename_directory_noreplace
 
-        def mutate_staging(source_name, destination_name, **kwargs) -> None:
+        def mutate_staging(source_name, destination_name, parent_descriptor) -> None:
             descriptor = os.open(
                 f"{source_name}/complete.txt",
                 os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
-                dir_fd=kwargs["src_dir_fd"],
+                dir_fd=parent_descriptor,
             )
             os.write(descriptor, b"evil")
             os.close(descriptor)
-            real_rename(source_name, destination_name, **kwargs)
+            publish(source_name, destination_name, parent_descriptor)
 
-        with mock.patch.object(os, "rename", side_effect=mutate_staging), \
+        with mock.patch.object(product_inventory, "_rename_directory_noreplace", side_effect=mutate_staging), \
                 self.assertRaisesRegex(ValueError, "contents changed during publication"):
             product_inventory.publish_regular_tree(source, destination)
-        self.assertFalse(destination.exists())
-        self.assertEqual([], list(parent.iterdir()))
+        self.assertEqual(b"evil", (destination / "complete.txt").read_bytes())
 
     def test_contract_advance_publication_rejects_post_copy_mutation(self) -> None:
         root = self.root.resolve()
@@ -3390,7 +3431,9 @@ class ProductReuseAdapterTest(unittest.TestCase):
         ), self.assertRaisesRegex(ValueError, "do not match the source"):
             product_inventory.publish_regular_tree(source, destination)
         self.assertFalse(destination.exists())
-        self.assertEqual([], list(destination.parent.iterdir()))
+        failed = list(destination.parent.glob(".published-snapshot-*"))
+        self.assertEqual(1, len(failed))
+        self.assertEqual(b"evil", (failed[0] / "complete.txt").read_bytes())
 
     def test_contract_advance_publication_preserves_directory_modes(self) -> None:
         root = self.root.resolve()

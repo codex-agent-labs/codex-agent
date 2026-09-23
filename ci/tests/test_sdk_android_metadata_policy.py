@@ -131,19 +131,18 @@ class AndroidMetadataPolicyTest(unittest.TestCase):
         self.plan.assert_called_once()
         self.loader.assert_called_once_with(self.evidence)
 
-    def test_official_gate_failure_or_late_input_mutation_never_leaves_policy(self):
+    def test_official_gate_failure_retains_unaccepted_policy_for_caller_cleanup(self):
         self.exit_failure = "official Firebase recheck failed"
         with self.assertRaisesRegex(ValueError, "official Firebase"):
             self.call()
-        self.assertFalse(self.destination.exists())
+        self.assertTrue((self.destination / policy.POLICY_NAME).is_file())
 
-        self.events.clear()
-        self.exit_failure = None
+    def test_late_input_mutation_retains_unaccepted_policy_for_caller_cleanup(self):
         original = self.f.plan.read_bytes()
         self.exit_mutation = lambda: self.f.plan.write_bytes(b"late changed plan")
         with self.assertRaisesRegex(ValueError, "inputs changed"):
             self.call()
-        self.assertFalse(self.destination.exists())
+        self.assertTrue((self.destination / policy.POLICY_NAME).is_file())
         self.f.plan.write_bytes(original)
 
     def test_byte_identical_replacement_is_not_deleted_on_reader_exit_failure(self):
