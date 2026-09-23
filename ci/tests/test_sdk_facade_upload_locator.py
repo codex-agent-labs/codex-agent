@@ -1,6 +1,8 @@
 """Core original locators over synthetic official API responses; no network."""
 
 from copy import deepcopy
+from contextlib import redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -25,9 +27,9 @@ class CoreUploadLocatorTest(unittest.TestCase):
         self.requests = []
         self.select("validation", "jvm")
 
-    def select(self, phase, target):
-        self.receipt_path = self.f.work / f"core-{phase}-{target}.json"
-        self.receipt = write_receipt(self.receipt_path, product="sdk", component="sdk-core",
+    def select(self, phase, target, component="sdk-core"):
+        self.receipt_path = self.f.work / f"{component}-{phase}-{target}.json"
+        self.receipt = write_receipt(self.receipt_path, product="sdk", component=component,
             phase=phase, target=target,
             outputs=[output("fixture", "outputs/example.bin", b"example")], upstream=[],
             context={"producer": self.f.producer}, version="0.8.0", version_identity="0.8.0")
@@ -50,6 +52,50 @@ class CoreUploadLocatorTest(unittest.TestCase):
                 "expected_receipt_sha256": sha256_bytes(self.receipt_path.read_bytes()),
                 "trusted_workflow_sha": self.f.pin, "token": "synthetic-token",
                 "environ": self.environment, **changes})
+
+    def call_maven(self, **changes):
+        with patch("reuse.api_request", side_effect=self.api):
+            return locator.locate_original_maven_upload(self.receipt_path, **{
+                "expected_receipt_sha256": sha256_bytes(self.receipt_path.read_bytes()),
+                "trusted_workflow_sha": self.f.pin, "token": "synthetic-token",
+                "environ": self.environment, **changes})
+
+    def test_maven_binary_and_package_use_only_original_fixed_routes(self):
+        for component, target in (("sdk-core", "common"), ("sdk-android", "android")):
+            for phase in ("binary", "package"):
+                with self.subTest(component=component, phase=phase):
+                    self.select(phase, target, component)
+                    self.assertEqual({"artifact_id": 701, "artifact_sha256": self.f.artifact["digest"]},
+                                     self.call_maven())
+        self.assertFalse(any("/runs/999" in url or url.endswith("/zip") for url in self.requests))
+        self.select("validation", "jvm")
+        with patch.object(locator, "_locate") as observe, self.assertRaises(ValueError):
+            self.call_maven()
+        observe.assert_not_called()
+
+    def test_maven_requires_independently_pinned_receipt_and_official_upload(self):
+        self.select("binary", "common")
+        with patch.object(locator, "_locate") as observe, self.assertRaisesRegex(
+                ValueError, "independent caller selection"):
+            self.call_maven(expected_receipt_sha256="sha256:" + "0" * 64)
+        observe.assert_not_called()
+        self.listing = []
+        with self.assertRaises(ValueError):
+            self.call_maven()
+
+    def test_maven_cli_selects_only_the_maven_locator(self):
+        self.select("binary", "common")
+        output = io.StringIO()
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "synthetic-token"}, clear=True), \
+                patch.object(locator, "locate_original_maven_upload", return_value={
+                    "artifact_id": 701, "artifact_sha256": self.f.artifact["digest"]}) as maven, \
+                patch.object(locator, "locate_original_facade_upload") as facade, redirect_stdout(output):
+            self.assertEqual(0, locator.main(["--maven", "--receipt", str(self.receipt_path),
+                "--expected-receipt-sha256", sha256_bytes(self.receipt_path.read_bytes()),
+                "--trusted-workflow-sha", self.f.pin]))
+        self.assertEqual(701, json.loads(output.getvalue())["artifact_id"])
+        self.assertEqual("synthetic-token", maven.call_args.kwargs["token"])
+        facade.assert_not_called()
 
     def test_independent_selected_receipt_digest_is_required_before_official_observation(self):
         with patch.object(locator, "_locate") as observe, self.assertRaisesRegex(
