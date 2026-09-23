@@ -39,6 +39,11 @@ class CoreMetadataWorkflowTest(unittest.TestCase):
                       "sdk-apple-validation-policy", "keyring", "keys-directory", "build-key", "tree"):
             self.assertIn(field + ":", worker)
         self.assertIn("select_native_state(json.loads(os.environ['RESULTS']), stage='core-metadata')", result)
+        for field in ("metadata_original_context", "metadata_receipt_sha256",
+                      "metadata_artifact_id", "metadata_artifact_sha256"):
+            self.assertIn(field + ": ${{ steps.result.outcome == 'success' && ", result)
+            self.assertIn("needs.sdk-core-metadata.outputs." + field, result)
+        self.assertNotIn("sdk-facade-metadata-policy", result)
         self.assertIn("sdk-core-metadata-result", job("sdk-completion").split("    needs:", 1)[1].split("\n", 1)[0])
 
 
