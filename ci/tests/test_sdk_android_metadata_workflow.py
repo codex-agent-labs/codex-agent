@@ -148,6 +148,7 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
         self.java = self.root / "caller/java"; self.java.write_bytes(b"java")
         self.analyzer = self.root / "caller/apkanalyzer"; self.analyzer.write_bytes(b"analyzer")
         self.events = []
+        self.expected_pin = None
         self.admissions = {}
         self.reader_arguments = None
         self.reader_enter_failure = self.reader_exit_failure = None
@@ -185,12 +186,14 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
 
     def verified_state(self, *args, **kwargs):
         self.events.append("state")
+        self.assertEqual(self.expected_pin, kwargs["sdk_original_workflow_sha"])
         self.assert_admissions(kwargs)
         return SimpleNamespace(prior_ready_plans={workflow._INSTANCE: deepcopy(self.metadata_plan)},
             producer=deepcopy(self.current), expected_fixed={"versions": {"sdk": self.version}})
 
     def materialize(self, plan, discovery, state, instance, destination, **kwargs):
         self.events.append("materialize")
+        self.assertEqual(self.expected_pin, kwargs["sdk_original_workflow_sha"])
         self.assert_admissions(kwargs)
         destination.mkdir(parents=True)
         selected = destination / "sdk-sdk-android-validation-android"
@@ -308,6 +311,7 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
         self.assertNotIn("metadata_admission", (self.destination / "selection/phase-plan.json").read_text())
 
     def test_observed_original_reader_uses_explicit_caller_pins_and_run(self):
+        self.expected_pin = "8" * 40
         result = self.call(
             original_validation_capture=None,
             validation_artifact_id=17,
@@ -351,6 +355,7 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
         self.assertNotIn("state", self.events)
 
     def test_observed_reader_failure_or_exit_never_publishes(self):
+        self.expected_pin = "8" * 40
         observed = dict(
             original_validation_capture=None, validation_artifact_id=17,
             validation_artifact_sha256="sha256:" + "7" * 64,

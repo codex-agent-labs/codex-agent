@@ -141,6 +141,7 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
         self.events.append("materialize")
         self.assertEqual(workflow._INSTANCE, instance)
         self.assertEqual(self.ready["buildKey"], kwargs["expected_build_key"])
+        self.assertEqual(self.arguments["trusted_workflow_sha"], kwargs["sdk_original_workflow_sha"])
         self.assertIs(self.apple_policy, kwargs["sdk_apple_validation_policy"])
         actual = {name: kwargs[name] for name in (
             "sdk_facade_metadata_admission", "sdk_android_metadata_admission") if name in kwargs}

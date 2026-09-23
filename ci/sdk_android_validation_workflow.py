@@ -215,7 +215,8 @@ def execute(
     ready = product_reuse.materialize_product_predecessors(
         plan, discovery, state, _INSTANCE, destination / "inputs",
         expected_build_key=expected_build_key, repository_root=root, environ=environ,
-        sdk_validation_tooling=tooling, **apple, **admissions)
+        sdk_validation_tooling=tooling, sdk_original_workflow_sha=trusted_workflow_sha,
+        **apple, **admissions)
     selected_inventory = regular_file_inventory(destination / "inputs", allow_empty=True)
     producer = product_reuse.validate_producer(product_reuse._canonical_control(
         destination / "inputs/producer.json", "Elected Android validation producer"))

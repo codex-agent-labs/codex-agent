@@ -391,7 +391,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         # Keep the whole selected flow under one lifetime guard.  In particular,
         # failures before publication must still recheck every caller-owned input.
         verified = product_reuse._verified_product_state(
-            plan, discovery, state, root, environ, tooling, **apple, **admissions)
+            plan, discovery, state, root, environ, tooling,
+            sdk_original_workflow_sha=trusted_workflow_sha, **apple, **admissions)
         ready = verified.prior_ready_plans.get(_INSTANCE)
         if ready is None or ready["buildKey"] != expected_build_key:
             raise ValueError("Android metadata is not ready with the elected build key")
@@ -406,7 +407,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         materialized = product_reuse.materialize_product_predecessors(
             plan, discovery, state, _INSTANCE, inputs, expected_build_key=expected_build_key,
             repository_root=root, environ=environ, sdk_validation_tooling=tooling,
-            **apple, **admissions)
+            sdk_original_workflow_sha=trusted_workflow_sha, **apple, **admissions)
         materialized_bytes = canonical_json_bytes(materialized)
         bindings.update(materialized=materialized, materializedBytes=materialized_bytes)
         if materialized != ready or _read(inputs / "phase-plan.json") != ready_bytes:
