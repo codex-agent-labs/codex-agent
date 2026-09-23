@@ -331,10 +331,15 @@ API status_t codex_agent_runtime_identity(char *buffer, size_t *inout_size) {
         default: break;
     }
     if (inout_size == NULL) return 1;
+    if (atomic_load(&identity_mode) == 9 && buffer == NULL) {
+        *inout_size = 65537u;
+        return 9;
+    }
     const size_t required = strlen(identity) + 1u;
     const size_t capacity = *inout_size;
     *inout_size = required;
     if (buffer == NULL || capacity < required) return 9;
+    if (atomic_load(&identity_mode) == 10) return 9;
     memcpy(buffer, identity, required);
     return 0;
 }

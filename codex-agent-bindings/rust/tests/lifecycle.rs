@@ -437,6 +437,8 @@ fn lifecycle_state_failure_cancellation_identity_and_ownership() {
         (6, "malformed identity"),
         (7, "actual/declared ABI mismatch"),
         (8, "wrong ABI major"),
+        (9, "oversized identity measurement"),
+        (10, "failed identity copy"),
     ] {
         set(control.set_identity_mode, mode);
         let error = CodexNativeLibrary::load(path)
