@@ -18,7 +18,7 @@ if __package__:
 import product_reuse
 import sdk_workflow
 from products.inventory import (load_canonical_json_bytes, publish_regular_tree,
-    read_regular_file_bytes, regular_file_inventory, require_sha256,
+    read_regular_file_bytes, regular_file_inventory, require_sha256, sha256_bytes,
     snapshot_regular_tree, write_canonical_json)
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
 from products.registry import PhaseInstanceId, SDK_FACADE_TARGETS
@@ -32,6 +32,7 @@ from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admis
 
 _BINARY = PhaseInstanceId("sdk", "sdk-core", "binary", "common")
 _PACKAGE = PhaseInstanceId("sdk", "sdk-core", "package", "common")
+_METADATA = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
 _CONTRACT = PhaseInstanceId("contract", "contract", "metadata", "common")
 
 
@@ -40,13 +41,14 @@ def prepare(plan, discovery, state, destination, *, target, expected_build_key,
             keyring, keys_directory, repository_root, environ, token,
             native_compiler_archive=None, sdk_validation_tooling=None,
             sdk_apple_validation_policy=None, sdk_facade_metadata_admission=None,
-            sdk_android_metadata_admission=None):
+            sdk_android_metadata_admission=None, expected_metadata_build_key=None):
     """Write an exact facade request; never read authority from a retained request."""
     require_no_signing_secret(environ)
     if target not in SDK_FACADE_TARGETS:
         raise ValueError("Core validation requires a supported target")
     archive = _native_archive_path(target, native_compiler_archive)
-    if archive is not None and target not in ("macos-arm64", "ios-arm64", "ios-simulator-arm64"):
+    if (archive is not None and expected_metadata_build_key is None
+            and target not in ("macos-arm64", "ios-arm64", "ios-simulator-arm64")):
         raise ValueError("Core native validation has no reviewed archive policy for this host")
     require_sha256(expected_build_key, "Core validation elected key")
     require_sha256(sdk_inputs_artifact_sha256, "Original S858 upload digest")
@@ -69,9 +71,18 @@ def prepare(plan, discovery, state, destination, *, target, expected_build_key,
     verified = product_reuse._verified_product_state(plan, discovery, state, root, environ,
         sdk_validation_tooling, sdk_original_workflow_sha=trusted_workflow_sha,
         **{name: value for name, value in policies.items() if name != "sdk_validation_tooling"})
-    elected = verified.prior_ready_plans.get(instance)
-    if elected is None or elected["buildKey"] != expected_build_key:
-        raise ValueError("Core validation is not ready with its exact elected key")
+    if expected_metadata_build_key is None:
+        selected_instance, selected_key = instance, expected_build_key
+    else:
+        selected_instance, selected_key = _METADATA, require_sha256(
+            expected_metadata_build_key, "Core metadata elected key")
+        validation = verified.prior_by_instance.get(instance)
+        if (validation is None or validation["state"] != "retained"
+                or validation["buildKey"] != expected_build_key or instance not in verified.sources):
+            raise ValueError("Core metadata requires its exact retained validation original")
+    elected = verified.prior_ready_plans.get(selected_instance)
+    if elected is None or elected["buildKey"] != selected_key:
+        raise ValueError("Core validation or metadata is not ready with its exact elected key")
     if any(verified.prior_by_instance.get(phase, {}).get("state") != "retained"
            or phase not in verified.sources for phase in (_BINARY, _PACKAGE, _CONTRACT)):
         raise ValueError("Core validation requires same-campaign retained package, binary and Contract")
@@ -97,9 +108,18 @@ def prepare(plan, discovery, state, destination, *, target, expected_build_key,
             raise ValueError("Core validation lacks Git-authoritative release trust")
         predecessors = prepared / "predecessors"
         ready = product_reuse._materialize_product_predecessors(
-            verified, instance, predecessors, expected_build_key, root)
+            verified, selected_instance, predecessors, selected_key, root)
         if ready != elected:
             raise ValueError("Core validation predecessor election changed")
+        if expected_metadata_build_key is not None:
+            retained = predecessors / f"sdk-sdk-core-validation-{target}/phase-receipt.json"
+            retained_bytes = read_regular_file_bytes(retained, reject_symlink_parents=True)
+            original_receipt = validate_phase_receipt(load_canonical_json_bytes(retained_bytes))
+            if (tuple(original_receipt[name] for name in ("product", "component", "phase", "target")) !=
+                    ("sdk", "sdk-core", "validation", target)
+                    or original_receipt["buildKey"] != expected_build_key
+                    or sha256_bytes(retained_bytes) != validation["receiptSha256"]):
+                raise ValueError("Core metadata predecessor differs from its selected validation original")
 
         def original(product, component, phase, source_target):
             if (product, component, source_target) != ("contract", "contract", "common"):

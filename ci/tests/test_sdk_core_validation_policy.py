@@ -155,6 +155,32 @@ class CoreValidationPolicyTests(unittest.TestCase):
         self.assertEqual(request["binaryContractEvidence"], request["validationContractEvidence"])
         self.assertEqual("release", request["validationContractEvidence"]["expectedTrustDomain"])
 
+    def test_metadata_mode_elects_ready_metadata_and_exact_retained_validation(self):
+        instance = policy.PhaseInstanceId("sdk", "sdk-core", "validation", "jvm")
+        selected = {phase: {"state": "retained"} for phase in
+                    (policy._BINARY, policy._PACKAGE, policy._CONTRACT)}
+        selected[instance] = {"state": "retained", "buildKey": _KEY,
+                              "receiptSha256": "sha256:" + "c" * 64}
+        verified = SimpleNamespace(prior_ready_plans={policy._METADATA: {"buildKey": _KEY}},
+            prior_by_instance=selected, sources={phase: object() for phase in selected},
+            rebased_request={"contractEvidence": {"expectedTrustDomain": "release"}},
+            plan={"validationCommit": "b" * 40})
+        with (patch.object(policy.product_reuse, "_verified_product_state", return_value=verified),
+              patch.object(policy.product_reuse, "_release_trust", return_value=SimpleNamespace(
+                  keyring=self.root / "keyring.json", keys=self.root / "keys")),
+              patch.object(policy.product_reuse, "_materialize_product_predecessors",
+                           side_effect=RuntimeError("selected metadata closure")) as materialized,
+              self.assertRaisesRegex(RuntimeError, "selected metadata closure")):
+            policy.prepare(**self.args(expected_metadata_build_key=_KEY))
+        self.assertEqual(policy._METADATA, materialized.call_args.args[1])
+        self.assertEqual(_KEY, materialized.call_args.args[3])
+        selected[instance]["state"] = "reused"
+        with (patch.object(policy.product_reuse, "_verified_product_state", return_value=verified),
+              patch.object(policy.product_reuse, "_materialize_product_predecessors") as materialized,
+              self.assertRaisesRegex(ValueError, "exact retained validation")):
+            policy.prepare(**self.args(expected_metadata_build_key=_KEY))
+        materialized.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
