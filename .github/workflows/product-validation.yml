@@ -5459,6 +5459,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     outputs:
+      metadata_build_key: ${{ steps.metadata.outputs.metadata-artifact-id != '' && matrix.buildKey || '' }}
       metadata_original_context: ${{ steps.metadata.outputs.metadata-original-context }}
       metadata_receipt_sha256: ${{ steps.metadata.outputs.metadata-receipt-sha256 }}
       metadata_artifact_id: ${{ steps.metadata.outputs.metadata-artifact-id }}
@@ -5595,6 +5596,7 @@ jobs:
       artifact_digest: ${{ steps.result.outputs.artifact_digest }}
       state_wave: ${{ steps.result.outputs.state_wave }}
       sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
+      metadata_build_key: ${{ steps.result.outcome == 'success' && needs.sdk-core-metadata.result == 'success' && needs.sdk-core-metadata.outputs.metadata_build_key || '' }}
       metadata_original_context: ${{ steps.result.outcome == 'success' && needs.sdk-core-metadata.result == 'success' && needs.sdk-core-metadata.outputs.metadata_original_context || '' }}
       metadata_receipt_sha256: ${{ steps.result.outcome == 'success' && needs.sdk-core-metadata.result == 'success' && needs.sdk-core-metadata.outputs.metadata_receipt_sha256 || '' }}
       metadata_artifact_id: ${{ steps.result.outcome == 'success' && needs.sdk-core-metadata.result == 'success' && needs.sdk-core-metadata.outputs.metadata_artifact_id || '' }}

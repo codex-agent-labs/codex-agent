@@ -32,6 +32,7 @@ class CoreMetadataWorkflowTest(unittest.TestCase):
         self.assertEqual(5, worker.count("$(native_archive "))
         self.assertLess(worker.index("ci.sdk_core_native_archive_provision"),
                         worker.index("uses: ./.github/actions/sdk-core-metadata-worker"))
+        self.assertIn("metadata_build_key: ${{ steps.metadata.outputs.metadata-artifact-id != '' && matrix.buildKey || '' }}", worker)
         for target in ("ios-arm64", "ios-simulator-arm64", "linux-arm64", "linux-x64",
                        "macos-arm64", "macos-x64", "windows-x64"):
             self.assertIn("native-compiler-archive-" + target + ":", worker)
@@ -39,6 +40,8 @@ class CoreMetadataWorkflowTest(unittest.TestCase):
                       "sdk-apple-validation-policy", "keyring", "keys-directory", "build-key", "tree"):
             self.assertIn(field + ":", worker)
         self.assertIn("select_native_state(json.loads(os.environ['RESULTS']), stage='core-metadata')", result)
+        self.assertIn("metadata_build_key: ${{ steps.result.outcome == 'success' && ", result)
+        self.assertIn("needs.sdk-core-metadata.outputs.metadata_build_key", result)
         for field in ("metadata_original_context", "metadata_receipt_sha256",
                       "metadata_artifact_id", "metadata_artifact_sha256"):
             self.assertIn(field + ": ${{ steps.result.outcome == 'success' && ", result)
