@@ -41,10 +41,11 @@ class CoreNativeArchiveProvisionTest(unittest.TestCase):
         self.destination = self.base / NAME
         self.payload = b"pinned native archive fixture"
 
-    def sources(self, *, payload=None, include_archive=True):
+    def sources(self, *, payload=None, include_archive=True, target="macos-arm64"):
         payload = self.payload if payload is None else payload
         digest = hashlib.sha256(payload).hexdigest()
-        artifact = (f'<artifact name="{NAME}"><sha256 value="{digest}"/></artifact>'
+        name = f"kotlin-native-prebuilt-{VERSION}-{provider._SUFFIXES[target]}.tar.gz"
+        artifact = (f'<artifact name="{name}"><sha256 value="{digest}"/></artifact>'
                     if include_archive else "")
         return {
             provider.VERSION_CATALOG: b'[versions]\nkotlin = "2.3.10"\n',
@@ -73,19 +74,25 @@ class CoreNativeArchiveProvisionTest(unittest.TestCase):
         return result
 
     def test_three_macos_arm64_routes_publish_exact_git_pinned_archive(self):
-        for target in sorted(provider._TARGETS):
+        for target in ("macos-arm64", "ios-arm64", "ios-simulator-arm64"):
             with self.subTest(target=target):
                 result = self.run_provider(target=target)
                 self.assertEqual([URL], self.download_urls)
                 self.assertEqual(self.payload, result.read_bytes())
                 result.unlink()
 
-    def test_four_other_native_routes_fail_before_retrieval(self):
+    def test_four_other_native_routes_require_their_own_git_pin_before_retrieval(self):
         for target in ("macos-x64", "linux-arm64", "linux-x64", "windows-x64"):
-            with self.subTest(target=target), self.assertRaisesRegex(ValueError, "no reviewed pin"):
-                self.run_provider(target=target)
-            self.assertEqual([], self.download_urls)
-            self.assertFalse(self.destination.exists())
+            with self.subTest(target=target):
+                with self.assertRaisesRegex(ValueError, "exact checksum"):
+                    self.run_provider(target=target)
+                self.assertEqual([], self.download_urls)
+                self.assertFalse(self.destination.exists())
+                result = self.run_provider(target=target, sources=self.sources(target=target))
+                name = f"kotlin-native-prebuilt-{VERSION}-{provider._SUFFIXES[target]}.tar.gz"
+                self.assertEqual([f"{provider._MAVEN_ROOT}/{VERSION}/{name}"], self.download_urls)
+                self.assertEqual(self.payload, result.read_bytes())
+                result.unlink()
 
     def test_missing_pin_wrong_bytes_and_redirect_fail_without_publishing(self):
         with self.assertRaisesRegex(ValueError, "exact checksum"):

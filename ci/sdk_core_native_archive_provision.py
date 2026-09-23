@@ -1,8 +1,7 @@
-"""Fetch the Git-pinned macOS ARM64 Kotlin/Native archive for Core validation.
+"""Fetch a Git-pinned host Kotlin/Native archive for Core validation.
 
-Only the macOS ARM64 host archive has a reviewed checksum. The fetched file is
-external caller evidence, never a product payload or a substitute for the full
-original compiler/toolchain admission.
+Absent host checksums fail before download. The fetched file is external caller
+evidence, never a product payload or a substitute for full original admission.
 """
 
 import argparse
@@ -27,7 +26,13 @@ from products.toolchain import (_metadata_checksum, RUNTIME_VERIFICATION_METADAT
 from sdk_android_archive_provision import _publish_archive
 
 
-_TARGETS = {"macos-arm64", "ios-arm64", "ios-simulator-arm64"}
+_SUFFIXES = {
+    "macos-arm64": "macos-aarch64", "ios-arm64": "macos-aarch64",
+    "ios-simulator-arm64": "macos-aarch64", "macos-x64": "macos-x86_64",
+    "linux-arm64": "linux-aarch64", "linux-x64": "linux-x86_64",
+    "windows-x64": "windows-x86_64",
+}
+_TARGETS = set(_SUFFIXES)
 _MAVEN_ROOT = "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-native-prebuilt"
 _MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 
@@ -53,7 +58,7 @@ def provision(plan_path, target, destination, *, repository_root):
     """Publish fresh external archive bytes only after immutable-Git pin checks."""
     require_no_signing_secret(os.environ)
     if target not in _TARGETS:
-        raise ValueError("Core native archive has no reviewed pin for this target")
+        raise ValueError("Core native archive has no supported host route for this target")
     root = Path(repository_root).resolve(strict=True)
     plan_path, destination = Path(plan_path), Path(destination)
     if (not plan_path.is_absolute() or not destination.is_absolute()
@@ -75,7 +80,7 @@ def provision(plan_path, target, destination, *, repository_root):
     }
     catalog = tomllib.loads(sources[VERSION_CATALOG].decode("utf-8", errors="strict"))
     version = require_semver(catalog.get("versions", {}).get("kotlin"), "Git-pinned Kotlin version")
-    name = f"kotlin-native-prebuilt-{version}-macos-aarch64.tar.gz"
+    name = f"kotlin-native-prebuilt-{version}-{_SUFFIXES[target]}.tar.gz"
     expected = _metadata_checksum(sources[RUNTIME_VERIFICATION_METADATA], name)
     url = f"{_MAVEN_ROOT}/{version}/{name}"
     _maven_https(url)

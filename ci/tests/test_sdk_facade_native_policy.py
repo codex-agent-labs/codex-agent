@@ -8,7 +8,7 @@ from copy import deepcopy
 import hashlib
 import io
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import tarfile
 import tempfile
 import unittest
@@ -49,6 +49,10 @@ class FacadeNativePolicyTest(unittest.TestCase):
         self.revision = "a" * 40
         self.version = "2.3.10"
         self.home = "/original/selected/kotlin-native"
+        self.host = "macos-arm64"
+        self.host_name = "macos_arm64"
+        self.classifier = "macos-aarch64"
+        self.target_name = "macos_arm64"
         self.prefix = "kotlin-native-prebuilt-macos-aarch64-" + self.version
         self.selected = {"konan/konan.properties": (
                             b"llvmHome.macos_arm64 = $llvm.macos_arm64.user\n"
@@ -87,14 +91,16 @@ class FacadeNativePolicyTest(unittest.TestCase):
                 member.size = len(data)
                 archive.addfile(member, io.BytesIO(data))
         digest = hashlib.sha256(self.archive.read_bytes()).hexdigest()
-        artifact = f"kotlin-native-prebuilt-{self.version}-macos-aarch64.tar.gz"
+        artifact = f"kotlin-native-prebuilt-{self.version}-{self.classifier}.tar.gz"
         self.sources[policy.RUNTIME_VERIFICATION_METADATA] = (
             f'<verification-metadata><components><component group="org.jetbrains.kotlin" '
             f'name="kotlin-native-prebuilt" version="{self.version}"><artifact name="{artifact}">'
             f'<sha256 value="{digest}"/></artifact></component></components></verification-metadata>').encode()
 
     def inventory(self, values, *, root=None):
-        rows = [{"path": (self.home if root is None else root) + "/" + name, "bytes": len(contents),
+        base = self.home if root is None else root
+        parent = PureWindowsPath(base) if PureWindowsPath(base).drive else PurePosixPath(base)
+        rows = [{"path": str(parent / name), "bytes": len(contents),
                  "sha256": hashlib.sha256(contents).hexdigest()} for name, contents in values.items()]
         rows.sort(key=lambda row: row["path"])
         encoded = "".join(f"{row['path']}\0{row['bytes']}\0{row['sha256']}\n" for row in rows).encode()
@@ -121,15 +127,17 @@ class FacadeNativePolicyTest(unittest.TestCase):
         value = self.observation(target)
         value["schemaVersion"] = 2
         names = ["libffi-reviewed", "llvm-reviewed"]
-        if target == "macos-arm64":
+        if target == "macos-arm64" or self.host != "macos-arm64":
             names.append("lldb-reviewed")
-        directory = "/original/konan/dependencies"
+        data = "C:\\original\\konan" if self.host == "windows-x64" else "/original/konan"
+        separator = "\\" if self.host == "windows-x64" else "/"
+        directory = data + separator + "dependencies"
         value["nativeSelection"] = {
-            "dataDirectory": "/original/konan", "dependenciesDirectory": directory,
-            "host": "macos_arm64", "target": target.replace("-", "_"),
+            "dataDirectory": data, "dependenciesDirectory": directory,
+            "host": self.host_name, "target": self.target_name if target == "windows-x64" else target.replace("-", "_"),
             "fingerprint": self.inventory({"konan/compiler.fingerprint": b"not yet captured by Core"}),
-            "dependencies": [{"name": name, "root": directory + "/" + name,
-                "inventory": self.inventory({"bin/tool": b"unreviewed dependency bytes"}, root=directory + "/" + name),
+            "dependencies": [{"name": name, "root": directory + separator + name,
+                "inventory": self.inventory({"bin/tool": b"unreviewed dependency bytes"}, root=directory + separator + name),
                 "symlinks": []} for name in sorted(names)],
         }
         return value
@@ -213,7 +221,7 @@ class FacadeNativePolicyTest(unittest.TestCase):
     def call(self, **changes):
         return policy.verify_facade_native_compiler_artifacts(**{
             "repository": self.root, "policy_revision": self.revision, "compiler_inputs": self.capture,
-            "native_archive": self.archive, "expected_host": "macos-arm64", **changes})
+            "native_archive": self.archive, "expected_host": self.host, **changes})
 
     def test_three_supported_target_routes_compare_exact_subset_without_replay_or_extraction(self):
         before = {path: path.read_bytes() for path in (self.capture, self.archive)}
@@ -227,9 +235,37 @@ class FacadeNativePolicyTest(unittest.TestCase):
         self.assertEqual(before[self.archive], self.archive.read_bytes())
         self.assertEqual({self.capture, self.archive}, set(self.root.iterdir()))
 
+    def test_four_additional_host_routes_bind_archive_selection_and_original_paths(self):
+        routes = {
+            "macos-x64": ("macos_x64", "macos-x86_64"),
+            "linux-arm64": ("linux_arm64", "linux-aarch64"),
+            "linux-x64": ("linux_x64", "linux-x86_64"),
+            "windows-x64": ("mingw_x64", "windows-x86_64"),
+        }
+        for target, (host_name, classifier) in routes.items():
+            with self.subTest(target=target):
+                self.host, self.host_name, self.classifier = target, host_name, classifier
+                self.target_name = "mingw_x64" if target == "windows-x64" else host_name
+                self.home = (r"C:\original\selected\kotlin-native" if target == "windows-x64"
+                             else "/original/selected/kotlin-native")
+                self.prefix = f"kotlin-native-prebuilt-{classifier}-{self.version}"
+                self.selected["konan/konan.properties"] = (
+                    f"llvmHome.{host_name} = llvm-reviewed\n"
+                    f"libffiDir.{host_name} = libffi-reviewed\n"
+                    f"dependencies.{host_name} = lldb-reviewed\n").encode()
+                self.write_archive()
+                self.value = self.observation_v2(target)
+                self.save()
+                self.assertIsNone(self.call())
+                with self.assertRaisesRegex(ValueError, "supported host route"):
+                    self.call(expected_host="macos-arm64")
+                self.sources[policy.RUNTIME_VERIFICATION_METADATA] = b"<verification-metadata/>"
+                with self.assertRaisesRegex(ValueError, "one exact checksum"):
+                    self.call()
+
     def test_host_target_and_revision_are_independent_and_fail_closed(self):
         for host in ("macos-x64", "linux-x64", "windows-x64", "macos-aarch64", None):
-            with self.subTest(host=host), self.assertRaisesRegex(ValueError, "only explicitly selected"):
+            with self.subTest(host=host), self.assertRaisesRegex(ValueError, "native host|supported host route"):
                 self.call(expected_host=host)
         for revision in ("HEAD", "A" * 40, None):
             with self.subTest(revision=revision), self.assertRaises(ValueError):

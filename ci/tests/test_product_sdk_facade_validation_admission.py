@@ -183,10 +183,13 @@ class FacadeOriginalContentTest(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "changed during replay"):
             self.verify(native_compiler_archive=archive)
 
-    def test_unpinned_native_host_remains_fail_closed(self):
+    def test_native_host_verifier_failure_remains_fail_closed(self):
         archive = self.native_identity("linux-x64")
-        with self.assertRaisesRegex(ValueError, "supports only.*macos-arm64"):
+        with (patch.object(admission, "verify_facade_native_compiler_artifacts",
+                           side_effect=ValueError("missing immutable Git archive pin")) as native,
+              self.assertRaisesRegex(ValueError, "missing immutable Git archive pin")):
             self.verify(native_compiler_archive=archive)
+        native.assert_called_once()
         self.tooling.assert_not_called()
 
     def test_nonnative_rejects_native_archive_and_native_paths_are_strict(self):

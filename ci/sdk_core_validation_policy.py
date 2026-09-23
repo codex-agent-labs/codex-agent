@@ -47,9 +47,6 @@ def prepare(plan, discovery, state, destination, *, target, expected_build_key,
     if target not in SDK_FACADE_TARGETS:
         raise ValueError("Core validation requires a supported target")
     archive = _native_archive_path(target, native_compiler_archive)
-    if (archive is not None and expected_metadata_build_key is None
-            and target not in ("macos-arm64", "ios-arm64", "ios-simulator-arm64")):
-        raise ValueError("Core native validation has no reviewed archive policy for this host")
     require_sha256(expected_build_key, "Core validation elected key")
     require_sha256(sdk_inputs_artifact_sha256, "Original S858 upload digest")
     if type(sdk_inputs_artifact_id) is not int or sdk_inputs_artifact_id < 1:

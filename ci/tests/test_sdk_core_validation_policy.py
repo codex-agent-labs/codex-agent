@@ -38,20 +38,24 @@ class CoreValidationPolicyTests(unittest.TestCase):
         values.update(changes)
         return values
 
-    def test_unknown_and_unpinned_native_targets_fail_before_state_replay(self):
+    def test_unknown_or_missing_native_archive_fails_before_state_replay(self):
         archive = self.root / "native-compiler.tar.gz"
         archive.write_bytes(b"fixture")
         with patch.object(policy.product_reuse, "_verified_product_state") as verified:
-            for target in ("unknown", "macos-x64", "linux-arm64", "linux-x64", "windows-x64"):
+            with self.assertRaises(ValueError):
+                policy.prepare(**self.args(target="unknown", native_compiler_archive=archive))
+            for target in ("macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64",
+                           "ios-arm64", "ios-simulator-arm64"):
                 with self.subTest(target=target), self.assertRaises(ValueError):
-                    policy.prepare(**self.args(target=target, native_compiler_archive=archive))
+                    policy.prepare(**self.args(target=target))
             verified.assert_not_called()
         self.assertFalse(self.destination.exists())
 
-    def test_three_reviewed_macos_arm64_host_targets_reach_authenticated_replay(self):
+    def test_all_native_routes_reach_authenticated_replay_with_independent_archive(self):
         archive = self.root / "native-compiler.tar.gz"
         archive.write_bytes(b"fixture")
-        for target in ("macos-arm64", "ios-arm64", "ios-simulator-arm64"):
+        for target in ("macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64",
+                       "ios-arm64", "ios-simulator-arm64"):
             with self.subTest(target=target), patch.object(policy.product_reuse,
                     "_verified_product_state", side_effect=RuntimeError("replay reached")) as replay:
                 with self.assertRaisesRegex(RuntimeError, "replay reached"):

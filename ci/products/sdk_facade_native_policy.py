@@ -1,6 +1,6 @@
-"""Compare the captured native compiler subset with one immutable archive pin.
+"""Compare the captured native compiler subset with its immutable host archive pin.
 
-Only macOS ARM64 has a reviewed archive in the existing verification metadata.
+An absent host checksum fails closed before archive parsing.
 Schema 1 covers konan/lib/** and konan/konan.properties; schema 2 also binds the
 compiler fingerprint and exact dependency selection from those pinned properties.
 Neither comparison authenticates the complete installation or dependency bytes,
@@ -28,7 +28,16 @@ from .toolchain import (_expand_property, _metadata_checksum, _properties, _revi
 
 
 _LIMIT = 16 * 1024 * 1024
-_TARGETS = {"macos-arm64", "ios-arm64", "ios-simulator-arm64"}
+_ROUTES = {
+    "macos-arm64": ("macos-arm64", "macos_arm64", "macos-aarch64", "macos_arm64"),
+    "ios-arm64": ("macos-arm64", "macos_arm64", "macos-aarch64", "ios_arm64"),
+    "ios-simulator-arm64": ("macos-arm64", "macos_arm64", "macos-aarch64", "ios_simulator_arm64"),
+    "macos-x64": ("macos-x64", "macos_x64", "macos-x86_64", "macos_x64"),
+    "linux-arm64": ("linux-arm64", "linux_arm64", "linux-aarch64", "linux_arm64"),
+    "linux-x64": ("linux-x64", "linux_x64", "linux-x86_64", "linux_x64"),
+    "windows-x64": ("windows-x64", "mingw_x64", "windows-x86_64", "mingw_x64"),
+}
+_TARGETS = set(_ROUTES)
 # The pinned macOS ARM64 2.3.10 tar has 44,701 members / 853,156,366 payload
 # bytes (largest member 80,644,391 bytes), plus 42,581 GNU longname headers
 # (6,711,024 metadata bytes): 87,282 physical headers total. Unlike a product
@@ -37,8 +46,8 @@ _TARGETS = {"macos-arm64", "ios-arm64", "ios-simulator-arm64"}
 _LIMITS = {**OBJECT_ZIP_LIMITS, "max_members": 65_536, "max_headers": 131_072}
 
 
-def _archive_subset(stream, version, *, include_fingerprint=False, properties=None):
-    prefix = f"kotlin-native-prebuilt-macos-aarch64-{version}"
+def _archive_subset(stream, version, *, classifier="macos-aarch64", include_fingerprint=False, properties=None):
+    prefix = f"kotlin-native-prebuilt-{classifier}-{version}"
     archive_bytes = os.fstat(stream.fileno()).st_size
     headers, total = 0, 0
 
@@ -128,7 +137,11 @@ def _dependency_selection(selection, contents, observed):
     host, target = selection["host"], selection["target"]
     data = _original_path(selection["dataDirectory"], "Original native data directory")
     directory = _original_path(selection["dependenciesDirectory"], "Original native dependencies directory")
-    if PureWindowsPath(data).drive or directory != data + "/dependencies":
+    windows = bool(PureWindowsPath(data).drive)
+    if windows != (host == "mingw_x64"):
+        raise ValueError("Native dependency path differs from its host platform")
+    path = PureWindowsPath(data) if windows else PurePosixPath(data)
+    if directory != str(path / "dependencies"):
         raise ValueError("Native dependency directory differs from its selected data directory")
     keys = [f"llvmHome.{host}", f"libffiDir.{host}"]
     expected = set()
@@ -154,10 +167,11 @@ def _dependency_selection(selection, contents, observed):
         record = require_exact_keys(record, {"name", "root", "inventory", "symlinks"},
                                     "Selected native dependency")
         name = record["name"]
-        if type(name) is not str or name not in expected or record["root"] != directory + "/" + name:
+        root = str(path / "dependencies" / name)
+        if type(name) is not str or name not in expected or record["root"] != root:
             raise ValueError("Selected native dependency differs from the pinned property selection")
         rows = compiler_observation_inventory(record["inventory"], observed=observed)
-        if any(not row["path"].startswith(record["root"] + "/") for row in rows):
+        if any(not row["path"].startswith(root + ("\\" if windows else "/")) for row in rows):
             raise ValueError("Selected native dependency inventory escapes its named root")
         require_array(record["symlinks"], "Selected native symbolic links")
         names.append(name)
@@ -168,8 +182,8 @@ def _dependency_selection(selection, contents, observed):
 def verify_facade_native_compiler_artifacts(*, repository, policy_revision,
         compiler_inputs, native_archive, expected_host) -> None:
     """Compare selected native bytes only; never execute tools or read old paths."""
-    if expected_host != "macos-arm64":
-        raise ValueError("Native compiler archive policy supports only explicitly selected macos-arm64")
+    if expected_host not in {route[0] for route in _ROUTES.values()}:
+        raise ValueError("Native compiler archive policy requires an explicitly selected native host")
     revision = _revision(policy_revision)
     root = Path(repository)
     require_regular_directory(root, "Native compiler policy repository")
@@ -183,35 +197,39 @@ def verify_facade_native_compiler_artifacts(*, repository, policy_revision,
     value = require_exact_keys(value, _TOP | ({"nativeSelection"} if schema == 2 else set()),
                                "Native compiler observation")
     target = value["target"]
-    if type(target) is not str or target not in _TARGETS:
+    if type(target) is not str or target not in _TARGETS or _ROUTES[target][0] != expected_host:
         raise ValueError("Native compiler observation target differs from the supported host route")
     if (schema not in {1, 2}
             or value["family"] != "native" or value["task"] != FACADE_CONSUMER_TASKS[target]
             or value["taskClass"] != "org.jetbrains.kotlin.gradle.tasks.KotlinNativeCompile"):
         raise ValueError("Native compiler observation differs from the fixed task family")
     home = _original_path(value["nativeHome"], "Original selected native distribution")
-    if PureWindowsPath(home).drive or not PurePosixPath(home).is_absolute():
-        raise ValueError("macOS native compiler home must be an original POSIX path")
+    windows = expected_host == "windows-x64"
+    if bool(PureWindowsPath(home).drive) != windows:
+        raise ValueError("Native compiler home path differs from its host platform")
+    path = PureWindowsPath(home) if windows else PurePosixPath(home)
+    if not path.is_absolute():
+        raise ValueError("Native compiler home must be an original absolute path")
     tools = require_exact_keys(value["tools"], _TOOLS, "Native compiler tool inventories")
     observed = {}
     native = compiler_observation_inventory(tools["native"], observed=observed)
     compiler = compiler_observation_inventory(tools["compiler"], observed=observed)
-    main = home + "/konan/lib/kotlin-native-compiler-embeddable.jar"
+    main = str(path / "konan/lib/kotlin-native-compiler-embeddable.jar")
     if len(compiler) != 1 or compiler[0]["path"] != main:
         raise ValueError("Native compiler artifact differs from the selected original distribution")
     selected = {}
     for row in native:
-        if not row["path"].startswith(home + "/"):
+        if not row["path"].startswith(home + ("\\" if windows else "/")):
             raise ValueError("Observed native inventory escapes the selected distribution")
-        selected[row["path"][len(home) + 1:]] = {key: row[key] for key in ("bytes", "sha256")}
+        selected[row["path"][len(home) + 1:].replace("\\", "/")] = {key: row[key] for key in ("bytes", "sha256")}
     if schema == 2:
         selection = require_exact_keys(value["nativeSelection"],
             {"dataDirectory", "dependenciesDirectory", "host", "target", "fingerprint", "dependencies"},
             "Native selected tool context")
-        if selection["host"] != "macos_arm64" or selection["target"] != target.replace("-", "_"):
+        if (selection["host"] != _ROUTES[target][1] or selection["target"] != _ROUTES[target][3]):
             raise ValueError("Native selected tool context differs from its host/target route")
         fingerprint = compiler_observation_inventory(selection["fingerprint"], observed=observed)
-        if len(fingerprint) != 1 or fingerprint[0]["path"] != home + "/konan/compiler.fingerprint":
+        if len(fingerprint) != 1 or fingerprint[0]["path"] != str(path / "konan/compiler.fingerprint"):
             raise ValueError("Native compiler fingerprint differs from its selected distribution")
         selected["konan/compiler.fingerprint"] = {key: fingerprint[0][key] for key in ("bytes", "sha256")}
         # Dependency names are bound below after reading the pinned properties;
@@ -231,15 +249,17 @@ def verify_facade_native_compiler_artifacts(*, repository, policy_revision,
             version = require_semver(catalog.get("versions", {}).get("kotlin"), "Policy Kotlin version")
             if value["kotlinVersion"] != version:
                 raise ValueError("Observed native compiler version differs from immutable policy")
-            name = f"kotlin-native-prebuilt-{version}-macos-aarch64.tar.gz"
+            name = f"kotlin-native-prebuilt-{version}-{_ROUTES[target][2]}.tar.gz"
             expected = _metadata_checksum(sources[RUNTIME_VERIFICATION_METADATA], name)
             actual = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
             if actual != expected:
                 raise ValueError("Caller native archive differs from the immutable artifact pin")
             stream.seek(0)
             properties = bytearray()
-            expected_subset = (_archive_subset(stream, version, include_fingerprint=True, properties=properties) if schema == 2
-                               else _archive_subset(stream, version))
+            classifier = _ROUTES[target][2]
+            options = {"classifier": classifier} if classifier != "macos-aarch64" else {}
+            expected_subset = (_archive_subset(stream, version, include_fingerprint=True, properties=properties, **options) if schema == 2
+                               else _archive_subset(stream, version, **options))
             if selected != expected_subset:
                 raise ValueError("Observed native compiler subset differs from the pinned archive")
             if schema == 2:
