@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 from ci.products.index import IndexEntrySource, SignedProductIndex, build_product_index
-from ci.products.inventory import write_canonical_json
+from ci.products.inventory import sha256_bytes, write_canonical_json
 from ci.products.receipt import write_output_manifest
 from ci.products.restore import finalize_phase_object
 from ci.products.sdk_campaign_index import verify_signed_sdk_campaign_originals
@@ -107,6 +107,31 @@ class SdkCampaignIndexTest(unittest.TestCase):
                 context={**self.context, "runId": 4}, keyring_path=self.keyring,
                 keys_directory=self.keys_directory, sources=self.sources,
                 envelopes=self.envelopes, archives=self.archives, stages=self.stages)
+
+    def test_signed_index_rejects_foreign_original_repository(self):
+        instance = min(SDK_CAMPAIGN_INSTANCES)
+        with tempfile.TemporaryDirectory(prefix="sdk-foreign-original-") as temporary:
+            root = Path(temporary).resolve()
+            original = self.envelopes[instance]["receipt"]
+            foreign = {**self.producer, "repository": "other/repository"}
+            plan = {name: original[name] for name in (
+                "schemaVersion", "product", "component", "phase", "target", "buildKey", "inputs")}
+            finalized = finalize_phase_object(stage_root=self.stages[instance], phase_plan=plan,
+                producer=foreign, product_version="0.8.0", trust_domain="development",
+                destination=root / "shard")
+            sources, envelopes, archives = dict(self.sources), dict(self.envelopes), dict(self.archives)
+            sources[instance] = IndexEntrySource(finalized["receiptBytes"], sources[instance].artifact_path)
+            envelopes[instance] = {name: finalized[name] for name in (
+                "receipt", "receiptBytes", "receiptSha256", "objectSha256")}
+            archives[instance] = root / "shard" / finalized["objectPath"]
+            changed = deepcopy(self.index)
+            entry = next(entry for entry in changed["entries"] if
+                (entry["product"], entry["component"], entry["phase"], entry["target"]) ==
+                (instance.product, instance.component, instance.phase, instance.target))
+            entry["receiptSha256"] = sha256_bytes(finalized["receiptBytes"])
+            with self.assertRaisesRegex(ValueError, "another repository"):
+                self._verify(self._signed(changed, "foreign-repository"), sources=sources,
+                    envelopes=envelopes, archives=archives)
 
     def test_signed_index_entry_cannot_choose_a_different_original_artifact(self):
         changed = deepcopy(self.index)

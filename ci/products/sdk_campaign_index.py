@@ -47,6 +47,8 @@ def verify_signed_sdk_campaign_originals(
             receipt = receipts[instance]
             if receipt["trustDomain"] != "development":
                 raise ValueError("SDK campaign original receipt must retain development trust")
+            if receipt["producer"]["repository"] != repository:
+                raise ValueError("SDK campaign original receipt belongs to another repository")
             _verify_index_receipt(entry, held_envelopes[instance])
             artifact = next(
                 (output for output in receipt["outputs"]
