@@ -61,6 +61,7 @@ from .runtime_adapter_content import (
 from .receipt import build_key_payload
 from .sdk_validation import VerifiedSdkValidationProjection, decode_sdk_validation_records, sdk_validation_provider
 from .sdk_apple_validation_admission import AppleValidationAdmission
+from .sdk_apple_package_admission import ApplePackageAdmission
 from .sdk_facade_metadata_admission import FacadeMetadataAdmission
 from .sdk_android_metadata_admission import AndroidMetadataAdmission
 from .registry import (
@@ -1066,6 +1067,7 @@ def plan_reuse_wave(
     *,
     build_plan_consumer: Callable[[PhaseInstanceId, dict[str, Any]], None] | None = None,
     sdk_runtime_consumer: Callable[[dict[str, Any]], None] | None = None,
+    sdk_apple_package_admission: ApplePackageAdmission | None = None,
     sdk_facade_metadata_admission: FacadeMetadataAdmission | None = None,
     sdk_android_metadata_admission: AndroidMetadataAdmission | None = None,
 ) -> dict[str, Any]:
@@ -1446,6 +1448,7 @@ def plan_reuse_wave(
             runtime_validation_projection_provider=runtime_validation_projection_provider,
             native_runtime_projection_provider=native_runtime_projection_provider,
             sdk_validation_projection_provider=sdk_projection_provider,
+            sdk_apple_package_admission=sdk_apple_package_admission,
             sdk_apple_validation_admission=apple_admission,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
             sdk_android_metadata_admission=sdk_android_metadata_admission,
@@ -1552,6 +1555,7 @@ def advance_reuse(
     ] | None = None,
     build_plan_consumer: Callable[[PhaseInstanceId, dict[str, Any]], None] | None = None,
     sdk_apple_validation_admission: AppleValidationAdmission | None = None,
+    sdk_apple_package_admission: ApplePackageAdmission | None = None,
     sdk_facade_metadata_admission: FacadeMetadataAdmission | None = None,
     sdk_android_metadata_admission: AndroidMetadataAdmission | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
@@ -1565,6 +1569,8 @@ def advance_reuse(
         raise ValueError("Reuse resolution requires a LookupSession")
     if sdk_apple_validation_admission is not None and type(sdk_apple_validation_admission) is not AppleValidationAdmission:
         raise ValueError("Apple validation admission requires the concrete full verifier")
+    if sdk_apple_package_admission is not None and type(sdk_apple_package_admission) is not ApplePackageAdmission:
+        raise ValueError("Apple package admission requires the concrete full verifier")
     for admission, expected in (
             (sdk_facade_metadata_admission, FacadeMetadataAdmission),
             (sdk_android_metadata_admission, AndroidMetadataAdmission)):
@@ -1572,7 +1578,11 @@ def advance_reuse(
             raise ValueError("SDK metadata admission requires the concrete full verifier")
 
     def admit_sdk(instance, envelope):
-        if (instance.product, instance.component, instance.phase) == ("sdk", "sdk-ios", "validation"):
+        if instance == PhaseInstanceId("sdk", "sdk-ios", "package", "ios"):
+            if sdk_apple_package_admission is None:
+                raise ValueError("Apple package reuse lacks authenticated original evidence")
+            sdk_apple_package_admission.verify(envelope)
+        elif (instance.product, instance.component, instance.phase) == ("sdk", "sdk-ios", "validation"):
             if sdk_apple_validation_admission is None:
                 raise ValueError("Apple validation reuse lacks authenticated original evidence")
             sdk_apple_validation_admission.verify(envelope)

@@ -23,8 +23,9 @@ class AppleReuseAdmissionTest(unittest.TestCase):
         self.plan = {"buildKey": "sha256:" + "3" * 64}
         self.transport = {"synthetic": "already authenticated lookup seam"}
         self.admission = object.__new__(reuse.AppleValidationAdmission)
+        self.package_admission = object.__new__(reuse.ApplePackageAdmission)
 
-    def run_route(self, route, admission=None):
+    def run_route(self, route, admission=None, package_admission=None):
         # A real session is required by the public API. Only its lookup is
         # replaced: these tests isolate the transition into resolved state,
         # not catalog authentication, dependency planning or receipt parsing.
@@ -56,6 +57,8 @@ class AppleReuseAdmissionTest(unittest.TestCase):
             self.lookup = stack.enter_context(patch.object(session, "lookup", side_effect=lookup))
             self.build_consumer = Mock()
             options = {} if admission is None else {"sdk_apple_validation_admission": admission}
+            if package_admission is not None:
+                options["sdk_apple_package_admission"] = package_admission
             result = reuse.advance_reuse(
                 (self.identity,), {self.identity: {}},
                 (self.envelope,) if route == "retained" else (), session,
@@ -121,14 +124,23 @@ class AppleReuseAdmissionTest(unittest.TestCase):
             else:
                 provider.verify.assert_not_called()
 
-    def test_unrelated_package_keeps_legacy_omitted_admission_behavior(self):
+    def test_package_reuse_requires_concrete_full_original_admission(self):
         self.identity = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
         for route in ("retained", "lookup"):
-            with self.subTest(route=route), patch.object(reuse.AppleValidationAdmission, "verify") as verify:
-                result, originals = self.run_route(route)
+            with self.subTest(route=route), patch.object(reuse.ApplePackageAdmission, "verify") as verify, \
+                    self.assertRaisesRegex(ValueError, "package reuse lacks authenticated original evidence"):
+                self.run_route(route)
+            verify.assert_not_called()
+            with self.subTest(route=route), patch.object(reuse.ApplePackageAdmission, "verify",
+                    autospec=True, side_effect=ValueError("original package replay failed")) as verify, \
+                    self.assertRaisesRegex(ValueError, "original package replay failed"):
+                self.run_route(route, package_admission=self.package_admission)
+            verify.assert_called_once_with(self.package_admission, self.envelope)
+            with patch.object(reuse.ApplePackageAdmission, "verify", autospec=True) as verify:
+                result, originals = self.run_route(route, package_admission=self.package_admission)
+            verify.assert_called_once_with(self.package_admission, self.envelope)
             self.assertTrue(result["fullReuse"])
             self.assertEqual((self.envelope,), originals)
-            verify.assert_not_called()
 
     def test_metadata_routes_require_full_join_and_propagate_rejection(self):
         self.identity = PhaseInstanceId("sdk", "sdk-ios", "metadata", "ios")
