@@ -720,8 +720,14 @@ class ProductReuseTest(unittest.TestCase):
         self.assertIs(apple_package, delegated.call_args.kwargs["sdk_apple_package_admission"])
         self.assertIs(core, delegated.call_args.kwargs["sdk_facade_metadata_admission"])
         self.assertIs(android, delegated.call_args.kwargs["sdk_android_metadata_admission"])
+        factory = lambda envelope: apple_package
+        with mock.patch("ci.products.reuse.advance_reuse", return_value=({"ok": True}, ())) as delegated:
+            self.assertEqual({"ok": True}, plan_reuse_wave(request,
+                sdk_apple_package_admission_factory=factory))
+        self.assertIs(factory, delegated.call_args.kwargs["sdk_apple_package_admission_factory"])
         for name in ("sdkApplePackageAdmission", "sdkFacadeMetadataAdmission", "sdkAndroidMetadataAdmission",
-                     "sdk_apple_package_admission", "sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
+                     "sdk_apple_package_admission", "sdk_apple_package_admission_factory",
+                     "sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 plan_reuse_wave({**request, name: {"transported": "not authority"}})
 

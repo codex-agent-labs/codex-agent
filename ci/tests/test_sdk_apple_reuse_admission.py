@@ -25,7 +25,7 @@ class AppleReuseAdmissionTest(unittest.TestCase):
         self.admission = object.__new__(reuse.AppleValidationAdmission)
         self.package_admission = object.__new__(reuse.ApplePackageAdmission)
 
-    def run_route(self, route, admission=None, package_admission=None):
+    def run_route(self, route, admission=None, package_admission=None, package_factory=None):
         # A real session is required by the public API. Only its lookup is
         # replaced: these tests isolate the transition into resolved state,
         # not catalog authentication, dependency planning or receipt parsing.
@@ -59,6 +59,8 @@ class AppleReuseAdmissionTest(unittest.TestCase):
             options = {} if admission is None else {"sdk_apple_validation_admission": admission}
             if package_admission is not None:
                 options["sdk_apple_package_admission"] = package_admission
+            if package_factory is not None:
+                options["sdk_apple_package_admission_factory"] = package_factory
             result = reuse.advance_reuse(
                 (self.identity,), {self.identity: {}},
                 (self.envelope,) if route == "retained" else (), session,
@@ -141,6 +143,27 @@ class AppleReuseAdmissionTest(unittest.TestCase):
             verify.assert_called_once_with(self.package_admission, self.envelope)
             self.assertTrue(result["fullReuse"])
             self.assertEqual((self.envelope,), originals)
+
+    def test_package_factory_runs_only_after_selected_envelope_and_must_return_full_verifier(self):
+        self.identity = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+        for route in ("retained", "lookup"):
+            self.events.clear()
+            def factory(envelope):
+                self.assertIs(self.envelope, envelope)
+                self.events.append("factory")
+                return self.package_admission
+            with self.subTest(route=route), patch.object(
+                    reuse.ApplePackageAdmission, "verify", autospec=True) as verify:
+                result, _ = self.run_route(route, package_factory=factory)
+            verify.assert_called_once_with(self.package_admission, self.envelope)
+            self.assertEqual(["plan", *(["lookup"] if route == "lookup" else []),
+                              "factory", "returned"], self.events)
+            self.assertTrue(result["fullReuse"])
+            with self.subTest(route=route), self.assertRaisesRegex(ValueError, "lacks authenticated original evidence"):
+                self.run_route(route, package_factory=lambda _: SimpleNamespace(verify=Mock()))
+            with self.subTest(route=route), self.assertRaisesRegex(ValueError, "one concrete source"):
+                self.run_route(route, package_admission=self.package_admission,
+                               package_factory=factory)
 
     def test_metadata_routes_require_full_join_and_propagate_rejection(self):
         self.identity = PhaseInstanceId("sdk", "sdk-ios", "metadata", "ios")

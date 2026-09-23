@@ -1068,6 +1068,7 @@ def plan_reuse_wave(
     build_plan_consumer: Callable[[PhaseInstanceId, dict[str, Any]], None] | None = None,
     sdk_runtime_consumer: Callable[[dict[str, Any]], None] | None = None,
     sdk_apple_package_admission: ApplePackageAdmission | None = None,
+    sdk_apple_package_admission_factory: Callable[[dict[str, Any]], ApplePackageAdmission] | None = None,
     sdk_facade_metadata_admission: FacadeMetadataAdmission | None = None,
     sdk_android_metadata_admission: AndroidMetadataAdmission | None = None,
 ) -> dict[str, Any]:
@@ -1449,6 +1450,7 @@ def plan_reuse_wave(
             native_runtime_projection_provider=native_runtime_projection_provider,
             sdk_validation_projection_provider=sdk_projection_provider,
             sdk_apple_package_admission=sdk_apple_package_admission,
+            sdk_apple_package_admission_factory=sdk_apple_package_admission_factory,
             sdk_apple_validation_admission=apple_admission,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
             sdk_android_metadata_admission=sdk_android_metadata_admission,
@@ -1556,6 +1558,7 @@ def advance_reuse(
     build_plan_consumer: Callable[[PhaseInstanceId, dict[str, Any]], None] | None = None,
     sdk_apple_validation_admission: AppleValidationAdmission | None = None,
     sdk_apple_package_admission: ApplePackageAdmission | None = None,
+    sdk_apple_package_admission_factory: Callable[[dict[str, Any]], ApplePackageAdmission] | None = None,
     sdk_facade_metadata_admission: FacadeMetadataAdmission | None = None,
     sdk_android_metadata_admission: AndroidMetadataAdmission | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
@@ -1571,6 +1574,9 @@ def advance_reuse(
         raise ValueError("Apple validation admission requires the concrete full verifier")
     if sdk_apple_package_admission is not None and type(sdk_apple_package_admission) is not ApplePackageAdmission:
         raise ValueError("Apple package admission requires the concrete full verifier")
+    if (sdk_apple_package_admission_factory is not None
+            and (not callable(sdk_apple_package_admission_factory) or sdk_apple_package_admission is not None)):
+        raise ValueError("Apple package admission requires one concrete source")
     for admission, expected in (
             (sdk_facade_metadata_admission, FacadeMetadataAdmission),
             (sdk_android_metadata_admission, AndroidMetadataAdmission)):
@@ -1579,9 +1585,11 @@ def advance_reuse(
 
     def admit_sdk(instance, envelope):
         if instance == PhaseInstanceId("sdk", "sdk-ios", "package", "ios"):
-            if sdk_apple_package_admission is None:
+            admission = (sdk_apple_package_admission_factory(envelope)
+                         if sdk_apple_package_admission_factory is not None else sdk_apple_package_admission)
+            if type(admission) is not ApplePackageAdmission:
                 raise ValueError("Apple package reuse lacks authenticated original evidence")
-            sdk_apple_package_admission.verify(envelope)
+            admission.verify(envelope)
         elif (instance.product, instance.component, instance.phase) == ("sdk", "sdk-ios", "validation"):
             if sdk_apple_validation_admission is None:
                 raise ValueError("Apple validation reuse lacks authenticated original evidence")
