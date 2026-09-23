@@ -4771,7 +4771,7 @@ jobs:
           fi
           python3 -B -m ci.sdk_completion --plan "$PLAN" \
             --discovery-root "$DISCOVERY_ROOT" --state-root "$STATE_ROOT" \
-            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --sdk-original-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
             --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
             ${tooling[@]+"${tooling[@]}"}
 

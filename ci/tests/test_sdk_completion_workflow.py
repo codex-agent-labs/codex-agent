@@ -207,6 +207,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             self.assertIn(name + ": ${{ steps.capture.outputs." + output + " }}", completion)
         self.assertIn("SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}", completion)
         self.assertIn("SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}", completion)
+        self.assertIn("TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}", completion)
         self.assertIn("GITHUB_TOKEN: ${{ github.token }}", completion)
         for name, output in (("complete", "complete"), ("phase_count", "phaseCount"), ("full_reuse", "fullReuse")):
             self.assertIn(name + ": ${{ steps.completion.outputs." + output + " }}", job)
@@ -232,6 +233,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                         env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ.get("PATH", ""),
                             "PLAN": "/captured plan/impact-plan.json", "DISCOVERY_ROOT": "/captured discovery",
                             "STATE_ROOT": "/captured state", "SDK_VALIDATION_TOOLING": policy,
+                            "TRUSTED_WORKFLOW_SHA": "c" * 40,
                             "GITHUB_WORKSPACE": "/candidate repository", "GITHUB_OUTPUT": str(output),
                             "GITHUB_TOKEN": "not-a-command-argument", "ARGV_CAPTURE": str(arguments), "MOCK_EXIT": str(status)}
                         env.pop("SDK_APPLE_VALIDATION_POLICY", None)
@@ -242,6 +244,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                         self.assertEqual(status, process.returncode, process.stderr)
                         expected = ["-B", "-m", "ci.sdk_completion", "--plan", env["PLAN"],
                             "--discovery-root", env["DISCOVERY_ROOT"], "--state-root", env["STATE_ROOT"],
+                            "--sdk-original-workflow-sha", env["TRUSTED_WORKFLOW_SHA"],
                             "--repository-root", env["GITHUB_WORKSPACE"], "--github-output", str(output)]
                         if policy:
                             expected.extend(("--sdk-validation-tooling", policy))
