@@ -87,6 +87,11 @@ class SdkCompletionTest(unittest.TestCase):
         with patch.object(completion.products, "inspect_products", side_effect=ValueError("original evidence rejected")):
             with self.assertRaisesRegex(ValueError, "original evidence rejected"):
                 completion.require_sdk_completion(*self.paths, sdk_apple_validation_policy=apple)
+        self.call(inspected([]), sdk_apple_validation_policy=apple,
+                  sdk_original_workflow_sha="d" * 40)
+        self.inspect.assert_called_once_with(*self.paths, repository_root=self.root,
+            environ=self.environment, sdk_apple_validation_policy=apple,
+            sdk_original_workflow_sha="d" * 40)
 
     def test_metadata_admissions_are_independent_opaque_caller_objects(self):
         admissions = {name: object() for name in (
@@ -150,6 +155,9 @@ class SdkCompletionTest(unittest.TestCase):
                                          sdk_validation_tooling=policy, sdk_apple_validation_policy=apple)
             self.assertEqual("complete=true\nphaseCount=2\nfullReuse=false\n", output.read_text())
             self.assertEqual(canonical_json_bytes(apple), apple_path.read_bytes())
+            with patch.object(completion, "require_sdk_completion", return_value={"complete": True, "phaseCount": 2, "fullReuse": False}) as gate:
+                self.assertEqual(0, completion.main([*argv, "--sdk-original-workflow-sha", "d" * 40]))
+            self.assertEqual("d" * 40, gate.call_args.kwargs["sdk_original_workflow_sha"])
             output.unlink()
             with patch.object(completion, "require_sdk_completion", side_effect=ValueError("unresolved")), \
                     redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

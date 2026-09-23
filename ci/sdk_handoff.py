@@ -112,6 +112,7 @@ def main_released_default(argv=None):
     parser.add_argument("--state-root", type=Path)
     parser.add_argument("--sdk-validation-tooling", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
+    parser.add_argument("--trusted-workflow-sha")
     arguments = parser.parse_args(argv)
     try:
         tooling = None if arguments.sdk_validation_tooling is None else product_reuse._canonical_control(
@@ -122,7 +123,9 @@ def main_released_default(argv=None):
         product_reuse.materialize_sdk_default_inputs(arguments.plan, arguments.discovery_root,
             arguments.state_root, arguments.destination, keyring=arguments.keyring,
             keys_directory=arguments.keys_directory, repository_root=arguments.repository_root,
-            environ=os.environ, sdk_validation_tooling=tooling, **apple)
+            environ=os.environ, sdk_validation_tooling=tooling,
+            **({"sdk_original_workflow_sha": arguments.trusted_workflow_sha}
+               if arguments.trusted_workflow_sha is not None else {}), **apple)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

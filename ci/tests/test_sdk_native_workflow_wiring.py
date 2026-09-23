@@ -24,6 +24,13 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
     def setUp(self):
         self.workflow = (ROOT / ".github/workflows/product-validation.yml").read_text()
 
+    def test_package_inspection_forwards_existing_caller_workflow_pin(self):
+        source = (ROOT / "ci/sdk_native_package_workflow.py").read_text()
+        for entry in ("inspected = product_reuse.inspect_products(",
+                      "ready = product_reuse.materialize_product_predecessors("):
+            call = source.split(entry, 1)[1].split(")\n", 1)[0]
+            self.assertIn("sdk_original_workflow_sha=trusted_workflow_sha", call)
+
     def job(self, name):
         return re.search(rf"(?ms)^  {re.escape(name)}:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)", self.workflow)[0]
 
@@ -33,7 +40,8 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="sdk-native-wiring-") as temporary:
             output = Path(temporary) / "output"
             output.write_bytes(b"")
-            with patch.dict(os.environ, {**environment, "GITHUB_OUTPUT": str(output)}, clear=True):
+            with patch.dict(os.environ, {"TRUSTED_WORKFLOW_SHA": "c" * 40,
+                    **environment, "GITHUB_OUTPUT": str(output)}, clear=True):
                 try:
                     exec(compile(textwrap.dedent(match[1]), "native-workflow-fixture", "exec"), {})
                 except Exception:
@@ -164,7 +172,8 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
                 output = Path(temporary) / "output"
                 env = {key: value for key, value in os.environ.items() if not key.startswith("PYTHON")}
                 env.update(PLAN="/original/plan", DISCOVERY="/original/discovery", STATE="/original/state",
-                           SDK_VALIDATION_TOOLING="", GITHUB_OUTPUT=str(output), READY_PLANS=json.dumps(rows))
+                           SDK_VALIDATION_TOOLING="", TRUSTED_WORKFLOW_SHA="c" * 40,
+                           GITHUB_OUTPUT=str(output), READY_PLANS=json.dumps(rows))
                 result = subprocess.run([sys.executable, "-B", "-c", code], cwd=ROOT, env=env,
                                         capture_output=True, text=True)
                 self.assertEqual(0, result.returncode, result.stderr)

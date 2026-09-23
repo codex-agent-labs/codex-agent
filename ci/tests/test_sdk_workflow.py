@@ -84,7 +84,8 @@ class SdkWorkflowTest(unittest.TestCase):
                     self.assertEqual(self.arguments["keyring"], verified.call_args.kwargs["keyring"])
                     self.assertEqual(self.arguments["keys_directory"], verified.call_args.kwargs["keys_directory"])
                     expected = {"repository_root": self.repository, "environ": self.arguments["environ"],
-                                "include_sdk_selection": True, **optional}
+                                "include_sdk_selection": True,
+                                "sdk_original_workflow_sha": self.upload["trusted_workflow_sha"], **optional}
                     self.inspect.assert_called_once_with(self.plan, self.discovery, self.state, **expected)
                     if policy is not None:
                         self.assertIs(caller_policy, self.inspect.call_args.kwargs["sdk_validation_tooling"])
@@ -121,6 +122,7 @@ class SdkWorkflowTest(unittest.TestCase):
         self.assertEqual(destination / "original/runtime-state", result["state_root"])
         self.assertEqual(destination / "original/product-resume-state", result["discovery_root"])
         self.assertEqual(result["state_root"], matrix.call_args.args[2])
+        self.assertEqual(self.upload["trusted_workflow_sha"], matrix.call_args.kwargs["trusted_workflow_sha"])
         with patch.object(workflow.product_reuse, "capture_runtime_resume_upload"), \
                 patch.object(workflow, "matrix", side_effect=ValueError("invalid original state")):
             failed_output = self.repository / "failed-capture-output"
@@ -130,6 +132,25 @@ class SdkWorkflowTest(unittest.TestCase):
 
     def upload_for_capture(self):
         return {key: self.upload[key] for key in ("artifact_id", "artifact_sha256", "trusted_workflow_sha")}
+
+    def test_matrix_forwards_exact_caller_workflow_pin_only_when_supplied(self):
+        pin = "c" * 40
+        self.inspect.return_value = {"readyPlans": []}
+        workflow.matrix(self.plan, self.discovery, self.state, self.repository / "pinned-matrix-output",
+            repository_root=self.repository, environ={}, trusted_workflow_sha=pin)
+        self.assertEqual(pin, self.inspect.call_args.kwargs["sdk_original_workflow_sha"])
+        workflow.matrix(self.plan, self.discovery, self.state, self.repository / "legacy-matrix-output",
+            repository_root=self.repository, environ={})
+        self.assertNotIn("sdk_original_workflow_sha", self.inspect.call_args.kwargs)
+
+    def test_matrix_cli_accepts_caller_workflow_pin(self):
+        pin = "c" * 40
+        with patch.object(workflow, "matrix", return_value={"include": []}) as matrix:
+            self.assertEqual(0, workflow.main(["matrix", "--plan", str(self.plan),
+                "--discovery-root", str(self.discovery), "--state-root", str(self.state),
+                "--github-output", str(self.repository / "cli-matrix-output"),
+                "--trusted-workflow-sha", pin]))
+        self.assertEqual(pin, matrix.call_args.kwargs["trusted_workflow_sha"])
 
     def test_collection_preserves_original_roots_and_uses_exact_sdk_partition(self):
         original = self.repository / "original"
@@ -149,11 +170,15 @@ class SdkWorkflowTest(unittest.TestCase):
                 return {"synthetic": "advanced"}
 
             with patch.object(workflow.product_reuse, "collect_runtime_workers", return_value={"rows": [row]}) as collect, \
-                    patch.object(workflow.product_reuse, "advance_products", side_effect=advance), \
+                    patch.object(workflow.product_reuse, "advance_products", side_effect=advance) as advanced, \
                     patch.object(workflow, "matrix", return_value={"include": []}) as matrix:
                 result = workflow.collect(original, destination, self.repository / f"collect-output-{failure}",
                     wave=1, trusted_workflow_sha="c" * 40, repository_root=self.repository, environ={}, token="fixture")
             self.assertTrue(collect.call_args.kwargs["sdk_javascript_only"])
+            self.assertEqual("c" * 40, advanced.call_args.kwargs[
+                "sdk_original_workflow_sha"])
+            if not failure:
+                self.assertEqual("c" * 40, matrix.call_args.kwargs["trusted_workflow_sha"])
             self.assertEqual({"synthetic": "advanced"}, result)
             self.assertEqual(not failure, matrix.called)
             for name in ("product-resume-inputs", "product-resume-state"):
@@ -196,7 +221,8 @@ class SdkWorkflowTest(unittest.TestCase):
         self.assertEqual({"synthetic": "fresh result"}, self.stage(**self.upload))
         self.validate.assert_called_once_with(self.plan, self.repository)
         self.inspect.assert_called_once_with(self.plan, self.discovery, self.state,
-            repository_root=self.repository, environ=self.arguments["environ"], include_sdk_selection=True)
+            repository_root=self.repository, environ=self.arguments["environ"], include_sdk_selection=True,
+            sdk_original_workflow_sha=self.upload["trusted_workflow_sha"])
         self.fresh.assert_called_once_with(self.plan, self.destination, **self.upload,
             sdk_version=self.selection["sdkVersion"], compatible_release_range=self.selection["compatibleReleaseRange"],
             compatible_runtime_compatibility_range=self.selection["compatibleRuntimeCompatibilityRange"],

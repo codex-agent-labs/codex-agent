@@ -18,6 +18,14 @@ class SdkNativeMetadataWorkflowWiringTest(unittest.TestCase):
     def setUp(self):
         self.workflow = (ROOT / ".github/workflows/product-validation.yml").read_text()
 
+    def test_metadata_inspection_forwards_existing_caller_workflow_pin(self):
+        source = (ROOT / "ci/sdk_native_metadata_workflow.py").read_text()
+        for entry in ("inspected = product_reuse.inspect_products(",
+                      "ready = product_reuse.materialize_product_predecessors(",
+                      "result = product_reuse.execute_sdk_metadata("):
+            call = source.split(entry, 1)[1].split(")\n", 1)[0]
+            self.assertIn("sdk_original_workflow_sha=trusted_workflow_sha", call)
+
     def job(self, name):
         match = re.search(rf"(?ms)^  {re.escape(name)}:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)", self.workflow)
         self.assertIsNotNone(match, name)

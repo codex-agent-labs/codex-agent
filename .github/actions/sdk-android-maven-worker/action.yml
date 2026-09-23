@@ -287,7 +287,8 @@ runs:
         args=(--plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
           --destination "$GITHUB_WORKSPACE/build/sdk-android-maven-worker" \
           --repository-root "$GITHUB_WORKSPACE" --component sdk-android \
-          --expected-build-key "$BUILD_KEY" --android-runtime-archive "$ANDROID_ARCHIVE")
+          --expected-build-key "$BUILD_KEY" --android-runtime-archive "$ANDROID_ARCHIVE" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA")
         if [ -n "$SDK_VALIDATION_TOOLING" ]; then args+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
         if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then args+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
         if [ -n "$SDK_FACADE_METADATA_POLICY" ]; then args+=(--sdk-facade-metadata-policy "$SDK_FACADE_METADATA_POLICY"); fi
@@ -297,7 +298,6 @@ runs:
             --binary-artifact-id "$BINARY_ARTIFACT_ID" --binary-artifact-sha256 "$BINARY_ARTIFACT_SHA256" \
             --binary-contract-evidence "$BINARY_CONTRACT_EVIDENCE" \
             --binary-original-context "$BINARY_ORIGINAL_CONTEXT" \
-            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
             --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
             --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys")
         fi

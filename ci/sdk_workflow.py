@@ -36,12 +36,13 @@ def _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy, *,
 
 
 def _selection(plan, discovery, state, repository_root, environ, sdk_validation_tooling=None,
-               sdk_apple_validation_policy=None, *,
+               sdk_apple_validation_policy=None, *, trusted_workflow_sha=None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     validated = product_reuse._validate_plan(plan, repository_root)
     inspected = product_reuse.inspect_products(plan, discovery, state,
         repository_root=repository_root, environ=environ, include_sdk_selection=True,
+        **({"sdk_original_workflow_sha": trusted_workflow_sha} if trusted_workflow_sha is not None else {}),
         **_caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
             sdk_android_metadata_admission=sdk_android_metadata_admission))
@@ -62,10 +63,13 @@ def stage(plan, discovery, state, destination, *, keyring, keys_directory,
     tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
-    validated, selection, _ = _selection(plan, discovery, state, repository_root, environ, **tooling)
+    validated, selection, _ = _selection(plan, discovery, state, repository_root, environ,
+                                         trusted_workflow_sha=trusted_workflow_sha, **tooling)
     if selection.get("source") == "released-default":
         return product_reuse.materialize_sdk_default_inputs(plan, discovery, state, destination,
-            keyring=keyring, keys_directory=keys_directory, repository_root=repository_root, environ=environ, **tooling)
+            keyring=keyring, keys_directory=keys_directory, repository_root=repository_root, environ=environ,
+            **({"sdk_original_workflow_sha": trusted_workflow_sha} if trusted_workflow_sha is not None else {}),
+            **tooling)
     if selection.get("source") != "current-runtime":
         raise ValueError("SDK workflow has an unsupported replayed Runtime source")
     if any(value is None for value in (trusted_workflow_sha, artifact_id, artifact_sha256,
@@ -95,6 +99,7 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
     """
     validated, selection, plan_bytes = _selection(plan, discovery, state, repository_root, environ,
                                                 sdk_validation_tooling=sdk_validation_tooling,
+                                                trusted_workflow_sha=trusted_workflow_sha,
                                                 **_caller_policies(None, sdk_apple_validation_policy,
                                                     sdk_facade_metadata_admission=sdk_facade_metadata_admission,
                                                     sdk_android_metadata_admission=sdk_android_metadata_admission))
@@ -138,6 +143,7 @@ def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_
         raise ValueError("SDK iOS binary inputs require a fresh destination")
     plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, sdk_validation_tooling,
+        sdk_original_workflow_sha=trusted_workflow_sha,
         **_caller_policies(None, sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
             sdk_android_metadata_admission=sdk_android_metadata_admission))
@@ -244,6 +250,7 @@ def execute_ios_binary(plan, discovery, state, destination, *, expected_build_ke
 
 
 def matrix(plan, discovery, state, github_output_path, *, repository_root=None, environ=None, ios_binary=False, family=None,
+           trusted_workflow_sha=None,
            sdk_validation_tooling=None, sdk_apple_validation_policy=None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Expose only the fixed replay-elected SDK family before platform setup."""
@@ -278,6 +285,7 @@ def matrix(plan, discovery, state, github_output_path, *, repository_root=None, 
         return route(ready)
     inspected = product_reuse.inspect_products(plan, discovery, state,
         repository_root=repository_root, environ=environ,
+        **({"sdk_original_workflow_sha": trusted_workflow_sha} if trusted_workflow_sha is not None else {}),
         **_caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
             sdk_android_metadata_admission=sdk_android_metadata_admission))
@@ -313,7 +321,8 @@ def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha2
         "discovery_root": original / "product-resume-state",
         "state_root": original / ("runtime-state" if state_wave or sdk_state_wave is not None else "product-resume-state")}
     value = matrix(paths["plan_path"], paths["discovery_root"], paths["state_root"], github_output_path,
-                   repository_root=repository_root, environ=environ, **({"ios_binary": True} if ios_binary else {}),
+                   repository_root=repository_root, environ=environ,
+                   trusted_workflow_sha=trusted_workflow_sha, **({"ios_binary": True} if ios_binary else {}),
                    **_caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
                        sdk_facade_metadata_admission=sdk_facade_metadata_admission,
                        sdk_android_metadata_admission=sdk_android_metadata_admission),
@@ -398,6 +407,7 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     handoff = destination / "handoff"
     advanced = product_reuse.advance_products(plan, discovery, state, shards, handoff / "runtime-state",
         github_output_path, repository_root=root, environ=environ, failed_instances=failed, **scope, **tooling,
+        sdk_original_workflow_sha=trusted_workflow_sha,
         **({"sdk_evidence_roots": evidence} if family == "native-validation" else {}),
         **({"sdk_apple_evidence_roots": apple_evidence} if family == "ios-validation" else {}))
     for name in ("product-resume-inputs", "product-resume-state"):
@@ -407,7 +417,7 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     else:
         ready = matrix(handoff / "product-resume-inputs/plan/impact-plan.json", handoff / "product-resume-state",
                        handoff / "runtime-state", github_output_path, repository_root=root, environ=environ,
-                       **tooling,
+                       trusted_workflow_sha=trusted_workflow_sha, **tooling,
                        **({"ios_binary": True} if ios_binary else {}),
                        **({"family": family} if family is not None else {}))
         if wave >= 2 and ready["include"]:
@@ -452,7 +462,8 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
             raise ValueError("SDK native preparation consumer is not selected")
         prepared = destination / "inputs"
         ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
-            expected_build_key=expected_build_key, repository_root=root, environ=environ, **tooling)
+            expected_build_key=expected_build_key, repository_root=root, environ=environ,
+            sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
         producer = product_reuse.validate_producer(product_reuse._canonical_control(
             prepared / "producer.json", "Elected native SDK producer"))
         contract = product_reuse.validate_phase_receipt(product_reuse._canonical_control(
@@ -566,7 +577,8 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
             raise ValueError("SDK JavaScript worker is not selected")
         prepared = destination / "inputs"
         ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
-            expected_build_key=expected_build_key, repository_root=root, environ=environ, **tooling)
+            expected_build_key=expected_build_key, repository_root=root, environ=environ,
+            sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
         producer = product_reuse.validate_producer(product_reuse._canonical_control(
             prepared / "producer.json", "Elected SDK producer"))
         contract = product_reuse.validate_phase_receipt(product_reuse._canonical_control(
@@ -617,6 +629,7 @@ def _workflow_main(argv):
         if name == "matrix":
             for flag, dest in (("plan", "plan"), ("discovery-root", "discovery"), ("state-root", "state")):
                 command.add_argument(f"--{flag}", dest=dest, type=Path, required=True)
+            command.add_argument("--trusted-workflow-sha")
         else:
             command.add_argument("--destination", type=Path, required=True)
             command.add_argument("--trusted-workflow-sha", required=True)

@@ -159,7 +159,8 @@ class SdkIosBinaryInputsTest(unittest.TestCase):
             before = regular_file_inventory(self.destination)
         self.assertEqual(before, regular_file_inventory(self.destination))
         self.assertEqual(["native-enter", "native-exit"], self.events)
-        self.replay.assert_called_once_with(self.plan, self.discovery, self.state_root, self.repository, self.options["environ"], None)
+        self.replay.assert_called_once_with(self.plan, self.discovery, self.state_root, self.repository,
+            self.options["environ"], None, sdk_original_workflow_sha=self.options["trusted_workflow_sha"])
         self.native.assert_called_once_with(self.plan, uploads=self.options["native_uploads"],
             trusted_workflow_sha=self.options["trusted_workflow_sha"], repository_root=self.repository,
             environ=self.options["environ"], token=self.options["token"])

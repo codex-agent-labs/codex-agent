@@ -76,6 +76,7 @@ def prepare_runtime_signing_inputs(
     output = _destination(destination, protected)
     plan_bytes = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
+    tooling["sdk_original_workflow_sha"] = trusted_workflow_sha
     if apple_bytes is not None:
         tooling["sdk_apple_validation_policy"] = load_canonical_json_bytes(apple_bytes)
     with tempfile.TemporaryDirectory(prefix="runtime-signing-inputs-", dir=candidate) as temporary:

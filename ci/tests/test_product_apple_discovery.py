@@ -1,6 +1,6 @@
 """Automatic Apple policy routing; cryptographic gates are tested separately."""
 
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 import json
 from pathlib import Path
 import sys
@@ -34,7 +34,7 @@ class ProductAppleDiscoveryTest(unittest.TestCase):
         self.java = self.fixture.java
         self.number = 0
 
-    def invoke(self, *, tooling_hit, explicit_roots=(), explicit_policy=None):
+    def invoke(self, *, tooling_hit, explicit_roots=(), explicit_policy=None, package_only=False):
         self.number += 1
         plan = impact_plan(changed=["codex-agent-runtime-ios/apple/TestApp/TestApp.swift"])
         self.plan_path.write_text(json.dumps(plan), encoding="utf-8")
@@ -47,7 +47,7 @@ class ProductAppleDiscoveryTest(unittest.TestCase):
         contract = PhaseInstanceId("contract", "contract", "metadata", "common")
         package = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
         validation = PhaseInstanceId("sdk", "sdk-ios", "validation", "ios-arm64")
-        closure = (contract, package, validation)
+        closure = (contract, package) if package_only else (contract, package, validation)
         events, selected_roots, planner_calls = [], [], []
 
         def release_trust(_root, _revision, output):
@@ -102,6 +102,8 @@ class ProductAppleDiscoveryTest(unittest.TestCase):
 
         def planner(invocation, **_kwargs):
             events.append("planner")
+            if _kwargs.get("sdk_apple_package_admission_factory") is not None:
+                events.append("apple-factory")
             planner_calls.append(invocation)
             if len(planner_calls) == 1:
                 return {"result": "complete", "fullReuse": True, "phases": []}
@@ -112,8 +114,9 @@ class ProductAppleDiscoveryTest(unittest.TestCase):
         with ExitStack() as stack:
             for owner, name, options in (
                 (product_reuse, "_validate_plan", {"return_value": plan}),
-                (product_reuse, "_requested", {"return_value": (validation,)}),
-                (product_reuse, "_dependency_closure", {"return_value": closure}),
+                (product_reuse, "_requested", {"return_value": (package,) if package_only else (validation,)}),
+                (product_reuse, "_dependency_closure", {"side_effect":
+                    lambda selected, **_options: (contract,) if tuple(selected) == (contract,) else closure}),
                 (product_reuse, "sdk_runtime_source", {"return_value": None}),
                 (product_reuse, "_versions", {"return_value": VERSIONS}),
                 (product_reuse, "_release_trust", {"side_effect": release_trust}),
@@ -128,6 +131,8 @@ class ProductAppleDiscoveryTest(unittest.TestCase):
                 (tooling_discovery, "discover_tooling_ci", {"side_effect": discover_tooling}),
             ):
                 stack.enter_context(patch.object(owner, name, **options))
+            stack.enter_context(patch("sdk_apple_original_package_selection.caller_original_apple_package_selector",
+                                      return_value=nullcontext(object())))
             result = product_reuse.discover(
                 self.plan_path, destination, self.output, repository_root=self.root,
                 environ=environment, sdk_apple_evidence_roots=tuple(explicit_roots),
@@ -168,8 +173,21 @@ class ProductAppleDiscoveryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "caller-owned validation policy"):
             self.invoke(tooling_hit=False, explicit_roots=(explicit,))
 
+    def test_package_only_reuse_gets_caller_policy_without_validation_evidence(self):
+        with patch.object(sdk_apple_policy, "caller_apple_validation_policy",
+                          wraps=sdk_apple_policy.caller_apple_validation_policy) as mapping:
+            _, _, _, events, roots, planners = self.invoke(tooling_hit=True, package_only=True)
+        mapping.assert_called_once()
+        self.assertEqual([()], roots)
+        self.assertEqual(1, events.count("apple-factory"))
+        self.assertTrue(all("sdkAppleValidationEvidence" not in request for request in planners))
+        with patch.object(sdk_apple_policy, "caller_apple_validation_policy",
+                          wraps=sdk_apple_policy.caller_apple_validation_policy) as mapping:
+            self.invoke(tooling_hit=False, package_only=True)
+        mapping.assert_not_called()
+
     def test_explicit_policy_is_never_replaced_by_automatic_discovery(self):
-        explicit = {"caller": "original explicit policy"}
+        explicit = {"caller": "original explicit policy", "plan": str(self.plan_path)}
         with patch.object(sdk_apple_policy, "caller_apple_validation_policy",
                           side_effect=AssertionError("explicit policy must not be replaced")) as automatic:
             _, _, _, _, _, planners = self.invoke(tooling_hit=True, explicit_policy=explicit)

@@ -82,7 +82,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             if identity not in selection["consumers"]:
                 raise ValueError("Native SDK package is not selected")
             inspected = product_reuse.inspect_products(plan, discovery, preparation_state,
-                repository_root=root, environ=environ, **tooling)
+                repository_root=root, environ=environ,
+                sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
             elected = [row for row in inspected["readyPlans"]
                        if all(row.get(name) == value for name, value in preparation_identity.items())]
             if (len(elected) != 1 or set(elected[0]) != PHASE_PLAN_KEYS
@@ -98,7 +99,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             capture_inventory = regular_file_inventory(capture, allow_empty=True)
             prepared = destination / "inputs"
             ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
-                expected_build_key=expected_build_key, repository_root=root, environ=environ, **tooling)
+                expected_build_key=expected_build_key, repository_root=root, environ=environ,
+                sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
             prepared_inventory = regular_file_inventory(prepared, allow_empty=True)
             producer = product_reuse.validate_producer(product_reuse._canonical_control(
                 prepared / "producer.json", "Elected native package producer"))

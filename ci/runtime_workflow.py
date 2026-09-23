@@ -13,12 +13,13 @@ from reuse import github_output
 
 
 def matrix(plan_path, discovery_root, state_root, github_output_path, *, repository_root=None, environ=None,
-           sdk_validation_tooling=None, sdk_apple_validation_policy=None,
+           sdk_validation_tooling=None, sdk_apple_validation_policy=None, sdk_original_workflow_sha=None,
            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     value = products.runtime_worker_matrix(
         plan_path, discovery_root, state_root, repository_root=repository_root, environ=environ,
         **({"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
+        **({"sdk_original_workflow_sha": sdk_original_workflow_sha} if sdk_original_workflow_sha is not None else {}),
         **({"sdk_facade_metadata_admission": sdk_facade_metadata_admission} if sdk_facade_metadata_admission is not None else {}),
         **({"sdk_android_metadata_admission": sdk_android_metadata_admission} if sdk_android_metadata_admission is not None else {}))
     supervisors = [row["buildKey"] for row in value["include"]
@@ -36,6 +37,7 @@ def matrix(plan_path, discovery_root, state_root, github_output_path, *, reposit
 def continuation(plan_path, discovery_root, state_root, github_output_path, *,
                  repository_root=None, environ=None, sdk_validation_tooling=None,
                  require_completed=False, if_selected=False, sdk_apple_validation_policy=None,
+                 sdk_original_workflow_sha=None,
                  sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Route the final fully materialized Runtime closure, not early native fanout.
 
@@ -50,6 +52,7 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
         repository_root=repository_root, environ=environ,
         sdk_validation_tooling=sdk_validation_tooling, include_sdk_selection=True,
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
+        **({"sdk_original_workflow_sha": sdk_original_workflow_sha} if sdk_original_workflow_sha is not None else {}),
         **({"sdk_facade_metadata_admission": sdk_facade_metadata_admission} if sdk_facade_metadata_admission is not None else {}),
         **({"sdk_android_metadata_admission": sdk_android_metadata_admission} if sdk_android_metadata_admission is not None else {}))
     sdk = inspected.get("sdkInputSelection")
@@ -134,6 +137,7 @@ def capture(plan_path, destination, github_output_path, *, artifact_id, artifact
     tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
     if sdk_apple_validation_policy is not None:
         tooling["sdk_apple_validation_policy"] = sdk_apple_validation_policy
+    tooling["sdk_original_workflow_sha"] = trusted_workflow_sha
     if sdk_facade_metadata_admission is not None:
         tooling["sdk_facade_metadata_admission"] = sdk_facade_metadata_admission
     if sdk_android_metadata_admission is not None:
@@ -176,6 +180,7 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
     if sdk_apple_validation_policy is not None:
         tooling["sdk_apple_validation_policy"] = sdk_apple_validation_policy
+    tooling["sdk_original_workflow_sha"] = trusted_workflow_sha
     if sdk_facade_metadata_admission is not None:
         tooling["sdk_facade_metadata_admission"] = sdk_facade_metadata_admission
     if sdk_android_metadata_admission is not None:
@@ -270,6 +275,8 @@ def main(argv=None):
     for command in (show, final, captured, collected):
         command.add_argument("--sdk-apple-validation-policy", type=Path)
         add_metadata_admission_arguments(command)
+    for command in (show, final):
+        command.add_argument("--sdk-original-workflow-sha")
     trust = commands.add_parser("variant-trust")
     trust.add_argument("--variant-handoff", action="append", required=True, metavar="TARGET=PATH")
     for name in ("destination", "keyring", "keys-directory"):
@@ -284,7 +291,9 @@ def main(argv=None):
                 products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")})
             with metadata_admission_options(args) as admissions:
                 matrix(args.plan, args.discovery_root, args.state_root, args.github_output,
-                       **tooling, **apple_policy, **admissions)
+                       **tooling, **apple_policy,
+                       **({"sdk_original_workflow_sha": args.sdk_original_workflow_sha}
+                          if args.sdk_original_workflow_sha is not None else {}), **admissions)
         elif args.command == "continuation":
             tooling = (None if args.sdk_validation_tooling is None else
                        products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy"))
@@ -292,7 +301,9 @@ def main(argv=None):
                 continuation(args.plan, args.discovery_root, args.state_root, args.github_output,
                              sdk_validation_tooling=tooling, **({"if_selected": True} if args.if_selected else {}),
                              **({"require_completed": True} if args.require_completed else {}),
-                             **apple_policy, **admissions)
+                             **apple_policy,
+                             **({"sdk_original_workflow_sha": args.sdk_original_workflow_sha}
+                                if args.sdk_original_workflow_sha is not None else {}), **admissions)
         elif args.command == "capture":
             tooling = ({} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
                 products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")})

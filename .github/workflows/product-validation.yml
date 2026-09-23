@@ -928,6 +928,7 @@ jobs:
             --state-root build/product-resume-inputs/state \
             --contract-handoff build/product-resume-inputs/release/contract-input \
             --destination build/product-resume-state \
+            --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
             --github-output "$GITHUB_OUTPUT" ${tooling[@]+"${tooling[@]}"}
       - name: Elect Runtime workers from the verified resumed state
         id: runtime_matrix
@@ -941,6 +942,7 @@ jobs:
           python3 -B ci/runtime_workflow.py matrix \
             --plan build/product-resume-inputs/plan/impact-plan.json \
             --discovery-root build/product-resume-state --state-root build/product-resume-state \
+            --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
             --github-output "$GITHUB_OUTPUT" ${tooling[@]+"${tooling[@]}"}
       - name: Preserve the resumed state and all original transport evidence
         id: upload_resume
@@ -1022,6 +1024,7 @@ jobs:
           echo "key_hex=${BUILD_KEY#sha256:}" >> "$GITHUB_OUTPUT"
           python3 -B ci/product_reuse.py execute-runtime-supervisor ${tooling[@]+"${tooling[@]}"} \
             --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+            --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
             --expected-build-key "$BUILD_KEY" --destination build/runtime-supervisor
       - id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1695,6 +1698,7 @@ jobs:
           if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
           python3 -B ci/runtime_workflow.py continuation --if-selected ${tooling[@]+"${tooling[@]}"} \
             --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+            --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
             --github-output "$GITHUB_OUTPUT"
 
   runtime-signing-prepare-native:
@@ -1942,6 +1946,7 @@ jobs:
           if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
           python3 -B ci/product_reuse.py execute-runtime-aggregate ${tooling[@]+"${tooling[@]}"} \
             --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+            --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
             --expected-build-key "$BUILD_KEY" --variant-trust-root build/runtime-variant-trust \
             --destination build/runtime-aggregate-worker
       - if: always()
@@ -2115,6 +2120,7 @@ jobs:
           if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
           python3 -B ci/runtime_workflow.py continuation --require-completed ${tooling[@]+"${tooling[@]}"} \
             --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+            --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
             --github-output "$GITHUB_OUTPUT"
 
   runtime-signing-prepare-aggregate:
@@ -2360,12 +2366,12 @@ jobs:
             current-runtime)
               destination="$RUNNER_TEMP/sdk-inputs"
               fresh=(--artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256"
-                --expected-build-key "$AGGREGATE_KEY" --expected-metadata-receipt-sha256 "$AGGREGATE_RECEIPT"
-                --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA") ;;
+                --expected-build-key "$AGGREGATE_KEY" --expected-metadata-receipt-sha256 "$AGGREGATE_RECEIPT") ;;
             *) echo 'Unknown replayed SDK input source' >&2; exit 1 ;;
           esac
           python3 -B -m ci.sdk_workflow --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
             --destination "$destination" --repository-root "$GITHUB_WORKSPACE" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
             --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
             --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" ${fresh[@]+"${fresh[@]}"} ${tooling[@]+"${tooling[@]}"}
           printf 'path=%s\n' "$destination" >> "$GITHUB_OUTPUT"
@@ -3125,6 +3131,7 @@ jobs:
           STATE: ${{ steps.capture.outputs.state-root }}
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
           SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
         run: |
           python3 - <<'PY'
           import os, sys
@@ -3139,7 +3146,8 @@ jobs:
           if apple_policy:
               tooling['sdk_apple_validation_policy'] = _canonical_control(Path(apple_policy), 'Caller Apple validation policy')
           inspected = inspect_products(Path(os.environ['PLAN']), Path(os.environ['DISCOVERY']), Path(os.environ['STATE']),
-              repository_root=Path.cwd(), environ=os.environ, **tooling)
+              repository_root=Path.cwd(), environ=os.environ,
+              sdk_original_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'], **tooling)
           github_output(Path(os.environ['GITHUB_OUTPUT']), select_preparation_anchor(inspected['readyPlans']))
           PY
 
@@ -4750,6 +4758,7 @@ jobs:
           STATE_ROOT: ${{ steps.capture.outputs.state-root }}
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
           SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -4762,6 +4771,7 @@ jobs:
           fi
           python3 -B -m ci.sdk_completion --plan "$PLAN" \
             --discovery-root "$DISCOVERY_ROOT" --state-root "$STATE_ROOT" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
             --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
             ${tooling[@]+"${tooling[@]}"}
 

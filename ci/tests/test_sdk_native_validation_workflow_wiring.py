@@ -14,6 +14,13 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
         self.harness = fixture.SdkNativeWorkflowWiringTest(methodName="runTest")
         self.harness.setUp()
 
+    def test_validation_inspection_forwards_existing_caller_workflow_pin(self):
+        source = (fixture.ROOT / "ci/sdk_native_validation_workflow.py").read_text()
+        for entry in ("inspected = product_reuse.inspect_products(",
+                      "ready = product_reuse.materialize_product_predecessors("):
+            call = source.split(entry, 1)[1].split(")\n", 1)[0]
+            self.assertIn("sdk_original_workflow_sha=trusted_workflow_sha", call)
+
     def job(self, name):
         return self.harness.job(name)
 

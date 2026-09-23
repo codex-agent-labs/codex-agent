@@ -94,6 +94,7 @@ runs:
         TREE: ${{ inputs.tree }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
         APPLE_POLICY_SHA256: ${{ steps.policy.outputs.apple_policy_sha256 }}
       run: |
@@ -162,6 +163,7 @@ runs:
             '--state-root': os.environ['STATE'], '--destination': str(root / 'build/sdk-ios-metadata-worker'),
             '--repository-root': str(root), '--expected-build-key': os.environ['BUILD_KEY'],
             '--sdk-apple-validation-policy': os.environ['SDK_APPLE_VALIDATION_POLICY'],
+            '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
         }
         command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'ios-metadata']
         command += [part for flag, value in fields.items() for part in (flag, value)]

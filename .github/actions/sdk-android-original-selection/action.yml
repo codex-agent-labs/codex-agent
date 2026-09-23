@@ -165,7 +165,8 @@ runs:
             selected = product_reuse.materialize_product_predecessors(
                 plan, Path(os.environ['DISCOVERY']), Path(os.environ['STATE']), instance, prepared,
                 expected_build_key=os.environ['BUILD_KEY'], repository_root=root, environ=os.environ,
-                sdk_validation_tooling=tooling, sdk_apple_validation_policy=apple, **admissions)
+                sdk_validation_tooling=tooling, sdk_apple_validation_policy=apple,
+                sdk_original_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'], **admissions)
             if selected['buildKey'] != os.environ['BUILD_KEY']:
                 raise ValueError('Android original predecessor election changed')
             package = prepared / 'sdk-sdk-android-package-android'

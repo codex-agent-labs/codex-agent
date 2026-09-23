@@ -105,4 +105,5 @@ runs:
         python3 -B ci/product_reuse.py execute-runtime-phase \
           --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
           --product runtime --component "$COMPONENT" --phase "$PHASE" --target "$TARGET" \
+          --sdk-original-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
           --expected-build-key "$BUILD_KEY" --destination build/runtime-worker ${extra[@]+"${extra[@]}"}

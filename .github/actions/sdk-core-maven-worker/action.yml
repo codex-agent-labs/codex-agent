@@ -225,6 +225,7 @@ runs:
             '--state-root': os.environ['STATE'], '--destination': str(root / 'build/sdk-core-maven-worker'),
             '--repository-root': str(root), '--component': 'sdk-core',
             '--expected-build-key': os.environ['BUILD_KEY'],
+            '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
         }
         for env_name, flag in (('SDK_VALIDATION_TOOLING', '--sdk-validation-tooling'),
                                ('SDK_APPLE_VALIDATION_POLICY', '--sdk-apple-validation-policy'),
@@ -240,7 +241,6 @@ runs:
                 '--binary-artifact-sha256': os.environ['BINARY_ARTIFACT_SHA256'],
                 '--binary-contract-evidence': os.environ['BINARY_CONTRACT_EVIDENCE'],
                 '--binary-original-context': os.environ['BINARY_ORIGINAL_CONTEXT'],
-                '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
                 '--keyring': str(root / 'gradle/release/product-signing-keys.json'),
                 '--keys-directory': str(root / 'gradle/release/keys'),
             })

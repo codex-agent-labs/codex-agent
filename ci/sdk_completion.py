@@ -19,7 +19,7 @@ from reuse import github_output
 
 def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
                            repository_root=None, environ=None, sdk_validation_tooling=None,
-                           sdk_apple_validation_policy=None,
+                           sdk_apple_validation_policy=None, sdk_original_workflow_sha=None,
                            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Check the full replayed SDK closure, not a family matrix or new election.
 
@@ -34,6 +34,8 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
         **({"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy}
            if sdk_apple_validation_policy is not None else {}),
+        **({"sdk_original_workflow_sha": sdk_original_workflow_sha}
+           if sdk_original_workflow_sha is not None else {}),
         **products._metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     result = require_exact_keys(require_object(inspected, "SDK completion inspection").get("result"),
                                 products._REUSE_RESULT_KEYS, "SDK completion replay result")
@@ -69,6 +71,7 @@ def main(argv=None):
         parser.add_argument("--" + name, type=Path, required=True)
     for name in ("state-root", "sdk-validation-tooling", "sdk-apple-validation-policy", "github-output"):
         parser.add_argument("--" + name, type=Path)
+    parser.add_argument("--sdk-original-workflow-sha")
     add_metadata_admission_arguments(parser)
     args = parser.parse_args(argv)
     try:
@@ -78,7 +81,9 @@ def main(argv=None):
             apple = {} if args.sdk_apple_validation_policy is None else {"sdk_apple_validation_policy":
                 products._canonical_control(args.sdk_apple_validation_policy, "Caller Apple validation policy")}
             result = require_sdk_completion(args.plan, args.discovery_root, args.state_root,
-                repository_root=args.repository_root, environ=os.environ, **tooling, **apple, **admissions)
+                repository_root=args.repository_root, environ=os.environ, **tooling, **apple,
+                **({"sdk_original_workflow_sha": args.sdk_original_workflow_sha}
+                   if args.sdk_original_workflow_sha is not None else {}), **admissions)
             if args.github_output is None:
                 print(canonical_json_bytes(result).decode().strip())
             else:

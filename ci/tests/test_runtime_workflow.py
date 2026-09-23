@@ -402,6 +402,14 @@ class RuntimeWorkflowTest(unittest.TestCase):
             self.assertEqual(0, workflow.main([*args, "--require-completed"]))
         route.assert_called_once_with(Path("plan"), Path("discovery"), Path("state"), self.output,
                                       sdk_validation_tooling=None, require_completed=True)
+        with mock.patch.object(workflow, "continuation") as route:
+            self.assertEqual(0, workflow.main([*args, "--sdk-original-workflow-sha", PIN]))
+        self.assertEqual(PIN, route.call_args.kwargs["sdk_original_workflow_sha"])
+        matrix_args = ["matrix", "--plan", "plan", "--discovery-root", "discovery",
+                       "--state-root", "state", "--github-output", str(self.output)]
+        with mock.patch.object(workflow, "matrix") as route:
+            self.assertEqual(0, workflow.main([*matrix_args, "--sdk-original-workflow-sha", PIN]))
+        self.assertEqual(PIN, route.call_args.kwargs["sdk_original_workflow_sha"])
 
     def test_capture_uses_caller_upload_then_current_captured_paths_for_each_wave(self):
         for wave in (0, 1, 4, 5):
@@ -424,7 +432,8 @@ class RuntimeWorkflowTest(unittest.TestCase):
                 discovery = original / "product-resume-state"
                 state = original / ("runtime-state" if wave else "product-resume-state")
                 gate.assert_called_once_with(plan, discovery, state,
-                                             repository_root=self.root, environ=self.environment)
+                                             repository_root=self.root, environ=self.environment,
+                                             sdk_original_workflow_sha=PIN)
                 self.assertEqual({"input_root": original, "plan_path": plan, "discovery_root": discovery,
                                   "state_root": state, "phase_plan": state / "phase-plans/runtime-node-js-validation-node-js-binding.json",
                                   "matrix": value}, result)
@@ -455,7 +464,8 @@ class RuntimeWorkflowTest(unittest.TestCase):
                 route.assert_called_once_with(
                     destination / "original/product-resume-inputs/plan/impact-plan.json",
                     destination / "original/product-resume-state", destination / "original/runtime-state",
-                    self.output, repository_root=self.root, environ=self.environment)
+                    self.output, repository_root=self.root, environ=self.environment,
+                    sdk_original_workflow_sha=PIN)
 
     def test_capture_rejects_failed_transport_partial_identity_wrong_key_and_duplicate_row(self):
         with mock.patch.object(workflow.products, "capture_runtime_resume_upload", side_effect=ValueError("transport rejected")), \
@@ -493,15 +503,18 @@ class RuntimeWorkflowTest(unittest.TestCase):
                 state = self.input / ("runtime-state" if wave > 1 else "product-resume-state")
                 collect.assert_called_once_with(plan, discovery, state, destination / "collection",
                                                 trusted_workflow_sha=PIN, repository_root=self.root,
-                                                environ=self.environment, token="synthetic-token")
+                                                environ=self.environment, token="synthetic-token",
+                                                sdk_original_workflow_sha=PIN)
                 handoff = destination / "handoff"
                 advance.assert_called_once_with(plan, discovery, state, [destination / "collection/good/shard"],
                                                 handoff / "runtime-state", self.output,
                                                 repository_root=self.root, environ=self.environment,
-                                                failed_instances=(), runtime_workers_only=True)
+                                                failed_instances=(), runtime_workers_only=True,
+                                                sdk_original_workflow_sha=PIN)
                 gate.assert_called_once_with(handoff / "product-resume-inputs/plan/impact-plan.json",
                                              handoff / "product-resume-state", handoff / "runtime-state",
-                                             repository_root=self.root, environ=self.environment)
+                                             repository_root=self.root, environ=self.environment,
+                                             sdk_original_workflow_sha=PIN)
                 self.assertEqual({"fullReuse": False, "fixture": "actual gate is mocked"}, result)
                 self.assertEqual({"product-resume-inputs", "product-resume-state", "runtime-state"},
                                  {path.name for path in handoff.iterdir()})
@@ -545,14 +558,17 @@ class RuntimeWorkflowTest(unittest.TestCase):
         plan = self.input / "product-resume-inputs/plan/impact-plan.json"
         collect.assert_called_once_with(plan, self.input / "product-resume-state", self.input / "runtime-state",
             destination / "collection", trusted_workflow_sha=PIN, repository_root=self.root,
-            environ=self.environment, token="synthetic-token", runtime_aggregate_only=True)
+            environ=self.environment, token="synthetic-token", runtime_aggregate_only=True,
+            sdk_original_workflow_sha=PIN)
         handoff = destination / "handoff"
         advance.assert_called_once_with(plan, self.input / "product-resume-state", self.input / "runtime-state",
             [destination / "collection/good/shard"], handoff / "runtime-state", self.output,
-            repository_root=self.root, environ=self.environment, failed_instances=(), runtime_aggregate_only=True)
+            repository_root=self.root, environ=self.environment, failed_instances=(), runtime_aggregate_only=True,
+            sdk_original_workflow_sha=PIN)
         route.assert_called_once_with(handoff / "product-resume-inputs/plan/impact-plan.json",
             handoff / "product-resume-state", handoff / "runtime-state", self.output,
-            repository_root=self.root, environ=self.environment, require_completed=True)
+            repository_root=self.root, environ=self.environment, require_completed=True,
+            sdk_original_workflow_sha=PIN)
         inspect.assert_called_once()
         self.assertEqual("completed", self.outputs()["aggregate_state"])
         self.assertEqual("true", self.outputs()["aggregate_payload_complete"])
