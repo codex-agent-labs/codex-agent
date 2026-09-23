@@ -10,9 +10,12 @@ inputs:
   artifact-sha256:
     required: true
     description: Exact predecessor SDK state digest.
+  state-wave:
+    default: '0'
+    description: Exact preceding Runtime state wave when no SDK wave has run.
   sdk-state-wave:
-    required: true
-    description: Exact preceding SDK state wave.
+    default: ''
+    description: Exact preceding SDK state wave when any earlier SDK wave ran.
   trusted-workflow-sha:
     required: true
     description: Reviewed product workflow revision.
@@ -66,7 +69,7 @@ inputs:
     description: Optional independently supplied Android metadata replay policy.
 outputs:
   sdk-facade-metadata-policy:
-    description: Raw eleven-validation caller policy generated from this job's authenticated wave-13 capture.
+    description: Runner-local raw eleven-validation policy generated from this job's authenticated predecessor capture.
     value: >-
       ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
           steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
@@ -106,19 +109,19 @@ runs:
         plan-id: ${{ inputs.plan-id }}
         artifact-id: ${{ inputs.artifact-id }}
         artifact-sha256: ${{ inputs.artifact-sha256 }}
+        state-wave: ${{ inputs.state-wave }}
         sdk-state-wave: ${{ inputs.sdk-state-wave }}
         trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
         sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
         sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
         sdk-android-metadata-policy: ${{ inputs.sdk-android-metadata-policy }}
     - id: bootstrap
-      name: Construct raw eleven-validation policy from captured wave 13
+      name: Construct raw eleven-validation policy from the captured predecessor
       shell: bash
       env:
         PLAN: ${{ steps.captured.outputs.plan-path }}
         DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
         STATE: ${{ steps.captured.outputs.state-root }}
-        SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
         BUILD_KEY: ${{ inputs.build-key }}
         SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
         SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
@@ -137,7 +140,6 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
-        test "$SDK_STATE_WAVE" = 13
         bootstrap_dir=$(mktemp -d "$RUNNER_TEMP/core-metadata-bootstrap.XXXXXXXX")
         policy_path="$bootstrap_dir/policy.json"
         options=()
@@ -178,8 +180,9 @@ runs:
         from products.signing_isolation import require_no_signing_secret
         from ci.sdk_policy_snapshot import snapshot_policy_closure
         require_no_signing_secret(os.environ)
-        if os.environ['SDK_STATE_WAVE'] != '13':
-            raise ValueError('Core metadata requires exact preceding SDK wave 13')
+        wave = os.environ['SDK_STATE_WAVE']
+        if wave and wave not in {str(value) for value in range(1, 14)}:
+            raise ValueError('Core metadata requires a predecessor before SDK wave 14')
         root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
         digests = {}
         for name, kind in (('CORE_POLICY', 'core-metadata-bootstrap'),
@@ -225,7 +228,7 @@ runs:
                                       ('APPLE_POLICY', 'apple-validation'),
                                       ('ANDROID_POLICY', 'android-metadata')) if os.environ[name]}
         if sha256_bytes(canonical_json_bytes(digests)) != os.environ['POLICY_SHA256']:
-            raise ValueError('Core metadata caller policy changed during state capture')
+            raise ValueError('Core metadata caller policy changed after bootstrap')
         rows = json.loads(os.environ['MATRIX'])['include']
         key, tree = os.environ['BUILD_KEY'], os.environ['TREE']
         if (host_classifier() != 'linux-x64' or os.environ['REQUIRED'] != 'true'

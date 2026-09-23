@@ -39,6 +39,7 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
         self.assertLess(self.action.index("- id: identity"), self.action.index("uses: ./.github/actions/setup-kmp"))
         self.assertEqual(1, self.action.count("uses: ./.github/actions/capture-runtime-state"))
         self.assertIn("sdk-family: core-metadata", self.action)
+        self.assertIn("state-wave: ${{ inputs.state-wave }}", self.action)
         self.assertIn("sdk-state-wave: ${{ inputs.sdk-state-wave }}", self.action)
         capture = self.action.split("- id: captured", 1)[1].split("- id: bootstrap", 1)[0]
         self.assertNotIn("sdk-facade-metadata-policy:", capture)
@@ -55,7 +56,7 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
             self.assertIn('--native-compiler-archive "' + target + '=$', bootstrap)
         self.assertIn("CORE_POLICY: ${{ steps.bootstrap.outputs.policy_path }}", self.action)
         self.assertNotIn("CORE_POLICY: ${{ inputs.sdk-facade-metadata-policy }}", self.action)
-        self.assertIn("sdk-facade-metadata-policy:\n    description: Raw", self.action)
+        self.assertIn("sdk-facade-metadata-policy:\n    description: Runner-local raw", self.action)
         self.assertIn("steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&", self.action)
         source = self.source("policy")
         with tempfile.TemporaryDirectory() as temporary:
@@ -66,18 +67,24 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
             policy.write_bytes(canonical_json_bytes({"evidenceRoot": str(root / "evidence"),
                 "records": [], "policy": {}}))
             values = {"GITHUB_WORKSPACE": str(workspace), "GITHUB_OUTPUT": str(root / "github-output"),
-                "SDK_STATE_WAVE": "12", "CORE_POLICY": str(policy), "APPLE_POLICY": "", "ANDROID_POLICY": ""}
-            with patch.dict(os.environ, values, clear=True), self.assertRaisesRegex(ValueError, "wave 13"):
+                "SDK_STATE_WAVE": "14", "CORE_POLICY": str(policy), "APPLE_POLICY": "", "ANDROID_POLICY": ""}
+            with patch.dict(os.environ, values, clear=True), self.assertRaisesRegex(ValueError, "before SDK wave 14"):
                 exec(compile(source, "core-policy", "exec"), {})
-            values["SDK_STATE_WAVE"] = "13"
+            values["SDK_STATE_WAVE"] = "12"
             with patch.dict(os.environ, values, clear=True), self.assertRaises(ValueError):
                 exec(compile(source, "core-policy", "exec"), {})  # No eleven-target caller policy.
             with patch.dict(os.environ, values, clear=True), patch(
                     "ci.sdk_policy_snapshot.snapshot_policy_closure",
                     return_value=sha256_bytes(policy.read_bytes())):
                 exec(compile(source, "core-policy", "exec"), {})
-            self.assertEqual(sha256_bytes(canonical_json_bytes({"CORE_POLICY": sha256_bytes(policy.read_bytes())})),
-                             (root / "github-output").read_text().strip().split("=", 1)[1])
+            values["SDK_STATE_WAVE"] = ""
+            with patch.dict(os.environ, values, clear=True), patch(
+                    "ci.sdk_policy_snapshot.snapshot_policy_closure",
+                    return_value=sha256_bytes(policy.read_bytes())):
+                exec(compile(source, "core-policy", "exec"), {})
+            expected = sha256_bytes(canonical_json_bytes({"CORE_POLICY": sha256_bytes(policy.read_bytes())}))
+            self.assertEqual([expected, expected], [line.split("=", 1)[1] for line in
+                (root / "github-output").read_text().splitlines()])
             values["CORE_POLICY"] = str(workspace / "policy.json")
             Path(values["CORE_POLICY"]).write_bytes(policy.read_bytes())
             with patch.dict(os.environ, values, clear=True), self.assertRaisesRegex(ValueError, "external"):
@@ -135,7 +142,7 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
             transitive.write_bytes(b"mutated")
             with patch.dict(os.environ, values, clear=True), patch("native_wrappers.host_classifier", return_value="linux-x64"), \
                     patch("ci.sdk_policy_snapshot.snapshot_policy_closure", side_effect=snapshot), \
-                    self.assertRaisesRegex(ValueError, "changed during state capture"):
+                    self.assertRaisesRegex(ValueError, "changed after bootstrap"):
                 exec(compile(source, "core-identity", "exec"), {})
             transitive.write_bytes(b"original")
             apple = root / "apple.json"
@@ -143,7 +150,7 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
             values["APPLE_POLICY"] = str(apple)
             with patch.dict(os.environ, values, clear=True), patch(
                     "ci.sdk_policy_snapshot.snapshot_policy_closure", side_effect=snapshot), \
-                    self.assertRaisesRegex(ValueError, "changed during state capture"):
+                    self.assertRaisesRegex(ValueError, "changed after bootstrap"):
                 exec(compile(source, "core-identity", "exec"), {})
 
     def test_existing_controller_retains_full_original_replay_and_diagnostics(self):
