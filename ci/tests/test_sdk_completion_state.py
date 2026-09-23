@@ -36,6 +36,7 @@ def handoff():
     value["sdk-ios-validation-result"] = job("success", **locator("88", sdk="8"))
     value["sdk-ios-metadata-result"] = job("success", **locator("88", sdk="8"))
     value["sdk-core-binary-result"] = job("success", **locator("88", sdk="8"))
+    value["sdk-core-package-result"] = job("success", **locator("88", sdk="8"))
     return value
 
 
@@ -47,6 +48,7 @@ class SdkCompletionStateTest(unittest.TestCase):
             value["sdk-ios-validation-result"]["outputs"] = locator("88", runtime, sdk)
             value["sdk-ios-metadata-result"]["outputs"] = locator("88", runtime, sdk)
             value["sdk-core-binary-result"]["outputs"] = locator("88", runtime, sdk)
+            value["sdk-core-package-result"]["outputs"] = locator("88", runtime, sdk)
             before = deepcopy(value)
             with self.subTest(runtime=runtime, sdk=sdk):
                 self.assertEqual(value["sdk-native-result"]["outputs"], state.select_sdk_completion_state(value))
@@ -57,6 +59,7 @@ class SdkCompletionStateTest(unittest.TestCase):
         value["sdk-ios-validation-result"] = job("success", **locator("99", sdk="9"))
         value["sdk-ios-metadata-result"] = job("success", **locator("99", sdk="9"))
         value["sdk-core-binary-result"] = job("success", **locator("99", sdk="9"))
+        value["sdk-core-package-result"] = job("success", **locator("99", sdk="9"))
         before = deepcopy(value)
         self.assertEqual(locator("99", sdk="9"), state.select_sdk_completion_state(value))
         self.assertEqual(before, value)
@@ -77,6 +80,7 @@ class SdkCompletionStateTest(unittest.TestCase):
         value["sdk-ios-validation-result"] = job("success", **locator("99", sdk="9"))
         value["sdk-ios-metadata-result"] = job("success", **locator("110", sdk="10"))
         value["sdk-core-binary-result"] = job("success", **locator("110", sdk="10"))
+        value["sdk-core-package-result"] = job("success", **locator("110", sdk="10"))
         before = deepcopy(value)
         self.assertEqual(locator("110", sdk="10"), state.select_sdk_completion_state(value))
         self.assertEqual(before, value)
@@ -102,6 +106,7 @@ class SdkCompletionStateTest(unittest.TestCase):
         value = handoff()
         value["sdk-ios-metadata-result"] = job("success", **locator("110", sdk="10"))
         value["sdk-core-binary-result"] = job("success", **locator("111", sdk="11"))
+        value["sdk-core-package-result"] = job("success", **locator("111", sdk="11"))
         self.assertEqual(locator("111", sdk="11"), state.select_sdk_completion_state(value))
         for status in ("failure", "cancelled", "skipped", "in_progress"):
             changed = deepcopy(value)
@@ -112,6 +117,22 @@ class SdkCompletionStateTest(unittest.TestCase):
         changed["sdk-core-binary-result"]["outputs"] = locator("111", sdk="12")
         with self.assertRaises(ValueError):
             state.select_sdk_completion_state(changed)
+
+    def test_core_package_wave_twelve_requires_its_terminal_gate(self):
+        value = handoff()
+        value["sdk-core-binary-result"] = job("success", **locator("111", sdk="11"))
+        value["sdk-core-package-result"] = job("success", **locator("112", sdk="12"))
+        self.assertEqual(locator("112", sdk="12"), state.select_sdk_completion_state(value))
+        for status in ("failure", "cancelled", "skipped", "in_progress"):
+            changed = deepcopy(value)
+            changed["sdk-core-package-result"]["result"] = status
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                state.select_sdk_completion_state(changed)
+        for invalid in (locator("112", sdk="11"), locator("112", sdk="13")):
+            changed = deepcopy(value)
+            changed["sdk-core-package-result"]["outputs"] = invalid
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                state.select_sdk_completion_state(changed)
 
     def test_full_reuse_initial_and_normal_empty_sdk_branch_preserve_original_resume(self):
         value = needs()

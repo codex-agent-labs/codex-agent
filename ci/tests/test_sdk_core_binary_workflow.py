@@ -48,7 +48,7 @@ class SdkCoreBinaryWorkflowTest(unittest.TestCase):
 
     def test_collected_original_outputs_require_successful_fresh_wave(self):
         source = WORKFLOW.read_text()
-        block = source.split("  sdk-core-binary-result:\n", 1)[1].split("\n  sdk-completion:\n", 1)[0]
+        block = source.split("  sdk-core-binary-result:\n", 1)[1].split("\n  sdk-core-package-plan:\n", 1)[0]
         script = textwrap.dedent(block.split("          python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0])
         context = '{"repositoryRoot":"/original/repo","workerRoot":"/original/repo/build/sdk-core-maven-worker"}'
         original = {"binary_artifact_id": "71", "binary_artifact_sha256": "sha256:" + "a" * 64,
