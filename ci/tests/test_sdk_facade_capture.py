@@ -57,7 +57,7 @@ class FacadeCaptureTest(unittest.TestCase):
                 **{directory + "/retained.bin": b"opaque retained proof" for directory in self.required_directories}})
             self.records[target] = (shard / "phase-receipt.json", descriptor["receiptBytes"], selected, files)
         self.receipt_path, self.receipt_bytes, self.receipt, self.files = deepcopy(self.records[target])
-        self.jobs[0].update(name=f"product-validation / sdk-{self.component}-{self.phase}-{target}", runner_id=19,
+        self.jobs[0].update(name=f"product-validation / {self.component}-{self.phase}-{target}", runner_id=19,
                             labels=[facade._capture_route(self.receipt)[1]])
         self.artifact["name"] = (f"codex-agent-sdk-worker-{self.component}-{self.phase}-{target}-"
             f"{self.receipt['buildKey'].removeprefix('sha256:')}-{self.producer['tree']}-attempt-{self.producer['runAttempt']}")
@@ -95,6 +95,15 @@ class FacadeCaptureTest(unittest.TestCase):
                 self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
                 facade.verify_retained_sdk_phase_upload(self.output, self.receipt_bytes)
                 shutil.rmtree(self.output)
+
+    def test_original_job_route_matches_declared_core_workflow_name(self):
+        if self.component != "sdk-core":
+            self.skipTest("Android worker jobs are not wired yet")
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/product-validation.yml").read_text()
+        target = "${{ matrix.target }}" if self.phase == "validation" else "common"
+        self.assertIn(f"    name: sdk-core-{self.phase}-{target}\n", workflow)
+        self.assertEqual(f"product-validation / sdk-core-{self.phase}-{self.targets[0]}",
+                         facade._capture_route(self.receipt)[3])
 
     def test_fixed_job_attempt_source_pin_runner_and_window_are_mandatory(self):
         baseline = deepcopy((self.run, self.jobs, self.artifact, self.commit))

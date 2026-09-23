@@ -112,7 +112,7 @@ def _capture_route(receipt, family=None):
     if family is not None and family != selected:
         raise ValueError("Selected SDK original receipt differs from the fixed capture route")
     producer = receipt["producer"]
-    job = f"product-validation / sdk-{component}-{phase}-{target}"
+    job = f"product-validation / {component}-{phase}-{target}"
     name = (f"codex-agent-sdk-worker-{component}-{phase}-{target}-"
             f"{receipt['buildKey'].removeprefix('sha256:')}-{producer['tree']}-attempt-{producer['runAttempt']}")
     return PhaseInstanceId(*identity), runner, directories, job, name, selected
