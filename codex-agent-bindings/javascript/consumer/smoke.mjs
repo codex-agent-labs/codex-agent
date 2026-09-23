@@ -690,7 +690,11 @@ test('typescript compiler discovers the exact installed public API', () => {
     { code: 'ENOENT' },
     'A missing compatibility resource must fail closed',
   );
-  const wrongDefaultVersion = expectedDefaultRuntimeVersion === '0.2.1' ? '0.2.2' : '0.2.1';
+  const wrongDefaultVersion = expectedDefaultRuntimeVersion.replace(
+    /^(\d+\.\d+\.)(\d+)(.*)$/,
+    (_, line, patch) => `${line}${Number(patch) + 1}`,
+  );
+  assert.notEqual(wrongDefaultVersion, expectedDefaultRuntimeVersion, 'The selected Runtime must have a numeric patch version');
   const wrongDefault = Buffer.from(
     compatibilityBytes.toString('utf8').replace(
       `"defaultRuntimeVersion":"${expectedDefaultRuntimeVersion}"`,

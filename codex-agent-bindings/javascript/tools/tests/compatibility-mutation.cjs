@@ -21,15 +21,15 @@ const helpers = exactBlock('function canonicalJson(value)', 'function hasModifie
 const mutation = exactBlock('  const wrongDefaultVersion =',
   '  assert.throws(\n    () => verifySdkCompatibility(Buffer.concat(');
 
-for (const expectedDefaultRuntimeVersion of ['0.2.0', '0.2.1']) {
+for (const expectedDefaultRuntimeVersion of ['0.8.0', '0.8.1']) {
   test(`actual installed consumer rejects a changed default when selected default is ${expectedDefaultRuntimeVersion}`, () => {
     const declaration = {
       contract: {}, platformRuntime: {},
       runtime: { defaultRuntimeVersion: expectedDefaultRuntimeVersion, embeddedVariants: [{}, {}, {}, {}, {}] },
-      schemaVersion: 1, sdkVersion: '0.2.0',
+      schemaVersion: 1, sdkVersion: '0.8.0',
     };
     vm.runInNewContext(`${helpers}\nverifySdkCompatibility(compatibilityBytes);\n${mutation}\n` +
-      'assert.match(wrongDefaultVersion, /^0\\.2\\.[0-9]+$/);', {
+      "assert.equal(wrongDefaultVersion, expectedDefaultRuntimeVersion === '0.8.0' ? '0.8.1' : '0.8.2');", {
       assert, Buffer, expectedDefaultRuntimeVersion,
       compatibilityBytes: Buffer.from(`${JSON.stringify(declaration)}\n`),
     });
