@@ -90,6 +90,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
     policy = policy_bytes()
     retained = {}
     identities = []
+    original_context = None
 
     def unchanged():
         require_no_signing_secret(environ)
@@ -146,6 +147,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
                 tooling_public_key=tooling_public_key, java_executable=java_executable, policy_revision=policy_revision,
                 required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
                 tooling_keys_directory=tooling_keys_directory) as original:
+            original_context = {"repositoryRoot": str(root), "metadataRequest": str(original["request"])}
             package = original["package"]
             selected_package = prepared / "sdk-sdk-core-package-common"
             if (package["receipt"]["productVersion"] != version
@@ -233,7 +235,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
                 raise ValueError("Core metadata finalized shard changed")
             publish_regular_tree(candidate, destination / "shard")
         return {"stage": stage, "content": stage / OUTPUT_PATH, "outputInventory": retained[stage],
-                "diagnostics": worker, "shard": verify_phase_shard(destination / "shard", _INSTANCE)}
+                "diagnostics": worker, "shard": verify_phase_shard(destination / "shard", _INSTANCE),
+                "originalContext": original_context}
     finally:
         unchanged()
 

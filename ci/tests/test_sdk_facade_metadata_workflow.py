@@ -105,6 +105,10 @@ class FacadeMetadataWorkflowTest(unittest.TestCase):
         self.assertEqual("f" * 40, self.materialize.call_args.kwargs["sdk_original_workflow_sha"])
         self.assertEqual(canonical_json_bytes(self.expected), result["content"].read_bytes())
         self.assertEqual(result["shard"], verify_phase_shard(self.destination / "shard", workflow._INSTANCE))
+        self.assertEqual(str(self.root), result["originalContext"]["repositoryRoot"])
+        request = Path(result["originalContext"]["metadataRequest"])
+        self.assertEqual("metadata-request.json", request.name)
+        self.assertFalse(request.exists())  # The caller preserves the path, not a mutable private input.
         self.assertEqual({"inputs", "selection", "worker", "originals", "shard"},
                          {path.name for path in self.destination.iterdir()})
         for target in SDK_FACADE_TARGETS:

@@ -31,6 +31,25 @@ inputs:
   sdk-android-metadata-policy:
     default: ''
     description: Optional independently supplied Android metadata replay policy.
+outputs:
+  metadata-original-context:
+    description: Successful original Core metadata invocation context, captured by the caller before upload.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.execute.outputs.original_context != '' && steps.execute.outputs.original_context || '' }}
+  metadata-artifact-id:
+    description: Official original metadata upload ID, exposed only after successful execution and upload.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.upload.outputs.artifact-id || '' }}
+  metadata-artifact-sha256:
+    description: Official original metadata upload digest, exposed only after successful execution and upload.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          format('sha256:{0}', steps.upload.outputs.artifact-digest) || '' }}
 runs:
   using: composite
   steps:
@@ -132,7 +151,8 @@ runs:
       with:
         cache-read-only: 'true'
         product-worker: 'true'
-    - name: Execute exact Core metadata controller
+    - id: execute
+      name: Execute exact Core metadata controller
       shell: bash
       env:
         PLAN: ${{ steps.captured.outputs.plan-path }}
@@ -155,6 +175,7 @@ runs:
         from products.sdk_facade_metadata_admission import fresh_metadata_arguments
         from products.signing_isolation import require_no_signing_secret
         from sdk_facade_original_inputs import held_fresh_facade_metadata_policy
+        from sdk_facade_metadata_original import _context as original_metadata_context
         from ci.sdk_policy_snapshot import snapshot_policy_closure
         from sdk_facade_metadata_workflow import execute
         from sdk_metadata_policy import metadata_admission_options
@@ -208,7 +229,7 @@ runs:
                         read_regular_file_bytes(policy['plan'], reject_symlink_parents=True) !=
                         read_regular_file_bytes(plan, reject_symlink_parents=True)):
                     raise ValueError('Fresh Core metadata policy differs from the current authenticated plan')
-                execute(plan=plan, discovery=Path(os.environ['DISCOVERY']), state=Path(os.environ['STATE']),
+                result = execute(plan=plan, discovery=Path(os.environ['DISCOVERY']), state=Path(os.environ['STATE']),
                     destination=root / 'build/sdk-core-metadata-worker', expected_build_key=os.environ['BUILD_KEY'],
                     validations=policy['validations'], contract_digest=policy['contract_digest'],
                     component_digests=policy['component_digests'], repository_root=root, environ=os.environ,
@@ -221,8 +242,17 @@ runs:
         if held_policy_digest() != os.environ['POLICY_SHA256']:
             raise ValueError('Core metadata caller policy closure changed after original reader exit')
         require_no_signing_secret(os.environ)
+        context = original_metadata_context(result['originalContext'])
+        if context['repositoryRoot'] != str(root):
+            raise ValueError('Core metadata controller returned an invalid caller context')
+        value = canonical_json_bytes(context).decode('utf-8').strip()
+        if '\r' in value or '\n' in value:
+            raise ValueError('Core metadata context must fit one output line')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('original_context=' + value + '\n')
         PY
-    - if: success() && steps.identity.outcome == 'success'
+    - id: upload
+      if: always() && steps.identity.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-sdk-worker-sdk-core-metadata-common-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
@@ -231,3 +261,4 @@ runs:
         overwrite: false
         include-hidden-files: true
         compression-level: 0
+        retention-days: 90
