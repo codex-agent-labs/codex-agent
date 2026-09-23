@@ -1,0 +1,194 @@
+"""Offline Phase-11 byte-forwarding checks; hosted S1048 pins remain external."""
+
+from contextlib import contextmanager
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from ci import runtime_phase11_bytes as candidate
+from ci.tests.test_products import phase_receipt
+from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes
+from products.receipt import compute_build_key
+
+
+_MANIFEST = b"original manifest\n"
+
+
+class RuntimePhase11BytesTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(dir="/private/tmp")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.release = self.root / "protected-output"
+        self.release.mkdir()
+        receipt = phase_receipt("release")
+        receipt.update(product="runtime", component="runtime-aggregate", phase="metadata", target="aggregate")
+        receipt["buildKey"] = compute_build_key(
+            product="runtime", component="runtime-aggregate", phase="metadata",
+            target="aggregate", inputs=receipt["inputs"],
+        )
+        self.receipt_sha = sha256_bytes(canonical_json_bytes(receipt))
+        self.build_key = receipt["buildKey"]
+        metadata = self.release / "aggregate-input/metadata-receipt.json"
+        metadata.parent.mkdir()
+        metadata.write_bytes(canonical_json_bytes(receipt))
+        self.payload = (self.release / "selected-inputs/predecessors/"
+                        "runtime-runtime-aggregate-metadata-aggregate/stage/outputs")
+        self.payload.mkdir(parents=True)
+        (self.payload / "codex-agent-runtime-0.8.0-manifest.json").write_bytes(_MANIFEST)
+        self.commit, self.tree, self.workflow = "a" * 40, "b" * 40, "c" * 40
+        (self.release / "caller.json").write_bytes(canonical_json_bytes({
+            "trustedSourceCommit": self.commit, "trustedSourceTree": self.tree,
+            "trustedWorkflowSha": self.workflow,
+        }))
+        self.sidecars = self.root / "phase10-maven"
+        self.sidecars.mkdir()
+        (self.sidecars / "signature.asc").write_bytes(b"signature\n")
+        self.policy = self.root / "product-policy"
+        self.policy.mkdir()
+        self.keyring = self.policy / "product-signing-keys.json"
+        self.keyring.write_bytes(b"original keyring\n")
+        self.keys = self.policy / "keys"
+        self.keys.mkdir()
+        (self.keys / "release.pub").write_bytes(b"original SSH public key\n")
+        self.pgp_key = self.root / "pgp-public-key.asc"
+        self.pgp_key.write_bytes(b"original PGP public key\n")
+        self.destination = self.root / "candidate-input"
+
+    def kwargs(self):
+        return dict(
+            expected_protected_inventory_sha256=candidate._tree_digest(self.release, allow_empty=True),
+            expected_sidecar_inventory_sha256=candidate._tree_digest(self.sidecars),
+            expected_metadata_receipt_sha256=self.receipt_sha,
+            expected_build_key=self.build_key,
+            expected_runtime_version="0.8.0",
+            expected_manifest_sha256=sha256_bytes(_MANIFEST),
+            expected_source_commit=self.commit,
+            expected_source_tree=self.tree,
+            expected_workflow_sha=self.workflow,
+            keyring=self.keyring,
+            expected_keyring_sha256=sha256_bytes(self.keyring.read_bytes()),
+            keys_directory=self.keys,
+            expected_keys_inventory_sha256=candidate._tree_digest(self.keys),
+            pgp_public_key=self.pgp_key,
+            expected_pgp_key_sha256=sha256_bytes(self.pgp_key.read_bytes()),
+        )
+
+    def forward(self, **changes):
+        @contextmanager
+        def verified(root, *, keyring, keys_directory):
+            self.assertEqual(self.keyring.read_bytes(), keyring.read_bytes())
+            self.assertEqual(regular_file_inventory(self.keys), regular_file_inventory(keys_directory))
+            stage = root / "selected-inputs/predecessors/runtime-runtime-aggregate-metadata-aggregate/stage"
+            yield {"originalPhases": {candidate._METADATA: {"stage": stage}},
+                   "indexInputs": {"manifest": stage / "outputs/codex-agent-runtime-0.8.0-manifest.json"}}
+
+        def verify(payload, manifest, sidecars, public_key, digest):
+            self.assertEqual(b"original manifest\n", manifest.read_bytes())
+            self.assertEqual(self.pgp_key.read_bytes(), public_key.read_bytes())
+            self.assertEqual(digest, sha256_bytes(public_key.read_bytes()))
+            self.assertEqual(regular_file_inventory(self.sidecars), regular_file_inventory(sidecars))
+            return {"runtimeVersion": "0.8.0", "manifestSha256": sha256_bytes(manifest.read_bytes())}
+
+        with patch.object(candidate, "verified_runtime_aggregate_handoff", side_effect=verified) as full, \
+                patch.object(candidate, "verify_runtime_phase10_maven", side_effect=verify) as maven:
+            result = candidate.forward_verified_runtime_phase10_bytes(
+                self.release, self.sidecars, self.destination, **{**self.kwargs(), **changes},
+            )
+        full.assert_called_once()
+        maven.assert_called_once()
+        return result
+
+    def test_forwards_only_original_bytes_plus_pinned_public_policy(self):
+        result = self.forward()
+        self.assertEqual("0.8.0", result["runtimeVersion"])
+        self.assertEqual(regular_file_inventory(self.release, allow_empty=True),
+                         regular_file_inventory(self.destination / "runtime-release", allow_empty=True))
+        self.assertEqual(regular_file_inventory(self.sidecars),
+                         regular_file_inventory(self.destination / "maven-sidecars"))
+        self.assertEqual(self.keyring.read_bytes(),
+                         (self.destination / "product-policy/product-signing-keys.json").read_bytes())
+        self.assertEqual(self.pgp_key.read_bytes(),
+                         (self.destination / "pgp-public-key.asc").read_bytes())
+
+    def test_retained_release_wrapper_preserves_original_and_current_context(self):
+        retained = self.release / "retained-release"
+        retained.mkdir()
+        for name in ("aggregate-input", "selected-inputs"):
+            (self.release / name).rename(retained / name)
+        (self.release / "trust").mkdir()
+        (self.release / "caller.json").write_bytes(canonical_json_bytes({
+            "schemaVersion": 1, "target": "aggregate",
+            "trustedSourceCommit": self.commit, "trustedSourceTree": self.tree,
+            "trustedWorkflowSha": self.workflow,
+            "transportProducer": {}, "authorizationReason": "fixture", "event": {},
+            "environment": {}, "metadataReceiptSha256": self.receipt_sha,
+            "releaseDirectory": "retained-release",
+        }))
+        selection = self.release / "selected-inputs/selection.json"
+        selection.parent.mkdir(parents=True)
+        selection.write_bytes(canonical_json_bytes({
+            "target": "aggregate", "metadata": {
+                "buildKey": self.build_key, "receiptSha256": self.receipt_sha,
+            },
+        }))
+        self.forward()
+        self.assertEqual(regular_file_inventory(self.release, allow_empty=True),
+                         regular_file_inventory(self.destination / "runtime-release", allow_empty=True))
+
+    def test_independent_byte_and_provenance_pins_fail_closed(self):
+        with self.assertRaisesRegex(ValueError, "independently selected bytes"):
+            self.forward(expected_sidecar_inventory_sha256=sha256_bytes(b"other"))
+        with self.assertRaisesRegex(ValueError, "caller provenance"):
+            self.forward(expected_source_tree="d" * 40)
+        with self.assertRaisesRegex(ValueError, "verifier key"):
+            self.forward(expected_keyring_sha256=sha256_bytes(b"other"))
+        with self.assertRaisesRegex(ValueError, "release identity"):
+            self.forward(expected_runtime_version="0.8.1")
+        self.assertFalse(self.destination.exists())
+
+    def test_mutation_during_publication_fails_after_no_replace_copy(self):
+        real_publish = candidate.publish_regular_tree
+
+        def corrupt_after_copy(source, destination):
+            real_publish(source, destination)
+            (destination / "maven-sidecars/signature.asc").write_bytes(b"changed after copy\n")
+
+        with patch.object(candidate, "publish_regular_tree", side_effect=corrupt_after_copy), \
+                self.assertRaisesRegex(ValueError, "Published Runtime candidate bytes differ"):
+            self.forward()
+
+    def test_verified_copy_mutation_fails_before_publication(self):
+        @contextmanager
+        def altered(root, *, keyring, keys_directory):
+            stage = root / "selected-inputs/predecessors/runtime-runtime-aggregate-metadata-aggregate/stage"
+            yield {"originalPhases": {candidate._METADATA: {"stage": stage}},
+                   "indexInputs": {"manifest": stage / "outputs/codex-agent-runtime-0.8.0-manifest.json"}}
+
+        def mutate(payload, manifest, sidecars, public_key, digest):
+            (sidecars / "signature.asc").write_bytes(b"changed verified copy\n")
+            return {"runtimeVersion": "0.8.0", "manifestSha256": sha256_bytes(_MANIFEST)}
+
+        with patch.object(candidate, "verified_runtime_aggregate_handoff", side_effect=altered), \
+                patch.object(candidate, "verify_runtime_phase10_maven", side_effect=mutate), \
+                self.assertRaisesRegex(ValueError, "Verified Runtime candidate bytes changed"):
+            candidate.forward_verified_runtime_phase10_bytes(
+                self.release, self.sidecars, self.destination, **self.kwargs(),
+            )
+        self.assertFalse(self.destination.exists())
+
+    def test_transport_cannot_supply_verifier_policy_or_output_overwrite(self):
+        transported = self.release / "transported-keyring.json"
+        transported.write_bytes(self.keyring.read_bytes())
+        with self.assertRaisesRegex(ValueError, "policy must be external"):
+            self.forward(keyring=transported,
+                         expected_protected_inventory_sha256=candidate._tree_digest(self.release, allow_empty=True))
+        transported.unlink()
+        self.forward()
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            self.forward()
+
+
+if __name__ == "__main__":
+    unittest.main()
