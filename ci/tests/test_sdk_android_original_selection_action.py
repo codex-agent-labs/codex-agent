@@ -52,11 +52,16 @@ class AndroidOriginalSelectionActionTest(unittest.TestCase):
         self.assertIn("product_reuse.materialize_product_predecessors(", source)
         self.assertIn("PhaseInstanceId('sdk', 'sdk-android', 'metadata', 'android')", source)
         self.assertIn("sha256_bytes(receipt_raw) != control['validationReceiptSha256']", source)
+        self.assertIn("locator = locate_sdk_android_validation_upload(", source)
+        self.assertIn("expected_receipt_sha256=control['validationReceiptSha256']", source)
+        self.assertIn("if locator != {'artifact_id': control['validationArtifactId']", source)
         self.assertIn("with verified_original_android_firebase_validation(", source)
         for field in ("validationArtifactId", "validationArtifactSha256", "trustedAndroidWorkflowSha",
                       "expectedOriginalRunId", "expectedOriginalRunAttempt", "trustedSourceCommit",
                       "trustedSourceTree", "binaryContractEvidence", "compatibilityRequest"):
             self.assertIn("control['" + field + "']", source)
+        self.assertLess(source.index("locator = locate_sdk_android_validation_upload("),
+                        source.index("with verified_original_android_firebase_validation("))
         self.assertLess(source.index("with verified_original_android_firebase_validation("),
                         source.index("with output.open('xb')"))
         self.assertLess(source.index("with output.open('xb')"), source.index("original_policy_path="))

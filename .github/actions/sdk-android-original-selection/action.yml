@@ -67,6 +67,7 @@ runs:
         from products.signing_isolation import require_no_signing_secret
         from ci.sdk_policy_snapshot import snapshot_policy_closure
         from sdk_android_firebase_original import verified_original_android_firebase_validation
+        from sdk_android_original_upload_locator import locate_sdk_android_validation_upload
         from sdk_metadata_policy import metadata_admission_options
         require_no_signing_secret(os.environ)
         if host_classifier() != 'linux-x64':
@@ -177,6 +178,13 @@ runs:
             selected_before = regular_file_inventory(prepared, allow_empty=True)
             if caller_snapshot()[0] != before:
                 raise ValueError('Android original caller inputs changed before official replay')
+            locator = locate_sdk_android_validation_upload(
+                plan, receipt, expected_receipt_sha256=control['validationReceiptSha256'],
+                trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'], repository_root=root,
+                environ=os.environ, token=os.environ['GITHUB_TOKEN'])
+            if locator != {'artifact_id': control['validationArtifactId'],
+                           'artifact_sha256': control['validationArtifactSha256']}:
+                raise ValueError('Android original upload differs from independent caller selection')
             with verified_original_android_firebase_validation(
                     plan, receipt, validation_artifact_id=control['validationArtifactId'],
                     validation_artifact_sha256=control['validationArtifactSha256'],
