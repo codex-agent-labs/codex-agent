@@ -8,7 +8,7 @@ _JOBS = (
     "product-resume", "runtime-continuation", "runtime-aggregate-continuation",
     "sdk-ios-binary-plan", "sdk-ios-binary", "sdk-collect-3", "sdk-plan", "sdk-native-result",
     "sdk-ios-validation-result", "sdk-ios-metadata-result", "sdk-core-binary-result",
-    "sdk-core-package-result",
+    "sdk-core-package-result", "sdk-core-validation-result",
 )
 
 
@@ -88,9 +88,9 @@ def select_sdk_completion_state(needs):
             raise ValueError("SDK completion iOS binary collection retained failures")
         parent = _state(collected["outputs"], runtime_wave="0", sdk_wave="3")
 
-    planned, native, validation, final, core_binary, core_package = (jobs[name] for name in
+    planned, native, validation, final, core_binary, core_package, core_validation = (jobs[name] for name in
         ("sdk-plan", "sdk-native-result", "sdk-ios-validation-result", "sdk-ios-metadata-result",
-         "sdk-core-binary-result", "sdk-core-package-result"))
+         "sdk-core-binary-result", "sdk-core-package-result", "sdk-core-validation-result"))
     if native["result"] != "success":
         raise ValueError("SDK completion final native gate did not succeed")
     if validation["result"] != "success":
@@ -121,11 +121,17 @@ def select_sdk_completion_state(needs):
         package_state = _state(core_package["outputs"])
         if package_state != core_state and package_state["sdk_state_wave"] != "12":
             raise ValueError("Core package state differs from its original binary parent or wave")
-        return package_state
+        if core_validation["result"] != "success":
+            raise ValueError("SDK completion Core validation gate did not succeed")
+        validation_state = _state(core_validation["outputs"])
+        if validation_state != package_state and validation_state["sdk_state_wave"] != "13":
+            raise ValueError("Core validation state differs from its original package parent or wave")
+        return validation_state
     if (planned["result"] != "skipped" or any(_locator(native["outputs"]).values())
             or any(_locator(validation["outputs"]).values())
             or any(_locator(final["outputs"]).values())
             or core_binary["result"] != "skipped" or any(_locator(core_binary["outputs"]).values())
-            or core_package["result"] != "skipped" or any(_locator(core_package["outputs"]).values())):
+            or core_package["result"] != "skipped" or any(_locator(core_package["outputs"]).values())
+            or core_validation["result"] != "skipped" or any(_locator(core_validation["outputs"]).values())):
         raise ValueError("Unexpected SDK handoff state without its election")
     return parent

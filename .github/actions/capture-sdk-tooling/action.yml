@@ -23,6 +23,9 @@ outputs:
   tooling-policy:
     description: Current consumer's external six-field policy path, valid for this job only.
     value: ${{ steps.capture.outputs.tooling_policy }}
+  plan-directory:
+    description: Caller-selected plan download directory, present only when plan-id was supplied.
+    value: ${{ steps.capture.outputs.plan_directory }}
   apple-policy:
     description: Optional current-job external Apple validation policy path; never transported as authority.
     value: ${{ steps.apple-policy.outputs.apple-policy }}

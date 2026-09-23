@@ -113,6 +113,7 @@ class CaptureSdkToolingActionTest(unittest.TestCase):
     def test_optional_plan_download_and_policy_reuse_are_guarded_and_exact(self):
         self.assertIn("  plan-id:\n    default: ''", self.action)
         self.assertIn('PLAN_ID: ${{ inputs.plan-id }}', self.action)
+        self.assertIn('value: ${{ steps.capture.outputs.plan_directory }}', self.action)
         self.assertIn('value: ${{ steps.apple-policy.outputs.apple-policy }}', self.action)
         download = self.action.split('    - name: Download the exact original plan outside the checkout\n', 1)[1]
         download, policy = download.split('    - id: apple-policy\n', 1)
