@@ -127,6 +127,74 @@ class AndroidCore14CallerTest(unittest.TestCase):
             self.assertIn('"runner":"ubuntu-24.04"', raw)
             self.assertIn("sdk_workers_required=true\n", raw)
 
+    def test_package_replays_core_while_retaining_s858_and_original_binary_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            archive = root / "archive.tar.gz"
+            archive.write_bytes(b"pinned")
+            descriptor = root / "descriptor.json"
+            descriptor.write_bytes(canonical_json_bytes({"evidenceRoot": "originals", "records": [],
+                "policy": {"toolingEvidence": "evidence", "toolingPublicKey": "key",
+                    "javaExecutable": "java", "toolingTrustDomain": "release",
+                    "toolingKeyring": "keyring", "toolingKeysDirectory": "keys"}}))
+            active = []
+
+            @contextmanager
+            def held(*args, **kwargs):
+                active.append(True)
+                try:
+                    yield descriptor
+                finally:
+                    active.pop()
+
+            def verified(*args, **kwargs):
+                self.assertTrue(active)
+                self.assertEqual(args[2], root / "wave15")
+                return SimpleNamespace(prior_ready_plans={caller._PACKAGE: {
+                    "product": "sdk", "component": "sdk-android", "phase": "package",
+                    "target": "android", "buildKey": "sha256:" + "b" * 64}},
+                    plan={"validationCommit": "c" * 40})
+
+            def package(*args, **kwargs):
+                self.assertTrue(active)
+                self.assertIsNotNone(kwargs["sdk_facade_metadata_admission"])
+                self.assertEqual(kwargs["sdk_inputs_artifact_id"], 71)
+                self.assertEqual(kwargs["binary_artifact_id"], 72)
+                self.assertEqual(kwargs["binary_contract_evidence"], {"original": "contract"})
+                self.assertEqual(kwargs["binary_original_context"], {"original": "binary"})
+                return "package executed"
+
+            with (patch.object(caller, "held_same_campaign_core_metadata_policy", held),
+                  patch.object(caller, "FacadeMetadataAdmission", return_value=object()),
+                  patch.object(caller.product_reuse, "_validate_plan",
+                      return_value={"validationCommit": "c" * 40}),
+                  patch.object(caller.product_reuse, "_verified_product_state", side_effect=verified),
+                  patch.object(caller, "git_regular_blob_bytes", return_value=b"pins"),
+                  patch.object(caller, "_properties", return_value={
+                      "codexAgent.codexArchiveSha256": sha256_file(archive).split(":", 1)[1]}),
+                  patch.object(caller.sdk_maven_package_workflow, "execute", side_effect=package)):
+                args = dict(plan=root / "plan", discovery=root / "discovery",
+                    before_state=root / "wave13", after_state=root / "wave14",
+                    selected_state=root / "wave15", metadata_receipt=root / "receipt",
+                    expected_build_key="sha256:" + "b" * 64,
+                    expected_metadata_build_key="sha256:" + "d" * 64,
+                    expected_metadata_receipt_sha256="sha256:" + "a" * 64,
+                    replay_policy={}, original_context={}, trusted_workflow_sha="e" * 40,
+                    repository_root=root, android_runtime_archive=archive, token="token", environ={},
+                    phase="package", sdk_inputs_artifact_id=71,
+                    sdk_inputs_artifact_sha256="sha256:" + "f" * 64,
+                    binary_artifact_id=72, binary_artifact_sha256="sha256:" + "1" * 64,
+                    binary_contract_evidence={"original": "contract"},
+                    binary_original_context={"original": "binary"},
+                    keyring=root / "keyring", keys_directory=root / "keys")
+                self.assertEqual(caller.with_core14(**args)["phase"], "package")
+                self.assertFalse(active)
+                self.assertEqual(caller.with_core14(**args, destination=root / "output"),
+                    "package executed")
+                self.assertFalse(active)
+                with self.assertRaisesRegex(ValueError, "independent S858 and binary inputs"):
+                    caller.with_core14(**{**args, "binary_artifact_sha256": None})
+
 
 if __name__ == "__main__":
     unittest.main()
