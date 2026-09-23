@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from ci.products.inventory import sha256_bytes
 from ci.products.receipt import write_output_manifest
-from ci.products.sdk_campaign_apple import verify_campaign_apple_binary
+from ci.products.sdk_campaign_apple import verify_campaign_apple_binary, verify_campaign_apple_family
 from ci.tests.product_chain_support import write_receipt
 
 
@@ -25,8 +25,11 @@ class AppleCampaignBinaryTest(unittest.TestCase):
                          "commit": "a" * 40, "tree": "b" * 40, "event": "pull_request",
                          "runId": 3, "runAttempt": 1, "pullRequest": 31}
         self.binary, self.binary_stage = self.envelope("binary", "ios")
-        self.package, _ = self.envelope("package", "ios")
-        self.validations = {target: self.envelope("validation", target)[0] for target in _TARGETS}
+        self.package, self.package_stage = self.envelope("package", "ios")
+        validation_rows = {target: self.envelope("validation", target) for target in _TARGETS}
+        self.validations = {target: row[0] for target, row in validation_rows.items()}
+        self.validation_stages = {target: row[1] for target, row in validation_rows.items()}
+        self.metadata, self.metadata_stage = self.envelope("metadata", "ios")
         self.handoffs = {target: self.root / f"handoff-{target}" for target in _TARGETS}
         for path in self.handoffs.values():
             path.mkdir()
@@ -40,8 +43,10 @@ class AppleCampaignBinaryTest(unittest.TestCase):
             (predecessor / "phase-receipt.json").write_bytes(self.binary["receiptBytes"])
             shutil.copytree(self.binary_stage, predecessor / "stage")
             self.originals[target] = {"original": original,
+                "stage": self.validation_stages[target],
                 "receiptBytes": self.validations[target]["receiptBytes"],
                 "package": {"original": predecessor.parent.parent,
+                            "stage": self.package_stage,
                             "receiptBytes": self.package["receiptBytes"]}}
         self.policy = {"plan": str(self.root / "plan.json"),
             "attestationPublicKey": str(self.root / "attestation.pub"),
@@ -52,6 +57,12 @@ class AppleCampaignBinaryTest(unittest.TestCase):
         self.events = []
         self.bad_shard = None
         self.fail_target = None
+        self.records = {target: {"target": target,
+            "receiptSha256": self.validations[target]["receiptSha256"],
+            "evidenceRoot": self.handoffs[target].name} for target in _TARGETS}
+        self.bad_metadata = False
+        self.mutate_after_metadata = False
+        self.late_mutation = None
 
     def envelope(self, phase, target):
         stage = self.root / f"{phase}-{target}-stage"
@@ -139,6 +150,95 @@ class AppleCampaignBinaryTest(unittest.TestCase):
             verify_campaign_apple_binary(self.binary, self.binary_stage, self.package,
                 self.validations, self.handoffs, repository=self.root,
                 policy_revision="a" * 40, policy=self.policy)
+
+    def family(self):
+        @contextmanager
+        def package_original(stage, receipt, **_kwargs):
+            self.assertEqual(self.package_stage, stage)
+            self.assertEqual(self.package["receiptBytes"], receipt.read_bytes())
+            self.events.append("package-enter")
+            try:
+                yield {"original": self.originals[_TARGETS[0]]["package"]["original"]}
+            finally:
+                self.events.append("package-exit")
+
+        def metadata_original(**kwargs):
+            self.events.append("metadata")
+            self.assertEqual(self.metadata["receiptBytes"], kwargs["metadata_receipt"].read_bytes())
+            self.assertEqual(self.records, {row["target"]: row for row in kwargs["evidence_records"]})
+            if self.mutate_after_metadata:
+                (self.validation_stages["ios-arm64"] / "outputs/evidence/content.json").write_bytes(b"changed")
+            if self.late_mutation is not None:
+                self.late_mutation()
+            return self.metadata["receipt"], b"wrong" if self.bad_metadata else self.metadata["receiptBytes"]
+
+        with patch("ci.products.sdk_campaign_apple.verified_selected_ios_package", package_original), \
+                patch("ci.products.sdk_campaign_apple.verified_apple_validation_handoff", self.full_handoff), \
+                patch("ci.products.sdk_campaign_apple.verify_phase_shard", self.shard), \
+                patch("ci.products.sdk_campaign_apple.verify_sdk_apple_metadata_admission", metadata_original):
+            return verify_campaign_apple_family(self.binary, self.binary_stage,
+                self.package, self.package_stage, self.validations, self.validation_stages,
+                self.metadata, self.metadata_stage, self.handoffs,
+                package_capture=self.root / "package-capture", sdk_capture=self.root / "sdk-capture",
+                metadata_evidence_root=self.root, metadata_evidence_records=self.records,
+                repository=self.root, policy_revision="a" * 40, policy=self.policy)
+
+    def test_family_replays_original_package_both_validations_and_metadata(self):
+        result = self.family()
+        self.assertEqual({"binary": self.binary["receiptBytes"],
+            "package": self.package["receiptBytes"],
+            "validation": {target: self.validations[target]["receiptBytes"] for target in _TARGETS},
+            "metadata": self.metadata["receiptBytes"]}, result)
+        self.assertEqual(["package-enter", "package-exit", "enter-ios-arm64",
+                          "enter-ios-simulator-arm64", "exit-ios-simulator-arm64",
+                          "exit-ios-arm64", "metadata"], self.events)
+
+    def test_family_rejects_wrong_selected_validation_stage(self):
+        (self.validation_stages["ios-arm64"] / "outputs/evidence/content.json").write_bytes(b"wrong")
+        with self.assertRaisesRegex(ValueError, "Declared file inventory does not match"):
+            self.family()
+        self.assertNotIn("metadata", self.events)
+
+    def test_family_rejects_wrong_original_package_or_metadata_selection(self):
+        self.package["objectSha256"] = "sha256:" + "3" * 64
+        with self.assertRaisesRegex(ValueError, "original package differs"):
+            self.family()
+        self.assertNotIn("metadata", self.events)
+        self.package["objectSha256"] = "sha256:" + "1" * 64
+        self.records["ios-arm64"]["receiptSha256"] = "sha256:" + "4" * 64
+        with self.assertRaisesRegex(ValueError, "metadata evidence differs"):
+            self.family()
+        self.assertEqual([], [event for event in self.events if event == "metadata"])
+
+    def test_family_rejects_metadata_mismatch_and_late_selected_stage_mutation(self):
+        self.bad_metadata = True
+        with self.assertRaisesRegex(ValueError, "metadata differs from the selected receipt"):
+            self.family()
+        self.bad_metadata = False
+        self.mutate_after_metadata = True
+        with self.assertRaisesRegex(ValueError, "selected evidence changed"):
+            self.family()
+
+    def test_family_rejects_late_binary_or_validation_slot_mutation(self):
+        self.late_mutation = lambda: self.binary.update(objectSha256="sha256:" + "4" * 64)
+        with self.assertRaisesRegex(ValueError, "selected evidence changed"):
+            self.family()
+        self.binary["objectSha256"] = "sha256:" + "1" * 64
+        self.late_mutation = lambda: self.validations.__setitem__("ios-arm64", {
+            **self.validations["ios-arm64"], "objectSha256": "sha256:" + "5" * 64})
+        with self.assertRaisesRegex(ValueError, "selected evidence changed"):
+            self.family()
+
+    def test_family_rejects_late_handoff_or_metadata_evidence_mapping_mutation(self):
+        self.late_mutation = lambda: self.handoffs.__setitem__(
+            "ios-arm64", self.root / "different-handoff")
+        with self.assertRaisesRegex(ValueError, "selected evidence changed"):
+            self.family()
+        self.handoffs["ios-arm64"] = self.root / "handoff-ios-arm64"
+        self.late_mutation = lambda: self.records["ios-arm64"].update(
+            evidenceRoot="different-handoff")
+        with self.assertRaisesRegex(ValueError, "selected evidence changed"):
+            self.family()
 
 
 if __name__ == "__main__":
