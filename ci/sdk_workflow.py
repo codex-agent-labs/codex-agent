@@ -6,6 +6,7 @@ import argparse
 from contextlib import contextmanager
 import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
 
@@ -321,6 +322,42 @@ def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha2
     return {**paths, "matrix": value}
 
 
+def capture_transport(plan, destination, github_output_path, *, artifact_id,
+        artifact_sha256, trusted_workflow_sha, sdk_state_wave, repository_root,
+        environ, token):
+    """Authenticate only the original SDK state upload before policy election.
+
+    The caller must separately pin its elected receipt/object identities, build
+    current policy, and replay the state. Transport capture alone grants no
+    metadata or phase authority and deliberately emits no worker matrix.
+    """
+    root = Path(repository_root).resolve(strict=True)
+    plan, _, destination = product_reuse._product_materialization_paths(root, plan, plan, destination)
+    output = Path(github_output_path).absolute()
+    if (output.resolve(strict=False) != output or output == root or root in output.parents
+            or output == destination or destination in output.parents):
+        raise ValueError("SDK transport output must be outside source and captured state")
+    descriptor = os.open(output, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "a", encoding="utf-8") as held_output:
+        identity = os.fstat(held_output.fileno())
+        if not stat.S_ISREG(identity.st_mode) or identity.st_nlink != 1:
+            raise ValueError("SDK transport output must be a singly linked regular runner file")
+        product_reuse.capture_runtime_resume_upload(plan, destination, artifact_id=artifact_id,
+            artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
+            sdk_state_wave=sdk_state_wave, state_wave=0, repository_root=root,
+            environ=environ, token=token)
+        original = destination / "original"
+        paths = {"input_root": original,
+            "plan_path": original / "product-resume-inputs/plan/impact-plan.json",
+            "discovery_root": original / "product-resume-state",
+            "state_root": original / "runtime-state"}
+        for name, path in paths.items():
+            if "\n" in str(path) or "\r" in str(path):
+                raise ValueError("SDK transport output path contains a line break")
+            held_output.write(f"{name}={path}\n")
+    return paths
+
+
 def collect(input_root, destination, github_output_path, *, wave, trusted_workflow_sha,
             repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None,
             sdk_apple_validation_policy=None,
@@ -607,6 +644,28 @@ def _workflow_main(argv):
         parser.error(str(error))
 
 
+def _capture_transport_main(argv):
+    parser = argparse.ArgumentParser(description="Capture exact official SDK state transport before caller policy selection",
+                                     allow_abbrev=False)
+    for name in ("plan", "destination", "github-output", "repository-root"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    for name in ("trusted-workflow-sha", "artifact-sha256"):
+        parser.add_argument("--" + name, required=True)
+    parser.add_argument("--artifact-id", type=int, required=True)
+    parser.add_argument("--sdk-state-wave", type=int, choices=range(1, 19), required=True)
+    arguments = vars(parser.parse_args(argv))
+    arguments["github_output_path"] = arguments.pop("github_output")
+    try:
+        # The parent directory is runner-owned; O_NOFOLLOW protects the final file.
+        runner_output = os.environ.get("GITHUB_OUTPUT")
+        if not runner_output or Path(runner_output).absolute() != arguments["github_output_path"].absolute():
+            raise ValueError("SDK transport output must be the runner-provided GITHUB_OUTPUT")
+        capture_transport(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    return 0
+
+
 def _ios_binary_main(argv):
     parser = argparse.ArgumentParser(description="Execute only the elected SDK iOS binary phase")
     for name in ("plan", "discovery-root", "state-root", "destination", "repository-root"):
@@ -644,6 +703,8 @@ def _ios_binary_main(argv):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "capture-transport":
+        return _capture_transport_main(argv[1:])
     if argv and argv[0] == "maven-binary":
         from sdk_maven_binary_workflow import main as maven_binary_main
         return maven_binary_main(argv[1:])

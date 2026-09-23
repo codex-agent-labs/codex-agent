@@ -1,0 +1,314 @@
+name: Execute one elected Android Maven SDK phase
+description: Replay authenticated state before setup, then execute the exact Android binary or artifact-only package.
+inputs:
+  phase:
+    required: true
+    description: Exactly binary or package.
+  plan-id:
+    required: true
+    description: Exact original plan upload ID.
+  artifact-id:
+    required: true
+    description: Current predecessor state upload ID.
+  artifact-sha256:
+    required: true
+    description: Exact predecessor state digest.
+  state-wave:
+    default: '0'
+    description: Current Runtime state wave.
+  sdk-state-wave:
+    default: ''
+    description: Current SDK state wave when applicable.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  build-key:
+    required: true
+    description: Exact elected Android phase key.
+  tree:
+    required: true
+    description: Exact tested source tree.
+  android-runtime-archive:
+    required: true
+    description: Caller-provisioned Codex ARM64 archive, checked against the original Git pin.
+  sdk-inputs-id:
+    default: ''
+    description: Package-only exact authenticated SDK inputs upload ID.
+  sdk-inputs-sha256:
+    default: ''
+    description: Package-only SDK inputs upload digest.
+  binary-artifact-id:
+    default: ''
+    description: Package-only exact original Android binary upload ID.
+  binary-artifact-sha256:
+    default: ''
+    description: Package-only original Android binary upload digest.
+  binary-contract-evidence:
+    default: ''
+    description: Package-only independently selected original binary Contract policy JSON.
+  binary-original-context:
+    default: ''
+    description: Package-only independently selected original binary invocation context JSON.
+  sdk-validation-tooling:
+    default: ''
+    description: Optional caller-authenticated SDK tooling policy, never read from state.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional caller-authenticated Apple policy for replayed state.
+  sdk-facade-metadata-policy:
+    default: ''
+    description: Optional caller-authenticated Core metadata policy for replayed state.
+  sdk-android-metadata-policy:
+    default: ''
+    description: Optional caller-authenticated Android metadata policy for replayed state.
+runs:
+  using: composite
+  steps:
+    - id: policy
+      name: Pin caller-owned archive and policies before state capture
+      shell: bash
+      env:
+        PHASE: ${{ inputs.phase }}
+        ANDROID_ARCHIVE: ${{ inputs.android-runtime-archive }}
+        SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        BINARY_ARTIFACT_ID: ${{ inputs.binary-artifact-id }}
+        BINARY_ARTIFACT_SHA256: ${{ inputs.binary-artifact-sha256 }}
+        BINARY_CONTRACT_EVIDENCE: ${{ inputs.binary-contract-evidence }}
+        BINARY_ORIGINAL_CONTEXT: ${{ inputs.binary-original-context }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+      run: |
+        python3 -B - <<'PY'
+        import os, re
+        from pathlib import Path
+        from ci.products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
+            read_regular_file_bytes, require_exact_keys, require_sha256, sha256_bytes, sha256_file)
+        from ci.products.sdk_facade_inputs import _EVIDENCE_FIELDS
+        from ci.products.signing_isolation import require_no_signing_secret
+        from ci.sdk_maven_original import _context
+        require_no_signing_secret(os.environ)
+        phase = os.environ['PHASE']
+        if phase not in ('binary', 'package'):
+            raise ValueError('Android Maven worker requires binary or package')
+        package = ('SDK_INPUTS_ID', 'SDK_INPUTS_SHA256', 'BINARY_ARTIFACT_ID',
+                   'BINARY_ARTIFACT_SHA256', 'BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT')
+        if ((phase == 'binary' and any(os.environ[name] for name in package)) or
+                (phase == 'package' and not all(os.environ[name] for name in package))):
+            raise ValueError('Android Maven package requires all original inputs; binary accepts none')
+        if phase == 'package':
+            for name in ('SDK_INPUTS_ID', 'BINARY_ARTIFACT_ID'):
+                if not re.fullmatch(r'[1-9][0-9]*', os.environ[name]):
+                    raise ValueError('Android Maven original upload ID must be positive decimal')
+            for name in ('SDK_INPUTS_SHA256', 'BINARY_ARTIFACT_SHA256'):
+                require_sha256(os.environ[name], name)
+        archive = Path(os.environ['ANDROID_ARCHIVE'])
+        if not archive.is_absolute() or archive.resolve(strict=True) != archive:
+            raise ValueError('Android archive requires an absolute non-symbolic caller path')
+        pins = {'ANDROID_ARCHIVE': sha256_file(archive, reject_symlink_parents=True)}
+        for name in ('BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT', 'SDK_VALIDATION_TOOLING',
+                     'SDK_APPLE_VALIDATION_POLICY', 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY'):
+            if not os.environ[name]:
+                continue
+            path = Path(os.environ[name])
+            if not path.is_absolute() or path.resolve(strict=True) != path:
+                raise ValueError('Android policy requires an absolute non-symbolic caller path')
+            raw = read_regular_file_bytes(path, reject_symlink_parents=True)
+            value = load_canonical_json_bytes(raw)
+            if name == 'BINARY_CONTRACT_EVIDENCE':
+                require_exact_keys(value, _EVIDENCE_FIELDS, 'Original Android binary Contract evidence')
+            elif name == 'BINARY_ORIGINAL_CONTEXT':
+                _context(value, 'binary')
+            pins[name] = sha256_bytes(raw)
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('policy_sha256=' + sha256_bytes(canonical_json_bytes(pins)) + '\n')
+        PY
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: sdk
+        sdk-family: android-${{ inputs.phase }}
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        state-wave: ${{ inputs.state-wave }}
+        sdk-state-wave: ${{ inputs.sdk-state-wave }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+        sdk-facade-metadata-policy: ${{ inputs.sdk-facade-metadata-policy }}
+        sdk-android-metadata-policy: ${{ inputs.sdk-android-metadata-policy }}
+    - id: identity
+      name: Require exact Android election and independent caller inputs before setup
+      shell: bash
+      env:
+        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
+        REQUIRED: ${{ steps.captured.outputs.sdk-workers-required }}
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        PHASE: ${{ inputs.phase }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
+        ANDROID_ARCHIVE: ${{ inputs.android-runtime-archive }}
+        SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        BINARY_ARTIFACT_ID: ${{ inputs.binary-artifact-id }}
+        BINARY_ARTIFACT_SHA256: ${{ inputs.binary-artifact-sha256 }}
+        BINARY_CONTRACT_EVIDENCE: ${{ inputs.binary-contract-evidence }}
+        BINARY_ORIGINAL_CONTEXT: ${{ inputs.binary-original-context }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
+      run: |
+        python3 -B - <<'PY'
+        import json, os, re, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        from native_wrappers import host_classifier
+        from products.inventory import (canonical_json_bytes, git_regular_blob_bytes,
+            load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys,
+            require_sha256, sha256_bytes, sha256_file)
+        from products.signing_isolation import require_no_signing_secret
+        from products.sdk_facade_inputs import _EVIDENCE_FIELDS
+        from products.toolchain import _properties
+        from sdk_maven_original import _context
+
+        require_no_signing_secret(os.environ)
+        phase, key, tree = (os.environ[name] for name in ('PHASE', 'BUILD_KEY', 'TREE'))
+        if phase not in ('binary', 'package') or host_classifier() != 'linux-x64':
+            raise ValueError('Android Maven worker requires binary/package on Linux x64')
+        rows = json.loads(os.environ['MATRIX'])['include']
+        if (os.environ['REQUIRED'] != 'true' or len(rows) != 1 or
+                tuple(rows[0].get(name) for name in ('product', 'component', 'phase', 'target')) !=
+                    ('sdk', 'sdk-android', phase, 'android') or rows[0].get('buildKey') != key or
+                tuple(rows[0].get(name) for name in ('runner', 'runnerOs', 'runnerArch')) !=
+                    ('ubuntu-24.04', 'Linux', 'X64') or
+                not re.fullmatch(r'sha256:[0-9a-f]{64}', key) or
+                not re.fullmatch(r'[0-9a-f]{40}', tree)):
+            raise ValueError('Android Maven worker differs from its exact replay election')
+        plan = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
+        if plan['validationTree'] != tree:
+            raise ValueError('Android Maven source tree differs from the authenticated plan')
+        state = Path(os.environ['STATE']).resolve(strict=True)
+        archive = Path(os.environ['ANDROID_ARCHIVE'])
+        if (not archive.is_absolute() or archive.resolve(strict=True) != archive or
+                state == archive or state in archive.parents or not archive.is_file()):
+            raise ValueError('Android archive must be a separate caller-provisioned regular file')
+        archive_digest = sha256_file(archive, reject_symlink_parents=True)
+        pins = {'ANDROID_ARCHIVE': archive_digest}
+        for name in ('BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT', 'SDK_VALIDATION_TOOLING',
+                     'SDK_APPLE_VALIDATION_POLICY', 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY'):
+            if os.environ[name]:
+                pins[name] = sha256_bytes(read_regular_file_bytes(Path(os.environ[name]),
+                    reject_symlink_parents=True))
+        if sha256_bytes(canonical_json_bytes(pins)) != os.environ['POLICY_SHA256']:
+            raise ValueError('Android caller-owned archive or policy changed during state capture')
+        if phase == 'binary':
+            properties = _properties(git_regular_blob_bytes(Path.cwd(), plan['validationCommit'],
+                'gradle.properties', max_bytes=1024 * 1024), 'Original Android runtime pins')
+            if archive_digest != require_sha256('sha256:' + properties['codexAgent.codexArchiveSha256'],
+                    'Original Android archive pin'):
+                raise ValueError('Android archive differs from the immutable candidate Git pin')
+        package = {name: os.environ[name] for name in ('SDK_INPUTS_ID', 'SDK_INPUTS_SHA256',
+            'BINARY_ARTIFACT_ID', 'BINARY_ARTIFACT_SHA256', 'BINARY_CONTRACT_EVIDENCE',
+            'BINARY_ORIGINAL_CONTEXT')}
+        if phase == 'binary' and any(package.values()):
+            raise ValueError('Android binary cannot receive package-only evidence')
+        if phase == 'package':
+            for name in ('SDK_INPUTS_ID', 'BINARY_ARTIFACT_ID'):
+                if not re.fullmatch(r'[1-9][0-9]*', package[name]):
+                    raise ValueError('Android package requires exact original upload IDs')
+            for name in ('SDK_INPUTS_SHA256', 'BINARY_ARTIFACT_SHA256'):
+                require_sha256(package[name], name)
+            for name in ('BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT'):
+                path = Path(package[name])
+                if (not path.is_absolute() or path.resolve(strict=True) != path or
+                        state == path or state in path.parents):
+                    raise ValueError('Android package policy must be independent of captured state')
+                package[name] = load_canonical_json_bytes(read_regular_file_bytes(path,
+                    reject_symlink_parents=True))
+            require_exact_keys(package['BINARY_CONTRACT_EVIDENCE'], _EVIDENCE_FIELDS,
+                'Original Android binary Contract evidence')
+            _context(package['BINARY_ORIGINAL_CONTEXT'], 'binary')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
+            output.write('archive_sha256=' + archive_digest + '\n')
+        PY
+    - uses: ./.github/actions/setup-kmp
+      with:
+        cache-read-only: 'true'
+        product-worker: 'true'
+    - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+    - name: Execute exact Android Maven phase with held original inputs
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        PHASE: ${{ inputs.phase }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        ANDROID_ARCHIVE: ${{ inputs.android-runtime-archive }}
+        ARCHIVE_SHA256: ${{ steps.identity.outputs.archive_sha256 }}
+        SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        BINARY_ARTIFACT_ID: ${{ inputs.binary-artifact-id }}
+        BINARY_ARTIFACT_SHA256: ${{ inputs.binary-artifact-sha256 }}
+        BINARY_CONTRACT_EVIDENCE: ${{ inputs.binary-contract-evidence }}
+        BINARY_ORIGINAL_CONTEXT: ${{ inputs.binary-original-context }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        from ci.products.inventory import canonical_json_bytes, read_regular_file_bytes, sha256_bytes, sha256_file
+        from ci.products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        pins = {'ANDROID_ARCHIVE': sha256_file(Path(os.environ['ANDROID_ARCHIVE']), reject_symlink_parents=True)}
+        for name in ('BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT', 'SDK_VALIDATION_TOOLING',
+                     'SDK_APPLE_VALIDATION_POLICY', 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY'):
+            if os.environ[name]:
+                pins[name] = sha256_bytes(read_regular_file_bytes(Path(os.environ[name]),
+                    reject_symlink_parents=True))
+        if (pins['ANDROID_ARCHIVE'] != os.environ['ARCHIVE_SHA256'] or
+                sha256_bytes(canonical_json_bytes(pins)) != os.environ['POLICY_SHA256']):
+            raise ValueError('Android caller-owned archive or policy changed before controller execution')
+        PY
+        args=(--plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+          --destination "$GITHUB_WORKSPACE/build/sdk-android-maven-worker" \
+          --repository-root "$GITHUB_WORKSPACE" --component sdk-android \
+          --expected-build-key "$BUILD_KEY" --android-runtime-archive "$ANDROID_ARCHIVE")
+        if [ -n "$SDK_VALIDATION_TOOLING" ]; then args+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+        if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then args+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+        if [ -n "$SDK_FACADE_METADATA_POLICY" ]; then args+=(--sdk-facade-metadata-policy "$SDK_FACADE_METADATA_POLICY"); fi
+        if [ -n "$SDK_ANDROID_METADATA_POLICY" ]; then args+=(--sdk-android-metadata-policy "$SDK_ANDROID_METADATA_POLICY"); fi
+        if [ "$PHASE" = package ]; then
+          args+=(--sdk-inputs-artifact-id "$SDK_INPUTS_ID" --sdk-inputs-artifact-sha256 "$SDK_INPUTS_SHA256" \
+            --binary-artifact-id "$BINARY_ARTIFACT_ID" --binary-artifact-sha256 "$BINARY_ARTIFACT_SHA256" \
+            --binary-contract-evidence "$BINARY_CONTRACT_EVIDENCE" \
+            --binary-original-context "$BINARY_ORIGINAL_CONTEXT" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
+            --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys")
+        fi
+        python3 -B -m ci.sdk_workflow "maven-$PHASE" "${args[@]}"
+    - if: always() && steps.identity.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-worker-sdk-android-${{ inputs.phase }}-android-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/sdk-android-maven-worker
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90

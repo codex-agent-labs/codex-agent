@@ -1,0 +1,152 @@
+"""Check the Android Maven composite's pre-setup boundary and shell routing."""
+
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
+import unittest
+
+from ci.products.inventory import canonical_json_bytes, sha256_bytes
+
+
+ROOT = Path(__file__).resolve().parents[2]
+ACTION = ROOT / ".github/actions/sdk-android-maven-worker/action.yml"
+KEY = "sha256:" + "a" * 64
+
+
+class AndroidMavenWorkerActionTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.action = ACTION.read_text()
+        cls.shell = shutil.which("bash")
+
+    @classmethod
+    def script(cls, marker):
+        match = re.search(rf"(?ms)^    - {marker}\n(.*?)(?=^    - |\Z)", cls.action)
+        if match is None:
+            raise AssertionError(f"Missing action step: {marker}")
+        return textwrap.dedent(match[1].split("      run: |\n", 1)[1])
+
+    def test_current_state_is_captured_before_any_platform_setup(self):
+        action = self.action
+        self.assertLess(action.index("- id: policy"), action.index("- id: captured"))
+        self.assertLess(action.index("- id: captured"), action.index("- id: identity"))
+        self.assertLess(action.index("- id: identity"), action.index("uses: ./.github/actions/setup-kmp"))
+        self.assertLess(action.index("- id: identity"), action.index("uses: android-actions/setup-android@"))
+        self.assertIn("sdk-family: android-${{ inputs.phase }}", action)
+        for field in ("plan-id", "artifact-id", "artifact-sha256", "trusted-workflow-sha",
+                      "state-wave", "sdk-state-wave", "sdk-validation-tooling",
+                      "sdk-facade-metadata-policy", "sdk-android-metadata-policy"):
+            self.assertIn(f"{field}: ${{{{ inputs.{field} }}}}", action)
+        identity = self.script("id: identity")
+        for check in ("host_classifier() != 'linux-x64'", "len(rows) != 1",
+                      "('sdk', 'sdk-android', phase, 'android')", "rows[0].get('buildKey') != key",
+                      "('ubuntu-24.04', 'Linux', 'X64')", "os.environ['POLICY_SHA256']",
+                      "plan['validationTree'] != tree", "git_regular_blob_bytes", "sha256_file(archive",
+                      "_context(package['BINARY_ORIGINAL_CONTEXT'], 'binary')"):
+            self.assertIn(check, identity)
+        self.assertIn("require_no_signing_secret(os.environ)", self.script("id: policy"))
+        self.assertIn("sha256_bytes(canonical_json_bytes(pins))", self.script(
+            "name: Execute exact Android Maven phase with held original inputs"))
+
+    def run_execution(self, phase, *, bad_digest=False):
+        with tempfile.TemporaryDirectory(prefix="android-maven-action-", dir=ROOT / "build") as temporary:
+            root = Path(temporary)
+            binary = root / "bin"
+            binary.mkdir()
+            recorder = binary / "python3"
+            recorder.write_text("#!/bin/sh\n"
+                "if [ \"$1\" = -B ] && [ \"$2\" = - ]; then "
+                "exec \"$REAL_PYTHON\" \"$@\"; fi\n"
+                "printf '%s\\0' \"$@\" > \"$RECORDED_ARGS\"\n")
+            recorder.chmod(0o700)
+            record = root / "arguments"
+            archive = root / "original.tar.gz"
+            archive.write_bytes(b"pinned archive fixture")
+            contract, context = root / "contract.json", root / "context.json"
+            contract.write_bytes(canonical_json_bytes({}))
+            context.write_bytes(canonical_json_bytes({}))
+            actual_digest = sha256_bytes(archive.read_bytes())
+            pins = {"ANDROID_ARCHIVE": actual_digest}
+            if phase == "package":
+                pins.update(BINARY_CONTRACT_EVIDENCE=sha256_bytes(contract.read_bytes()),
+                            BINARY_ORIGINAL_CONTEXT=sha256_bytes(context.read_bytes()))
+            environment = {"PATH": str(binary) + os.pathsep + os.environ["PATH"],
+                "RECORDED_ARGS": str(record), "REAL_PYTHON": sys.executable,
+                "PYTHONPATH": str(ROOT),
+                "GITHUB_WORKSPACE": str(root), "PLAN": str(root / "plan.json"),
+                "DISCOVERY": str(root / "discovery"), "STATE": str(root / "state"),
+                "PHASE": phase, "BUILD_KEY": KEY, "ANDROID_ARCHIVE": str(archive),
+                "ARCHIVE_SHA256": actual_digest if not bad_digest else KEY,
+                "POLICY_SHA256": sha256_bytes(canonical_json_bytes(pins)),
+                "SDK_INPUTS_ID": "71", "SDK_INPUTS_SHA256": KEY,
+                "BINARY_ARTIFACT_ID": "72", "BINARY_ARTIFACT_SHA256": KEY,
+                "BINARY_CONTRACT_EVIDENCE": str(contract) if phase == "package" else "",
+                "BINARY_ORIGINAL_CONTEXT": str(context) if phase == "package" else "",
+                "SDK_VALIDATION_TOOLING": "", "SDK_APPLE_VALIDATION_POLICY": "",
+                "SDK_FACADE_METADATA_POLICY": "", "SDK_ANDROID_METADATA_POLICY": "",
+                "TRUSTED_WORKFLOW_SHA": "c" * 40}
+            result = subprocess.run([self.shell, "--noprofile", "--norc", "-c",
+                self.script("name: Execute exact Android Maven phase with held original inputs")],
+                cwd=root, env=environment, capture_output=True, text=True, check=False)
+            arguments = record.read_bytes().decode().split("\0")[:-1] if record.exists() else None
+            return result, arguments
+
+    def test_pre_capture_policy_rejects_missing_package_inputs_and_signing_secret(self):
+        with tempfile.TemporaryDirectory(prefix="android-maven-policy-", dir=ROOT / "build") as temporary:
+            root = Path(temporary)
+            archive, output = root / "archive.tar.gz", root / "output"
+            archive.write_bytes(b"original archive")
+            environment = {**os.environ, "PHASE": "binary", "ANDROID_ARCHIVE": str(archive),
+                "SDK_INPUTS_ID": "", "SDK_INPUTS_SHA256": "", "BINARY_ARTIFACT_ID": "",
+                "BINARY_ARTIFACT_SHA256": "", "BINARY_CONTRACT_EVIDENCE": "",
+                "BINARY_ORIGINAL_CONTEXT": "", "SDK_VALIDATION_TOOLING": "",
+                "SDK_APPLE_VALIDATION_POLICY": "", "SDK_FACADE_METADATA_POLICY": "",
+                "SDK_ANDROID_METADATA_POLICY": "", "GITHUB_OUTPUT": str(output)}
+            script = self.script("id: policy")
+            command = [self.shell, "--noprofile", "--norc", "-c", script]
+            good = subprocess.run(command, cwd=ROOT,
+                env=environment, capture_output=True, text=True, check=False)
+            self.assertEqual(0, good.returncode, good.stderr)
+            self.assertRegex(output.read_text(), r"^policy_sha256=sha256:[0-9a-f]{64}\n$")
+            missing = subprocess.run(command, cwd=ROOT,
+                env={**environment, "PHASE": "package"}, capture_output=True, text=True, check=False)
+            self.assertNotEqual(0, missing.returncode)
+            secret = subprocess.run(command, cwd=ROOT,
+                env={**environment, "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": ""},
+                capture_output=True, text=True, check=False)
+            self.assertNotEqual(0, secret.returncode)
+
+    def test_binary_and_package_pass_only_their_fixed_original_inputs(self):
+        for phase in ("binary", "package"):
+            with self.subTest(phase=phase):
+                result, args = self.run_execution(phase)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(["-B", "-m", "ci.sdk_workflow", "maven-" + phase], args[:4])
+                self.assertIn("--expected-build-key", args)
+                self.assertIn("--android-runtime-archive", args)
+                self.assertIn("--component", args)
+                self.assertEqual("sdk-android", args[args.index("--component") + 1])
+                if phase == "binary":
+                    for flag in ("--sdk-inputs-artifact-id", "--binary-artifact-id",
+                                 "--binary-contract-evidence", "--binary-original-context",
+                                 "--trusted-workflow-sha"):
+                        self.assertNotIn(flag, args)
+                else:
+                    for flag in ("--sdk-inputs-artifact-id", "--binary-artifact-id",
+                                 "--binary-contract-evidence", "--binary-original-context",
+                                 "--trusted-workflow-sha", "--keyring", "--keys-directory"):
+                        self.assertIn(flag, args)
+
+    def test_archive_mutation_before_execution_fails_without_controller(self):
+        result, args = self.run_execution("package", bad_digest=True)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIsNone(args)
+
+
+if __name__ == "__main__":
+    unittest.main()
