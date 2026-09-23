@@ -970,6 +970,25 @@ class ProductIndexTest(unittest.TestCase):
                 context=context("development"), trust_domain="development",
                 signing=self.development_signing, producer=producer("development"), stable_history=None)
 
+    def test_release_trust_pull_request_index_is_sdk_only(self) -> None:
+        sdk = source("package", product="sdk", component="sdk-core", target="common",
+                     trust_domain="development")
+        contract = source("package", trust_domain="development")
+        sdk_index = build_product_index([sdk], repository=REPOSITORY,
+            context=context("development"), trust_domain="development",
+            signing=self.development_signing, producer=producer("development"), stable_history=None)
+        contract_index = build_product_index([contract], repository=REPOSITORY,
+            context=context("development"), trust_domain="development",
+            signing=self.development_signing, producer=producer("development"), stable_history=None)
+        release = {**sdk_index, "trustDomain": "release", "signing": self.release_signing}
+        self.assertIs(release, validate_product_index(release))
+        with self.assertRaisesRegex(ValueError, "only SDK campaign entries"):
+            validate_product_index({**release, "entries": contract_index["entries"]})
+        with self.assertRaisesRegex(ValueError, "receipt trust domain does not match"):
+            build_product_index([sdk], repository=REPOSITORY,
+                context=context("development"), trust_domain="release",
+                signing=self.release_signing, producer=producer("development"), stable_history=None)
+
     def test_prior_stable_same_version_with_different_bytes_is_rejected(self) -> None:
         first = self.root / "first" / "product-index.json"
         first.parent.mkdir()

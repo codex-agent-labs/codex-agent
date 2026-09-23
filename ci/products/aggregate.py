@@ -1385,6 +1385,9 @@ def validate_product_index(value: Any) -> dict[str, Any]:
         raise ValueError("Pull-request product index context/producer mismatch")
     if context["kind"] in {"stable", "promoted-main"} and index["trustDomain"] != "release":
         raise ValueError("Stable and promoted-main product indexes require release trust")
+    if context["kind"] == "pull-request" and index["trustDomain"] == "release" and any(
+            entry["product"] != "sdk" for entry in entries):
+        raise ValueError("Release-trust pull-request index may contain only SDK campaign entries")
     if context["kind"] in {"stable", "promoted-main"} and producer["event"] != "push":
         raise ValueError("Stable and promoted-main product indexes require a push producer")
     if context["kind"] == "promoted-main" and (
