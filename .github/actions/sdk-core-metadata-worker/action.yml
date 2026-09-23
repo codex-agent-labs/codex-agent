@@ -1,0 +1,205 @@
+name: Execute elected Core metadata phase
+description: Join the exact eleven original Core validations under an independent caller policy.
+inputs:
+  plan-id:
+    required: true
+    description: Original plan artifact ID.
+  artifact-id:
+    required: true
+    description: Predecessor SDK state artifact ID.
+  artifact-sha256:
+    required: true
+    description: Exact predecessor SDK state digest.
+  sdk-state-wave:
+    required: true
+    description: Exact preceding SDK state wave.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  build-key:
+    required: true
+    description: Exact elected metadata phase key.
+  tree:
+    required: true
+    description: Exact tested source tree.
+  sdk-facade-metadata-policy:
+    required: true
+    description: Caller-owned descriptor produced from a signed catalog and all eleven original validations.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional independently supplied Apple replay policy.
+  sdk-android-metadata-policy:
+    default: ''
+    description: Optional independently supplied Android metadata replay policy.
+runs:
+  using: composite
+  steps:
+    - id: policy
+      name: Hold independent eleven-target policy before state capture
+      shell: bash
+      env:
+        CORE_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        ANDROID_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
+      run: |
+        python3 -B - <<'PY'
+        import os, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        from products.inventory import canonical_json_bytes, sha256_bytes
+        from products.signing_isolation import require_no_signing_secret
+        from ci.sdk_policy_snapshot import snapshot_policy_closure
+        require_no_signing_secret(os.environ)
+        if os.environ['SDK_STATE_WAVE'] != '13':
+            raise ValueError('Core metadata requires exact preceding SDK wave 13')
+        root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        digests = {}
+        for name, kind in (('CORE_POLICY', 'core-metadata'),
+                           ('APPLE_POLICY', 'apple-validation'),
+                           ('ANDROID_POLICY', 'android-metadata')):
+            value = os.environ[name]
+            if name == 'CORE_POLICY' and not value:
+                raise ValueError('Core metadata requires independent eleven-target caller policy')
+            if not value:
+                continue
+            path = Path(value)
+            if not path.is_absolute() or path.resolve(strict=True) != path or path == root or root in path.parents:
+                raise ValueError('Core metadata caller policy must be external, absolute and non-symbolic')
+            digests[name] = snapshot_policy_closure(kind, path)
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('policy_sha256=' + sha256_bytes(canonical_json_bytes(digests)) + '\n')
+        PY
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: sdk
+        sdk-family: core-metadata
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        sdk-state-wave: ${{ inputs.sdk-state-wave }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+        sdk-facade-metadata-policy: ${{ inputs.sdk-facade-metadata-policy }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+        sdk-android-metadata-policy: ${{ inputs.sdk-android-metadata-policy }}
+    - id: identity
+      name: Require exact elected Core metadata row before setup
+      shell: bash
+      env:
+        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
+        REQUIRED: ${{ steps.captured.outputs.sdk-workers-required }}
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
+        CORE_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        ANDROID_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
+      run: |
+        python3 -B - <<'PY'
+        import json, os, re, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        from native_wrappers import host_classifier
+        from products.inventory import canonical_json_bytes, sha256_bytes
+        from products.signing_isolation import require_no_signing_secret
+        from ci.sdk_policy_snapshot import snapshot_policy_closure
+        require_no_signing_secret(os.environ)
+        digests = {name: snapshot_policy_closure(kind, Path(os.environ[name]))
+                   for name, kind in (('CORE_POLICY', 'core-metadata'),
+                                      ('APPLE_POLICY', 'apple-validation'),
+                                      ('ANDROID_POLICY', 'android-metadata')) if os.environ[name]}
+        if sha256_bytes(canonical_json_bytes(digests)) != os.environ['POLICY_SHA256']:
+            raise ValueError('Core metadata caller policy changed during state capture')
+        rows = json.loads(os.environ['MATRIX'])['include']
+        key, tree = os.environ['BUILD_KEY'], os.environ['TREE']
+        if (host_classifier() != 'linux-x64' or os.environ['REQUIRED'] != 'true'
+                or type(rows) is not list or len(rows) != 1 or type(rows[0]) is not dict
+                or tuple(rows[0].get(name) for name in ('product', 'component', 'phase', 'target')) !=
+                   ('sdk', 'sdk-core', 'metadata', 'common')
+                or tuple(rows[0].get(name) for name in ('runner', 'runnerOs', 'runnerArch')) !=
+                   ('ubuntu-24.04', 'Linux', 'X64')
+                or rows[0].get('buildKey') != key or not re.fullmatch(r'sha256:[0-9a-f]{64}', key)
+                or not re.fullmatch(r'[0-9a-f]{40}', tree)):
+            raise ValueError('Core metadata differs from its elected host, target or key')
+        with open(os.environ['PLAN']) as source:
+            if json.load(source)['validationTree'] != tree:
+                raise ValueError('Core metadata tree differs from the authenticated plan')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
+        PY
+    - uses: ./.github/actions/setup-kmp
+      with:
+        cache-read-only: 'true'
+        product-worker: 'true'
+    - name: Execute exact Core metadata controller
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        CORE_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        ANDROID_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B - <<'PY'
+        import os, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        import product_reuse
+        from products.inventory import canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes
+        from products.sdk_facade_metadata_admission import _arguments
+        from products.signing_isolation import require_no_signing_secret
+        from ci.sdk_policy_snapshot import snapshot_policy_closure
+        from sdk_facade_metadata_workflow import execute
+        from sdk_metadata_policy import metadata_admission_options
+        require_no_signing_secret(os.environ)
+        root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        policy_path = Path(os.environ['CORE_POLICY'])
+        raw = read_regular_file_bytes(policy_path, reject_symlink_parents=True)
+        def held_policy_digest():
+            digests = {name: snapshot_policy_closure(kind, Path(os.environ[name]))
+                       for name, kind in (('CORE_POLICY', 'core-metadata'),
+                                          ('APPLE_POLICY', 'apple-validation'),
+                                          ('ANDROID_POLICY', 'android-metadata')) if os.environ[name]}
+            return sha256_bytes(canonical_json_bytes(digests))
+        if held_policy_digest() != os.environ['POLICY_SHA256']:
+            raise ValueError('Core metadata caller policy changed before execution')
+        descriptor = require_exact_keys(load_canonical_json_bytes(raw), {'evidenceRoot', 'records', 'policy'}, 'Core metadata descriptor')
+        policy = _arguments(descriptor['policy'])
+        plan = Path(os.environ['PLAN'])
+        current = product_reuse._validate_plan(plan, root)
+        options = {'plan': plan, 'repository_root': root, 'sdk_facade_metadata_policy': policy_path}
+        if os.environ['ANDROID_POLICY']:
+            options['sdk_android_metadata_policy'] = Path(os.environ['ANDROID_POLICY'])
+        apple = (product_reuse._canonical_control(Path(os.environ['APPLE_POLICY']), 'Caller Apple validation policy')
+                 if os.environ['APPLE_POLICY'] else None)
+        with metadata_admission_options(options) as admissions:
+            execute(plan=plan, discovery=Path(os.environ['DISCOVERY']), state=Path(os.environ['STATE']),
+                destination=root / 'build/sdk-core-metadata-worker', expected_build_key=os.environ['BUILD_KEY'],
+                validations=policy['validations'], contract_digest=policy['contract_digest'],
+                component_digests=policy['component_digests'], repository_root=root, environ=os.environ,
+                token=os.environ['GITHUB_TOKEN'], trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
+                tooling_evidence=policy['tooling_evidence'], tooling_public_key=policy['tooling_public_key'],
+                java_executable=policy['java_executable'], policy_revision=current['validationCommit'],
+                required_trust_domain=policy['required_trust_domain'], tooling_keyring=policy['tooling_keyring'],
+                tooling_keys_directory=policy['tooling_keys_directory'], sdk_apple_validation_policy=apple,
+                **admissions)
+        if held_policy_digest() != os.environ['POLICY_SHA256']:
+            raise ValueError('Core metadata caller policy closure changed after original reader exit')
+        require_no_signing_secret(os.environ)
+        PY
+    - if: always() && steps.identity.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-worker-sdk-core-metadata-common-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/sdk-core-metadata-worker
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0

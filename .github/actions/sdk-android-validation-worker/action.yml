@@ -1,0 +1,470 @@
+name: Execute elected Android SDK validation
+description: Replay elected predecessors and both unchanged official Firebase captures through the existing full gate.
+inputs:
+  plan-id:
+    required: true
+    description: Exact original plan upload ID.
+  artifact-id:
+    required: true
+    description: Exact current predecessor state upload ID.
+  artifact-sha256:
+    required: true
+    description: Exact current predecessor state upload digest.
+  state-wave:
+    default: '0'
+    description: Current Runtime state wave.
+  sdk-state-wave:
+    default: ''
+    description: Current SDK state wave.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision for state and final capture.
+  trusted-android-workflow-sha:
+    required: true
+    description: Reviewed unchanged Android/Firebase workflow revision.
+  trusted-source-commit:
+    required: true
+    description: Independently selected protected Firebase source commit.
+  trusted-source-tree:
+    required: true
+    description: Independently selected protected Firebase source tree.
+  policy-revision:
+    required: true
+    description: Exact caller Git revision authenticating SDK validation tooling policy.
+  build-key:
+    required: true
+    description: Exact elected Android validation key.
+  tree:
+    required: true
+    description: Exact tested source tree.
+  package-stage:
+    required: true
+    description: Independently provisioned original Android SDK package stage.
+  package-receipt:
+    required: true
+    description: Exact original package phase receipt.
+  binary-stage:
+    required: true
+    description: Independently provisioned original Android SDK binary stage.
+  binary-receipt:
+    required: true
+    description: Exact original binary phase receipt.
+  compatibility-request:
+    required: true
+    description: Caller-authenticated original S858 request, not recovered from state.
+  binary-contract-evidence:
+    required: true
+    description: Canonical independently selected original binary Contract evidence policy.
+  sdk-validation-tooling:
+    required: true
+    description: Canonical six-field caller tooling policy; its original evidence and Java are provisioned before invocation.
+  apkanalyzer-executable:
+    required: true
+    description: Caller-selected original Android APK analyzer executable.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional independently provisioned Apple policy for predecessor replay.
+  sdk-facade-metadata-policy:
+    default: ''
+    description: Optional independently provisioned Core metadata policy for predecessor replay.
+  sdk-android-metadata-policy:
+    default: ''
+    description: Optional independently provisioned Android metadata policy for predecessor replay.
+runs:
+  using: composite
+  steps:
+    - id: policy
+      name: Pin all original caller inputs before state capture or platform setup
+      shell: bash
+      env:
+        PACKAGE_STAGE: ${{ inputs.package-stage }}
+        PACKAGE_RECEIPT: ${{ inputs.package-receipt }}
+        BINARY_STAGE: ${{ inputs.binary-stage }}
+        BINARY_RECEIPT: ${{ inputs.binary-receipt }}
+        COMPATIBILITY_REQUEST: ${{ inputs.compatibility-request }}
+        BINARY_CONTRACT_EVIDENCE: ${{ inputs.binary-contract-evidence }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        APKANALYZER_EXECUTABLE: ${{ inputs.apkanalyzer-executable }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+      run: |
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        from ci.products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
+            read_regular_file_bytes, regular_file_inventory, require_exact_keys, sha256_bytes, sha256_file)
+        from ci.products.sdk_android_validation_phase import _contract_sources
+        from ci.products.sdk_apple_validation_admission import apple_validation_policy_arguments
+        from ci.products.sdk_facade_metadata_admission import _arguments as core_metadata_arguments
+        from ci.products.sdk_android_metadata_admission import _policy_arguments as android_metadata_arguments
+        from ci.products.sdk_facade_inputs import _EVIDENCE_FIELDS
+        from ci.products.sdk_facade_inputs import _request as facade_request, _sources as facade_sources
+        from ci.products.sdk_validation_inputs import _request_inventory
+        from ci.products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        def path(name, directory=False):
+            value = Path(os.environ[name])
+            if not value.is_absolute() or value.resolve(strict=True) != value or (not value.is_dir() if directory else not value.is_file()):
+                raise ValueError('Android validation original caller input must be absolute, regular and non-symbolic: ' + name)
+            return value
+        trees = {name: path(name, True) for name in ('PACKAGE_STAGE', 'BINARY_STAGE')}
+        files = {name: path(name) for name in ('PACKAGE_RECEIPT', 'BINARY_RECEIPT', 'COMPATIBILITY_REQUEST',
+            'BINARY_CONTRACT_EVIDENCE', 'SDK_VALIDATION_TOOLING', 'APKANALYZER_EXECUTABLE')}
+        contract = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(files['BINARY_CONTRACT_EVIDENCE'],
+            reject_symlink_parents=True)), _EVIDENCE_FIELDS, 'Original Android binary Contract')
+        contract_trees, contract_files = _contract_sources(contract)
+        trees.update(contract_trees)
+        files.update(contract_files)
+        tooling = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(files['SDK_VALIDATION_TOOLING'],
+            reject_symlink_parents=True)), {'evidence', 'publicKey', 'javaExecutable', 'requiredTrustDomain',
+            'keyring', 'keysDirectory'}, 'Caller SDK tooling')
+        if (tooling['requiredTrustDomain'] not in ('development', 'release') or
+                (tooling['keyring'] is None) != (tooling['keysDirectory'] is None) or
+                (tooling['requiredTrustDomain'] == 'release' and tooling['keyring'] is None) or
+                (tooling['requiredTrustDomain'] == 'development' and tooling['keyring'] is not None)):
+            raise ValueError('Android validation tooling requires explicit paired release trust')
+        trees['toolingEvidence'] = Path(tooling['evidence'])
+        files.update(toolingPublicKey=Path(tooling['publicKey']), java=Path(tooling['javaExecutable']))
+        if tooling['keyring'] is not None:
+            files['toolingKeyring'] = Path(tooling['keyring'])
+            trees['toolingKeys'] = Path(tooling['keysDirectory'])
+        if os.environ['SDK_APPLE_VALIDATION_POLICY']:
+            files['SDK_APPLE_VALIDATION_POLICY'] = path('SDK_APPLE_VALIDATION_POLICY')
+            apple = load_canonical_json_bytes(read_regular_file_bytes(files['SDK_APPLE_VALIDATION_POLICY'],
+                reject_symlink_parents=True))
+            for name, value in apple_validation_policy_arguments(apple).items():
+                if isinstance(value, Path):
+                    (trees if value.is_dir() else files)['apple/' + name] = value
+        for name, parser in (('SDK_FACADE_METADATA_POLICY', core_metadata_arguments),
+                             ('SDK_ANDROID_METADATA_POLICY', android_metadata_arguments)):
+            if not os.environ[name]:
+                continue
+            files[name] = path(name)
+            descriptor = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(files[name],
+                reject_symlink_parents=True)), {'evidenceRoot', 'records', 'policy'}, 'Caller metadata descriptor')
+            trees[name + '/evidenceRoot'] = Path(descriptor['evidenceRoot'])
+            arguments = parser(descriptor['policy'])
+            for field, value in arguments.items():
+                if isinstance(value, Path):
+                    (trees if value.is_dir() else files)[name + '/' + field] = value
+            if name == 'SDK_FACADE_METADATA_POLICY':
+                for target, record in arguments['validations'].items():
+                    for field in ('validationReceipt', 'facadeRequest', 'captureRoot', 'nativeCompilerArchive'):
+                        if field in record:
+                            value = Path(record[field])
+                            (trees if field == 'captureRoot' else files)[name + '/' + target + '/' + field] = value
+                    request, _ = facade_request(Path(record['facadeRequest']))
+                    _, source_trees, source_files = facade_sources(request)
+                    trees.update({name + '/' + target + '/' + key: value for key, value in source_trees.items()})
+                    files.update({name + '/' + target + '/' + key: value for key, value in source_files.items()})
+                    files.update({name + '/' + target + '/compatibility/' + str(path): path
+                        for path in _request_inventory(Path(request['compatibilityRequest']))})
+            else:
+                nested_trees, nested_files = _contract_sources(arguments['binary_contract_evidence'])
+                trees.update({name + '/' + key: value for key, value in nested_trees.items()})
+                files.update({name + '/' + key: value for key, value in nested_files.items()})
+                files.update({name + '/compatibility/' + str(path): path
+                    for path in _request_inventory(arguments['compatibility_request'])})
+        if any(not value.is_absolute() or value.resolve(strict=True) != value
+               for value in (*trees.values(), *files.values())):
+            raise ValueError('Android validation referenced caller inputs must be normalized and non-symbolic')
+        inventory = {str(name): digest for name, digest in _request_inventory(files['COMPATIBILITY_REQUEST']).items()}
+        pins = {'trees': {name: regular_file_inventory(value, allow_empty=True) for name, value in trees.items()},
+                'files': {name: sha256_file(value, reject_symlink_parents=True) for name, value in files.items()},
+                'compatibility': inventory}
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('policy_sha256=' + sha256_bytes(canonical_json_bytes(pins)) + '\n')
+            output.write('tooling_trust=' + tooling['requiredTrustDomain'] + '\n')
+        PY
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: sdk
+        sdk-family: android-validation
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        state-wave: ${{ inputs.state-wave }}
+        sdk-state-wave: ${{ inputs.sdk-state-wave }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+        sdk-facade-metadata-policy: ${{ inputs.sdk-facade-metadata-policy }}
+        sdk-android-metadata-policy: ${{ inputs.sdk-android-metadata-policy }}
+    - id: identity
+      name: Require exact elected Android phase and unchanged original inputs before setup
+      shell: bash
+      env:
+        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
+        REQUIRED: ${{ steps.captured.outputs.sdk-workers-required }}
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
+        POLICY_REVISION: ${{ inputs.policy-revision }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        TRUSTED_ANDROID_WORKFLOW_SHA: ${{ inputs.trusted-android-workflow-sha }}
+        TRUSTED_SOURCE_COMMIT: ${{ inputs.trusted-source-commit }}
+        TRUSTED_SOURCE_TREE: ${{ inputs.trusted-source-tree }}
+        POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
+        PACKAGE_STAGE: ${{ inputs.package-stage }}
+        PACKAGE_RECEIPT: ${{ inputs.package-receipt }}
+        BINARY_STAGE: ${{ inputs.binary-stage }}
+        BINARY_RECEIPT: ${{ inputs.binary-receipt }}
+        COMPATIBILITY_REQUEST: ${{ inputs.compatibility-request }}
+        BINARY_CONTRACT_EVIDENCE: ${{ inputs.binary-contract-evidence }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        APKANALYZER_EXECUTABLE: ${{ inputs.apkanalyzer-executable }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+      run: |
+        python3 -B - <<'PY'
+        import json, os, re, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        from native_wrappers import host_classifier
+        from products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
+            read_regular_file_bytes, regular_file_inventory, sha256_bytes, sha256_file)
+        from products.sdk_android_validation_phase import _contract_sources
+        from products.sdk_facade_inputs import _request as facade_request, _sources as facade_sources
+        from products.sdk_apple_validation_admission import apple_validation_policy_arguments
+        from products.sdk_facade_metadata_admission import _arguments as core_metadata_arguments
+        from products.sdk_android_metadata_admission import _policy_arguments as android_metadata_arguments
+        from products.sdk_validation_inputs import _request_inventory
+        from products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        rows = json.loads(os.environ['MATRIX'])['include']
+        key, tree = os.environ['BUILD_KEY'], os.environ['TREE']
+        if (host_classifier() != 'linux-x64' or os.environ['REQUIRED'] != 'true' or
+                type(rows) is not list or len(rows) != 1 or type(rows[0]) is not dict or
+                tuple(rows[0].get(name) for name in ('product', 'component', 'phase', 'target')) !=
+                    ('sdk', 'sdk-android', 'validation', 'android') or
+                tuple(rows[0].get(name) for name in ('runner', 'runnerOs', 'runnerArch')) !=
+                    ('ubuntu-24.04', 'Linux', 'X64') or rows[0].get('buildKey') != key or
+                not re.fullmatch(r'sha256:[0-9a-f]{64}', key) or not re.fullmatch(r'[0-9a-f]{40}', tree)
+                or any(not re.fullmatch(r'[0-9a-f]{40}', os.environ[name]) for name in
+                       ('POLICY_REVISION', 'TRUSTED_WORKFLOW_SHA', 'TRUSTED_ANDROID_WORKFLOW_SHA',
+                        'TRUSTED_SOURCE_COMMIT', 'TRUSTED_SOURCE_TREE'))):
+            raise ValueError('Android validation differs from its exact elected phase or host')
+        plan = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
+        if plan['validationTree'] != tree:
+            raise ValueError('Android validation source tree differs from the authenticated plan')
+        state = Path(os.environ['STATE']).resolve(strict=True)
+        names = ('PACKAGE_STAGE', 'BINARY_STAGE', 'PACKAGE_RECEIPT', 'BINARY_RECEIPT',
+                 'COMPATIBILITY_REQUEST', 'BINARY_CONTRACT_EVIDENCE', 'SDK_VALIDATION_TOOLING',
+                 'APKANALYZER_EXECUTABLE', 'SDK_APPLE_VALIDATION_POLICY',
+                 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY')
+        if any(Path(os.environ[name]) == state or state in Path(os.environ[name]).parents
+               for name in names if os.environ[name]):
+            raise ValueError('Android validation caller inputs cannot come from captured state')
+        contract = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['BINARY_CONTRACT_EVIDENCE']),
+            reject_symlink_parents=True))
+        contract_trees, contract_files = _contract_sources(contract)
+        tooling = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['SDK_VALIDATION_TOOLING']),
+            reject_symlink_parents=True))
+        trees = {name: Path(os.environ[name]) for name in ('PACKAGE_STAGE', 'BINARY_STAGE')}
+        trees.update(contract_trees)
+        trees['toolingEvidence'] = Path(tooling['evidence'])
+        files = {name: Path(os.environ[name]) for name in ('PACKAGE_RECEIPT', 'BINARY_RECEIPT',
+            'COMPATIBILITY_REQUEST', 'BINARY_CONTRACT_EVIDENCE', 'SDK_VALIDATION_TOOLING', 'APKANALYZER_EXECUTABLE')}
+        files.update(contract_files)
+        files.update(toolingPublicKey=Path(tooling['publicKey']), java=Path(tooling['javaExecutable']))
+        if tooling['keyring'] is not None:
+            files['toolingKeyring'] = Path(tooling['keyring'])
+            trees['toolingKeys'] = Path(tooling['keysDirectory'])
+        if os.environ['SDK_APPLE_VALIDATION_POLICY']:
+            files['SDK_APPLE_VALIDATION_POLICY'] = Path(os.environ['SDK_APPLE_VALIDATION_POLICY'])
+            apple = load_canonical_json_bytes(read_regular_file_bytes(files['SDK_APPLE_VALIDATION_POLICY'],
+                reject_symlink_parents=True))
+            for name, value in apple_validation_policy_arguments(apple).items():
+                if isinstance(value, Path):
+                    (trees if value.is_dir() else files)['apple/' + name] = value
+        for name, parser in (('SDK_FACADE_METADATA_POLICY', core_metadata_arguments),
+                             ('SDK_ANDROID_METADATA_POLICY', android_metadata_arguments)):
+            if not os.environ[name]:
+                continue
+            files[name] = Path(os.environ[name])
+            descriptor = load_canonical_json_bytes(read_regular_file_bytes(files[name], reject_symlink_parents=True))
+            trees[name + '/evidenceRoot'] = Path(descriptor['evidenceRoot'])
+            arguments = parser(descriptor['policy'])
+            for field, value in arguments.items():
+                if isinstance(value, Path):
+                    (trees if value.is_dir() else files)[name + '/' + field] = value
+            if name == 'SDK_FACADE_METADATA_POLICY':
+                for target, record in arguments['validations'].items():
+                    for field in ('validationReceipt', 'facadeRequest', 'captureRoot', 'nativeCompilerArchive'):
+                        if field in record:
+                            value = Path(record[field])
+                            (trees if field == 'captureRoot' else files)[name + '/' + target + '/' + field] = value
+                    request, _ = facade_request(Path(record['facadeRequest']))
+                    _, source_trees, source_files = facade_sources(request)
+                    trees.update({name + '/' + target + '/' + key: value for key, value in source_trees.items()})
+                    files.update({name + '/' + target + '/' + key: value for key, value in source_files.items()})
+                    files.update({name + '/' + target + '/compatibility/' + str(path): path
+                        for path in _request_inventory(Path(request['compatibilityRequest']))})
+            else:
+                nested_trees, nested_files = _contract_sources(arguments['binary_contract_evidence'])
+                trees.update({name + '/' + key: value for key, value in nested_trees.items()})
+                files.update({name + '/' + key: value for key, value in nested_files.items()})
+                files.update({name + '/compatibility/' + str(path): path
+                    for path in _request_inventory(arguments['compatibility_request'])})
+        if any(value == state or state in value.parents for value in (*trees.values(), *files.values(),
+               *_request_inventory(files['COMPATIBILITY_REQUEST']).keys())):
+            raise ValueError('Android validation original inputs cannot come from captured state')
+        pins = {'trees': {name: regular_file_inventory(value, allow_empty=True) for name, value in trees.items()},
+                'files': {name: sha256_file(value, reject_symlink_parents=True) for name, value in files.items()},
+                'compatibility': {str(name): digest for name, digest in _request_inventory(files['COMPATIBILITY_REQUEST']).items()}}
+        if sha256_bytes(canonical_json_bytes(pins)) != os.environ['POLICY_SHA256']:
+            raise ValueError('Android validation caller inputs changed during state capture')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
+        PY
+    - uses: ./.github/actions/setup-kmp
+      with:
+        cache-read-only: 'true'
+        product-worker: 'true'
+    - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+    - id: execute
+      name: Compose existing full Android validation without new Firebase execution
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        PACKAGE_STAGE: ${{ inputs.package-stage }}
+        PACKAGE_RECEIPT: ${{ inputs.package-receipt }}
+        BINARY_STAGE: ${{ inputs.binary-stage }}
+        BINARY_RECEIPT: ${{ inputs.binary-receipt }}
+        COMPATIBILITY_REQUEST: ${{ inputs.compatibility-request }}
+        BINARY_CONTRACT_EVIDENCE: ${{ inputs.binary-contract-evidence }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        APKANALYZER_EXECUTABLE: ${{ inputs.apkanalyzer-executable }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        TRUSTED_ANDROID_WORKFLOW_SHA: ${{ inputs.trusted-android-workflow-sha }}
+        TRUSTED_SOURCE_COMMIT: ${{ inputs.trusted-source-commit }}
+        TRUSTED_SOURCE_TREE: ${{ inputs.trusted-source-tree }}
+        POLICY_REVISION: ${{ inputs.policy-revision }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B - <<'PY'
+        import os, re, subprocess, sys
+        from pathlib import Path
+        root = Path(os.environ['GITHUB_WORKSPACE'])
+        sys.path.insert(0, str(root / 'ci'))
+        from products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
+            read_regular_file_bytes, regular_file_inventory, sha256_bytes, sha256_file)
+        from products.sdk_android_validation_phase import _contract_sources
+        from products.sdk_facade_inputs import _request as facade_request, _sources as facade_sources
+        from products.sdk_apple_validation_admission import apple_validation_policy_arguments
+        from products.sdk_facade_metadata_admission import _arguments as core_metadata_arguments
+        from products.sdk_android_metadata_admission import _policy_arguments as android_metadata_arguments
+        from products.sdk_validation_inputs import _request_inventory
+        from products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        if any(re.fullmatch(r'[0-9a-f]{40}', os.environ[name]) is None for name in
+               ('TRUSTED_WORKFLOW_SHA', 'TRUSTED_ANDROID_WORKFLOW_SHA', 'TRUSTED_SOURCE_COMMIT',
+                'TRUSTED_SOURCE_TREE', 'POLICY_REVISION')):
+            raise ValueError('Android validation requires exact caller-owned workflow and source identities')
+        contract = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['BINARY_CONTRACT_EVIDENCE']),
+            reject_symlink_parents=True))
+        contract_trees, contract_files = _contract_sources(contract)
+        tooling = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['SDK_VALIDATION_TOOLING']),
+            reject_symlink_parents=True))
+        trees = {name: Path(os.environ[name]) for name in ('PACKAGE_STAGE', 'BINARY_STAGE')}
+        trees.update(contract_trees)
+        trees['toolingEvidence'] = Path(tooling['evidence'])
+        files = {name: Path(os.environ[name]) for name in ('PACKAGE_RECEIPT', 'BINARY_RECEIPT',
+            'COMPATIBILITY_REQUEST', 'BINARY_CONTRACT_EVIDENCE', 'SDK_VALIDATION_TOOLING', 'APKANALYZER_EXECUTABLE')}
+        files.update(contract_files)
+        files.update(toolingPublicKey=Path(tooling['publicKey']), java=Path(tooling['javaExecutable']))
+        if tooling['keyring'] is not None:
+            files['toolingKeyring'] = Path(tooling['keyring'])
+            trees['toolingKeys'] = Path(tooling['keysDirectory'])
+        if os.environ['SDK_APPLE_VALIDATION_POLICY']:
+            files['SDK_APPLE_VALIDATION_POLICY'] = Path(os.environ['SDK_APPLE_VALIDATION_POLICY'])
+            apple = load_canonical_json_bytes(read_regular_file_bytes(files['SDK_APPLE_VALIDATION_POLICY'],
+                reject_symlink_parents=True))
+            for name, value in apple_validation_policy_arguments(apple).items():
+                if isinstance(value, Path):
+                    (trees if value.is_dir() else files)['apple/' + name] = value
+        for name, parser in (('SDK_FACADE_METADATA_POLICY', core_metadata_arguments),
+                             ('SDK_ANDROID_METADATA_POLICY', android_metadata_arguments)):
+            if not os.environ[name]:
+                continue
+            files[name] = Path(os.environ[name])
+            descriptor = load_canonical_json_bytes(read_regular_file_bytes(files[name], reject_symlink_parents=True))
+            trees[name + '/evidenceRoot'] = Path(descriptor['evidenceRoot'])
+            arguments = parser(descriptor['policy'])
+            for field, value in arguments.items():
+                if isinstance(value, Path):
+                    (trees if value.is_dir() else files)[name + '/' + field] = value
+            if name == 'SDK_FACADE_METADATA_POLICY':
+                for target, record in arguments['validations'].items():
+                    for field in ('validationReceipt', 'facadeRequest', 'captureRoot', 'nativeCompilerArchive'):
+                        if field in record:
+                            value = Path(record[field])
+                            (trees if field == 'captureRoot' else files)[name + '/' + target + '/' + field] = value
+                    request, _ = facade_request(Path(record['facadeRequest']))
+                    _, source_trees, source_files = facade_sources(request)
+                    trees.update({name + '/' + target + '/' + key: value for key, value in source_trees.items()})
+                    files.update({name + '/' + target + '/' + key: value for key, value in source_files.items()})
+                    files.update({name + '/' + target + '/compatibility/' + str(path): path
+                        for path in _request_inventory(Path(request['compatibilityRequest']))})
+            else:
+                nested_trees, nested_files = _contract_sources(arguments['binary_contract_evidence'])
+                trees.update({name + '/' + key: value for key, value in nested_trees.items()})
+                files.update({name + '/' + key: value for key, value in nested_files.items()})
+                files.update({name + '/compatibility/' + str(path): path
+                    for path in _request_inventory(arguments['compatibility_request'])})
+        pins = {'trees': {name: regular_file_inventory(value, allow_empty=True) for name, value in trees.items()},
+                'files': {name: sha256_file(value, reject_symlink_parents=True) for name, value in files.items()},
+                'compatibility': {str(name): digest for name, digest in _request_inventory(files['COMPATIBILITY_REQUEST']).items()}}
+        if sha256_bytes(canonical_json_bytes(pins)) != os.environ['POLICY_SHA256']:
+            raise ValueError('Android validation caller inputs changed before controller execution')
+        fields = {
+            '--plan': os.environ['PLAN'], '--discovery-root': os.environ['DISCOVERY'],
+            '--state-root': os.environ['STATE'], '--destination': str(root / 'build/sdk-android-validation-worker'),
+            '--expected-build-key': os.environ['BUILD_KEY'], '--repository-root': str(root),
+            '--package-stage': os.environ['PACKAGE_STAGE'], '--package-receipt': os.environ['PACKAGE_RECEIPT'],
+            '--binary-stage': os.environ['BINARY_STAGE'], '--binary-receipt': os.environ['BINARY_RECEIPT'],
+            '--compatibility-request': os.environ['COMPATIBILITY_REQUEST'],
+            '--binary-contract-evidence': os.environ['BINARY_CONTRACT_EVIDENCE'],
+            '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
+            '--trusted-android-workflow-sha': os.environ['TRUSTED_ANDROID_WORKFLOW_SHA'],
+            '--trusted-source-commit': os.environ['TRUSTED_SOURCE_COMMIT'],
+            '--trusted-source-tree': os.environ['TRUSTED_SOURCE_TREE'],
+            '--tooling-evidence': tooling['evidence'], '--tooling-public-key': tooling['publicKey'],
+            '--java-executable': tooling['javaExecutable'],
+            '--apkanalyzer-executable': os.environ['APKANALYZER_EXECUTABLE'],
+            '--policy-revision': os.environ['POLICY_REVISION'],
+            '--required-trust-domain': tooling['requiredTrustDomain'],
+        }
+        if tooling['keyring'] is not None:
+            fields['--tooling-keyring'] = tooling['keyring']
+            fields['--tooling-keys-directory'] = tooling['keysDirectory']
+        for name, flag in (('SDK_APPLE_VALIDATION_POLICY', '--sdk-apple-validation-policy'),
+                           ('SDK_FACADE_METADATA_POLICY', '--sdk-facade-metadata-policy'),
+                           ('SDK_ANDROID_METADATA_POLICY', '--sdk-android-metadata-policy')):
+            if os.environ[name]: fields[flag] = os.environ[name]
+        command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'android-validation']
+        command += [part for flag, value in fields.items() for part in (flag, value)]
+        subprocess.run(command, cwd=root, check=True)
+        require_no_signing_secret(os.environ)
+        PY
+    - if: always() && steps.identity.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-worker-sdk-android-validation-android-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/sdk-android-validation-worker
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90
