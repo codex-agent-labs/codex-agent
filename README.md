@@ -442,10 +442,13 @@ Phase 10 ZIP, receipt, attestation, and signature bytes. Publication consumes
 the exact candidate bytes. Protected environments hold the Android evidence,
 signing, and publication authority.
 
-Git commit, tree, and blob identities determine whether inputs changed.
-Checksums remain only where a format or integrity boundary requires them; they
-never decide whether source changed, whether a lane must run, or whether two
-independent builds are equivalent.
+Product-phase reuse uses content-addressed keys over phase-owned input
+inventories, compatible upstream artifacts, toolchains, flags, and any
+byte-affecting version. Git commit, tree, and blob identities authenticate
+source and preserve producer provenance; commit/run identity does not by itself
+invalidate an otherwise identical product key. Exact artifact digests also
+protect signatures, packages, and transport. Independent builds are never
+assumed byte-equivalent without comparing their verified output inventories.
 
 See [protocol provenance](docs/PROTOCOL.md), the
 [iOS runtime design](docs/RUNTIME_IOS.md), the

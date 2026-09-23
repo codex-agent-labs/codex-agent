@@ -131,10 +131,13 @@ PyPI, NuGet.org, crates.io, a CMake registry, or pub.dev. Adding a registry is a
 separate release-policy and credentials change, not an implication of the
 language-support matrix.
 
-Git commit, tree, blob, and explicit toolchain identity decide reuse. Checksums
-remain for SwiftPM, Maven Central, signatures, pinned external inputs, GitHub
-transport, and security-sensitive archive integrity. They never decide whether
-source changed, key a lane, or compare independently rebuilt ZIP files.
+Product-phase reuse uses content-addressed keys over phase-owned input
+inventories, compatible upstream artifacts, toolchains, flags, and any
+byte-affecting version. Git commit, tree, and blob identities authenticate
+source and preserve producer provenance; commit/run identity does not by itself
+invalidate an otherwise identical product key. Exact artifact digests also
+protect signatures, packages, and transport. Independent builds are never
+assumed byte-equivalent without comparing their verified output inventories.
 
 ## Existing combined protected candidate (migration baseline)
 
