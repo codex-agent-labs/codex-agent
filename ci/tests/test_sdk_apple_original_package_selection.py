@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -167,6 +168,109 @@ class OriginalApplePackageSelectionTest(unittest.TestCase):
                 self.assertRaises(ValueError):
             self.selector()(wrong)
         observe.assert_not_called()
+
+
+class CallerOriginalSelectorContextTest(unittest.TestCase):
+    """Synthetic authority fixtures only; no hosted Apple proof is asserted."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="apple-caller-context-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.plan = self.root / "impact-plan.json"
+        self.plan.write_bytes(b"synthetic current plan")
+        self.keyring = self.root / "keyring.json"
+        self.keyring.write_bytes(b"synthetic tracked keyring")
+        self.keys = self.root / "keys"
+        self.keys.mkdir()
+        (self.keys / "release.pub").write_bytes(b"synthetic tracked key")
+        self.tooling = self.root / "tooling"
+        self.tooling.mkdir()
+        (self.tooling / "receipt.json").write_bytes(b"synthetic tooling evidence")
+        self.tooling_keyring = self.root / "tooling-keyring.json"
+        self.tooling_keyring.write_bytes(b"synthetic tooling keyring")
+        self.tooling_keys = self.root / "tooling-keys"
+        self.tooling_keys.mkdir()
+        (self.tooling_keys / "key.pub").write_bytes(b"synthetic tooling key")
+        self.tooling_public = self.root / "tooling.pub"
+        self.tooling_public.write_bytes(b"synthetic tooling public key")
+        self.java = self.root / "java"
+        self.java.write_bytes(b"synthetic Java executable")
+        self.policy = {"plan": str(self.plan), "attestationPublicKey": None,
+            "attestationTrustDomain": "release", "keyring": str(self.keyring),
+            "keysDirectory": str(self.keys), "toolingEvidence": str(self.tooling),
+            "toolingPublicKey": str(self.tooling_public), "javaExecutable": str(self.java),
+            "toolingTrustDomain": "release", "toolingKeyring": str(self.tooling_keyring),
+            "toolingKeysDirectory": str(self.tooling_keys)}
+        self.revision, self.tree = "a" * 40, "b" * 40
+
+    def _trust(self, _root, _revision, destination):
+        keyring = destination / "trust/product-signing-keys.json"
+        keys = destination / "trust/keys"
+        keys.mkdir(parents=True)
+        keyring.write_bytes(self.keyring.read_bytes())
+        (keys / "release.pub").write_bytes((self.keys / "release.pub").read_bytes())
+        return SimpleNamespace(keyring=keyring, keys=keys)
+
+    def caller(self):
+        return selection.caller_original_apple_package_selector(self.plan, self.policy,
+            repository_root=self.root, trusted_workflow_sha="c" * 40,
+            environ={}, token="synthetic")
+
+    def mocked_current_authority(self):
+        stack = ExitStack()
+        stack.enter_context(patch.object(selection.product_reuse, "_validate_plan",
+            return_value={"validationCommit": self.revision, "validationTree": self.tree}))
+        stack.enter_context(patch.object(selection.product_reuse, "_git_value",
+            side_effect=lambda _root, _command, selector:
+                self.revision if selector == "HEAD^{commit}" else self.tree))
+        stack.enter_context(patch.object(selection.product_reuse, "_release_trust", side_effect=self._trust))
+        return stack
+
+    def test_context_keeps_external_scratch_alive_through_selector_use(self):
+        with self.mocked_current_authority(), self.caller() as factory:
+            self.assertIs(type(factory), selection.OriginalApplePackageSelector)
+            scratch = factory._scratch
+            self.assertTrue(scratch.is_dir())
+            self.assertFalse(self.root in scratch.parents)
+            self.assertEqual(self.revision, factory._policy["policy_revision"])
+        self.assertFalse(scratch.exists())
+
+    def test_plan_mutation_during_reuse_fails_on_exit(self):
+        with self.mocked_current_authority(), self.assertRaisesRegex(ValueError, "changed during reuse"):
+            with self.caller():
+                self.plan.write_bytes(b"mutated plan")
+
+    def test_tooling_mutation_during_reuse_fails_on_exit(self):
+        with self.mocked_current_authority(), self.assertRaisesRegex(ValueError, "changed during reuse"):
+            with self.caller():
+                (self.tooling / "receipt.json").write_bytes(b"mutated evidence")
+
+    def test_policy_mutation_during_reuse_fails_on_exit(self):
+        with self.mocked_current_authority(), self.assertRaisesRegex(ValueError, "changed during reuse"):
+            with self.caller():
+                self.policy["toolingTrustDomain"] = "development"
+
+    def test_caller_keyring_must_match_current_git(self):
+        self.keyring.write_bytes(b"untracked impostor keyring")
+        with self.mocked_current_authority(), patch.object(selection.product_reuse,
+                "_release_trust", side_effect=self._different_trust), \
+                self.assertRaisesRegex(ValueError, "differ from current Git"):
+            with self.caller():
+                pass
+
+    def _different_trust(self, _root, _revision, destination):
+        trust = self._trust_copy(destination)
+        trust.keyring.write_bytes(b"original Git keyring")
+        return trust
+
+    def _trust_copy(self, destination):
+        keyring = destination / "trust/product-signing-keys.json"
+        keys = destination / "trust/keys"
+        keys.mkdir(parents=True)
+        keyring.write_bytes(self.keyring.read_bytes())
+        (keys / "release.pub").write_bytes((self.keys / "release.pub").read_bytes())
+        return SimpleNamespace(keyring=keyring, keys=keys)
 
 
 if __name__ == "__main__":

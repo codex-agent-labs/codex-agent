@@ -7,16 +7,18 @@ no captured descriptor or transport record is treated as product authority.
 """
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
 import sys
+import tempfile
 
 if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import product_reuse
 from products.inventory import (
-    git_product_versions, load_canonical_json_bytes, read_regular_file_bytes,
-    require_exact_keys, require_integer, require_sha256,
+    canonical_json_bytes, git_product_versions, load_canonical_json_bytes,
+    read_regular_file_bytes, regular_file_inventory, require_exact_keys, require_integer, require_sha256,
     verified_zip_contents, write_canonical_json,
 )
 from products.registry import PhaseInstanceId
@@ -29,10 +31,88 @@ from products.signing_isolation import require_no_signing_secret
 from receipt import safe_extract
 from sdk_apple_source import _original_upload
 from sdk_apple_upload_locator import locate_original_apple_upload
+from products.sdk_apple_validation_admission import apple_validation_policy_arguments
 
 
 _INSTANCE = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
 _PLAN_JOB = "product-validation / plan"
+
+
+@contextmanager
+def caller_original_apple_package_selector(plan_path, apple_policy, *, repository_root,
+        trusted_workflow_sha, environ, token):
+    """Hold current caller authority and external evidence through one reuse wave.
+
+    The policy is already caller-owned; its release keys are independently
+    compared with the current Git tree.  Neither retained data nor the selected
+    envelope can choose tooling, trust, or the revision.
+    """
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(os.environ)
+    require_no_signing_secret(environment)
+    repository = Path(repository_root).resolve(strict=True)
+    plan_file = Path(plan_path).resolve(strict=True)
+    arguments = apple_validation_policy_arguments(apple_policy)
+    if (arguments["plan"].resolve(strict=True) != plan_file
+            or arguments["attestation_trust_domain"] != "release"
+            or arguments["required_trust_domain"] != "release"):
+        raise ValueError("Apple package selector requires the current release caller policy and plan")
+    if not token:
+        raise ValueError("Apple package selector requires an observation token")
+    policy_bytes = canonical_json_bytes(apple_policy)
+    files = {name: arguments[name] for name in (
+        "plan", "keyring", "tooling_public_key", "java_executable", "tooling_keyring")}
+    directories = {name: arguments[name] for name in (
+        "keys_directory", "tooling_evidence", "tooling_keys_directory")}
+    before_files = {name: read_regular_file_bytes(path, max_bytes=128 * 1024 * 1024,
+        reject_symlink_parents=True) for name, path in files.items()}
+    before_directories = {name: regular_file_inventory(path, allow_empty=True)
+                          for name, path in directories.items()}
+    with tempfile.TemporaryDirectory(prefix="apple-original-package-") as temporary:
+        scratch = Path(temporary).resolve(strict=True)
+        _require_capability_output_separate(scratch, repository)
+        pinned_plan = scratch / "current-impact-plan.json"
+        pinned_plan.write_bytes(before_files["plan"])
+        plan = product_reuse._validate_plan(pinned_plan, repository)
+        revision, tree = plan["validationCommit"], plan["validationTree"]
+        trust = product_reuse._release_trust(repository, revision, scratch / "current")
+        if trust is None:
+            raise ValueError("Apple package selector requires current Git release trust")
+        if (read_regular_file_bytes(trust.keyring) != before_files["keyring"]
+                or regular_file_inventory(trust.keys) != before_directories["keys_directory"]):
+            raise ValueError("Apple package caller keys differ from current Git release trust")
+        trust_inventory = regular_file_inventory(scratch / "current/trust")
+
+        def unchanged():
+            require_no_signing_secret(os.environ)
+            require_no_signing_secret(environment)
+            if (canonical_json_bytes(apple_policy) != policy_bytes
+                    or any(read_regular_file_bytes(path, max_bytes=128 * 1024 * 1024,
+                        reject_symlink_parents=True) != before_files[name]
+                        for name, path in files.items())
+                    or any(regular_file_inventory(path, allow_empty=True) != before_directories[name]
+                           for name, path in directories.items())
+                    or read_regular_file_bytes(pinned_plan) != before_files["plan"]
+                    or regular_file_inventory(scratch / "current/trust") != trust_inventory
+                    or product_reuse._git_value(repository, "rev-parse", "HEAD^{commit}") != revision
+                    or product_reuse._git_value(repository, "rev-parse", "HEAD^{tree}") != tree):
+                raise ValueError("Apple package caller policy or plan changed during reuse")
+
+        unchanged()
+        (scratch / "original").mkdir()
+        selector = OriginalApplePackageSelector(scratch / "original", repository_root=repository,
+            trusted_workflow_sha=trusted_workflow_sha, keyring=trust.keyring,
+            keys_directory=trust.keys, tooling_evidence=arguments["tooling_evidence"],
+            tooling_public_key=arguments["tooling_public_key"],
+            java_executable=arguments["java_executable"], policy_revision=revision,
+            required_trust_domain="release", environ=environment, token=token,
+            tooling_keyring=arguments["tooling_keyring"],
+            tooling_keys_directory=arguments["tooling_keys_directory"])
+        try:
+            unchanged()
+            yield selector
+        finally:
+            unchanged()
 
 
 class OriginalApplePackageSelector:
