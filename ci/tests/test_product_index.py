@@ -27,6 +27,7 @@ from ci.products.inventory import (
     write_canonical_json,
 )
 from ci.products.receipt import compute_build_key, validate_phase_receipt
+from ci.products.registry import PHASE_INSTANCE_IDS
 from ci.products.restore import store_local_object
 from ci.tests import test_contract_bundle as contract_fixture
 from ci.products.signatures import (
@@ -971,10 +972,11 @@ class ProductIndexTest(unittest.TestCase):
                 signing=self.development_signing, producer=producer("development"), stable_history=None)
 
     def test_release_trust_pull_request_index_is_sdk_only(self) -> None:
-        sdk = source("package", product="sdk", component="sdk-core", target="common",
-                     trust_domain="development")
+        sdk_sources = [source(instance.phase, product="sdk", component=instance.component,
+            target=instance.target, trust_domain="development")
+            for instance in PHASE_INSTANCE_IDS if instance.product == "sdk"]
         contract = source("package", trust_domain="development")
-        sdk_index = build_product_index([sdk], repository=REPOSITORY,
+        sdk_index = build_product_index(sdk_sources, repository=REPOSITORY,
             context=context("development"), trust_domain="development",
             signing=self.development_signing, producer=producer("development"), stable_history=None)
         contract_index = build_product_index([contract], repository=REPOSITORY,
@@ -982,10 +984,22 @@ class ProductIndexTest(unittest.TestCase):
             signing=self.development_signing, producer=producer("development"), stable_history=None)
         release = {**sdk_index, "trustDomain": "release", "signing": self.release_signing}
         self.assertIs(release, validate_product_index(release))
-        with self.assertRaisesRegex(ValueError, "only SDK campaign entries"):
-            validate_product_index({**release, "entries": contract_index["entries"]})
+        with self.assertRaisesRegex(ValueError, "every exact SDK campaign phase"):
+            validate_product_index({**release, "entries": release["entries"][:-1]})
+        with self.assertRaisesRegex(ValueError, "every exact SDK campaign phase"):
+            validate_product_index({**release, "entries": sorted([
+                *release["entries"][:-1], contract_index["entries"][0]],
+                key=lambda entry: entry["buildKey"])})
+        with self.assertRaisesRegex(ValueError, "one SDK version"):
+            validate_product_index({**release, "entries": [
+                {**release["entries"][0], "productVersion": "1.2.4"},
+                *release["entries"][1:]]})
+        with self.assertRaisesRegex(ValueError, "registered owner"):
+            validate_product_index({**release, "entries": [
+                {**release["entries"][0], "coordinate": "wrong:owner"},
+                *release["entries"][1:]]})
         with self.assertRaisesRegex(ValueError, "receipt trust domain does not match"):
-            build_product_index([sdk], repository=REPOSITORY,
+            build_product_index(sdk_sources, repository=REPOSITORY,
                 context=context("development"), trust_domain="release",
                 signing=self.release_signing, producer=producer("development"), stable_history=None)
 

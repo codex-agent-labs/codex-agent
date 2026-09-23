@@ -37,7 +37,7 @@ from .receipt import (
     validate_producer,
     verify_output_manifest,
 )
-from .registry import NATIVE_TARGETS, PhaseInstanceId
+from .registry import NATIVE_TARGETS, PHASE_INSTANCE_IDS, PhaseInstanceId, published_coordinate
 from .sdk_runtime_content import VerifiedNativeRuntimeProjection
 from .runtime_adapter_content import VerifiedAdapterRuntimeProjection
 from .sdk_validation import VerifiedSdkValidationProjection
@@ -1385,9 +1385,17 @@ def validate_product_index(value: Any) -> dict[str, Any]:
         raise ValueError("Pull-request product index context/producer mismatch")
     if context["kind"] in {"stable", "promoted-main"} and index["trustDomain"] != "release":
         raise ValueError("Stable and promoted-main product indexes require release trust")
-    if context["kind"] == "pull-request" and index["trustDomain"] == "release" and any(
-            entry["product"] != "sdk" for entry in entries):
-        raise ValueError("Release-trust pull-request index may contain only SDK campaign entries")
+    if context["kind"] == "pull-request" and index["trustDomain"] == "release":
+        expected = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "sdk"}
+        actual = {PhaseInstanceId(*(entry[name] for name in (
+            "product", "component", "phase", "target"))) for entry in entries}
+        if len(entries) != len(expected) or actual != expected:
+            raise ValueError("Release-trust pull-request index requires every exact SDK campaign phase")
+        if len({entry["productVersion"] for entry in entries}) != 1:
+            raise ValueError("Release-trust SDK campaign phases require one SDK version")
+        if any(entry["coordinate"] != published_coordinate(entry["product"], entry["component"])
+               for entry in entries):
+            raise ValueError("Release-trust SDK campaign coordinate differs from its registered owner")
     if context["kind"] in {"stable", "promoted-main"} and producer["event"] != "push":
         raise ValueError("Stable and promoted-main product indexes require a push producer")
     if context["kind"] == "promoted-main" and (
