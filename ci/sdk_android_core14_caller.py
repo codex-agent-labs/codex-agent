@@ -36,6 +36,7 @@ _PACKAGE = PhaseInstanceId("sdk", "sdk-android", "package", "android")
 
 def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
         *, expected_build_key, expected_metadata_build_key, expected_metadata_receipt_sha256,
+        expected_metadata_artifact_id=None, expected_metadata_artifact_sha256=None,
         replay_policy, original_context, trusted_workflow_sha, repository_root,
         android_runtime_archive, token, environ=None, destination=None,
         sdk_apple_validation_policy=None, phase="binary", selected_state=None,
@@ -102,10 +103,14 @@ def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
             replay_policy={**replay_policy, "originalContext": original_context},
             trusted_workflow_sha=trusted_workflow_sha, repository_root=root, token=token)
     else:
+        require_integer(expected_metadata_artifact_id, "Fresh Core metadata upload ID", 1)
+        require_sha256(expected_metadata_artifact_sha256, "Fresh Core metadata upload digest")
         held = held_same_campaign_core_metadata_policy(
             plan, discovery, before_state, after_state, metadata_receipt,
             expected_build_key=expected_metadata_build_key,
             expected_receipt_sha256=expected_metadata_receipt_sha256,
+            expected_artifact_id=expected_metadata_artifact_id,
+            expected_artifact_sha256=expected_metadata_artifact_sha256,
             replay_policy=replay_policy, original_context=original_context,
             trusted_workflow_sha=trusted_workflow_sha, repository_root=root,
             environ=environment, token=token,
@@ -182,6 +187,8 @@ def main(argv=None):
     for name in ("expected-build-key", "expected-metadata-build-key",
                  "expected-metadata-receipt-sha256", "trusted-workflow-sha"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--expected-metadata-artifact-id", type=int)
+    parser.add_argument("--expected-metadata-artifact-sha256")
     parser.add_argument("--destination", type=Path)
     parser.add_argument("--github-output", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)

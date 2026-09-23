@@ -180,6 +180,8 @@ class AndroidCore14CallerTest(unittest.TestCase):
                     metadata_receipt=root / "receipt", expected_build_key="sha256:" + "b" * 64,
                     expected_metadata_build_key="sha256:" + "d" * 64,
                     expected_metadata_receipt_sha256="sha256:" + "a" * 64,
+                    expected_metadata_artifact_id=42,
+                    expected_metadata_artifact_sha256="sha256:" + "f" * 64,
                     replay_policy={}, original_context={}, trusted_workflow_sha="e" * 40,
                     repository_root=root, android_runtime_archive=archive, token="token", environ={})
                 self.assertEqual(caller.with_core14(**arguments)["buildKey"], arguments["expected_build_key"])
@@ -215,6 +217,8 @@ class AndroidCore14CallerTest(unittest.TestCase):
                         root / "after", root / "receipt", expected_build_key="sha256:" + "b" * 64,
                         expected_metadata_build_key="sha256:" + "d" * 64,
                         expected_metadata_receipt_sha256="sha256:" + "a" * 64,
+                        expected_metadata_artifact_id=42,
+                        expected_metadata_artifact_sha256="sha256:" + "f" * 64,
                         replay_policy={}, original_context={}, trusted_workflow_sha="e" * 40,
                         repository_root=root, android_runtime_archive=archive, token="token", environ={})
                 execute.assert_not_called()
@@ -300,6 +304,8 @@ class AndroidCore14CallerTest(unittest.TestCase):
                     expected_build_key="sha256:" + "b" * 64,
                     expected_metadata_build_key="sha256:" + "d" * 64,
                     expected_metadata_receipt_sha256="sha256:" + "a" * 64,
+                    expected_metadata_artifact_id=42,
+                    expected_metadata_artifact_sha256="sha256:" + "f" * 64,
                     replay_policy={}, original_context={}, trusted_workflow_sha="e" * 40,
                     repository_root=root, android_runtime_archive=archive, token="token", environ={},
                     phase="package", sdk_inputs_artifact_id=71,

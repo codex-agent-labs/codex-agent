@@ -16,7 +16,7 @@ if __package__:
 
 import product_reuse
 from products.inventory import (load_canonical_json_bytes, read_regular_file_bytes,
-    regular_file_inventory, require_exact_keys, require_sha256, sha256_bytes)
+    regular_file_inventory, require_exact_keys, require_integer, require_sha256, sha256_bytes)
 from products.receipt import validate_phase_receipt
 from products.registry import PhaseInstanceId, SDK_FACADE_TARGETS
 from products.restore import verify_phase_shard
@@ -35,7 +35,8 @@ _METADATA = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
 @contextmanager
 def held_same_campaign_core_metadata_policy(plan, discovery, before_state, after_state,
         metadata_receipt_path, *, expected_build_key, expected_receipt_sha256,
-        replay_policy, original_context, trusted_workflow_sha, repository_root,
+        expected_artifact_id, expected_artifact_sha256, replay_policy, original_context,
+        trusted_workflow_sha, repository_root,
         environ, token, sdk_apple_validation_policy=None):
     """Yield a temporary concrete admission descriptor for Android wave 15.
 
@@ -52,6 +53,8 @@ def held_same_campaign_core_metadata_policy(plan, discovery, before_state, after
     if receipt_path.resolve(strict=True) != receipt_path:
         raise ValueError("Core metadata caller receipt must be normalized and non-symbolic")
     require_sha256(expected_receipt_sha256, "Same-campaign Core metadata receipt")
+    require_integer(expected_artifact_id, "Same-campaign Core metadata upload ID", 1)
+    require_sha256(expected_artifact_sha256, "Same-campaign Core metadata upload digest")
     raw = read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024,
                                   reject_symlink_parents=True)
     if sha256_bytes(raw) != expected_receipt_sha256:
@@ -79,6 +82,9 @@ def held_same_campaign_core_metadata_policy(plan, discovery, before_state, after
         locator = locate_original_facade_upload(receipt_path,
             expected_receipt_sha256=expected_receipt_sha256,
             trusted_workflow_sha=trusted_workflow_sha, token=token, environ=environ)
+        if (locator["artifact_id"] != expected_artifact_id or
+                locator["artifact_sha256"] != expected_artifact_sha256):
+            raise ValueError("Original Core metadata upload differs from successful worker pins")
         metadata_capture = evidence / "common"
         capture_sdk_facade_metadata_upload(plan, metadata_capture,
             metadata_receipt_path=receipt_path, artifact_id=locator["artifact_id"],

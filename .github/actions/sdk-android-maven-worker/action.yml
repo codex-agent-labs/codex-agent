@@ -52,6 +52,12 @@ inputs:
   core14-metadata-receipt-sha256:
     default: ''
     description: Caller-pinned original Core metadata receipt digest.
+  core14-metadata-artifact-id:
+    default: ''
+    description: Successful Core-14 worker's official upload ID, pinned independently of the downloaded receipt.
+  core14-metadata-artifact-sha256:
+    default: ''
+    description: Successful Core-14 worker's official upload digest.
   core14-replay-policy:
     default: ''
     description: Independent eleven-target Core original replay policy.
@@ -124,6 +130,8 @@ runs:
         CORE14_BUILD_KEY: ${{ inputs.core14-build-key }}
         CORE14_METADATA_RECEIPT: ${{ inputs.core14-metadata-receipt }}
         CORE14_METADATA_RECEIPT_SHA256: ${{ inputs.core14-metadata-receipt-sha256 }}
+        CORE14_METADATA_ARTIFACT_ID: ${{ inputs.core14-metadata-artifact-id }}
+        CORE14_METADATA_ARTIFACT_SHA256: ${{ inputs.core14-metadata-artifact-sha256 }}
         CORE14_REPLAY_POLICY: ${{ inputs.core14-replay-policy }}
         CORE14_ORIGINAL_CONTEXT: ${{ inputs.core14-original-context }}
         SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
@@ -157,6 +165,7 @@ runs:
             raise ValueError('Android Maven package requires all original inputs; binary accepts none')
         core = ('CORE13_ARTIFACT_ID', 'CORE13_ARTIFACT_SHA256', 'CORE14_BUILD_KEY',
                 'CORE14_METADATA_RECEIPT', 'CORE14_METADATA_RECEIPT_SHA256',
+                'CORE14_METADATA_ARTIFACT_ID', 'CORE14_METADATA_ARTIFACT_SHA256',
                 'CORE14_REPLAY_POLICY', 'CORE14_ORIGINAL_CONTEXT')
         if not all(os.environ[name] for name in core):
             raise ValueError('Android Maven phase requires complete Core wave 13/14 caller authority')
@@ -164,6 +173,9 @@ runs:
             raise ValueError('Android Maven phase must replay Core wave 14 in-process, not import a descriptor')
         if not re.fullmatch(r'[1-9][0-9]*', os.environ['CORE13_ARTIFACT_ID']):
             raise ValueError('Core wave 13 upload ID must be positive decimal')
+        if not re.fullmatch(r'[1-9][0-9]*', os.environ['CORE14_METADATA_ARTIFACT_ID']):
+            raise ValueError('Core metadata upload ID must be positive decimal')
+        require_sha256(os.environ['CORE14_METADATA_ARTIFACT_SHA256'], 'CORE14_METADATA_ARTIFACT_SHA256')
         if ((phase == 'package' and not all(os.environ[name] for name in
                 ('CORE14_ARTIFACT_ID', 'CORE14_ARTIFACT_SHA256'))) or
                 (phase == 'binary' and (os.environ['CORE14_ARTIFACT_ID'] or
@@ -286,6 +298,8 @@ runs:
         METADATA_KEY: ${{ inputs.core14-build-key }}
         METADATA_RECEIPT: ${{ inputs.core14-metadata-receipt }}
         METADATA_RECEIPT_SHA256: ${{ inputs.core14-metadata-receipt-sha256 }}
+        METADATA_ARTIFACT_ID: ${{ inputs.core14-metadata-artifact-id }}
+        METADATA_ARTIFACT_SHA256: ${{ inputs.core14-metadata-artifact-sha256 }}
         REPLAY_POLICY: ${{ inputs.core14-replay-policy }}
         ORIGINAL_CONTEXT: ${{ inputs.core14-original-context }}
         WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
@@ -307,6 +321,8 @@ runs:
           --metadata-receipt "$METADATA_RECEIPT" \
           --expected-build-key "$BUILD_KEY" --expected-metadata-build-key "$METADATA_KEY" \
           --expected-metadata-receipt-sha256 "$METADATA_RECEIPT_SHA256" \
+          --expected-metadata-artifact-id "$METADATA_ARTIFACT_ID" \
+          --expected-metadata-artifact-sha256 "$METADATA_ARTIFACT_SHA256" \
           --replay-policy "$REPLAY_POLICY" --original-context "$ORIGINAL_CONTEXT" \
           --trusted-workflow-sha "$WORKFLOW_SHA" --repository-root "$GITHUB_WORKSPACE" \
           --android-runtime-archive "$ANDROID_ARCHIVE" --github-output "$GITHUB_OUTPUT")
@@ -467,6 +483,8 @@ runs:
         CORE14_BUILD_KEY: ${{ inputs.core14-build-key }}
         CORE14_METADATA_RECEIPT: ${{ inputs.core14-metadata-receipt }}
         CORE14_METADATA_RECEIPT_SHA256: ${{ inputs.core14-metadata-receipt-sha256 }}
+        CORE14_METADATA_ARTIFACT_ID: ${{ inputs.core14-metadata-artifact-id }}
+        CORE14_METADATA_ARTIFACT_SHA256: ${{ inputs.core14-metadata-artifact-sha256 }}
         CORE14_REPLAY_POLICY: ${{ inputs.core14-replay-policy }}
         CORE14_ORIGINAL_CONTEXT: ${{ inputs.core14-original-context }}
         ARCHIVE_SHA256: ${{ steps.identity.outputs.archive_sha256 }}
@@ -509,6 +527,8 @@ runs:
           --metadata-receipt "$CORE14_METADATA_RECEIPT" \
           --expected-build-key "$BUILD_KEY" --expected-metadata-build-key "$CORE14_BUILD_KEY" \
           --expected-metadata-receipt-sha256 "$CORE14_METADATA_RECEIPT_SHA256" \
+          --expected-metadata-artifact-id "$CORE14_METADATA_ARTIFACT_ID" \
+          --expected-metadata-artifact-sha256 "$CORE14_METADATA_ARTIFACT_SHA256" \
           --replay-policy "$CORE14_REPLAY_POLICY" --original-context "$CORE14_ORIGINAL_CONTEXT" \
           --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --repository-root "$GITHUB_WORKSPACE" \
           --android-runtime-archive "$ANDROID_ARCHIVE" \

@@ -51,7 +51,8 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
                               "javaExecutable": "/java", "toolingTrustDomain": "release",
                               "toolingKeyring": "/keyring", "toolingKeysDirectory": "/keys"}})
 
-    def invoke(self, *, selected_object=None, fresh_records=None):
+    def invoke(self, *, selected_object=None, fresh_records=None,
+               expected_artifact_id=7, expected_artifact_sha256="sha256:" + "d" * 64):
         if fresh_records is not None:
             value = selected.load_canonical_json_bytes(self.fresh.read_bytes())
             value["records"] = fresh_records
@@ -104,7 +105,9 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
             with selected.held_same_campaign_core_metadata_policy(
                     self.root / "plan.json", self.discovery, self.before, self.after,
                     self.receipt_path, expected_build_key=self.key,
-                    expected_receipt_sha256=self.digest, replay_policy={},
+                    expected_receipt_sha256=self.digest,
+                    expected_artifact_id=expected_artifact_id,
+                    expected_artifact_sha256=expected_artifact_sha256, replay_policy={},
                     original_context={}, trusted_workflow_sha="e" * 40,
                     repository_root=self.root, environ={}, token="token") as policy:
                 self.assertTrue(policy.is_file())
@@ -117,6 +120,12 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
         writer.assert_called_once()
         verified.assert_called_once()
         self.assertIsNotNone(verified.call_args.kwargs["sdk_facade_metadata_admission"])
+
+    def test_rejects_worker_upload_different_from_independent_success_pins(self):
+        with self.assertRaisesRegex(ValueError, "successful worker pins"):
+            self.invoke(expected_artifact_id=8)
+        with self.assertRaisesRegex(ValueError, "successful worker pins"):
+            self.invoke(expected_artifact_sha256="sha256:" + "f" * 64)
 
     def test_rejects_fresh_descriptor_as_reuse_authority_and_cross_pair(self):
         with self.assertRaisesRegex(ValueError, "cannot certify reuse"):
@@ -213,6 +222,8 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
                     Path(fresh_policy["plan"]), self.discovery, self.before, self.after,
                     receipt_path, expected_build_key=receipt["buildKey"],
                     expected_receipt_sha256=fixture.envelope["receiptSha256"],
+                    expected_artifact_id=123,
+                    expected_artifact_sha256="sha256:" + "d" * 64,
                     replay_policy=fresh_policy, original_context=fixture.f.context,
                     trusted_workflow_sha="e" * 40, repository_root=fixture.root,
                     environ={}, token="explicit-caller-token") as descriptor:
