@@ -128,6 +128,12 @@ if (args is ["--runtime-loader-embedded-child", var library, var compatibility, 
     return;
 }
 
+if (args is ["--runtime-loader-native-child", var nativeLibrary, var nativeCompatibility, var nativeTarget, var expected])
+{
+    RuntimeLoaderSecurity.VerifyNativeChild(nativeLibrary, nativeCompatibility, nativeTarget, expected);
+    return;
+}
+
 if (args is ["--runtime-loader-security"])
 {
     RuntimeLoaderSecurity.Verify();

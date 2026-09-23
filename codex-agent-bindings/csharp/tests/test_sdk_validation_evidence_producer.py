@@ -264,8 +264,8 @@ class CSharpSdkValidationEvidenceProducerTest(unittest.TestCase):
         targets = {target.attrib["Name"]: target for target in project.findall("Target")}
         commands = [entry.attrib["Command"] for entry in
                     targets["BuildFakeCodexAgentNativeLibraryWindows"].findall("Exec")]
-        self.assertEqual(3, len(commands))
-        for command, suffix in zip(commands, ("", "_missing_identity", "_abi_mismatch")):
+        self.assertEqual(4, len(commands))
+        for command, suffix in zip(commands, ("", "_missing_identity", "_abi_1_12", "_abi_mismatch")):
             self.assertIn("-DCODEX_AGENT_BUILD", command)
             self.assertIn(f"codex_agent{suffix}.dll", command)
         real = targets["BuildRealMcpValueFixtureWindows"].find("Exec").attrib["Command"]
@@ -275,7 +275,7 @@ class CSharpSdkValidationEvidenceProducerTest(unittest.TestCase):
         source = (ROOT / "tests/CodexAgent.Tests/native/real_mcp_value_fixture.c").read_text()
         self.assertIn("#define CODEX_AGENT_FIXTURE_API __declspec(dllexport)", source)
         security = (ROOT / "tests/CodexAgent.Tests/RuntimeLoaderSecurity.cs").read_text()
-        for suffix in ("_missing_identity", "_abi_mismatch"):
+        for suffix in ("_missing_identity", "_abi_1_12", "_abi_mismatch"):
             self.assertIn(f'NativeName("{suffix}")', security)
         self.assertIn('DifferentDigest(value["contractDigest"]!.GetValue<string>())', security)
         fake = (ROOT / "tests/CodexAgent.Tests/native/fake_codex_agent.c").read_text()

@@ -82,7 +82,7 @@ def _native_program_files() -> tuple[str, ...]:
         "lib", ".dylib" if sys.platform == "darwin" else ".so"
     )
     return tuple(prefix + "codex_agent" + suffix + extension for suffix in (
-        "", "_missing_identity", "_abi_mismatch", "_csharp_fixture",
+        "", "_missing_identity", "_abi_1_12", "_abi_mismatch", "_csharp_fixture",
     ))
 
 

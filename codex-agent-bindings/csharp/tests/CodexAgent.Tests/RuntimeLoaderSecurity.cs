@@ -209,13 +209,16 @@ internal static class RuntimeLoaderSecurity
     {
         var valid = Path.Combine(AppContext.BaseDirectory, NativeName());
         var identityVariable = "CODEX_AGENT_TEST_IDENTITY_" + Target.Replace('-', '_').ToUpperInvariant();
-        var previousIdentity = Environment.GetEnvironmentVariable(identityVariable);
+        var root = Path.Combine(AppContext.BaseDirectory, "runtime-loader-native-child");
+        if (Directory.Exists(root)) Directory.Delete(root, true);
+        Directory.CreateDirectory(root);
         try
         {
+            var compatibilityPath = Path.Combine(root, "sdk-compatibility.json");
+            File.WriteAllText(compatibilityPath, compatibility, new UTF8Encoding(false));
             var external = Identity(Target);
             external["componentId"] = DifferentDigest(external["componentId"]!.GetValue<string>());
-            Environment.SetEnvironmentVariable(identityVariable, external.ToJsonString());
-            NativeLibraryLoader.ValidateNativePathForTests(valid, compatibility, Target);
+            RunNativeChild(valid, compatibilityPath, identityVariable, external, "accept");
 
             foreach (var mutation in new Action<JsonObject>[]
             {
@@ -227,14 +230,12 @@ internal static class RuntimeLoaderSecurity
             {
                 var incompatible = Identity(Target);
                 mutation(incompatible);
-                Environment.SetEnvironmentVariable(identityVariable, incompatible.ToJsonString());
-                Reject<InvalidDataException>(() => NativeLibraryLoader.ValidateNativePathForTests(
-                    valid, compatibility, Target));
+                RunNativeChild(valid, compatibilityPath, identityVariable, incompatible, "InvalidDataException");
             }
         }
         finally
         {
-            Environment.SetEnvironmentVariable(identityVariable, previousIdentity);
+            Directory.Delete(root, true);
         }
 
         var incompatibleOverride = JsonNode.Parse(compatibility)!.AsObject();
@@ -252,9 +253,50 @@ internal static class RuntimeLoaderSecurity
         var missing = Path.Combine(AppContext.BaseDirectory, NativeName("_missing_identity"));
         Reject<EntryPointNotFoundException>(() => NativeLibraryLoader.ValidateNativePathForTests(
             missing, compatibility, Target));
+        var oldAbi = Path.Combine(AppContext.BaseDirectory, NativeName("_abi_1_12"));
+        Reject<CodexAbiException>(() => NativeLibraryLoader.ValidateNativePathForTests(
+            oldAbi, compatibility, Target));
         var mismatch = Path.Combine(AppContext.BaseDirectory, NativeName("_abi_mismatch"));
         Reject<InvalidDataException>(() => NativeLibraryLoader.ValidateNativePathForTests(
             mismatch, compatibility, Target));
+    }
+
+    internal static void VerifyNativeChild(string library, string compatibilityPath, string target, string expected)
+    {
+        try
+        {
+            NativeLibraryLoader.ValidateNativePathForTests(library, File.ReadAllText(compatibilityPath), target);
+            if (expected != "accept") throw new InvalidOperationException("incompatible native Runtime was accepted");
+        }
+        catch (InvalidDataException) when (expected == "InvalidDataException")
+        {
+            return;
+        }
+        if (expected != "accept" && expected != "InvalidDataException")
+            throw new InvalidOperationException("unknown native Runtime child expectation");
+    }
+
+    private static void RunNativeChild(
+        string library, string compatibilityPath, string identityVariable, JsonObject identity, string expected)
+    {
+        var process = new ProcessStartInfo
+        {
+            FileName = Environment.ProcessPath ?? throw new InvalidOperationException("test process path unavailable"),
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        if (Path.GetFileNameWithoutExtension(process.FileName).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+            process.ArgumentList.Add(Assembly.GetEntryAssembly()!.Location);
+        foreach (var argument in new[] { "--runtime-loader-native-child", library, compatibilityPath, Target, expected })
+            process.ArgumentList.Add(argument);
+        process.Environment[identityVariable] = identity.ToJsonString();
+        using var child = Process.Start(process) ?? throw new InvalidOperationException("native Runtime child did not start");
+        var output = child.StandardOutput.ReadToEnd();
+        var error = child.StandardError.ReadToEnd();
+        child.WaitForExit();
+        if (child.ExitCode != 0)
+            throw new InvalidOperationException($"native Runtime child failed ({child.ExitCode}): {output}{error}");
     }
 
     private static void VerifyChildEmbeddedLoad(string compatibility)
