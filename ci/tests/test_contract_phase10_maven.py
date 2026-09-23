@@ -64,6 +64,15 @@ class ContractPhase10MavenTest(unittest.TestCase):
         ).stdout.decode()
         fingerprint = next(line.split(":")[9] for line in listing.splitlines()
                            if line.startswith("fpr:"))
+        run = subprocess.run
+        with mock.patch("ci.products.contract_phase10_maven.subprocess.run", wraps=run) as commands:
+            with self.assertRaisesRegex(ValueError, "signer differs from pinned PGP key"):
+                produce_contract_phase10_maven_sidecars(
+                    self.payload, self.sidecars, self.key, sha256_bytes(self.key.read_bytes()),
+                    home, "B" * 40, "",
+                )
+            self.assertFalse(any("--detach-sign" in call.args[0] for call in commands.call_args_list))
+        self.assertFalse(self.sidecars.exists())
         original = self.payload.read_bytes()
         environment = os.environ.copy()
         environment.pop("PYTHONPATH", None)

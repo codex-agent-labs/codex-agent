@@ -63,6 +63,23 @@ def _pinned_key(path: Path, expected_sha256: str) -> bytes:
     return raw
 
 
+def _public_key_fingerprint(key: bytes, root: Path) -> str:
+    home = root / "gnupg"
+    home.mkdir(mode=0o700)
+    verifier = root / "pgp-public-key.asc"
+    verifier.write_bytes(key)
+    _gpg("--homedir", str(home), "--batch", "--no-tty", "--import", str(verifier))
+    listing = _gpg("--homedir", str(home), "--batch", "--no-tty", "--with-colons",
+                   "--fingerprint", "--list-keys")
+    lines = [line.split(":") for line in listing.splitlines()]
+    fingerprints = [line[9] for line in lines if line[0] == "fpr"]
+    if sum(line[0] == "pub" for line in lines) != 1 or not fingerprints or not re.fullmatch(
+        r"[0-9A-F]{40}|[0-9A-F]{64}", fingerprints[0],
+    ):
+        raise ValueError("Contract PGP public key must contain one identifiable primary key")
+    return fingerprints[0]
+
+
 def verify_contract_phase10_maven(
     payload: Path, sidecar_directory: Path, pgp_public_key: Path,
     expected_pgp_key_sha256: str,
@@ -93,21 +110,9 @@ def verify_contract_phase10_maven(
                                                    reject_symlink_parents=True)
                 if checksum != (hashlib.new(suffix[1:], signature).hexdigest() + "\n").encode("ascii"):
                     raise ValueError("Contract Maven PGP signature checksum mismatch")
-        home = root / "gnupg"
-        home.mkdir(mode=0o700)
-        verifier = root / "pgp-public-key.asc"
-        verifier.write_bytes(key)
-        _gpg("--homedir", str(home), "--batch", "--no-tty", "--import", str(verifier))
-        listing = _gpg("--homedir", str(home), "--batch", "--no-tty", "--with-colons",
-                       "--fingerprint", "--list-keys")
-        lines = [line.split(":") for line in listing.splitlines()]
-        fingerprints = [line[9] for line in lines if line[0] == "fpr"]
-        if sum(line[0] == "pub" for line in lines) != 1 or not fingerprints or not re.fullmatch(
-            r"[0-9A-F]{40}|[0-9A-F]{64}", fingerprints[0],
-        ):
-            raise ValueError("Contract PGP public key must contain one identifiable primary key")
+        fingerprint = _public_key_fingerprint(key, root)
         for path in primaries:
-            _gpg("--homedir", str(home), "--batch", "--no-tty", "--verify",
+            _gpg("--homedir", str(root / "gnupg"), "--batch", "--no-tty", "--verify",
                  str(captured / (path + ".asc")), str(primaries_root / path))
         if (read_regular_file_bytes(payload, max_bytes=_LIMIT, reject_symlink_parents=True) != original
                 or regular_file_inventory(sidecar_directory) != original_sidecars
@@ -118,7 +123,7 @@ def verify_contract_phase10_maven(
                 "payloadSha256": sha256_bytes(original),
                 "payloadBytes": len(original), "sidecarFiles": original_sidecars,
                 "pgpPublicKey": {"bytes": len(key), "sha256": sha256_bytes(key),
-                                 "fingerprint": fingerprints[0]}}
+                                 "fingerprint": fingerprint}}
 
 
 def produce_contract_phase10_maven_sidecars(
@@ -139,6 +144,11 @@ def produce_contract_phase10_maven_sidecars(
     with tempfile.TemporaryDirectory(prefix="ct-sign-", dir=sidecar_directory.parent) as temporary:
         root = Path(temporary)
         _, original, primaries_root, primaries = _payload_snapshot(payload, root)
+        temporary_root = Path("/tmp") if Path("/tmp").is_dir() else Path(tempfile.gettempdir())
+        with tempfile.TemporaryDirectory(prefix="ct-key-",
+                                         dir=temporary_root.resolve(strict=True)) as preflight:
+            if _public_key_fingerprint(key, Path(preflight)) != signing_fingerprint:
+                raise ValueError("Contract Maven signer differs from pinned PGP key")
         sidecars = root / "sidecars"
         sidecars.mkdir()
         for path in primaries:
