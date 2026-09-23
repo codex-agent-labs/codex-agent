@@ -3,6 +3,7 @@
 import hashlib
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -137,6 +138,53 @@ class RuntimePhase10MavenTest(unittest.TestCase):
             verify_runtime_phase10_maven(
                 self.payload, self.manifest, self.sidecars, self.key,
                 sha256_bytes(self.key.read_bytes()),
+            )
+
+    @unittest.skipUnless(shutil.which("gpg"), "GnuPG unavailable")
+    def test_real_gpg_round_trip_and_mutated_signature(self):
+        home = Path(self.temporary.name) / "fixture-gnupg"
+        home.mkdir(mode=0o700)
+        command = ["gpg", "--homedir", str(home), "--batch", "--no-tty",
+                   "--pinentry-mode", "loopback", "--passphrase", ""]
+        generated = subprocess.run(
+            [*command, "--quick-generate-key", "Runtime Fixture <runtime@example.test>",
+             "ed25519", "sign", "0"], capture_output=True, timeout=60,
+        )
+        self.assertEqual(0, generated.returncode, generated.stderr.decode())
+        exported = subprocess.run(
+            [*command, "--armor", "--export", "runtime@example.test"],
+            check=True, capture_output=True, timeout=60,
+        ).stdout
+        self.key.write_bytes(exported)
+        signatures = []
+        for source in self.fixture.maven_inputs:
+            if source["role"] == "checksum":
+                continue
+            signature = self.sidecars / (source["path"] + ".asc")
+            signed = subprocess.run(
+                [*command, "--yes", "--armor", "--detach-sign", "--output", str(signature),
+                 str(self.payload / source["path"])],
+                capture_output=True, timeout=60,
+            )
+            self.assertEqual(0, signed.returncode, signed.stderr.decode())
+            signatures.append(signature)
+            for suffix in CONTRACT_CHECKSUM_SUFFIXES:
+                signature.with_name(signature.name + suffix).write_bytes(
+                    (hashlib.new(suffix[1:], signature.read_bytes()).hexdigest() + "\n").encode(),
+                )
+        result = verify_runtime_phase10_maven(
+            self.payload, self.manifest, self.sidecars, self.key, sha256_bytes(exported),
+        )
+        self.assertEqual(len(signatures) * 5, len(result["sidecarFiles"]))
+        damaged = signatures[0]
+        damaged.write_bytes(damaged.read_bytes().replace(b"A", b"B", 1))
+        for suffix in CONTRACT_CHECKSUM_SUFFIXES:
+            damaged.with_name(damaged.name + suffix).write_bytes(
+                (hashlib.new(suffix[1:], damaged.read_bytes()).hexdigest() + "\n").encode(),
+            )
+        with self.assertRaisesRegex(ValueError, "PGP verification failed"):
+            verify_runtime_phase10_maven(
+                self.payload, self.manifest, self.sidecars, self.key, sha256_bytes(exported),
             )
 
 
