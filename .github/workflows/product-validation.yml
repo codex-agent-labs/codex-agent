@@ -4754,6 +4754,10 @@ jobs:
       matrix: ${{ fromJSON(needs.sdk-core-binary-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    outputs:
+      binary_artifact_id: ${{ steps.binary.outputs.binary-artifact-id }}
+      binary_artifact_sha256: ${{ steps.binary.outputs.binary-artifact-sha256 }}
+      binary_original_context: ${{ steps.binary.outputs.binary-original-context }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4785,7 +4789,8 @@ jobs:
         with:
           plan-path: ${{ runner.temp }}/sdk-apple-plan/impact-plan.json
           tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
-      - uses: ./.github/actions/sdk-core-maven-worker
+      - id: binary
+        uses: ./.github/actions/sdk-core-maven-worker
         with:
           phase: binary
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -4872,6 +4877,9 @@ jobs:
       artifact_digest: ${{ steps.result.outputs.artifact_digest }}
       state_wave: ${{ steps.result.outputs.state_wave }}
       sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
+      binary_artifact_id: ${{ steps.result.outputs.binary_artifact_id }}
+      binary_artifact_sha256: ${{ steps.result.outputs.binary_artifact_sha256 }}
+      binary_original_context: ${{ steps.result.outputs.binary_original_context }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4884,11 +4892,30 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           python3 - <<'PY'
-          import json, os
+          import json, os, re
           from pathlib import Path
+          from ci.products.inventory import canonical_json_bytes, require_exact_keys, require_sha256
+          from ci.sdk_maven_original import _context
           from ci.sdk_native_continuation import select_native_state
           from ci.reuse import github_output
-          result = select_native_state(json.loads(os.environ['RESULTS']), stage='core-binary')
+          needs = json.loads(os.environ['RESULTS'])
+          result = select_native_state(needs, stage='core-binary')
+          original = needs['sdk-core-binary']['outputs']
+          fields = ('binary_artifact_id', 'binary_artifact_sha256', 'binary_original_context')
+          if result['sdk_state_wave'] == '11':
+              identifier, digest, context = (original.get(field, '') for field in fields)
+              if not isinstance(identifier, str) or re.fullmatch(r'[1-9][0-9]*', identifier) is None:
+                  raise ValueError('Collected Core binary lacks its official upload ID')
+              require_sha256(digest, 'Collected Core binary upload')
+              if not isinstance(context, str):
+                  raise ValueError('Collected Core binary lacks its original caller context')
+              value = require_exact_keys(json.loads(context), {'repositoryRoot', 'workerRoot'},
+                                         'Collected Core binary original context')
+              if canonical_json_bytes(value).decode().strip() != context or _context(value, 'binary') != value:
+                  raise ValueError('Collected Core binary context is not canonical')
+              result.update(zip(fields, (identifier, digest, context)))
+          elif any(original.get(field, '') for field in fields):
+              raise ValueError('Reused Core binary cannot expose a current-run original upload')
           github_output(Path(os.environ['GITHUB_OUTPUT']), result)
           PY
 

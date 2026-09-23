@@ -1,8 +1,15 @@
 """Saved Core binary wave wiring; hosted compiler evidence remains separate."""
 
 from pathlib import Path
+import json
+import os
 import re
+import tempfile
+import textwrap
 import unittest
+from unittest.mock import patch
+
+from ci import sdk_native_continuation
 
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/product-validation.yml"
@@ -30,11 +37,40 @@ class SdkCoreBinaryWorkflowTest(unittest.TestCase):
         self.assertIn("sdk-family: core-binary", collect)
         self.assertIn("runs-on: ${{ matrix.runner }}", worker)
         self.assertIn("uses: ./.github/actions/sdk-core-maven-worker", worker)
+        self.assertIn("- id: binary\n        uses: ./.github/actions/sdk-core-maven-worker", worker)
         self.assertIn("phase: binary", worker)
         self.assertIn("build-key: ${{ matrix.buildKey }}", worker)
+        for output in ("binary-artifact-id", "binary-artifact-sha256", "binary-original-context"):
+            self.assertIn(f"steps.binary.outputs.{output}", worker)
         self.assertIn("wave: '11'", collect)
-        self.assertIn("select_native_state(json.loads(os.environ['RESULTS']), stage='core-binary')", result)
+        self.assertIn("select_native_state(needs, stage='core-binary')", result)
         self.assertIn("sdk-core-binary-result", job("sdk-completion").split("    needs:", 1)[1].split("\n", 1)[0])
+
+    def test_collected_original_outputs_require_successful_fresh_wave(self):
+        source = WORKFLOW.read_text()
+        block = source.split("  sdk-core-binary-result:\n", 1)[1].split("\n  sdk-completion:\n", 1)[0]
+        script = textwrap.dedent(block.split("          python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0])
+        context = '{"repositoryRoot":"/original/repo","workerRoot":"/original/repo/build/sdk-core-maven-worker"}'
+        original = {"binary_artifact_id": "71", "binary_artifact_sha256": "sha256:" + "a" * 64,
+                    "binary_original_context": context}
+        for wave, outputs, accepted in (("11", original, True), ("11", {}, False),
+                                        ("10", original, False), ("10", {}, True)):
+            with self.subTest(wave=wave, outputs=bool(outputs)), tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary) / "github-output"
+                needs = {"sdk-core-binary": {"outputs": outputs}}
+                selected = {"artifact_id": "52", "artifact_digest": "sha256:" + "b" * 64,
+                            "state_wave": "0", "sdk_state_wave": wave}
+                with patch.dict(os.environ, {"RESULTS": json.dumps(needs), "GITHUB_OUTPUT": str(output)}, clear=True), \
+                        patch.object(sdk_native_continuation, "select_native_state", return_value=selected):
+                    if accepted:
+                        exec(compile(script, "saved-core-binary-result", "exec"), {})
+                        rows = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                        self.assertEqual(original if wave == "11" else {},
+                                         {name: rows[name] for name in original if name in rows})
+                    else:
+                        with self.assertRaises(ValueError):
+                            exec(compile(script, "saved-core-binary-result", "exec"), {})
+                        self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

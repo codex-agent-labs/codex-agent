@@ -108,6 +108,32 @@ class SdkCoreMavenWorkerActionTest(unittest.TestCase):
                             with self.assertRaisesRegex(ValueError, "elected host"):
                                 exec(compile(script, "core-identity", "exec"), {})
 
+    def test_binary_context_and_official_upload_outputs_are_caller_owned(self):
+        self.assertLess(self.action.index("- id: identity"), self.action.index("- id: context"))
+        self.assertLess(self.action.index("- id: context"), self.action.index("uses: ./.github/actions/setup-kmp"))
+        self.assertIn("if: inputs.phase == 'binary'", self.action)
+        self.assertIn("steps.context.outputs.value", self.action)
+        self.assertIn("steps.upload.outputs.artifact-id", self.action)
+        self.assertIn("steps.upload.outputs.artifact-digest", self.action)
+        self.assertIn("inputs.phase == 'binary' &&", self.action)
+        outputs = self.action.split("\noutputs:\n", 1)[1].split("\nruns:\n", 1)[0]
+        for output in ("binary-artifact-id", "binary-artifact-sha256"):
+            expression = outputs.split("  " + output + ":", 1)[1].split("\n  binary-", 1)[0]
+            for guard in ("steps.execute.outcome == 'success'", "steps.upload.outcome == 'success'",
+                          "steps.upload.outputs.artifact-id != ''", "steps.upload.outputs.artifact-digest != ''"):
+                self.assertIn(guard, expression)
+        script = self.source("context")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = root / "github-output"
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(root), "GITHUB_OUTPUT": str(output)}, clear=True):
+                exec(compile(script, "core-context", "exec"), {})
+            value = output.read_text().removeprefix("value=")
+            self.assertEqual(canonical_json_bytes({
+                "repositoryRoot": str(root),
+                "workerRoot": str(root / "build/sdk-core-maven-worker"),
+            }), value.encode())
+
     def test_existing_controllers_receive_exact_caller_inputs_and_attempt_is_retained(self):
         source = self.source("execute")
         for flag in ("--sdk-inputs-artifact-id", "--sdk-inputs-artifact-sha256",
