@@ -6,6 +6,8 @@ or missing compiler-byte policy. The concrete metadata adapter remains real.
 
 from dataclasses import replace
 from copy import deepcopy
+from contextlib import redirect_stderr
+import io
 from pathlib import Path
 import shutil
 import subprocess
@@ -88,6 +90,73 @@ class FacadeMetadataSelectionTest(unittest.TestCase):
             evidence_root=self.root, records=self.a.records, policy=self.a.policy, repository_root=self.root)
         arguments.update(changes)
         return selection.write_selected_facade_metadata_policy(self.f.plan, self.output, **arguments)
+
+    def cli(self):
+        external = self.output.parent
+        descriptor = external / "catalog.json"
+        records = external / "records.json"
+        policy = external / "policy.json"
+        public = external / "caller-pinned.pub"
+        shutil.copyfile(self.catalog.public_key, public)
+        relative = lambda path: Path(path).relative_to(self.root).as_posix()
+        descriptor.write_bytes(selection.canonical_json_bytes({
+            "manifest": relative(self.catalog.manifest), "signature": relative(self.catalog.signature),
+            "publicKey": None, "keyring": None, "keysDirectory": None,
+            "contractAttestation": None, "contractAttestationSignature": None,
+            "contractPublicKey": None,
+            "objects": [{"buildKey": key, "objectPath": relative(path)}
+                        for key, path in sorted(self.catalog.objects.items())],
+        }))
+        records.write_bytes(selection.canonical_json_bytes(self.a.records))
+        policy.write_bytes(selection.canonical_json_bytes(self.a.policy))
+        argv = ["--plan", str(self.f.plan), "--destination", str(self.output),
+                "--catalog", str(descriptor), "--catalog-root", str(self.root),
+                "--catalog-source", "same-pr", "--public-key", str(public),
+                "--metadata-receipt", str(self.a.f.receipt_path), "--evidence-root", str(self.root),
+                "--records", str(records), "--policy", str(policy), "--repository-root", str(self.root)]
+        return argv, descriptor, policy
+
+    def test_cli_replays_signed_catalog_with_independent_caller_controls(self):
+        argv, _, _ = self.cli()
+        self.assertEqual(0, selection.main(argv))
+        self.assertEqual(["enter", "exit"], self.a.events)
+        self.assertEqual(self.a.records, selection.load_canonical_json_bytes(self.output.read_bytes())["records"])
+
+    def test_cli_rejects_carrier_supplied_key_and_policy(self):
+        argv, descriptor, _ = self.cli()
+        value = selection.load_canonical_json_bytes(descriptor.read_bytes())
+        value["publicKey"] = self.catalog.public_key.relative_to(self.root).as_posix()
+        descriptor.write_bytes(selection.canonical_json_bytes(value))
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failure:
+            selection.main(argv)
+        self.assertEqual(2, failure.exception.code)
+        self.assertEqual([], self.a.events)
+        self.assertFalse(self.output.exists())
+        descriptor.write_bytes(selection.canonical_json_bytes({**value, "publicKey": None}))
+        index = argv.index("--policy") + 1
+        argv[index] = str(self.root / "retained-policy.json")
+        Path(argv[index]).write_bytes(selection.canonical_json_bytes(self.a.policy))
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failure:
+            selection.main(argv)
+        self.assertEqual(2, failure.exception.code)
+        self.assertEqual([], self.a.events)
+        self.assertFalse(self.output.exists())
+
+    def test_cli_rejects_late_caller_policy_mutation(self):
+        argv, _, policy = self.cli()
+        original = selection.write_selected_facade_metadata_policy
+
+        def publish(*arguments, **kwargs):
+            result = original(*arguments, **kwargs)
+            policy.write_bytes(b"replaced after signed replay")
+            return result
+
+        with patch.object(selection, "write_selected_facade_metadata_policy", side_effect=publish), \
+                redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failure:
+            selection.main(argv)
+        self.assertEqual(2, failure.exception.code)
+        self.assertEqual(["enter", "exit"], self.a.events)
+        self.assertTrue(self.output.exists())
 
     def test_real_catalogs_select_all_originals_before_full_writer(self):
         raw = self.a.f.receipt_path.read_bytes()

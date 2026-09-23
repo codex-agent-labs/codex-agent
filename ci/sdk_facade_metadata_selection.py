@@ -7,20 +7,22 @@ Release catalogs containing development SDK receipts remain rejected by the
 existing lookup policy; no SDK release-attestation exception is added here.
 """
 
+import argparse
+from dataclasses import replace
 import os
 from pathlib import Path
 import sys
 import tempfile
 
-if __package__:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent if __package__
+                       else Path(__file__).resolve().parents[1]))
 
 import product_reuse
 from products.inventory import canonical_json_bytes, load_canonical_json_bytes, sha256_bytes
 from products.receipt import validate_phase_receipt
 from products.registry import SDK_FACADE_TARGETS
 from products.restore import PHASE_PLAN_KEYS
-from products.reuse import LookupSession, RemoteCatalog
+from products.reuse import LookupSession, RemoteCatalog, _remote_catalog
 from products.sdk_facade_inputs import _fresh, _path, _request, _sources
 from products.sdk_facade_metadata_admission import _arguments
 from products.sdk_facade_validation import _inventory
@@ -145,3 +147,57 @@ def write_selected_facade_metadata_policy(plan, destination, *, catalog, catalog
         # There is no atomic compare-inode-and-unlink primitive here. Retain a
         # failed publication instead of racing deletion of a foreign inode.
         raise
+
+
+def main(argv=None):
+    """Load only independently supplied caller policy; catalog bytes are locators."""
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    for name in ("plan", "destination", "catalog", "catalog-root", "metadata-receipt",
+                 "evidence-root", "records", "policy", "repository-root"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--catalog-source", choices=("same-pr", "stable", "promoted-main"), required=True)
+    parser.add_argument("--public-key", type=Path)
+    parser.add_argument("--keyring", type=Path)
+    parser.add_argument("--keys-directory", type=Path)
+    args = parser.parse_args(argv)
+    try:
+        require_no_signing_secret(os.environ)
+        repository = _path(str(args.repository_root), "Core selection repository")
+        evidence = _path(str(args.evidence_root), "Core selection evidence")
+        carrier = _path(str(args.catalog_root), "Core selection catalog root")
+        controls = tuple(_path(str(path), "Core independent caller input")
+                         for path in (args.catalog, args.records, args.policy))
+        trust = tuple(_path(str(path), "Core independent trust input") for path in
+                      (args.public_key, args.keyring, args.keys_directory) if path is not None)
+        if any(path == root or root in path.parents for path in (*controls, *trust)
+               for root in (carrier, evidence)) or any(path == repository or repository in path.parents
+               for path in controls):
+            raise ValueError("Core caller policy and trust inputs must be independent of retained carriers")
+        if args.catalog_source == "same-pr":
+            if args.public_key is None or args.keyring is not None or args.keys_directory is not None:
+                raise ValueError("Same-PR Core selection requires only an external public key")
+        elif args.public_key is not None or args.keyring is None or args.keys_directory is None:
+            raise ValueError("Release Core selection requires an external keyring and keys directory")
+        _fresh(Path(args.destination).absolute(), [repository, evidence, carrier, *controls, *trust])
+        originals = tuple(_read(path) for path in controls)
+        catalog = _remote_catalog(carrier, load_canonical_json_bytes(originals[0]),
+                                  "Core caller catalog")
+        if any(getattr(catalog, name) is not None for name in
+               ("public_key", "keyring", "keys_directory", "contract_attestation",
+                "contract_attestation_signature", "contract_public_key")):
+            raise ValueError("Core catalog locators cannot supply caller trust")
+        catalog = replace(catalog, public_key=args.public_key, keyring=args.keyring,
+                          keys_directory=args.keys_directory)
+        write_selected_facade_metadata_policy(args.plan, args.destination, catalog=catalog,
+            catalog_source=args.catalog_source, metadata_receipt_path=args.metadata_receipt,
+            evidence_root=evidence, records=load_canonical_json_bytes(originals[1]),
+            policy=load_canonical_json_bytes(originals[2]), repository_root=repository)
+        if any(_read(path) != raw for path, raw in zip(controls, originals)):
+            raise ValueError("Core caller catalog or policy changed during selection")
+        return 0
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
