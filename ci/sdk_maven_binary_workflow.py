@@ -13,7 +13,7 @@ import product_reuse
 import sdk_workflow
 from products.contract_projection import verify_contract_component_projection
 from products.inventory import (
-    canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
+    canonical_json_bytes, publish_regular_tree, read_regular_file_bytes, sha256_file,
     write_canonical_json,
 )
 from products.receipt import verify_output_manifest_identity
@@ -158,6 +158,24 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
         (selected / "impact-plan.json").write_bytes(before_files["plan"])
         write_canonical_json(selected / "phase-plan.json", ready)
         write_canonical_json(selected / "producer.json", producer)
+        # Invocation facts are run-specific, so they belong in the authenticated
+        # original upload, never in the reusable stage or shard. They locate the
+        # producer's original inputs; a later caller must still authenticate
+        # the Contract and the enclosing official upload independently.
+        write_canonical_json(selected / "original-context.json", {
+            "repositoryRoot": root.as_posix(),
+            "workerRoot": destination.as_posix(),
+        })
+        write_canonical_json(selected / "original-contract-locator.json", {
+            "contractVersion": contract_version,
+            "sourceEvidence": evidence,
+            "handoffRelativePath": "inputs/contract-input",
+            "handoffInventory": _inventory(handoff),
+            "metadataStageRelativePath": "inputs/predecessors/contract-contract-metadata-common/stage",
+            "metadataStageInventory": _inventory(contract["stage"]),
+            "metadataReceiptRelativePath": "inputs/predecessors/contract-contract-metadata-common/phase-receipt.json",
+            "metadataReceiptSha256": sha256_file(contract["receiptPath"]),
+        })
         retained[selected] = _inventory(selected)
         archive = None
         if android_runtime_archive is not None:

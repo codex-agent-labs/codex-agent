@@ -12,7 +12,7 @@ from unittest.mock import patch
 from ci import sdk_maven_binary_workflow as workflow
 from ci.tests.product_chain_support import write_receipt
 from ci.tests.test_sdk_facade_workflow import assert_metadata_cli_context
-from products.inventory import snapshot_regular_tree, write_canonical_json
+from products.inventory import load_canonical_json_bytes, sha256_file, snapshot_regular_tree, write_canonical_json
 from products.receipt import write_output_manifest
 from products.restore import PHASE_PLAN_KEYS
 
@@ -143,6 +143,19 @@ class MavenBinaryWorkflowTest(unittest.TestCase):
         self.assertEqual(self.ready["buildKey"], result["receipt"]["buildKey"])
         self.assertEqual(self.binary["receipt"]["outputs"], result["receipt"]["outputs"])
         self.assertEqual(self.plan.read_bytes(), (self.destination / "selection/impact-plan.json").read_bytes())
+        context = load_canonical_json_bytes((self.destination / "selection/original-context.json").read_bytes())
+        self.assertEqual({"repositoryRoot": self.root.as_posix(),
+                          "workerRoot": self.destination.as_posix()}, context)
+        locator = load_canonical_json_bytes((self.destination / "selection/original-contract-locator.json").read_bytes())
+        self.assertEqual(self.evidence, locator["sourceEvidence"])
+        self.assertEqual("0.8.7", locator["contractVersion"])
+        self.assertEqual(workflow._inventory(self.destination / locator["handoffRelativePath"]),
+                         locator["handoffInventory"])
+        self.assertEqual(workflow._inventory(self.destination / locator["metadataStageRelativePath"]),
+                         locator["metadataStageInventory"])
+        self.assertEqual(sha256_file(self.destination / locator["metadataReceiptRelativePath"]),
+                         locator["metadataReceiptSha256"])
+        self.assertFalse((self.destination / "shard" / "original-context.json").exists())
         self.assertEqual(b"exact original closure", (self.destination /
             "inputs/contract-input/execution-closure/original.json").read_bytes())
         self.assertEqual(workflow.required_contract_components(self.instance),
@@ -164,8 +177,19 @@ class MavenBinaryWorkflowTest(unittest.TestCase):
         self.assertIs(tooling, self.state.call_args.args[-1])
         self.assertEqual({"sdk_apple_validation_policy": apple,
                           "sdk_original_workflow_sha": "e" * 40}, self.state.call_args.kwargs)
-        self.assertEqual({"impact-plan.json", "phase-plan.json", "producer.json"},
+        self.assertEqual({"impact-plan.json", "phase-plan.json", "producer.json",
+                          "original-context.json", "original-contract-locator.json"},
                          {path.name for path in (self.destination / "selection").iterdir()})
+
+    def test_original_invocation_evidence_is_pinned_through_worker_exit(self):
+        def mutate(*args, **kwargs):
+            result = self.produce(*args, **kwargs)
+            (self.destination / "selection/original-context.json").write_bytes(b"changed")
+            return result
+        self.worker.side_effect = mutate
+        with self.assertRaisesRegex(ValueError, "retained evidence changed"):
+            self.invoke()
+        self.finalize.assert_not_called()
 
     def test_metadata_admission_objects_forward_only_to_state_replay(self):
         admissions = {"sdk_facade_metadata_admission": object(), "sdk_android_metadata_admission": object()}
