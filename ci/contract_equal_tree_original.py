@@ -7,9 +7,16 @@ selected run/job/upload; it does not sign, promote, or publish product bytes.
 
 from __future__ import annotations
 
+import argparse
 import os
 from pathlib import Path
+import sys
 import tempfile
+
+if __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+else:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import promote
 import product_reuse as transport
@@ -17,7 +24,7 @@ from receipt import safe_extract
 from runtime_catalog_promotion import _checkout
 from products.contract_phase10_inventory import capture_contract_phase10_inventory
 from products.inventory import (
-    git_regular_blob_bytes, load_canonical_json_bytes, publish_regular_tree,
+    git_regular_blob_bytes, load_canonical_json_bytes, load_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys,
     require_semver, require_sha256, sha256_file, verified_zip_contents,
     write_canonical_json,
@@ -171,3 +178,35 @@ def capture_equal_tree_contract_original(
         output_safe()
         publish_regular_tree(prepared, destination, allow_empty=True)
     return selection
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("repository-root", "candidate-root", "destination"):
+        parser.add_argument(f"--{name}", type=Path, required=True)
+    for name in ("trusted-source-sha", "trusted-workflow-sha",
+                 "trusted-promotion-workflow-sha", "final-commit"):
+        parser.add_argument(f"--{name}", required=True)
+    args = parser.parse_args(argv)
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if not event_path:
+        parser.error("GITHUB_EVENT_PATH is required")
+    try:
+        event = load_json_bytes(read_regular_file_bytes(
+            Path(event_path), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
+        if type(event) is not dict:
+            raise ValueError("Push event must be a JSON object")
+    except (OSError, ValueError):
+        parser.error("GITHUB_EVENT_PATH must name a safe regular JSON event object")
+    capture_equal_tree_contract_original(
+        args.repository_root, args.candidate_root, args.destination,
+        trusted_source_sha=args.trusted_source_sha,
+        trusted_workflow_sha=args.trusted_workflow_sha,
+        trusted_promotion_workflow_sha=args.trusted_promotion_workflow_sha,
+        final_commit=args.final_commit, event_payload=event,
+        environment=os.environ, token=os.environ.get("GITHUB_TOKEN"),
+    )
+
+
+if __name__ == "__main__":
+    main()

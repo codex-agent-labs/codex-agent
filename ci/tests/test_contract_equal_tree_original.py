@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -213,6 +216,36 @@ class ContractEqualTreeOriginalTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.invoke()
         self.assertFalse(self.destination.exists())
+
+    def test_cli_passes_independent_pins_and_rejects_non_object_event(self) -> None:
+        help_result = subprocess.run(
+            [sys.executable, "-B", str(Path(locator.__file__).resolve()), "--help"],
+            cwd=self.root, env={key: value for key, value in os.environ.items()
+                                if key != "PYTHONPATH"}, capture_output=True, text=True,
+        )
+        self.assertEqual(0, help_result.returncode, help_result.stderr)
+        event = self.root / "event.json"
+        event.write_bytes(canonical_json_bytes(self.event))
+        arguments = ["--repository-root", str(self.trusted), "--candidate-root", str(self.candidate),
+                     "--destination", str(self.destination), "--trusted-source-sha", self.source_sha,
+                     "--trusted-workflow-sha", self.workflow_sha,
+                     "--trusted-promotion-workflow-sha", self.promotion_sha,
+                     "--final-commit", self.final]
+        with mock.patch.dict(os.environ, {**self.environment,
+                                           "GITHUB_EVENT_PATH": str(event),
+                                           "GITHUB_TOKEN": "synthetic-token"}), \
+                mock.patch.object(locator, "capture_equal_tree_contract_original") as capture:
+            locator.main(arguments)
+            capture.assert_called_once_with(
+                self.trusted, self.candidate, self.destination,
+                trusted_source_sha=self.source_sha, trusted_workflow_sha=self.workflow_sha,
+                trusted_promotion_workflow_sha=self.promotion_sha, final_commit=self.final,
+                event_payload=self.event, environment=os.environ, token="synthetic-token",
+            )
+            event.write_bytes(canonical_json_bytes([]))
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                locator.main(arguments)
+            capture.assert_called_once()
 
 
 if __name__ == "__main__":
