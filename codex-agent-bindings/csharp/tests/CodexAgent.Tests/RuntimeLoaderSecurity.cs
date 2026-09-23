@@ -208,6 +208,35 @@ internal static class RuntimeLoaderSecurity
     private static void VerifyInvalidNativeLibraries(string compatibility)
     {
         var valid = Path.Combine(AppContext.BaseDirectory, NativeName());
+        var identityVariable = "CODEX_AGENT_TEST_IDENTITY_" + Target.Replace('-', '_').ToUpperInvariant();
+        var previousIdentity = Environment.GetEnvironmentVariable(identityVariable);
+        try
+        {
+            var external = Identity(Target);
+            external["componentId"] = DifferentDigest(external["componentId"]!.GetValue<string>());
+            Environment.SetEnvironmentVariable(identityVariable, external.ToJsonString());
+            NativeLibraryLoader.ValidateNativePathForTests(valid, compatibility, Target);
+
+            foreach (var mutation in new Action<JsonObject>[]
+            {
+                value => value["cAbiVersion"] = "1.12.0",
+                value => value["contractDigest"] = DifferentDigest(value["contractDigest"]!.GetValue<string>()),
+                value => value["target"] = "unsupported-target",
+                value => value["runtimeCompatibilityVersion"] = "0.0.0",
+            })
+            {
+                var incompatible = Identity(Target);
+                mutation(incompatible);
+                Environment.SetEnvironmentVariable(identityVariable, incompatible.ToJsonString());
+                Reject<InvalidDataException>(() => NativeLibraryLoader.ValidateNativePathForTests(
+                    valid, compatibility, Target));
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(identityVariable, previousIdentity);
+        }
+
         var incompatibleOverride = JsonNode.Parse(compatibility)!.AsObject();
         var incompatibleDigest = DifferentDigest(incompatibleOverride["contract"]!["digest"]!.GetValue<string>());
         incompatibleOverride["contract"]!["digest"] = incompatibleDigest;

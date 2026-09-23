@@ -1072,6 +1072,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn external_runtime_accepts_compatible_08_updates_only() {
+        let declaration = String::from_utf8(DECLARATION.to_vec())
+            .unwrap()
+            .replace("0.2.0", "0.8.0")
+            .replace("0.3.0", "0.9.0");
+        let parsed = Compatibility::parse(declaration.as_bytes()).unwrap();
+        let compatible = String::from_utf8(identity("1.13.0"))
+            .unwrap()
+            .replace("0.2.0", "0.8.1");
+        assert!(
+            parsed
+                .authenticate_identity(compatible.as_bytes(), "macos-arm64", false)
+                .is_ok()
+        );
+        assert!(
+            parsed
+                .authenticate_identity(compatible.as_bytes(), "macos-arm64", true)
+                .is_err()
+        );
+
+        for version in ["0.7.9", "0.9.0"] {
+            let incompatible = compatible.replace("0.8.1", version);
+            assert!(
+                parsed
+                    .authenticate_identity(incompatible.as_bytes(), "macos-arm64", false)
+                    .is_err()
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn private_snapshot_denies_ordinary_write_and_replacement() {

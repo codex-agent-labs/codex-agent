@@ -41,16 +41,16 @@ def compatibility() -> dict[str, object]:
     targets = ["linux-arm64", "linux-x64", "macos-arm64", "macos-x64", "windows-x64"]
     return {
         "schemaVersion": 1,
-        "sdkVersion": "0.2.0",
-        "contract": {"version": "0.2.0", "digest": digest("a")},
+        "sdkVersion": "0.8.0",
+        "contract": {"version": "0.8.0", "digest": digest("a")},
         "runtime": {
-            "compatibleReleaseRange": ">=0.2.0 <0.3.0",
-            "compatibleRuntimeCompatibilityRange": ">=0.2.0 <0.3.0",
+            "compatibleReleaseRange": ">=0.8.0 <0.9.0",
+            "compatibleRuntimeCompatibilityRange": ">=0.8.0 <0.9.0",
             "requiredIdentitySchema": 1,
             "requiredContractDigest": digest("a"),
             "requiredAbiMajor": 1,
             "minimumAbiMinor": 13,
-            "defaultRuntimeVersion": "0.2.0",
+            "defaultRuntimeVersion": "0.8.0",
             "defaultManifestSha256": digest("b"),
             "embeddedVariants": [
                 {
@@ -82,7 +82,7 @@ def identity(target: str = "macos-arm64") -> dict[str, object]:
         "componentId": digest(component),
         "contractComponentDigest": digest("f"),
         "contractDigest": digest("a"),
-        "runtimeCompatibilityVersion": "0.2.0",
+        "runtimeCompatibilityVersion": "0.8.0",
         "schemaVersion": 1,
         "target": target,
     }
@@ -171,6 +171,7 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
         _validate_runtime_identity(identity(), self.compatibility, "macos-arm64", True)
         external = identity()
         external["componentId"] = digest("9")
+        external["runtimeCompatibilityVersion"] = "0.8.5"
         _validate_runtime_identity(external, self.compatibility, "macos-arm64", False)
         with self.assertRaisesRegex(OSError, "component mismatch"):
             _validate_runtime_identity(external, self.compatibility, "macos-arm64", True)
@@ -187,7 +188,7 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
                 "contractComponentDigest", "sha256:invalid"
             ),
             "wrong target": lambda value: value.__setitem__("target", "linux-arm64"),
-            "unsupported compatibility": lambda value: value.__setitem__("runtimeCompatibilityVersion", "0.3.0"),
+            "unsupported compatibility": lambda value: value.__setitem__("runtimeCompatibilityVersion", "0.9.0"),
         }
         for description, change in changes.items():
             with self.subTest(description):
@@ -216,7 +217,7 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
     def test_tampered_compatibility_policy_fails_closed(self) -> None:
         changes = {
             "Contract digest disagreement": lambda value: value["contract"].__setitem__("digest", digest("9")),
-            "default Runtime outside release range": lambda value: value["runtime"].__setitem__("defaultRuntimeVersion", "0.3.0"),
+            "default Runtime outside release range": lambda value: value["runtime"].__setitem__("defaultRuntimeVersion", "0.9.0"),
             "duplicate component identity": lambda value: value["runtime"]["embeddedVariants"][1].__setitem__(
                 "componentId", value["runtime"]["embeddedVariants"][0]["componentId"]
             ),
@@ -343,6 +344,32 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
             with patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility):
                 with self.assertRaisesRegex(OSError, "Contract mismatch"):
                     NativeLibrary.load(incompatible)
+
+            compatible_identity = identity(target)
+            compatible_identity["componentId"] = digest("9")
+            compatible_identity["runtimeCompatibilityVersion"] = "0.8.5"
+            compatible = compile_library(
+                root, "compatible_patch_override", canonical(compatible_identity, False), 0x010D0000
+            )
+            with patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility), \
+                    patch.object(NativeLibrary, "_declare_all", return_value=None):
+                loaded = NativeLibrary.load(compatible)
+            self.assertEqual(int(loaded.library.codex_agent_abi_version()), 0x010D0000)
+
+            for description, field, value, error in (
+                ("wrong_target", "target", "windows-x64" if target != "windows-x64" else "linux-x64", "target mismatch"),
+                ("unsupported_compatibility", "runtimeCompatibilityVersion", "0.9.0", "unsupported"),
+                ("malformed_component", "componentId", "sha256:invalid", "componentId"),
+            ):
+                with self.subTest(description):
+                    incompatible_identity = identity(target)
+                    incompatible_identity[field] = value
+                    library = compile_library(
+                        root, description, canonical(incompatible_identity, False), 0x010D0000
+                    )
+                    with patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility):
+                        with self.assertRaisesRegex(OSError, error):
+                            NativeLibrary.load(library)
 
     def test_noncanonical_native_identity_fails(self) -> None:
         if _native_loader_directory is None:
