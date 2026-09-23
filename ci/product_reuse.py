@@ -54,6 +54,7 @@ from products.inventory import (
 from products.registry import (
     NATIVE_BINDINGS,
     NATIVE_TARGETS,
+    SDK_FACADE_TARGETS,
     PHASE_INSTANCE_IDS,
     PhaseInstanceId,
     phase_instance_dependencies,
@@ -2845,7 +2846,12 @@ def _sdk_ios_binary_worker_instance(instance):
     return instance == PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
 
 
-SDK_WORKER_FAMILIES = ("native-package", "ios-package", "javascript-metadata", "native-validation", "native-metadata", "ios-validation", "ios-metadata")
+SDK_WORKER_FAMILIES = (
+    "native-package", "ios-package", "javascript-metadata", "native-validation",
+    "native-metadata", "ios-validation", "ios-metadata",
+    "core-binary", "core-package", "core-validation", "core-metadata",
+    "android-binary", "android-package", "android-validation", "android-metadata",
+)
 
 
 def _sdk_family_worker_instance(instance, family):
@@ -2863,6 +2869,12 @@ def _sdk_family_worker_instance(instance, family):
                             for target in ("ios-arm64", "ios-simulator-arm64")}
     if family == "ios-metadata":
         return instance == PhaseInstanceId("sdk", "sdk-ios", "metadata", "ios")
+    if family.startswith("core-"):
+        phase = family.removeprefix("core-")
+        targets = SDK_FACADE_TARGETS if phase == "validation" else ("common",)
+        return instance in {PhaseInstanceId("sdk", "sdk-core", phase, target) for target in targets}
+    if family.startswith("android-"):
+        return instance == PhaseInstanceId("sdk", "sdk-android", family.removeprefix("android-"), "android")
     return instance == (PhaseInstanceId("sdk", "sdk-ios", "package", "ios") if family == "ios-package"
                         else PhaseInstanceId("sdk", "javascript", "metadata", "node"))
 
@@ -4515,8 +4527,8 @@ def capture_runtime_resume_upload(
     if type(state_wave) is not int or not 0 <= state_wave <= 5:
         raise ValueError("Runtime state wave must be an integer from zero through five")
     if sdk_state_wave is not None and (type(sdk_state_wave) is not int
-            or sdk_state_wave not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10) or state_wave != 0):
-        raise ValueError("SDK state wave must be one through ten, without a Runtime state wave")
+            or sdk_state_wave not in range(1, 19) or state_wave != 0):
+        raise ValueError("SDK state wave must be one through eighteen, without a Runtime state wave")
     require_sha256(artifact_sha256, "Runtime resume artifact digest")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     if destination.exists() or destination.is_symlink():

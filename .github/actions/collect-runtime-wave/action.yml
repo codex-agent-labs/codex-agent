@@ -9,13 +9,19 @@ inputs:
     description: Optional exact SDK predecessor state wave.
   sdk-family:
     default: ''
-    description: Optional native-package, ios-package, javascript-metadata, native-validation, native-metadata, ios-validation, or ios-metadata SDK scope.
+    description: Optional exact SDK family projection selected by ci.sdk_workflow.
   sdk-validation-tooling:
     default: ''
     description: Caller-provisioned tooling policy path, not retained-state authority.
   sdk-apple-validation-policy:
     default: ''
     description: Caller-provisioned Apple validation policy path, not retained-state authority.
+  sdk-facade-metadata-policy:
+    default: ''
+    description: Caller-provisioned Core metadata admission descriptor, not retained-state authority.
+  sdk-android-metadata-policy:
+    default: ''
+    description: Caller-provisioned Android metadata admission descriptor, not retained-state authority.
   plan-id:
     required: true
     description: Original plan upload ID.
@@ -33,7 +39,7 @@ inputs:
     description: Fixed predecessor wave.
   wave:
     required: true
-    description: Runtime waves one through five; SDK JavaScript one/two, iOS binary three, native package four, iOS package five, JS metadata six, native validation seven, native metadata eight, iOS validation nine, iOS metadata ten.
+    description: Runtime waves one through five; SDK families use the exact wave assigned by ci.sdk_workflow.
   tree:
     required: true
     description: Exact tested tree.
@@ -71,6 +77,8 @@ runs:
         sdk-family: ${{ inputs.sdk-family }}
         sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
         sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+        sdk-facade-metadata-policy: ${{ inputs.sdk-facade-metadata-policy }}
+        sdk-android-metadata-policy: ${{ inputs.sdk-android-metadata-policy }}
         plan-id: ${{ inputs.plan-id }}
         artifact-id: ${{ inputs.artifact-id }}
         artifact-sha256: ${{ inputs.artifact-sha256 }}
@@ -86,6 +94,8 @@ runs:
         SDK_FAMILY: ${{ inputs.sdk-family }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
@@ -96,7 +106,7 @@ runs:
             command=(python3 -B -m ci.sdk_workflow collect); state=()
             if [ -n "$SDK_FAMILY" ]; then
               case "$SDK_FAMILY" in
-                native-package|ios-package|javascript-metadata|native-validation|native-metadata|ios-validation|ios-metadata) state=(--family "$SDK_FAMILY") ;;
+                native-package|ios-package|javascript-metadata|native-validation|native-metadata|ios-validation|ios-metadata|core-binary|core-package|core-validation|core-metadata|android-binary|android-package|android-validation|android-metadata) state=(--family "$SDK_FAMILY") ;;
                 *) echo 'Unknown SDK family' >&2; exit 1 ;;
               esac
             fi ;;
@@ -108,6 +118,14 @@ runs:
         fi
         if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
           state+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
+        fi
+        if [ -n "${SDK_FACADE_METADATA_POLICY:-}" ]; then
+          test "$PRODUCT" = sdk
+          state+=(--sdk-facade-metadata-policy "$SDK_FACADE_METADATA_POLICY")
+        fi
+        if [ -n "${SDK_ANDROID_METADATA_POLICY:-}" ]; then
+          test "$PRODUCT" = sdk
+          state+=(--sdk-android-metadata-policy "$SDK_ANDROID_METADATA_POLICY")
         fi
         "${command[@]}" --input-root "$INPUT_ROOT" \
           --destination build/runtime-next --wave "$WAVE" ${state[@]+"${state[@]}"} \
