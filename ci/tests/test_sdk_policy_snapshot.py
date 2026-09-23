@@ -62,12 +62,19 @@ class SdkPolicySnapshotTest(unittest.TestCase):
             original = {"captureRoot": str(capture), "facadeRequest": str(request),
                         "validationReceipt": str(receipt)}
             with patch.object(snapshot, "core_arguments", return_value={"validations": {"jvm": original}}), \
+                    patch.object(snapshot, "fresh_metadata_arguments", return_value={"validations": {"jvm": original}}), \
                     patch.object(snapshot, "facade_request", return_value=({"compatibilityRequest": str(compatibility)}, b"")), \
                     patch.object(snapshot, "facade_sources", return_value=({}, {"stage": stage}, {"receipt": receipt})), \
                     patch.object(snapshot, "_request_inventory", return_value={nested: "sha256:" + "a" * 64}):
-                first = snapshot_policy_closure("core-metadata", descriptor)
-                nested.write_text("changed")
-                self.assertNotEqual(first, snapshot_policy_closure("core-metadata", descriptor))
+                for kind in ("core-metadata", "core-metadata-fresh"):
+                    nested.write_text("original")
+                    first = snapshot_policy_closure(kind, descriptor)
+                    nested.write_text("changed")
+                    self.assertNotEqual(first, snapshot_policy_closure(kind, descriptor))
+                descriptor.write_bytes(canonical_json_bytes({"evidenceRoot": str(evidence),
+                    "records": [{"receiptSha256": "sha256:" + "a" * 64}], "policy": {}}))
+                with self.assertRaisesRegex(ValueError, "must not claim a metadata receipt"):
+                    snapshot_policy_closure("core-metadata-fresh", descriptor)
 
     def test_android_policy_tracks_nested_contract_and_compatibility_inputs(self):
         with tempfile.TemporaryDirectory() as temporary:

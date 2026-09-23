@@ -57,6 +57,18 @@ class FacadeMetadataAdmissionTest(unittest.TestCase):
         arguments.update(changes)
         return admission.FacadeMetadataAdmission(self.root, self.records, **arguments)
 
+    def test_fresh_policy_requires_exact_eleven_inputs_but_no_future_context(self):
+        fresh = deepcopy(self.policy)
+        del fresh["originalContext"]
+        arguments = admission.fresh_metadata_arguments(fresh)
+        self.assertEqual(set(admission.SDK_FACADE_TARGETS), set(arguments["validations"]))
+        self.assertNotIn("original_context", arguments)
+        with self.assertRaises(ValueError):
+            admission.fresh_metadata_arguments(self.policy)
+        del fresh["validations"]["jvm"]
+        with self.assertRaises(ValueError):
+            admission.fresh_metadata_arguments(fresh)
+
     @contextmanager
     def replay(self, **arguments):
         self.assertEqual(self.root, arguments["repository_root"])

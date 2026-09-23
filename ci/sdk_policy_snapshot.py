@@ -12,7 +12,8 @@ from ci.products.inventory import (canonical_json_bytes, load_canonical_json_byt
 from ci.products.sdk_android_metadata_admission import _policy_arguments as android_arguments
 from ci.products.sdk_apple_validation_admission import apple_validation_policy_arguments
 from ci.products.sdk_facade_inputs import _request as facade_request, _sources as facade_sources
-from ci.products.sdk_facade_metadata_admission import _arguments as core_arguments
+from ci.products.sdk_facade_metadata_admission import (_arguments as core_arguments,
+    fresh_metadata_arguments)
 from ci.products.sdk_validation_inputs import _request_inventory
 from ci.products import sdk_android_validation_phase
 from ci.products.signing_isolation import require_no_signing_secret
@@ -45,9 +46,12 @@ def snapshot_policy_closure(kind, path):
     if kind == "apple-validation":
         arguments = apple_validation_policy_arguments(policy)
         paths.update(value for value in arguments.values() if isinstance(value, Path))
-    elif kind == "core-metadata":
+    elif kind in ("core-metadata", "core-metadata-fresh"):
         descriptor = require_exact_keys(policy, {"evidenceRoot", "records", "policy"}, "Core metadata descriptor")
-        arguments = core_arguments(descriptor["policy"])
+        if kind == "core-metadata-fresh" and descriptor["records"] != []:
+            raise ValueError("Fresh Core metadata must not claim a metadata receipt")
+        arguments = (fresh_metadata_arguments if kind == "core-metadata-fresh" else core_arguments)(
+            descriptor["policy"])
         paths.add(Path(descriptor["evidenceRoot"]))
         paths.update(value for value in arguments.values() if isinstance(value, Path))
         for original in arguments["validations"].values():

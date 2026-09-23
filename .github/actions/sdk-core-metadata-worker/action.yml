@@ -55,7 +55,7 @@ runs:
             raise ValueError('Core metadata requires exact preceding SDK wave 13')
         root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
         digests = {}
-        for name, kind in (('CORE_POLICY', 'core-metadata'),
+        for name, kind in (('CORE_POLICY', 'core-metadata-fresh'),
                            ('APPLE_POLICY', 'apple-validation'),
                            ('ANDROID_POLICY', 'android-metadata')):
             value = os.environ[name]
@@ -111,7 +111,7 @@ runs:
         from ci.sdk_policy_snapshot import snapshot_policy_closure
         require_no_signing_secret(os.environ)
         digests = {name: snapshot_policy_closure(kind, Path(os.environ[name]))
-                   for name, kind in (('CORE_POLICY', 'core-metadata'),
+                   for name, kind in (('CORE_POLICY', 'core-metadata-fresh'),
                                       ('APPLE_POLICY', 'apple-validation'),
                                       ('ANDROID_POLICY', 'android-metadata')) if os.environ[name]}
         if sha256_bytes(canonical_json_bytes(digests)) != os.environ['POLICY_SHA256']:
@@ -157,7 +157,7 @@ runs:
         sys.path.insert(0, str(Path.cwd() / 'ci'))
         import product_reuse
         from products.inventory import canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes
-        from products.sdk_facade_metadata_admission import _arguments
+        from products.sdk_facade_metadata_admission import fresh_metadata_arguments
         from products.signing_isolation import require_no_signing_secret
         from ci.sdk_policy_snapshot import snapshot_policy_closure
         from sdk_facade_metadata_workflow import execute
@@ -168,7 +168,7 @@ runs:
         raw = read_regular_file_bytes(policy_path, reject_symlink_parents=True)
         def held_policy_digest():
             digests = {name: snapshot_policy_closure(kind, Path(os.environ[name]))
-                       for name, kind in (('CORE_POLICY', 'core-metadata'),
+                       for name, kind in (('CORE_POLICY', 'core-metadata-fresh'),
                                           ('APPLE_POLICY', 'apple-validation'),
                                           ('ANDROID_POLICY', 'android-metadata')) if os.environ[name]}
             return sha256_bytes(canonical_json_bytes(digests))
@@ -177,8 +177,12 @@ runs:
         descriptor = require_exact_keys(load_canonical_json_bytes(raw), {'evidenceRoot', 'records', 'policy'}, 'Core metadata descriptor')
         if descriptor['records'] != []:
             raise ValueError('Fresh Core metadata must not claim a metadata receipt or reuse admission')
-        policy = _arguments(descriptor['policy'])
+        policy = fresh_metadata_arguments(descriptor['policy'])
         plan = Path(os.environ['PLAN'])
+        if (policy['plan'] != plan or
+                read_regular_file_bytes(policy['plan'], reject_symlink_parents=True) !=
+                read_regular_file_bytes(plan, reject_symlink_parents=True)):
+            raise ValueError('Fresh Core metadata policy differs from the current authenticated plan')
         current = product_reuse._validate_plan(plan, root)
         # The fresh metadata phase has no selected metadata receipt yet. Keep
         # the reuse-only Core admission out of both state capture and replay;

@@ -28,15 +28,14 @@ _PATHS = {"plan": "plan", "toolingEvidence": "tooling_evidence", "toolingPublicK
           "toolingKeysDirectory": "tooling_keys_directory"}
 
 
-def _arguments(policy):
+def _arguments(policy, *, fresh=False):
     if __package__.startswith("ci."):
         from ..sdk_facade_metadata_inputs import _records
-        from ..sdk_facade_metadata_original import _context
     else:
         from sdk_facade_metadata_inputs import _records
-        from sdk_facade_metadata_original import _context
     policy = require_exact_keys(policy, {*_PATHS, "validations", "contractDigest", "componentDigests",
-                                       "originalContext", "toolingTrustDomain"}, "Core metadata caller policy")
+                                       "toolingTrustDomain"} | (set() if fresh else {"originalContext"}),
+                                "Core metadata caller policy")
     trust = policy["toolingTrustDomain"]
     if type(trust) is not str or trust not in {"development", "release"}:
         raise ValueError("Core metadata requires an explicit tooling trust domain")
@@ -52,10 +51,21 @@ def _arguments(policy):
                                     "Core metadata Contract components")
     for digest in components.values():
         require_sha256(digest, "Core metadata Contract component digest")
-    return {**arguments, "validations": records,
+    result = {**arguments, "validations": records,
             "contract_digest": require_sha256(policy["contractDigest"], "Core metadata Contract digest"),
-            "component_digests": components, "original_context": _context(policy["originalContext"]),
-            "required_trust_domain": trust}
+            "component_digests": components, "required_trust_domain": trust}
+    if not fresh:
+        if __package__.startswith("ci."):
+            from ..sdk_facade_metadata_original import _context
+        else:
+            from sdk_facade_metadata_original import _context
+        result["original_context"] = _context(policy["originalContext"])
+    return result
+
+
+def fresh_metadata_arguments(policy):
+    """Parse fresh execution inputs without a not-yet-created original request."""
+    return _arguments(policy, fresh=True)
 
 
 def _read(path):

@@ -100,7 +100,7 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
             transitive.write_bytes(b"original")
             def snapshot(_kind, path):
                 return sha256_bytes(Path(path).read_bytes() + transitive.read_bytes())
-            values["POLICY_SHA256"] = sha256_bytes(canonical_json_bytes({"CORE_POLICY": snapshot("core-metadata", policy)}))
+            values["POLICY_SHA256"] = sha256_bytes(canonical_json_bytes({"CORE_POLICY": snapshot("core-metadata-fresh", policy)}))
             with patch.dict(os.environ, values, clear=True), patch("native_wrappers.host_classifier", return_value="linux-x64"), \
                     patch("ci.sdk_policy_snapshot.snapshot_policy_closure", side_effect=snapshot):
                 exec(compile(source, "core-identity", "exec"), {})
@@ -140,11 +140,40 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
             self.assertIn(required, source)
         self.assertNotIn("'sdk_facade_metadata_policy': policy_path", source)
         self.assertIn("if descriptor['records'] != []:", source)
+        self.assertIn("fresh_metadata_arguments(descriptor['policy'])", source)
+        self.assertNotIn("from products.sdk_facade_metadata_admission import _arguments", source)
+        self.assertEqual(3, self.action.count("('CORE_POLICY', 'core-metadata-fresh')"))
         self.assertGreaterEqual(self.action.count("snapshot_policy_closure(kind, "), 3)
         self.assertIn("if: always() && steps.identity.outcome == 'success'", self.action)
         self.assertIn("attempt-${{ github.run_attempt }}", self.action)
         for forbidden in ("secrets.", "PRIVATE_KEY", "ssh-keygen", "gradlew "):
             self.assertNotIn(forbidden, self.action)
+
+    def test_fresh_policy_must_bind_exact_current_plan_before_controller(self):
+        source = self.action.split("- name: Execute exact Core metadata controller", 1)[1]
+        source = textwrap.dedent(source.split("        python3 -B - <<'PY'\n", 1)[1].split("\n        PY", 1)[0])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            workspace = root / "workspace"
+            workspace.mkdir()
+            current, other = root / "current.json", root / "other.json"
+            current.write_bytes(canonical_json_bytes({"version": 1}))
+            other.write_bytes(canonical_json_bytes({"version": 2}))
+            descriptor = root / "fresh.json"
+            descriptor.write_bytes(canonical_json_bytes({"evidenceRoot": str(root / "evidence"),
+                "records": [], "policy": {}}))
+            snapshot = sha256_bytes(b"typed closure")
+            values = {"GITHUB_WORKSPACE": str(workspace), "CORE_POLICY": str(descriptor),
+                "APPLE_POLICY": "", "ANDROID_POLICY": "", "PLAN": str(current),
+                "POLICY_SHA256": sha256_bytes(canonical_json_bytes({"CORE_POLICY": snapshot}))}
+            with patch.dict(os.environ, values, clear=True), patch(
+                    "ci.sdk_policy_snapshot.snapshot_policy_closure", return_value=snapshot), patch(
+                    "products.sdk_facade_metadata_admission.fresh_metadata_arguments",
+                    return_value={"plan": other}), patch(
+                    "product_reuse._validate_plan") as validate, self.assertRaisesRegex(
+                    ValueError, "differs from the current authenticated plan"):
+                exec(compile(source, "core-metadata-plan-binding", "exec"), {})
+            validate.assert_not_called()
 
 
 if __name__ == "__main__":
