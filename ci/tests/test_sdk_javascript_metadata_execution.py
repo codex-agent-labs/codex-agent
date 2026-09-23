@@ -113,7 +113,8 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
         self.assertEqual(self.destination / "inputs", destination)
         self.assertEqual({"expected_build_key": self.ready["buildKey"], "repository_root": self.repository,
                           "environ": self.arguments["environ"],
-                          "sdk_validation_tooling": self.tooling_policy}, kwargs)
+                          "sdk_validation_tooling": self.tooling_policy,
+                          "sdk_original_workflow_sha": self.arguments["trusted_workflow_sha"]}, kwargs)
         snapshot_regular_tree(self.originals, destination)
         write_canonical_json(destination / "producer.json", self.producer)
         write_canonical_json(destination / "phase-plan.json", self.ready)

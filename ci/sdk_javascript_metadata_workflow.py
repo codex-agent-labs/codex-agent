@@ -92,7 +92,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             prepared = destination / "inputs"
             ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
                 expected_build_key=expected_build_key, repository_root=root, environ=environ,
-                sdk_validation_tooling=tooling, **apple)
+                sdk_validation_tooling=tooling, sdk_original_workflow_sha=trusted_workflow_sha, **apple)
             before = _inventory(prepared, allow_empty=True)
             ready_bytes = canonical_json_bytes(ready)
             producer = product_reuse.validate_producer(product_reuse._canonical_control(
