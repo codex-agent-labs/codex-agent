@@ -7,6 +7,7 @@ exact retained index, shard, producer and validation edge, then uses locator
 fields only to invoke the existing official-gated policy producer.
 """
 
+import argparse
 import os
 from pathlib import Path
 import sys
@@ -314,3 +315,76 @@ def create_selected_sdk_android_metadata_policy(
         except BaseException as mutation:
             raise mutation from error
         raise
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    for name in (
+            "plan", "authenticated-state-root", "destination", "package-stage",
+            "package-receipt", "binary-stage", "binary-receipt",
+            "compatibility-request", "binary-contract-evidence", "original-context",
+            "tooling-evidence", "tooling-public-key", "java-executable",
+            "apkanalyzer-executable", "repository-root"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    for name in (
+            "expected-build-key", "metadata-receipt-sha256", "metadata-object-sha256",
+            "trusted-workflow-sha", "trusted-android-workflow-sha",
+            "trusted-source-commit", "trusted-source-tree"):
+        parser.add_argument("--" + name, required=True)
+    for name in ("expected-original-run-id", "expected-original-run-attempt"):
+        parser.add_argument("--" + name, type=int, required=True)
+    parser.add_argument("--required-trust-domain", choices=("development", "release"), required=True)
+    parser.add_argument("--tooling-keyring", type=Path)
+    parser.add_argument("--tooling-keys-directory", type=Path)
+    args = parser.parse_args(argv)
+    if (args.tooling_keyring is None) != (args.tooling_keys_directory is None):
+        parser.error("Android metadata tooling keyring and directory must be paired")
+    try:
+        state = _directory(args.authenticated_state_root, "Authenticated Android metadata state")
+        repository = _directory(args.repository_root, "Android metadata repository")
+        controls = tuple(_file(path, "Caller Android metadata control") for path in
+                         (args.binary_contract_evidence, args.original_context))
+        if any(path == root or root in path.parents for path in controls
+               for root in (state, repository)):
+            raise ValueError("Android metadata caller controls must be independent of retained state and repository")
+        control_bytes = tuple(_read(path) for path in controls)
+        descriptor = create_selected_sdk_android_metadata_policy(
+            args.plan, args.authenticated_state_root, args.destination,
+            expected_build_key=args.expected_build_key,
+            metadata_receipt_sha256=args.metadata_receipt_sha256,
+            metadata_object_sha256=args.metadata_object_sha256,
+            trusted_workflow_sha=args.trusted_workflow_sha,
+            trusted_android_workflow_sha=args.trusted_android_workflow_sha,
+            expected_original_run_id=args.expected_original_run_id,
+            expected_original_run_attempt=args.expected_original_run_attempt,
+            package_stage=args.package_stage, package_receipt=args.package_receipt,
+            binary_stage=args.binary_stage, binary_receipt=args.binary_receipt,
+            compatibility_request=args.compatibility_request,
+            binary_contract_evidence=product_reuse._canonical_control(
+                controls[0], "Caller Android binary Contract evidence"),
+            trusted_source_commit=args.trusted_source_commit,
+            trusted_source_tree=args.trusted_source_tree,
+            original_context=product_reuse._canonical_control(
+                controls[1], "Caller original Android metadata context"),
+            tooling_evidence=args.tooling_evidence,
+            tooling_public_key=args.tooling_public_key,
+            java_executable=args.java_executable,
+            apkanalyzer_executable=args.apkanalyzer_executable,
+            required_trust_domain=args.required_trust_domain,
+            repository_root=args.repository_root, environ=os.environ,
+            token=os.environ.get("GITHUB_TOKEN", ""),
+            tooling_keyring=args.tooling_keyring,
+            tooling_keys_directory=args.tooling_keys_directory)
+        if set(descriptor) != {"evidenceRoot", "records", "policy"}:
+            raise ValueError("Android metadata policy descriptor shape changed")
+        if tuple(_read(path) for path in controls) != control_bytes:
+            raise ValueError("Android metadata caller controls changed during selection")
+        result = {"policy_path": str(args.destination.absolute() / POLICY_NAME)}
+        print(canonical_json_bytes(result).decode().strip())
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

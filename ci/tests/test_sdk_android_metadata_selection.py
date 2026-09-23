@@ -1,6 +1,8 @@
 """Android metadata selection from an independently authenticated state root."""
 
 from copy import deepcopy
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import os
 from pathlib import Path
 import shutil
@@ -262,6 +264,107 @@ class AndroidMetadataSelectionTest(unittest.TestCase):
             self.call()
         self.loader.assert_not_called()
         self.producer.assert_not_called()
+
+    def cli_argv(self):
+        contract = self.root / "binary-contract-evidence.json"
+        context = self.root / "original-context.json"
+        write_canonical_json(contract, self.arguments["binary_contract_evidence"])
+        write_canonical_json(context, self.arguments["original_context"])
+        paths = {
+            "plan": self.arguments["plan"],
+            "authenticated-state-root": self.state,
+            "destination": self.destination,
+            "package-stage": self.arguments["package_stage"],
+            "package-receipt": self.arguments["package_receipt"],
+            "binary-stage": self.arguments["binary_stage"],
+            "binary-receipt": self.arguments["binary_receipt"],
+            "compatibility-request": self.arguments["compatibility_request"],
+            "binary-contract-evidence": contract,
+            "original-context": context,
+            "tooling-evidence": self.arguments["tooling_evidence"],
+            "tooling-public-key": self.arguments["tooling_public_key"],
+            "java-executable": self.arguments["java_executable"],
+            "apkanalyzer-executable": self.arguments["apkanalyzer_executable"],
+            "repository-root": self.arguments["repository_root"],
+        }
+        scalars = {
+            "expected-build-key": self.arguments["expected_build_key"],
+            "metadata-receipt-sha256": self.arguments["metadata_receipt_sha256"],
+            "metadata-object-sha256": self.arguments["metadata_object_sha256"],
+            "trusted-workflow-sha": self.arguments["trusted_workflow_sha"],
+            "trusted-android-workflow-sha": self.arguments["trusted_android_workflow_sha"],
+            "expected-original-run-id": self.arguments["expected_original_run_id"],
+            "expected-original-run-attempt": self.arguments["expected_original_run_attempt"],
+            "trusted-source-commit": self.arguments["trusted_source_commit"],
+            "trusted-source-tree": self.arguments["trusted_source_tree"],
+            "required-trust-domain": self.arguments["required_trust_domain"],
+        }
+        argv = [part for name, value in {**paths, **scalars}.items()
+                for part in ("--" + name, str(value))]
+        return argv, contract, context
+
+    def test_cli_forwards_only_caller_elected_identity_and_explicit_authority(self):
+        argv, contract, _ = self.cli_argv()
+        with patch.object(selection, "create_selected_sdk_android_metadata_policy",
+                          return_value=self.created) as create, \
+                patch.dict(os.environ, {"GITHUB_TOKEN": "protected token"}, clear=True), \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(0, selection.main(argv))
+        self.assertEqual(
+            {"policy_path": str(self.destination / selection.POLICY_NAME)},
+            load_canonical_json_bytes(output.getvalue().encode()))
+        self.assertEqual(self.arguments["expected_build_key"],
+                         create.call_args.kwargs["expected_build_key"])
+        self.assertEqual(self.arguments["metadata_receipt_sha256"],
+                         create.call_args.kwargs["metadata_receipt_sha256"])
+        self.assertEqual(self.arguments["metadata_object_sha256"],
+                         create.call_args.kwargs["metadata_object_sha256"])
+        self.assertEqual(self.arguments["binary_contract_evidence"],
+                         create.call_args.kwargs["binary_contract_evidence"])
+        self.assertEqual(self.arguments["original_context"],
+                         create.call_args.kwargs["original_context"])
+        self.assertEqual("protected token", create.call_args.kwargs["token"])
+        for invalid in (
+                [*argv, "--validation-artifact-id", "77"],
+                [*argv, "--token", "forbidden"],
+                [*argv, "--github-output", str(self.state / "retained")],
+                [*argv, "--tooling-keyring", str(self.root / "keyring")],
+                [*argv, "--tooling-keys-directory", str(self.root / "keys")],
+                argv[:-2],
+                [*argv, "--required-trust-domain", "unknown"]):
+            with self.subTest(invalid=invalid[-2:]), redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                selection.main(invalid)
+        contract.write_text("not-json")
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            selection.main(argv)
+        self.assertEqual(1, create.call_count)
+
+    def test_cli_rejects_carrier_supplied_controls(self):
+        argv, contract, _ = self.cli_argv()
+        retained_control = self.state / "untrusted-contract.json"
+        retained_control.write_bytes(contract.read_bytes())
+        changed = list(argv)
+        changed[changed.index("--binary-contract-evidence") + 1] = str(retained_control)
+        with patch.object(selection, "create_selected_sdk_android_metadata_policy") as create, \
+                redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            selection.main(changed)
+        create.assert_not_called()
+
+    def test_cli_rejects_late_control_replacement(self):
+        argv, contract, _ = self.cli_argv()
+        original = contract.read_bytes()
+
+        def mutate_control(*args, **kwargs):
+            contract.write_bytes(b"replaced caller Contract control")
+            return self.created
+
+        with patch.object(selection, "create_selected_sdk_android_metadata_policy",
+                          side_effect=mutate_control), redirect_stdout(io.StringIO()) as output, \
+                redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            selection.main(argv)
+        self.assertEqual("", output.getvalue())
+        contract.write_bytes(original)
 
 
 if __name__ == "__main__":
