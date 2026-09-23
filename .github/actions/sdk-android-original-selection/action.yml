@@ -1,0 +1,240 @@
+name: Select original Android metadata inputs
+description: Bind the elected Android validation to its official Firebase upload and caller-owned source policy.
+inputs:
+  plan-path:
+    required: true
+    description: Independently captured original plan path.
+  discovery-root:
+    required: true
+    description: Independently captured predecessor discovery root.
+  state-root:
+    required: true
+    description: Independently captured predecessor state root.
+  build-key:
+    required: true
+    description: Exact elected Android metadata build key.
+  tree:
+    required: true
+    description: Exact tested source tree.
+  trusted-workflow-sha:
+    required: true
+    description: Caller-pinned product workflow revision.
+  original-control:
+    required: true
+    description: External canonical final-upload, Firebase workflow, Contract, S858, source and tooling policy.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional independent Apple replay policy for state authentication.
+  sdk-facade-metadata-policy:
+    default: ''
+    description: Optional independent Core metadata replay policy for state authentication.
+  sdk-android-metadata-policy:
+    default: ''
+    description: Optional independent retained Android metadata replay policy for state authentication.
+outputs:
+  original-policy-path:
+    value: ${{ steps.select.outputs.original_policy_path }}
+runs:
+  using: composite
+  steps:
+    - id: select
+      name: Elect and re-observe full original Android/Firebase lineage
+      shell: bash
+      env:
+        PLAN: ${{ inputs.plan-path }}
+        DISCOVERY: ${{ inputs.discovery-root }}
+        STATE: ${{ inputs.state-root }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        ORIGINAL_CONTROL: ${{ inputs.original-control }}
+        APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        CORE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B - <<'PY'
+        import os, re, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        import product_reuse
+        from native_wrappers import host_classifier
+        from products.inventory import (canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
+            regular_file_inventory, require_exact_keys, require_integer, require_sha256, sha256_bytes, sha256_file)
+        from products.registry import PhaseInstanceId
+        from products.sdk_android_validation_phase import _contract_sources
+        from products.sdk_validation_inputs import _request_inventory
+        from products.signing_isolation import require_no_signing_secret
+        from ci.sdk_policy_snapshot import snapshot_policy_closure
+        from sdk_android_firebase_original import verified_original_android_firebase_validation
+        from sdk_metadata_policy import metadata_admission_options
+        require_no_signing_secret(os.environ)
+        if host_classifier() != 'linux-x64':
+            raise ValueError('Android original selection requires the exact Linux X64 host')
+        root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        source = Path(os.environ['ORIGINAL_CONTROL'])
+        if not source.is_absolute() or source.resolve(strict=True) != source or source == root or root in source.parents:
+            raise ValueError('Android original control must be independently supplied outside source')
+        names = {'APPLE_POLICY': 'apple-validation', 'CORE_METADATA_POLICY': 'core-metadata',
+                 'ANDROID_METADATA_POLICY': 'android-metadata'}
+        option_paths = {}
+        for name in names:
+            if os.environ[name]:
+                path = Path(os.environ[name])
+                if not path.is_absolute() or path.resolve(strict=True) != path or path == root or root in path.parents:
+                    raise ValueError('Android original admission policy must be external')
+                option_paths[name] = path
+        raw = read_regular_file_bytes(source, reject_symlink_parents=True)
+        control = require_exact_keys(load_canonical_json_bytes(raw), {
+            'schemaVersion', 'validationReceiptSha256', 'validationArtifactId', 'validationArtifactSha256',
+            'trustedAndroidWorkflowSha', 'expectedOriginalRunId', 'expectedOriginalRunAttempt',
+            'compatibilityRequest', 'binaryContractEvidence', 'trustedSourceCommit', 'trustedSourceTree',
+            'toolingEvidence', 'toolingPublicKey', 'javaExecutable', 'apkanalyzerExecutable',
+            'toolingTrustDomain', 'toolingKeyring', 'toolingKeysDirectory'}, 'Android original caller control')
+        if type(control['schemaVersion']) is not int or control['schemaVersion'] != 1:
+            raise ValueError('Android original control schema is unsupported')
+        for name in ('validationReceiptSha256', 'validationArtifactSha256'):
+            require_sha256(control[name], 'Android original ' + name)
+        for name in ('validationArtifactId', 'expectedOriginalRunId', 'expectedOriginalRunAttempt'):
+            require_integer(control[name], 'Android original ' + name, 1)
+        for name in ('trustedAndroidWorkflowSha', 'trustedSourceCommit', 'trustedSourceTree'):
+            if type(control[name]) is not str or re.fullmatch(r'[0-9a-f]{40}', control[name]) is None:
+                raise ValueError('Android original source and workflow identities must be exact Git SHAs')
+        trust = control['toolingTrustDomain']
+        if (trust not in ('development', 'release') or
+                (control['toolingKeyring'] is None) != (control['toolingKeysDirectory'] is None) or
+                (trust == 'release') != (control['toolingKeyring'] is not None)):
+            raise ValueError('Android original tooling trust policy is incomplete')
+        for name in ('compatibilityRequest', 'binaryContractEvidence', 'toolingEvidence',
+                     'toolingPublicKey', 'javaExecutable', 'apkanalyzerExecutable'):
+            path = Path(control[name]) if type(control[name]) is str else None
+            if path is None or not path.is_absolute() or path.resolve(strict=True) != path:
+                raise ValueError('Android original caller paths must be absolute and non-symbolic')
+        for name in ('toolingKeyring', 'toolingKeysDirectory'):
+            if control[name] is not None:
+                path = Path(control[name]) if type(control[name]) is str else None
+                if path is None or not path.is_absolute() or path.resolve(strict=True) != path:
+                    raise ValueError('Android original tooling key paths must be absolute and non-symbolic')
+        contract = Path(control['binaryContractEvidence'])
+        if contract == root or root in contract.parents:
+            raise ValueError('Android original Contract authority must be outside source')
+        plan = Path(os.environ['PLAN'])
+        current = product_reuse._validate_plan(plan, root)
+        if (current['validationTree'] != os.environ['TREE']
+                or not re.fullmatch(r'sha256:[0-9a-f]{64}', os.environ['BUILD_KEY'])
+                or not re.fullmatch(r'[0-9a-f]{40}', os.environ['TRUSTED_WORKFLOW_SHA'])
+                or current['remoteBuildAuthorized'] is not True):
+            raise ValueError('Android original selector differs from authorized tree, key or workflow pin')
+        def caller_snapshot():
+            if read_regular_file_bytes(source, reject_symlink_parents=True) != raw:
+                raise ValueError('Android original control changed')
+            evidence = load_canonical_json_bytes(read_regular_file_bytes(contract, reject_symlink_parents=True))
+            contract_trees, contract_files = _contract_sources(evidence)
+            trees = {Path(control['toolingEvidence']), *contract_trees.values()}
+            files = {source, contract, Path(control['compatibilityRequest']), Path(control['toolingPublicKey']),
+                     Path(control['javaExecutable']), Path(control['apkanalyzerExecutable']), *contract_files.values()}
+            if control['toolingKeyring'] is not None:
+                files.add(Path(control['toolingKeyring']))
+                trees.add(Path(control['toolingKeysDirectory']))
+            files.update(_request_inventory(Path(control['compatibilityRequest'])))
+            for path in trees | files:
+                if not path.is_absolute() or path.resolve(strict=True) != path:
+                    raise ValueError('Android original transitive caller path changed')
+            snapshot = {'files': {str(path): sha256_file(path, reject_symlink_parents=True) for path in sorted(files)},
+                        'trees': {str(path): regular_file_inventory(path, allow_empty=True) for path in sorted(trees)},
+                        'admissions': {name: snapshot_policy_closure(kind, option_paths[name])
+                                       for name, kind in names.items() if name in option_paths}}
+            return sha256_bytes(canonical_json_bytes(snapshot)), evidence
+        before, evidence = caller_snapshot()
+        tooling = {'evidence': control['toolingEvidence'], 'publicKey': control['toolingPublicKey'],
+                   'javaExecutable': control['javaExecutable'], 'requiredTrustDomain': trust,
+                   'keyring': control['toolingKeyring'], 'keysDirectory': control['toolingKeysDirectory']}
+        options = {'plan': plan, 'repository_root': root}
+        for name, field in (('CORE_METADATA_POLICY', 'sdk_facade_metadata_policy'),
+                            ('ANDROID_METADATA_POLICY', 'sdk_android_metadata_policy')):
+            if name in option_paths:
+                options[field] = option_paths[name]
+        apple = (product_reuse._canonical_control(option_paths['APPLE_POLICY'], 'Caller Apple validation policy')
+                 if 'APPLE_POLICY' in option_paths else None)
+        instance = PhaseInstanceId('sdk', 'sdk-android', 'metadata', 'android')
+        prepared = root / 'build/sdk-android-original-selection'
+        if prepared.exists() or prepared.is_symlink():
+            raise ValueError('Android original selected predecessor destination must be fresh')
+        with metadata_admission_options(options) as admissions:
+            selected = product_reuse.materialize_product_predecessors(
+                plan, Path(os.environ['DISCOVERY']), Path(os.environ['STATE']), instance, prepared,
+                expected_build_key=os.environ['BUILD_KEY'], repository_root=root, environ=os.environ,
+                sdk_validation_tooling=tooling, sdk_apple_validation_policy=apple, **admissions)
+            if selected['buildKey'] != os.environ['BUILD_KEY']:
+                raise ValueError('Android original predecessor election changed')
+            package = prepared / 'sdk-sdk-android-package-android'
+            binary = prepared / 'sdk-sdk-android-binary-android'
+            validation = prepared / 'sdk-sdk-android-validation-android'
+            receipt = validation / 'phase-receipt.json'
+            receipt_raw = read_regular_file_bytes(receipt, reject_symlink_parents=True)
+            if sha256_bytes(receipt_raw) != control['validationReceiptSha256']:
+                raise ValueError('Android original validation differs from independently pinned receipt')
+            selected_before = regular_file_inventory(prepared, allow_empty=True)
+            if caller_snapshot()[0] != before:
+                raise ValueError('Android original caller inputs changed before official replay')
+            with verified_original_android_firebase_validation(
+                    plan, receipt, validation_artifact_id=control['validationArtifactId'],
+                    validation_artifact_sha256=control['validationArtifactSha256'],
+                    trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
+                    trusted_android_workflow_sha=control['trustedAndroidWorkflowSha'],
+                    expected_original_run_id=control['expectedOriginalRunId'],
+                    expected_original_run_attempt=control['expectedOriginalRunAttempt'],
+                    package_stage=package / 'stage', package_receipt=package / 'phase-receipt.json',
+                    binary_stage=binary / 'stage', binary_receipt=binary / 'phase-receipt.json',
+                    compatibility_request=Path(control['compatibilityRequest']),
+                    binary_contract_evidence=evidence,
+                    trusted_source_commit=control['trustedSourceCommit'],
+                    trusted_source_tree=control['trustedSourceTree'],
+                    tooling_evidence=Path(control['toolingEvidence']),
+                    tooling_public_key=Path(control['toolingPublicKey']),
+                    java_executable=Path(control['javaExecutable']),
+                    apkanalyzer_executable=Path(control['apkanalyzerExecutable']),
+                    policy_revision=current['validationCommit'], required_trust_domain=trust,
+                    repository_root=root, environ=os.environ, token=os.environ['GITHUB_TOKEN'],
+                    tooling_keyring=(Path(control['toolingKeyring']) if control['toolingKeyring'] else None),
+                    tooling_keys_directory=(Path(control['toolingKeysDirectory']) if control['toolingKeysDirectory'] else None)) as original:
+                if original['receiptBytes'] != receipt_raw:
+                    raise ValueError('Android original replay selected a different validation receipt')
+                if (regular_file_inventory(prepared, allow_empty=True) != selected_before
+                        or caller_snapshot()[0] != before):
+                    raise ValueError('Android original selected inputs changed during official replay')
+            if (regular_file_inventory(prepared, allow_empty=True) != selected_before
+                    or caller_snapshot()[0] != before):
+                raise ValueError('Android original selected inputs changed after reader exit')
+        policy = {'schemaVersion': 1, 'packageStage': str(package / 'stage'),
+                  'packageReceipt': str(package / 'phase-receipt.json'),
+                  'binaryStage': str(binary / 'stage'), 'binaryReceipt': str(binary / 'phase-receipt.json'),
+                  'compatibilityRequest': control['compatibilityRequest'],
+                  'binaryContractEvidence': control['binaryContractEvidence'],
+                  'trustedSourceCommit': control['trustedSourceCommit'],
+                  'trustedSourceTree': control['trustedSourceTree'],
+                  'toolingEvidence': control['toolingEvidence'], 'toolingPublicKey': control['toolingPublicKey'],
+                  'javaExecutable': control['javaExecutable'],
+                  'apkanalyzerExecutable': control['apkanalyzerExecutable'],
+                  'toolingTrustDomain': trust, 'toolingKeyring': control['toolingKeyring'],
+                  'toolingKeysDirectory': control['toolingKeysDirectory'],
+                  'validationArtifactId': control['validationArtifactId'],
+                  'validationArtifactSha256': control['validationArtifactSha256'],
+                  'trustedAndroidWorkflowSha': control['trustedAndroidWorkflowSha'],
+                  'expectedOriginalRunId': control['expectedOriginalRunId'],
+                  'expectedOriginalRunAttempt': control['expectedOriginalRunAttempt']}
+        output = Path(os.environ['RUNNER_TEMP']).resolve(strict=True) / 'sdk-android-metadata-original-policy.json'
+        if output == root or root in output.parents:
+            raise ValueError('Android original policy output must be outside the checkout')
+        if output.exists() or output.is_symlink():
+            raise ValueError('Android original policy output must be fresh')
+        descriptor = canonical_json_bytes(policy)
+        with output.open('xb') as destination:
+            destination.write(descriptor)
+        if (read_regular_file_bytes(output, reject_symlink_parents=True) != descriptor
+                or regular_file_inventory(prepared, allow_empty=True) != selected_before
+                or caller_snapshot()[0] != before):
+            raise ValueError('Android original selection changed during policy publication')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as destination:
+            destination.write('original_policy_path=' + str(output) + '\n')
+        PY
