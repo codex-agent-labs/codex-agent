@@ -55,6 +55,8 @@ These are intended release coordinates, not a claim of tag or registry availabil
 SDK `0.8.0` embeds Runtime `0.8.0` by default and accepts compatible Runtime
 updates in `>=0.8.0 <0.9.0`, subject to the existing signature, Contract, ABI,
 target, and capability checks; the version range alone does not establish compatibility.
+The [product and repository boundaries](docs/REPOSITORY_BOUNDARIES.md) explain
+which artifacts and versions belong to each release train.
 
 The other implemented package surfaces are:
 
@@ -412,18 +414,22 @@ manual capability manifest or a second language-activation mechanism.
 ## Release evidence
 
 An unlabeled pull request runs lightweight workflow and impact planning; its
-required merge gate remains failed until readiness is declared. On a non-draft
-pull request, adding `merge-ready` validates the prospective merge tree and
-runs its affected product, platform, and consumer lanes. Adding `ci:full`
-forces every lane. Successful lanes from an earlier run of the same pull
-request may be reused; full mode never suppresses required work. A merge group
+required merge gate remains failed until readiness is declared. A non-draft
+pull request with `merge-ready` and the explicit `ci:remote-final` label may
+run its affected product, platform, and consumer lanes. `ci:full` broadens an
+already authorized campaign but does not authorize remote builds by itself.
+Successful lanes from an earlier run of the same pull request may be reused;
+full mode never suppresses required work. A merge group
 reuses the pull-request result when its Git tree is identical, otherwise it
 reevaluates the changed base and runs the newly affected lanes.
 
 A push to `main` only promotes equal-tree validation receipts, their exact
 GitHub-hosted artifacts, and selected cache seeds; it never compiles or tests.
-A protected `candidate/v<version>-rc.N` tag consumes those promoted bytes and
-performs verification, signing, sidecar generation, and release assembly only.
+A protected product-specific candidate tag is planned to consume those
+promoted bytes and perform verification, external signing, sidecar generation,
+and release assembly only; the product workflow cutover is not complete.
+The planned tags are `candidate/contract/v0.8.0-rc.N`,
+`candidate/runtime/v0.8.0-rc.N`, and `candidate/sdk/v0.8.0-rc.N`.
 For the Contract product, `codex-agent-contract-<version>.zip` is a
 deterministic content-only artifact: neither it nor its embedded manifest
 contains producer identity, a signature, or other signing material. Full

@@ -7,8 +7,8 @@ Kotlin/JS and Kotlin/WasmJS applications running on Node.js use the canonical
 and protocol handshake remain internal.
 
 After publication, Kotlin consumers use the Maven dependency and JavaScript or
-TypeScript consumers use `@codex-agent-labs/codex-agent@0.2.0` on Node.js
-`>=24.18.0 <25`. Version `0.2.0` is not published yet; use locally built
+TypeScript consumers use `@codex-agent-labs/codex-agent@0.8.0` on Node.js
+`>=24.18.0 <25`. The planned initial release is `0.8.0`; use locally built
 artifacts before release. Browser JavaScript, browser Wasm, and WASI are
 unsupported.
 
@@ -32,8 +32,8 @@ Kotlin/WasmJS Node application:
 
 ```kotlin
 dependencies {
-    implementation("io.github.codex-agent-labs:codex-agent:0.2.0")
-    implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:0.2.0")
+    implementation("io.github.codex-agent-labs:codex-agent:0.8.0")
+    implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:0.8.0")
 }
 ```
 

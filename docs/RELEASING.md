@@ -1,8 +1,22 @@
 # Releasing
 
-Version `0.2.0` has not yet been tagged or published. The release process is
-designed to validate before merge, promote the exact validated bytes, and never
-rebuild them during candidate assembly or publication.
+The planned initial Contract, Desktop Runtime, and SDK versions are `0.8.0`.
+This document does not establish that any product has been published. The
+product-specific candidate and publish workflow cutover is still in progress.
+The combined workflow sections below describe the existing migration baseline,
+not an executable `0.8.0` release procedure. The target policy validates
+before merge, promotes exact validated bytes, and never rebuilds them during
+candidate assembly or publication.
+
+The planned product tags are `candidate/contract/v0.8.0-rc.N`,
+`candidate/runtime/v0.8.0-rc.N`, and `candidate/sdk/v0.8.0-rc.N`, followed by
+`contract/v0.8.0`, `runtime/v0.8.0`, and `sdk/v0.8.0`. Contract, Runtime, then
+SDK publication is dependency-ordered and resumable. All three candidates
+must validate before the first irreversible publication. Phase 11 may verify,
+sign external publication-context evidence, forward, and upload exact Phase-10
+bytes; it may not compile, link, run product tests, or repackage reusable
+product payloads. The six product-specific candidate/publish entry workflows
+and their local/hosted acceptance are still pending.
 
 No API key or stored ChatGPT credential is used by automated verification. A
 real-model check uses interactive ChatGPT sign-in in the iOS Simulator test app.
@@ -10,11 +24,12 @@ real-model check uses interactive ChatGPT sign-in in the iOS Simulator test app.
 ## Merge gate and promotion
 
 An unlabeled pull request is cheap: it runs workflow lint and impact planning,
-but no product build or platform test. A non-draft pull request labeled
-`merge-ready` validates its prospective merge tree and runs only the affected
-lanes. Successful same-PR lanes and artifacts may be reused after a later
-commit. The `ci:full` label only expands execution; it cannot narrow or skip a
-required lane. Unknown impact fails closed to full validation.
+but no product build or platform test. A non-draft pull request needs both
+`merge-ready` and explicit `ci:remote-final` authorization before affected
+product jobs may run. Successful same-PR lanes and artifacts may be reused
+after a later commit. The `ci:full` label only expands an already authorized
+campaign; it neither authorizes product jobs by itself nor skips a required
+lane. Unknown impact fails closed to full validation after authorization.
 
 The required `CI / merge-gate` check accepts an exact, complete receipt set. A
 merge group whose Git tree is identical to the validated PR tree reuses that
@@ -49,7 +64,7 @@ follows:
 - Set `CI_MERGE_QUEUE_ENABLED=true` when the merge-queue rules and trusted
   workflow are configured.
 
-## Candidate identity
+## Existing combined candidate identity (migration baseline)
 
 A candidate tag must match `candidate/v<version>-rc.N`. It must identify an
 exact commit on `main` whose Git tree has a complete promoted validation. The
@@ -105,9 +120,9 @@ repackage the Contract payload.
 ## Native-wrapper release assets
 
 The candidate contains exactly 14 wrapper packages: five Python wheels and one
-sdist, one `CodexAgent.0.2.0.nupkg`, one `codex-agent-0.2.0.crate`, one
-`codex-agent-dart-0.2.0.tar.gz`, and five target-specific
-`codex-agent-cpp-0.2.0-<classifier>.zip` files. Five package-toolchain TSVs stay
+sdist, one `CodexAgent.0.8.0.nupkg`, one `codex-agent-0.8.0.crate`, one
+`codex-agent-dart-0.8.0.tar.gz`, and five target-specific
+`codex-agent-cpp-0.8.0-<classifier>.zip` files. Five package-toolchain TSVs stay
 as candidate evidence rather than public SDK packages.
 
 The publication workflow uploads those 14 packages as GitHub release assets
@@ -121,7 +136,7 @@ remain for SwiftPM, Maven Central, signatures, pinned external inputs, GitHub
 transport, and security-sensitive archive integrity. They never decide whether
 source changed, key a lane, or compare independently rebuilt ZIP files.
 
-## Protected candidate
+## Existing combined protected candidate (migration baseline)
 
 Run the Release Candidate workflow from the candidate tag. Candidate assembly
 uses a clean checkout and produces one immutable commit-scoped payload under:
@@ -146,7 +161,7 @@ Useful local gates while developing are:
 ```shell
 actionlint
 ./gradlew -p gradle/build-logic test
-./gradlew verifyReleaseMetadata -PcodexAgent.releaseTag=v0.2.0
+./gradlew verifyReleaseMetadata -PcodexAgent.releaseTag=v0.8.0
 export DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer
 ./gradlew :codex-agent-runtime-ios:preflightIosRuntime
 ./gradlew verifyIosRuntime
@@ -202,7 +217,7 @@ Identity Federation. It needs no stored Google service-account key. Creating or
 authorizing the Google identity, generating Maven Central credentials, and
 approving protected environments remain external account-owner actions.
 
-## Protected publication
+## Existing combined protected publication (migration baseline)
 
 The Publish Verified Release workflow consumes the exact successful candidate
 bytes and never rebuilds Maven, native, or runtime artifacts. It:
