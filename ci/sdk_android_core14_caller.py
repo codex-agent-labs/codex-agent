@@ -35,7 +35,7 @@ _PACKAGE = PhaseInstanceId("sdk", "sdk-android", "package", "android")
 
 
 def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
-        *, expected_build_key, expected_metadata_build_key, expected_metadata_receipt_sha256,
+        *, expected_build_key=None, expected_metadata_build_key, expected_metadata_receipt_sha256,
         expected_metadata_artifact_id=None, expected_metadata_artifact_sha256=None,
         replay_policy, original_context, trusted_workflow_sha, repository_root,
         android_runtime_archive, token, environ=None, destination=None,
@@ -63,18 +63,23 @@ def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
         raise ValueError("Android binary must elect directly from Core wave 14")
     if phase == "package" and selected_state is None:
         raise ValueError("Android package requires its separate wave 15 state")
+    election = expected_build_key is None and destination is None
+    if expected_build_key is None and not election:
+        raise ValueError("Android execution requires the exact elected build key")
     package_inputs = (sdk_inputs_artifact_id, sdk_inputs_artifact_sha256,
         binary_artifact_id, binary_artifact_sha256, binary_contract_evidence,
         binary_original_context, keyring, keys_directory)
     if (phase == "binary" and any(value is not None for value in package_inputs)) or (
-            phase == "package" and any(value is None for value in package_inputs)):
+            phase == "package" and not election and any(value is None for value in package_inputs)) or (
+            phase == "package" and election and any(value is not None for value in package_inputs)):
         raise ValueError("Android package requires all independent S858 and binary inputs")
-    if phase == "package":
+    if phase == "package" and not election:
         require_integer(sdk_inputs_artifact_id, "Android package S858 upload ID", 1)
         require_sha256(sdk_inputs_artifact_sha256, "Android package S858 upload digest")
         require_integer(binary_artifact_id, "Android package original binary upload ID", 1)
         require_sha256(binary_artifact_sha256, "Android package original binary upload digest")
-    require_sha256(expected_build_key, "Android Maven build key")
+    if not election:
+        require_sha256(expected_build_key, "Android Maven build key")
     phase_state = after_state if selected_state is None else selected_state
     reused = any(value is not None for value in
         (reused_catalog, reused_catalog_root, reused_catalog_source, reused_receipt_sha256))
@@ -142,8 +147,14 @@ def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
                     metadata["receiptSha256"] != expected_metadata_receipt_sha256):
                 raise ValueError("Android Core metadata differs from the signed reused election")
         ready = verified.prior_ready_plans.get(_BINARY if phase == "binary" else _PACKAGE)
-        if ready is None or ready["buildKey"] != expected_build_key:
+        if (ready is None and not election) or (ready is not None and not election and
+                ready["buildKey"] != expected_build_key):
             raise ValueError("Android Maven phase differs from the Core-admitted election")
+        if ready is not None:
+            expected_identity = ("sdk", "sdk-android", phase, "android")
+            if tuple(ready.get(name) for name in ("product", "component", "phase", "target")) != expected_identity:
+                raise ValueError("Android Maven election has the wrong phase identity")
+            require_sha256(ready.get("buildKey"), "Elected Android Maven build key")
         properties = _properties(git_regular_blob_bytes(root, verified.plan["validationCommit"],
             "gradle.properties", max_bytes=1024 * 1024), "Original Android archive pins")
         if sha256_file(archive, reject_symlink_parents=True) != require_sha256(
@@ -178,15 +189,16 @@ def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("mode", choices=("preflight", "execute"))
+    parser.add_argument("mode", choices=("elect", "preflight", "execute"))
     parser.add_argument("--phase", choices=("binary", "package"), default="binary")
     for name in ("plan", "discovery-root", "before-state-root", "after-state-root",
                  "metadata-receipt", "replay-policy", "original-context", "repository-root",
                  "android-runtime-archive"):
         parser.add_argument("--" + name, type=Path, required=True)
-    for name in ("expected-build-key", "expected-metadata-build-key",
-                 "expected-metadata-receipt-sha256", "trusted-workflow-sha"):
+    for name in ("expected-metadata-build-key", "expected-metadata-receipt-sha256",
+                 "trusted-workflow-sha"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--expected-build-key")
     parser.add_argument("--expected-metadata-artifact-id", type=int)
     parser.add_argument("--expected-metadata-artifact-sha256")
     parser.add_argument("--destination", type=Path)
@@ -210,10 +222,16 @@ def main(argv=None):
     arguments["before_state"] = arguments.pop("before_state_root")
     arguments["after_state"] = arguments.pop("after_state_root")
     arguments["selected_state"] = arguments.pop("selected_state_root")
-    if (mode == "preflight") != (arguments["destination"] is None):
-        parser.error("preflight requires no destination; execute requires a destination")
+    if mode == "execute" and arguments["destination"] is None:
+        parser.error("execute requires a destination")
+    if mode != "execute" and arguments["destination"] is not None:
+        parser.error("elect and preflight require no destination")
+    if (mode == "elect") == (arguments["expected_build_key"] is not None):
+        parser.error("elect derives the build key; preflight and execute require it")
     if mode == "execute" and output is not None:
         parser.error("execution cannot publish a new caller authority")
+    if mode == "elect" and output is None:
+        parser.error("election requires a GitHub output destination")
     try:
         replay_control, context_control = arguments["replay_policy"], arguments["original_context"]
         arguments["replay_policy"] = load_canonical_json_bytes(read_regular_file_bytes(
@@ -276,11 +294,14 @@ def main(argv=None):
                          "reused_keys_directory"):
                 arguments.pop(name)
         ready = with_core14(**arguments, token=os.environ["GITHUB_TOKEN"], environ=os.environ)
-        if mode == "preflight":
-            row = {name: ready[name] for name in ("product", "component", "phase", "target", "buildKey")}
-            row.update(runner="ubuntu-24.04", runnerOs="Linux", runnerArch="X64")
-            github_output(output, {"sdk_matrix": canonical_json_bytes({"include": [row]}).decode().strip(),
-                "sdk_workers_required": True})
+        if mode != "execute":
+            rows = []
+            if ready is not None:
+                row = {name: ready[name] for name in ("product", "component", "phase", "target", "buildKey")}
+                row.update(runner="ubuntu-24.04", runnerOs="Linux", runnerArch="X64")
+                rows.append(row)
+            github_output(output, {"sdk_matrix": canonical_json_bytes({"include": rows}).decode().strip(),
+                "sdk_workers_required": bool(rows)})
     except (OSError, ValueError, KeyError) as error:
         parser.error(str(error))
     return 0

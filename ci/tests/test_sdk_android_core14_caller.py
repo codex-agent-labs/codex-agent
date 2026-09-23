@@ -98,7 +98,8 @@ class AndroidCore14CallerTest(unittest.TestCase):
                 "buildKey": metadata_key, "receiptSha256": digests["common"]}
             verified = SimpleNamespace(prior_by_instance={caller.PhaseInstanceId(
                 "sdk", "sdk-core", "metadata", "common"): state_row},
-                prior_ready_plans={caller._BINARY: {"buildKey": key}},
+                prior_ready_plans={caller._BINARY: {"product": "sdk", "component": "sdk-android",
+                    "phase": "binary", "target": "android", "buildKey": key}},
                 plan={"validationCommit": "c" * 40})
             arguments = dict(plan=root / "plan", discovery=root / "discovery",
                 before_state=root / "before", after_state=root / "after",
@@ -158,7 +159,9 @@ class AndroidCore14CallerTest(unittest.TestCase):
             def verified(*args, **kwargs):
                 self.assertTrue(active)
                 admissions.append(kwargs["sdk_facade_metadata_admission"])
-                return SimpleNamespace(prior_ready_plans={caller._BINARY: {"buildKey": "sha256:" + "b" * 64}},
+                return SimpleNamespace(prior_ready_plans={caller._BINARY: {"product": "sdk",
+                    "component": "sdk-android", "phase": "binary", "target": "android",
+                    "buildKey": "sha256:" + "b" * 64}},
                     plan={"validationCommit": "c" * 40})
 
             def execute(*args, **kwargs):
@@ -186,9 +189,14 @@ class AndroidCore14CallerTest(unittest.TestCase):
                     repository_root=root, android_runtime_archive=archive, token="token", environ={})
                 self.assertEqual(caller.with_core14(**arguments)["buildKey"], arguments["expected_build_key"])
                 self.assertFalse(active)
+                self.assertEqual(caller.with_core14(**{**arguments, "expected_build_key": None})["buildKey"],
+                    arguments["expected_build_key"])
+                self.assertFalse(active)
                 self.assertEqual(caller.with_core14(**arguments, destination=root / "output"), "executed")
                 self.assertFalse(active)
-                self.assertEqual(len(admissions), 2)
+                self.assertEqual(len(admissions), 3)
+                with self.assertRaisesRegex(ValueError, "exact elected build key"):
+                    caller.with_core14(**{**arguments, "expected_build_key": None}, destination=root / "output")
 
     def test_wrong_android_election_fails_while_core_is_held(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -210,7 +218,11 @@ class AndroidCore14CallerTest(unittest.TestCase):
                   patch.object(caller.product_reuse, "_validate_plan",
                       return_value={"validationCommit": "c" * 40}),
                   patch.object(caller.product_reuse, "_verified_product_state",
-                      return_value=SimpleNamespace(prior_ready_plans={})),
+                      return_value=SimpleNamespace(prior_ready_plans={},
+                          plan={"validationCommit": "c" * 40})),
+                  patch.object(caller, "git_regular_blob_bytes", return_value=b"pins"),
+                  patch.object(caller, "_properties", return_value={
+                      "codexAgent.codexArchiveSha256": sha256_file(archive).split(":", 1)[1]}),
                   patch.object(caller.sdk_maven_binary_workflow, "execute") as execute):
                 with self.assertRaisesRegex(ValueError, "Core-admitted election"):
                     caller.with_core14(root / "plan", root / "discovery", root / "before",
@@ -221,6 +233,13 @@ class AndroidCore14CallerTest(unittest.TestCase):
                         expected_metadata_artifact_sha256="sha256:" + "f" * 64,
                         replay_policy={}, original_context={}, trusted_workflow_sha="e" * 40,
                         repository_root=root, android_runtime_archive=archive, token="token", environ={})
+                self.assertIsNone(caller.with_core14(root / "plan", root / "discovery", root / "before",
+                    root / "after", root / "receipt", expected_metadata_build_key="sha256:" + "d" * 64,
+                    expected_metadata_receipt_sha256="sha256:" + "a" * 64,
+                    expected_metadata_artifact_id=42,
+                    expected_metadata_artifact_sha256="sha256:" + "f" * 64,
+                    replay_policy={}, original_context={}, trusted_workflow_sha="e" * 40,
+                    repository_root=root, android_runtime_archive=archive, token="token", environ={}))
                 execute.assert_not_called()
 
     def test_cli_preflight_emits_only_elected_android_matrix(self):
@@ -251,6 +270,40 @@ class AndroidCore14CallerTest(unittest.TestCase):
             raw = output.read_text()
             self.assertIn('"runner":"ubuntu-24.04"', raw)
             self.assertIn("sdk_workers_required=true\n", raw)
+
+    def test_cli_election_emits_zero_or_one_without_a_caller_supplied_key(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            policy, context, output = (root / name for name in
+                ("replay.json", "context.json", "github-output"))
+            policy.write_bytes(canonical_json_bytes({}))
+            context.write_bytes(canonical_json_bytes({}))
+            argv = ["elect", "--plan", str(root / "plan"),
+                "--discovery-root", str(root / "discovery"),
+                "--before-state-root", str(root / "before"),
+                "--after-state-root", str(root / "after"),
+                "--metadata-receipt", str(root / "receipt"),
+                "--replay-policy", str(policy), "--original-context", str(context),
+                "--repository-root", str(root), "--android-runtime-archive", str(root / "archive"),
+                "--expected-metadata-build-key", "sha256:" + "b" * 64,
+                "--expected-metadata-receipt-sha256", "sha256:" + "c" * 64,
+                "--trusted-workflow-sha", "d" * 40, "--github-output", str(output)]
+            selected = {"product": "sdk", "component": "sdk-android", "phase": "binary",
+                "target": "android", "buildKey": "sha256:" + "a" * 64}
+            with (patch.object(caller, "with_core14", side_effect=(None, selected)) as source,
+                  patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"})):
+                self.assertEqual(caller.main(argv), 0)
+                self.assertEqual(caller.main(argv), 0)
+            self.assertEqual(source.call_args.kwargs["expected_build_key"], None)
+            raw = output.read_text()
+            self.assertIn('sdk_matrix={"include":[]}\n', raw)
+            self.assertIn("sdk_workers_required=false\n", raw)
+            self.assertIn('"buildKey":"sha256:' + "a" * 64 + '"', raw)
+            self.assertIn("sdk_workers_required=true\n", raw)
+            with redirect_stderr(io.StringIO()) as error:
+                with self.assertRaises(SystemExit):
+                    caller.main([*argv, "--expected-build-key", selected["buildKey"]])
+            self.assertIn("elect derives the build key", error.getvalue())
 
     def test_package_replays_core_while_retaining_s858_and_original_binary_inputs(self):
         with tempfile.TemporaryDirectory() as temporary:
