@@ -92,6 +92,24 @@ class NativePreparationAnchorSelectionTest(unittest.TestCase):
 
 
 class NativeStateSelectionTest(unittest.TestCase):
+    def test_core_android_continuation_has_exact_eight_wave_chain(self):
+        families = ("core-binary", "core-package", "core-validation", "core-metadata",
+                    "android-binary", "android-package", "android-validation", "android-metadata")
+        parent = "sdk-ios-metadata-result"
+        for wave, family in enumerate(families, start=11):
+            expected = (parent, f"sdk-{family}-plan", f"sdk-{family}", f"sdk-collect-{wave}", str(wave))
+            self.assertEqual(expected, routing._STAGES[family])
+            for required in (False, True):
+                current = locator(str(wave - 1), "0")
+                selected = needs_for(family, required=required, state=current)
+                self.assertEqual((dict(artifact_id="456", artifact_digest="sha256:" + "b" * 64,
+                    state_wave="0", sdk_state_wave=str(wave)) if required else current),
+                    routing.select_native_state(selected, stage=family))
+            parent = f"sdk-{family}-result"
+        for invalid in ("19", "0", "01", "-1"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                routing._locator(locator(invalid, "0"))
+
     def test_ios_metadata_exact_terminal_route_and_unchanged_validation_parent(self):
         self.assertEqual(("sdk-ios-validation-result", "sdk-ios-metadata-plan", "sdk-ios-metadata", "sdk-collect-10", "10"),
                          routing._STAGES["ios-metadata"])
@@ -260,7 +278,7 @@ class NativeStateSelectionTest(unittest.TestCase):
                     needs[name]["outputs"][field] = value
                     with self.subTest(stage=stage, name=name, field=field), self.assertRaises(ValueError):
                         routing.select_native_state(needs, stage=stage)
-            for state in (locator("0", "0"), locator("7", "1"), locator("11", "0"), locator("", "6")):
+            for state in (locator("0", "0"), locator("7", "1"), locator("19", "0"), locator("", "6")):
                 with self.assertRaises(ValueError):
                     routing.select_native_state(needs_for(stage, state=state), stage=stage)
             for name in (workers, collector):

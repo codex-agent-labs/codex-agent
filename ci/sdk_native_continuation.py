@@ -32,6 +32,14 @@ _STAGES = {
     "metadata": ("sdk-native-validation-result", "sdk-native-metadata-plan", "sdk-native-metadata", "sdk-collect-8", "8"),
     "ios-validation": ("sdk-native-result", "sdk-ios-validation-plan", "sdk-ios-validation", "sdk-collect-9", "9"),
     "ios-metadata": ("sdk-ios-validation-result", "sdk-ios-metadata-plan", "sdk-ios-metadata", "sdk-collect-10", "10"),
+    "core-binary": ("sdk-ios-metadata-result", "sdk-core-binary-plan", "sdk-core-binary", "sdk-collect-11", "11"),
+    "core-package": ("sdk-core-binary-result", "sdk-core-package-plan", "sdk-core-package", "sdk-collect-12", "12"),
+    "core-validation": ("sdk-core-package-result", "sdk-core-validation-plan", "sdk-core-validation", "sdk-collect-13", "13"),
+    "core-metadata": ("sdk-core-validation-result", "sdk-core-metadata-plan", "sdk-core-metadata", "sdk-collect-14", "14"),
+    "android-binary": ("sdk-core-metadata-result", "sdk-android-binary-plan", "sdk-android-binary", "sdk-collect-15", "15"),
+    "android-package": ("sdk-android-binary-result", "sdk-android-package-plan", "sdk-android-package", "sdk-collect-16", "16"),
+    "android-validation": ("sdk-android-package-result", "sdk-android-validation-plan", "sdk-android-validation", "sdk-collect-17", "17"),
+    "android-metadata": ("sdk-android-validation-result", "sdk-android-metadata-plan", "sdk-android-metadata", "sdk-collect-18", "18"),
 }
 
 
@@ -78,7 +86,7 @@ def _locator(outputs):
     if (not re.fullmatch(r"[1-9][0-9]*", result["artifact_id"])
             or not re.fullmatch(r"sha256:[0-9a-f]{64}", result["artifact_digest"])
             or result["state_wave"] not in ("0", "1", "2", "3", "4", "5")
-            or result["sdk_state_wave"] not in ("", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10")
+            or result["sdk_state_wave"] not in ("", *(str(wave) for wave in range(1, 19)))
             or (result["sdk_state_wave"] and result["state_wave"] != "0")):
         raise ValueError("Invalid native state artifact identity or wave")
     return result
