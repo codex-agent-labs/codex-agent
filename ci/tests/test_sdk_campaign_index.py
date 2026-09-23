@@ -133,6 +133,41 @@ class SdkCampaignIndexTest(unittest.TestCase):
                 self._verify(self._signed(changed, "foreign-repository"), sources=sources,
                     envelopes=envelopes, archives=archives)
 
+    def test_signed_index_allows_push_but_rejects_other_campaign_original(self):
+        instance = min(SDK_CAMPAIGN_INSTANCES)
+        for event, pull_request in (("push", None), ("pull_request", 32),
+                                    ("merge_group", None), ("workflow_dispatch", None),
+                                    ("local", None)):
+            with self.subTest(event=event), tempfile.TemporaryDirectory(
+                    prefix="sdk-foreign-context-") as temporary:
+                root = Path(temporary).resolve()
+                original = self.envelopes[instance]["receipt"]
+                producer = {**self.producer, "event": event, "pullRequest": pull_request}
+                if event == "local":
+                    producer.update(workflowPath=None, runId=None, runAttempt=None)
+                plan = {name: original[name] for name in (
+                    "schemaVersion", "product", "component", "phase", "target", "buildKey", "inputs")}
+                finalized = finalize_phase_object(stage_root=self.stages[instance], phase_plan=plan,
+                    producer=producer, product_version="0.8.0", trust_domain="development",
+                    destination=root / "shard")
+                sources, envelopes, archives = dict(self.sources), dict(self.envelopes), dict(self.archives)
+                sources[instance] = IndexEntrySource(finalized["receiptBytes"], sources[instance].artifact_path)
+                envelopes[instance] = {name: finalized[name] for name in (
+                    "receipt", "receiptBytes", "receiptSha256", "objectSha256")}
+                archives[instance] = root / "shard" / finalized["objectPath"]
+                changed = deepcopy(self.index)
+                entry = next(entry for entry in changed["entries"] if
+                    (entry["product"], entry["component"], entry["phase"], entry["target"]) ==
+                    (instance.product, instance.component, instance.phase, instance.target))
+                entry["receiptSha256"] = sha256_bytes(finalized["receiptBytes"])
+                signed = self._signed(changed, f"foreign-{event}")
+                if event == "push":
+                    self._verify(signed, sources=sources, envelopes=envelopes, archives=archives)
+                    continue
+                with self.assertRaisesRegex(ValueError, "another producer context"):
+                    self._verify(signed, sources=sources,
+                        envelopes=envelopes, archives=archives)
+
     def test_signed_index_entry_cannot_choose_a_different_original_artifact(self):
         changed = deepcopy(self.index)
         alternate = next(output for output in changed["entries"][0]["outputs"]
