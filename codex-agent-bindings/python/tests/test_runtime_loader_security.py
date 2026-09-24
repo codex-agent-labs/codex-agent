@@ -10,7 +10,9 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -94,6 +96,37 @@ def identity(target: str = "macos-arm64") -> dict[str, object]:
 def canonical(value: dict[str, object], final_lf: bool = True) -> bytes:
     result = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return result + (b"\n" if final_lf else b"")
+
+
+def install_synthetic_wheel(directory: Path, root_public: bytes) -> Path:
+    package_data = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["setuptools"]["package-data"]["codex_agent"]
+    if "native/sdk-compatibility.json" not in package_data or "native/sdk-runtime-root.pub" not in package_data:
+        raise AssertionError("Python wheel manifest omits an SDK trust resource")
+    source = ROOT / "src/codex_agent"
+    entries = {
+        file.relative_to(ROOT / "src").as_posix(): file.read_bytes()
+        for file in source.rglob("*")
+        if file.is_file() and (file.suffix in {".py", ".pyi"} or file.name == "py.typed")
+    }
+    entries["codex_agent/native/sdk-compatibility.json"] = canonical(compatibility())
+    entries["codex_agent/native/sdk-runtime-root.pub"] = root_public
+    metadata = "codex_agent-0.8.0.dist-info"
+    entries[f"{metadata}/METADATA"] = b"Metadata-Version: 2.1\nName: codex-agent\nVersion: 0.8.0\n"
+    entries[f"{metadata}/WHEEL"] = b"Wheel-Version: 1.0\nGenerator: synthetic-loader-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+    record = [f"{name},sha256={base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b'=').decode()},{len(data)}"
+              for name, data in sorted(entries.items())]
+    entries[f"{metadata}/RECORD"] = ("\n".join([*record, f"{metadata}/RECORD,,"]) + "\n").encode()
+    wheel = directory / "codex_agent-0.8.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name, data in entries.items():
+            archive.writestr(name, data)
+    installed = directory / "installed"
+    result = subprocess.run([sys.executable, "-m", "pip", "--isolated", "install", "--no-index", "--no-deps",
+                             "--no-compile", "--disable-pip-version-check", "--target", str(installed), str(wheel)],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    if result.returncode:
+        raise AssertionError(f"synthetic wheel installation failed:\n{result.stdout.decode(errors='replace')}")
+    return installed
 
 
 def write_execution(path: Path, result: subprocess.CompletedProcess) -> None:
@@ -370,6 +403,52 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
                 with self.assertRaises(OSError):
                     NativeLibrary.load(library)
                 dynamic_loader.assert_not_called()
+
+    def test_installed_wheel_uses_its_pinned_root_for_external_overrides(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            directory = Path(temporary)
+            target = current_classifier()
+            runtime_identity = identity(target)
+            library = compile_library(directory, "wheel_external", canonical(runtime_identity, False), 0x010D0000)
+            root_public = authorize(library, runtime_identity, "0.8.5")
+            installed = install_synthetic_wheel(directory, root_public)
+            resource = installed / "codex_agent/native/sdk-runtime-root.pub"
+            self.assertEqual(resource.read_bytes(), root_public)
+
+            child = """
+import os
+import sys
+from unittest.mock import patch
+sys.path.insert(0, sys.argv[1])
+from codex_agent import _ffi
+mode, path = sys.argv[2:]
+if mode == 'environment':
+    os.environ['CODEX_AGENT_LIBRARY'] = path
+with patch.object(_ffi.NativeLibrary, '_declare_all', return_value=None):
+    if mode in {'explicit', 'environment'}:
+        loaded = _ffi.NativeLibrary.load(path if mode == 'explicit' else None)
+        assert loaded.library.codex_agent_abi_version() == 0x010D0000
+    else:
+        with patch.object(_ffi.ctypes, 'CDLL', side_effect=AssertionError('dynamic load reached')) as dynamic_load:
+            try:
+                _ffi.NativeLibrary.load(path)
+            except OSError:
+                dynamic_load.assert_not_called()
+            else:
+                raise AssertionError('untrusted installed root was accepted')
+"""
+
+            def run(mode: str) -> None:
+                result = subprocess.run([sys.executable, "-I", "-B", "-c", child, str(installed), mode, str(library)],
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+                self.assertEqual(result.returncode, 0, result.stdout.decode(errors="replace"))
+
+            run("explicit")
+            run("environment")
+            resource.write_bytes((Path(str(library) + ".evidence") / "keys/release.pub").read_bytes())
+            run("tampered")
+            resource.unlink()
+            run("missing")
 
     @patch("codex_agent._ffi._require_external_runtime_evidence", side_effect=lambda path, *_: (path, None))
     def test_real_missing_identity_and_abi_mismatch_above_floor_fail(self, _test_only_evidence_bypass: object) -> None:
