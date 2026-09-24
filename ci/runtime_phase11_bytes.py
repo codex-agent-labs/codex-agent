@@ -7,6 +7,8 @@ establishes official upload/landed-tree authority nor publishes a release.
 
 from __future__ import annotations
 
+import argparse
+import json
 import re
 from pathlib import Path
 import subprocess
@@ -195,3 +197,28 @@ def forward_verified_runtime_phase10_bytes(
                 "protectedInventorySha256": expected_protected_inventory_sha256,
                 "sidecarInventorySha256": expected_sidecar_inventory_sha256,
                 "candidateInventory": prepared_inventory}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    for option in (
+        "protected-output", "maven-sidecars", "destination", "landed-repository",
+        "keyring", "keys-directory", "pgp-public-key",
+    ):
+        parser.add_argument(f"--{option}", type=Path, required=True)
+    for option in (
+        "expected-protected-inventory-sha256", "expected-sidecar-inventory-sha256",
+        "expected-metadata-receipt-sha256", "expected-build-key",
+        "expected-runtime-version", "expected-manifest-sha256",
+        "expected-source-commit", "expected-source-tree", "expected-validation-tree",
+        "expected-workflow-sha", "expected-keyring-sha256",
+        "expected-keys-inventory-sha256", "expected-pgp-key-sha256",
+    ):
+        parser.add_argument(f"--{option}", required=True)
+    result = forward_verified_runtime_phase10_bytes(**vars(parser.parse_args(argv)))
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

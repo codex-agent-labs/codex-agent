@@ -1,6 +1,8 @@
 """Offline Phase-11 byte-forwarding checks; hosted S1048 pins remain external."""
 
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
+import io
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -81,7 +83,15 @@ class RuntimePhase11BytesTest(unittest.TestCase):
             expected_pgp_key_sha256=sha256_bytes(self.pgp_key.read_bytes()),
         )
 
-    def forward(self, _landed_trees=None, **changes):
+    def cli_args(self, **changes):
+        values = {"protected_output": self.release, "maven_sidecars": self.sidecars,
+                  "destination": self.destination, **self.kwargs(), **changes}
+        arguments = []
+        for name, value in values.items():
+            arguments.extend(["--" + name.replace("_", "-"), str(value)])
+        return arguments
+
+    def forward(self, _landed_trees=None, _cli=False, **changes):
         @contextmanager
         def verified(root, *, keyring, keys_directory):
             self.assertEqual(self.keyring.read_bytes(), keyring.read_bytes())
@@ -101,9 +111,14 @@ class RuntimePhase11BytesTest(unittest.TestCase):
                           side_effect=_landed_trees or (lambda _: self.tree)), \
                 patch.object(candidate, "verified_runtime_aggregate_handoff", side_effect=verified) as full, \
                 patch.object(candidate, "verify_runtime_phase10_maven", side_effect=verify) as maven:
-            result = candidate.forward_verified_runtime_phase10_bytes(
-                self.release, self.sidecars, self.destination, **{**self.kwargs(), **changes},
-            )
+            if _cli:
+                with redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(0, candidate.main(self.cli_args(**changes)))
+                result = json.loads(output.getvalue())
+            else:
+                result = candidate.forward_verified_runtime_phase10_bytes(
+                    self.release, self.sidecars, self.destination, **{**self.kwargs(), **changes},
+                )
         full.assert_called_once()
         maven.assert_called_once()
         return result
@@ -119,6 +134,22 @@ class RuntimePhase11BytesTest(unittest.TestCase):
                          (self.destination / "product-policy/product-signing-keys.json").read_bytes())
         self.assertEqual(self.pgp_key.read_bytes(),
                          (self.destination / "pgp-public-key.asc").read_bytes())
+
+    def test_cli_requires_every_pin_and_copies_only_verified_bytes(self):
+        with self.assertRaises(SystemExit) as missing:
+            candidate.main(self.cli_args()[:-2])
+        self.assertEqual(2, missing.exception.code)
+        self.assertFalse(self.destination.exists())
+        with patch.object(candidate, "_landed_tree", return_value=self.tree), \
+                self.assertRaisesRegex(ValueError, "verifier key"):
+            candidate.main(self.cli_args(expected_keyring_sha256=sha256_bytes(b"wrong keyring")))
+        self.assertFalse(self.destination.exists())
+        result = self.forward(_cli=True)
+        self.assertEqual("runtime", result["product"])
+        self.assertEqual(regular_file_inventory(self.release, allow_empty=True),
+                         regular_file_inventory(self.destination / "runtime-release", allow_empty=True))
+        self.assertEqual(regular_file_inventory(self.sidecars),
+                         regular_file_inventory(self.destination / "maven-sidecars"))
 
     def test_retained_release_wrapper_preserves_original_and_current_context(self):
         retained = self.release / "retained-release"
