@@ -19,6 +19,15 @@ language packages also consume Runtime R. This graph is not a single chain.
 | Desktop Runtime R | `gradle/release/versions/runtime.txt` | `codex-agent-runtime-desktop`, five native variants, JVM/Node adapters, aggregate |
 | SDK S | `gradle/release/versions/sdk.txt` | `codex-agent` facade, BOM, Android/iOS adapters, Swift package, JavaScript and native-language packages |
 
+The planned Maven coordinates are
+`io.github.codex-agent-labs:codex-agent-core:<contractVersion>`,
+`io.github.codex-agent-labs:codex-agent-runtime-desktop:<runtimeVersion>`, and
+`io.github.codex-agent-labs:codex-agent:<sdkVersion>`. The SDK-owned
+`io.github.codex-agent-labs:codex-agent-bom:<sdkVersion>` constrains the facade
+and Android/iOS adapters to `sdkVersion`, Contract to `contractVersion`, and
+Desktop Runtime to the SDK's selected embedded default `runtimeVersion`. It
+does not make the three version authorities one version.
+
 “Runtime product” means the independently versioned Desktop/Host external-
 process runtime. Android and iOS have different execution models and remain
 SDK-versioned platform adapters even though their module names contain
