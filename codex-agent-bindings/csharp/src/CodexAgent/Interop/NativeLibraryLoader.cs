@@ -8,7 +8,7 @@ using System.Text.Json;
 
 namespace CodexAgent.Interop;
 
-internal static class NativeLibraryLoader
+internal static partial class NativeLibraryLoader
 {
     private const string CompatibilityResource = "CodexAgent.sdk-compatibility.json";
     private static readonly JsonSerializerOptions CanonicalJson = new()
@@ -183,6 +183,9 @@ internal static class NativeLibraryLoader
         finally { NativeLibrary.Free(handle); }
     }
 
+    internal static void RejectUnverifiedExternalForTests(string path, string compatibilityJson, string target) =>
+        _ = LoadAuthenticated(path, ParseCompatibility(compatibilityJson), target, false, null);
+
     private static nint LoadAuthenticated(
         string path,
         Compatibility compatibility,
@@ -192,12 +195,21 @@ internal static class NativeLibraryLoader
     {
         Snapshot? snapshot = null;
         nint handle = 0;
+        string? signedIdentity = null;
         try
         {
             if (embedded)
                 snapshot = SnapshotEmbeddedLibrary(path, compatibility.Variants[target].RuntimeLibrarySha256, snapshotRoot);
+            else
+            {
+                var evidenceRoot = path + ".evidence";
+                var pinnedRoot = ReadPinnedRuntimeRoot();
+                var digest = ExternalDigestHint(evidenceRoot);
+                snapshot = SnapshotEmbeddedLibrary(path, digest, snapshotRoot);
+                signedIdentity = RequireExternalRuntimeEvidence(snapshot.Path, evidenceRoot, pinnedRoot, compatibility, target);
+            }
             handle = NativeLibrary.Load(snapshot?.Path ?? path);
-            ValidateLoadedLibrary(handle, compatibility, target, embedded);
+            ValidateLoadedLibrary(handle, compatibility, target, embedded, signedIdentity);
             loadedHandle = handle;
             if (snapshot is not null) CompleteSnapshotOwnership(snapshot);
             return handle;
@@ -281,7 +293,8 @@ internal static class NativeLibraryLoader
             identitySchema, contractDigest, abiMajor, abiMinor, parsedVariants);
     }
 
-    private static unsafe void ValidateLoadedLibrary(nint handle, Compatibility compatibility, string target, bool embedded)
+    private static unsafe void ValidateLoadedLibrary(nint handle, Compatibility compatibility, string target, bool embedded,
+        string? signedIdentity = null)
     {
         var identityFunction = (delegate* unmanaged[Cdecl]<byte*, nuint*, CodexStatus>)
             NativeLibrary.GetExport(handle, "codex_agent_runtime_identity");
@@ -297,6 +310,8 @@ internal static class NativeLibraryLoader
         if (bytes[^1] != 0 || bytes.AsSpan(0, bytes.Length - 1).Contains((byte)0))
             throw new InvalidDataException("Runtime identity is not a canonical NUL-terminated string.");
         var identityJson = new UTF8Encoding(false, true).GetString(bytes, 0, bytes.Length - 1);
+        if (signedIdentity is not null && identityJson != signedIdentity)
+            throw new InvalidDataException("Loaded Runtime identity differs from its signed authorization.");
         using var identity = ParseDocument(identityJson, "Runtime identity");
         RequireCanonical(identity.RootElement, identityJson, "Runtime identity");
         ValidateIdentity(compatibility, identity.RootElement, target, embedded);

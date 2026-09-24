@@ -137,13 +137,6 @@ if (args is ["--runtime-loader-native-child", var nativeLibrary, var nativeCompa
 if (args is ["--runtime-loader-security"])
 {
     RuntimeLoaderSecurity.Verify();
-    var fileName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-        ? "codex_agent.dll"
-        : RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
-            ? "libcodex_agent.dylib"
-            : "libcodex_agent.so";
-    CodexNativeLibrary.Configure(Path.Combine(AppContext.BaseDirectory, fileName));
-    RuntimeLoaderSecurity.VerifyNative();
     return;
 }
 
@@ -169,12 +162,7 @@ Require(
     CodexNativeLibrary.RuntimeIdentifier is "osx-arm64" or "osx-x64" or "linux-arm64" or "linux-x64" or "win-x64",
     "supported RID");
 
-var fakeLibraryName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-    ? "codex_agent.dll"
-    : RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
-        ? "libcodex_agent.dylib"
-        : "libcodex_agent.so";
-CodexNativeLibrary.Configure(Path.Combine(AppContext.BaseDirectory, fakeLibraryName));
+RuntimeLoaderSecurity.LoadFakeNativeForTests();
 
 var executedCapabilityTests = new HashSet<string>(StringComparer.Ordinal);
 VerifyOrdinaryEnumCapabilities(capabilityClaims, canonicalCapabilities, executedCapabilityTests);

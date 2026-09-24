@@ -60,6 +60,8 @@ internal static class RuntimeLoaderSecurity
     {
         var compatibility = Compatibility();
         NativeLibraryLoader.ValidateCompatibilityForTests(compatibility);
+        foreach (var json in new[] { "{\"schemaVersion\":1.0}\n", "{\"nested\":{\"value\":1e0}}\n" })
+            Reject<InvalidDataException>(() => NativeLibraryLoader.ValidateEvidenceJsonForTests(json));
         NativeLibraryLoader.ValidateIdentityForTests(compatibility, Identity().ToJsonString(), "macos-arm64", true);
 
         if (NativeLibraryLoader.CheckedIdentitySize(CodexStatus.BufferTooSmall, 2) != 2 ||
@@ -137,6 +139,7 @@ internal static class RuntimeLoaderSecurity
         VerifyPathsAndSnapshot();
         VerifyInvalidNativeLibraries(compatibility);
         VerifyChildEmbeddedLoad(compatibility);
+        VerifySignedExternalLoad(compatibility);
         Console.WriteLine("CodexAgent C# Runtime loader security tests passed.");
     }
 
@@ -172,6 +175,8 @@ internal static class RuntimeLoaderSecurity
             var source = Path.Combine(root, "runtime-library");
             File.WriteAllText(source, "verified Runtime");
             NativeLibraryLoader.ValidateExplicitPathForTests(source);
+            Reject<FileNotFoundException>(() => NativeLibraryLoader.RejectUnverifiedExternalForTests(
+                source, Compatibility(), Target));
             var expected = "sha256:" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(source))).ToLowerInvariant();
             var wrongDigest = JsonNode.Parse(Compatibility())!.AsObject();
             wrongDigest["runtime"]!["embeddedVariants"]!.AsArray()
@@ -361,6 +366,142 @@ internal static class RuntimeLoaderSecurity
             Directory.Delete(root, true);
         }
     }
+
+    private static byte[] Canonical(JsonNode value)
+    {
+        static JsonNode? Sorted(JsonNode? node) => node switch
+        {
+            JsonObject value => new JsonObject(value.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => KeyValuePair.Create(pair.Key, Sorted(pair.Value)))),
+            JsonArray value => new JsonArray(value.Select(Sorted).ToArray()),
+            _ => node?.DeepClone(),
+        };
+        return Encoding.UTF8.GetBytes(Sorted(value)!.ToJsonString(new JsonSerializerOptions
+        {
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        }) + "\n");
+    }
+
+    private static void VerifySignedExternalLoad(string compatibility)
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "runtime-loader-signed");
+        if (Directory.Exists(root)) Directory.Delete(root, true);
+        Directory.CreateDirectory(root);
+        try
+        {
+            var library = Path.Combine(root, NativeName());
+            File.Copy(Path.Combine(AppContext.BaseDirectory, NativeName()), library);
+            var evidence = Directory.CreateDirectory(library + ".evidence").FullName;
+            Directory.CreateDirectory(Path.Combine(evidence, "keys"));
+
+            static void Keygen(string path)
+            {
+                var verifier = OperatingSystem.IsWindows()
+                    ? Path.Combine(Environment.SystemDirectory, "OpenSSH", "ssh-keygen.exe")
+                    : "/usr/bin/ssh-keygen";
+                var start = new ProcessStartInfo(verifier) { UseShellExecute = false,
+                    RedirectStandardOutput = true, RedirectStandardError = true };
+                foreach (var argument in new[] { "-q", "-t", "ed25519", "-N", "", "-f", path })
+                    start.ArgumentList.Add(argument);
+                using var process = Process.Start(start) ?? throw new InvalidOperationException("test keygen did not start");
+                _ = process.StandardOutput.ReadToEnd();
+                _ = process.StandardError.ReadToEnd();
+                process.WaitForExit();
+                if (process.ExitCode != 0) throw new InvalidOperationException("test keygen failed");
+            }
+
+            static byte[] PublicKey(string path)
+            {
+                var parts = File.ReadAllText(path + ".pub").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                return Encoding.ASCII.GetBytes(parts[0] + " " + parts[1].TrimEnd('\n', '\r') + "\n");
+            }
+
+            static string Fingerprint(byte[] publicKey)
+            {
+                var blob = Convert.FromBase64String(Encoding.ASCII.GetString(publicKey).Split(' ')[1].Trim());
+                return "sha256:" + Convert.ToHexString(SHA256.HashData(blob)).ToLowerInvariant();
+            }
+
+            static void Sign(string path, string privateKey, string namespaceName, string destination)
+            {
+                var verifier = OperatingSystem.IsWindows()
+                    ? Path.Combine(Environment.SystemDirectory, "OpenSSH", "ssh-keygen.exe")
+                    : "/usr/bin/ssh-keygen";
+                var start = new ProcessStartInfo(verifier) { UseShellExecute = false,
+                    RedirectStandardOutput = true, RedirectStandardError = true };
+                foreach (var argument in new[] { "-Y", "sign", "-f", privateKey, "-n", namespaceName, path })
+                    start.ArgumentList.Add(argument);
+                using var process = Process.Start(start) ?? throw new InvalidOperationException("test signer did not start");
+                _ = process.StandardOutput.ReadToEnd();
+                _ = process.StandardError.ReadToEnd();
+                process.WaitForExit();
+                if (process.ExitCode != 0) throw new InvalidOperationException("test signer failed");
+                File.Move(path + ".sig", destination);
+            }
+
+            var rootKey = Path.Combine(root, "root-key");
+            var releaseKey = Path.Combine(root, "release-key");
+            var fixtureKey = Path.Combine(AppContext.BaseDirectory, "fixtures", "sdk-runtime-root-test-only");
+            File.Copy(fixtureKey, rootKey);
+            File.Copy(fixtureKey + ".pub", rootKey + ".pub");
+            if (!OperatingSystem.IsWindows())
+                File.SetUnixFileMode(rootKey, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            Keygen(releaseKey);
+            var rootPublic = PublicKey(rootKey);
+            var releasePublic = PublicKey(releaseKey);
+            File.WriteAllBytes(Path.Combine(evidence, "keys", "release.pub"), releasePublic);
+            var keyring = new JsonObject
+            {
+                ["schemaVersion"] = 1, ["namespace"] = "codex-agent-product-v1", ["algorithm"] = "ssh-ed25519",
+                ["trustDomain"] = "release", ["activeKey"] = new JsonObject
+                {
+                    ["keyId"] = "release", ["fingerprint"] = Fingerprint(releasePublic),
+                },
+                ["retiredKeys"] = new JsonArray(),
+            };
+            var keyringBytes = Canonical(keyring);
+            File.WriteAllBytes(Path.Combine(evidence, "release-keyring.json"), keyringBytes);
+            var delegation = Path.Combine(evidence, "root-delegation.json");
+            File.WriteAllBytes(delegation, Canonical(new JsonObject
+            {
+                ["schemaVersion"] = 1, ["kind"] = "sdk-runtime-release-keyring-delegation",
+                ["scope"] = "desktop-runtime-library", ["rootFingerprint"] = Fingerprint(rootPublic),
+                ["keyringSha256"] = "sha256:" + Convert.ToHexString(SHA256.HashData(keyringBytes)).ToLowerInvariant(),
+            }));
+            Sign(delegation, rootKey, "codex-agent-sdk-runtime-root-v1", Path.Combine(evidence, "root-delegation.sig"));
+            var claim = Path.Combine(evidence, "runtime-library-authorization.json");
+            File.WriteAllBytes(claim, Canonical(new JsonObject
+            {
+                ["schemaVersion"] = 1, ["kind"] = "desktop-runtime-library-authorization",
+                ["runtimeVersion"] = "0.8.5", ["runtimeIdentity"] = Identity(Target),
+                ["runtimeLibrarySha256"] = "sha256:" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(library))).ToLowerInvariant(),
+                ["variantBundleSha256"] = "sha256:" + new string('1', 64),
+                ["variantManifestSha256"] = "sha256:" + new string('2', 64),
+                ["aggregateManifestSha256"] = "sha256:" + new string('3', 64),
+                ["variantAttestationSha256"] = "sha256:" + new string('4', 64),
+                ["aggregateAttestationSha256"] = "sha256:" + new string('5', 64),
+                ["signing"] = new JsonObject
+                {
+                    ["algorithm"] = "ssh-ed25519", ["namespace"] = "codex-agent-product-v1",
+                    ["trustDomain"] = "release", ["keyId"] = "release",
+                    ["fingerprint"] = Fingerprint(releasePublic),
+                },
+            }));
+            Sign(claim, releaseKey, "codex-agent-product-v1",
+                Path.Combine(evidence, "runtime-library-authorization.sig"));
+            var signature = Path.Combine(evidence, "runtime-library-authorization.sig");
+            var original = File.ReadAllBytes(signature);
+            File.WriteAllBytes(signature, [.. original, (byte)'x']);
+            Reject<InvalidDataException>(() => NativeLibraryLoader.RejectUnverifiedExternalForTests(
+                library, compatibility, Target));
+            File.WriteAllBytes(signature, original);
+            CodexNativeLibrary.Configure(library);
+            VerifyNative();
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    internal static void LoadFakeNativeForTests() => VerifySignedExternalLoad(Compatibility());
 
     internal static void VerifyNative()
     {

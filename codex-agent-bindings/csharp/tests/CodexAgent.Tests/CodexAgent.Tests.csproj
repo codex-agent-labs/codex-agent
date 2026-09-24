@@ -8,10 +8,14 @@
     <RollForward>Major</RollForward>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <CodexAgentSdkRuntimeRoot>$(MSBuildThisFileDirectory)fixtures/sdk-runtime-root-test-only.pub</CodexAgentSdkRuntimeRoot>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../src/CodexAgent/CodexAgent.csproj" />
+    <ProjectReference Include="../../src/CodexAgent/CodexAgent.csproj"
+                      AdditionalProperties="CodexAgentSdkRuntimeRoot=$(CodexAgentSdkRuntimeRoot);BaseOutputPath=$(MSBuildThisFileDirectory)bin/test-root/CodexAgent/;BaseIntermediateOutputPath=$(MSBuildThisFileDirectory)obj/test-root/CodexAgent/;ProjectAssetsFile=$(MSBuildThisFileDirectory)../../src/CodexAgent/obj/project.assets.json" />
+    <None Include="fixtures/sdk-runtime-root-test-only" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="fixtures/sdk-runtime-root-test-only.pub" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../parity/capability-claims.tsv" Link="parity/capability-claims.tsv" CopyToOutputDirectory="PreserveNewest" />
     <None Include="$(CodexAgentCanonicalApiReport)" Link="parity/canonical-api.json" CopyToOutputDirectory="PreserveNewest" Condition="'$(CodexAgentCanonicalApiReport)' != ''" />
     <None Include="$(CodexAgentCAbiBootstrapEvidence)" Link="parity/c-abi-bootstrap-evidence.json" CopyToOutputDirectory="PreserveNewest" Condition="'$(CodexAgentCAbiBootstrapEvidence)' != ''" />
