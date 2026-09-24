@@ -112,17 +112,27 @@ def stage_runtime_aggregate_release_evidence(records, source_root: Path, destina
                     raise ValueError("Runtime aggregate release changed during capture")
                 inventories[digest] = verified["inventory"]
             relocated.append({"receiptSha256": digest, "handoffRoot": relative})
-        (captured / REQUEST_NAME).write_bytes(canonical_json_bytes(relocated))
+        descriptor_bytes = canonical_json_bytes(relocated)
+        (captured / REQUEST_NAME).write_bytes(descriptor_bytes)
         load_runtime_aggregate_release_evidence(captured)
+        expected_files = [
+            *({**record, "relativePath": f"handoffs/{digest[7:]}/{record['relativePath']}"}
+              for digest, inventory in inventories.items() for record in inventory),
+            {"relativePath": REQUEST_NAME, "bytes": len(descriptor_bytes),
+             "sha256": sha256_bytes(descriptor_bytes)},
+        ]
+        expected_files.sort(key=lambda record: record["relativePath"])
         if (any(regular_file_inventory(source, allow_empty=True) != inventories[digest]
                 or regular_file_inventory(captured / f"handoffs/{digest[7:]}", allow_empty=True) != inventories[digest]
                 for digest, source in sources.items())
+                or regular_file_inventory(captured, allow_empty=True) != expected_files
                 or regular_file_inventory(policy) != policy_inventory
                 or any(read_regular_file_bytes(path, max_bytes=64 * 1024, reject_symlink_parents=True)
                        != policy_bytes[name] for name, path in policy_paths.items())):
             raise ValueError("Runtime aggregate originals or caller policy changed before publication")
         output_safe()
-        publish_regular_tree(captured, destination, allow_empty=True)
+        publish_regular_tree(captured, destination, allow_empty=True,
+                             expected_inventory=expected_files)
     return relocated
 
 

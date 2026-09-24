@@ -10,7 +10,8 @@ from unittest.mock import patch
 from ci.tests import test_runtime_aggregate_handoff as fixture
 from products import runtime_aggregate_inputs as transport
 from products.inventory import (
-    canonical_json_bytes, regular_file_inventory, sha256_file, snapshot_regular_tree,
+    canonical_json_bytes, publish_regular_tree as actual_publish_regular_tree,
+    regular_file_inventory, sha256_file, snapshot_regular_tree,
 )
 from products.signatures import generate_development_key
 
@@ -216,6 +217,17 @@ class RuntimeAggregateInputsTest(unittest.TestCase):
             self.stage(source_root=source.parent)
         self.assertEqual(b"keep\n", (self.output / "sentinel").read_bytes())
         self.assertEqual(before, regular_file_inventory(source, allow_empty=True))
+
+    def test_verified_carrier_changed_during_final_copy_never_publishes(self):
+        def mutate_before_copy(source, destination, *, allow_empty, expected_inventory):
+            (source / transport.REQUEST_NAME).write_bytes(b"changed after verification\n")
+            actual_publish_regular_tree(source, destination, allow_empty=allow_empty,
+                                        expected_inventory=expected_inventory)
+
+        with patch.object(transport, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self.stage()
+        self.assertFalse(self.output.exists())
 
 
 class RuntimeAggregateInputsCliTest(unittest.TestCase):
