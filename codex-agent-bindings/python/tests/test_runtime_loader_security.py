@@ -183,6 +183,7 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
             "ABI 1.12": lambda value: value.__setitem__("cAbiVersion", "1.12.0"),
             "wrong ABI minor": lambda value: value.__setitem__("cAbiVersion", "1.0.0"),
             "wrong ABI major": lambda value: value.__setitem__("cAbiVersion", "2.13.0"),
+            "ABI patch-width collision": lambda value: value.__setitem__("cAbiVersion", "1.13.65536"),
             "wrong Contract": lambda value: value.__setitem__("contractDigest", digest("9")),
             "malformed Contract component digest": lambda value: value.__setitem__(
                 "contractComponentDigest", "sha256:invalid"
@@ -335,6 +336,16 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
             with patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility):
                 with self.assertRaisesRegex(OSError, "ABI disagrees"):
                     NativeLibrary.load(mismatch)
+
+            overflowing_identity = identity(target)
+            overflowing_identity["cAbiVersion"] = "1.13.65536"
+            overflow = compile_library(
+                root, "abi_width_collision", canonical(overflowing_identity, False), 0x010E0000
+            )
+            with patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility), \
+                    patch.object(NativeLibrary, "_declare_all", return_value=None):
+                with self.assertRaisesRegex(OSError, "packed ABI field widths"):
+                    NativeLibrary.load(overflow)
 
             incompatible_identity = identity(target)
             incompatible_identity["contractDigest"] = digest("9")

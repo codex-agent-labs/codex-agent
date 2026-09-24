@@ -337,6 +337,8 @@ def _validate_runtime_identity(
     if identity["contractDigest"] != runtime["requiredContractDigest"]:
         raise OSError("Runtime identity Contract mismatch")
     abi = _semver(identity["cAbiVersion"], "Runtime identity ABI")
+    if abi[0] > 0xff or abi[1] > 0xff or abi[2] > 0xffff:
+        raise OSError("Runtime identity ABI exceeds the packed ABI field widths")
     if abi[0] != runtime["requiredAbiMajor"] or abi[1] < runtime["minimumAbiMinor"]:
         raise OSError("Runtime identity ABI is incompatible")
     if not _in_range(identity["runtimeCompatibilityVersion"], _range(runtime["compatibleRuntimeCompatibilityRange"], "Runtime compatibility range"), "Runtime compatibility version"):
