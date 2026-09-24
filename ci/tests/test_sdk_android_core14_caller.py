@@ -1,17 +1,126 @@
 import tempfile
 import io
 import os
+import shutil
 import unittest
 from contextlib import contextmanager, redirect_stderr
+from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from ci import sdk_android_core14_caller as caller
-from ci.products.inventory import canonical_json_bytes, sha256_bytes, sha256_file
+from ci.products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
+    sha256_bytes, sha256_file, snapshot_regular_tree)
+from ci.products.registry import SDK_FACADE_TARGETS
+from ci.products.signatures import generate_development_key
+import sdk_facade_original_inputs as original_inputs
+import sdk_facade_metadata_original as original_metadata
 
 
 class AndroidCore14CallerTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("ssh-keygen"), "ssh-keygen is required")
+    def test_reused_core_holds_signed_twelve_originals_through_android_admission(self):
+        from ci.tests.test_sdk_facade_metadata_selection import FacadeMetadataSelectionTest
+
+        fixture = FacadeMetadataSelectionTest(methodName="runTest")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        source = fixture.a
+        selected = {"common": source.envelope,
+                    **{value["receipt"]["target"]: value for value in source.predecessors}}
+        digests = {target: envelope["receiptSha256"] for target, envelope in selected.items()}
+        replay = deepcopy(source.policy)
+        for record in replay["validations"].values():
+            record.pop("captureRoot")
+        captures = {Path(source.policy["validations"][target]["validationReceipt"]):
+                    Path(source.policy["validations"][target]["captureRoot"])
+                    for target in SDK_FACADE_TARGETS}
+        archive = fixture.root / "android.tar.gz"
+        archive.write_bytes(b"Git-pinned Android archive fixture")
+        caller_key = fixture.root / "caller-pinned.pub"
+        caller_key.write_bytes(fixture.catalog.public_key.read_bytes())
+        catalog = replace(fixture.catalog, public_key=caller_key)
+        android_key = "sha256:" + "b" * 64
+        metadata_key = source.envelope["receipt"]["buildKey"]
+        original_context = replay.pop("originalContext")
+        state_row = {"state": "reused", "source": "same-pr",
+            "transportSource": {"indexSha256": sha256_file(fixture.catalog.manifest)},
+            "buildKey": metadata_key, "receiptSha256": digests["common"]}
+        verified = SimpleNamespace(prior_by_instance={caller.PhaseInstanceId(
+            "sdk", "sdk-core", "metadata", "common"): state_row},
+            prior_ready_plans={caller._BINARY: {"product": "sdk", "component": "sdk-android",
+                "phase": "binary", "target": "android", "buildKey": android_key}},
+            plan={"validationCommit": "c" * 40})
+        admissions = []
+
+        @contextmanager
+        def replay_original(**inputs):
+            capture = Path(inputs["capture_root"])
+            self.assertEqual(fixture.root, inputs["repository_root"])
+            self.assertEqual(source.envelope["receiptBytes"], inputs["metadata_receipt_path"].read_bytes())
+            self.assertEqual(set(SDK_FACADE_TARGETS), set(inputs["validations"]))
+            self.assertEqual(original_context, inputs["original_context"])
+            result = {"receipt": deepcopy(source.envelope["receipt"]),
+                "receiptBytes": source.envelope["receiptBytes"],
+                "receiptPath": inputs["metadata_receipt_path"], "capture": capture,
+                "original": capture / "original",
+                "stage": fixture.root / "build/product-stage/sdk/sdk-core/metadata/common",
+                "transport": load_canonical_json_bytes((capture / "capture-transport.json").read_bytes())}
+            source.events.append("enter")
+            try:
+                yield result
+            finally:
+                source.events.append("exit")
+
+        def copy_original(plan, destination, *, validation_receipt_path=None,
+                metadata_receipt_path=None, **kwargs):
+            receipt = validation_receipt_path or metadata_receipt_path
+            source_capture = source.f.retained if metadata_receipt_path else captures[Path(receipt)]
+            snapshot_regular_tree(source_capture, destination, allow_empty=True)
+
+        def verify_state(*args, **kwargs):
+            admission = kwargs["sdk_facade_metadata_admission"]
+            self.assertIsInstance(admission, caller.FacadeMetadataAdmission)
+            admission.verify_metadata(source.envelope, source.predecessors)
+            admissions.append(admission)
+            return verified
+
+        arguments = dict(plan=fixture.f.plan, discovery=fixture.root / "discovery",
+            before_state=fixture.root / "before", after_state=fixture.root / "after",
+            metadata_receipt=source.f.receipt_path, expected_build_key=android_key,
+            expected_metadata_build_key=metadata_key,
+            expected_metadata_receipt_sha256=digests["common"],
+            replay_policy=replay, original_context=original_context,
+            trusted_workflow_sha="e" * 40, repository_root=fixture.root,
+            android_runtime_archive=archive, token="token", environ={},
+            reused_catalog=catalog, reused_catalog_root=catalog.manifest.parent,
+            reused_catalog_source="same-pr", reused_receipt_sha256=digests)
+        with (patch.object(original_inputs, "locate_original_facade_upload",
+                           return_value={"artifact_id": 123, "artifact_sha256": "sha256:" + "d" * 64}),
+              patch.object(original_metadata, "verified_retained_sdk_facade_metadata",
+                           side_effect=replay_original),
+              patch.object(original_inputs, "capture_sdk_facade_validation_upload", side_effect=copy_original),
+              patch.object(original_inputs, "capture_sdk_facade_metadata_upload", side_effect=copy_original),
+              patch.object(caller.product_reuse, "_verified_product_state", side_effect=verify_state),
+              patch.object(caller, "git_regular_blob_bytes", return_value=b"pins"),
+              patch.object(caller, "_properties", return_value={
+                  "codexAgent.codexArchiveSha256": sha256_file(archive).split(":", 1)[1]})):
+            self.assertEqual(android_key, caller.with_core14(**arguments)["buildKey"])
+            self.assertEqual(1, len(admissions))
+            wrong = {**digests, "jvm": "sha256:" + "0" * 64}
+            with self.assertRaisesRegex(ValueError, "original receipt differs"):
+                caller.with_core14(**{**arguments, "reused_receipt_sha256": wrong})
+            _, foreign_key, _ = generate_development_key(fixture.root / "foreign-key")
+            with self.assertRaises(ValueError):
+                caller.with_core14(**{**arguments, "reused_catalog": replace(
+                    catalog, public_key=foreign_key)})
+            state_row["transportSource"]["indexSha256"] = "sha256:" + "0" * 64
+            with self.assertRaisesRegex(ValueError, "signed reused election"):
+                caller.with_core14(**arguments)
+            self.assertEqual(2, len(admissions))
+
     def test_reused_cli_rejects_replay_controls_from_carrier_or_checkout(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
