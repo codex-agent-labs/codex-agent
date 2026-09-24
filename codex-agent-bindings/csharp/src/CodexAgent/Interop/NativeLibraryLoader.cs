@@ -235,7 +235,7 @@ internal static class NativeLibraryLoader
         var identitySchema = Integer(runtime, "requiredIdentitySchema");
         var abiMajor = Integer(runtime, "requiredAbiMajor");
         var abiMinor = Integer(runtime, "minimumAbiMinor");
-        if (identitySchema != 1 || abiMajor != 1 || abiMinor < 0)
+        if (identitySchema != 1 || abiMajor != 1 || abiMinor is < 0 or > 255)
             throw new InvalidDataException("Unsupported Runtime identity or ABI policy.");
         if (Sha(String(runtime, "requiredContractDigest"), "required Contract digest") != contractDigest)
             throw new InvalidDataException("SDK compatibility Contract digest mismatch.");
@@ -333,7 +333,8 @@ internal static class NativeLibraryLoader
         if (String(identity, "contractDigest") != compatibility.ContractDigest)
             throw new InvalidDataException("Runtime identity Contract mismatch.");
         var abi = Semver(String(identity, "cAbiVersion"), "Runtime identity ABI");
-        if (abi.Major != compatibility.AbiMajor || abi.Minor < compatibility.AbiMinor)
+        if (abi.Major != compatibility.AbiMajor || abi.Minor < compatibility.AbiMinor ||
+            abi.Minor > 255 || abi.Build > 65535)
             throw new InvalidDataException("Runtime identity ABI is incompatible.");
         var runtimeCompatibility = Semver(String(identity, "runtimeCompatibilityVersion"), "Runtime compatibility version");
         if (runtimeCompatibility < compatibility.CompatibilityMinimum || runtimeCompatibility >= compatibility.CompatibilityMaximum)

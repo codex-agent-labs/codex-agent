@@ -82,6 +82,8 @@ internal static class RuntimeLoaderSecurity
             value => value["cAbiVersion"] = "1.12.0",
             value => value["cAbiVersion"] = "1.0.0",
             value => value["cAbiVersion"] = "2.13.0",
+            value => value["cAbiVersion"] = "1.269.0",
+            value => value["cAbiVersion"] = "1.13.65536",
             value => value["contractDigest"] = DifferentDigest(value["contractDigest"]!.GetValue<string>()),
             value => value["target"] = "linux-arm64",
             value =>
@@ -108,6 +110,9 @@ internal static class RuntimeLoaderSecurity
             booleanInteger["runtime"]![field] = true;
             Reject<InvalidDataException>(() => NativeLibraryLoader.ValidateCompatibilityForTests(booleanInteger.ToJsonString() + "\n"));
         }
+        var oversizedAbiMinor = JsonNode.Parse(compatibility)!.AsObject();
+        oversizedAbiMinor["runtime"]!["minimumAbiMinor"] = 256;
+        Reject<InvalidDataException>(() => NativeLibraryLoader.ValidateCompatibilityForTests(oversizedAbiMinor.ToJsonString() + "\n"));
 
         foreach (var mutation in new Action<JsonObject>[]
         {
