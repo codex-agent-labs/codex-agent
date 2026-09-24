@@ -111,7 +111,10 @@ def attest_contract_ci(
             "event": payload, "environment": {**expected_environment, "GITHUB_REF": environment.get("GITHUB_REF")},
         }
         write_canonical_json(prepared / "caller.json", caller)
-        publish_regular_tree(prepared, destination)
+        # Pin the already authenticated handoff and caller evidence before the
+        # publisher snapshots its source; a late mutation must not become its baseline.
+        expected_inventory = regular_file_inventory(prepared)
+        publish_regular_tree(prepared, destination, expected_inventory=expected_inventory)
     return caller
 
 

@@ -6,11 +6,25 @@ import tempfile
 import unittest
 from unittest import mock
 
-from ci.products.inventory import publish_regular_tree
+from ci.products.inventory import publish_regular_tree, regular_file_inventory
 
 
 @unittest.skipIf(os.name == "nt", "POSIX directory publication race")
 class ProductPublicationAtomicityTests(unittest.TestCase):
+    def test_pinned_inventory_uses_global_file_path_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "source"
+            (source / "a").mkdir(parents=True)
+            (source / "a.txt").write_bytes(b"sibling")
+            (source / "a" / "file").write_bytes(b"nested")
+            destination = root / "published"
+
+            expected = regular_file_inventory(source)
+            publish_regular_tree(source, destination, expected_inventory=expected)
+
+            self.assertEqual(expected, regular_file_inventory(destination))
+
     def test_foreign_empty_destination_created_after_final_check_is_not_replaced(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

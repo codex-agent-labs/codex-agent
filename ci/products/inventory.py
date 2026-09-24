@@ -564,10 +564,10 @@ def _directory_inventory(
     directory: int,
     prefix: str = "",
     *, allow_empty: bool = False,
-) -> tuple[tuple[str, str, int, str], ...]:
+) -> tuple[tuple[str, str, int, int, str], ...]:
     before = os.fstat(directory)
     names = sorted(os.listdir(directory))
-    records: list[tuple[str, str, int, str]] = []
+    records: list[tuple[str, str, int, int, str]] = []
     for name in names:
         relative = f"{prefix}/{name}" if prefix else name
         metadata = os.stat(name, dir_fd=directory, follow_symlinks=False)
@@ -581,7 +581,7 @@ def _directory_inventory(
                 opened = os.fstat(child)
                 if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
                     raise ValueError(f"Snapshot directory changed while verifying: {relative}")
-                records.append((relative, "directory", opened.st_mode, ""))
+                records.append((relative, "directory", opened.st_mode, 0, ""))
                 records.extend(_directory_inventory(child, relative, allow_empty=allow_empty))
             finally:
                 os.close(child)
@@ -606,7 +606,7 @@ def _directory_inventory(
                         remaining -= len(chunk)
                     if source.read(1) or _stat_identity(opened) != _stat_identity(os.fstat(file_descriptor)):
                         raise ValueError(f"Snapshot file changed while verifying: {relative}")
-                records.append((relative, "file", opened.st_mode, f"sha256:{digest.hexdigest()}"))
+                records.append((relative, "file", opened.st_mode, opened.st_size, f"sha256:{digest.hexdigest()}"))
             finally:
                 os.close(file_descriptor)
         else:
@@ -708,7 +708,10 @@ def _copy_windows_snapshot_file(source: Path, destination: Path, expected: tuple
             os.close(destination_descriptor)
 
 
-def _snapshot_regular_tree_windows(source: Path, destination: Path, *, allow_empty: bool = False) -> None:
+def _snapshot_regular_tree_windows(
+    source: Path, destination: Path, *, allow_empty: bool = False,
+    expected_inventory: tuple[tuple[str, int, str], ...] | None = None,
+) -> None:
     source = _windows_directory_path(source, "Snapshot source")
     destination = Path(os.path.abspath(destination))
     parent = _windows_directory_path(destination.parent, "Snapshot destination", create=True)
@@ -736,6 +739,11 @@ def _snapshot_regular_tree_windows(source: Path, destination: Path, *, allow_emp
         for relative, expected_digest in copied.items():
             if _regular_file_digest(staged / relative)[1] != expected_digest:
                 raise ValueError(f"Snapshot destination file changed before publication: {relative}")
+        if expected_inventory is not None and tuple(
+            (relative, source_files[relative][2], digest)
+            for relative, digest in sorted(copied.items())
+        ) != expected_inventory:
+            raise ValueError("Snapshot staged contents do not match the pinned inventory")
         try:
             os.rename(staged, destination)
         except OSError as error:
@@ -798,10 +806,21 @@ def _rename_directory_noreplace(source_name: str, destination_name: str, parent:
         raise OSError(code, os.strerror(code), destination_name)
 
 
-def publish_regular_tree(source: Path, destination: Path, *, allow_empty: bool = False) -> None:
+def publish_regular_tree(
+    source: Path, destination: Path, *, allow_empty: bool = False,
+    expected_inventory: list[dict[str, Any]] | None = None,
+) -> None:
     """Publish a verified tree atomically without following a replaced parent path."""
+    expected = None
+    if expected_inventory is not None:
+        records = require_sorted_unique_records(expected_inventory, "pinned inventory")
+        for index, record in enumerate(records):
+            validate_file_record(record, f"pinned inventory[{index}]", with_kind=False)
+        expected = tuple((record["relativePath"], record["bytes"], record["sha256"]) for record in records)
     if _is_windows():
-        _snapshot_regular_tree_windows(Path(source), Path(destination), allow_empty=allow_empty)
+        _snapshot_regular_tree_windows(
+            Path(source), Path(destination), allow_empty=allow_empty, expected_inventory=expected,
+        )
         return
     source = Path(os.path.abspath(source))
     destination = Path(os.path.abspath(destination))
@@ -837,6 +856,11 @@ def publish_regular_tree(source: Path, destination: Path, *, allow_empty: bool =
             raise ValueError("Snapshot source contents changed during publication")
         if staged_inventory != source_inventory:
             raise ValueError("Snapshot staged contents do not match the source")
+        if expected is not None and tuple(sorted(
+            (relative, size, digest)
+            for relative, kind, _mode, size, digest in staged_inventory if kind == "file"
+        )) != expected:
+            raise ValueError("Snapshot staged contents do not match the pinned inventory")
         named = os.stat(staged_name, dir_fd=parent_descriptor, follow_symlinks=False)
         if _stat_identity(named) != _stat_identity(os.fstat(staged_descriptor)):
             raise ValueError("Snapshot staging directory changed before publication")

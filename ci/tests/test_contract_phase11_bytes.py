@@ -29,6 +29,8 @@ class ContractPhase11BytesTest(unittest.TestCase):
         phase10 = phase10_tests.ContractPhase10MavenCallerTest(
             "test_exact_original_payload_and_external_phase10_maven_sidecars",
         )
+        self.addCleanup(phase10.doClassCleanups)
+        phase10.setUpClass()
         self.addCleanup(phase10.doCleanups)
         phase10.setUp()
         with mock.patch("reuse.api_request", side_effect=phase10.fixture.api()):

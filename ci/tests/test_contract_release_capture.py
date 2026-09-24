@@ -15,7 +15,11 @@ from ci.tests import test_contract_ci_originals as originals_fixture
 from ci.tests.test_contract_bundle import VERSION
 from ci.tests.test_contract_release_context import contract_context, trusted_repository
 from products.contract_attestation import build_contract_attestation, verify_contract_attestation
-from products.inventory import canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory, sha256_bytes
+from products.inventory import (
+    canonical_json_bytes, load_canonical_json_bytes,
+    publish_regular_tree as actual_publish_regular_tree,
+    regular_file_inventory, sha256_bytes,
+)
 from products.signatures import generate_development_key
 from ci import contract_release
 
@@ -140,6 +144,24 @@ class ContractReleaseCaptureTest(unittest.TestCase):
         self.assert_public_caller_policy()
         secret_bytes = self.private_key.read_bytes()
         self.assertFalse(any(secret_bytes in path.read_bytes() for path in self.destination.rglob("*") if path.is_file()))
+
+    def test_late_prepared_payload_mutation_cannot_be_published(self):
+        original = self.payload.read_bytes()
+        published = []
+
+        def mutate_then_publish(source, destination, **kwargs):
+            payload = Path(source) / "contract-input" / f"codex-agent-contract-{VERSION}.zip"
+            payload.write_bytes(payload.read_bytes() + b"late mutation\n")
+            published.append(payload)
+            actual_publish_regular_tree(source, destination, **kwargs)
+
+        with mock.patch("reuse.api_request", side_effect=self.api()), \
+                mock.patch.object(contract_release, "publish_regular_tree", side_effect=mutate_then_publish), \
+                self.assertRaises(ValueError):
+            self.attest()
+        self.assertEqual(1, len(published))
+        self.assertFalse(self.destination.exists())
+        self.assertEqual(original, self.payload.read_bytes())
 
     def test_exact_existing_release_handoff_is_forwarded_without_secret_or_signing(self):
         handoff = self.root / "existing-release"
