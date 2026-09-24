@@ -60,10 +60,12 @@ class CrossLanguageJavaScriptBindingTasksTest {
                 ${wiring.lineSequence().single { it.startsWith("val npmOffline =") }}
                 val npmConsumerDirectory = layout.projectDirectory.dir("consumer")
                 val npmConsumerCacheDirectory = providers.provider { layout.projectDirectory.dir("npm-cache") }
-                val npmArchiveFile = providers.provider { layout.projectDirectory.file("fixture.tgz") }
+                val importedNpmSdkPackageStage = providers.gradleProperty("fixtureImportedNpmSdkPackageStage")
+                val npmConsumerArchive = providers.provider { layout.projectDirectory.file("fixture.tgz") }
                 val preparePackedNpmConsumer = tasks.register("preparePackedNpmConsumer")
                 val packageNpm = tasks.register("packageNpm")
                 val verifyNpmPackDryRun = tasks.register("verifyNpmPackDryRun")
+                val verifyImportedJavaScriptSdkCompatibility = tasks.register("verifyImportedJavaScriptSdkCompatibility")
                 val npmCiPackedConsumer = $registration
                 tasks.withType<Exec>().configureEach {
                     executable = layout.projectDirectory.file("npm-probe").asFile.absolutePath

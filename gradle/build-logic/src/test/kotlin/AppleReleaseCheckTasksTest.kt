@@ -124,15 +124,24 @@ class AppleReleaseCheckTasksTest {
             ),
             "codexagent.contract-product.gradle.kts" to listOf(
                 "\"python3\", \"-m\", \"ci.products.contract\"",
+                "\"python3\", \"-m\", \"ci.products.contract\"",
+                "\"python3\", \"-m\", \"ci.products.contract\"",
+                "\"python3\", \"-m\", \"ci.products.contract\"",
+                "\"python3\", \"-m\", \"ci.products.contract\"",
                 "executable(\"python3\")\n    args(\"-m\", \"ci.products.contract\", \"validate-package\"",
             ),
             "ProductOutputManifestGradleTask.kt" to listOf(
+                "pythonExecutable.convention(\"python3\")",
+                "pythonExecutable.convention(\"python3\")",
                 "pythonExecutable.convention(\"python3\")",
             ),
             "ProductPythonTooling.kt" to listOf(
                 "ProcessBuilder(listOf(\"python3\", \"-I\", \"-S\", \"-B\", \"-c\", bootstrap, root.absolutePath) + script + arguments)",
             ),
             "CrossLanguageNativeWrapperGradleTasks.kt" to listOf(
+                "pythonExecutable.convention(\"python3\")",
+                "pythonExecutable.convention(\"python3\")",
+                "pythonExecutable.convention(\"python3\")",
                 "pythonExecutable.convention(\"python3\")",
                 "\"python3\", packageScript.get().asFile.absolutePath, \"package\"",
             ),
@@ -149,6 +158,14 @@ class AppleReleaseCheckTasksTest {
                 "\"python3\", \"-m\", \"ci.products.sdk_maven\"",
                 "\"python3\", \"-m\", \"ci.products.sdk_archive\"",
             ),
+            "AppleValidationContentTasks.kt" to listOf("pythonExecutable.convention(\"python3\")"),
+            "IosSdkMetadataContentTask.kt" to listOf("pythonExecutable.convention(\"python3\")"),
+            "SdkAndroidMetadataTasks.kt" to listOf("pythonExecutable.convention(\"python3\")"),
+            "SdkFacadeMetadataTasks.kt" to listOf("pythonExecutable.convention(\"python3\")"),
+            "SdkFacadeValidationTasks.kt" to listOf(
+                "pythonExecutable.convention(\"python3\")",
+                "pythonExecutable.convention(\"python3\")",
+            ),
         )
         val nonProductPythonSource = sources
             .filterKeys { it !in productPythonOwners }
@@ -159,7 +176,7 @@ class AppleReleaseCheckTasksTest {
             var remaining = productSource
             invocations.forEach { invocation ->
                 assertTrue(invocation in remaining, owner)
-                remaining = remaining.replace(invocation, "")
+                remaining = remaining.replaceFirst(invocation, "")
             }
             assertFalse("python3" in remaining, owner)
         }

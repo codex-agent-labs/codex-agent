@@ -230,8 +230,9 @@ class AppleSdkDistributionPackageTaskTest {
         assertTrue("codexAgent.iosExpectedSdkCompatibility" in ios)
         assertTrue("codexAgent.iosExpectedDistributionProof" in ios)
         assertTrue("canonicalRequest" in ios)
-        assertTrue(ios.indexOf("if (importedApple.isPresent)") <
-            ios.indexOf("project(\":codex-agent-runtime-ios\")"))
+        assertTrue(("} else if (importedApple.isPresent) {\n" +
+            "            val iosRuntime = project(\":codex-agent-runtime-ios\")\n" +
+            "            iosRuntime.pluginManager.withPlugin(\"codexagent.ios-runtime\") {") in ios)
         assertTrue("stageImportedCodexAgentIosSdkPackageArtifacts" in ios)
         assertTrue("verifyTransportedCodexAgentIosSdkPackageClosure" in ios)
         assertTrue("dependsOn(invalidate)" in ios)
