@@ -14,10 +14,12 @@ plugins {
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.maven.publish)
     id("codexagent.contract-product") apply false
+    id("codexagent.sdk-product") apply false
     id("codexagent.root-release")
 }
 
 apply(plugin = "codexagent.contract-product")
+apply(plugin = "codexagent.sdk-product")
 
 dependencies {
     constraints {

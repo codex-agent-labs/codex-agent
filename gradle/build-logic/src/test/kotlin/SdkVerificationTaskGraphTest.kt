@@ -57,7 +57,9 @@ class SdkVerificationTaskGraphTest {
                 gradle.projectsEvaluated {
                     println("CODEX_AGENT_PROJECT_GRAPH=" + gradle.rootProject.allprojects*.path.sort().join(","))
                     println("CODEX_AGENT_TASK_GRAPH=" + gradle.rootProject.allprojects.collectMany {
-                        project -> project.tasks*.path
+                        project -> project.tasks.names.collect { name ->
+                            project.path == ":" ? ":" + name : project.path + ":" + name
+                        }
                     }.sort().join(","))
                 }
                 """.trimIndent() + "\n",

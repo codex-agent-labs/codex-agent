@@ -6,6 +6,7 @@ import kotlin.test.assertTrue
 
 class ProductPhaseMappingContractTest {
     private val contract = File("src/main/kotlin/codexagent.contract-product.gradle.kts").readText()
+    private val sdkProduct = File("src/main/kotlin/codexagent.sdk-product.gradle.kts").readText()
     private val desktop = File("../../runtime/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts")
         .readText()
     private val runtimeBuild = File("../../runtime/build.gradle.kts").readText()
@@ -24,8 +25,11 @@ class ProductPhaseMappingContractTest {
             Triple("contract", "contract", "metadata") to "writeContractMetadataOutputManifest",
             Triple("sdk", "sdk-core", "binary") to "writeSdkCoreBinaryOutputManifest",
             Triple("sdk", "sdk-core", "package") to "writeSdkCorePackageOutputManifest",
+            Triple("sdk", "sdk-core", "validation") to "writeSdkCoreValidationOutputManifest",
+            Triple("sdk", "sdk-core", "metadata") to "writeSdkCoreMetadataOutputManifest",
             Triple("sdk", "sdk-android", "binary") to "writeSdkAndroidBinaryOutputManifest",
             Triple("sdk", "sdk-android", "package") to "writeSdkAndroidPackageOutputManifest",
+            Triple("sdk", "sdk-android", "metadata") to "writeSdkAndroidMetadataOutputManifest",
             Triple("sdk", "sdk-ios", "binary") to "writeSdkIosBinaryOutputManifest",
             Triple("sdk", "sdk-ios", "package") to "writeSdkIosPackageOutputManifest",
             Triple("sdk", "sdk-ios", "validation") to "writeSdkIosValidationOutputManifest",
@@ -697,9 +701,9 @@ class ProductPhaseMappingContractTest {
     @Test
     fun SDK_Maven_binary_phases_publish_to_three_disjoint_raw_repositories() {
         val binary = between(
-            contract,
+            sdkProduct,
             "fun registerSdkBinaryPhase(",
-            "tasks.register(\"ciProductPhase\")",
+            "val requestedProduct =",
         )
         mapOf(
             "sdk-core" to "SDK_CORE_BINARY_STAGING",

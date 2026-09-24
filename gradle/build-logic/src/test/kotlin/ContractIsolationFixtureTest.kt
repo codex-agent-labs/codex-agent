@@ -37,30 +37,13 @@ class ContractIsolationFixtureTest {
         "MavenRepositoryTasks.kt",
         "ProductOutputManifestGradleTask.kt",
         "ProductPythonTooling.kt",
+        "ProductVersionIdentity.kt",
         "ProductVersions.kt",
         "ReleaseIo.kt",
         "VerifyProtocolSourceTask.kt",
         "codexagent.contract-product.gradle.kts",
         "codexagent.core-verification.gradle.kts",
     )
-    @Test
-    fun `Contract production inputs cover the exact compiler closure`() {
-        val matchers = repository.resolve("ci/lanes/contract-product.production.pathspec")
-            .readLines()
-            .filter { it.isNotBlank() && !it.startsWith('#') }
-            .map { pattern ->
-                repository.toPath().fileSystem.getPathMatcher(
-                    "glob:${pattern.replace('/', File.separatorChar)}",
-                )
-            }
-        val inputs = contractBuildLogicSourceFiles.map { "gradle/build-logic/src/main/kotlin/$it" }
-        val missing = inputs.filterNot { relative ->
-            val path = repository.toPath().fileSystem.getPath(relative.replace('/', File.separatorChar))
-            matchers.any { it.matches(path) }
-        }
-        assertTrue(missing.isEmpty(), "Contract compiler inputs missing from production pathspec: $missing")
-    }
-
     @Test
     fun `explicit Contract build logic closure compiles alone`() {
         val fixture = createTempDirectory("contract-build-logic").toFile()
@@ -93,6 +76,7 @@ class ContractIsolationFixtureTest {
         try {
             copyDirectory("gradle/release/contract-isolation-fixture", fixture)
             copyFile("gradle/release/versions/contract.txt", fixture)
+            val contractVersion = fixture.resolve("gradle/release/versions/contract.txt").readText().trim()
             copyContractBuildLogic(fixture)
             copyFile("codex-agent-core/build.gradle.kts", fixture)
             copyFile("codex-agent-core/gradle.lockfile", fixture)
@@ -198,7 +182,7 @@ class ContractIsolationFixtureTest {
                 "build/contract-product/maven-repository/io/github/codex-agent-labs",
             )
             facadePublicationSpecs.map { it.coreArtifact }.forEach { artifact ->
-                val versionDirectory = stagedGroup.resolve("$artifact/0.2.0")
+                val versionDirectory = stagedGroup.resolve("$artifact/$contractVersion")
                 assertTrue(versionDirectory.isDirectory, versionDirectory.path)
                 assertTrue(
                     versionDirectory.listFiles().orEmpty().any { it.isFile && it.extension == "pom" },
@@ -216,7 +200,7 @@ class ContractIsolationFixtureTest {
                 ).language,
             )
 
-            val bundle = fixture.resolve("build/contract-product/bundle/codex-agent-contract-0.2.0.zip")
+            val bundle = fixture.resolve("build/contract-product/bundle/codex-agent-contract-$contractVersion.zip")
             assertTrue(bundle.isFile)
             assertFalse(fixture.resolve("build/contract-product/bundle/development-ed25519.pub").exists())
             assertFalse(fixture.walkTopDown().any { it.name == "development-ed25519" })

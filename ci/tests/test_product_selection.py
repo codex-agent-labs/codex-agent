@@ -1586,6 +1586,20 @@ class ProductSelectionTest(unittest.TestCase):
         for path in paths:
             selected = classify_paths([path]).instances
             self.assertFalse(any(instance.product == "runtime" and instance.phase == "binary" for instance in selected))
+        sdk_script = classify_paths([
+            "gradle/build-logic/src/main/kotlin/codexagent.sdk-product.gradle.kts",
+        ]).instances
+        self.assertEqual({"sdk-core", "sdk-android", "sdk-ios"},
+                         {instance.component for instance in sdk_script})
+        self.assertTrue(all(instance.product == "sdk" for instance in sdk_script))
+        self.assertEqual({"binary", "package", "validation", "metadata"},
+                         {instance.phase for instance in sdk_script})
+        capture_path = "ci/sdk_core_context_preparation_capture.py"
+        self.assertEqual({("sdk", "sdk-core", "metadata")},
+                         {(instance.product, instance.component, instance.phase)
+                          for instance in classify_paths([capture_path]).instances})
+        self.assertEqual((), phase_inventory_paths([capture_path],
+            PhaseInstanceId("sdk", "sdk-core", "metadata", "common")))
 
         archive = classify_paths(["ci/products/sdk_archive.py"])
         self.assertEqual({"sdk-core", "sdk-android", "sdk-ios", "javascript"},

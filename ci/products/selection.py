@@ -265,6 +265,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_campaign_original_locator.py",
     "ci/sdk_campaign_original_worker.py",
     "ci/sdk_core_context_preparation_locator.py",
+    "ci/sdk_core_context_preparation_capture.py",
     "ci/sdk_core_metadata_bootstrap.py",
     "ci/sdk_core_metadata_context_policy.py",
     "ci/sdk_core_metadata_context_preparation.py",
@@ -634,7 +635,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path in {"ci/products/sdk_core_original_selection.py", "ci/sdk_core_native_archive_provision.py",
                 "ci/sdk_core_validation_policy.py"}:
         return _from_phase("sdk", "sdk-core", "validation")
-    if path in {"ci/sdk_core_context_preparation_locator.py", "ci/sdk_core_metadata_bootstrap.py",
+    if path in {"ci/sdk_core_context_preparation_locator.py", "ci/sdk_core_context_preparation_capture.py",
+                "ci/sdk_core_metadata_bootstrap.py",
                 "ci/sdk_core_metadata_context_policy.py", "ci/sdk_core_metadata_context_preparation.py",
                 "ci/sdk_core_metadata_history.py", "ci/sdk_core_metadata_same_campaign.py",
                 "ci/sdk_facade_original_inputs.py"}:
@@ -1276,6 +1278,11 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             return _from_phase("contract", "contract", "validation")
         if name == "codexagent.contract-product.gradle.kts":
             return _contract().union(*(
+                _from_phase("sdk", component, "binary")
+                for component in ("sdk-core", "sdk-android", "sdk-ios")
+            ))
+        if name == "codexagent.sdk-product.gradle.kts":
+            return set().union(*(
                 _from_phase("sdk", component, "binary")
                 for component in ("sdk-core", "sdk-android", "sdk-ios")
             ))
