@@ -5,6 +5,8 @@ policy, not the uploaded execution context. This is not hosted-toolchain or
 release admission: the caller still has to authenticate those expectations.
 """
 
+from collections.abc import Mapping
+from copy import deepcopy
 from pathlib import Path
 import os
 import tempfile
@@ -117,3 +119,46 @@ def verify_campaign_core_validation(
     finally:
         unchanged()
     return expected[0]
+
+
+def verify_campaign_core_validations(selections: Mapping, *, repository_root,
+    tooling_evidence, tooling_public_key, java_executable, policy_revision,
+    required_trust_domain, environ=None, tooling_keyring=None,
+    tooling_keys_directory=None) -> dict[str, bytes]:
+    """Replay all eleven caller-pinned originals; do not grant release trust.
+
+    Each selection is independent caller policy, never data recovered from an
+    uploaded execution context. The protected caller must authenticate these
+    pins and hold the selected objects through its separate release decision.
+    """
+    if not isinstance(selections, Mapping) or set(selections) != set(SDK_FACADE_TARGETS):
+        raise ValueError("Campaign Core requires exactly eleven target selections")
+    pinned = deepcopy(dict(selections))
+    fields = {"envelope", "stage", "captureRoot", "plan", "facadeRequest",
+              "originalContext", "originalWorkerDirectory", "nativeCompilerArchive"}
+    for target in sorted(SDK_FACADE_TARGETS):
+        selection = require_exact_keys(selections[target], fields,
+            f"Campaign Core {target} caller selection")
+        identity, _ = _validate_envelope(selection["envelope"])
+        if (identity.product, identity.component, identity.phase, identity.target) != \
+                ("sdk", "sdk-core", "validation", target):
+            raise ValueError("Campaign Core caller selection has the wrong target")
+    receipts = {}
+    for target in sorted(SDK_FACADE_TARGETS):
+        if dict(selections) != pinned:
+            raise ValueError("Campaign Core caller selections changed during replay")
+        selection = pinned[target]
+        receipts[target] = verify_campaign_core_validation(
+            selection["envelope"], selection["stage"], selection["captureRoot"],
+            plan=selection["plan"], facade_request=selection["facadeRequest"],
+            repository_root=repository_root,
+            original_context=selection["originalContext"],
+            original_worker_directory=selection["originalWorkerDirectory"],
+            tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
+            java_executable=java_executable, policy_revision=policy_revision,
+            required_trust_domain=required_trust_domain, environ=environ,
+            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
+            native_compiler_archive=selection["nativeCompilerArchive"])
+    if dict(selections) != pinned:
+        raise ValueError("Campaign Core caller selections changed during replay")
+    return receipts

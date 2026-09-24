@@ -8,7 +8,10 @@ from unittest.mock import patch
 
 from ci.products.inventory import sha256_bytes, write_canonical_json
 from ci.products.receipt import write_output_manifest
-from ci.products.sdk_core_original_selection import verify_campaign_core_validation
+from ci.products.registry import SDK_FACADE_TARGETS
+from ci.products.sdk_core_original_selection import (
+    verify_campaign_core_validation, verify_campaign_core_validations,
+)
 from ci.tests.product_chain_support import write_receipt
 
 
@@ -145,6 +148,43 @@ class CoreOriginalSelectionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.verify(changed)
         self.assertEqual(self.calls, [])
+
+    def test_all_targets_require_independent_exact_selections(self):
+        selections = {target: {
+            "envelope": self.selected(target), "stage": self.stage,
+            "captureRoot": self.capture, "plan": self.plan,
+            "facadeRequest": self.request, "originalContext": self.context,
+            "originalWorkerDirectory": self.worker, "nativeCompilerArchive": None,
+        } for target in SDK_FACADE_TARGETS}
+        arguments = dict(repository_root=self.repository, tooling_evidence=self.tooling,
+            tooling_public_key=self.public_key, java_executable=self.java,
+            policy_revision="a" * 40, required_trust_domain="release", environ={})
+        with patch("ci.products.sdk_core_original_selection.verify_campaign_core_validation",
+                   side_effect=lambda envelope, *_args, **_kwargs: envelope["receiptBytes"]) as replay:
+            result = verify_campaign_core_validations(selections, **arguments)
+            self.assertEqual(set(result), set(SDK_FACADE_TARGETS))
+            self.assertEqual(replay.call_count, 11)
+            with self.assertRaisesRegex(ValueError, "exactly eleven"):
+                verify_campaign_core_validations({"jvm": selections["jvm"]}, **arguments)
+            with self.assertRaisesRegex(ValueError, "wrong target"):
+                wrong = dict(selections)
+                wrong["jvm"] = dict(wrong["jvm"], envelope=selections["android"]["envelope"])
+                verify_campaign_core_validations(wrong, **arguments)
+            with self.assertRaisesRegex(ValueError, "caller selection"):
+                missing_pin = dict(selections)
+                missing_pin["jvm"] = {key: value for key, value in missing_pin["jvm"].items()
+                                      if key != "originalWorkerDirectory"}
+                verify_campaign_core_validations(missing_pin, **arguments)
+            self.assertEqual(replay.call_count, 11)
+        changed_during_replay = dict(selections)
+        def mutate_selection(envelope, *_args, **_kwargs):
+            changed_during_replay["jvm"] = dict(changed_during_replay["jvm"],
+                                                originalWorkerDirectory="/different/worker")
+            return envelope["receiptBytes"]
+        with patch("ci.products.sdk_core_original_selection.verify_campaign_core_validation",
+                   side_effect=mutate_selection), \
+                self.assertRaisesRegex(ValueError, "changed during replay"):
+            verify_campaign_core_validations(changed_during_replay, **arguments)
 
 
 if __name__ == "__main__":
