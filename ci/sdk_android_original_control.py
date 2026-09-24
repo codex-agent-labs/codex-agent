@@ -22,7 +22,6 @@ from products.signing_isolation import require_no_signing_secret
 
 
 _BASE = {
-    "packageStage", "packageReceipt", "binaryStage", "binaryReceipt",
     "compatibilityRequest", "binaryContractEvidence", "trustedSourceCommit",
     "trustedSourceTree", "toolingEvidence", "toolingPublicKey",
     "javaExecutable", "apkanalyzerExecutable", "toolingTrustDomain",
@@ -66,15 +65,15 @@ def compose(base, validation, *, expected_run_id, expected_run_attempt,
     for name in _BASE - {
             "trustedSourceCommit", "trustedSourceTree", "trustedAndroidWorkflowSha",
             "toolingTrustDomain", "toolingKeyring", "toolingKeysDirectory",
-            "packageStage", "binaryStage", "toolingEvidence"}:
+            "toolingEvidence"}:
         _external(_source_path(base[name], name), repository, name)
     if base["toolingKeyring"] is not None:
         _external(_source_path(base["toolingKeyring"], "toolingKeyring"), repository,
                   "toolingKeyring")
         _external(_source_path(base["toolingKeysDirectory"], "toolingKeysDirectory",
                                directory=True), repository, "toolingKeysDirectory")
-    for name in ("packageStage", "binaryStage", "toolingEvidence"):
-        _external(_source_path(base[name], name, directory=True), repository, name)
+    _external(_source_path(base["toolingEvidence"], "toolingEvidence", directory=True),
+              repository, "toolingEvidence")
     return {
         "schemaVersion": 1, **base,
         "validationReceiptSha256": validation["validationReceiptSha256"],

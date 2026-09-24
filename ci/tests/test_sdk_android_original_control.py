@@ -21,8 +21,6 @@ class AndroidOriginalControlTest(unittest.TestCase):
         directory.mkdir()
         (directory / "evidence").write_bytes(b"original")
         self.base = {
-            "packageStage": str(directory), "packageReceipt": str(source),
-            "binaryStage": str(directory), "binaryReceipt": str(source),
             "compatibilityRequest": str(source), "binaryContractEvidence": str(source),
             "trustedSourceCommit": "a" * 40, "trustedSourceTree": "b" * 40,
             "toolingEvidence": str(directory), "toolingPublicKey": str(source),
@@ -51,7 +49,7 @@ class AndroidOriginalControlTest(unittest.TestCase):
                          policy["validationArtifactSha256"])
         self.assertEqual((29, 2), (policy["expectedOriginalRunId"],
                                     policy["expectedOriginalRunAttempt"]))
-        self.assertEqual(22, len(policy))
+        self.assertEqual(18, len(policy))
 
     def test_missing_or_cross_paired_worker_outputs_fail_closed(self):
         for field in self.outputs:
@@ -74,7 +72,7 @@ class AndroidOriginalControlTest(unittest.TestCase):
         inside = self.repository / "retained-receipt.json"
         inside.write_bytes(b"untrusted retained state")
         with self.assertRaisesRegex(ValueError, "source checkout"):
-            self.compose(base={**self.base, "packageReceipt": str(inside)})
+            self.compose(base={**self.base, "compatibilityRequest": str(inside)})
 
     def test_cli_writes_one_external_canonical_policy(self):
         root = self.repository.parent

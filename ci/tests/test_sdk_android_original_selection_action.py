@@ -69,6 +69,9 @@ class AndroidOriginalSelectionActionTest(unittest.TestCase):
         self.assertIn("expected_receipt_sha256=control['validationReceiptSha256']", source)
         self.assertIn("if locator != {'artifact_id': control['validationArtifactId']", source)
         self.assertIn("with verified_original_android_firebase_validation(", source)
+        self.assertIn("'validationReceiptSha256': control['validationReceiptSha256']", source)
+        self.assertIn("'packageStage': str(package / 'stage')", source)
+        self.assertIn("'binaryStage': str(binary / 'stage')", source)
         for field in ("validationArtifactId", "validationArtifactSha256", "trustedAndroidWorkflowSha",
                       "expectedOriginalRunId", "expectedOriginalRunAttempt", "trustedSourceCommit",
                       "trustedSourceTree", "binaryContractEvidence", "compatibilityRequest"):
@@ -155,6 +158,10 @@ class AndroidOriginalSelectionActionTest(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "elected"):
                 run()  # Independent sibling controls pass the path boundary.
+            control["packageStage"] = str(root / "state")
+            with self.assertRaises(ValueError):
+                run()  # Caller stage paths cannot replace authenticated predecessors.
+            del control["packageStage"]
             for name in ("compatibilityRequest", "toolingEvidence", "toolingPublicKey",
                          "javaExecutable", "apkanalyzerExecutable"):
                 original = control[name]

@@ -274,6 +274,7 @@ runs:
                   'apkanalyzerExecutable': control['apkanalyzerExecutable'],
                   'toolingTrustDomain': trust, 'toolingKeyring': control['toolingKeyring'],
                   'toolingKeysDirectory': control['toolingKeysDirectory'],
+                  'validationReceiptSha256': control['validationReceiptSha256'],
                   'validationArtifactId': control['validationArtifactId'],
                   'validationArtifactSha256': control['validationArtifactSha256'],
                   'trustedAndroidWorkflowSha': control['trustedAndroidWorkflowSha'],
