@@ -100,13 +100,15 @@ class RuntimeVariantHandoffTest(unittest.TestCase):
 
     def test_exact_original_nine_bytes_retained_without_signing_or_ci(self):
         before = regular_file_inventory(self.root, allow_empty=True)
+        pinned = {}
         with patch("ci.products.runtime_attestation.sign_manifest", side_effect=AssertionError("read signed")), \
                 patch.object(capture, "read_runtime_variant_handoff", wraps=capture.read_runtime_variant_handoff) as reader:
-            outputs = self.invoke()
+            outputs = self.invoke(original_inventories=pinned)
         self.assertEqual(1, len(outputs))
         reader.assert_called_once()
         self.assertEqual(regular_file_inventory(self.original_handoffs[TARGET]), regular_file_inventory(outputs[0]))
         self.assertEqual(9, len(regular_file_inventory(outputs[0])))
+        self.assertEqual({outputs[0]: regular_file_inventory(self.original_handoffs[TARGET])}, pinned)
         expected = sha256_bytes(self.phases["validation"].read_bytes()).removeprefix("sha256:")
         self.assertEqual(self.destination / expected, outputs[0])
         self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
@@ -194,6 +196,54 @@ class RuntimeVariantHandoffTest(unittest.TestCase):
                 for path, raw in restore:
                     if path.exists():
                         path.write_bytes(raw)
+
+    def test_late_final_publication_change_does_not_replace_verified_handoff(self):
+        original_publish = capture.publish_regular_tree
+
+        def mutate(source, destination, **kwargs):
+            (source / sha256_bytes(self.phases["validation"].read_bytes()).removeprefix("sha256:") /
+             "public-key.pub").write_bytes(b"late replacement\n")
+            return original_publish(source, destination, **kwargs)
+
+        with patch.object(capture, "publish_regular_tree", side_effect=mutate), self.assertRaises(ValueError):
+            self.invoke()
+        self.assertFalse(self.destination.exists())
+
+    def test_caller_policy_and_original_copy_are_pinned_before_verification(self):
+        pinned = {"product-signing-keys.json": self.keyring.read_bytes(),
+                  f"keys/{self.signing['keyId']}.pub":
+                      (self.keys / f"{self.signing['keyId']}.pub").read_bytes()}
+        original_policy = capture._public_policy
+
+        def swapped_policy(*args):
+            paths, raw = original_policy(*args)
+            return paths, {**raw, "product-signing-keys.json": b"transient swap"}
+
+        with patch.object(capture, "_public_policy", side_effect=swapped_policy), \
+                self.assertRaisesRegex(ValueError, "caller-pinned bytes"):
+            self.invoke(expected_policy=pinned)
+        self.assertFalse(self.destination.exists())
+
+        def mutate_private_policy(*args):
+            paths, raw = original_policy(*args)
+            (args[2] / "product-signing-keys.json").write_bytes(b"changed private policy\n")
+            return paths, raw
+
+        with patch.object(capture, "_public_policy", side_effect=mutate_private_policy), \
+                self.assertRaisesRegex(ValueError, "private policy"):
+            self.invoke(expected_policy=pinned)
+        self.assertFalse(self.destination.exists())
+
+        original_copy = capture._copy_file
+
+        def mutate_copy(source, destination, **kwargs):
+            original_copy(source, destination, **kwargs)
+            if destination.name == "public-key.pub":
+                destination.write_bytes(b"changed copied source\n")
+
+        with patch.object(capture, "_copy_file", side_effect=mutate_copy), self.assertRaises(ValueError):
+            self.invoke(expected_policy=pinned)
+        self.assertFalse(self.destination.exists())
 
     def test_unsafe_records_outputs_and_selected_identity_preserve_originals(self):
         before = regular_file_inventory(self.root, allow_empty=True)

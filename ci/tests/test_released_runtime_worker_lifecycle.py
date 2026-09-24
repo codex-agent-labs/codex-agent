@@ -20,7 +20,9 @@ from ci.tests.test_contract_execution_closure import execution_closure_fixture
 from ci.products.contract_attestation import build_contract_attestation, capture_contract_execution_closure
 from ci.products.plan import plan_phase
 from ci.products.selection import phase_git_inventory
-from products.inventory import load_canonical_json, regular_file_inventory, snapshot_regular_tree, write_canonical_json
+from products.inventory import (
+    load_canonical_json, publish_regular_tree, regular_file_inventory, snapshot_regular_tree, write_canonical_json,
+)
 from products.receipt import verify_output_manifest_identity
 from products.registry import NATIVE_TARGETS
 from products.sdk_compatibility import load_sdk_compatibility_request
@@ -277,6 +279,24 @@ class ReleasedRuntimeWorkerLifecycleTest(unittest.TestCase):
                          transport["receiptSha256"])
         self.assertEqual(self.producer, transport["consumer"]["producer"])
         self.assertFalse(list(self.repository.glob("codex-agent-sdk-default-*")))
+
+    def test_late_released_runtime_copy_mutation_cannot_publish_sdk_default(self):
+        destination = self.repository / "build/late-mutated-sdk-default"
+
+        def mutate_before_copy(prepared, target, **kwargs):
+            receipt = prepared / "runtime-original/aggregate-input/metadata-receipt.json"
+            if receipt.is_file():
+                receipt.write_bytes(receipt.read_bytes() + b"late mutation\n")
+            return publish_regular_tree(prepared, target, **kwargs)
+
+        with self.control_seams(), patch.object(adapter, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            adapter.materialize_sdk_default_inputs(
+                self.plan_path, self.resumed, self.resumed, destination,
+                keyring=self.catalog.keyring, keys_directory=self.catalog.keys,
+                repository_root=self.repository, environ=self.environment,
+            )
+        self.assertFalse(destination.exists())
 
     def test_sdk_default_inputs_reject_wrong_caller_policy_without_publication(self):
         work = self.repository / "build/wrong-sdk-default-policy"

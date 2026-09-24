@@ -3211,6 +3211,7 @@ def materialize_sdk_default_inputs(
 ):
     """Stage the elected SDK default, preserving both original provenance chains."""
     from products.runtime_sdk_handoff import stage_runtime_sdk_handoff
+    from products.sdk_inputs import INVENTORY_NAME
     from products.sdk_package import _require_capability_output_separate
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     discovery_root, state_root, destination = _product_materialization_paths(
@@ -3226,11 +3227,16 @@ def materialize_sdk_default_inputs(
     with tempfile.TemporaryDirectory(prefix="codex-agent-sdk-default-", dir=root) as temporary:
         prepared = Path(temporary).resolve() / "output"
         captured = {}
+        runtime_files = []
 
         def capture(selected):
             if captured:
                 raise ValueError("SDK default was captured more than once")
-            snapshot_regular_tree(selected["handoff"]["directory"], prepared / "runtime-original", allow_empty=True)
+            source = selected["handoff"]["directory"]
+            runtime_files.extend(regular_file_inventory(source, allow_empty=True))
+            snapshot_regular_tree(source, prepared / "runtime-original", allow_empty=True)
+            if regular_file_inventory(prepared / "runtime-original", allow_empty=True) != runtime_files:
+                raise ValueError("SDK default Runtime original changed during capture")
             captured.update({"transportSource": selected["transportSource"],
                              "receiptSha256": selected["envelope"]["receiptSha256"],
                              "objectSha256": selected["envelope"]["objectSha256"]})
@@ -3246,18 +3252,49 @@ def materialize_sdk_default_inputs(
             raise ValueError("SDK default inputs require selected released-default consumer work")
         contract = PhaseInstanceId("contract", "contract", "metadata", "common")
         (prepared / "current-contract").mkdir()
-        _restore_product_objects(state, _dependency_closure((contract,)), prepared / "current-contract")
+        restored_contract = _restore_product_objects(state, _dependency_closure((contract,)), prepared / "current-contract")
         write_canonical_json(prepared / "selection.json", selection)
-        write_canonical_json(prepared / "transport.json", {**captured, "consumer": state.consumer})
-        stage_runtime_sdk_handoff(prepared / "runtime-original", prepared / "sdk-inputs",
+        transport = {**captured, "consumer": state.consumer}
+        write_canonical_json(prepared / "transport.json", transport)
+        staged_sdk = stage_runtime_sdk_handoff(prepared / "runtime-original", prepared / "sdk-inputs",
             sdk_version=selection["sdkVersion"], compatible_release_range=selection["compatibleReleaseRange"],
             compatible_runtime_compatibility_range=selection["compatibleRuntimeCompatibilityRange"],
             keyring=keyring, keys_directory=keys_directory,
             selection_repository_root=root, selection_revision=state.producer["commit"],
             expected_contract_payload_sha256=selection["contractPayloadSha256"])
         # Both original replay and full SDK authentication have exited before publication.
+        expected_files = [
+            *({**record, "relativePath": f"runtime-original/{record['relativePath']}"} for record in runtime_files),
+            *({**record, "relativePath": f"sdk-inputs/{record['relativePath']}"}
+              for record in staged_sdk["inventory"]["files"]),
+        ]
+        inventory_bytes = canonical_json_bytes(staged_sdk["inventory"])
+        if sha256_bytes(inventory_bytes) != staged_sdk["inventorySha256"]:
+            raise ValueError("SDK default staged inventory differs from its verified writer")
+        expected_files.append({"relativePath": f"sdk-inputs/{INVENTORY_NAME}", "bytes": len(inventory_bytes),
+                               "sha256": staged_sdk["inventorySha256"]})
+        for identity, restored in restored_contract.items():
+            prefix = "current-contract/" + "-".join(getattr(identity, field) for field in _IDENTITY_KEYS)
+            receipt = restored["receipt"]
+            manifest = {"schemaVersion": 1, **{field: receipt[field] for field in
+                ("product", "component", "phase", "target", "productVersion", "outputs")}}
+            manifest_bytes, receipt_bytes = canonical_json_bytes(manifest), restored["receiptBytes"]
+            expected_files.extend([
+                *({"relativePath": f"{prefix}/stage/{record['relativePath']}",
+                   "bytes": record["bytes"], "sha256": record["sha256"]} for record in receipt["outputs"]),
+                {"relativePath": f"{prefix}/stage/output-manifest.json", "bytes": len(manifest_bytes),
+                 "sha256": sha256_bytes(manifest_bytes)},
+                {"relativePath": f"{prefix}/phase-receipt.json", "bytes": len(receipt_bytes),
+                 "sha256": sha256_bytes(receipt_bytes)},
+            ])
+        for name, value in (("selection.json", selection), ("transport.json", transport)):
+            raw = canonical_json_bytes(value)
+            expected_files.append({"relativePath": name, "bytes": len(raw), "sha256": sha256_bytes(raw)})
+        expected_files.sort(key=lambda record: record["relativePath"])
+        if regular_file_inventory(prepared, allow_empty=True) != expected_files:
+            raise ValueError("SDK default inputs differ from authenticated originals")
         output_safe()
-        publish_regular_tree(prepared, destination, allow_empty=True)
+        publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected_files)
     return selection
 
 
@@ -3364,7 +3401,7 @@ the complete product semantics. This selection never grants signing authority.
         prepared = Path(temporary).resolve() / "selection"
         inputs = prepared / "predecessors"
         inputs.mkdir(parents=True)
-        _restore_product_objects(state, instances, inputs)
+        restored_objects = _restore_product_objects(state, instances, inputs)
 
         def original(product, component, phase, target):
             identity = PhaseInstanceId(product, component, phase, target)
@@ -3384,8 +3421,70 @@ the complete product semantics. This selection never grants signing authority.
         trust = _release_trust(root, state.producer["commit"], prepared)
         if trust is None:
             raise ValueError("Runtime attestation selection has no Git-authoritative release policy")
-        contract, version, handoff, _ = _capture_runtime_contract(
+        contract, version, handoff, _, handoff_files = _capture_runtime_contract(
             root, evidence, original, one_output, prepared, trust)
+
+        retained_inventories = {}
+        retained_policy = None
+
+        def publish_selection(selection, retained=()):
+            keyring_bytes = git_regular_blob_bytes(root, state.producer["commit"], _KEYRING_PATH,
+                                                   max_bytes=64 * 1024)
+            keyring_value = load_canonical_json_bytes(keyring_bytes)
+            key_records = [record for record in (keyring_value["activeKey"], *keyring_value["retiredKeys"])
+                           if record is not None]
+            expected_files = [
+                {"relativePath": "trust/product-signing-keys.json", "bytes": len(keyring_bytes),
+                 "sha256": sha256_bytes(keyring_bytes)},
+                *({**record, "relativePath": f"contract-input/{record['relativePath']}"}
+                  for record in handoff_files),
+            ]
+            for record in key_records:
+                key_id = record["keyId"]
+                raw = git_regular_blob_bytes(root, state.producer["commit"],
+                                             f"{_KEYS_ROOT}/{key_id}.pub", max_bytes=64 * 1024)
+                expected_files.append({"relativePath": f"trust/keys/{key_id}.pub",
+                                       "bytes": len(raw), "sha256": sha256_bytes(raw)})
+            for identity, restored in restored_objects.items():
+                name = "-".join(getattr(identity, field) for field in _IDENTITY_KEYS)
+                stage = f"predecessors/{name}/stage"
+                if target != "aggregate" and identity.product == "runtime" and identity.component == target \
+                        and identity.target == target and identity.phase in {"binary", "package", "validation", "metadata"}:
+                    stage = f"runtime/{target}/{identity.phase}"
+                receipt = restored["receipt"]
+                manifest = {"schemaVersion": 1, **{field: receipt[field] for field in
+                    ("product", "component", "phase", "target", "productVersion", "outputs")}}
+                manifest_bytes, receipt_bytes = canonical_json_bytes(manifest), restored["receiptBytes"]
+                expected_files.extend([
+                    *({"relativePath": f"{stage}/{record['relativePath']}",
+                       "bytes": record["bytes"], "sha256": record["sha256"]} for record in receipt["outputs"]),
+                    {"relativePath": f"{stage}/output-manifest.json", "bytes": len(manifest_bytes),
+                     "sha256": sha256_bytes(manifest_bytes)},
+                    {"relativePath": f"predecessors/{name}/phase-receipt.json", "bytes": len(receipt_bytes),
+                     "sha256": sha256_bytes(receipt_bytes)},
+                ])
+            if retained:
+                for path in retained:
+                    prefix = path.relative_to(prepared).as_posix()
+                    expected_files.extend(
+                        {**record, "relativePath": f"{prefix}/{record['relativePath']}"}
+                        for record in retained_inventories[path])
+                policy_bytes, keys_inventory = retained_policy
+                if (any(read_regular_file_bytes(
+                            retained_release_keyring if name == "product-signing-keys.json"
+                            else retained_release_keys_directory / name.removeprefix("keys/"),
+                            max_bytes=64 * 1024, reject_symlink_parents=True) != raw
+                        for name, raw in policy_bytes.items())
+                        or regular_file_inventory(retained_release_keys_directory) != keys_inventory):
+                    raise ValueError("Retained Runtime caller policy changed after capture")
+            selection_bytes = canonical_json_bytes(selection)
+            expected_files.append({"relativePath": "selection.json", "bytes": len(selection_bytes),
+                                   "sha256": sha256_bytes(selection_bytes)})
+            expected_files.sort(key=lambda record: record["relativePath"])
+            if regular_file_inventory(prepared) != expected_files:
+                raise ValueError("Runtime attestation selection differs from authenticated originals")
+            publish_regular_tree(prepared, destination, expected_inventory=expected_files)
+
         if target == "aggregate":
             value = original("runtime", "runtime-aggregate", "metadata", "aggregate")
             selection = {
@@ -3403,7 +3502,7 @@ the complete product semantics. This selection never grants signing authority.
             }
             write_canonical_json(prepared / "selection.json", selection)
             _runtime_worker_checkout(root, state.producer)
-            publish_regular_tree(prepared, destination)
+            publish_selection(selection)
             return selection
         phase_receipts = {}
         payload = None
@@ -3433,17 +3532,28 @@ the complete product semantics. This selection never grants signing authority.
         }
         if retained_release_keyring is not None:
             from products.runtime_variant_handoff import capture_runtime_variant_handoffs
+            policy = load_keyring(retained_release_keyring, retained_release_keys_directory)
+            policy_bytes = {"product-signing-keys.json": read_regular_file_bytes(
+                retained_release_keyring, max_bytes=64 * 1024, reject_symlink_parents=True)}
+            for record in (policy["activeKey"], *policy["retiredKeys"]):
+                if record is not None:
+                    policy_bytes[f"keys/{record['keyId']}.pub"] = read_regular_file_bytes(
+                        public_key_path(retained_release_keys_directory, record["keyId"]),
+                        max_bytes=64 * 1024, reject_symlink_parents=True)
+            retained_policy = (
+                policy_bytes, regular_file_inventory(retained_release_keys_directory))
             request = dict(state.rebased_request)
             _merge_native_comparison_records(request, _retained_native_handoffs(state_root, root))
             retained = capture_runtime_variant_handoffs(
                 request.get("nativeRuntimeComparisonEvidence", []), root,
                 prepared / "retained-release-handoffs", target=target,
                 phase_receipts={phase: prepared / path for phase, path in phase_receipts.items()},
-                keyring=retained_release_keyring, keys_directory=retained_release_keys_directory)
+                keyring=retained_release_keyring, keys_directory=retained_release_keys_directory,
+                original_inventories=retained_inventories, expected_policy=policy_bytes)
             selection["releaseHandoffs"] = [path.relative_to(prepared).as_posix() for path in retained]
         write_canonical_json(prepared / "selection.json", selection)
         _runtime_worker_checkout(root, state.producer)
-        publish_regular_tree(prepared, destination)
+        publish_selection(selection, retained if retained_release_keyring is not None else ())
     return selection
 
 
@@ -3453,16 +3563,23 @@ def _capture_runtime_contract(root, evidence, original, one_output, prepared, tr
     stem = f"codex-agent-contract-{version}"
     handoff = prepared / "contract-input"
     handoff.mkdir()
+    expected_files = []
     for source, name, limit in (
         (one_output(contract, "contract-bundle"), f"{stem}.zip", 512 * 1024 * 1024),
         (root / evidence["attestation"], f"{stem}.attestation.json", 16 * 1024 * 1024),
         (root / evidence["attestationSignature"], f"{stem}.attestation.sig", 1024 * 1024),
         (root / evidence["publicKey"], "public-key.pub", 1024 * 1024),
     ):
-        (handoff / name).write_bytes(read_regular_file_bytes(
-            source, max_bytes=limit, reject_symlink_parents=True))
-    snapshot_regular_tree((root / evidence["attestation"]).parent / "execution-closure",
-                          handoff / "execution-closure")
+        raw = read_regular_file_bytes(source, max_bytes=limit, reject_symlink_parents=True)
+        (handoff / name).write_bytes(raw)
+        expected_files.append({"relativePath": name, "bytes": len(raw), "sha256": sha256_bytes(raw)})
+    closure_source = (root / evidence["attestation"]).parent / "execution-closure"
+    closure_files = regular_file_inventory(closure_source)
+    snapshot_regular_tree(closure_source, handoff / "execution-closure")
+    if regular_file_inventory(handoff / "execution-closure") != closure_files:
+        raise ValueError("Runtime worker Contract closure changed during capture")
+    expected_files.extend({**record, "relativePath": f"execution-closure/{record['relativePath']}"}
+                          for record in closure_files)
     for phase in ("binary", "package", "validation", "metadata"):
         retained = original("contract", "contract", phase, "common")["receiptPath"]
         if read_regular_file_bytes(retained) != read_regular_file_bytes(
@@ -3473,7 +3590,10 @@ def _capture_runtime_contract(root, evidence, original, one_output, prepared, tr
         handoff / f"{stem}.attestation.json", handoff / f"{stem}.attestation.sig",
         handoff / "public-key.pub", required_trust_domain="release",
         keyring=trust.keyring, keys_directory=trust.keys)
-    return contract, version, handoff, manifest
+    expected_files.sort(key=lambda record: record["relativePath"])
+    if regular_file_inventory(handoff) != expected_files:
+        raise ValueError("Runtime worker Contract handoff changed before publication")
+    return contract, version, handoff, manifest, expected_files
 
 
 def _prepare_runtime_phase(state, instance, destination, expected_build_key, root):
@@ -3513,7 +3633,7 @@ def _prepare_runtime_phase(state, instance, destination, expected_build_key, roo
                 raise ValueError(f"Runtime worker requires one exact original {kind} output")
             return value["stage"] / outputs[0]["relativePath"]
 
-        contract, version, handoff, manifest = _capture_runtime_contract(
+        contract, version, handoff, manifest, _ = _capture_runtime_contract(
             root, evidence, original, one_output, prepared, trust)
         stem = f"codex-agent-contract-{version}"
         properties = {

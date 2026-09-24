@@ -13,7 +13,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from ci.tests import test_runtime_release_caller as fixture
-from products.inventory import load_canonical_json_bytes, regular_file_inventory, snapshot_regular_tree
+from products.inventory import (load_canonical_json_bytes, publish_regular_tree as actual_publish_regular_tree,
+                                regular_file_inventory, snapshot_regular_tree)
 from products.restore import store_local_object
 from products.registry import PhaseInstanceId
 import product_reuse
@@ -172,6 +173,25 @@ class RuntimeAttestationSelectionTest(unittest.TestCase):
         self.assertFalse(any(self.output.glob("predecessors/runtime-*/stage")))
         self.assertEqual(set(PHASES), set(selection["receiptSha256s"]))
 
+    def test_late_native_original_mutation_cannot_publish(self):
+        mutated = False
+
+        def mutate_before_copy(source, destination, **kwargs):
+            nonlocal mutated
+            receipt = Path(source) / f"predecessors/runtime-{TARGET}-binary-{TARGET}/phase-receipt.json"
+            if receipt.exists():
+                receipt.write_bytes(b"changed after selection")
+                mutated = True
+            return actual_publish_regular_tree(source, destination, **kwargs)
+
+        with patch.object(product_reuse, "publish_regular_tree", side_effect=mutate_before_copy):
+            try:
+                with self.assertRaisesRegex(ValueError, "pinned inventory"):
+                    self.materialize()
+            finally:
+                self.assertTrue(mutated)
+        self.assertFalse(self.output.exists())
+
     def test_wrong_key_missing_original_and_development_contract_fail_closed(self):
         with self.assertRaisesRegex(ValueError, "complete retained closure"):
             self.materialize(expected_build_key="sha256:" + "0" * 64)
@@ -185,7 +205,7 @@ class RuntimeAttestationSelectionTest(unittest.TestCase):
             self.materialize()
         self.assertFalse(self.output.exists())
 
-    def test_completed_aggregate_restores_all_fifty_originals_without_building(self):
+    def _aggregate_originals(self):
         aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
         instances = product_reuse._dependency_closure((aggregate,))
         self.assertEqual(50, len(instances))
@@ -213,6 +233,10 @@ class RuntimeAttestationSelectionTest(unittest.TestCase):
                 "receiptSha256": stored["receiptSha256"], "objectSha256": stored["objectSha256"]}
             self.state.sources[instance] = stored["path"]
             self.originals[instance] = receipt.read_bytes()
+        return aggregate
+
+    def test_completed_aggregate_restores_all_fifty_originals_without_building(self):
+        aggregate = self._aggregate_originals()
         before = regular_file_inventory(self.discovery)
         result = self.materialize(target="aggregate", expected_build_key=self.state.prior_by_instance[aggregate]["buildKey"])
         self.assertEqual(50, len(result["originals"]))
@@ -222,6 +246,26 @@ class RuntimeAttestationSelectionTest(unittest.TestCase):
             self.assertEqual(self.originals[instance],
                              (self.output / record["directory"] / "phase-receipt.json").read_bytes())
         self.assertEqual(before, regular_file_inventory(self.discovery))
+
+    def test_late_aggregate_original_mutation_cannot_publish(self):
+        aggregate = self._aggregate_originals()
+        mutated = False
+
+        def mutate_before_copy(source, destination, **kwargs):
+            nonlocal mutated
+            receipt = Path(source) / "predecessors/runtime-runtime-aggregate-metadata-aggregate/phase-receipt.json"
+            if receipt.exists():
+                receipt.write_bytes(b"changed after selection")
+                mutated = True
+            return actual_publish_regular_tree(source, destination, **kwargs)
+
+        with patch.object(product_reuse, "publish_regular_tree", side_effect=mutate_before_copy):
+            try:
+                with self.assertRaisesRegex(ValueError, "pinned inventory"):
+                    self.materialize(target="aggregate", expected_build_key=self.state.prior_by_instance[aggregate]["buildKey"])
+            finally:
+                self.assertTrue(mutated)
+        self.assertFalse(self.output.exists())
 
     def test_corrupt_original_object_never_publishes_a_selection(self):
         path = self.state.sources[self.metadata]

@@ -30,7 +30,9 @@ _JSON_LIMIT = 16 * 1024 * 1024
 
 def capture_runtime_variant_handoffs(records, artifact_root: Path, destination: Path, *,
                                      target: str, phase_receipts, keyring: Path,
-                                     keys_directory: Path) -> tuple[Path, ...]:
+                                     keys_directory: Path,
+                                     original_inventories: dict[Path, list] | None = None,
+                                     expected_policy: dict[str, bytes] | None = None) -> tuple[Path, ...]:
     """Publish matching release proofs unchanged, or return empty when absent.
 
     Candidate discovery is data-only. Every matching release candidate must pass
@@ -104,7 +106,13 @@ def capture_runtime_variant_handoffs(records, artifact_root: Path, destination: 
         private = Path(temporary).resolve()
         policy = private / "policy"
         policy_paths, policy_bytes = _public_policy(keyring, keys_directory, policy)
-        policy_inventory = regular_file_inventory(policy)
+        if expected_policy is not None and policy_bytes != expected_policy:
+            raise ValueError("Retained native policy differs from caller-pinned bytes")
+        policy_inventory = sorted(
+            ({"relativePath": name, "bytes": len(raw), "sha256": sha256_bytes(raw)}
+             for name, raw in policy_bytes.items()), key=lambda record: record["relativePath"])
+        if regular_file_inventory(policy) != policy_inventory:
+            raise ValueError("Retained native private policy differs from caller-pinned bytes")
         handoffs = private / "handoffs"
         source_digests = {}
         inventories = {}
@@ -121,10 +129,13 @@ def capture_runtime_variant_handoffs(records, artifact_root: Path, destination: 
             }
             name = digest.removeprefix("sha256:")
             captured = handoffs / name
+            original_files = []
             for relative, (source, limit) in sources.items():
-                if not 0 < source.stat(follow_symlinks=False).st_size <= limit:
+                size = source.stat(follow_symlinks=False).st_size
+                if not 0 < size <= limit:
                     raise ValueError("Retained native original exceeds its handoff size bound")
                 before = sha256_file(source)
+                original_files.append({"relativePath": relative, "bytes": size, "sha256": before})
                 if source in source_digests and source_digests[source] != before:
                     raise ValueError("Retained native original changed during capture")
                 source_digests[source] = before
@@ -135,7 +146,11 @@ def capture_runtime_variant_handoffs(records, artifact_root: Path, destination: 
                 path = captured / "receipts" / f"{phase}.json"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(raw)
+                original_files.append({"relativePath": f"receipts/{phase}.json",
+                                       "bytes": len(raw), "sha256": sha256_bytes(raw)})
             before = regular_file_inventory(captured)
+            if before != sorted(original_files, key=lambda record: record["relativePath"]):
+                raise ValueError("Retained native copy differs from original source bytes")
             verified = read_runtime_variant_handoff(captured, target=target,
                 keyring=policy / "product-signing-keys.json", keys_directory=policy / "keys")
             if (verified["receiptBytes"] != originals or regular_file_inventory(captured) != before
@@ -152,5 +167,11 @@ def capture_runtime_variant_handoffs(records, artifact_root: Path, destination: 
                        for name, path in policy_paths.items())):
             raise ValueError("Retained native original or caller policy changed before publication")
         output_safe()
-        publish_regular_tree(handoffs, destination)
+        expected = sorted(
+            ({**record, "relativePath": f"{name}/{record['relativePath']}"}
+             for name, inventory in inventories.items() for record in inventory),
+            key=lambda record: record["relativePath"])
+        publish_regular_tree(handoffs, destination, expected_inventory=expected)
+    if original_inventories is not None:
+        original_inventories.update({destination / name: inventory for name, inventory in inventories.items()})
     return tuple(published)
