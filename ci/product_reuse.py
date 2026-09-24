@@ -5252,13 +5252,34 @@ def _capture_completed_contract_handoff(
         trust = _release_trust(root, plan["validationCommit"], prepared)
         if trust is None:
             raise ValueError("Completed Contract handoff requires tracked release trust")
+        keyring_bytes = git_regular_blob_bytes(
+            root, plan["validationCommit"], _KEYRING_PATH, max_bytes=64 * 1024)
+        keyring = load_canonical_json_bytes(keyring_bytes)
+        trust_sources = [("product-signing-keys.json", keyring_bytes)]
+        for record in (keyring["activeKey"], *keyring["retiredKeys"]):
+            if record is not None:
+                relative = f"keys/{record['keyId']}.pub"
+                trust_sources.append((relative, git_regular_blob_bytes(
+                    root, plan["validationCommit"], f"{_KEYS_ROOT}/{record['keyId']}.pub",
+                    max_bytes=64 * 1024)))
+        trust_files = sorted((
+            {"relativePath": relative, "bytes": len(raw), "sha256": sha256_bytes(raw)}
+            for relative, raw in trust_sources
+        ), key=lambda record: record["relativePath"])
+        if regular_file_inventory(trust.keyring.parent) != trust_files:
+            raise ValueError("Completed Contract release trust differs from tracked Git bytes")
         state = private / "state"
         snapshot_regular_tree(state_root, state)
         result = _canonical_control(state / "contract-reuse-result.json", "Completed Contract result")
         contract = PhaseInstanceId("contract", "contract", "metadata", "common")
         _validate_reuse_result(result, (contract,), require_complete=True)
         handoff = prepared / "contract-input"
+        handoff_files = regular_file_inventory(handoff_root)
         snapshot_regular_tree(handoff_root, handoff)
+        expected_files = sorted((
+            *({**record, "relativePath": f"trust/{record['relativePath']}"} for record in trust_files),
+            *({**record, "relativePath": f"contract-input/{record['relativePath']}"} for record in handoff_files),
+        ), key=lambda record: record["relativePath"])
         phases = ("binary", "package", "validation", "metadata")
         originals = {}
         for phase in phases:
@@ -5290,13 +5311,15 @@ def _capture_completed_contract_handoff(
             handoff / f"{stem}.attestation.json", handoff / f"{stem}.attestation.sig",
             handoff / "public-key.pub", required_trust_domain="release",
             keyring=trust.keyring, keys_directory=trust.keys)
+        if regular_file_inventory(prepared) != expected_files:
+            raise ValueError("Completed Contract handoff changed before publication")
         evidence = {
             "attestation": f"contract-input/{stem}.attestation.json",
             "attestationSignature": f"contract-input/{stem}.attestation.sig",
             "publicKey": "contract-input/public-key.pub", "expectedTrustDomain": "release",
             "keyring": _relative(prepared, trust.keyring), "keysDirectory": _relative(prepared, trust.keys),
         }
-        publish_regular_tree(prepared, destination)
+        publish_regular_tree(prepared, destination, expected_inventory=expected_files)
     return evidence
 
 
@@ -5410,7 +5433,8 @@ def resume_products(
                          reason="verified-full-reuse" if reuse["fullReuse"] else "product-build-required", reuse=reuse)
         write_canonical_json(prepared / "request.json", _discovery_request(plan, requested))
         write_canonical_json(prepared / "result.json", result)
-        publish_regular_tree(prepared, destination, allow_empty=True)
+        publish_regular_tree(prepared, destination, allow_empty=True,
+                             expected_inventory=regular_file_inventory(prepared, allow_empty=True))
     github_output(github_output_path, {"full_reuse": result["fullReuse"],
         "target_jobs_required": result["targetJobsRequired"], "product_reuse_reason": result["reason"]})
     return result

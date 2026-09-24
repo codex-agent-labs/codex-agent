@@ -14,7 +14,8 @@ from ci.tests.test_contract_bundle import VERSION
 from products.contract_attestation import (
     build_contract_attestation, capture_contract_execution_closure, verify_contract_attestation,
 )
-from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes
+from products.inventory import (canonical_json_bytes, publish_regular_tree as actual_publish_regular_tree,
+                                regular_file_inventory, sha256_bytes)
 from products.registry import PhaseInstanceId
 from products.restore import PHASE_SHARD_NAME, verify_phase_shard, write_carrier
 
@@ -196,3 +197,42 @@ class ContractResumeBindingTest(unittest.TestCase):
                 self.capture(destination=source / "overlapping-output")
             self.assertFalse((source / "overlapping-output").exists())
             self.assertEqual(before, regular_file_inventory(source))
+
+    def test_verified_handoff_rejects_prepublication_and_late_copy_mutations(self):
+        original_trust = product_reuse._release_trust
+
+        def inject_untracked_trust(*args, **kwargs):
+            trust = original_trust(*args, **kwargs)
+            if trust is not None:
+                (trust.keyring.parent / "untracked.pub").write_bytes(b"untracked release key")
+            return trust
+
+        with mock.patch.object(product_reuse, "_release_trust", side_effect=inject_untracked_trust), \
+                self.assertRaisesRegex(ValueError, "differs from tracked Git bytes"):
+            self.capture()
+        self.assertFalse(self.destination.exists())
+
+        original_verify = product_reuse.verify_contract_attestation
+
+        def mutate_after_verification(*args, **kwargs):
+            result = original_verify(*args, **kwargs)
+            Path(args[0]).write_bytes(b"changed before publication")
+            return result
+
+        with mock.patch.object(product_reuse, "verify_contract_attestation",
+                               side_effect=mutate_after_verification), \
+                self.assertRaisesRegex(ValueError, "changed before publication"):
+            self.capture()
+        self.assertFalse(self.destination.exists())
+
+        def mutate_during_copy(source, destination, **kwargs):
+            public_key = Path(source) / "contract-input/public-key.pub"
+            if public_key.exists():
+                public_key.write_bytes(b"changed during copy")
+            actual_publish_regular_tree(source, destination, **kwargs)
+
+        with mock.patch.object(product_reuse, "publish_regular_tree",
+                               side_effect=mutate_during_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self.capture()
+        self.assertFalse(self.destination.exists())

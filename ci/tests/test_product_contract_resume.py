@@ -10,7 +10,8 @@ from unittest import mock
 
 from ci.products.contract_attestation import build_contract_attestation, capture_contract_execution_closure
 from ci.products.inventory import (
-    load_canonical_json, regular_file_inventory, sha256_file, write_canonical_json,
+    load_canonical_json, publish_regular_tree as actual_publish_regular_tree,
+    regular_file_inventory, sha256_file, write_canonical_json,
 )
 from ci.products.plan import plan_phase
 from ci.products.selection import phase_git_inventory
@@ -206,6 +207,17 @@ class ContractProductResumeTest(unittest.TestCase):
         receipt.write_bytes(receipt.read_bytes() + b" ")
         with self.assertRaises(ValueError):
             self.resume(handoff=changed)
+        self.assertFalse((self.scratch / "resumed").exists())
+
+    def test_late_resume_control_mutation_cannot_publish(self):
+        def mutate_during_copy(source, destination, **kwargs):
+            if (Path(source) / "reuse-wave-result.json").exists():
+                (Path(source) / "reuse-wave-result.json").write_bytes(b"changed during copy")
+            actual_publish_regular_tree(source, destination, **kwargs)
+
+        with mock.patch.object(adapter, "publish_regular_tree", side_effect=mutate_during_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self.resume()
         self.assertFalse((self.scratch / "resumed").exists())
 
 
