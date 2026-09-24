@@ -168,7 +168,8 @@ class RuntimeMatrixControlTest(unittest.TestCase):
                     mock.patch.object(adapter, "_retained_aggregate_handoffs", return_value=[second]) as retained:
                 result = adapter.inspect_products(root / "plan", root / "discovery", root / "state",
                     repository_root=root, environ={})
-            replay.assert_called_once_with(root / "plan", root / "discovery", root / "state", root, {}, None)
+            replay.assert_called_once_with(root / "plan", root / "discovery", root / "state", root, {}, None,
+                sdk_original_workflow_sha=None)
             retained.assert_called_once_with(root / "state", root)
             self.assertEqual([first, second], result["runtimeAggregateReleaseEvidence"])
             self.assertNotIn("sdkInputSelection", result)
