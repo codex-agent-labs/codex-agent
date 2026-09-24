@@ -500,13 +500,23 @@ def capture_contract_ci_artifact(
         root = Path(temporary).resolve()
         archive = root / "transport.zip"
         archive.write_bytes(raw)
-        verified_zip_contents(archive, retained_paths=(), **_CATALOG_ZIP_LIMITS)
+        zipped, _, _ = verified_zip_contents(archive, retained_paths=(), **_CATALOG_ZIP_LIMITS)
         prepared = root / "captured"
         safe_extract(archive, prepared)
+        if regular_file_inventory(prepared) != zipped:
+            raise ValueError("Contract CI extraction differs from its exact original archive")
         _verify_contract_ci_capture(prepared, contract_version)
         evidence = {"artifact": artifact, "captureProducer": dict(transport_producer), "observed": observed}
         write_canonical_json(prepared / "transport/ci-artifact.json", evidence)
-        publish_regular_tree(prepared, destination)
+        evidence_bytes = canonical_json_bytes(evidence)
+        expected_files = sorted([
+            *zipped,
+            {"relativePath": "transport/ci-artifact.json", "bytes": len(evidence_bytes),
+             "sha256": sha256_bytes(evidence_bytes)},
+        ], key=lambda record: record["relativePath"])
+        if regular_file_inventory(prepared) != expected_files:
+            raise ValueError("Contract CI capture changed before publication")
+        publish_regular_tree(prepared, destination, expected_inventory=expected_files)
     return evidence
 
 
@@ -4638,10 +4648,13 @@ def capture_runtime_resume_upload(
             _require_artifact_job_window(observed[0], job_name, artifact)
         archive = private / "transport.zip"
         archive.write_bytes(raw)
-        verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+        zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
+                                             **_CATALOG_ZIP_LIMITS)
         prepared = private / "captured"
         original = prepared / "original"
         safe_extract(archive, original)
+        if regular_file_inventory(original, allow_empty=True) != zipped:
+            raise ValueError("Runtime resume extraction differs from its exact original archive")
         expected_roots = {"product-resume-inputs", "product-resume-state"} | (
             {"runtime-state"} if state_wave or sdk_state_wave is not None else set())
         if ({member.name for member in original.iterdir()} != expected_roots
@@ -4659,7 +4672,15 @@ def capture_runtime_resume_upload(
                                        reject_symlink_parents=True) != plan_bytes:
                 raise ValueError("Original SDK state capture plan changed during verification")
         write_canonical_json(prepared / "capture-transport.json", transport)
-        publish_regular_tree(prepared, destination, allow_empty=True)
+        transport_bytes = canonical_json_bytes(transport)
+        expected_files = sorted([
+            {"relativePath": "capture-transport.json", "bytes": len(transport_bytes),
+             "sha256": sha256_bytes(transport_bytes)},
+            *({**record, "relativePath": f"original/{record['relativePath']}"} for record in zipped),
+        ], key=lambda record: record["relativePath"])
+        if regular_file_inventory(prepared, allow_empty=True) != expected_files:
+            raise ValueError("Runtime resume capture changed before publication")
+        publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected_files)
     return transport
 
 
@@ -5018,11 +5039,21 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed,
                      f"{phase}ReceiptSha256": sha256_bytes(receipt_bytes)}
         write_canonical_json(prepared / "capture-transport.json", transport)
+        transport_bytes = canonical_json_bytes(transport)
+        expected_files = sorted([
+            {"relativePath": "plan/impact-plan.json", "bytes": len(plan_bytes),
+             "sha256": sha256_bytes(plan_bytes)},
+            {"relativePath": "transport.zip", "bytes": len(raw), "sha256": artifact_sha256},
+            {"relativePath": "capture-transport.json", "bytes": len(transport_bytes),
+             "sha256": sha256_bytes(transport_bytes)},
+            *({**record, "relativePath": f"original/{record['relativePath']}"} for record in zipped),
+        ], key=lambda record: record["relativePath"])
         if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes
                 or (receipt_path is not None and read_regular_file_bytes(receipt_path,
                     max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != receipt_bytes)
                 or captured_plan.read_bytes() != plan_bytes or sha256_file(archive) != artifact_sha256
-                or regular_file_inventory(original, allow_empty=True) != zipped):
+                or regular_file_inventory(original, allow_empty=True) != zipped
+                or regular_file_inventory(prepared, allow_empty=True) != expected_files):
             raise ValueError(f"Apple {phase} original inputs or upload changed before publication")
         output_safe()
         if bootstrap:
@@ -5030,7 +5061,7 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
             if (canonical_json_bytes(plan) != bootstrap_plan
                     or validate_producer(_consumer(plan, environment)["producer"]) != producer):
                 raise ValueError("Apple bootstrap plan or current producer changed during capture")
-        publish_regular_tree(prepared, destination, allow_empty=True)
+        publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected_files)
     return transport
 
 

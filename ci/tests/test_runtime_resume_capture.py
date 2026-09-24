@@ -1,6 +1,7 @@
 """Mocked original upload transport; captured bytes still require full replay."""
 import copy
 import io
+from pathlib import Path
 import stat
 import unittest
 from unittest import mock
@@ -8,7 +9,8 @@ import zipfile
 
 from ci.tests import test_runtime_supervisor_capture as supervisor_fixture
 from ci.tests.test_product_resume_capture import archive, product_reuse
-from ci.products.inventory import load_canonical_json, sha256_bytes
+from ci.products.inventory import (load_canonical_json, publish_regular_tree as actual_publish_regular_tree,
+                                   sha256_bytes)
 
 
 class RuntimeResumeCaptureTest(unittest.TestCase):
@@ -77,6 +79,19 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
         download.assert_called_once_with(self.artifact, "not-a-real-token")
         # The fixture state is not valid JSON; capture therefore proves no phase replay.
         self.assertNotIn("fullReuse", result)
+
+    def test_late_original_mutation_cannot_publish(self):
+        destination = self.root / "build/rejected-resume-late-copy"
+
+        def mutate_during_copy(source, output, **kwargs):
+            (Path(source) / "original/product-resume-state/reuse-wave-result.json").write_bytes(
+                b"changed during copy")
+            actual_publish_regular_tree(source, output, **kwargs)
+
+        with mock.patch.object(product_reuse, "publish_regular_tree", side_effect=mutate_during_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self.capture(destination)
+        self.assertFalse(destination.exists())
 
     def test_cli_forwards_only_explicit_upload_and_workflow_bindings(self):
         destination = self.root / "build/cli-resume-capture"

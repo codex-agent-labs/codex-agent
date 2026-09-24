@@ -362,6 +362,24 @@ class ContractCiArtifactCaptureTest(unittest.TestCase):
                 self.assertFalse(self.output.exists())
                 self.assertFalse((self.root / "escape").exists())
 
+    def test_late_transport_mutation_cannot_publish(self):
+        actual_publish = product_inventory.publish_regular_tree
+
+        def mutate_before_copy(source, destination, **kwargs):
+            transport = Path(source) / "transport/ci-artifact.json"
+            evidence = product_inventory.load_canonical_json_bytes(transport.read_bytes())
+            evidence["artifact"]["id"] = 42
+            transport.write_bytes(canonical_json_bytes(evidence))
+            return actual_publish(source, destination, **kwargs)
+
+        with mock.patch.object(product_reuse, "api_json", side_effect=[self.run, self.commit, self.artifact]), \
+                mock.patch.object(product_reuse, "paginated_items", return_value=self.jobs[1:]), \
+                mock.patch("reuse.api_request", return_value=self.raw), \
+                mock.patch.object(product_reuse, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self.capture()
+        self.assertFalse(self.output.exists())
+
 
 class ProductReuseAdapterTest(unittest.TestCase):
     def test_catalog_accepts_object_bound_and_rejects_oversized_member_before_extraction(self) -> None:

@@ -13,7 +13,9 @@ from unittest.mock import patch
 
 from ci.tests import test_runtime_aggregate_upload as fixture
 from ci.tests.product_chain_support import write_receipt
-from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes, snapshot_regular_tree
+from products.inventory import (
+    canonical_json_bytes, publish_regular_tree, regular_file_inventory, sha256_bytes, snapshot_regular_tree,
+)
 from products.receipt import write_output_manifest
 from products.restore import PHASE_PLAN_KEYS, finalize_phase_object
 
@@ -267,6 +269,17 @@ class SdkIosPackageUploadTest(unittest.TestCase):
             return result
 
         with patch.object(capture, "safe_extract", side_effect=mutate_archive), self.assertRaises(ValueError):
+            self.call()
+        self.assertFalse(self.output.exists())
+
+    def test_late_original_member_mutation_rejects_before_publication(self):
+        def mutate_before_copy(source, destination, **kwargs):
+            member = source / "original/worker/gradle.log"
+            member.write_bytes(b"late mutation\n")
+            return publish_regular_tree(source, destination, **kwargs)
+
+        with patch.object(capture, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
             self.call()
         self.assertFalse(self.output.exists())
 
