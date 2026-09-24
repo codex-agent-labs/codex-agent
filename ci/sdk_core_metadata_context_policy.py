@@ -163,12 +163,15 @@ def prepare_original_core_caller_policy(plan, discovery, state, bootstrap_policy
         "javaExecutable": policy["javaExecutable"], "policyRevision": elected.plan["validationCommit"],
         "requiredTrustDomain": policy["toolingTrustDomain"], "toolingKeyring": policy["toolingKeyring"],
         "toolingKeysDirectory": policy["toolingKeysDirectory"]}
+    caller_bytes = canonical_json_bytes(caller)
     with tempfile.TemporaryDirectory(prefix="core-context-caller-") as temporary:
         staged = Path(temporary).resolve() / "candidate"
         staged.mkdir()
         write_canonical_json(staged / "caller-policy.json", caller)
         unchanged()
-        publish_regular_tree(staged, destination)
+        publish_regular_tree(staged, destination, expected_inventory=[{
+            "relativePath": "caller-policy.json", "bytes": len(caller_bytes),
+            "sha256": sha256_bytes(caller_bytes)}])
     return destination / "caller-policy.json"
 
 

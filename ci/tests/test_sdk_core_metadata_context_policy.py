@@ -137,6 +137,20 @@ class CoreContextPolicyTest(unittest.TestCase):
             self.invoke(locator=mutate)
         self.assertFalse(self.destination.exists())
 
+    def test_late_caller_policy_replacement_never_publishes(self):
+        publish = policy.publish_regular_tree
+
+        def replace(source, destination, **kwargs):
+            record = source / "caller-policy.json"
+            altered = {**load_canonical_json_bytes(record.read_bytes()), "artifactId": 98}
+            write_canonical_json(record, altered)
+            return publish(source, destination, **kwargs)
+
+        with patch.object(policy, "publish_regular_tree", side_effect=replace):
+            with self.assertRaisesRegex(ValueError, "pinned inventory"):
+                self.invoke()
+        self.assertFalse(self.destination.exists())
+
     def test_optional_apple_policy_bytes_are_pinned_across_observation(self):
         apple, _, _ = self.apple_policy()
         result, calls = self.invoke(sdk_apple_validation_policy_path=apple)
