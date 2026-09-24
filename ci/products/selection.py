@@ -232,6 +232,50 @@ _IOS_BINARY_BUILD_LOGIC = frozenset({
     "codexagent.ios-runtime.gradle.kts",
 })
 _CONTROL_ONLY_FILES = frozenset({
+    "ci/contract_equal_tree_original.py",
+    "ci/contract_phase10_maven_caller.py",
+    "ci/contract_phase10_sidecar_caller.py",
+    "ci/contract_phase11_bytes.py",
+    "ci/products/contract_phase10_inventory.py",
+    "ci/products/contract_phase10_maven.py",
+    "ci/products/runtime_phase10_maven.py",
+    "ci/products/sdk_apple_package_admission.py",
+    "ci/products/sdk_campaign_android.py",
+    "ci/products/sdk_campaign_apple.py",
+    "ci/products/sdk_campaign_index.py",
+    "ci/products/sdk_campaign_javascript.py",
+    "ci/products/sdk_campaign_maven.py",
+    "ci/products/sdk_campaign_native.py",
+    "ci/products/sdk_campaign_selection.py",
+    "ci/products/sdk_campaign_semantics.py",
+    "ci/products/sdk_core_original_selection.py",
+    "ci/products/sdk_javascript_validation_phase.py",
+    "ci/products/sdk_phase10_maven.py",
+    "ci/runtime_phase10_sidecar_caller.py",
+    "ci/runtime_phase11_bytes.py",
+    "ci/sdk_android_archive_provision.py",
+    "ci/sdk_android_core14_caller.py",
+    "ci/sdk_android_core14_fresh_inputs.py",
+    "ci/sdk_android_original_control.py",
+    "ci/sdk_android_original_upload_locator.py",
+    "ci/sdk_android_package_policy.py",
+    "ci/sdk_android_validation_policy.py",
+    "ci/sdk_apple_original_package_selection.py",
+    "ci/sdk_campaign_observation.py",
+    "ci/sdk_campaign_original_locator.py",
+    "ci/sdk_campaign_original_worker.py",
+    "ci/sdk_core_context_preparation_locator.py",
+    "ci/sdk_core_metadata_bootstrap.py",
+    "ci/sdk_core_metadata_context_policy.py",
+    "ci/sdk_core_metadata_context_preparation.py",
+    "ci/sdk_core_metadata_history.py",
+    "ci/sdk_core_metadata_same_campaign.py",
+    "ci/sdk_core_native_archive_provision.py",
+    "ci/sdk_core_package_policy.py",
+    "ci/sdk_core_validation_policy.py",
+    "ci/sdk_facade_original_inputs.py",
+    "ci/sdk_facade_upload_locator.py",
+    "ci/sdk_policy_snapshot.py",
     "ci/products/signing_isolation.py",
     "ci/runtime_preparation_capture.py",
     "ci/runtime_preparation_locator.py",
@@ -554,6 +598,64 @@ def _native_metadata_owners(path: str) -> set[PhaseInstanceId]:
 def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path == "ci/products/gradle_bootstrap.py":
         return set(ALL_INSTANCES)
+    if path in {
+        "ci/contract_equal_tree_original.py", "ci/contract_phase10_maven_caller.py",
+        "ci/contract_phase10_sidecar_caller.py", "ci/contract_phase11_bytes.py",
+        "ci/products/contract_phase10_inventory.py", "ci/products/contract_phase10_maven.py",
+    }:
+        return _from_phase("contract", "contract", "metadata")
+    if path in {"ci/products/runtime_phase10_maven.py", "ci/runtime_phase10_sidecar_caller.py",
+                "ci/runtime_phase11_bytes.py"}:
+        return _from_phase("runtime", "runtime-aggregate", "metadata")
+    if path == "ci/products/sdk_phase10_maven.py":
+        return (_from_phase("sdk", "sdk-core", "metadata") |
+                _from_phase("sdk", "sdk-android", "metadata"))
+    if path == "ci/products/sdk_campaign_maven.py":
+        return (_from_phase("sdk", "sdk-core", "binary") |
+                _from_phase("sdk", "sdk-android", "binary"))
+    if path in {"ci/products/sdk_campaign_selection.py", "ci/products/sdk_campaign_semantics.py",
+                "ci/products/sdk_campaign_index.py", "ci/sdk_campaign_observation.py",
+                "ci/sdk_campaign_original_locator.py", "ci/sdk_campaign_original_worker.py",
+                "ci/sdk_policy_snapshot.py"}:
+        return {instance for instance in ALL_INSTANCES if instance.product == "sdk"}
+    if path in {"ci/products/sdk_campaign_native.py"}:
+        return _bindings(NATIVE_BINDINGS)
+    if path == "ci/products/sdk_campaign_javascript.py":
+        return _from_phase("sdk", "javascript", "package")
+    if path == "ci/products/sdk_javascript_validation_phase.py":
+        return _from_phase("sdk", "javascript", "validation")
+    if path == "ci/products/sdk_campaign_apple.py":
+        return _from_phase("sdk", "sdk-ios", "binary")
+    if path in {"ci/products/sdk_apple_package_admission.py",
+                "ci/sdk_apple_original_package_selection.py"}:
+        return _from_phase("sdk", "sdk-ios", "package")
+    if path == "ci/products/sdk_campaign_android.py":
+        return _from_phase("sdk", "sdk-android", "binary")
+    if path in {"ci/products/sdk_core_original_selection.py", "ci/sdk_core_native_archive_provision.py",
+                "ci/sdk_core_validation_policy.py"}:
+        return _from_phase("sdk", "sdk-core", "validation")
+    if path in {"ci/sdk_core_context_preparation_locator.py", "ci/sdk_core_metadata_bootstrap.py",
+                "ci/sdk_core_metadata_context_policy.py", "ci/sdk_core_metadata_context_preparation.py",
+                "ci/sdk_core_metadata_history.py", "ci/sdk_core_metadata_same_campaign.py",
+                "ci/sdk_facade_original_inputs.py"}:
+        return _from_phase("sdk", "sdk-core", "metadata")
+    if path == "ci/sdk_core_package_policy.py":
+        return _from_phase("sdk", "sdk-core", "package")
+    if path == "ci/sdk_facade_upload_locator.py":
+        return (_from_phase("sdk", "sdk-core", "binary") |
+                _from_phase("sdk", "sdk-android", "binary"))
+    if path == "ci/sdk_android_archive_provision.py":
+        return (_from_phase("sdk", "sdk-android", "binary") |
+                _from_phase("sdk", "sdk-core", "validation"))
+    if path in {"ci/sdk_android_core14_caller.py",
+                "ci/sdk_android_core14_fresh_inputs.py", "ci/sdk_android_original_control.py"}:
+        return _from_phase("sdk", "sdk-android", "binary")
+    if path == "ci/sdk_android_package_policy.py":
+        return _from_phase("sdk", "sdk-android", "package")
+    if path == "ci/sdk_android_validation_policy.py":
+        return _from_phase("sdk", "sdk-android", "validation")
+    if path == "ci/sdk_android_original_upload_locator.py":
+        return _from_phase("sdk", "sdk-android", "validation")
     if path in {"ci/sdk_facade_metadata_inputs.py", "ci/sdk_facade_metadata_workflow.py",
                 "ci/sdk_facade_metadata_selection.py",
                 "ci/sdk_facade_metadata_original.py", "ci/sdk_facade_metadata_policy.py",
@@ -608,6 +710,26 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         return set(ALL_INSTANCES)
     if _is_prefix(path, ".github/actions/capture-sdk-tooling/"):
         return set(ALL_INSTANCES)
+    if _is_prefix(path, ".github/actions/capture-sdk-transport/"):
+        return {instance for instance in ALL_INSTANCES if instance.product == "sdk"}
+    if _is_prefix(path, ".github/actions/sdk-android-core14-caller/"):
+        return _from_phase("sdk", "sdk-android", "binary")
+    if _is_prefix(path, ".github/actions/sdk-android-firebase-controls/"):
+        return _from_phase("sdk", "sdk-android", "validation")
+    if _is_prefix(path, ".github/actions/sdk-android-maven-worker/"):
+        return _from_phase("sdk", "sdk-android", "binary")
+    if _is_prefix(path, ".github/actions/sdk-android-metadata-worker/"):
+        return _from_phase("sdk", "sdk-android", "metadata")
+    if _is_prefix(path, ".github/actions/sdk-android-original-selection/"):
+        return _from_phase("sdk", "sdk-android", "binary")
+    if _is_prefix(path, ".github/actions/sdk-android-validation-worker/"):
+        return _from_phase("sdk", "sdk-android", "validation")
+    if _is_prefix(path, ".github/actions/sdk-core-maven-worker/"):
+        return _from_phase("sdk", "sdk-core", "binary")
+    if _is_prefix(path, ".github/actions/sdk-core-metadata-worker/"):
+        return _from_phase("sdk", "sdk-core", "metadata")
+    if _is_prefix(path, ".github/actions/sdk-core-validation-worker/"):
+        return _from_phase("sdk", "sdk-core", "validation")
     if _is_prefix(path, ".github/actions/prepare-sdk-apple-policy/"):
         return set(ALL_INSTANCES)
     if _is_prefix(path, ".github/actions/prepare-runtime-signing/"):

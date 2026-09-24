@@ -59,6 +59,58 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_new_release_controls_select_owning_phases_without_entering_payload_keys(self) -> None:
+        sdk = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "sdk"}
+        cases = {
+            "ci/contract_phase11_bytes.py": {PhaseInstanceId("contract", "contract", "metadata", "common")},
+            "ci/products/runtime_phase10_maven.py": {PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")},
+            "ci/products/sdk_phase10_maven.py": {
+                PhaseInstanceId("sdk", "sdk-core", "metadata", "common"),
+                PhaseInstanceId("sdk", "sdk-android", "metadata", "android"),
+            },
+            "ci/products/sdk_campaign_semantics.py": sdk,
+            "ci/products/sdk_campaign_maven.py": {
+                instance for instance in sdk if instance.component in {"sdk-core", "sdk-android"}
+            },
+            "ci/products/sdk_campaign_javascript.py": {
+                instance for instance in sdk if instance.component == "javascript"
+                and instance.phase in {"package", "validation", "metadata"}
+            },
+            "ci/sdk_android_validation_policy.py": {
+                instance for instance in sdk if instance.component == "sdk-android"
+                and instance.phase in {"validation", "metadata"}
+            },
+            "ci/sdk_core_metadata_bootstrap.py": {
+                PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
+            },
+            "ci/sdk_facade_upload_locator.py": {
+                instance for instance in sdk if instance.component in {"sdk-core", "sdk-android"}
+            },
+            "ci/sdk_android_archive_provision.py": {
+                instance for instance in sdk if instance.component == "sdk-android"
+                or (instance.component == "sdk-core" and instance.phase in {"validation", "metadata"})
+            },
+            ".github/actions/sdk-android-core14-caller/action.yml": {
+                instance for instance in sdk if instance.component == "sdk-android"
+            },
+            ".github/actions/sdk-core-validation-worker/action.yml": {
+                instance for instance in sdk if instance.component == "sdk-core"
+                and instance.phase in {"validation", "metadata"}
+            },
+        }
+        for path, expected in cases.items():
+            with self.subTest(path=path):
+                result = classify_paths([path])
+                self.assertEqual(expected, identities(result))
+                self.assertEqual((), result.unknown_paths)
+                self.assertEqual((), result.inventory_paths)
+                for instance in PHASE_INSTANCE_IDS:
+                    self.assertEqual((), phase_inventory_paths([path], instance))
+
+        future = classify_paths(["ci/products/sdk_campaign_unreviewed.py"])
+        self.assertEqual(("ci/products/sdk_campaign_unreviewed.py",), future.unknown_paths)
+        self.assertFalse(future.reuse_allowed)
+
     def test_bootstrap_guard_rechecks_all_plans_without_changing_payload_keys(self):
         result = classify_paths(("ci/products/gradle_bootstrap.py",))
         self.assertEqual(set(PHASE_INSTANCE_IDS), set(result.instances))
