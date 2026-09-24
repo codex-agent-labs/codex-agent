@@ -246,6 +246,37 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
                 "receipt_sha256=" + KEY + "\n",
                 output.read_text())
 
+    def test_nonsecret_context_upload_follows_verified_original_metadata(self):
+        for earlier, later in (("- id: upload", "- id: context-policy"),
+                               ("- id: context-policy", "- id: context-preparation"),
+                               ("- id: context-preparation", "- id: context-upload")):
+            self.assertLess(self.action.index(earlier), self.action.index(later))
+        for name in ("preparation-artifact-id", "preparation-artifact-sha256"):
+            block = re.search(rf"(?ms)^  {name}:\n(.*?)(?=^  [a-z][a-z0-9-]*:|^runs:)",
+                              self.action).group(1)
+            self.assertIn("steps.context-preparation.outcome == 'success'", block)
+            self.assertIn("steps.context-upload.outcome == 'success'", block)
+            self.assertIn("steps.context-upload.outputs.artifact-id != ''", block)
+            self.assertIn("steps.context-upload.outputs.artifact-digest != ''", block)
+        policy = self.action.split("- id: context-policy", 1)[1].split("- id: context-preparation", 1)[0]
+        for required in ("--state \"$STATE\"", "--bootstrap-policy \"$BOOTSTRAP_POLICY\"",
+                         "--expected-receipt-sha256 \"$RECEIPT_SHA256\"",
+                         "--metadata-artifact-id \"$METADATA_ARTIFACT_ID\"",
+                         "--original-context \"$ORIGINAL_CONTEXT\"",
+                         "-m ci.sdk_core_metadata_context_policy"):
+            self.assertIn(required, policy)
+        preparation = self.action.split("- id: context-preparation", 1)[1].split("- id: context-upload", 1)[0]
+        self.assertIn("-m ci.sdk_core_metadata_context_preparation", preparation)
+        self.assertIn("--caller-policy \"$CALLER_POLICY\"", preparation)
+        self.assertIn("--signing-keyring \"$KEYRING\"", preparation)
+        self.assertNotIn("private-key", preparation)
+        final_gate = self.action.split("- name: Require both successful original uploads", 1)[1]
+        self.assertIn("if: always() && steps.identity.outcome == 'success'", final_gate)
+        for value in ("PHASE_RESULT", "PHASE_UPLOAD_RESULT", "PHASE_RECEIPT", "PHASE_CONTEXT",
+                      "PHASE_UPLOAD_ID", "PHASE_UPLOAD_DIGEST", "PREPARATION_RESULT",
+                      "PREPARATION_UPLOAD_RESULT", "PREPARATION_UPLOAD_ID", "PREPARATION_UPLOAD_DIGEST"):
+            self.assertIn('test ' + ('-n ' if not value.endswith('RESULT') else '') + '"$' + value + '"', final_gate)
+
     def test_fresh_policy_must_bind_exact_current_plan_before_controller(self):
         source = self.source("execute")
         with tempfile.TemporaryDirectory() as temporary:

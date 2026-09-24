@@ -98,6 +98,18 @@ outputs:
       ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
           steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
           format('sha256:{0}', steps.upload.outputs.artifact-digest) || '' }}
+  preparation-artifact-id:
+    description: Official unsigned Core context preparation upload ID after full original replay.
+    value: >-
+      ${{ steps.context-preparation.outcome == 'success' && steps.context-upload.outcome == 'success' &&
+          steps.context-upload.outputs.artifact-id != '' && steps.context-upload.outputs.artifact-digest != '' &&
+          steps.context-upload.outputs.artifact-id || '' }}
+  preparation-artifact-sha256:
+    description: Official unsigned Core context preparation upload digest after full original replay.
+    value: >-
+      ${{ steps.context-preparation.outcome == 'success' && steps.context-upload.outcome == 'success' &&
+          steps.context-upload.outputs.artifact-id != '' && steps.context-upload.outputs.artifact-digest != '' &&
+          format('sha256:{0}', steps.context-upload.outputs.artifact-digest) || '' }}
 runs:
   using: composite
   steps:
@@ -363,3 +375,98 @@ runs:
         include-hidden-files: true
         compression-level: 0
         retention-days: 90
+    - id: context-policy
+      name: Locate all original Core uploads for non-secret context preparation
+      if: >-
+        steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+        steps.execute.outputs.receipt_sha256 != '' && steps.execute.outputs.original_context != '' &&
+        steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != ''
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        BOOTSTRAP_POLICY: ${{ steps.bootstrap.outputs.policy_path }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        RECEIPT_SHA256: ${{ steps.execute.outputs.receipt_sha256 }}
+        METADATA_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        METADATA_ARTIFACT_SHA256: ${{ steps.upload.outputs.artifact-digest }}
+        ORIGINAL_CONTEXT: ${{ steps.execute.outputs.original_context }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        context_root=$(mktemp -d "$RUNNER_TEMP/core-context-caller.XXXXXXXX")
+        options=()
+        if [ -n "$APPLE_POLICY" ]; then
+          options+=(--sdk-apple-validation-policy "$APPLE_POLICY")
+        fi
+        python3 -B -m ci.sdk_core_metadata_context_policy \
+          --plan "$PLAN" --discovery "$DISCOVERY" --state "$STATE" \
+          --bootstrap-policy "$BOOTSTRAP_POLICY" \
+          --metadata-receipt "$GITHUB_WORKSPACE/build/sdk-core-metadata-worker/shard/phase-receipt.json" \
+          --destination "$context_root/policy" --expected-build-key "$BUILD_KEY" \
+          --expected-receipt-sha256 "$RECEIPT_SHA256" \
+          --metadata-artifact-id "$METADATA_ARTIFACT_ID" \
+          --metadata-artifact-sha256 "sha256:$METADATA_ARTIFACT_SHA256" \
+          --original-context "$ORIGINAL_CONTEXT" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --repository-root "$GITHUB_WORKSPACE" "${options[@]}"
+        printf 'policy=%s\n' "$context_root/policy/caller-policy.json" >> "$GITHUB_OUTPUT"
+    - id: context-preparation
+      name: Replay exact Core originals without signing authority
+      if: steps.context-policy.outcome == 'success'
+      shell: bash
+      env:
+        CALLER_POLICY: ${{ steps.context-policy.outputs.policy }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        KEYRING: ${{ inputs.keyring }}
+        KEYS_DIRECTORY: ${{ inputs.keys-directory }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        context_root=$(mktemp -d "$RUNNER_TEMP/core-context-prepared.XXXXXXXX")
+        python3 -B -m ci.sdk_core_metadata_context_preparation \
+          --caller-policy "$CALLER_POLICY" --destination "$context_root/prepared" \
+          --repository-root "$GITHUB_WORKSPACE" \
+          --signing-keyring "$KEYRING" --signing-keys-directory "$KEYS_DIRECTORY" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA"
+        printf 'prepared=%s\n' "$context_root/prepared" >> "$GITHUB_OUTPUT"
+    - id: context-upload
+      if: steps.context-preparation.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-core-context-preparation-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: ${{ steps.context-preparation.outputs.prepared }}
+        if-no-files-found: error
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90
+    - name: Require both successful original uploads
+      if: always() && steps.identity.outcome == 'success'
+      shell: bash
+      env:
+        PHASE_RESULT: ${{ steps.execute.outcome }}
+        PHASE_UPLOAD_RESULT: ${{ steps.upload.outcome }}
+        PHASE_RECEIPT: ${{ steps.execute.outputs.receipt_sha256 }}
+        PHASE_CONTEXT: ${{ steps.execute.outputs.original_context }}
+        PHASE_UPLOAD_ID: ${{ steps.upload.outputs.artifact-id }}
+        PHASE_UPLOAD_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        PREPARATION_RESULT: ${{ steps.context-preparation.outcome }}
+        PREPARATION_UPLOAD_RESULT: ${{ steps.context-upload.outcome }}
+        PREPARATION_UPLOAD_ID: ${{ steps.context-upload.outputs.artifact-id }}
+        PREPARATION_UPLOAD_DIGEST: ${{ steps.context-upload.outputs.artifact-digest }}
+      run: |
+        set -euo pipefail
+        test "$PHASE_RESULT" = success
+        test "$PHASE_UPLOAD_RESULT" = success
+        test -n "$PHASE_RECEIPT"
+        test -n "$PHASE_CONTEXT"
+        test -n "$PHASE_UPLOAD_ID"
+        test -n "$PHASE_UPLOAD_DIGEST"
+        test "$PREPARATION_RESULT" = success
+        test "$PREPARATION_UPLOAD_RESULT" = success
+        test -n "$PREPARATION_UPLOAD_ID"
+        test -n "$PREPARATION_UPLOAD_DIGEST"

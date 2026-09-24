@@ -5464,6 +5464,8 @@ jobs:
       metadata_receipt_sha256: ${{ steps.metadata.outputs.metadata-receipt-sha256 }}
       metadata_artifact_id: ${{ steps.metadata.outputs.metadata-artifact-id }}
       metadata_artifact_sha256: ${{ steps.metadata.outputs.metadata-artifact-sha256 }}
+      preparation_artifact_id: ${{ steps.metadata.outputs.preparation-artifact-id }}
+      preparation_artifact_sha256: ${{ steps.metadata.outputs.preparation-artifact-sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -5601,6 +5603,8 @@ jobs:
       metadata_receipt_sha256: ${{ steps.result.outcome == 'success' && needs.sdk-core-metadata.result == 'success' && needs.sdk-core-metadata.outputs.metadata_receipt_sha256 || '' }}
       metadata_artifact_id: ${{ steps.result.outcome == 'success' && needs.sdk-core-metadata.result == 'success' && needs.sdk-core-metadata.outputs.metadata_artifact_id || '' }}
       metadata_artifact_sha256: ${{ steps.result.outcome == 'success' && needs.sdk-core-metadata.result == 'success' && needs.sdk-core-metadata.outputs.metadata_artifact_sha256 || '' }}
+      preparation_artifact_id: ${{ steps.result.outcome == 'success' && needs.sdk-core-metadata.result == 'success' && needs.sdk-core-metadata.outputs.preparation_artifact_id || '' }}
+      preparation_artifact_sha256: ${{ steps.result.outcome == 'success' && needs.sdk-core-metadata.result == 'success' && needs.sdk-core-metadata.outputs.preparation_artifact_sha256 || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
