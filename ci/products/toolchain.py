@@ -701,7 +701,8 @@ def observe_producer(
         compiler_home = konan_root / f"kotlin-native-prebuilt-{classifier}-{kotlin_version}"
         if not compiler_home.is_dir() or compiler_home.is_symlink():
             raise ValueError("Kotlin/Native compiler cache is missing or unsafe")
-        archive_name = f"kotlin-native-prebuilt-{kotlin_version}-{classifier}.tar.gz"
+        extension = "zip" if runner_os == "Windows" else "tar.gz"
+        archive_name = f"kotlin-native-prebuilt-{kotlin_version}-{classifier}.{extension}"
         archive_root = gradle_home / "caches/modules-2/files-2.1/org.jetbrains.kotlin/kotlin-native-prebuilt" / kotlin_version
         archive = _unique_file(archive_root, archive_name, "Kotlin/Native archive")
         archive_sha = _sha256_file(archive, "Kotlin/Native archive")

@@ -1,8 +1,7 @@
 """Build caller-owned Core metadata policy from elected originals, never uploads.
 
 This is a pre-worker input preparer, not metadata or hosted-toolchain admission.
-Only the already reviewed macOS Arm64 Kotlin/Native archive has a usable pin;
-the other native targets fail closed until their immutable pins are reviewed.
+Each native host requires its own immutable archive pin; missing pins fail closed.
 """
 
 import argparse
@@ -54,7 +53,8 @@ def _native_archives(root, revision, values):
                   "linux-aarch64" if platform == ("Linux", "ARM64") else None)
         if suffix is None:
             raise ValueError("Core metadata native host lacks an exact archive mapping")
-        name = f"kotlin-native-prebuilt-{version}-{suffix}.tar.gz"
+        extension = "zip" if suffix == "windows-x86_64" else "tar.gz"
+        name = f"kotlin-native-prebuilt-{version}-{suffix}.{extension}"
         expected = _metadata_checksum(verification, name)
         if digests[path] != expected:
             raise ValueError("Core metadata native archive differs from its immutable Git pin")

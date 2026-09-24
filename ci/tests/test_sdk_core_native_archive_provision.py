@@ -44,7 +44,8 @@ class CoreNativeArchiveProvisionTest(unittest.TestCase):
     def sources(self, *, payload=None, include_archive=True, target="macos-arm64"):
         payload = self.payload if payload is None else payload
         digest = hashlib.sha256(payload).hexdigest()
-        name = f"kotlin-native-prebuilt-{VERSION}-{provider._SUFFIXES[target]}.tar.gz"
+        extension = "zip" if target == "windows-x64" else "tar.gz"
+        name = f"kotlin-native-prebuilt-{VERSION}-{provider._SUFFIXES[target]}.{extension}"
         artifact = (f'<artifact name="{name}"><sha256 value="{digest}"/></artifact>'
                     if include_archive else "")
         return {
@@ -89,7 +90,8 @@ class CoreNativeArchiveProvisionTest(unittest.TestCase):
                 self.assertEqual([], self.download_urls)
                 self.assertFalse(self.destination.exists())
                 result = self.run_provider(target=target, sources=self.sources(target=target))
-                name = f"kotlin-native-prebuilt-{VERSION}-{provider._SUFFIXES[target]}.tar.gz"
+                extension = "zip" if target == "windows-x64" else "tar.gz"
+                name = f"kotlin-native-prebuilt-{VERSION}-{provider._SUFFIXES[target]}.{extension}"
                 self.assertEqual([f"{provider._MAVEN_ROOT}/{VERSION}/{name}"], self.download_urls)
                 self.assertEqual(self.payload, result.read_bytes())
                 result.unlink()

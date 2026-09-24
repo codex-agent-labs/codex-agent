@@ -80,7 +80,8 @@ def provision(plan_path, target, destination, *, repository_root):
     }
     catalog = tomllib.loads(sources[VERSION_CATALOG].decode("utf-8", errors="strict"))
     version = require_semver(catalog.get("versions", {}).get("kotlin"), "Git-pinned Kotlin version")
-    name = f"kotlin-native-prebuilt-{version}-{_SUFFIXES[target]}.tar.gz"
+    extension = "zip" if target == "windows-x64" else "tar.gz"
+    name = f"kotlin-native-prebuilt-{version}-{_SUFFIXES[target]}.{extension}"
     expected = _metadata_checksum(sources[RUNTIME_VERIFICATION_METADATA], name)
     url = f"{_MAVEN_ROOT}/{version}/{name}"
     _maven_https(url)

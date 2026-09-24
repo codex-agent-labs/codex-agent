@@ -12,8 +12,10 @@ import hashlib
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
+import stat
 import tarfile
 import tomllib
+import zipfile
 
 from .inventory import (
     _open_regular_file, _stat_identity, git_regular_blob_bytes, load_json_bytes,
@@ -47,6 +49,9 @@ _LIMITS = {**OBJECT_ZIP_LIMITS, "max_members": 65_536, "max_headers": 131_072}
 
 
 def _archive_subset(stream, version, *, classifier="macos-aarch64", include_fingerprint=False, properties=None):
+    if classifier == "windows-x86_64":
+        return _zip_archive_subset(stream, version, classifier=classifier,
+                                   include_fingerprint=include_fingerprint, properties=properties)
     prefix = f"kotlin-native-prebuilt-{classifier}-{version}"
     archive_bytes = os.fstat(stream.fileno()).st_size
     headers, total = 0, 0
@@ -119,6 +124,82 @@ def _archive_subset(stream, version, *, classifier="macos-aarch64", include_fing
                     selected[relative] = {"bytes": size, "sha256": digest.hexdigest()}
     except (tarfile.TarError, EOFError) as error:
         raise ValueError("Native compiler archive is malformed") from error
+    if ("konan/konan.properties" not in selected
+            or "konan/lib/kotlin-native-compiler-embeddable.jar" not in selected
+            or include_fingerprint and "konan/compiler.fingerprint" not in selected):
+        raise ValueError("Pinned native archive lacks the selected compiler subset")
+    return selected
+
+
+def _zip_archive_subset(stream, version, *, classifier, include_fingerprint, properties):
+    prefix = f"kotlin-native-prebuilt-{classifier}-{version}"
+    archive_bytes = os.fstat(stream.fileno()).st_size
+    tail_size = min(archive_bytes, 22 + 65_535)
+    stream.seek(archive_bytes - tail_size)
+    tail = stream.read(tail_size)
+    eocd = tail.rfind(b"PK\x05\x06")
+    if eocd < 0 or eocd + 22 > len(tail) or eocd + 22 + int.from_bytes(tail[eocd + 20:eocd + 22], "little") != len(tail):
+        raise ValueError("Native ZIP end-of-central-directory is malformed")
+    members = int.from_bytes(tail[eocd + 10:eocd + 12], "little")
+    central_bytes = int.from_bytes(tail[eocd + 12:eocd + 16], "little")
+    if (members == 0xFFFF or central_bytes == 0xFFFFFFFF
+            or members > _LIMITS["max_members"]
+            or central_bytes > _LIMITS["max_central_directory_bytes"]):
+        raise ValueError("Native archive exceeds bounded archive limits")
+    stream.seek(0)
+    seen, files, directories, selected = set(), set(), set(), {}
+    total = 0
+    try:
+        with zipfile.ZipFile(stream) as archive:
+            entries = archive.infolist()
+            if len(entries) != members:
+                raise ValueError("Native ZIP central-directory member count differs")
+            for entry in entries:
+                name = entry.orig_filename
+                directory = entry.is_dir()
+                if (name != entry.filename or bool(entry.external_attr & 0x10) != directory
+                        or entry.flag_bits & 1 or entry.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)):
+                    raise ValueError("Native ZIP has unsafe member metadata")
+                name = require_relative_path(name[:-1] if directory else name, "Native ZIP member")
+                path = PurePosixPath(name)
+                mode = stat.S_IFMT((entry.external_attr >> 16) & 0xFFFF)
+                if (name in seen or path.parts[0] != prefix
+                        or mode not in ((0, stat.S_IFDIR) if directory else (0, stat.S_IFREG))
+                        or (directory and entry.file_size != 0)):
+                    raise ValueError("Native ZIP has duplicate, foreign or unsafe members")
+                if any(parent.as_posix() in files for parent in path.parents):
+                    raise ValueError("Native ZIP file overlaps a member directory")
+                if not directory and name in directories:
+                    raise ValueError("Native ZIP file overlaps a member directory")
+                total += entry.file_size
+                if (entry.file_size > _LIMITS["max_entry_bytes"]
+                        or total > _LIMITS["max_total_bytes"]
+                        or total > archive_bytes * _LIMITS["max_compression_ratio"]
+                        or entry.file_size > max(entry.compress_size, 1) * _LIMITS["max_compression_ratio"]):
+                    raise ValueError("Native archive exceeds bounded archive limits")
+                seen.add(name)
+                directories.update(parent.as_posix() for parent in path.parents)
+                (directories if directory else files).add(name)
+                relative = path.relative_to(prefix).as_posix()
+                if not directory and (relative == "konan/konan.properties" or relative.startswith("konan/lib/")
+                                      or include_fingerprint and relative == "konan/compiler.fingerprint"):
+                    retain = properties is not None and relative == "konan/konan.properties"
+                    if retain and entry.file_size > _LIMIT:
+                        raise ValueError("Pinned native properties exceed the control limit")
+                    digest, size = hashlib.sha256(), 0
+                    with archive.open(entry) as source:
+                        while chunk := source.read(1024 * 1024):
+                            size += len(chunk)
+                            if size > entry.file_size:
+                                raise ValueError("Native ZIP selected member exceeds declared size")
+                            digest.update(chunk)
+                            if retain:
+                                properties.extend(chunk)
+                    if size != entry.file_size:
+                        raise ValueError("Native ZIP selected member is truncated")
+                    selected[relative] = {"bytes": size, "sha256": digest.hexdigest()}
+    except (zipfile.BadZipFile, EOFError) as error:
+        raise ValueError("Native compiler ZIP is malformed") from error
     if ("konan/konan.properties" not in selected
             or "konan/lib/kotlin-native-compiler-embeddable.jar" not in selected
             or include_fingerprint and "konan/compiler.fingerprint" not in selected):
@@ -249,7 +330,8 @@ def verify_facade_native_compiler_artifacts(*, repository, policy_revision,
             version = require_semver(catalog.get("versions", {}).get("kotlin"), "Policy Kotlin version")
             if value["kotlinVersion"] != version:
                 raise ValueError("Observed native compiler version differs from immutable policy")
-            name = f"kotlin-native-prebuilt-{version}-{_ROUTES[target][2]}.tar.gz"
+            extension = "zip" if windows else "tar.gz"
+            name = f"kotlin-native-prebuilt-{version}-{_ROUTES[target][2]}.{extension}"
             expected = _metadata_checksum(sources[RUNTIME_VERIFICATION_METADATA], name)
             actual = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
             if actual != expected:

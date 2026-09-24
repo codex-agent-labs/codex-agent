@@ -12,6 +12,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import tarfile
 import tempfile
 import unittest
+import zipfile
+import stat
 from unittest.mock import patch
 
 from ci.products import sdk_facade_native_policy as policy
@@ -77,21 +79,38 @@ class FacadeNativePolicyTest(unittest.TestCase):
         return self.sources[name]
 
     def write_archive(self, extra=(), *, omitted=()):
-        entries = [(self.prefix + "/" + name, data, tarfile.REGTYPE, "")
-                   for name, data in self.selected.items() if name not in omitted]
-        entries += [(self.prefix + "/konan/compiler.fingerprint", b"not yet captured by Core", tarfile.REGTYPE, ""),
-                    (self.prefix + "/bin/konanc", b"not part of this partial byte comparison", tarfile.REGTYPE, "")]
-        with tarfile.open(self.archive, "w:gz", format=tarfile.GNU_FORMAT) as archive:
-            directory = tarfile.TarInfo(self.prefix + "/")
-            directory.type = tarfile.DIRTYPE
-            archive.addfile(directory)
-            for name, data, kind, link in [*entries, *extra]:
-                member = tarfile.TarInfo(name)
-                member.type, member.linkname = kind, link
-                member.size = len(data)
-                archive.addfile(member, io.BytesIO(data))
+        if self.classifier == "windows-x86_64":
+            entries = [(self.prefix + "/" + name, data)
+                       for name, data in self.selected.items() if name not in omitted]
+            entries += [(self.prefix + "/konan/compiler.fingerprint", b"not yet captured by Core"),
+                        (self.prefix + "/bin/konanc.bat", b"not part of this partial byte comparison")]
+            with zipfile.ZipFile(self.archive, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(self.prefix + "/", b"")
+                for name, data in entries:
+                    archive.writestr(name, data)
+                for name, data, kind, _ in extra:
+                    info = zipfile.ZipInfo(name)
+                    info.create_system = 3
+                    info.external_attr = (stat.S_IFLNK if kind == tarfile.SYMTYPE else stat.S_IFREG) << 16
+                    archive.writestr(info, data)
+            extension = "zip"
+        else:
+            entries = [(self.prefix + "/" + name, data, tarfile.REGTYPE, "")
+                       for name, data in self.selected.items() if name not in omitted]
+            entries += [(self.prefix + "/konan/compiler.fingerprint", b"not yet captured by Core", tarfile.REGTYPE, ""),
+                        (self.prefix + "/bin/konanc", b"not part of this partial byte comparison", tarfile.REGTYPE, "")]
+            with tarfile.open(self.archive, "w:gz", format=tarfile.GNU_FORMAT) as archive:
+                directory = tarfile.TarInfo(self.prefix + "/")
+                directory.type = tarfile.DIRTYPE
+                archive.addfile(directory)
+                for name, data, kind, link in [*entries, *extra]:
+                    member = tarfile.TarInfo(name)
+                    member.type, member.linkname = kind, link
+                    member.size = len(data)
+                    archive.addfile(member, io.BytesIO(data))
+            extension = "tar.gz"
         digest = hashlib.sha256(self.archive.read_bytes()).hexdigest()
-        artifact = f"kotlin-native-prebuilt-{self.version}-{self.classifier}.tar.gz"
+        artifact = f"kotlin-native-prebuilt-{self.version}-{self.classifier}.{extension}"
         self.sources[policy.RUNTIME_VERIFICATION_METADATA] = (
             f'<verification-metadata><components><component group="org.jetbrains.kotlin" '
             f'name="kotlin-native-prebuilt" version="{self.version}"><artifact name="{artifact}">'
@@ -262,6 +281,43 @@ class FacadeNativePolicyTest(unittest.TestCase):
                 self.sources[policy.RUNTIME_VERIFICATION_METADATA] = b"<verification-metadata/>"
                 with self.assertRaisesRegex(ValueError, "one exact checksum"):
                     self.call()
+
+    def test_windows_zip_rejects_unsafe_members_and_bounded_metadata(self):
+        self.host = "windows-x64"
+        self.host_name = self.target_name = "mingw_x64"
+        self.classifier = "windows-x86_64"
+        self.home = r"C:\original\selected\kotlin-native"
+        self.prefix = f"kotlin-native-prebuilt-{self.classifier}-{self.version}"
+        self.archive = self.root / "caller-preprovisioned.zip"
+        self.selected["konan/konan.properties"] = (
+            b"llvmHome.mingw_x64 = llvm-reviewed\n"
+            b"libffiDir.mingw_x64 = libffi-reviewed\n"
+            b"dependencies.mingw_x64 = lldb-reviewed\n")
+        self.write_archive()
+        self.value = self.observation_v2("windows-x64")
+        self.save()
+        self.assertIsNone(self.call())
+        for name, kind in ((self.prefix + "/konan/konan.properties", tarfile.REGTYPE),
+                           ("../outside", tarfile.REGTYPE),
+                           ("/absolute", tarfile.REGTYPE),
+                           (self.prefix + "/bad\\name", tarfile.REGTYPE),
+                           (self.prefix + "/symbolic", tarfile.SYMTYPE)):
+            self.write_archive([(name, b"bad", kind, "")])
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.call()
+        self.write_archive(omitted=("konan/konan.properties",))
+        with self.assertRaisesRegex(ValueError, "lacks the selected compiler subset"):
+            self.call()
+        self.write_archive()
+        for bound in ("max_members", "max_central_directory_bytes", "max_entry_bytes", "max_total_bytes"):
+            with self.subTest(bound=bound), patch.dict(policy._LIMITS, {bound: 1}), self.assertRaises(ValueError):
+                self.call()
+        with patch.dict(policy._LIMITS, {"max_compression_ratio": 0}), self.assertRaises(ValueError):
+            self.call()
+        with self.archive.open("rb") as stream, patch.object(policy, "_LIMIT", 1), \
+                self.assertRaisesRegex(ValueError, "properties exceed the control limit"):
+            policy._archive_subset(stream, self.version, classifier=self.classifier,
+                                   include_fingerprint=True, properties=bytearray())
 
     def test_host_target_and_revision_are_independent_and_fail_closed(self):
         for host in ("macos-x64", "linux-x64", "windows-x64", "macos-aarch64", None):
