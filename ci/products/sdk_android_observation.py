@@ -5,7 +5,10 @@ from pathlib import Path
 import re
 import tempfile
 
-from ci.receipt import validate_receipt
+if __package__ == "products":  # Script entry points in ci/ use this namespace.
+    from receipt import validate_receipt
+else:
+    from ..receipt import validate_receipt
 from .inventory import (
     canonical_json_bytes, publish_regular_tree, read_regular_file_bytes, run_git,
     sha256_bytes,

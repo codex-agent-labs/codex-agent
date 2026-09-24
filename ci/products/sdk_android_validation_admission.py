@@ -13,7 +13,10 @@ import re
 import subprocess
 import tempfile
 
-from ci.receipt import LANE_RECEIPT_SCHEMA_VERSION
+if __package__ == "products":  # Script entry points in ci/ use this namespace.
+    from receipt import LANE_RECEIPT_SCHEMA_VERSION
+else:
+    from ..receipt import LANE_RECEIPT_SCHEMA_VERSION
 
 from .inventory import (
     canonical_json_bytes, load_canonical_json_bytes, load_json_bytes,
