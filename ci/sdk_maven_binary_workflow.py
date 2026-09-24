@@ -143,9 +143,9 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 raise ValueError("Maven binary requires one original Contract payload")
             return record["stage"] / outputs[0]["relativePath"]
 
-        contract, contract_version, handoff, _ = product_reuse._capture_runtime_contract(
+        contract, contract_version, handoff, _, handoff_files = product_reuse._capture_runtime_contract(
             root, evidence, original, one_output, prepared, trust)
-        retained[handoff] = _inventory(handoff, allow_empty=True)
+        retained[handoff] = handoff_files
         values.append((contract["receipt"], canonical_json_bytes(contract["receipt"])))
         stem = "codex-agent-contract-" + contract_version
         verify_contract_component_projection(contract["stage"], contract["receiptPath"],
@@ -170,7 +170,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             "contractVersion": contract_version,
             "sourceEvidence": evidence,
             "handoffRelativePath": "inputs/contract-input",
-            "handoffInventory": _inventory(handoff),
+            "handoffInventory": handoff_files,
             "metadataStageRelativePath": "inputs/predecessors/contract-contract-metadata-common/stage",
             "metadataStageInventory": _inventory(contract["stage"]),
             "metadataReceiptRelativePath": "inputs/predecessors/contract-contract-metadata-common/phase-receipt.json",

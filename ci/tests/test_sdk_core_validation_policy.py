@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from ci import sdk_core_validation_policy as policy
+from ci.products.inventory import regular_file_inventory
 
 
 _KEY = "sha256:" + "a" * 64
@@ -127,7 +128,7 @@ class CoreValidationPolicyTests(unittest.TestCase):
             for name in ("codex-agent-contract-0.8.0.attestation.json",
                          "codex-agent-contract-0.8.0.attestation.sig", "public-key.pub"):
                 (handoff / name).write_bytes(b"evidence")
-            return contract, "0.8.0", handoff, {}
+            return contract, "0.8.0", handoff, {}, regular_file_inventory(handoff)
 
         sdk = self.root / "official-sdk-inputs"
         sdk.mkdir()

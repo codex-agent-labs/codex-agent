@@ -109,7 +109,7 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
                 raise ValueError("Android validation requires one original Contract payload")
             return record["stage"] / rows[0]["relativePath"]
 
-        _, contract_version, _, _ = product_reuse._capture_runtime_contract(
+        _, contract_version, _, _, _ = product_reuse._capture_runtime_contract(
             root, evidence, original, one_output, prepared, trust)
         stem = "codex-agent-contract-" + contract_version
         contract_evidence = {

@@ -119,7 +119,8 @@ class SdkIosBinaryInputsTest(unittest.TestCase):
         receipts.mkdir(parents=True)
         for phase, raw in self.receipts.items():
             (receipts / f"{phase}.json").write_bytes(raw)
-        return records["metadata"], "0.2.0", handoff, {"synthetic": "verified manifest seam"}
+        return (records["metadata"], "0.2.0", handoff,
+                {"synthetic": "verified manifest seam"}, regular_file_inventory(handoff))
 
     @contextmanager
     def native_inputs(self, *args, **kwargs):

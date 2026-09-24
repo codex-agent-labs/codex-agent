@@ -128,7 +128,8 @@ class SdkIosToolingActionTest(unittest.TestCase):
                                 replay_destination, **fixture.options):
                             self.fail('Rejected replay must not yield')
                     replay.assert_called_once_with(fixture.plan, fixture.discovery, fixture.state,
-                        fixture.repository, fixture.options['environ'], policy)
+                        fixture.repository, fixture.options['environ'], policy,
+                        sdk_original_workflow_sha=fixture.options['trusted_workflow_sha'])
                 self.assertFalse(replay_destination.exists())
 
 

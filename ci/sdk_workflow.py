@@ -180,7 +180,7 @@ def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_
             raise ValueError("SDK iOS binary requires one original Contract payload")
         return record["stage"] / outputs[0]["relativePath"]
 
-    contract, version, handoff, _ = product_reuse._capture_runtime_contract(
+    contract, version, handoff, _, handoff_files = product_reuse._capture_runtime_contract(
         root, evidence, original, one_output, destination, trust)
     stem = f"codex-agent-contract-{version}"
     before = regular_file_inventory(destination, allow_empty=True)
@@ -190,7 +190,8 @@ def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_
         required_components=("ios-arm64", "ios-simulator-arm64"), keyring=trust.keyring, keys_directory=trust.keys)
 
     def unchanged():
-        if (regular_file_inventory(destination, allow_empty=True) != before or
+        if (regular_file_inventory(handoff) != handoff_files or
+                regular_file_inventory(destination, allow_empty=True) != before or
                 read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes):
             raise ValueError("SDK iOS binary original inputs changed during use")
 

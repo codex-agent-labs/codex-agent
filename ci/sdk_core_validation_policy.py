@@ -134,8 +134,10 @@ def prepare(plan, discovery, state, destination, *, target, expected_build_key,
                 raise ValueError("Core validation requires one original Contract payload")
             return record["stage"] / rows[0]["relativePath"]
 
-        contract, contract_version, handoff, _ = product_reuse._capture_runtime_contract(
+        contract, contract_version, handoff, _, handoff_files = product_reuse._capture_runtime_contract(
             root, evidence, original, one_output, prepared, trust)
+        if regular_file_inventory(handoff) != handoff_files:
+            raise ValueError("Core validation Contract handoff changed after capture")
         stem = "codex-agent-contract-" + contract_version
         contract_evidence = {
             "stageRoot": str(contract["stage"]), "phaseReceipt": str(contract["receiptPath"]),
@@ -195,6 +197,8 @@ def prepare(plan, discovery, state, destination, *, target, expected_build_key,
         unchanged()
         publish_regular_tree(prepared, destination)
     unchanged()
+    if regular_file_inventory(destination / "contract-input") != handoff_files:
+        raise ValueError("Core validation Contract handoff changed during publication")
     value, _ = _request(destination / "facade-request.json")
     if value != request:
         raise ValueError("Core validation caller request changed during publication")

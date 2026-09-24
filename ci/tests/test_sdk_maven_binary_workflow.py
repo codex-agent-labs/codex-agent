@@ -106,7 +106,7 @@ class MavenBinaryWorkflowTest(unittest.TestCase):
         records = {phase: original("contract", "contract", phase, "common") for phase in self.contracts}
         handoff = prepared / "contract-input"
         snapshot_regular_tree(self.evidence_root, handoff)
-        return records["metadata"], "0.8.7", handoff, {"mocked": "full signed Contract gate"}
+        return records["metadata"], "0.8.7", handoff, {"mocked": "full signed Contract gate"}, workflow._inventory(handoff)
 
     def produce(self, plan, **arguments):
         self.assertEqual(self.ready, plan)
@@ -189,6 +189,13 @@ class MavenBinaryWorkflowTest(unittest.TestCase):
         self.worker.side_effect = mutate
         with self.assertRaisesRegex(ValueError, "retained evidence changed"):
             self.invoke()
+        self.finalize.assert_not_called()
+
+    def test_contract_capture_inventory_cannot_be_self_baselined(self):
+        self.capture.side_effect = lambda *args: (*self.capture_contract(*args)[:4], [])
+        with self.assertRaisesRegex(ValueError, "retained evidence changed"):
+            self.invoke()
+        self.worker.assert_not_called()
         self.finalize.assert_not_called()
 
     def test_metadata_admission_objects_forward_only_to_state_replay(self):
