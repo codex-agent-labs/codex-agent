@@ -311,7 +311,7 @@ class RunLaneContractTest(unittest.TestCase):
             "needs.plan.outputs.contract_next_phase != 'none'",
         ):
             self.assertIn(guard, job)
-        self.assertIn("needs: [workflow-lint, plan, product]", job)
+        self.assertIn("needs: [workflow-lint, plan, product, product-tooling]", job)
         self.assertNotIn("contains(needs.*.result", job)
         self.assertIn("cache-read-only: \"true\"", job)
         self.assertNotIn("needs.plan.outputs.contract_next_phase != 'metadata'", job)
@@ -1469,7 +1469,7 @@ class ImpactPlanTest(GitFixture):
             self.assertEqual(2, workflow.count(f"matrix.lane == '{consumer}'"))
         gate = workflow[workflow.index("\n  merge-gate:"):]
         self.assertIn(
-            "needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]",
+            "needs: [workflow-lint, plan, product, tooling-attestation, product-tooling, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-plan, sdk-completion]",
             gate,
         )
         self.assertIn("pattern: codex-agent-ci-*", gate)
