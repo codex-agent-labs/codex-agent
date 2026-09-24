@@ -86,6 +86,9 @@ def prepare_original_core_context(plan, metadata_receipt_path, destination, *,
         "buildKey": expected_build_key, "receiptSha256": expected_receipt_sha256,
         "artifactId": artifact_id, "artifactSha256": artifact_sha256,
         "producer": receipt["producer"], "originalContext": context, "signing": signing}
+    record_bytes = canonical_json_bytes(record)
+    record_inventory = [{"relativePath": "original-context.json", "bytes": len(record_bytes),
+                         "sha256": sha256_bytes(record_bytes)}]
     with tempfile.TemporaryDirectory(prefix="core-original-context-prepare-") as temporary:
         prepared = Path(temporary).resolve() / "unsigned"
         prepared.mkdir()
@@ -97,8 +100,8 @@ def prepare_original_core_context(plan, metadata_receipt_path, destination, *,
                 read_regular_file_bytes(Path(signing_keyring), reject_symlink_parents=True) != keyring_bytes or
                 read_regular_file_bytes(public_key, reject_symlink_parents=True) != public_key_bytes):
             raise ValueError("Core context preparation caller trust or inputs changed")
-        publish_regular_tree(prepared, destination)
-    return destination / "original-context.json"
+        publish_regular_tree(prepared, destination, expected_inventory=record_inventory)
+    return destination / "original-context.json", record_bytes
 
 
 _CALLER_FIELDS = {"schemaVersion", "plan", "metadataReceiptPath", "expectedBuildKey",
@@ -137,7 +140,8 @@ def prepare_from_caller_policy(caller_policy, destination, *, repository_root,
         raise ValueError("Core context preparation destination must be fresh and non-symbolic")
     with tempfile.TemporaryDirectory(prefix="core-original-context-entry-") as temporary:
         staged = Path(temporary).resolve() / "candidate"
-        prepare_original_core_context(policy["plan"], policy["metadataReceiptPath"], staged,
+        _, original_record_bytes = prepare_original_core_context(
+            policy["plan"], policy["metadataReceiptPath"], staged,
             expected_build_key=policy["expectedBuildKey"],
             expected_receipt_sha256=policy["expectedReceiptSha256"],
             artifact_id=policy["artifactId"], artifact_sha256=policy["artifactSha256"],
@@ -155,7 +159,9 @@ def prepare_from_caller_policy(caller_policy, destination, *, repository_root,
         if read_regular_file_bytes(source, max_bytes=16 * 1024 * 1024,
                                    reject_symlink_parents=True) != raw:
             raise ValueError("Core context caller policy changed during original replay")
-        publish_regular_tree(staged, destination)
+        publish_regular_tree(staged, destination, expected_inventory=[{
+            "relativePath": "original-context.json", "bytes": len(original_record_bytes),
+            "sha256": sha256_bytes(original_record_bytes)}])
     return destination / "original-context.json"
 
 

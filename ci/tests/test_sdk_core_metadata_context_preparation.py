@@ -92,7 +92,7 @@ class OriginalCoreContextPreparationTest(unittest.TestCase):
 
     def test_prepares_unsigned_exact_record_only_after_full_original_reader(self):
         args = self.arguments()
-        manifest = preparation.prepare_original_core_context(**args)
+        manifest, original_bytes = preparation.prepare_original_core_context(**args)
         self.fixture.capture.assert_called_once()
         self.assertEqual({"original-context.json"}, {path.name for path in self.destination.iterdir()})
         self.assertEqual({"schemaVersion": 1, "kind": "sdk-core-metadata-original-context",
@@ -102,6 +102,37 @@ class OriginalCoreContextPreparationTest(unittest.TestCase):
             "producer": self.fixture.receipt["producer"],
             "originalContext": self.fixture.context, "signing": self.signing},
             load_canonical_json_bytes(manifest.read_bytes()))
+        self.assertEqual(original_bytes, manifest.read_bytes())
+
+    def test_late_inner_record_replacement_never_publishes(self):
+        publish = preparation.publish_regular_tree
+
+        def replace(source, destination, **kwargs):
+            record = source / "original-context.json"
+            altered = {**load_canonical_json_bytes(record.read_bytes()), "artifactId": 124}
+            write_canonical_json(record, altered)
+            return publish(source, destination, **kwargs)
+
+        with patch.object(preparation, "publish_regular_tree", side_effect=replace):
+            with self.assertRaisesRegex(ValueError, "pinned inventory"):
+                preparation.prepare_original_core_context(**self.arguments())
+        self.assertFalse(self.destination.exists())
+
+    def test_late_outer_record_replacement_never_publishes(self):
+        path, _ = self.caller_policy()
+        publish = preparation.publish_regular_tree
+
+        def replace(source, destination, **kwargs):
+            if destination == self.destination:
+                record = source / "original-context.json"
+                altered = {**load_canonical_json_bytes(record.read_bytes()), "artifactId": 124}
+                write_canonical_json(record, altered)
+            return publish(source, destination, **kwargs)
+
+        with patch.object(preparation, "publish_regular_tree", side_effect=replace):
+            with self.assertRaisesRegex(ValueError, "pinned inventory"):
+                preparation.prepare_from_caller_policy(**self.caller_arguments(path))
+        self.assertFalse(self.destination.exists())
 
     def test_wrong_selection_or_original_worker_never_publishes(self):
         for field, value in (("expected_build_key", "sha256:" + "e" * 64),
