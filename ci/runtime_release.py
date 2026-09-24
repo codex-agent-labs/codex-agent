@@ -18,8 +18,9 @@ from product_reuse import (
 )
 from products.contract_projection import verify_contract_component_projection
 from products.inventory import (
-    load_canonical_json_bytes, load_json_bytes, publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
-    require_exact_keys, require_semver, require_sha256, sha256_file, snapshot_regular_tree, write_canonical_json,
+    canonical_json_bytes, load_canonical_json_bytes, load_json_bytes, publish_regular_tree,
+    read_regular_file_bytes, regular_file_inventory, require_exact_keys, require_semver,
+    require_sha256, sha256_bytes, sha256_file, snapshot_regular_tree, write_canonical_json,
 )
 from products.runtime_attestation import build_runtime_variant_attestation, read_runtime_variant_handoff
 from products.registry import NATIVE_TARGETS
@@ -69,6 +70,7 @@ state before aggregate/SDK continuation. A success here does not elect a plan.
         if trust is None:
             raise ValueError("Runtime caller has no release verification policy")
         policy = load_keyring(trust.keyring, trust.keys)
+        policy_files = regular_file_inventory(root / "trust")
         prepared = root / "prepared"
         contract_root = prepared / "contract-input"
         snapshot_regular_tree(Path(contract["stage"]), contract_root / "stage")
@@ -146,6 +148,15 @@ state before aggregate/SDK continuation. A success here does not elect a plan.
             if regular_file_inventory(prepared, allow_empty=True) != baseline:
                 raise ValueError("Runtime caller captured proof changed during attestation")
         # Leaving the capture scope rechecks originals before anything is published.
+        handoff = read_runtime_variant_handoff(root / "handoff", target=target,
+            keyring=trust.keyring, keys_directory=trust.keys)
+        handoff_files = sorted(({"relativePath": name, "bytes": len(raw), "sha256": sha256_bytes(raw)}
+                                for name, raw in handoff["files"].items()),
+                               key=lambda record: record["relativePath"])
+        if regular_file_inventory(prepared, allow_empty=True) != baseline or \
+                regular_file_inventory(root / "handoff") != handoff_files or \
+                regular_file_inventory(root / "trust") != policy_files:
+            raise ValueError("Runtime caller verified inputs changed before publication")
         snapshot_regular_tree(root / "handoff", prepared / "runtime-input")
         snapshot_regular_tree(root / "trust", prepared / "caller-policy")
         caller = {
@@ -156,7 +167,20 @@ state before aggregate/SDK continuation. A success here does not elect a plan.
             "environment": {**expected_environment, "GITHUB_REF": environment.get("GITHUB_REF")},
         }
         write_canonical_json(prepared / "caller.json", caller)
-        publish_regular_tree(prepared, destination, allow_empty=True)
+        caller_bytes = canonical_json_bytes(caller)
+        expected_files = [
+            *baseline,
+            *({**record, "relativePath": f"runtime-input/{record['relativePath']}"}
+              for record in handoff_files),
+            *({**record, "relativePath": f"caller-policy/{record['relativePath']}"}
+              for record in policy_files),
+            {"relativePath": "caller.json", "bytes": len(caller_bytes), "sha256": sha256_bytes(caller_bytes)},
+        ]
+        expected_files.sort(key=lambda record: record["relativePath"])
+        if regular_file_inventory(prepared, allow_empty=True) != expected_files:
+            raise ValueError("Runtime caller prepared bytes differ from verified inputs")
+        publish_regular_tree(prepared, destination, allow_empty=True,
+                             expected_inventory=expected_files)
     return caller
 
 
@@ -218,6 +242,10 @@ process or product compiler is executed. The reviewed source remains separate.
         if selection["producer"] != producer:
             raise ValueError("Runtime selected state differs from protected caller context")
         before = regular_file_inventory(root, allow_empty=True)
+        capture_files = [
+            {**record, "relativePath": record["relativePath"].removeprefix("current-state/")}
+            for record in before if record["relativePath"].startswith("current-state/")
+        ]
         # This private output is outside the candidate directory to satisfy the
         # leaf caller's strict original-input/output overlap checks.
         with tempfile.TemporaryDirectory(prefix="runtime-selected-result-") as result_temporary:
@@ -235,14 +263,30 @@ process or product compiler is executed. The reviewed source remains separate.
                 expected_receipt_sha256s=selection["receiptSha256s"],
                 expected_contract_receipt_sha256=selection["contractReceiptSha256"],
                 expected_build_key=expected_build_key)
+            leaf_files = regular_file_inventory(prepared, allow_empty=True)
             if regular_file_inventory(root, allow_empty=True) != before:
                 raise ValueError("Runtime selected originals changed during protected verification")
             snapshot_regular_tree(capture, prepared / "selected-state-transport", allow_empty=True)
+            if regular_file_inventory(prepared / "selected-state-transport", allow_empty=True) != capture_files:
+                raise ValueError("Runtime selected transport differs from captured originals")
             # Persist exact selected identities, not private temporary path names.
-            write_canonical_json(prepared / "selected-state.json", {name: selection[name] for name in (
+            selected_state = {name: selection[name] for name in (
                 "schemaVersion", "target", "metadata", "producer", "contractVersion",
-                "contractReceiptSha256", "receiptSha256s")})
-            publish_regular_tree(prepared, output, allow_empty=True)
+                "contractReceiptSha256", "receiptSha256s")}
+            write_canonical_json(prepared / "selected-state.json", selected_state)
+            state_bytes = canonical_json_bytes(selected_state)
+            expected_files = [
+                *leaf_files,
+                *({**record, "relativePath": f"selected-state-transport/{record['relativePath']}"}
+                  for record in capture_files),
+                {"relativePath": "selected-state.json", "bytes": len(state_bytes),
+                 "sha256": sha256_bytes(state_bytes)},
+            ]
+            expected_files.sort(key=lambda record: record["relativePath"])
+            if regular_file_inventory(prepared, allow_empty=True) != expected_files:
+                raise ValueError("Runtime selected caller bytes differ from verified inputs")
+            publish_regular_tree(prepared, output, allow_empty=True,
+                                 expected_inventory=expected_files)
     return result
 
 

@@ -6,7 +6,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from ci.products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes, write_canonical_json
+from ci.products.inventory import (
+    canonical_json_bytes, publish_regular_tree as actual_publish_regular_tree,
+    regular_file_inventory, sha256_bytes, write_canonical_json,
+)
 from ci.products.runtime_attestation import (
     build_runtime_variant_attestation, derive_runtime_component_attestation,
     read_runtime_variant_handoff, verify_runtime_validation_inputs, verify_runtime_variant_attestation,
@@ -385,6 +388,21 @@ class RuntimeVariantCompleteHandoffTest(unittest.TestCase):
         with patch("ci.products.runtime_attestation.sign_manifest", side_effect=AssertionError("resign")), \
                 self.assertRaisesRegex(ValueError, "destination must not exist"):
             self.build(moved)
+
+    def test_attestation_changed_after_verification_cannot_publish(self) -> None:
+        def mutate_before_copy(source, destination, *, expected_inventory):
+            next(Path(source).glob("*.attestation.json")).write_bytes(b"changed after verification\n")
+            actual_publish_regular_tree(source, destination,
+                                        expected_inventory=expected_inventory)
+
+        for complete_handoff in (False, True):
+            output = self.root / f"late-mutation-{complete_handoff}"
+            with self.subTest(complete_handoff=complete_handoff), \
+                    patch("ci.products.runtime_attestation.publish_regular_tree",
+                          side_effect=mutate_before_copy), \
+                    self.assertRaisesRegex(ValueError, "pinned inventory"):
+                self.build(output, complete_handoff=complete_handoff)
+            self.assertFalse(output.exists())
 
     def test_hostile_destinations_and_inputs_never_sign_or_replace_originals(self) -> None:
         link = self.root / "linked-original"

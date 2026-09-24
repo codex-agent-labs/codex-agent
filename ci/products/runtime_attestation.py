@@ -986,11 +986,12 @@ def build_runtime_variant_attestation(
         attestation = prepared / f"{stem}.attestation.json"
         write_canonical_json(attestation, value)
         signature = sign_manifest(attestation, Path(private_key), signing)
+        verified_inventory = regular_file_inventory(prepared)
+        expected_paths = {attestation.name, signature.name}
         if complete_handoff:
-            verified_inventory = regular_file_inventory(prepared)
-            expected_paths = set(relative_paths.values()) | {attestation.name, signature.name}
-            if {record["relativePath"] for record in verified_inventory} != expected_paths:
-                raise ValueError("Complete Runtime handoff file inventory is not exact")
+            expected_paths.update(relative_paths.values())
+        if {record["relativePath"] for record in verified_inventory} != expected_paths:
+            raise ValueError("Runtime attestation file inventory is not exact")
         verify_runtime_variant_attestation(
             Path(payload), Path(binary_receipt), Path(package_receipt),
             Path(validation_receipt), Path(metadata_receipt), attestation, signature,
@@ -999,13 +1000,14 @@ def build_runtime_variant_attestation(
             validation_evidence=Path(validation_evidence),
             keyring=keyring, keys_directory=keys_directory,
         )
+        if regular_file_inventory(prepared) != verified_inventory:
+            raise ValueError("Captured Runtime handoff changed during verification")
         if complete_handoff:
-            if regular_file_inventory(prepared) != verified_inventory:
-                raise ValueError("Captured Runtime handoff changed during verification")
             for name, (path, limit) in original_paths.items():
                 if read_regular_file_bytes(path, max_bytes=limit, reject_symlink_parents=True) != originals[name]:
                     raise ValueError("Original Runtime inputs changed during handoff assembly")
                 if read_regular_file_bytes(captured[name], max_bytes=limit, reject_symlink_parents=True) != originals[name]:
                     raise ValueError("Captured Runtime inputs changed during handoff assembly")
-        publish_regular_tree(prepared, Path(output_directory))
+        publish_regular_tree(prepared, Path(output_directory),
+                             expected_inventory=verified_inventory)
     return value

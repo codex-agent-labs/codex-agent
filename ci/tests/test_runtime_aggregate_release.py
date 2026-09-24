@@ -20,7 +20,8 @@ from ci import runtime_aggregate_release as caller
 from products.aggregate import verify_runtime_aggregate_artifacts
 from products.contract_attestation import build_contract_attestation
 from products.inventory import (
-    canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory,
+    canonical_json_bytes, load_canonical_json_bytes,
+    publish_regular_tree as actual_publish_regular_tree, regular_file_inventory,
     sha256_bytes, sha256_file, snapshot_regular_tree,
     write_canonical_json as actual_write_canonical_json,
 )
@@ -323,6 +324,34 @@ class RuntimeAggregateReleaseTest(unittest.TestCase):
             self.invoke()
         self.assertFalse(self.output.exists())
 
+    def test_fresh_signed_aggregate_changed_before_copy_does_not_publish(self):
+        def mutate_before_copy(source, destination, *, allow_empty, expected_inventory):
+            next((source / "aggregate-input").glob("*.attestation.sig")).write_bytes(
+                b"changed after verification\n")
+            actual_publish_regular_tree(source, destination, allow_empty=allow_empty,
+                                        expected_inventory=expected_inventory)
+
+        with patch("reuse.api_request", side_effect=self.api), \
+                patch.object(caller, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self.invoke()
+        self.assertFalse(self.output.exists())
+
+    def test_git_trust_cannot_gain_an_unverified_file_before_baseline(self):
+        original_trust = caller._release_trust
+
+        def inject_after_trusted_capture(*args):
+            trust = original_trust(*args)
+            (trust.keyring.parent / "extra-policy-file").write_bytes(b"unverified\n")
+            return trust
+
+        with patch.object(caller, "_release_trust", side_effect=inject_after_trusted_capture), \
+                patch("reuse.api_request", side_effect=AssertionError("HTTP before trust gate")), \
+                self.assertRaisesRegex(ValueError, "pinned Git trust"):
+            self.invoke()
+        self.assertEqual(0, self.environment.secret_reads)
+        self.assertFalse(self.output.exists())
+
     def test_fresh_signed_aggregate_rechecks_caller_before_publication(self):
         def mutate_caller(path, value):
             actual_write_canonical_json(path, value)
@@ -381,6 +410,21 @@ class RuntimeAggregateReleaseTest(unittest.TestCase):
                 self.work / "reused/retained-release", allow_empty=True))
             self.assertEqual(original_inventory, regular_file_inventory(self.output, allow_empty=True))
             self.assertEqual(previous_reads, self.environment.secret_reads)
+            late_copy = self.work / "late-copy"
+
+            def mutate_before_copy(source, destination, *, allow_empty, expected_inventory):
+                (source / "retained-release/caller.json").write_bytes(b"changed after verification\n")
+                actual_publish_regular_tree(source, destination, allow_empty=allow_empty,
+                                            expected_inventory=expected_inventory)
+
+            with patch.object(caller, "publish_regular_tree", side_effect=mutate_before_copy), \
+                    patch("reuse.api_request", side_effect=AssertionError("fallback after late mutation")), \
+                    self.assertRaisesRegex(ValueError, "pinned inventory"):
+                caller._attest_selected_runtime_aggregate(
+                    self.repository, late_copy, **self.arguments(
+                        trusted_source_sha=retired_pin, variant_handoffs={},
+                        release_handoff=self.output, token=None))
+            self.assertFalse(late_copy.exists())
             def mutate_forwarded_carrier(path, value):
                 actual_write_canonical_json(path, value)
                 (path.parent / "retained-release/late-injected").write_bytes(b"unverified\n")

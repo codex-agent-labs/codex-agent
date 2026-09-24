@@ -22,9 +22,11 @@ from runtime_aggregate_phase import collect_finalized_inputs
 from runtime_original_ci import capture_runtime_aggregate_original_ci
 from products.contract_projection import verify_contract_component_projection
 from products.inventory import (
-    canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
+    canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes,
+    publish_regular_tree, read_regular_file_bytes,
     regular_file_inventory, require_exact_keys, require_regular_directory,
-    require_semver, require_sha256, sha256_file, snapshot_regular_tree, write_canonical_json,
+    require_semver, require_sha256, sha256_bytes, sha256_file, snapshot_regular_tree,
+    write_canonical_json,
 )
 from products.receipt import validate_phase_receipt
 from products.registry import NATIVE_TARGETS, PhaseInstanceId
@@ -131,8 +133,31 @@ def _attest_selected_runtime_aggregate(
         if trust is None:
             raise ValueError("Runtime aggregate caller has no release verification policy")
         policy = load_keyring(trust.keyring, trust.keys)
+        tracked_keyring = git_regular_blob_bytes(
+            trusted, trusted_source_sha, "gradle/release/product-signing-keys.json", max_bytes=64 * 1024,
+        )
+        trusted_policy_files = [{"relativePath": "product-signing-keys.json",
+                                 "bytes": len(tracked_keyring), "sha256": sha256_bytes(tracked_keyring)}]
+        for record in (policy["activeKey"], *policy["retiredKeys"]):
+            if record is not None:
+                name = f"{record['keyId']}.pub"
+                raw = git_regular_blob_bytes(
+                    trusted, trusted_source_sha, f"gradle/release/keys/{name}", max_bytes=64 * 1024,
+                )
+                trusted_policy_files.append({"relativePath": f"keys/{name}",
+                                             "bytes": len(raw), "sha256": sha256_bytes(raw)})
+        trusted_policy_files.sort(key=lambda record: record["relativePath"])
+        base_files = [
+            *({**record, "relativePath": f"{name}/{record['relativePath']}"}
+              for name, records in before.items() for record in records),
+            *({**record, "relativePath": f"trust/{record['relativePath']}"}
+              for record in trusted_policy_files),
+        ]
+        base_files.sort(key=lambda record: record["relativePath"])
         selected = prepared / "selected-inputs"
         originals = _selected_originals(selected, selection, producer, expected_build_key)
+        if regular_file_inventory(prepared, allow_empty=True) != base_files:
+            raise ValueError("Runtime aggregate captured inputs differ from selected originals or pinned Git trust")
 
         if release_handoff is not None:
             from products.runtime_aggregate_handoff import verified_runtime_aggregate_handoff
@@ -164,10 +189,20 @@ def _attest_selected_runtime_aggregate(
                        for path in (source, prepared / name)):
                     raise ValueError("Runtime aggregate selected evidence changed during reuse")
             write_canonical_json(prepared / "caller.json", caller)
+            caller_bytes = canonical_json_bytes(caller)
+            expected_files = [
+                *base_files,
+                *({**record, "relativePath": f"retained-release/{record['relativePath']}"}
+                  for record in retained_inventory),
+                {"relativePath": "caller.json", "bytes": len(caller_bytes),
+                 "sha256": sha256_bytes(caller_bytes)},
+            ]
+            expected_files.sort(key=lambda record: record["relativePath"])
             if (regular_file_inventory(release_handoff, allow_empty=True) != retained_inventory
-                    or regular_file_inventory(prepared / "retained-release", allow_empty=True) != retained_inventory):
+                    or regular_file_inventory(prepared, allow_empty=True) != expected_files):
                 raise ValueError("Retained aggregate changed before publication")
-            publish_regular_tree(prepared, output, allow_empty=True)
+            publish_regular_tree(prepared, output, allow_empty=True,
+                                 expected_inventory=expected_files)
             return caller
 
         def original(component, phase, target):
@@ -247,24 +282,36 @@ def _attest_selected_runtime_aggregate(
         attestation = build_runtime_aggregate_attestation(**arguments, signing_metadata=signing,
             private_key=private_key, public_key=public_key, output_directory=root / "signed",
             required_variant_trust_domain="release", keyring=trust.keyring, keys_directory=trust.keys)
+        signed_files = regular_file_inventory(root / "signed")
         unchanged()
         snapshot_regular_tree(root / "signed", prepared / "aggregate-input")
         for name, raw in publication.items():
             (prepared / "aggregate-input" / name).write_bytes(raw)
-        finalized = regular_file_inventory(prepared, allow_empty=True)
+        expected_files = [
+            *baseline,
+            *({**record, "relativePath": f"aggregate-input/{record['relativePath']}"}
+              for record in signed_files),
+            *({"relativePath": f"aggregate-input/{name}", "bytes": len(raw),
+               "sha256": sha256_bytes(raw)} for name, raw in publication.items()),
+        ]
+        expected_files.sort(key=lambda record: record["relativePath"])
         caller = {"schemaVersion": 1, "target": "aggregate", "trustedSourceCommit": trusted_source_sha,
             "trustedSourceTree": source_tree, "trustedWorkflowSha": trusted_workflow_sha,
             "transportProducer": producer, "authorizationReason": reason, "event": event_payload,
             "environment": {**expected_environment, "GITHUB_REF": environment.get("GITHUB_REF")},
             "metadataReceiptSha256": attestation["metadataReceiptSha256"]}
         write_canonical_json(prepared / "caller.json", caller)
-        if (read_regular_file_bytes(prepared / "caller.json", reject_symlink_parents=True)
-                != canonical_json_bytes(caller)
-                or regular_file_inventory(prepared, excluded_paths=("caller.json",), allow_empty=True) != finalized
+        caller_bytes = canonical_json_bytes(caller)
+        expected_files.append({"relativePath": "caller.json", "bytes": len(caller_bytes),
+                               "sha256": sha256_bytes(caller_bytes)})
+        expected_files.sort(key=lambda record: record["relativePath"])
+        if (regular_file_inventory(root / "signed") != signed_files
+                or regular_file_inventory(prepared, allow_empty=True) != expected_files
                 or any(regular_file_inventory(source, allow_empty=name == "selected-inputs") != before[name]
                        for name, source in sources.items())):
             raise ValueError("Runtime aggregate verified evidence changed before publication")
-        publish_regular_tree(prepared, output, allow_empty=True)
+        publish_regular_tree(prepared, output, allow_empty=True,
+                             expected_inventory=expected_files)
     return caller
 
 

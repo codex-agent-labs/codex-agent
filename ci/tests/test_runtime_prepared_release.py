@@ -10,7 +10,10 @@ import unittest
 from unittest.mock import patch
 
 from ci import runtime_prepared_release as release
-from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes
+from products.inventory import (
+    canonical_json_bytes, publish_regular_tree as actual_publish_regular_tree,
+    regular_file_inventory, sha256_bytes,
+)
 
 
 class RuntimePreparedReleaseTest(unittest.TestCase):
@@ -232,6 +235,17 @@ class RuntimePreparedReleaseTest(unittest.TestCase):
         self.late_mutation = None
         self.sign_native.side_effect = ValueError('signing gate rejected')
         with self.assertRaisesRegex(ValueError, 'signing gate rejected'):
+            self.invoke()
+        self.assertFalse(self.output.exists())
+
+    def test_changed_verified_result_fails_before_publication(self):
+        def mutate_before_copy(source, destination, *, allow_empty, expected_inventory):
+            (source / 'caller.json').write_bytes(b'changed after verification\n')
+            actual_publish_regular_tree(source, destination, allow_empty=allow_empty,
+                                        expected_inventory=expected_inventory)
+
+        with patch.object(release, 'publish_regular_tree', side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, 'pinned inventory'):
             self.invoke()
         self.assertFalse(self.output.exists())
 

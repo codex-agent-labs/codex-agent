@@ -4,6 +4,7 @@ Existing predecessor/resume tests cover full replay. These checks neither mint
 host evidence nor claim the mocked state admission is an authenticated CI run.
 """
 
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
@@ -236,7 +237,10 @@ class RuntimeAttestationSelectionTest(unittest.TestCase):
     def test_state_caller_discovers_exact_retained_native_evidence_without_resigning(self):
         self._state_caller_reuse(automatic=True)
 
-    def _state_caller_reuse(self, *, automatic):
+    def test_state_caller_changed_verified_bytes_do_not_publish(self):
+        self._state_caller_reuse(automatic=False, late_mutation=True)
+
+    def _state_caller_reuse(self, *, automatic, late_mutation=False):
         import runtime_release
         from ci.tests.test_contract_release_context import contract_context
         from ci.tests.test_contract_release_capture import ObservedEnvironment
@@ -293,10 +297,25 @@ class RuntimeAttestationSelectionTest(unittest.TestCase):
             captured_plan.parent.mkdir(parents=True)
             captured_plan.write_bytes(plan.read_bytes())
 
+        original_publish = runtime_release.publish_regular_tree
+
+        def mutate_before_copy(source, destination, *, allow_empty, expected_inventory):
+            if Path(destination) == output:
+                (source / "selected-state.json").write_bytes(b"changed after verification\n")
+            original_publish(source, destination, allow_empty=allow_empty,
+                             expected_inventory=expected_inventory)
+
+        publisher = (patch.object(runtime_release, "publish_regular_tree",
+                                  side_effect=mutate_before_copy)
+                     if late_mutation else nullcontext())
+        expected = (self.assertRaisesRegex(ValueError, "pinned inventory")
+                    if late_mutation else nullcontext())
+
         with patch.object(runtime_release, "capture_runtime_resume_upload", side_effect=capture) as transport, \
                 patch.object(product_reuse, "_verified_product_state", return_value=self.state) as replay, \
                 patch("reuse.api_request", side_effect=AssertionError("HTTP beyond captured transport")), \
-                patch("products.runtime_attestation.sign_manifest", side_effect=AssertionError("resigning")):
+                patch("products.runtime_attestation.sign_manifest", side_effect=AssertionError("resigning")), \
+                publisher, expected:
             runtime_release.attest_runtime_state_ci(
                 self.repository, self.candidate, plan, output, target=TARGET,
                 expected_build_key=self.state.prior_by_instance[self.metadata]["buildKey"],
@@ -306,6 +325,9 @@ class RuntimeAttestationSelectionTest(unittest.TestCase):
                 token="not-a-real-token", release_handoffs=() if automatic else (self.handoff,))
             transport.assert_called_once()
             replay.assert_called_once()
+        if late_mutation:
+            self.assertFalse(output.exists())
+            return
         self.assertEqual(regular_file_inventory(self.handoff), regular_file_inventory(output / "runtime-input"))
         selection = load_canonical_json_bytes((output / "selected-state.json").read_bytes())
         self.assertEqual(self.state.prior_by_instance[self.metadata], selection["metadata"])

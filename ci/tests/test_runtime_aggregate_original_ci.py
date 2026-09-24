@@ -9,7 +9,12 @@ from unittest.mock import patch
 
 from ci.tests import test_contract_ci_originals as fixture
 from ci.tests.test_products import phase_receipt
+from ci import runtime_original_ci as original_ci
 from ci.runtime_original_ci import capture_runtime_aggregate_original_ci
+from products.inventory import (
+    publish_regular_tree as actual_publish_regular_tree,
+    write_canonical_json as actual_write_canonical_json,
+)
 from products.receipt import compute_build_key, write_output_manifest
 from products.runtime_aggregate import _adapter_receipt_identities
 
@@ -155,6 +160,27 @@ class RuntimeAggregateOriginalCiTest(unittest.TestCase):
         self.adapters[0]["receipt"] = replacement
         with patch("reuse.api_request", side_effect=self.api), \
                 self.assertRaisesRegex(ValueError, "differs from its requested original receipt"):
+            self.capture()
+        self.assertFalse(self.output.exists())
+
+    def test_pre_pin_and_late_copy_mutations_do_not_publish_originals(self):
+        def mutate_before_pin(path, value):
+            actual_write_canonical_json(path, value)
+            next((Path(path).parent.parent / "phases").rglob("transport.zip")).write_bytes(b"changed before pin\n")
+
+        with patch("reuse.api_request", side_effect=self.api), \
+                patch.object(original_ci, "write_canonical_json", side_effect=mutate_before_pin), \
+                self.assertRaisesRegex(ValueError, "changed before publication"):
+            self.capture()
+        self.assertFalse(self.output.exists())
+
+        def mutate_before_copy(source, destination, **kwargs):
+            next((Path(source) / "phases").rglob("transport.zip")).write_bytes(b"changed after pin\n")
+            actual_publish_regular_tree(source, destination, **kwargs)
+
+        with patch("reuse.api_request", side_effect=self.api), \
+                patch.object(original_ci, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
             self.capture()
         self.assertFalse(self.output.exists())
 

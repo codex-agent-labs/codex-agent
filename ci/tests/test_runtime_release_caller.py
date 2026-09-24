@@ -15,7 +15,10 @@ from ci.tests.test_product_native_chain import build_chain
 from ci import runtime_release
 from products.contract_attestation import build_contract_attestation
 from products.runtime_attestation import build_runtime_variant_attestation, read_runtime_variant_handoff
-from products.inventory import canonical_json_bytes, regular_file_inventory
+from products.inventory import (
+    canonical_json_bytes, publish_regular_tree as actual_publish_regular_tree,
+    regular_file_inventory,
+)
 from products.signatures import generate_development_key
 
 
@@ -119,6 +122,18 @@ class RuntimeReleaseCallerTest(unittest.TestCase):
                                     "original/empty-diagnostic.log").read_bytes())
         self.assertFalse(any(self.context["private_key"].read_bytes() in path.read_bytes()
                              for path in self.destination.rglob("*") if path.is_file()))
+
+    def test_verified_release_bytes_changed_before_copy_do_not_publish(self):
+        def mutate_before_copy(source, destination, *, allow_empty, expected_inventory):
+            (source / "caller.json").write_bytes(b"changed after verification\n")
+            actual_publish_regular_tree(source, destination, allow_empty=allow_empty,
+                                        expected_inventory=expected_inventory)
+
+        with patch("reuse.api_request", side_effect=self.source.api()), \
+                patch.object(runtime_release, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self.invoke()
+        self.assertFalse(self.destination.exists())
 
     def test_retired_exact_handoff_needs_no_active_key_secret_or_http(self):
         original = self.keyring.read_bytes()

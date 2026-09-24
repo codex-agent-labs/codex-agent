@@ -11,7 +11,8 @@ import tempfile
 from typing import Any
 
 from products.inventory import (
-    load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
+    canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
+    read_regular_file_bytes, regular_file_inventory,
     require_array, require_exact_keys, require_regular_directory, require_string,
     sha256_bytes, verified_zip_contents, write_canonical_json,
 )
@@ -71,7 +72,7 @@ def capture_runtime_aggregate_original_ci(
     attempts = {(value["run"]["id"], value["run"]["run_attempt"]): value for value in observed}
     with tempfile.TemporaryDirectory(prefix="runtime-aggregate-original-ci-") as temporary:
         prepared = Path(temporary).resolve() / "captured"
-        inventories, artifacts = {}, {}
+        inventories, artifacts, expected_files = {}, {}, []
         for name, receipt in receipts.items():
             producer = receipt["producer"]
             run_id = producer["runId"]
@@ -100,11 +101,19 @@ def capture_runtime_aggregate_original_ci(
             retained.mkdir(parents=True)
             archive = retained / "transport.zip"
             archive.write_bytes(raw)
-            verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+            archive_files, _, _ = verified_zip_contents(
+                archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS,
+            )
             safe_extract(archive, retained / "original")
+            if regular_file_inventory(retained / "original", allow_empty=True) != archive_files:
+                raise ValueError("Original Runtime aggregate extraction differs from verified upload")
             verified = verify_phase_shard(retained / "original/shard", identities[name])
             if verified["receiptBytes"] != originals[name]:
                 raise ValueError("Original Runtime aggregate upload differs from its requested original receipt")
+            expected_files.append({"relativePath": f"phases/{name}/transport.zip",
+                                   "bytes": len(raw), "sha256": sha256_bytes(raw)})
+            expected_files.extend({**record, "relativePath": f"phases/{name}/original/{record['relativePath']}"}
+                                  for record in archive_files)
             artifacts[name] = artifact
         if any(read_regular_file_bytes(sources[name], max_bytes=16 * 1024 * 1024,
                                        reject_symlink_parents=True) != raw for name, raw in originals.items()):
@@ -112,5 +121,12 @@ def capture_runtime_aggregate_original_ci(
         evidence = {"target": "aggregate", "observed": observed, "artifacts": artifacts,
                     "receiptSha256s": {name: sha256_bytes(raw) for name, raw in originals.items()}}
         write_canonical_json(prepared / "transport/original-ci-phases.json", evidence)
-        publish_regular_tree(prepared, destination, allow_empty=True)
+        evidence_bytes = canonical_json_bytes(evidence)
+        expected_files.append({"relativePath": "transport/original-ci-phases.json",
+                               "bytes": len(evidence_bytes), "sha256": sha256_bytes(evidence_bytes)})
+        expected_files.sort(key=lambda record: record["relativePath"])
+        if regular_file_inventory(prepared, allow_empty=True) != expected_files:
+            raise ValueError("Original Runtime aggregate evidence changed before publication")
+        publish_regular_tree(prepared, destination, allow_empty=True,
+                             expected_inventory=expected_files)
     return evidence

@@ -138,13 +138,20 @@ def attest_prepared_runtime_ci(
                 target=target, expected_build_key=expected_build_key, originals=originals)
             unchanged()
             result = attest_runtime_variant_ci(trusted, result_path, target=target, **context, **arguments)
+        expected_result_files = regular_file_inventory(result_path, allow_empty=True)
         unchanged()
         for source, name in ((prepared_capture, "preparation-transport"),
                              (original_capture, "selected-state-transport")):
             snapshot_regular_tree(source, result_path / name, allow_empty=True)
             if regular_file_inventory(result_path / name, allow_empty=True) != baselines[source]:
                 raise ValueError("Prepared Runtime transport changed during evidence forwarding")
+            expected_result_files.extend({**record, "relativePath": f"{name}/{record['relativePath']}"}
+                                         for record in baselines[source])
+        expected_result_files.sort(key=lambda record: record["relativePath"])
         unchanged()
+        if regular_file_inventory(result_path, allow_empty=True) != expected_result_files:
+            raise ValueError("Prepared Runtime result changed before publication")
         _destination(output, protected)
-        publish_regular_tree(result_path, output, allow_empty=True)
+        publish_regular_tree(result_path, output, allow_empty=True,
+                             expected_inventory=expected_result_files)
     return result
