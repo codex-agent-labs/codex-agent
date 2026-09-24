@@ -18,6 +18,7 @@ from products.contract_phase10_maven import verify_contract_phase10_maven
 from products.inventory import (
     load_canonical_json, publish_regular_tree as actual_publish_regular_tree,
     regular_file_inventory, sha256_bytes,
+    write_canonical_json as actual_write_canonical_json,
 )
 
 
@@ -110,13 +111,25 @@ class ContractPhase10MavenCallerTest(unittest.TestCase):
         self.assertFalse(self.destination.exists())
 
     def test_public_key_mutated_during_publication_cannot_return_success(self) -> None:
-        def mutate_then_publish(source, destination):
+        def mutate_then_publish(source, destination, **kwargs):
             (Path(source) / "publication-pgp-public-key.asc").write_bytes(b"mutated key\n")
-            actual_publish_regular_tree(source, destination)
+            actual_publish_regular_tree(source, destination, **kwargs)
 
         with mock.patch.object(caller, "publish_regular_tree", side_effect=mutate_then_publish):
-            with self.assertRaisesRegex(ValueError, "Published Contract release/PGP files differ"):
+            with self.assertRaisesRegex(ValueError, "pinned inventory"):
                 self.invoke()
+        self.assertFalse(self.destination.exists())
+
+    def test_sidecar_changed_before_inventory_pin_cannot_be_published(self) -> None:
+        def write_then_mutate(path, value):
+            actual_write_canonical_json(path, value)
+            if Path(path).name == "sidecar-selection.json":
+                next((Path(path).parent / "maven-sidecars").rglob("*.asc")).write_bytes(b"changed before pin\n")
+
+        with mock.patch.object(caller, "write_canonical_json", side_effect=write_then_mutate), \
+                self.assertRaises(ValueError):
+            self.invoke()
+        self.assertFalse(self.destination.exists())
 
     def test_cli_help_without_pythonpath(self) -> None:
         environment = os.environ.copy()

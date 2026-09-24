@@ -8,7 +8,10 @@ from unittest.mock import patch
 
 from ci import runtime_phase11_bytes as candidate
 from ci.tests.test_products import phase_receipt
-from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes
+from products.inventory import (
+    canonical_json_bytes, publish_regular_tree as actual_publish_regular_tree,
+    regular_file_inventory, sha256_bytes,
+)
 from products.receipt import compute_build_key
 
 
@@ -151,13 +154,23 @@ class RuntimePhase11BytesTest(unittest.TestCase):
     def test_mutation_during_publication_fails_after_no_replace_copy(self):
         real_publish = candidate.publish_regular_tree
 
-        def corrupt_after_copy(source, destination):
-            real_publish(source, destination)
+        def corrupt_after_copy(source, destination, *, expected_inventory):
+            real_publish(source, destination, expected_inventory=expected_inventory)
             (destination / "maven-sidecars/signature.asc").write_bytes(b"changed after copy\n")
 
         with patch.object(candidate, "publish_regular_tree", side_effect=corrupt_after_copy), \
                 self.assertRaisesRegex(ValueError, "Published Runtime candidate bytes differ"):
             self.forward()
+
+    def test_changed_verified_candidate_fails_before_publication(self):
+        def mutate_before_copy(source, destination, *, expected_inventory):
+            (source / "maven-sidecars/signature.asc").write_bytes(b"changed after verification\n")
+            actual_publish_regular_tree(source, destination, expected_inventory=expected_inventory)
+
+        with patch.object(candidate, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self.forward()
+        self.assertFalse(self.destination.exists())
 
     def test_verified_copy_mutation_fails_before_publication(self):
         @contextmanager

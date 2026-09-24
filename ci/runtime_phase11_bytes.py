@@ -156,7 +156,7 @@ def forward_verified_runtime_phase10_bytes(
                 or read_regular_file_bytes(prepared / "pgp-public-key.asc", max_bytes=1024 * 1024,
                                            reject_symlink_parents=True) != pgp_bytes):
             raise ValueError("Verified Runtime candidate bytes changed before publication")
-        publish_regular_tree(prepared, destination)
+        publish_regular_tree(prepared, destination, expected_inventory=prepared_inventory)
         if (regular_file_inventory(destination) != prepared_inventory
                 or read_regular_file_bytes(destination / "product-policy/product-signing-keys.json",
                                            max_bytes=64 * 1024, reject_symlink_parents=True) != keyring_bytes

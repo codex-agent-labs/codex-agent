@@ -11,7 +11,10 @@ from unittest.mock import patch
 
 from ci import runtime_phase10_sidecar_caller as caller
 from ci.tests.test_products import phase_receipt
-from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes
+from products.inventory import (
+    canonical_json_bytes, publish_regular_tree as actual_publish_regular_tree,
+    regular_file_inventory, sha256_bytes,
+)
 from products.receipt import compute_build_key
 
 
@@ -98,6 +101,16 @@ class RuntimePhase10SidecarCallerTest(unittest.TestCase):
         carrier = self._invoke()
         self.assertEqual("protected-output", carrier.name)
         self.assertFalse((self.output / "maven-sidecars").exists())
+
+    def test_changed_verified_sidecar_fails_before_publication(self):
+        def mutate_before_copy(source, destination, *, expected_inventory):
+            (source / "maven/runtime.asc").write_bytes(b"changed after verification\n")
+            actual_publish_regular_tree(source, destination, expected_inventory=expected_inventory)
+
+        with patch.object(caller, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self._invoke()
+        self.assertFalse(self.destination.exists())
 
     def test_retained_wrapper_uses_fixed_original_carrier_path(self):
         retained = self.output / "retained-release"

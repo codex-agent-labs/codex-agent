@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from ci.products.inventory import sha256_bytes
+from ci.products.inventory import publish_regular_tree as actual_publish_regular_tree
 from ci.products.inventory import snapshot_regular_tree as actual_snapshot_regular_tree
 from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
 from ci.products.runtime_phase10_maven import (
@@ -233,6 +234,20 @@ class RuntimePhase10MavenTest(unittest.TestCase):
         self.assertEqual(result["sidecarFiles"], verify_runtime_phase10_maven(
             self.payload, self.manifest, produced, self.key, sha256_bytes(exported),
         )["sidecarFiles"])
+        late_mutated = self.sidecars.with_name("late-mutated-sidecars")
+
+        def mutate_before_copy(source, destination, **kwargs):
+            next(Path(source).rglob("*.asc")).write_bytes(b"changed after verification\n")
+            actual_publish_regular_tree(source, destination, **kwargs)
+
+        with patch("ci.products.runtime_phase10_maven.publish_regular_tree",
+                   side_effect=mutate_before_copy):
+            with self.assertRaisesRegex(ValueError, "pinned inventory"):
+                produce_runtime_phase10_maven_sidecars(
+                    self.payload, self.manifest, late_mutated, self.key,
+                    sha256_bytes(exported), home, fingerprint, "",
+                )
+        self.assertFalse(late_mutated.exists())
         with self.assertRaisesRegex(ValueError, "already exists"):
             produce_runtime_phase10_maven_sidecars(
                 self.payload, self.manifest, produced, self.key, sha256_bytes(exported),

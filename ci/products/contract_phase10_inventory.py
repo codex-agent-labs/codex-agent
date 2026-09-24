@@ -108,7 +108,11 @@ def capture_contract_phase10_inventory(
                                                 reject_symlink_parents=True) != raw
                        for key_id, raw in original_keys.items())):
             raise ValueError("Contract Phase-10 inventory inputs changed during capture")
-        publish_regular_tree(prepared, destination)
+        expected_inventory = regular_file_inventory(prepared)
+        if verify_contract_phase10_inventory(prepared) != record or \
+                regular_file_inventory(prepared) != expected_inventory:
+            raise ValueError("Contract Phase-10 prepared inventory changed before publication")
+        publish_regular_tree(prepared, destination, expected_inventory=expected_inventory)
     return record
 
 

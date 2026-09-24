@@ -107,6 +107,9 @@ def produce_authenticated_contract_maven_sidecars(
         if (regular_file_inventory(original, allow_empty=True) != original_files
                 or regular_file_inventory(prepared / "original", allow_empty=True) != original_files
                 or verify_contract_phase10_inventory(prepared / "original/contract-record") != record
+                or verify_contract_phase10_maven(
+                    payload, sidecars, public, expected_pgp_key_sha256,
+                ) != signed
                 or read_regular_file_bytes(pgp_public_key, max_bytes=1024 * 1024,
                                            reject_symlink_parents=True) != key
                 or read_regular_file_bytes(public, max_bytes=1024 * 1024,
@@ -116,7 +119,7 @@ def produce_authenticated_contract_maven_sidecars(
                                            reject_symlink_parents=True) != control_bytes
                 or regular_file_inventory(prepared) != prepared_files):
             raise ValueError("Contract original or PGP key changed during signing")
-        publish_regular_tree(prepared, destination)
+        publish_regular_tree(prepared, destination, expected_inventory=prepared_files)
         if (regular_file_inventory(destination) != prepared_files
                 or read_regular_file_bytes(destination / "publication-pgp-public-key.asc",
                                            max_bytes=1024 * 1024,

@@ -17,6 +17,7 @@ from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
 from ci.products.inventory import (
     canonical_json_bytes,
     load_canonical_json_bytes,
+    publish_regular_tree as actual_publish_regular_tree,
     regular_file_inventory,
     sha256_bytes,
     sha256_file,
@@ -311,6 +312,27 @@ class Fixture:
 
 
 class RuntimeAggregateProducerTest(unittest.TestCase):
+    def test_attestation_changed_after_verification_cannot_publish(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture = Fixture(root / "fixture")
+            payload_output = root / "payload"
+            payload_output.mkdir()
+            manifest = fixture.produce(payload_output)["manifestPath"]
+            metadata = fixture.metadata_receipt(manifest)
+            output = root / "attestation"
+
+            def mutate_before_copy(source, destination, *, expected_inventory):
+                next(Path(source).glob("*.attestation.json")).write_bytes(b"changed after verification\n")
+                actual_publish_regular_tree(source, destination,
+                                            expected_inventory=expected_inventory)
+
+            with patch.object(runtime_aggregate_module, "publish_regular_tree",
+                              side_effect=mutate_before_copy), \
+                    self.assertRaisesRegex(ValueError, "pinned inventory"):
+                fixture.build_attestation(manifest, metadata, output)
+            self.assertFalse(output.exists())
+
     def test_payload_is_deterministic_and_contains_only_release_content_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

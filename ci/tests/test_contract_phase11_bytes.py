@@ -104,8 +104,20 @@ class ContractPhase11BytesTest(unittest.TestCase):
         self.assertFalse((phase10.fixture.root / "bad-signature").exists())
         sidecar.write_bytes(original_signature)
 
-        def publish(prepared, output):
-            actual_publish_regular_tree(prepared, output)
+        def tamper_before_publish(prepared, output, *, expected_inventory):
+            (prepared / "contract-release-evidence/contract-input" / payload.name).write_bytes(b"changed\n")
+            actual_publish_regular_tree(prepared, output, expected_inventory=expected_inventory)
+
+        tampered_destination = phase10.fixture.root / "changed-before-publish"
+        with mock.patch.object(candidate, "publish_regular_tree", side_effect=tamper_before_publish):
+            with self.assertRaisesRegex(ValueError, "pinned inventory"):
+                candidate.forward_verified_contract_phase10_bytes(
+                    source, tampered_destination, **pins,
+                )
+        self.assertFalse(tampered_destination.exists())
+
+        def publish(prepared, output, *, expected_inventory):
+            actual_publish_regular_tree(prepared, output, expected_inventory=expected_inventory)
 
         landed_tree.side_effect = [pins["expected_validation_tree"]] * 2 + ["0" * 40]
         with mock.patch.object(candidate, "publish_regular_tree", side_effect=publish):

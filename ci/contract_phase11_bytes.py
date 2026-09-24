@@ -152,11 +152,12 @@ def forward_verified_contract_phase10_bytes(
         }
         if {row["relativePath"] for row in regular_file_inventory(prepared)} != expected_paths:
             raise ValueError("Contract Phase-10 output has unexpected candidate files")
+        pinned_inventory = regular_file_inventory(prepared)
         if (_inventory_digest(source) != expected_inventory_sha256
-                or _inventory_digest(prepared) != expected_inventory_sha256
+                or sha256_bytes(canonical_json_bytes(pinned_inventory)) != expected_inventory_sha256
                 or _landed_tree(Path(landed_repository)) != expected_validation_tree):
             raise ValueError("Contract Phase-10 bytes changed during candidate verification")
-        publish_regular_tree(prepared, destination)
+        publish_regular_tree(prepared, destination, expected_inventory=pinned_inventory)
         if (_inventory_digest(destination) != expected_inventory_sha256
                 or _landed_tree(Path(landed_repository)) != expected_validation_tree):
             raise ValueError("Forwarded Contract candidate or landed tree differs from Phase-10 bytes")

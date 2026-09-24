@@ -87,7 +87,7 @@ def produce_authenticated_runtime_maven_sidecars(
             raise ValueError("Runtime protected output changed during signing")
         if regular_file_inventory(sidecars) != result["sidecarFiles"]:
             raise ValueError("Runtime signed sidecars changed before publication")
-        publish_regular_tree(sidecars, destination)
+        publish_regular_tree(sidecars, destination, expected_inventory=result["sidecarFiles"])
         if regular_file_inventory(destination) != result["sidecarFiles"] or \
                 regular_file_inventory(protected_output, allow_empty=True) != before:
             raise ValueError("Runtime original or sidecars changed during publication")

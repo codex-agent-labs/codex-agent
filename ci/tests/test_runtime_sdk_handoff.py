@@ -11,7 +11,8 @@ from unittest.mock import patch
 from ci.tests import test_runtime_aggregate_handoff as fixture
 from products import runtime_sdk_handoff as bridge
 from products.inventory import (
-    canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory,
+    canonical_json_bytes, load_canonical_json_bytes,
+    publish_regular_tree as actual_publish_regular_tree, regular_file_inventory,
     snapshot_regular_tree, verify_regular_file_inventory, sha256_bytes,
 )
 from products.registry import NATIVE_TARGETS
@@ -122,6 +123,17 @@ class RuntimeSdkHandoffTest(unittest.TestCase):
         compatibility = load_canonical_json_bytes((self.output / COMPATIBILITY_NAME).read_bytes())
         self.assertEqual("0.2.9", compatibility["sdkVersion"])
         self.assertEqual("0.2.7", compatibility["runtime"]["defaultRuntimeVersion"])
+
+    def test_changed_verified_sdk_input_cannot_publish(self):
+        def mutate_before_copy(source, destination, *, expected_inventory):
+            (source / COMPATIBILITY_NAME).write_bytes(b"changed after verification\n")
+            actual_publish_regular_tree(source, destination,
+                                        expected_inventory=expected_inventory)
+
+        with patch.object(bridge, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self.stage()
+        self.assertFalse(self.output.exists())
 
     def test_contract_payload_binding_rejects_receipt_digest_before_s858_writer(self):
         before = regular_file_inventory(self.carrier, allow_empty=True)

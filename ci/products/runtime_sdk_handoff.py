@@ -10,11 +10,11 @@ import tempfile
 
 from .inventory import (
     canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
-    regular_file_inventory, require_regular_directory, require_sha256,
+    regular_file_inventory, require_regular_directory, require_sha256, sha256_bytes,
 )
 from .registry import NATIVE_TARGETS, PhaseInstanceId
 from .runtime_aggregate_handoff import _public_policy, verified_runtime_aggregate_handoff
-from .sdk_inputs import stage_sdk_inputs
+from .sdk_inputs import INVENTORY_NAME, stage_sdk_inputs
 from .sdk_release_selection import (
     require_sdk_contract_version, require_sdk_release_selection, require_sdk_runtime_compatibility_policy,
 )
@@ -121,11 +121,22 @@ def stage_runtime_sdk_handoff(handoff_root: Path, destination: Path, *,
             request_path = private / "request.json"
             request_path.write_bytes(canonical_json_bytes(request))
             result = stage_sdk_inputs(request_path, private / "sdk-inputs")
+        inventory_bytes = canonical_json_bytes(result["inventory"])
+        if sha256_bytes(inventory_bytes) != result["inventorySha256"]:
+            raise ValueError("Runtime SDK staged inventory differs from writer result")
+        expected_files = sorted([
+            *result["inventory"]["files"],
+            {"relativePath": INVENTORY_NAME, "bytes": len(inventory_bytes),
+             "sha256": result["inventorySha256"]},
+        ], key=lambda item: item["relativePath"])
         # The reader's exit checks must finish before anything is published.
         if (regular_file_inventory(policy) != policy_inventory or any(
                 read_regular_file_bytes(path, max_bytes=64 * 1024, reject_symlink_parents=True) != original_policy[name]
                 for name, path in paths.items())):
             raise ValueError("Runtime SDK caller policy changed during capture")
+        if regular_file_inventory(private / "sdk-inputs") != expected_files:
+            raise ValueError("Runtime SDK staged files differ from verified writer result")
         output_safe()
-        publish_regular_tree(private / "sdk-inputs", destination)
+        publish_regular_tree(private / "sdk-inputs", destination,
+                             expected_inventory=expected_files)
     return result

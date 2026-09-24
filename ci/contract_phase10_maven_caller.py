@@ -101,6 +101,9 @@ def produce_contract_phase10_maven_handoff(
         control_bytes = canonical_json_bytes(control)
         expected_files = regular_file_inventory(prepared)
         if (regular_file_inventory(release) != original_files
+                or verify_contract_phase10_maven(
+                    payload, prepared / "maven-sidecars", public, expected_pgp_key_sha256,
+                ) != signed
                 or read_regular_file_bytes(public, max_bytes=1024 * 1024,
                                            reject_symlink_parents=True) != key
                 or read_regular_file_bytes(control_path, max_bytes=16 * 1024 * 1024,
@@ -109,7 +112,7 @@ def produce_contract_phase10_maven_handoff(
                 or read_regular_file_bytes(pgp_public_key, max_bytes=1024 * 1024,
                                            reject_symlink_parents=True) != key):
             raise ValueError("Contract release or PGP key changed before sidecar publication")
-        publish_regular_tree(prepared, destination)
+        publish_regular_tree(prepared, destination, expected_inventory=expected_files)
         if (regular_file_inventory(destination) != expected_files
                 or read_regular_file_bytes(destination / "publication-pgp-public-key.asc",
                                            max_bytes=1024 * 1024,

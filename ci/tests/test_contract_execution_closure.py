@@ -11,7 +11,8 @@ from ci.products.contract_attestation import (
     capture_contract_execution_closure, main, verify_contract_execution_closure,
 )
 from ci.products.inventory import (
-    load_canonical_json_bytes, regular_file_inventory,
+    load_canonical_json_bytes, publish_regular_tree as actual_publish_regular_tree,
+    regular_file_inventory,
     sha256_bytes, sha256_file, write_canonical_json,
 )
 from ci.products.plan import plan_phase
@@ -95,6 +96,33 @@ class ContractExecutionClosureTest(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             self.capture(output)
+
+    def test_late_closure_mutation_fails_before_publication(self):
+        output = self.root / "late-closure"
+
+        def mutate_then_publish(source, destination, **kwargs):
+            (Path(source) / "receipts/metadata.json").write_bytes(b"late mutation\n")
+            actual_publish_regular_tree(source, destination, **kwargs)
+
+        with mock.patch("ci.products.contract_attestation.publish_regular_tree",
+                        side_effect=mutate_then_publish), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self.capture(output)
+        self.assertFalse(output.exists())
+
+    def test_closure_mutation_before_inventory_pin_is_not_baselined(self):
+        output = self.root / "changed-before-pin"
+
+        def write_then_mutate(path, value):
+            write_canonical_json(path, value)
+            if Path(path).name == "contract-execution-closure.json":
+                (Path(path).parent / "receipts/metadata.json").write_bytes(b"changed before pin\n")
+
+        with mock.patch("ci.products.contract_attestation.write_canonical_json",
+                        side_effect=write_then_mutate), \
+                self.assertRaisesRegex(ValueError, "changed before publication"):
+            self.capture(output)
+        self.assertFalse(output.exists())
 
     def test_run_only_changes_preserve_payload_but_keep_distinct_external_proof(self):
         other_payload, other_receipts, other_archive = execution_closure_fixture(self.root / "second", "other-run")

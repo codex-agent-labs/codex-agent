@@ -176,7 +176,7 @@ def produce_contract_phase10_maven_sidecars(
                 or _pinned_key(pgp_public_key, expected_pgp_key_sha256) != key
                 or regular_file_inventory(sidecars) != result["sidecarFiles"]):
             raise ValueError("Contract Maven input or verified sidecars changed before publication")
-        publish_regular_tree(sidecars, sidecar_directory)
+        publish_regular_tree(sidecars, sidecar_directory, expected_inventory=result["sidecarFiles"])
         if regular_file_inventory(sidecar_directory) != result["sidecarFiles"]:
             raise ValueError("Contract Maven published sidecars differ from verified bytes")
         return result

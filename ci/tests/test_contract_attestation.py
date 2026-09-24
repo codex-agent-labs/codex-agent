@@ -22,6 +22,7 @@ from ci.products.contract_attestation import (
 from ci.products.contract_model import verify_extracted_contract_directory
 from ci.products.inventory import (
     load_canonical_json,
+    publish_regular_tree as actual_publish_regular_tree,
     public_key_fingerprint,
     regular_file_inventory,
     sha256_bytes,
@@ -164,6 +165,23 @@ class ContractAttestationTest(unittest.TestCase):
             self.assertFalse(output.exists())
             self.receipt.write_bytes(receipt_bytes)
             (closure / "unexpected-original-file").unlink(missing_ok=True)
+
+    def test_late_complete_handoff_mutation_fails_before_publication(self) -> None:
+        closure = _closure(self.payload, self.receipt, self.root / "late-closure")
+        output = self.root / "late-handoff"
+
+        def mutate_then_publish(source, destination, **kwargs):
+            (Path(source) / self.payload.name).write_bytes(b"late mutation\n")
+            actual_publish_regular_tree(source, destination, **kwargs)
+
+        with mock.patch("ci.products.contract_attestation.publish_regular_tree",
+                        side_effect=mutate_then_publish), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            build_contract_attestation(
+                self.payload, self.receipt, self.signing, self.private_key,
+                self.public_key, output, execution_closure=closure, complete_handoff=True,
+            )
+        self.assertFalse(output.exists())
 
     def verify(self, attestation: Path, signature: Path, **changes):
         arguments = {

@@ -11,7 +11,8 @@ from ci.products.contract_phase10_inventory import (
     capture_contract_phase10_inventory, verify_contract_phase10_inventory,
 )
 from ci.products.inventory import (
-    load_canonical_json, regular_file_inventory, snapshot_regular_tree, write_canonical_json,
+    load_canonical_json, publish_regular_tree, regular_file_inventory,
+    snapshot_regular_tree, write_canonical_json,
 )
 from ci.products.signatures import generate_development_key
 from ci.tests.test_contract_attestation import VERSION, _closure, _payload, _producer, _receipt
@@ -135,6 +136,19 @@ class ContractPhase10InventoryTest(unittest.TestCase):
         with mock.patch("ci.products.contract_phase10_inventory.snapshot_regular_tree",
                         side_effect=substituted_snapshot), \
                 self.assertRaisesRegex(ValueError, "differs from its original inventory"):
+            capture_contract_phase10_inventory(self.handoff, self.keyring, self.keys, destination)
+        self.assertFalse(destination.exists())
+
+    def test_late_mutation_of_verified_handoff_fails_before_publication(self) -> None:
+        destination = self.root / "rejected-late-mutation"
+
+        def mutate_before_copy(source: Path, output: Path, *, expected_inventory):
+            (source / "handoff" / f"codex-agent-contract-{VERSION}.attestation.sig").write_bytes(b"changed")
+            publish_regular_tree(source, output, expected_inventory=expected_inventory)
+
+        with mock.patch("ci.products.contract_phase10_inventory.publish_regular_tree",
+                        side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
             capture_contract_phase10_inventory(self.handoff, self.keyring, self.keys, destination)
         self.assertFalse(destination.exists())
 

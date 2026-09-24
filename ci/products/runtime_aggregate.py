@@ -781,6 +781,7 @@ def build_runtime_aggregate_attestation(
             variant_keyring=variant_keyring, variant_keys_directory=variant_keys_directory,
         )
         signature = sign_manifest(attestation_path, Path(private_key), signing)
+        prepared_inventory = regular_file_inventory(prepared)
         verify_runtime_aggregate_artifacts(
             Path(manifest),
             aggregate_metadata_receipt=Path(metadata_receipt),
@@ -810,5 +811,8 @@ def build_runtime_aggregate_attestation(
             variant_keyring=variant_keyring,
             variant_keys_directory=variant_keys_directory,
         )
-        publish_regular_tree(prepared, Path(output_directory))
+        if regular_file_inventory(prepared) != prepared_inventory:
+            raise ValueError("Runtime aggregate attestation changed during verification")
+        publish_regular_tree(prepared, Path(output_directory),
+                             expected_inventory=prepared_inventory)
     return value

@@ -9,6 +9,7 @@ from typing import Any
 
 from .contract_model import verify_contract_bundle, verify_extracted_contract_directory
 from .inventory import (
+    canonical_json_bytes,
     load_canonical_json_bytes,
     load_canonical_json,
     publish_regular_tree,
@@ -133,7 +134,14 @@ def capture_contract_execution_closure(
         archive.write_bytes(read_regular_file_bytes(execution_archive, max_bytes=_PAYLOAD_LIMIT, reject_symlink_parents=True))
         value = _verify_execution_closure_inputs(snapshot_payload, prepared)
         write_canonical_json(prepared / _CLOSURE_MANIFEST, value)
-        publish_regular_tree(prepared, output_directory)
+        manifest_bytes = canonical_json_bytes(value)
+        pinned_inventory = sorted([*value["files"], {
+            "relativePath": _CLOSURE_MANIFEST, "bytes": len(manifest_bytes),
+            "sha256": sha256_bytes(manifest_bytes),
+        }], key=lambda record: record["relativePath"])
+        if regular_file_inventory(prepared) != pinned_inventory:
+            raise ValueError("Contract execution closure changed before publication")
+        publish_regular_tree(prepared, output_directory, expected_inventory=pinned_inventory)
     return value
 
 
@@ -371,7 +379,6 @@ def build_contract_attestation(
         raise ValueError("Complete Contract handoff selection must be boolean")
     payload, metadata_receipt, public_key = Path(payload), Path(metadata_receipt), Path(public_key)
     originals = {}
-    closure_inventory = None
     if complete_handoff:
         output = Path(output_directory)
         if output.exists() or output.is_symlink():
@@ -384,7 +391,7 @@ def build_contract_attestation(
                     raise ValueError("Complete Contract handoff output overlaps an original input")
         originals = {path: read_regular_file_bytes(path, max_bytes=_PAYLOAD_LIMIT, reject_symlink_parents=True)
                      for path in (payload, metadata_receipt, public_key)}
-        closure_inventory = regular_file_inventory(execution_closure)
+    closure_inventory = regular_file_inventory(execution_closure)
     signing = validate_signing_metadata(signing_metadata)
     if signing["trustDomain"] == "release":
         if keyring is None or keys_directory is None:
@@ -434,6 +441,7 @@ def build_contract_attestation(
         attestation = prepared / f"{stem}.json"
         write_canonical_json(attestation, value)
         signature = sign_manifest(attestation, Path(private_key), signing)
+        pinned_inventory = regular_file_inventory(prepared)
         verify_contract_attestation(
             Path(payload),
             Path(metadata_receipt),
@@ -444,16 +452,19 @@ def build_contract_attestation(
             keyring=keyring,
             keys_directory=keys_directory,
         )
+        expected_paths = {attestation.name, signature.name,
+                          *(f"{CONTRACT_EXECUTION_CLOSURE_DIRECTORY}/{record['relativePath']}"
+                            for record in closure_inventory)}
         if complete_handoff:
-            expected_paths = {payload.name, "public-key.pub", attestation.name, signature.name,
-                              *(f"{CONTRACT_EXECUTION_CLOSURE_DIRECTORY}/{record['relativePath']}"
-                                for record in closure_inventory)}
-            if {record["relativePath"] for record in regular_file_inventory(prepared)} != expected_paths:
-                raise ValueError("Complete Contract handoff file inventory is not exact")
+            expected_paths.update((payload.name, "public-key.pub"))
+        if {record["relativePath"] for record in pinned_inventory} != expected_paths or \
+                regular_file_inventory(prepared) != pinned_inventory:
+            raise ValueError("Contract handoff changed after attestation verification")
+        if complete_handoff:
             if any(read_regular_file_bytes(path, max_bytes=_PAYLOAD_LIMIT, reject_symlink_parents=True) != raw
                    for path, raw in originals.items()) or regular_file_inventory(execution_closure) != closure_inventory:
                 raise ValueError("Original Contract inputs changed during handoff assembly")
-        publish_regular_tree(prepared, output)
+        publish_regular_tree(prepared, output, expected_inventory=pinned_inventory)
     return value
 
 

@@ -76,16 +76,17 @@ class ContractPhase10SidecarCallerTest(unittest.TestCase):
                                   "sidecarFiles": regular_file_inventory(sidecars)}
             return captured["signed"]
 
-        def mutate_then_publish(source, destination):
+        def mutate_then_publish(source, destination, **kwargs):
             (Path(source) / "publication-pgp-public-key.asc").write_bytes(b"changed after verification\n")
-            actual_publish_regular_tree(source, destination)
+            actual_publish_regular_tree(source, destination, **kwargs)
 
         with mock.patch.object(caller, "produce_contract_phase10_maven_sidecars", side_effect=signed), \
                 mock.patch.object(caller, "verify_contract_phase10_maven",
                                   side_effect=lambda *_: captured["signed"]), \
                 mock.patch.object(caller, "publish_regular_tree", side_effect=mutate_then_publish):
-            with self.assertRaisesRegex(ValueError, "Published Contract sidecars differ"):
+            with self.assertRaisesRegex(ValueError, "pinned inventory"):
                 self.invoke("A" * 40)
+        self.assertFalse(self.destination.exists())
 
     def test_mutated_selection_before_inventory_cannot_become_baseline(self) -> None:
         self.key.write_bytes(b"independently pinned fixture PGP key\n")

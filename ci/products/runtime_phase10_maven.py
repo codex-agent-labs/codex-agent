@@ -142,7 +142,8 @@ def produce_runtime_phase10_maven_sidecars(
             raise ValueError("Runtime Maven sidecar output already exists")
         if regular_file_inventory(sidecars) != result["sidecarFiles"]:
             raise ValueError("Runtime Maven verified sidecars changed before publication")
-        publish_regular_tree(sidecars, sidecar_directory)
+        publish_regular_tree(sidecars, sidecar_directory,
+                             expected_inventory=result["sidecarFiles"])
         if regular_file_inventory(sidecar_directory) != result["sidecarFiles"]:
             raise ValueError("Runtime Maven published sidecars differ from verified bytes")
         return result
