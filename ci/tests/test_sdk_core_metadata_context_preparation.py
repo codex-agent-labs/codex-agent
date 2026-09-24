@@ -7,6 +7,7 @@ real hosted, compiler, or protected-environment acceptance is claimed.
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from ci import sdk_core_metadata_context_preparation as preparation
 from ci.tests import test_sdk_facade_metadata_original as original_fixture
@@ -59,6 +60,36 @@ class OriginalCoreContextPreparationTest(unittest.TestCase):
             "signing_keys_directory": self.keys,
             "tooling_keyring": None, "tooling_keys_directory": None}
 
+    def caller_policy(self):
+        args = self.arguments()
+        value = {"schemaVersion": 1, "plan": str(args["plan"]),
+            "metadataReceiptPath": str(args["metadata_receipt_path"]),
+            "expectedBuildKey": args["expected_build_key"],
+            "expectedReceiptSha256": args["expected_receipt_sha256"],
+            "artifactId": args["artifact_id"], "artifactSha256": args["artifact_sha256"],
+            "originalContext": args["original_context"],
+            "validations": {target: {name: str(item) if isinstance(item, Path) else item
+                for name, item in record.items()} for target, record in args["validations"].items()},
+            "contractDigest": args["contract_digest"],
+            "componentDigests": args["component_digests"],
+            "toolingEvidence": str(args["tooling_evidence"]),
+            "toolingPublicKey": str(args["tooling_public_key"]),
+            "javaExecutable": str(args["java_executable"]),
+            "policyRevision": args["policy_revision"],
+            "requiredTrustDomain": args["required_trust_domain"],
+            "toolingKeyring": args["tooling_keyring"],
+            "toolingKeysDirectory": args["tooling_keys_directory"]}
+        path = self.external / "independent-caller.json"
+        write_canonical_json(path, value)
+        return path, value
+
+    def caller_arguments(self, caller_policy):
+        return {"caller_policy": caller_policy, "destination": self.destination,
+            "repository_root": self.arguments()["repository_root"],
+            "trusted_workflow_sha": self.arguments()["trusted_workflow_sha"],
+            "signing_keyring": self.keyring, "signing_keys_directory": self.keys,
+            "environ": self.arguments()["environ"], "token": self.arguments()["token"]}
+
     def test_prepares_unsigned_exact_record_only_after_full_original_reader(self):
         args = self.arguments()
         manifest = preparation.prepare_original_core_context(**args)
@@ -103,6 +134,55 @@ class OriginalCoreContextPreparationTest(unittest.TestCase):
             preparation.prepare_original_core_context(**{**self.arguments(),
                 "environ": {"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": "unexpected"}})
         self.fixture.capture.assert_not_called()
+        self.assertFalse(self.destination.exists())
+
+    def test_cli_entry_consumes_external_canonical_caller_policy(self):
+        path, _ = self.caller_policy()
+        manifest = preparation.prepare_from_caller_policy(**self.caller_arguments(path))
+        self.fixture.capture.assert_called_once()
+        self.assertEqual({"original-context.json"}, {entry.name for entry in self.destination.iterdir()})
+        self.assertEqual(self.fixture.context,
+                         load_canonical_json_bytes(manifest.read_bytes())["originalContext"])
+
+    def test_module_main_routes_only_explicit_caller_inputs(self):
+        path, _ = self.caller_policy()
+        args = ["--caller-policy", str(path), "--destination", str(self.destination),
+            "--repository-root", str(self.arguments()["repository_root"]),
+            "--trusted-workflow-sha", self.arguments()["trusted_workflow_sha"],
+            "--signing-keyring", str(self.keyring), "--signing-keys-directory", str(self.keys)]
+        with patch.dict(preparation.os.environ, {"GITHUB_TOKEN": self.arguments()["token"]}):
+            self.assertEqual(0, preparation.main(args))
+        self.fixture.capture.assert_called_once()
+        self.assertTrue((self.destination / "original-context.json").is_file())
+
+    def test_caller_policy_secret_or_retained_validation_rejects_before_observation(self):
+        path, policy = self.caller_policy()
+        args = self.caller_arguments(path)
+        with self.assertRaisesRegex(ValueError, "signing-secret context"):
+            preparation.prepare_from_caller_policy(**{**args,
+                "environ": {"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": "unexpected"}})
+        retained = policy["validations"][next(iter(policy["validations"]))]
+        retained.pop("artifactId")
+        retained.pop("artifactSha256")
+        retained["captureRoot"] = str(self.external)
+        write_canonical_json(path, policy)
+        with self.assertRaises(ValueError):
+            preparation.prepare_from_caller_policy(**args)
+        self.fixture.capture.assert_not_called()
+        self.assertFalse(self.destination.exists())
+
+    def test_caller_policy_mutation_after_reader_never_publishes(self):
+        path, policy = self.caller_policy()
+        reader = preparation.prepare_original_core_context
+
+        def mutate(*args, **kwargs):
+            result = reader(*args, **kwargs)
+            write_canonical_json(path, {**policy, "artifactId": 124})
+            return result
+
+        with patch.object(preparation, "prepare_original_core_context", side_effect=mutate):
+            with self.assertRaisesRegex(ValueError, "caller policy changed"):
+                preparation.prepare_from_caller_policy(**self.caller_arguments(path))
         self.assertFalse(self.destination.exists())
 
 

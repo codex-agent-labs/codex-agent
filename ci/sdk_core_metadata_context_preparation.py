@@ -5,15 +5,18 @@ protected runner must independently capture this preparation and the original
 upload, bind caller-pinned identities, and sign without executing replay code.
 """
 
+import argparse
+import os
 from pathlib import Path
 import tempfile
 
 from .products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
-    read_regular_file_bytes, require_integer, require_sha256, sha256_bytes,
+    read_regular_file_bytes, require_exact_keys, require_integer, require_sha256, sha256_bytes,
     write_canonical_json,
 )
 from .products.receipt import validate_phase_receipt
+from .products.registry import SDK_FACADE_TARGETS
 from .products.sdk_package import _require_capability_output_separate
 from .products.signing_isolation import require_no_signing_secret
 from .products.signatures import (
@@ -96,3 +99,80 @@ def prepare_original_core_context(plan, metadata_receipt_path, destination, *,
             raise ValueError("Core context preparation caller trust or inputs changed")
         publish_regular_tree(prepared, destination)
     return destination / "original-context.json"
+
+
+_CALLER_FIELDS = {"schemaVersion", "plan", "metadataReceiptPath", "expectedBuildKey",
+    "expectedReceiptSha256", "artifactId", "artifactSha256", "originalContext", "validations",
+    "contractDigest", "componentDigests", "toolingEvidence", "toolingPublicKey",
+    "javaExecutable", "policyRevision", "requiredTrustDomain", "toolingKeyring",
+    "toolingKeysDirectory"}
+
+
+def prepare_from_caller_policy(caller_policy, destination, *, repository_root,
+        trusted_workflow_sha, signing_keyring, signing_keys_directory, environ, token):
+    """Consume an external caller policy, never the retained metadata request.
+
+    The invoking workflow must construct the policy from independently selected
+    worker outputs and original validation locators. This entry verifies those
+    claims; mere possession of the policy does not grant release trust.
+    """
+    require_no_signing_secret(environ)
+    root = Path(repository_root).resolve(strict=True)
+    source = Path(caller_policy).absolute()
+    if (source.resolve(strict=True) != source or source == root or source.is_relative_to(root)):
+        raise ValueError("Core context caller policy must be external and non-symbolic")
+    raw = read_regular_file_bytes(source, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    policy = require_exact_keys(load_canonical_json_bytes(raw), _CALLER_FIELDS,
+                                "Core context independent caller policy")
+    if require_integer(policy["schemaVersion"], "Core caller policy schemaVersion", 1) != 1:
+        raise ValueError("Unsupported Core context caller policy schema")
+    for record in require_exact_keys(policy["validations"], SDK_FACADE_TARGETS,
+                                     "Core context original validations").values():
+        if type(record) is not dict or "captureRoot" in record:
+            raise ValueError("Core context preparation requires original validation uploads")
+    destination = Path(destination).absolute()
+    _require_capability_output_separate(destination, [root, source, Path(policy["plan"]),
+        Path(policy["metadataReceiptPath"]), Path(signing_keyring), Path(signing_keys_directory)])
+    if destination.exists() or destination.is_symlink() or destination.resolve(strict=False) != destination:
+        raise ValueError("Core context preparation destination must be fresh and non-symbolic")
+    with tempfile.TemporaryDirectory(prefix="core-original-context-entry-") as temporary:
+        staged = Path(temporary).resolve() / "candidate"
+        prepare_original_core_context(policy["plan"], policy["metadataReceiptPath"], staged,
+            expected_build_key=policy["expectedBuildKey"],
+            expected_receipt_sha256=policy["expectedReceiptSha256"],
+            artifact_id=policy["artifactId"], artifact_sha256=policy["artifactSha256"],
+            original_context=policy["originalContext"], validations=policy["validations"],
+            contract_digest=policy["contractDigest"], component_digests=policy["componentDigests"],
+            repository_root=root, environ=environ, token=token,
+            trusted_workflow_sha=trusted_workflow_sha,
+            tooling_evidence=policy["toolingEvidence"], tooling_public_key=policy["toolingPublicKey"],
+            java_executable=policy["javaExecutable"], policy_revision=policy["policyRevision"],
+            required_trust_domain=policy["requiredTrustDomain"],
+            tooling_keyring=policy["toolingKeyring"],
+            tooling_keys_directory=policy["toolingKeysDirectory"],
+            signing_keyring=signing_keyring, signing_keys_directory=signing_keys_directory)
+        require_no_signing_secret(environ)
+        if read_regular_file_bytes(source, max_bytes=16 * 1024 * 1024,
+                                   reject_symlink_parents=True) != raw:
+            raise ValueError("Core context caller policy changed during original replay")
+        publish_regular_tree(staged, destination)
+    return destination / "original-context.json"
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    for name in ("caller-policy", "destination", "repository-root", "signing-keyring",
+                 "signing-keys-directory"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--trusted-workflow-sha", required=True)
+    args = vars(parser.parse_args(argv))
+    try:
+        require_no_signing_secret(os.environ)
+        prepare_from_caller_policy(**args, environ=os.environ, token=os.environ["GITHUB_TOKEN"])
+    except (OSError, ValueError, KeyError) as error:
+        parser.error(str(error))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
