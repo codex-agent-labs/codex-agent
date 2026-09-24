@@ -23,7 +23,7 @@ def prepare(plan, discovery, before_state, worker_root, requests_root, destinati
         sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
         sdk_validation_tooling, native_compiler_archives, keyring, keys_directory,
         repository_root, environ, token, sdk_apple_validation_policy=None):
-    """Authenticate a current Core upload, then rebuild its independent raw policy.
+    """Pin the current Core receipt candidate, then rebuild independent raw policy.
 
     The downloaded tree is only a receipt candidate. The Core holder must
     authenticate its official upload before Android uses this policy.
@@ -38,8 +38,9 @@ def prepare(plan, discovery, before_state, worker_root, requests_root, destinati
     require_sha256(expected_metadata_build_key, "Original Core metadata build key")
     require_sha256(expected_metadata_receipt_sha256, "Original Core metadata receipt digest")
     context = _context(metadata_original_context)
-    if context["repositoryRoot"] != str(root):
-        raise ValueError("Original Core metadata context belongs to another checkout")
+    # The Core worker ran in a different job. Its original checkout/request
+    # paths are caller-pinned for the later official-upload replay, not paths
+    # in this Android checkout.
     receipt_path = worker / "shard/phase-receipt.json"
     raw = read_regular_file_bytes(receipt_path, reject_symlink_parents=True)
     receipt = validate_phase_receipt(load_canonical_json_bytes(raw))

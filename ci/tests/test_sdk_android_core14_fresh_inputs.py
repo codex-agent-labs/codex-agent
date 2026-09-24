@@ -18,7 +18,8 @@ class AndroidFreshCoreInputsTest(unittest.TestCase):
             key = "sha256:" + "a" * 64
             digest = sha256_bytes(receipt_path.read_bytes())
             producer = {"original": "current"}
-            context = {"repositoryRoot": str(root), "metadataRequest": "/tmp/original/request.json"}
+            context = {"repositoryRoot": "/original/core/checkout",
+                "metadataRequest": "/original/core/private/metadata-request.json"}
             arguments = dict(plan=root / "plan", discovery=root / "discovery",
                 before_state=root / "wave13", worker_root=worker,
                 requests_root=root / "build/android-core-requests",
@@ -54,7 +55,7 @@ class AndroidFreshCoreInputsTest(unittest.TestCase):
                 for change, message in (
                     ({"expected_metadata_receipt_sha256": "sha256:" + "0" * 64}, "receipt"),
                     ({"expected_metadata_build_key": "sha256:" + "0" * 64}, "receipt"),
-                    ({"metadata_original_context": {**context, "repositoryRoot": "/tmp/other"}}, "context"),
+                    ({"metadata_original_context": {**context, "repositoryRoot": "relative/checkout"}}, "absolute original path"),
                 ):
                     with self.subTest(change=change):
                         with self.assertRaisesRegex(ValueError, message):

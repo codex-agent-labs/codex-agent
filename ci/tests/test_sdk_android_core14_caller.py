@@ -147,9 +147,12 @@ class AndroidCore14CallerTest(unittest.TestCase):
                     "captureRoot": "common"}], "policy": policy}))
             active = []
             admissions = []
+            original_context = {"repositoryRoot": "/original/core/checkout",
+                "metadataRequest": "/original/core/private/metadata-request.json"}
 
             @contextmanager
             def held(*args, **kwargs):
+                self.assertEqual(kwargs["original_context"], original_context)
                 active.append(True)
                 try:
                     yield descriptor
@@ -185,7 +188,7 @@ class AndroidCore14CallerTest(unittest.TestCase):
                     expected_metadata_receipt_sha256="sha256:" + "a" * 64,
                     expected_metadata_artifact_id=42,
                     expected_metadata_artifact_sha256="sha256:" + "f" * 64,
-                    replay_policy={}, original_context={}, trusted_workflow_sha="e" * 40,
+                    replay_policy={}, original_context=original_context, trusted_workflow_sha="e" * 40,
                     repository_root=root, android_runtime_archive=archive, token="token", environ={})
                 self.assertEqual(caller.with_core14(**arguments)["buildKey"], arguments["expected_build_key"])
                 self.assertFalse(active)
