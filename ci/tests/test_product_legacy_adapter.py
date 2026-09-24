@@ -8,6 +8,7 @@ import unittest
 from ci.legacy_lanes import LANES
 from ci.product_legacy import project_legacy_lanes
 from ci.products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PHASE_INSTANCE_IDS, PhaseInstanceId
+from ci.products.reuse import _dependency_closure
 
 
 def phase(product: str, component: str, name: str, target: str) -> PhaseInstanceId:
@@ -59,6 +60,18 @@ class ProductLegacyAdapterTest(unittest.TestCase):
                     self.assertEqual(((lane, action),), project_legacy_lanes((
                         phase(product, component, name, target),
                     )).actions)
+
+    def test_android_validation_dependency_always_projects_android_evidence(self) -> None:
+        # Hosted planning uses require_android_evidence=True; full fallback selects every lane.
+        validation = phase("sdk", "sdk-android", "validation", "android")
+        for instance in PHASE_INSTANCE_IDS:
+            if validation not in _dependency_closure((instance,)):
+                continue
+            with self.subTest(instance=instance):
+                projection = project_legacy_lanes((instance,))
+                self.assertTrue(projection.full or any(
+                    lane == "android" for lane, _ in projection.actions
+                ))
 
     def test_native_runtime_is_target_exact_and_metadata_falls_back(self) -> None:
         for target in NATIVE_TARGETS:
@@ -132,15 +145,24 @@ class ProductLegacyAdapterTest(unittest.TestCase):
 
     def test_product_modules_do_not_import_legacy_planners(self) -> None:
         root = Path(__file__).resolve().parents[1] / "products"
-        forbidden = {"ci.impact", "ci.receipt", "ci.reuse", "ci.promote", "ci.validation_reuse"}
+        forbidden = {"ci.impact", "ci.reuse", "ci.promote", "ci.validation_reuse"}
+        # These leaf verifiers must check the original lane receipt; no product
+        # planner imports a legacy planner or accepts a lane receipt as product authority.
+        lane_receipt_imports = {
+            "sdk_android_observation.py": {"validate_receipt"},
+            "sdk_android_validation_admission.py": {"LANE_RECEIPT_SCHEMA_VERSION"},
+        }
         found = set()
         for path in root.glob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
-                    found.update(alias.name for alias in node.names if alias.name in forbidden)
+                    found.update(alias.name for alias in node.names if alias.name in forbidden or alias.name == "ci.receipt")
                 elif isinstance(node, ast.ImportFrom) and node.module in forbidden:
                     found.add(node.module)
+                elif isinstance(node, ast.ImportFrom) and node.module == "ci.receipt":
+                    if {alias.name for alias in node.names} != lane_receipt_imports.get(path.name):
+                        found.add(f"{path.name}: ci.receipt")
         self.assertEqual(set(), found)
 
 
