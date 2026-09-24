@@ -14,6 +14,7 @@ from runtime_native_phase import binary_plan
 from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes, write_canonical_json
 from products.toolchain import _verification_record, assemble_profile
 from ci.tests import test_runtime_native_phase as native_fixture
+from ci.tests.test_gradle_bootstrap import PROPERTIES
 from ci.tests.test_product_toolchain import observation
 
 
@@ -26,6 +27,9 @@ class RuntimeSupervisorTest(unittest.TestCase):
         source.parent.mkdir(parents=True)
         source.write_bytes((Path(__file__).resolve().parents[2] / runtime_supervisor.SOURCE).read_bytes())
         (cls.root / "gradlew").write_bytes(b"#!/bin/sh\nexit 99 # never executed by these process-boundary fixtures\n")
+        properties = cls.root / "gradle/wrapper/gradle-wrapper.properties"
+        properties.parent.mkdir(parents=True)
+        properties.write_bytes(PROPERTIES)
         cls.observation = observation("linux-arm64", "supervisor-builder", "Linux", "ARM64")
         cls.cross_observation = observation("linux-arm64", "cross-builder", "Linux", "X64")
         profile = cls.root / "gradle/release/toolchains/runtime/linux-arm64.json"
@@ -292,6 +296,7 @@ class RuntimeSupervisorTest(unittest.TestCase):
         before = regular_file_inventory(inputs, allow_empty=True)
         commands, run = self.process_fixture()
         with mock.patch("native_wrappers.host_classifier", return_value="linux-arm64"), \
+                mock.patch("products.gradle_bootstrap.require_preprovisioned_gradle"), \
                 mock.patch.object(runtime_supervisor.subprocess, "run", side_effect=run):
             result = runtime_supervisor.execute_supervisor(**arguments)
         destination = arguments["destination"]
@@ -309,6 +314,7 @@ class RuntimeSupervisorTest(unittest.TestCase):
         arguments = self.producer_arguments()
         commands, run = self.process_fixture(returncode=23)
         with mock.patch("native_wrappers.host_classifier", return_value="linux-arm64"), \
+                mock.patch("products.gradle_bootstrap.require_preprovisioned_gradle"), \
                 mock.patch.object(runtime_supervisor.subprocess, "run", side_effect=run):
             with self.assertRaisesRegex(ValueError, "exit code 23"):
                 runtime_supervisor.execute_supervisor(**arguments)
