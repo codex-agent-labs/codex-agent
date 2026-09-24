@@ -291,7 +291,7 @@ class LoaderAndPackageTests(unittest.TestCase):
     def test_metadata_has_canonical_identity_and_floor(self) -> None:
         metadata = tomllib.loads((ROOT / "pyproject.toml").read_text())
         self.assertEqual(metadata["project"]["name"], "codex-agent")
-        self.assertEqual(metadata["project"]["version"], "0.2.0")
+        self.assertEqual(metadata["project"]["version"], "0.8.0")
         self.assertEqual(metadata["project"]["requires-python"], ">=3.11")
         self.assertEqual(metadata["project"]["license"], "GPL-3.0-or-later")
 
