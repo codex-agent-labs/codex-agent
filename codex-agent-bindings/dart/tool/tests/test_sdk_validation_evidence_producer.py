@@ -339,7 +339,7 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
         finalizers = source[source.index("'host finalizer performs semantic close") :]
         for expected in ("Platform.resolvedExecutable", "'--enable-vm-service=0'",
                          "'--disable-service-auth-codes'", "'tool/finalizer_probe.dart'",
-                         "'--packages=${File('.dart_tool/package_config.json').absolute.path}'",
+                         "'--packages=${Platform.environment['CODEX_AGENT_TEST_PACKAGE_CONFIG']}'",
                          ").timeout(const Duration(seconds: 30))"):
             self.assertEqual(2, finalizers.count(expected), expected)
         self.assertIn("libraryPath,\n        'child',", finalizers)
