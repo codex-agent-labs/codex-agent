@@ -219,6 +219,8 @@ internal static class RuntimeLoaderSecurity
             var external = Identity(Target);
             external["componentId"] = DifferentDigest(external["componentId"]!.GetValue<string>());
             RunNativeChild(valid, compatibilityPath, identityVariable, external, "accept");
+            external["runtimeCompatibilityVersion"] = "0.8.5";
+            RunNativeChild(valid, compatibilityPath, identityVariable, external, "accept");
 
             foreach (var mutation in new Action<JsonObject>[]
             {
@@ -226,6 +228,7 @@ internal static class RuntimeLoaderSecurity
                 value => value["contractDigest"] = DifferentDigest(value["contractDigest"]!.GetValue<string>()),
                 value => value["target"] = "unsupported-target",
                 value => value["runtimeCompatibilityVersion"] = "0.0.0",
+                value => value["runtimeCompatibilityVersion"] = "0.9.0",
             })
             {
                 var incompatible = Identity(Target);
