@@ -7,7 +7,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>CodexAgent</PackageId>
     <RootNamespace>CodexAgent</RootNamespace>
-    <VersionPrefix>0.2.0</VersionPrefix>
+    <VersionPrefix>0.8.0</VersionPrefix>
     <Authors>codex-agent-labs</Authors>
     <Description>Idiomatic .NET bindings for the local Codex Agent desktop runtime.</Description>
     <PackageTags>codex;agent;native;desktop</PackageTags>

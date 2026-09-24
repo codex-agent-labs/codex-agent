@@ -107,7 +107,7 @@ class CSharpSdkValidationEvidenceProducerTest(unittest.TestCase):
                     self.assertEqual(declaration["contract"]["digest"], identity["contractDigest"])
                     self.assertEqual(variant["componentId"], identity["componentId"])
                     self.assertEqual(variant["target"], identity["target"])
-                    self.assertEqual('0.2.0', identity['runtimeCompatibilityVersion'])
+                    self.assertEqual('0.8.0', identity['runtimeCompatibilityVersion'])
 
     def test_fixture_compatibility_identity_tracks_default_minor_not_release_patch_or_range(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, Fixture(Path(temporary)) as fixture:
@@ -383,7 +383,7 @@ class Fixture:
         self.bootstrap = self._file("bootstrap.json", "{}\n")
         self.compatibility = self._file("sdk-compatibility.json", json.dumps({
             "contract": {"digest": "sha256:" + "b" * 64},
-            "runtime": {"defaultRuntimeVersion": "0.2.0", "embeddedVariants": [
+            "runtime": {"defaultRuntimeVersion": "0.8.0", "embeddedVariants": [
                 {"target": target, "componentId": "sha256:" + str(index + 5) * 64}
                 for index, target in enumerate(producer.TARGETS)
             ]},
