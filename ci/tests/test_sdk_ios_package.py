@@ -206,6 +206,24 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         self.assertFalse((self.stage / "phase-receipt.json").exists())
         (self.native / "ios-native-evidence.json").write_bytes(native_before)
 
+    def test_elected_plan_mutation_during_process_fails_closed(self):
+        original_key = self.plan["buildKey"]
+        self.mutate = lambda: self.plan.__setitem__("buildKey", "sha256:" + "d" * 64)
+        with self.assertRaisesRegex(ValueError, "input changed"):
+            self.execute()
+        self.assertNotEqual(original_key, self.plan["buildKey"])
+        self.assertEqual(original_key, json.loads((self.destination / "execution.json").read_bytes())["buildKey"])
+        self.assertFalse((self.stage / "phase-receipt.json").exists())
+
+    def test_elected_producer_mutation_during_process_fails_closed(self):
+        original_tree = self.producer["tree"]
+        self.mutate = lambda: self.producer.__setitem__("tree", "d" * 40)
+        with self.assertRaisesRegex(ValueError, "input changed"):
+            self.execute()
+        self.assertNotEqual(original_tree, self.producer["tree"])
+        self.assertEqual(original_tree, json.loads((self.destination / "execution.json").read_bytes())["producer"]["tree"])
+        self.assertFalse((self.stage / "phase-receipt.json").exists())
+
     def test_process_failure_preserves_raw_diagnostics_without_admission(self):
         self.return_code = 9
         with self.assertRaisesRegex(ValueError, "exit code 9"):

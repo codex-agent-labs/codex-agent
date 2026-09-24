@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 from products.inventory import (
-    load_canonical_json_bytes,
+    canonical_json_bytes, load_canonical_json_bytes,
     read_regular_file_bytes,
     require_exact_keys,
     require_integer,
@@ -84,6 +84,10 @@ def execute(
     require_sha256(selected["buildKey"], "Elected iOS SDK package build key")
     current_producer = validate_producer(producer, "Elected iOS SDK package producer")
     version = require_semver(sdk_version, "Elected SDK version")
+    selected_bytes = canonical_json_bytes(selected)
+    producer_bytes = canonical_json_bytes(current_producer)
+    original_build_key = selected["buildKey"]
+    original_producer = dict(current_producer)
 
     contract = _record(
         current_contract, ("contract", "contract", "binary", "common"),
@@ -173,7 +177,9 @@ def execute(
         raise ValueError("iOS SDK package worker requires fresh diagnostic and Gradle-owned outputs")
 
     def originals_unchanged() -> None:
-        if (_inventory(contract[1]) != contract[4] or _inventory(binary[1]) != binary[4]
+        if (canonical_json_bytes(selected) != selected_bytes
+                or canonical_json_bytes(current_producer) != producer_bytes
+                or _inventory(contract[1]) != contract[4] or _inventory(binary[1]) != binary[4]
                 or read_regular_file_bytes(contract[2], max_bytes=_LIMIT,
                                            reject_symlink_parents=True) != contract[3]
                 or read_regular_file_bytes(binary[2], max_bytes=_LIMIT,
@@ -242,8 +248,8 @@ def execute(
         raise
     finally:
         write_canonical_json(destination / "execution.json", {
-            "schemaVersion": 1, "producer": dict(current_producer),
-            "buildKey": selected["buildKey"], "command": command,
+            "schemaVersion": 1, "producer": original_producer,
+            "buildKey": original_build_key, "command": command,
             "returnCode": return_code, "launchError": launch_error,
             "elapsedNs": time.monotonic_ns() - started,
         })
