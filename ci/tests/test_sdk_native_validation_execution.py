@@ -65,6 +65,7 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
 
     def inspect(self, *args, **kwargs):
         self.assertEqual(self.tooling, kwargs.pop("sdk_validation_tooling"))
+        self.assertEqual(self.arguments["trusted_workflow_sha"], kwargs.pop("sdk_original_workflow_sha"))
         return fixture.SdkNativePackageExecutionTest.inspect(self, *args, **kwargs)
 
     @contextmanager
@@ -99,6 +100,7 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
         self.assertEqual(PhaseInstanceId("sdk", "python", "validation", "linux-x64"), identity)
         self.assertEqual(self.ready["buildKey"], kwargs["expected_build_key"])
         self.assertEqual(self.tooling, kwargs["sdk_validation_tooling"])
+        self.assertEqual(self.arguments["trusted_workflow_sha"], kwargs["sdk_original_workflow_sha"])
         originals = {**self.original_paths, fixture.fixture.CONTRACT: self.contract,
             PhaseInstanceId("sdk", "python", "package", "desktop"): {
                 "stage": self.package_stage, "receiptPath": self.package_receipt_path}}
