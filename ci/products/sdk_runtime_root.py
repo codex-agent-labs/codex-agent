@@ -7,6 +7,7 @@ different file: language loaders must hash their private library snapshot.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -48,6 +49,18 @@ _AUTHORIZATION_FIELDS = {
     "variantBundleSha256", "variantManifestSha256", "aggregateManifestSha256",
     "variantAttestationSha256", "aggregateAttestationSha256", "signing",
 }
+
+
+def _trusted_ssh_keygen() -> str:
+    if os.name != "nt":
+        return "/usr/bin/ssh-keygen"
+    import ctypes
+
+    directory = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetSystemDirectoryW(directory, len(directory))
+    if not 0 < length < len(directory):
+        raise ValueError("Windows system OpenSSH directory is unavailable")
+    return str(Path(directory.value) / "OpenSSH" / "ssh-keygen.exe")
 
 
 def validate_root_delegation(value: Any) -> dict[str, Any]:
@@ -102,11 +115,12 @@ def _verify_sshsig(contents: bytes, signature: bytes, public_key: bytes, *, name
         detached.write_bytes(signature)
         try:
             result = subprocess.run(
-                ["ssh-keygen", "-Y", "verify", "-f", str(allowed), "-I", principal.decode("ascii"),
+                [_trusted_ssh_keygen(), "-Y", "verify", "-f", str(allowed), "-I", principal.decode("ascii"),
                  "-n", namespace, "-s", str(detached)],
                 input=contents, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=10,
             )
-        except OSError as error:
+        except (OSError, subprocess.TimeoutExpired) as error:
             raise ValueError("OpenSSH signature verifier is unavailable") from error
     if result.returncode != 0:
         raise ValueError("SDK Runtime release signature verification failed")
@@ -142,7 +156,7 @@ def issue_root_delegation(
         write_canonical_json(manifest, delegation)
         try:
             subprocess.run(
-                ["ssh-keygen", "-Y", "sign", "-f", str(root_private_key),
+                [_trusted_ssh_keygen(), "-Y", "sign", "-f", str(root_private_key),
                  "-n", ROOT_NAMESPACE, str(manifest)],
                 check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
             )

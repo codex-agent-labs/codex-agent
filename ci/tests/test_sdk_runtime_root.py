@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from ci.products.inventory import (
     public_key_fingerprint, sha256_bytes, write_canonical_json,
@@ -140,3 +142,12 @@ class SdkRuntimeRootTest(unittest.TestCase):
             issue_root_delegation(source / "release-keyring.json", source / "keys",
                                   self.root_public, wrong_private, destination)
         self.assertFalse(destination.exists())
+
+    def test_verifier_and_issuer_do_not_resolve_ssh_keygen_from_path(self) -> None:
+        evidence = self.evidence("release-a")
+        destination = self.root / "fixed-verifier-delegation"
+        with patch.dict(os.environ, {"PATH": ""}):
+            self.verify(evidence)
+            issue_root_delegation(evidence / "release-keyring.json", evidence / "keys",
+                                  self.root_public, self.root_private, destination)
+        self.assertTrue((destination / "root-delegation.sig").is_file())
