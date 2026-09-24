@@ -354,7 +354,7 @@ static const char runtime_identity[] =
   "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\","
   "\"cAbiVersion\":\"1.13.0\",\"componentId\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
   "\"contractComponentDigest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\","
-  "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\",\"runtimeCompatibilityVersion\":\"0.2.0\","
+  "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\",\"runtimeCompatibilityVersion\":\"0.8.0\","
   "\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
 
 API uint32_t CALL codex_agent_abi_version(void) { return (1u << 24) | (13u << 16); }

@@ -141,7 +141,7 @@ void main() {
       {...valid, 'contractDigest': _wrongContractDigest},
       {...valid, 'cAbiVersion': '1.12.0'},
       {...valid, 'cAbiVersion': '2.0.0'},
-      {...valid, 'runtimeCompatibilityVersion': '0.3.0'},
+      {...valid, 'runtimeCompatibilityVersion': '0.9.0'},
       {...valid, 'componentId': _digestB},
     ];
     for (final identity in cases) {
@@ -222,7 +222,7 @@ void main() {
     }
 
     expectRejected(
-      (value) => _runtime(value)['defaultRuntimeVersion'] = '0.3.0',
+      (value) => _runtime(value)['defaultRuntimeVersion'] = '0.9.0',
     );
     expectRejected(
       (value) =>
@@ -511,7 +511,7 @@ String get _wrongContractDigest =>
         : _digestA;
 
 String _identity(String target,
-        {required String componentId, String version = '0.2.0'}) =>
+        {required String componentId, String version = '0.8.0'}) =>
     jsonEncode({
       'appServerVersion': '0.149.0',
       'buildInputDigest': _digestB,

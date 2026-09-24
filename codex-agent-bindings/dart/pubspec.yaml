@@ -1,6 +1,6 @@
 name: codex_agent
 description: Idiomatic Dart VM bindings for the local Codex Agent Desktop C SDK.
-version: 0.2.0
+version: 0.8.0
 repository: https://github.com/codex-agent-labs/codex-agent
 issue_tracker: https://github.com/codex-agent-labs/codex-agent/issues
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0
+## 0.8.0
 
 - Add the initial desktop Dart VM projection over Codex Agent C SDK ABI 1.13.
 - Add typed lifecycle, state streams, cancellation, failures, and value types.
