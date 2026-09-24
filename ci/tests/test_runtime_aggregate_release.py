@@ -312,6 +312,28 @@ class RuntimeAggregateReleaseTest(unittest.TestCase):
         self.assertEqual(1, self.environment.secret_reads)
         self.assertFalse(self.output.exists())
 
+    def test_fresh_signed_aggregate_rechecks_prepared_bytes_before_publication(self):
+        def mutate_after_signing(path, value):
+            actual_write_canonical_json(path, value)
+            (path.parent / "aggregate-input/late-injected").write_bytes(b"unverified\n")
+
+        with patch("reuse.api_request", side_effect=self.api), \
+                patch.object(caller, "write_canonical_json", side_effect=mutate_after_signing), \
+                self.assertRaisesRegex(ValueError, "verified evidence changed before publication"):
+            self.invoke()
+        self.assertFalse(self.output.exists())
+
+    def test_fresh_signed_aggregate_rechecks_caller_before_publication(self):
+        def mutate_caller(path, value):
+            actual_write_canonical_json(path, value)
+            path.write_bytes(b"{}\n")
+
+        with patch("reuse.api_request", side_effect=self.api), \
+                patch.object(caller, "write_canonical_json", side_effect=mutate_caller), \
+                self.assertRaisesRegex(ValueError, "verified evidence changed before publication"):
+            self.invoke()
+        self.assertFalse(self.output.exists())
+
     def test_retained_aggregate_never_falls_back_and_destination_alias_preserves_originals(self):
         self.environment.forbid_secret = True
         args = self.arguments()

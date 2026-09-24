@@ -22,7 +22,7 @@ from runtime_aggregate_phase import collect_finalized_inputs
 from runtime_original_ci import capture_runtime_aggregate_original_ci
 from products.contract_projection import verify_contract_component_projection
 from products.inventory import (
-    load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
+    canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
     regular_file_inventory, require_exact_keys, require_regular_directory,
     require_semver, require_sha256, sha256_file, snapshot_regular_tree, write_canonical_json,
 )
@@ -251,12 +251,19 @@ def _attest_selected_runtime_aggregate(
         snapshot_regular_tree(root / "signed", prepared / "aggregate-input")
         for name, raw in publication.items():
             (prepared / "aggregate-input" / name).write_bytes(raw)
+        finalized = regular_file_inventory(prepared, allow_empty=True)
         caller = {"schemaVersion": 1, "target": "aggregate", "trustedSourceCommit": trusted_source_sha,
             "trustedSourceTree": source_tree, "trustedWorkflowSha": trusted_workflow_sha,
             "transportProducer": producer, "authorizationReason": reason, "event": event_payload,
             "environment": {**expected_environment, "GITHUB_REF": environment.get("GITHUB_REF")},
             "metadataReceiptSha256": attestation["metadataReceiptSha256"]}
         write_canonical_json(prepared / "caller.json", caller)
+        if (read_regular_file_bytes(prepared / "caller.json", reject_symlink_parents=True)
+                != canonical_json_bytes(caller)
+                or regular_file_inventory(prepared, excluded_paths=("caller.json",), allow_empty=True) != finalized
+                or any(regular_file_inventory(source, allow_empty=name == "selected-inputs") != before[name]
+                       for name, source in sources.items())):
+            raise ValueError("Runtime aggregate verified evidence changed before publication")
         publish_regular_tree(prepared, output, allow_empty=True)
     return caller
 
