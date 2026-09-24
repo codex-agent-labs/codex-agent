@@ -812,7 +812,14 @@ def require_embedded_package_versions(
                 cpp = packages / "cpp" / f"codex-agent-cpp-{version_value}-{classifier}.zip"
                 extracted = work / f"cpp-{classifier}"
                 safe_extract_zip(cpp, extracted)
-                contents = require_one(extracted, "**/CodexAgentConfigVersion.cmake").read_text(encoding="utf-8")
+                config = extracted / (
+                    f"codex-agent-cpp-{version_value}-{classifier}/lib/cmake/CodexAgent"
+                )
+                version_file = config / "CodexAgentConfigVersion.cmake"
+                config_file = config / "CodexAgentConfig.cmake"
+                if any(not path.is_file() or path.is_symlink() for path in (version_file, config_file)):
+                    raise ValueError(f"C++ package {classifier} CMake coordinate is missing")
+                contents = version_file.read_text(encoding="utf-8")
                 versions = re.findall(r'(?m)^set\(PACKAGE_VERSION "([^"]+)"\)$', contents)
                 require_version(versions[0] if len(versions) == 1 else None, f"C++ package {classifier}")
 

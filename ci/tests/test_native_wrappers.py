@@ -963,13 +963,22 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 f"codex-agent-{version}/Cargo.toml",
                 f'[package]\nname = "codex-agent"\nversion = "{version}"\n',
             )
+            def write_cpp_package(
+                classifier: str, *, package_version: str = version,
+                version_path: str | None = "lib/cmake/CodexAgent/CodexAgentConfigVersion.cmake",
+                config_path: str | None = "lib/cmake/CodexAgent/CodexAgentConfig.cmake",
+            ) -> None:
+                archive_path = packages / f"cpp/codex-agent-cpp-{version}-{classifier}.zip"
+                archive_path.parent.mkdir(parents=True, exist_ok=True)
+                prefix = f"codex-agent-cpp-{version}-{classifier}"
+                with zipfile.ZipFile(archive_path, "w") as archive:
+                    if version_path is not None:
+                        archive.writestr(f"{prefix}/{version_path}", f'set(PACKAGE_VERSION "{package_version}")\n')
+                    if config_path is not None:
+                        archive.writestr(f"{prefix}/{config_path}", "# CMake config fixture\n")
+
             for classifier in HOSTS:
-                write_zip_file(
-                    packages / f"cpp/codex-agent-cpp-{version}-{classifier}.zip",
-                    f"codex-agent-cpp-{version}-{classifier}/lib/cmake/CodexAgent/"
-                    "CodexAgentConfigVersion.cmake",
-                    f'set(PACKAGE_VERSION "{version}")\n',
-                )
+                write_cpp_package(classifier)
             write_tar_file(
                 packages / f"dart/codex-agent-dart-{version}.tar.gz",
                 f"codex_agent-{version}/pubspec.yaml",
@@ -1042,14 +1051,19 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             write_sdist(source_records)
 
             classifier = next(iter(HOSTS))
-            write_zip_file(
-                packages / f"cpp/codex-agent-cpp-{version}-{classifier}.zip",
-                f"codex-agent-cpp-{version}-{classifier}/lib/cmake/CodexAgent/"
-                "CodexAgentConfigVersion.cmake",
-                'set(PACKAGE_VERSION "0.2.0")\n',
-            )
+            write_cpp_package(classifier, package_version="0.2.0")
             with self.assertRaisesRegex(ValueError, r"C\+\+ package"):
                 require_embedded_package_versions(packages, version)
+            for version_path, config_path in (
+                ("elsewhere/CodexAgentConfigVersion.cmake", "lib/cmake/CodexAgent/CodexAgentConfig.cmake"),
+                (None, "lib/cmake/CodexAgent/CodexAgentConfig.cmake"),
+                ("lib/cmake/CodexAgent/CodexAgentConfigVersion.cmake", "elsewhere/CodexAgentConfig.cmake"),
+                ("lib/cmake/CodexAgent/CodexAgentConfigVersion.cmake", None),
+            ):
+                with self.subTest(cpp_coordinate=(version_path, config_path)):
+                    write_cpp_package(classifier, version_path=version_path, config_path=config_path)
+                    with self.assertRaisesRegex(ValueError, r"C\+\+ package .* CMake coordinate"):
+                        require_embedded_package_versions(packages, version, ("cpp",))
 
     def test_installed_consumer_locks_follow_the_declared_sdk_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
