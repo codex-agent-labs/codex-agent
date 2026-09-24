@@ -143,11 +143,15 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
 
     def test_early_binary_election_and_worker_use_only_the_required_sources(self):
         plan = self.job("sdk-ios-binary-plan")
-        self.assertRegex(plan, r"(?m)^    needs: \[plan, product-resume\]$")
+        self.assertRegex(plan, r"(?m)^    needs: \[plan, product-resume, product-tooling\]$")
+        self.assertIn("uses: ./.github/actions/capture-sdk-tooling", plan)
+        self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", plan)
+        self.assertIn("sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}", plan)
         self.assertNotIn("runtime-continuation", plan)
         self.assertNotIn("runtime-aggregate-continuation", plan)
         binary = self.job("sdk-ios-binary")
-        self.assertIn("needs: [plan, product-resume, sdk-ios-binary-plan, apple]", binary)
+        self.assertIn("needs: [plan, product-resume, sdk-ios-binary-plan, apple, product-tooling]", binary)
+        self.assertIn("uses: ./.github/actions/capture-sdk-tooling", binary)
         for name in ("native_tests", "rust_device", "rust_simulator"):
             self.assertIn(f"needs.apple.outputs.{name}_artifact_id", binary)
             self.assertIn(f"needs.apple.outputs.{name}_artifact_digest", binary)
@@ -194,6 +198,7 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
     def test_sdk_plan_selects_collected_binary_wave_and_js_forwards_it(self):
         runtime = {"result": "success", "outputs": {
             "sdk_input_selection": json.dumps({"source": "released-default"}),
+            "aggregate_state": "completed",
             "artifact_id": "101", "artifact_digest": "sha256:" + "1" * 64,
             "state_wave": "4",
         }}

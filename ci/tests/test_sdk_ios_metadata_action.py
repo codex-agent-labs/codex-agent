@@ -55,6 +55,7 @@ class IosMetadataActionTest(unittest.TestCase):
             "SDK_APPLE_VALIDATION_POLICY": str(self.apple_path), "GITHUB_OUTPUT": str(self.output),
             "PLAN": str(self.plan), "MATRIX": json.dumps({"include": [self.row]}), "REQUIRED": "true",
             "BUILD_KEY": KEY, "TREE": TREE, "GITHUB_WORKSPACE": str(ROOT),
+            "TRUSTED_WORKFLOW_SHA": "c" * 40,
             "DISCOVERY": "/captured/discovery", "STATE": "/captured/state"}
 
     def run_snippet(self, name, *, host="macos-arm64"):
@@ -76,6 +77,7 @@ class IosMetadataActionTest(unittest.TestCase):
         captured = self.block("captured")
         self.assertIn("product: sdk", captured)
         self.assertIn("sdk-family: ios-metadata", captured)
+        self.assertIn("TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}", self.block("execute"))
         for name in ("plan-id", "artifact-id", "artifact-sha256", "state-wave", "sdk-state-wave",
                      "trusted-workflow-sha", "sdk-validation-tooling", "sdk-apple-validation-policy"):
             self.assertIn(name + ": ${{ inputs." + name + " }}", captured)
@@ -101,7 +103,8 @@ class IosMetadataActionTest(unittest.TestCase):
         self.assertEqual({"--plan": str(self.plan), "--discovery-root": "/captured/discovery",
             "--state-root": "/captured/state", "--destination": str(ROOT / "build/sdk-ios-metadata-worker"),
             "--repository-root": str(ROOT), "--expected-build-key": KEY,
-            "--sdk-apple-validation-policy": str(self.apple_path)}, dict(zip(argv[5::2], argv[6::2])))
+            "--sdk-apple-validation-policy": str(self.apple_path),
+            "--trusted-workflow-sha": "c" * 40}, dict(zip(argv[5::2], argv[6::2])))
         self.assertEqual({"cwd": ROOT, "check": True}, process.call_args.kwargs)
 
     def test_wrong_election_or_host_rejects_before_output(self):

@@ -143,6 +143,7 @@ runs:
         BUILD_KEY: ${{ inputs.build-key }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
         APPLE_POLICY_SHA256: ${{ steps.policy.outputs.apple_policy_sha256 }}
       run: |
