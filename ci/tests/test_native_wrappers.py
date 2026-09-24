@@ -61,6 +61,9 @@ from native_wrappers import (  # noqa: E402
 )
 from products.inventory import canonical_json_bytes, load_canonical_json_bytes  # noqa: E402
 
+TEST_SDK_ROOT = (b"ssh-ed25519 "
+                 b"AAAAC3NzaC1lZDI1NTE5AAAAIPoIOWAjQaSmTizyrbjyurE2cVsgmJElRQNN2r1DtJbq\n")
+
 
 def write_tar_file(path: Path, name: str, contents: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,10 +74,12 @@ def write_tar_file(path: Path, name: str, contents: str) -> None:
         archive.addfile(member, io.BytesIO(payload))
 
 
-def write_zip_file(path: Path, name: str, contents: str) -> None:
+def write_zip_file(path: Path, name: str, contents: str, additional: dict[str, bytes] | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(name, contents)
+        for relative, data in (additional or {}).items():
+            archive.writestr(relative, data)
 
 
 class NativeWrapperReleaseTest(unittest.TestCase):
@@ -284,7 +289,10 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 for path in files(root / "packages")
             ])
 
-    def test_release_archives_contain_the_exact_shared_compatibility_bytes(self) -> None:
+    @patch("native_wrappers.run")
+    @patch("native_wrappers.subprocess.run")
+    def test_release_archives_contain_the_exact_shared_compatibility_bytes(self, inspector, _build) -> None:
+        inspector.return_value.returncode = 0
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             sdks = root / "sdks"
@@ -295,22 +303,57 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             version = load_canonical_json_bytes(compatibility)["sdkVersion"]
             wrong_version = "0.2.1" if version != "0.2.1" else "0.2.0"
             (sdks / "sdk-compatibility.json").write_bytes(compatibility)
+            (sdks / "sdk-runtime-root.pub").write_bytes(TEST_SDK_ROOT)
             package = root / f"packages/csharp/CodexAgent.{version}.nupkg"
-            write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json", compatibility.decode())
+            root_member = {"META-INF/codex-agent/sdk-runtime-root.pub": TEST_SDK_ROOT,
+                           "lib/net8.0/CodexAgent.dll": b"assembly"}
+            write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json",
+                           compatibility.decode(), root_member)
 
             require_embedded_sdk_compatibility(root / "packages", sdks, version, ("csharp",))
+            inspector.assert_called()
+            inspector.return_value.returncode = 1
+            inspector.return_value.stderr = "Embedded SDK root differs from the expected root."
+            with self.assertRaisesRegex(ValueError, "embedded SDK Runtime trust root is invalid"):
+                require_embedded_sdk_compatibility(root / "packages", sdks, version, ("csharp",))
+            inspector.return_value.returncode = 0
+            write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json",
+                           compatibility.decode(), {"META-INF/codex-agent/sdk-runtime-root.pub": TEST_SDK_ROOT})
+            with self.assertRaisesRegex(ValueError, "only the expected CodexAgent.dll"):
+                require_embedded_sdk_compatibility(root / "packages", sdks, version, ("csharp",))
+            write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json",
+                           compatibility.decode(), {**root_member,
+                                                   "lib/net9.0/CodexAgent.dll": b"other root"})
+            with self.assertRaisesRegex(ValueError, "only the expected CodexAgent.dll"):
+                require_embedded_sdk_compatibility(root / "packages", sdks, version, ("csharp",))
+            write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json",
+                           compatibility.decode(), root_member)
+            write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json",
+                           compatibility.decode(), {**root_member,
+                                                   "META-INF/codex-agent/sdk-runtime-root.pub": b"wrong\n"})
+            with self.assertRaisesRegex(ValueError, "exact SDK Runtime trust root"):
+                require_embedded_sdk_compatibility(root / "packages", sdks, version, ("csharp",))
+            write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json",
+                           compatibility.decode())
+            with self.assertRaisesRegex(ValueError, "exact SDK Runtime trust root"):
+                require_embedded_sdk_compatibility(root / "packages", sdks, version, ("csharp",))
+            write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json",
+                           compatibility.decode(), root_member)
             with self.assertRaisesRegex(ValueError, "compatibility version mismatch"):
                 require_embedded_sdk_compatibility(root / "packages", sdks, wrong_version, ("csharp",))
 
-            write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json", "changed")
+            write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json", "changed", root_member)
             with self.assertRaisesRegex(ValueError, "exact SDK compatibility"):
                 require_embedded_sdk_compatibility(root / "packages", sdks, version, ("csharp",))
 
-            write_zip_file(package, "wrong/location/sdk-compatibility.json", compatibility.decode())
+            write_zip_file(package, "wrong/location/sdk-compatibility.json", compatibility.decode(), root_member)
             with self.assertRaisesRegex(ValueError, "exact SDK compatibility"):
                 require_embedded_sdk_compatibility(root / "packages", sdks, version, ("csharp",))
 
-    def test_public_native_package_verifier_is_read_only_and_fails_closed(self) -> None:
+    @patch("native_wrappers.run")
+    @patch("native_wrappers.subprocess.run")
+    def test_public_native_package_verifier_is_read_only_and_fails_closed(self, inspector, _build) -> None:
+        inspector.return_value.returncode = 0
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             packages = root / "packages"
@@ -322,6 +365,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             wrong_version = "0.2.1" if version != "0.2.1" else "0.2.0"
             (sdks / "sdk-compatibility.json").parent.mkdir(parents=True)
             (sdks / "sdk-compatibility.json").write_bytes(compatibility)
+            (sdks / "sdk-runtime-root.pub").write_bytes(TEST_SDK_ROOT)
             libraries: dict[str, bytes] = {}
             for classifier in HOSTS:
                 library = sdks / classifier / HOSTS[classifier][4]
@@ -363,6 +407,8 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                         "META-INF/codex-agent/sdk-compatibility.json",
                         embedded_compatibility,
                     )
+                    output.writestr("META-INF/codex-agent/sdk-runtime-root.pub", TEST_SDK_ROOT)
+                    output.writestr("lib/net8.0/CodexAgent.dll", b"assembly")
                     if duplicate_compatibility:
                         output.writestr("other/sdk-compatibility.json", embedded_compatibility)
                     for classifier, package_classifier in PACKAGE_CLASSIFIERS.items():
@@ -468,6 +514,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             sdks = root / "sdks"
             (sdks / "sdk-compatibility.json").parent.mkdir(parents=True)
             (sdks / "sdk-compatibility.json").write_text("compatibility\n", encoding="utf-8")
+            (sdks / "sdk-runtime-root.pub").write_bytes(TEST_SDK_ROOT)
             for classifier in HOSTS:
                 sdk = sdks / classifier
                 members = {
@@ -498,11 +545,13 @@ class NativeWrapperReleaseTest(unittest.TestCase):
         def build_language(root: Path, language: str, sdks: Path) -> Path:
             packages = root / "packages"
             compatibility = (sdks / "sdk-compatibility.json").read_bytes()
+            root_public = (sdks / "sdk-runtime-root.pub").read_bytes()
             if language == "python":
                 source = root / "python-sdist"
                 native = source / "src/codex_agent/native"
                 native.mkdir(parents=True, exist_ok=True)
                 (native / "sdk-compatibility.json").write_bytes(compatibility)
+                (native / "sdk-runtime-root.pub").write_bytes(root_public)
                 for classifier in HOSTS:
                     copy_target(sdks, classifier, native / classifier)
                 deterministic_tar(
@@ -513,6 +562,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                     native = wheel / "codex_agent/native"
                     native.mkdir(parents=True, exist_ok=True)
                     (native / "sdk-compatibility.json").write_bytes(compatibility)
+                    (native / "sdk-runtime-root.pub").write_bytes(root_public)
                     copy_target(sdks, classifier, native / classifier)
                     deterministic_zip(
                         wheel,
@@ -525,6 +575,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 native = source / "native"
                 native.mkdir(parents=True, exist_ok=True)
                 (native / "sdk-compatibility.json").write_bytes(compatibility)
+                (native / "sdk-runtime-root.pub").write_bytes(root_public)
                 for classifier, package_classifier in PACKAGE_CLASSIFIERS.items():
                     copy_target(sdks, classifier, native / package_classifier)
                 deterministic_tar(
@@ -537,6 +588,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 native.mkdir(parents=True, exist_ok=True)
                 (native / "README.md").write_text("native\n", encoding="utf-8")
                 (native / "sdk-compatibility.json").write_bytes(compatibility)
+                (native / "sdk-runtime-root.pub").write_bytes(root_public)
                 for classifier in HOSTS:
                     copy_target(sdks, classifier, native / classifier)
                 deterministic_tar(
@@ -563,6 +615,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                     metadata = source / "share/CodexAgent/native"
                     metadata.mkdir(parents=True, exist_ok=True)
                     (metadata / "sdk-compatibility.json").write_bytes(compatibility)
+                    (metadata / "sdk-runtime-root.pub").write_bytes(root_public)
                     legal = source / "share/doc/CodexAgent/LICENSE.txt"
                     legal.parent.mkdir(parents=True, exist_ok=True)
                     legal.write_bytes((sdk / "LICENSE.txt").read_bytes())
@@ -816,6 +869,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             }
             compatibility_bytes = canonical_json_bytes(compatibility)
             (sdks / "sdk-compatibility.json").write_bytes(compatibility_bytes)
+            (sdks / "sdk-runtime-root.pub").write_bytes(TEST_SDK_ROOT)
             for relative in (
                 "python/src/codex_agent/native/sdk-compatibility.json",
                 "csharp/native/sdk-compatibility.json",
@@ -823,12 +877,19 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 "dart/lib/src/native/sdk-compatibility.json",
             ):
                 (sources / relative).write_bytes(compatibility_bytes)
+                (sources / relative).with_name("sdk-runtime-root.pub").write_bytes(TEST_SDK_ROOT)
             for classifier in HOSTS:
                 destination = sources / f"cpp/native/{classifier}/share/CodexAgent/native/sdk-compatibility.json"
                 destination.parent.mkdir(parents=True)
                 destination.write_bytes(compatibility_bytes)
+                destination.with_name("sdk-runtime-root.pub").write_bytes(TEST_SDK_ROOT)
 
             require_prepared_native_assets(sources, sdks, "0.2.0")
+            python_root = sources / "python/src/codex_agent/native/sdk-runtime-root.pub"
+            python_root.write_bytes(b"wrong\n")
+            with self.assertRaisesRegex(ValueError, "trust root differs"):
+                require_prepared_native_assets(sources, sdks, "0.2.0")
+            python_root.write_bytes(TEST_SDK_ROOT)
             with self.assertRaisesRegex(ValueError, "compatibility version mismatch"):
                 require_prepared_native_assets(sources, sdks, "0.2.1")
             staged_proof = sdks / "linux-x64/codex-agent-c-abi-evidence.json"

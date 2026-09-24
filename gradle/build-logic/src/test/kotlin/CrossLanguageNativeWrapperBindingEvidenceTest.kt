@@ -769,6 +769,7 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
                             candidateCommit,
                             candidateTree,
                             fixture.sdkCompatibility(),
+                            fixture.sdkRuntimeRoot(),
                             archives,
                             evidence,
                             crossLanguageCAbiTargetSpecs.mapValues { (_, spec) -> fixture.reference(spec) },

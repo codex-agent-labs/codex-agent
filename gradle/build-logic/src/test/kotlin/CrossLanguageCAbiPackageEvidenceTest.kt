@@ -154,10 +154,16 @@ class CrossLanguageCAbiPackageEvidenceTest {
             Fixture.COMMIT,
             Fixture.TREE,
             fixture.sdkCompatibility(),
+            fixture.sdkRuntimeRoot(),
             archives,
             evidence,
             crossLanguageCAbiTargetSpecs.mapValues { (_, spec) -> fixture.reference(spec) },
         )
+        assertFailsWith<IllegalStateException> {
+            stageCrossLanguageNativeWrapperSdks(input.copy(
+                sdkRuntimeRootPublicKey = fixture.root.resolve("missing-sdk-runtime-root.pub"),
+            ), fixture.root.resolve("missing-root-wrapper-sdks"))
+        }
         val staged = fixture.root.resolve("wrapper-sdks")
         stageCrossLanguageNativeWrapperSdks(input, staged)
         val index = readCrossLanguageNativeWrapperSdkIndex(staged)
@@ -168,6 +174,8 @@ class CrossLanguageCAbiPackageEvidenceTest {
             fixture.sdkCompatibility().readBytes().toList(),
             staged.resolve("sdk-compatibility.json").readBytes().toList(),
         )
+        assertEquals(fixture.sdkRuntimeRoot().readBytes().toList(),
+            staged.resolve("sdk-runtime-root.pub").readBytes().toList())
 
         val packageAssets = fixture.root.resolve("wrapper-package-assets")
         materializeCrossLanguageNativeWrapperPackageAssets(staged, packageAssets)
@@ -188,11 +196,15 @@ class CrossLanguageCAbiPackageEvidenceTest {
                 packageAssets.resolve("dart/lib/src/native/$classifier"),
             ).forEach { destination ->
                 assertTrue(fixture.library(spec).readBytes().contentEquals(destination.resolve(libraryName).readBytes()))
+                assertTrue(fixture.sdkRuntimeRoot().readBytes().contentEquals(
+                    destination.parentFile.resolve("sdk-runtime-root.pub").readBytes()))
                 assertFalse(destination.resolve("codex-agent-c-abi-evidence.json").exists())
                 assertFalse(destination.resolve(C_ABI_PACKAGE_MANIFEST).exists())
             }
             val cppSdk = packageAssets.resolve("cpp/native/$classifier")
             assertEquals(expectedLibrary, cppSdk.resolve(spec.libraryPath).releaseDigest())
+            assertTrue(fixture.sdkRuntimeRoot().readBytes().contentEquals(
+                cppSdk.resolve("share/CodexAgent/native/sdk-runtime-root.pub").readBytes()))
             assertTrue(cppSdk.resolve(C_ABI_HEADER_PATH).isFile)
             assertFalse(cppSdk.resolve(C_ABI_PACKAGE_MANIFEST).exists())
             assertFalse(cppSdk.resolve("codex-agent-c-abi-evidence.json").exists())
@@ -251,7 +263,7 @@ class CrossLanguageCAbiPackageEvidenceTest {
         }
         fun input(compatibility: File) = CrossLanguageNativeWrapperSdkInput(
             Fixture.VERSION, Fixture.VERSION, Fixture.VERSION, Fixture.COMMIT, Fixture.TREE,
-            compatibility, archives, evidence,
+            compatibility, fixture.sdkRuntimeRoot(), archives, evidence,
             crossLanguageCAbiTargetSpecs.mapValues { (_, spec) -> fixture.reference(spec) },
         )
         val original = fixture.sdkCompatibility().readText()
@@ -380,6 +392,12 @@ class CrossLanguageCAbiPackageEvidenceTest {
                     }
                 })
             }))
+        }
+
+        fun sdkRuntimeRoot(): File = root.resolve("sdk-runtime-root.pub").apply {
+            if (!isFile) writeText(
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPoIOWAjQaSmTizyrbjyurE2cVsgmJElRQNN2r1DtJbq\n",
+            )
         }
 
         fun reference(spec: CrossLanguageCAbiTargetSpec) = CrossLanguageNativeWrapperSdkReferenceInput(

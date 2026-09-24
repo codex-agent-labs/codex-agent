@@ -116,6 +116,8 @@ abstract class StageCrossLanguageNativeWrapperSdksTask @Inject constructor(
     abstract val runtimeStageRoot: DirectoryProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val sdkCompatibility: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val sdkRuntimeRootPublicKey: RegularFileProperty
     @get:Internal abstract val outputDirectory: DirectoryProperty
     @get:Input abstract val pythonExecutable: Property<String>
     @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
@@ -155,6 +157,7 @@ abstract class StageCrossLanguageNativeWrapperSdksTask @Inject constructor(
     private fun nativeWrapperSdkInput(stageRoot: File) = CrossLanguageNativeWrapperSdkInput(
         libraryVersion.get(), runtimeProductVersion.get(), sdkVersion.get(),
         producerCommit.get(), producerTree.get(), sdkCompatibility.get().asFile,
+        sdkRuntimeRootPublicKey.get().asFile,
         crossLanguageCAbiTargetSpecs.keys.associateWith { target ->
             val component = crossLanguageCAbiTargetSpecs.getValue(target).classifier.removePrefix("c-abi-")
             stageRoot.resolve(

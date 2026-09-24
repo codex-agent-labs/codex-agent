@@ -223,6 +223,9 @@ val stageNativeWrapperCAbiSdks = tasks.register<StageCrossLanguageNativeWrapperS
     runtimeProductVersion.set(nativeWrapperRuntimeVersion)
     sdkVersion.set(nativeWrapperSdkVersion)
     sdkCompatibility.set(generateNativeWrapperSdkCompatibility.flatMap { it.outputFile })
+    sdkRuntimeRootPublicKey.set(rootProject.layout.projectDirectory.file(
+        "gradle/release/keys/sdk-runtime-root.pub",
+    ))
     compatibilityRequest.set(layout.file(nativeWrapperSdkCompatibilityRequest))
     producerCommit.set(nativeWrapperCandidateCommit)
     producerTree.set(nativeWrapperCandidateTree)
@@ -341,6 +344,7 @@ val nativeWrapperSdkPackageManifestTasks = nativeWrapperSdkPackageTaskNames.mapV
         dependsOn(stage)
         from(stage.flatMap { it.sdkDirectory }) {
             include("sdk-compatibility.json")
+            include("sdk-runtime-root.pub")
         }
         into(phaseOutputs.map { it.dir("evidence") })
     }

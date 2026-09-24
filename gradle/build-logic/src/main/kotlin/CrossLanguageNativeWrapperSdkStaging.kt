@@ -1,6 +1,7 @@
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.Base64
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.JsonArray
@@ -16,6 +17,7 @@ data class CrossLanguageNativeWrapperSdkInput(
     val producerCommit: String,
     val producerTree: String,
     val sdkCompatibility: File,
+    val sdkRuntimeRootPublicKey: File,
     val archives: Map<String, File>,
     val evidence: Map<String, File>,
     val references: Map<String, CrossLanguageNativeWrapperSdkReferenceInput>,
@@ -48,6 +50,23 @@ private data class NativeWrapperSdkCompatibility(
     val bytes: ByteArray,
     val runtimeLibraryDigests: Map<String, String>,
 )
+
+private fun readSdkRuntimeRootPublicKey(file: File): ByteArray {
+    check(regularCAbiFile(file) && file.length() <= 4096L) {
+        "SDK Runtime trust root is missing, symbolic, or oversized"
+    }
+    val bytes = file.readBytes()
+    val encoded = Regex("ssh-ed25519 ([A-Za-z0-9+/]+={0,2})\\n")
+        .matchEntire(bytes.decodeToString())?.groupValues?.get(1)
+        ?: error("SDK Runtime trust root is not a canonical Ed25519 public key")
+    val blob = Base64.getDecoder().decode(encoded)
+    val prefix = byteArrayOf(0, 0, 0, 11) + "ssh-ed25519".toByteArray() + byteArrayOf(0, 0, 0, 32)
+    check(blob.size == prefix.size + 32 && blob.copyOfRange(0, prefix.size).contentEquals(prefix) &&
+        Base64.getEncoder().encodeToString(blob) == encoded) {
+        "SDK Runtime trust root is not a canonical Ed25519 public key"
+    }
+    return bytes
+}
 
 private fun JsonElement.hasCanonicalKeyOrder(): Boolean = when (this) {
     is JsonObject -> keys.toList() == keys.sorted() && values.all(JsonElement::hasCanonicalKeyOrder)
@@ -192,6 +211,7 @@ fun stageCrossLanguageNativeWrapperSdks(
     val compatibility = readNativeWrapperSdkCompatibility(
         input.sdkCompatibility, input.sdkVersion, input.runtimeProductVersion,
     )
+    val sdkRuntimeRoot = readSdkRuntimeRootPublicKey(input.sdkRuntimeRootPublicKey)
     val parent = outputDirectory.absoluteFile.parentFile.also(File::mkdirs)
     val temporary = Files.createTempDirectory(parent.toPath(), ".native-wrapper-sdks-").toFile()
     try {
@@ -252,6 +272,7 @@ fun stageCrossLanguageNativeWrapperSdks(
             }
         }
         staged.resolve("sdk-compatibility.json").writeBytes(compatibility.bytes)
+        staged.resolve("sdk-runtime-root.pub").writeBytes(sdkRuntimeRoot)
         staged.resolve("codex-agent-native-wrapper-sdks.json").atomicWriteJson(buildJsonObject {
             put("schemaVersion", 2)
             put("libraryVersion", input.libraryVersion)
@@ -314,6 +335,8 @@ fun materializeCrossLanguageNativeWrapperPackageAssets(
             )
             cppCompatibility.parentFile.mkdirs()
             Files.copy(stagedSdkDirectory.resolve("sdk-compatibility.json").toPath(), cppCompatibility.toPath())
+            Files.copy(stagedSdkDirectory.resolve("sdk-runtime-root.pub").toPath(),
+                cppCompatibility.parentFile.resolve("sdk-runtime-root.pub").toPath())
         }
         val compatibilityDestinations = listOf(
             "python/src/codex_agent/native/sdk-compatibility.json",
@@ -325,6 +348,8 @@ fun materializeCrossLanguageNativeWrapperPackageAssets(
             val destination = staged.resolve(path)
             destination.parentFile.mkdirs()
             Files.copy(stagedSdkDirectory.resolve("sdk-compatibility.json").toPath(), destination.toPath())
+            Files.copy(stagedSdkDirectory.resolve("sdk-runtime-root.pub").toPath(),
+                destination.parentFile.resolve("sdk-runtime-root.pub").toPath())
         }
         try {
             Files.move(staged.toPath(), outputDirectory.toPath(), StandardCopyOption.ATOMIC_MOVE)
@@ -346,6 +371,7 @@ internal fun readCrossLanguageNativeWrapperSdkIndex(
     val expectedFiles = buildSet {
         add("codex-agent-native-wrapper-sdks.json")
         add("sdk-compatibility.json")
+        add("sdk-runtime-root.pub")
         crossLanguageCAbiTargetSpecs.values.forEach { spec ->
             val classifier = spec.classifier.removePrefix("c-abi-")
             listOf(
@@ -382,6 +408,8 @@ internal fun readCrossLanguageNativeWrapperSdkIndex(
     val tree = root.strictString("producerTree")
     checkIdentity(version, commit, tree)
     val compatibilityFile = stagedSdkDirectory.resolve("sdk-compatibility.json")
+    val rootFile = stagedSdkDirectory.resolve("sdk-runtime-root.pub")
+    readSdkRuntimeRootPublicKey(rootFile)
     val compatibility = readNativeWrapperSdkCompatibility(
         compatibilityFile,
         root.strictString("sdkVersion"),

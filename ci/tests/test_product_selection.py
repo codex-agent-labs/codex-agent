@@ -833,6 +833,18 @@ class ProductSelectionTest(unittest.TestCase):
             identities(classify_paths(["gradle/release/sdk-runtime-compatibility.json"])),
         )
 
+    def test_sdk_root_rotation_selects_only_native_sdk_packages(self) -> None:
+        selected = identities(classify_paths(["gradle/release/keys/sdk-runtime-root.pub"]))
+        self.assertEqual(set(NATIVE_BINDINGS), {item.component for item in selected})
+        self.assertTrue(all(item.product == "sdk" and item.phase != "binary" for item in selected))
+
+    def test_csharp_root_inspector_changes_only_csharp_validation(self) -> None:
+        selected = identities(classify_paths([
+            "codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot/Program.cs",
+        ]))
+        self.assertEqual({"csharp"}, {item.component for item in selected})
+        self.assertEqual({"validation", "metadata"}, {item.phase for item in selected})
+
     def test_sdk_default_runtime_selects_sdk_packages_without_runtime_rebuild(self) -> None:
         result = classify_paths(["gradle/release/sdk-default-runtime.txt"])
         selected = identities(result)

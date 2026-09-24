@@ -23,10 +23,10 @@ from pathlib import Path, PurePosixPath
 
 if __package__:
     from .products.aggregate import validate_sdk_compatibility
-    from .products.inventory import load_canonical_json_bytes, require_semver
+    from .products.inventory import load_canonical_json_bytes, public_key_fingerprint, require_semver
 else:
     from products.aggregate import validate_sdk_compatibility
-    from products.inventory import load_canonical_json_bytes, require_semver
+    from products.inventory import load_canonical_json_bytes, public_key_fingerprint, require_semver
 
 
 HOSTS = {
@@ -246,7 +246,7 @@ def package_python(source: Path, output: Path, work: Path) -> None:
         shutil.copytree(all_source, wheel_source)
         native = wheel_source / "src/codex_agent/native"
         for child in native.iterdir():
-            if child.name not in {classifier, "sdk-compatibility.json"}:
+            if child.name not in {classifier, "sdk-compatibility.json", "sdk-runtime-root.pub"}:
                 shutil.rmtree(child)
         run(
             sys.executable, "setup.py", "bdist_wheel", "--python-tag", "py3",
@@ -415,7 +415,8 @@ def require_prepared_native_assets(
     languages: tuple[str, ...] = LANGUAGES,
 ) -> None:
     version_value = require_semver(sdk_version, "SDK version")
-    expected_sdk_entries = {*HOSTS, "codex-agent-native-wrapper-sdks.json", "sdk-compatibility.json"}
+    expected_sdk_entries = {*HOSTS, "codex-agent-native-wrapper-sdks.json",
+                            "sdk-compatibility.json", "sdk-runtime-root.pub"}
     if (
         not sdks.is_dir()
         or sdks.is_symlink()
@@ -428,6 +429,11 @@ def require_prepared_native_assets(
     if not compatibility_path.is_file() or compatibility_path.is_symlink():
         raise ValueError("staged SDK compatibility declaration is missing or symbolic")
     compatibility_bytes = compatibility_path.read_bytes()
+    runtime_root = sdks / "sdk-runtime-root.pub"
+    if not runtime_root.is_file() or runtime_root.is_symlink() or runtime_root.stat().st_size > 4096:
+        raise ValueError("staged SDK Runtime trust root is missing, symbolic, or oversized")
+    root_bytes = runtime_root.read_bytes()
+    public_key_fingerprint(root_bytes)
     compatibility = validate_sdk_compatibility(load_canonical_json_bytes(compatibility_bytes))
     if compatibility["sdkVersion"] != version_value:
         raise ValueError("prepared SDK compatibility version mismatch")
@@ -435,13 +441,16 @@ def require_prepared_native_assets(
     if set(embedded) != set(HOSTS):
         raise ValueError("SDK compatibility target inventory mismatch")
     parent_specs = {
-        "python": (sources / "python/src/codex_agent/native", set(HOSTS), {"sdk-compatibility.json"}),
+        "python": (sources / "python/src/codex_agent/native", set(HOSTS),
+                   {"sdk-compatibility.json", "sdk-runtime-root.pub"}),
         "csharp": (sources / "csharp/native",
-            set(PACKAGE_CLASSIFIERS.values()), {"README.md", "sdk-compatibility.json"},
+            set(PACKAGE_CLASSIFIERS.values()), {"README.md", "sdk-compatibility.json", "sdk-runtime-root.pub"},
         ),
-        "rust": (sources / "rust/native", set(PACKAGE_CLASSIFIERS.values()), {"sdk-compatibility.json"}),
+        "rust": (sources / "rust/native", set(PACKAGE_CLASSIFIERS.values()),
+                 {"sdk-compatibility.json", "sdk-runtime-root.pub"}),
         "cpp": (sources / "cpp/native", set(HOSTS), set()),
-        "dart": (sources / "dart/lib/src/native", set(HOSTS), {"README.md", "sdk-compatibility.json"}),
+        "dart": (sources / "dart/lib/src/native", set(HOSTS),
+                 {"README.md", "sdk-compatibility.json", "sdk-runtime-root.pub"}),
     }
     for language in languages:
         parent, directories, regular_files = parent_specs[language]
@@ -457,6 +466,9 @@ def require_prepared_native_assets(
         if "sdk-compatibility.json" in regular_files and \
                 entries["sdk-compatibility.json"].read_bytes() != compatibility_bytes:
             raise ValueError(f"prepared SDK compatibility bytes differ: {parent}")
+        if "sdk-runtime-root.pub" in regular_files and \
+                entries["sdk-runtime-root.pub"].read_bytes() != root_bytes:
+            raise ValueError(f"prepared SDK Runtime trust root differs: {parent}")
         reject_raw_c_abi_proofs(parent, language)
     for classifier, host in HOSTS.items():
         sdk = sdks / classifier
@@ -494,11 +506,15 @@ def require_prepared_native_assets(
         if not cpp_compatibility.is_file() or cpp_compatibility.is_symlink() or \
                 cpp_compatibility.read_bytes() != compatibility_bytes:
             raise ValueError(f"C++ SDK compatibility bytes differ: {classifier}")
+        cpp_root = cpp_compatibility.parent / "sdk-runtime-root.pub"
+        if not cpp_root.is_file() or cpp_root.is_symlink() or cpp_root.read_bytes() != root_bytes:
+            raise ValueError(f"C++ SDK Runtime trust root differs: {classifier}")
         expected_cpp = {
             path: digest for path, digest in package_inventory(sdk)
             if Path(path).name not in FORBIDDEN_C_ABI_PROOFS
         }
         expected_cpp["share/CodexAgent/native/sdk-compatibility.json"] = sha256(cpp_compatibility)
+        expected_cpp["share/CodexAgent/native/sdk-runtime-root.pub"] = sha256(cpp_root)
         if dict(package_inventory(cpp)) != expected_cpp:
             raise ValueError(f"C++ prepared native inventory mismatch: {classifier}")
 
@@ -850,6 +866,11 @@ def require_embedded_sdk_compatibility(
     languages: tuple[str, ...] = LANGUAGES,
 ) -> None:
     expected = (sdks / "sdk-compatibility.json").read_bytes()
+    root_path = sdks / "sdk-runtime-root.pub"
+    if not root_path.is_file() or root_path.is_symlink() or root_path.stat().st_size > 4096:
+        raise ValueError("staged SDK Runtime trust root is missing, symbolic, or oversized")
+    expected_root = root_path.read_bytes()
+    public_key_fingerprint(expected_root)
     compatibility = validate_sdk_compatibility(load_canonical_json_bytes(expected))
     if compatibility["sdkVersion"] != require_semver(sdk_version, "SDK version"):
         raise ValueError("embedded SDK compatibility version mismatch")
@@ -880,6 +901,7 @@ def require_embedded_sdk_compatibility(
 
     with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-compatibility-") as temporary:
         work = Path(temporary)
+        csharp_inspector: Path | None = None
         for language in languages:
             archives = [
                 path for path in files(packages / language)
@@ -902,6 +924,40 @@ def require_embedded_sdk_compatibility(
                     raise ValueError(
                         f"{language} package {archive.name} does not contain the exact SDK compatibility declaration",
                     )
+                roots = [path for path in files(extracted) if path.name == "sdk-runtime-root.pub"]
+                required_root = required.with_name("sdk-runtime-root.pub")
+                if roots != [required_root] or required_root.read_bytes() != expected_root:
+                    raise ValueError(
+                        f"{language} package {archive.name} does not contain the exact SDK Runtime trust root",
+                    )
+                if language == "csharp":
+                    assembly = extracted / "lib/net8.0/CodexAgent.dll"
+                    assemblies = [path for path in files(extracted)
+                                  if path.name.lower() == "codexagent.dll"]
+                    if assemblies != [assembly]:
+                        raise ValueError("C# package must contain only the expected CodexAgent.dll")
+                    if csharp_inspector is None:
+                        project = (Path(__file__).resolve().parents[1] /
+                                   "codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot/"
+                                   "VerifySdkRuntimeRoot.csproj")
+                        tool_work = work / "csharp-inspector"
+                        tool_work.mkdir()
+                        properties = (
+                            f"-p:BaseOutputPath={tool_work / 'bin'}/",
+                            f"-p:BaseIntermediateOutputPath={tool_work / 'obj'}/",
+                            f"-p:MSBuildProjectExtensionsPath={tool_work / 'obj'}/",
+                        )
+                        run("dotnet", "restore", project, "--source", tool_work,
+                            *properties, cwd=tool_work)
+                        run("dotnet", "build", project, "--no-restore", *properties,
+                            cwd=tool_work)
+                        csharp_inspector = tool_work / "bin/Debug/net8.0/VerifySdkRuntimeRoot.dll"
+                    result = subprocess.run(
+                        ["dotnet", str(csharp_inspector), str(assembly), str(required_root)],
+                        capture_output=True, text=True, check=False, timeout=30,
+                    )
+                    if result.returncode != 0:
+                        raise ValueError(f"C# package embedded SDK Runtime trust root is invalid: {result.stderr.strip()}")
 
 
 def require_embedded_native_assets(
@@ -949,7 +1005,7 @@ def require_embedded_native_assets(
             native = root(extracted, sdist) / "src/codex_agent/native"
             require_inventory(
                 native,
-                {"sdk-compatibility.json"} | {
+                {"sdk-compatibility.json", "sdk-runtime-root.pub"} | {
                     path for classifier in HOSTS for path in target_files(classifier, classifier)
                 },
                 "Python",
@@ -964,7 +1020,7 @@ def require_embedded_native_assets(
                 native = extracted / "codex_agent/native"
                 require_inventory(
                     native,
-                    {"sdk-compatibility.json"} | target_files(classifier, classifier),
+                    {"sdk-compatibility.json", "sdk-runtime-root.pub"} | target_files(classifier, classifier),
                     "Python",
                 )
                 verify_target(native / classifier, classifier, "Python")
@@ -992,7 +1048,7 @@ def require_embedded_native_assets(
             native = root(extracted, archive) / "native"
             require_inventory(
                 native,
-                {"sdk-compatibility.json"} | {
+                {"sdk-compatibility.json", "sdk-runtime-root.pub"} | {
                     path
                     for classifier, package_classifier in PACKAGE_CLASSIFIERS.items()
                     for path in target_files(package_classifier, classifier)
@@ -1009,7 +1065,7 @@ def require_embedded_native_assets(
             native = root(extracted, archive) / "lib/src/native"
             require_inventory(
                 native,
-                {"README.md", "sdk-compatibility.json"} | {
+                {"README.md", "sdk-compatibility.json", "sdk-runtime-root.pub"} | {
                     path for classifier in HOSTS for path in target_files(classifier, classifier)
                 },
                 "Dart",
@@ -1026,7 +1082,7 @@ def require_embedded_native_assets(
                 metadata_root = package / "share/CodexAgent/native"
                 require_inventory(
                     metadata_root,
-                    {"sdk-compatibility.json"},
+                    {"sdk-compatibility.json", "sdk-runtime-root.pub"},
                     "C++",
                 )
                 require_inventory(

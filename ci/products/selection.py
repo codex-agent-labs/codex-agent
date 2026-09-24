@@ -899,7 +899,7 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             "codex-agent-bindings/dart/tool/produce_sdk_validation_evidence.py",
             "codex-agent-bindings/dart/tool/provision_dependencies.py",
             "codex-agent-bindings/dart/tool/tests/test_provision_dependencies.py",
-        }:
+        } or _is_prefix(path, "codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot/"):
             return _from_phase("sdk", language, "validation")
         if language == "javascript" and _binding_validation_path(path, language):
             return _from_phase("sdk", language, "validation")
@@ -1150,6 +1150,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             _from_phase("sdk", "sdk-ios", "package"),
             _bindings((*NATIVE_BINDINGS, "javascript")),
         )
+    if path == "gradle/release/keys/sdk-runtime-root.pub":
+        return _bindings(NATIVE_BINDINGS)
     if path == "gradle/release/versions/runtime.txt":
         return {PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")}
     if path == "gradle/release/versions/sdk.txt":
