@@ -36,6 +36,7 @@ from ci.products.contract import (
 )
 from ci.products.inventory import (
     canonical_json_bytes,
+    publish_regular_tree as actual_publish_regular_tree,
     regular_file_inventory,
     sha256_bytes,
     sha256_file,
@@ -790,6 +791,43 @@ class ContractBundleTest(unittest.TestCase):
             self.assertEqual((root / "first" / ARCHIVE_NAME).read_bytes(), (root / "second" / ARCHIVE_NAME).read_bytes())
             with self.assertRaisesRegex(ValueError, "already exists"):
                 capture_contract_execution_evidence(first, classes, results)
+
+    def test_execution_archive_mutation_before_or_after_pin_never_publishes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stage, classes, results = self._execution_projection_fixture(Path(temporary).resolve() / "source")
+            original_write = contract_product._write_contract_zip
+            original_verify = contract_product.verify_contract_execution_archive
+
+            def mutate_before_pin(raw, archive, **kwargs):
+                original_write(raw, archive, **kwargs)
+                Path(archive).write_bytes(b"changed before pin\n")
+
+            with mock.patch.object(contract_product, "_write_contract_zip",
+                                   side_effect=mutate_before_pin), \
+                    self.assertRaises(ValueError):
+                capture_contract_execution_evidence(stage, classes, results)
+            self.assertFalse((stage / "execution").exists())
+
+            def mutate_after_verify(archive):
+                projection = original_verify(archive)
+                Path(archive).write_bytes(b"changed after verification\n")
+                return projection
+
+            with mock.patch.object(contract_product, "verify_contract_execution_archive",
+                                   side_effect=mutate_after_verify), \
+                    self.assertRaisesRegex(ValueError, "changed after verification"):
+                capture_contract_execution_evidence(stage, classes, results)
+            self.assertFalse((stage / "execution").exists())
+
+            def mutate_before_copy(source, destination, **kwargs):
+                (Path(source) / "contract-execution.zip").write_bytes(b"changed before copy\n")
+                actual_publish_regular_tree(source, destination, **kwargs)
+
+            with mock.patch.object(contract_product, "publish_regular_tree",
+                                   side_effect=mutate_before_copy), \
+                    self.assertRaisesRegex(ValueError, "pinned inventory"):
+                capture_contract_execution_evidence(stage, classes, results)
+            self.assertFalse((stage / "execution").exists())
 
     def test_execution_projection_rejects_stale_failed_missing_duplicate_and_linked_proof(self):
         mutations = ("stale-results", "stale-classes", "failed", "skipped", "missing", "duplicate", "symlink")

@@ -159,10 +159,13 @@ def capture_contract_execution_evidence(
         external.mkdir()
         archive = external / "contract-execution.zip"
         _write_contract_zip(raw, archive, raw_execution=True)
+        expected_inventory = regular_file_inventory(external)
         if verify_contract_execution_archive(archive) != projection:
             raise ValueError("Contract execution archive changed its semantic projection")
+        if regular_file_inventory(external) != expected_inventory:
+            raise ValueError("Contract execution archive changed after verification")
         # Preserve the original raw evidence before replacing only the fresh stage copies.
-        publish_regular_tree(external, destination.parent)
+        publish_regular_tree(external, destination.parent, expected_inventory=expected_inventory)
         write_canonical_json(root / "evidence/canonical-coverage.json", projection["coverage"])
         write_canonical_json(root / "evidence/kotlin-parity.json", projection["kotlin"])
         contract_evidence_identity(root)

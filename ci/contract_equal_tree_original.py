@@ -24,9 +24,9 @@ from receipt import safe_extract
 from runtime_catalog_promotion import _checkout
 from products.contract_phase10_inventory import capture_contract_phase10_inventory
 from products.inventory import (
-    git_regular_blob_bytes, load_canonical_json_bytes, load_json_bytes, publish_regular_tree,
+    canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes, load_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys,
-    require_semver, require_sha256, sha256_file, verified_zip_contents,
+    require_semver, require_sha256, sha256_bytes, sha256_file, verified_zip_contents,
     write_canonical_json,
 )
 from products.sdk_package import _require_capability_output_separate
@@ -163,20 +163,43 @@ def capture_equal_tree_contract_original(
                      "originalProducer": producer, "artifact": artifact,
                      "contractVersion": version, "handoffInventory": record}
         write_canonical_json(prepared / "selection.json", selection)
-        write_canonical_json(prepared / "observations.json", {
+        observations = {
             "selectedValidationRun": selected, "originalAttempt": observed,
             "promotionRunId": int(expected["GITHUB_RUN_ID"]),
             "promotionRunAttempt": int(expected["GITHUB_RUN_ATTEMPT"]),
             "promotionEvent": event_payload, "promotionEnvironment": expected,
-        })
+        }
+        write_canonical_json(prepared / "observations.json", observations)
+        selection_bytes = canonical_json_bytes(selection)
+        observations_bytes = canonical_json_bytes(observations)
+        record_bytes = canonical_json_bytes(record)
+        expected_inventory = sorted([
+            {"relativePath": "original-evidence/upload.zip", "bytes": len(raw),
+             "sha256": artifact["digest"]},
+            *({**item, "relativePath": f"original-evidence/upload/{item['relativePath']}"}
+              for item in inventory),
+            *({**item, "relativePath": f"contract-record/handoff/{item['relativePath']}"}
+              for item in record["handoffFiles"]),
+            *({**item, "relativePath": f"contract-record/policy/keys/{item['relativePath']}"}
+              for item in record["verifierKeys"]),
+            {"relativePath": "contract-record/policy/keyring.json", **record["verifierKeyring"]},
+            {"relativePath": "contract-record/inventory.json", "bytes": len(record_bytes),
+             "sha256": sha256_bytes(record_bytes)},
+            {"relativePath": "selection.json", "bytes": len(selection_bytes),
+             "sha256": sha256_bytes(selection_bytes)},
+            {"relativePath": "observations.json", "bytes": len(observations_bytes),
+             "sha256": sha256_bytes(observations_bytes)},
+        ], key=lambda item: item["relativePath"])
         if (_checkout(trusted, trusted_source_sha)[1] != trusted_tree
                 or _checkout(candidate, final_commit)[1] != final_tree
                 or regular_file_inventory(source_trust.keyring.parent) != policy_inventory
                 or regular_file_inventory(uploaded, allow_empty=True) != inventory
-                or sha256_file(archive) != artifact["digest"]):
+                or sha256_file(archive) != artifact["digest"]
+                or regular_file_inventory(prepared, allow_empty=True) != expected_inventory):
             raise ValueError("Contract equal-tree original changed before publication")
         output_safe()
-        publish_regular_tree(prepared, destination, allow_empty=True)
+        publish_regular_tree(prepared, destination, allow_empty=True,
+                             expected_inventory=expected_inventory)
     return selection
 
 

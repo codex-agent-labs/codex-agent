@@ -20,7 +20,9 @@ from ci.tests.test_contract_release_context import trusted_repository
 from ci import contract_equal_tree_original as locator
 from products.contract_attestation import build_contract_attestation
 from products.inventory import (
-    canonical_json_bytes, regular_file_inventory, sha256_bytes, snapshot_regular_tree,
+    canonical_json_bytes, publish_regular_tree as actual_publish_regular_tree,
+    regular_file_inventory, sha256_bytes, snapshot_regular_tree,
+    write_canonical_json as actual_write_canonical_json,
 )
 from products.signatures import generate_development_key
 
@@ -214,6 +216,26 @@ class ContractEqualTreeOriginalTest(unittest.TestCase):
         signature.write_bytes(b"not an SSH signature\n")
         self.rebind_archive()
         with self.assertRaises(ValueError):
+            self.invoke()
+        self.assertFalse(self.destination.exists())
+
+    def test_pre_pin_and_late_copy_mutations_never_publish(self) -> None:
+        def mutate_before_pin(path, value):
+            actual_write_canonical_json(path, value)
+            if Path(path).name == "observations.json":
+                (Path(path).parent / "selection.json").write_bytes(b"changed before pin\n")
+
+        with mock.patch.object(locator, "write_canonical_json", side_effect=mutate_before_pin), \
+                self.assertRaisesRegex(ValueError, "changed before publication"):
+            self.invoke()
+        self.assertFalse(self.destination.exists())
+
+        def mutate_before_copy(source, destination, **kwargs):
+            (Path(source) / "selection.json").write_bytes(b"changed after pin\n")
+            actual_publish_regular_tree(source, destination, **kwargs)
+
+        with mock.patch.object(locator, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
             self.invoke()
         self.assertFalse(self.destination.exists())
 
