@@ -53,8 +53,10 @@ crates.io, a CMake registry, or pub.dev.
   `lib/src/native/<classifier>/`.
 
 Every native wrapper rejects an unsupported host or incompatible ABI. Explicit
-paths never fall back to an arbitrary system library. The release packages bind
-the same verified C ABI `1.13.0` native bytes and their manifest/evidence files.
+paths never fall back to an arbitrary system library. The packages embed
+verified target-specific C ABI `1.13.0` libraries and the canonical SDK
+compatibility declaration; raw C-ABI manifests and execution evidence remain
+external packaging inputs, not language-package assets.
 
 ## Equivalent lifecycle examples
 

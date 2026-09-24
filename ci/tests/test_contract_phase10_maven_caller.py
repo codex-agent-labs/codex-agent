@@ -24,6 +24,30 @@ from products.inventory import (
 @unittest.skipUnless(shutil.which("gpg") and shutil.which("ssh-keygen"),
                      "GnuPG and ssh-keygen are required")
 class ContractPhase10MavenCallerTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        home = tempfile.TemporaryDirectory(prefix="contract-p10-pgp-", dir="/private/tmp")
+        cls.addClassCleanup(home.cleanup)
+        cls.home = Path(home.name)
+        command = ["gpg", "--homedir", str(cls.home), "--batch", "--no-tty",
+                   "--pinentry-mode", "loopback", "--passphrase", ""]
+        generated = subprocess.run(
+            [*command, "--quick-generate-key", "Contract P10 <contract@example.test>",
+             "ed25519", "sign", "0"], capture_output=True, timeout=60,
+        )
+        if generated.returncode != 0:
+            raise RuntimeError(generated.stderr.decode())
+        cls.public_key = subprocess.run(
+            [*command, "--armor", "--export", "contract@example.test"],
+            check=True, capture_output=True, timeout=60,
+        ).stdout
+        listing = subprocess.run(
+            [*command, "--with-colons", "--fingerprint", "--list-secret-keys"],
+            check=True, capture_output=True, timeout=60,
+        ).stdout.decode()
+        cls.fingerprint = next(line.split(":")[9] for line in listing.splitlines()
+                               if line.startswith("fpr:"))
+
     def setUp(self) -> None:
         fixture = release_fixture.ContractReleaseCaptureTest(
             "test_complete_original_ci_pipeline_signs_exact_payload_and_preserves_external_originals",
@@ -33,26 +57,7 @@ class ContractPhase10MavenCallerTest(unittest.TestCase):
         self.fixture = fixture
         self.destination = fixture.root / "phase10-maven"
         self.key = fixture.root / "maven-public.asc"
-        home = tempfile.TemporaryDirectory(prefix="contract-p10-pgp-", dir="/private/tmp")
-        self.addCleanup(home.cleanup)
-        self.home = Path(home.name)
-        command = ["gpg", "--homedir", str(self.home), "--batch", "--no-tty",
-                   "--pinentry-mode", "loopback", "--passphrase", ""]
-        generated = subprocess.run(
-            [*command, "--quick-generate-key", "Contract P10 <contract@example.test>",
-             "ed25519", "sign", "0"], capture_output=True, timeout=60,
-        )
-        self.assertEqual(0, generated.returncode, generated.stderr.decode())
-        self.key.write_bytes(subprocess.run(
-            [*command, "--armor", "--export", "contract@example.test"],
-            check=True, capture_output=True, timeout=60,
-        ).stdout)
-        listing = subprocess.run(
-            [*command, "--with-colons", "--fingerprint", "--list-secret-keys"],
-            check=True, capture_output=True, timeout=60,
-        ).stdout.decode()
-        self.fingerprint = next(line.split(":")[9] for line in listing.splitlines()
-                                if line.startswith("fpr:"))
+        self.key.write_bytes(self.public_key)
 
     def invoke(self, *, key_digest: str | None = None):
         f = self.fixture
