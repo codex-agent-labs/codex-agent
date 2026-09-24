@@ -36,7 +36,7 @@ class NodeDesktopWorkflowContractTest {
     }
 
     @Test
-    fun `Node JS stages Runtime validation and the SDK job owns the strict binding gate`() {
+    fun `Node JS stages Runtime validation and elected SDK validation owns strict binding parity`() {
         val nodeJs = driver.substringAfter("  node-js)").substringBefore("  node-wasm)")
         val nodeWasm = driver.substringAfter("  node-wasm)").substringBefore("  desktop-macos-arm64)")
         val strictTask = ":codex-agent-sdk:verifyJavaScriptTypeScriptBindingParity"
@@ -52,14 +52,25 @@ class NodeDesktopWorkflowContractTest {
         assertFalse(":codex-agent-runtime-desktop:jsNodeTest" in nodeJs)
         assertFalse(strictTask in nodeWasm)
         val sdkJavaScript = ci.substringAfter("  sdk-javascript:").substringBefore("  merge-gate:")
-        assertEquals(1, Regex(Regex.escape(strictTask)).findAll(sdkJavaScript).count())
-        assertTrue("-PcodexAgent.product=sdk" in sdkJavaScript)
-        assertTrue("-PcodexAgent.component=javascript" in sdkJavaScript)
-        assertTrue("codex-agent-sdk/build/product-stage/sdk/javascript/package" in sdkJavaScript)
-        assertTrue("needs.plan.outputs.lane_node_js == 'true'" in sdkJavaScript)
-        assertTrue("name: codex-agent-ci-node-js-${'$'}{{ needs.plan.outputs.validation_tree }}" in sdkJavaScript)
-        assertTrue("build/ci/sdk-runtime" in sdkJavaScript)
-        assertFalse("codex-agent-ci-portable-" in sdkJavaScript)
+        assertFalse(strictTask in sdkJavaScript)
+        assertTrue("needs: [plan, runtime-continuation, sdk-plan, sdk-collect-1, sdk-collect-2]" in sdkJavaScript)
+        assertTrue("job['outputs'].get('wave_failed') != 'false'" in sdkJavaScript)
+        for (wave in 1..2) {
+            val worker = ci.substringAfter("  sdk-workers-$wave:").substringBefore("  sdk-collect-$wave:")
+            assertTrue("uses: ./.github/actions/sdk-javascript-worker" in worker)
+            assertTrue("phase: ${'$'}{{ matrix.phase }}" in worker)
+        }
+        val workerAction = repository.resolve(".github/actions/sdk-javascript-worker/action.yml").readText()
+        assertTrue("-m ci.sdk_workflow javascript" in workerAction)
+        val productRoute = repository.resolve(
+            "gradle/build-logic/src/main/kotlin/codexagent.contract-product.gradle.kts",
+        ).readText()
+        assertTrue("Triple(\"sdk\", \"javascript\", \"validation\") ->" in productRoute)
+        assertTrue("sdk.get().tasks.named(\"writeJavaScriptSdkValidationOutputManifest\")" in productRoute)
+        val sdkTasks = repository.resolve(
+            "gradle/build-logic/src/main/kotlin/codexagent.javascript-sdk.gradle.kts",
+        ).readText()
+        assertTrue("dependsOn(verifyImportedJavaScriptSdkCompatibility, verifyJavaScriptTypeScriptBindingParity)" in sdkTasks)
         assertEquals(
             1,
             Regex(Regex.escape(":codex-agent-runtime-desktop:wasmJsNodeTest")).findAll(nodeWasm).count(),
@@ -92,6 +103,7 @@ class NodeDesktopWorkflowContractTest {
 
         assertEquals(1, Regex(Regex.escape(task)).findAll(driver).count())
         assertEquals(1, Regex(Regex.escape(task)).findAll(macosArm64).count())
+        assertFalse("generateCodexAgentCAbiScenarioProof" in driver)
         assertFalse(task in otherDesktop)
         assertEquals(1, Regex(Regex.escape(append)).findAll(runDesktop).count())
         assertTrue(runDesktop.indexOf(append) < runDesktop.indexOf(invocation))

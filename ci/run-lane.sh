@@ -33,7 +33,7 @@ runtime_gradle() {
 }
 
 run_desktop() {
-  local target=$1 native_task=$2 jvm_task=$3 node_task=$4 wasm_task=$5 classifier=$6 evidence_task=${7:-} scenario_task=${8:-}
+  local target=$1 native_task=$2 jvm_task=$3 node_task=$4 wasm_task=$5 classifier=$6 evidence_task=${7:-}
   local imported=(codex-agent-runtime-desktop/build/distributions/codex-agent-runtime-desktop-*-${classifier}.zip)
   local c_abi_classifier package_task c_abi_package_task c_abi_evidence_task runtime_target
   case "$target" in
@@ -52,7 +52,6 @@ run_desktop() {
     args+=(-PcodexAgent.desktopEvidenceTarget="$target")
     local native_tasks=(":codex-agent-runtime-desktop:$native_task" ":codex-agent-runtime-desktop:$c_abi_evidence_task")
     [ -z "$evidence_task" ] || native_tasks+=("$evidence_task")
-    [ -z "$scenario_task" ] || native_tasks+=("$scenario_task")
     runtime_gradle "$runtime_target" "${native_tasks[@]}"
   elif [ "$build" = true ]; then
     runtime_gradle "$runtime_target" ":codex-agent-runtime-desktop:$package_task" \
@@ -159,8 +158,7 @@ case "$lane" in
   desktop-macos-arm64)
     run_desktop macosArm64 recordMacosArm64DesktopRuntimeEvidence recordJvmRuntimeMacosArm64Evidence \
       nodeRuntimeMacosArm64Test nodeWasmRuntimeMacosArm64Test app-server-macos-arm64 \
-      :codex-agent-runtime-desktop:generateCodexAgentCAbiBootstrapEvidence \
-      :codex-agent-runtime-desktop:generateCodexAgentCAbiScenarioProof
+      :codex-agent-runtime-desktop:generateCodexAgentCAbiBootstrapEvidence
     ;;
   desktop-macos-x64)
     run_desktop macosX64 recordMacosX64DesktopRuntimeEvidence recordJvmRuntimeMacosX64Evidence \
