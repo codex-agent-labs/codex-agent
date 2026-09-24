@@ -4,14 +4,17 @@
 #include <array>
 #include <atomic>
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <variant>
 #include <vector>
 
@@ -21,7 +24,10 @@
 #else
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <spawn.h>
+#include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -31,12 +37,14 @@ namespace {
 #ifdef CODEX_AGENT_NATIVE_LOADER_TEST_HOOK
 using LoaderTestHook = void (*)(const std::filesystem::path&);
 std::atomic<LoaderTestHook> loader_test_hook{};
+std::string loader_test_root_public;
 #endif
 
 struct Json {
     using Object = std::map<std::string, Json>;
     using Array = std::vector<Json>;
     std::variant<std::nullptr_t, bool, std::int64_t, std::string, Object, Array> value;
+    bool operator==(const Json&) const = default;
 };
 
 class JsonParser final {
@@ -468,6 +476,162 @@ std::filesystem::path safe_absolute_file(const std::filesystem::path& path, cons
     return canonical;
 }
 
+std::string sha256_bytes(std::string_view bytes) {
+    Sha256 hash;
+    hash.update(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
+    return hash.finish();
+}
+
+std::string read_evidence_file(const std::filesystem::path& path, std::uintmax_t limit = 1024 * 1024) {
+    (void)safe_absolute_file(path, "external Runtime evidence");
+    if (std::filesystem::file_size(path) > limit) throw std::runtime_error("external Runtime evidence is oversized");
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) throw std::runtime_error("external Runtime evidence is unavailable");
+    std::string bytes(std::istreambuf_iterator<char>(stream), {});
+    if (bytes.size() > limit) throw std::runtime_error("external Runtime evidence changed or is oversized");
+    return bytes;
+}
+
+Json parse_evidence_json(const std::string& bytes) {
+    if (bytes.empty() || bytes.back() != '\n' || bytes.size() > 1024 * 1024) {
+        throw std::runtime_error("external Runtime evidence JSON is not canonical");
+    }
+    return JsonParser(bytes.substr(0, bytes.size() - 1)).parse();
+}
+
+std::string decode_base64(std::string_view encoded) {
+    static constexpr std::string_view alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    if (encoded.empty() || encoded.size() % 4 != 0) throw std::runtime_error("invalid evidence Base64");
+    std::string decoded;
+    for (std::size_t offset = 0; offset < encoded.size(); offset += 4) {
+        const auto group = encoded.substr(offset, 4);
+        const auto padding = group[3] == '=' ? (group[2] == '=' ? 2u : 1u) : 0u;
+        if (padding && offset + 4 != encoded.size()) throw std::runtime_error("invalid evidence Base64 padding");
+        std::uint32_t bits = 0;
+        for (std::size_t index = 0; index < 4; ++index) {
+            if (group[index] == '=') {
+                if (index < 4 - padding) throw std::runtime_error("invalid evidence Base64 padding");
+                bits <<= 6;
+            } else {
+                const auto value = alphabet.find(group[index]);
+                if (value == std::string_view::npos) throw std::runtime_error("invalid evidence Base64 character");
+                bits = (bits << 6) | static_cast<std::uint32_t>(value);
+            }
+        }
+        for (std::size_t index = 0; index < 3 - padding; ++index)
+            decoded.push_back(static_cast<char>(bits >> (16 - index * 8)));
+        if ((padding == 1 && (bits & 0xffu) != 0) || (padding == 2 && (bits & 0xffffu) != 0))
+            throw std::runtime_error("noncanonical evidence Base64 padding");
+    }
+    return decoded;
+}
+
+std::string public_key_fingerprint(std::string_view key) {
+    static constexpr std::string_view prefix = "ssh-ed25519 ";
+    if (!key.starts_with(prefix) || !key.ends_with('\n')) throw std::runtime_error("invalid SDK Runtime root public key");
+    const auto encoded = key.substr(prefix.size(), key.size() - prefix.size() - 1);
+    const auto blob = decode_base64(encoded);
+    static constexpr char header[] = "\0\0\0\x0bssh-ed25519\0\0\0\x20";
+    if (blob.size() != 51 || blob.compare(0, 19, header, 19) != 0)
+        throw std::runtime_error("invalid SDK Runtime Ed25519 public key");
+    return sha256_bytes(blob);
+}
+
+void canonical_sshsig(std::string_view signature) {
+    static constexpr std::string_view header = "-----BEGIN SSH SIGNATURE-----\n";
+    static constexpr std::string_view footer = "-----END SSH SIGNATURE-----\n";
+    if (!signature.starts_with(header) || !signature.ends_with(footer))
+        throw std::runtime_error("invalid external Runtime SSHSIG armor");
+    auto body = signature.substr(header.size(), signature.size() - header.size() - footer.size());
+    std::string encoded;
+    while (!body.empty()) {
+        const auto newline = body.find('\n');
+        if (newline == std::string_view::npos || newline == 0 || newline > 70 ||
+            (newline + 1 < body.size() && newline != 70)) {
+            throw std::runtime_error("noncanonical external Runtime SSHSIG wrapping");
+        }
+        encoded.append(body.substr(0, newline));
+        body.remove_prefix(newline + 1);
+    }
+    if (!decode_base64(encoded).starts_with("SSHSIG"))
+        throw std::runtime_error("invalid external Runtime SSHSIG envelope");
+}
+
+#ifndef _WIN32
+std::filesystem::path trusted_system_temporary_directory() {
+    const auto root = std::filesystem::canonical("/tmp");
+    struct stat status{};
+    if (stat(root.c_str(), &status) != 0 || !S_ISDIR(status.st_mode) ||
+        status.st_uid != 0 || (status.st_mode & S_ISVTX) == 0) {
+        throw std::runtime_error("trusted system temporary directory is unavailable");
+    }
+    return root;
+}
+
+void verify_sshsig(std::string_view message, std::string_view signature, std::string_view public_key,
+                   std::string_view namespace_name, std::string_view principal) {
+    canonical_sshsig(signature);
+    (void)public_key_fingerprint(public_key);
+    const auto system_temp = trusted_system_temporary_directory();
+    auto pattern = (system_temp / "sdk-runtime-sshsig-XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    if (!mkdtemp(writable.data())) throw std::runtime_error("create private SSHSIG verifier directory failed");
+    const std::filesystem::path directory(writable.data());
+    struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); } } cleanup{directory};
+    const auto allowed = directory / "allowed-signers";
+    const auto detached = directory / "signature.sig";
+    const auto input = directory / "message";
+    auto write_file = [](const std::filesystem::path& path, std::string_view bytes) {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        output.close();
+        if (!output) throw std::runtime_error("write private SSHSIG verifier input failed");
+    };
+    write_file(allowed, std::string(principal) + " " + std::string(public_key));
+    write_file(detached, signature);
+    write_file(input, message);
+    const std::string namespace_text(namespace_name);
+    const std::string principal_text(principal);
+    const std::string allowed_text = allowed.string(), detached_text = detached.string();
+    const char* arguments[]{"/usr/bin/ssh-keygen", "-Y", "verify", "-f", allowed_text.c_str(),
+        "-I", principal_text.c_str(), "-n", namespace_text.c_str(), "-s", detached_text.c_str(), nullptr};
+    const char* environment[]{"LANG=C", "PATH=/usr/bin:/bin", nullptr};
+    posix_spawn_file_actions_t actions;
+    if (posix_spawn_file_actions_init(&actions) != 0) throw std::runtime_error("initialize SSHSIG verifier failed");
+    if (posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, input.c_str(), O_RDONLY, 0) != 0 ||
+        posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0) != 0 ||
+        posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0) != 0) {
+        posix_spawn_file_actions_destroy(&actions);
+        throw std::runtime_error("configure SSHSIG verifier input failed");
+    }
+    pid_t child = 0;
+    const auto launched = posix_spawn(&child, "/usr/bin/ssh-keygen", &actions, nullptr,
+        const_cast<char* const*>(arguments), const_cast<char* const*>(environment));
+    posix_spawn_file_actions_destroy(&actions);
+    if (launched != 0) throw std::runtime_error("trusted OpenSSH verifier is unavailable");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    int status = 0;
+    for (;;) {
+        const auto waited = waitpid(child, &status, WNOHANG);
+        if (waited == child) break;
+        if (waited < 0) throw std::runtime_error("trusted OpenSSH verifier wait failed");
+        if (std::chrono::steady_clock::now() >= deadline) {
+            kill(child, SIGKILL);
+            (void)waitpid(child, &status, 0);
+            throw std::runtime_error("trusted OpenSSH verifier timed out");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        throw std::runtime_error("external Runtime signature verification failed");
+}
+#else
+void verify_sshsig(std::string_view, std::string_view, std::string_view, std::string_view, std::string_view) {
+    throw std::runtime_error("trusted Windows OpenSSH verifier is unavailable");
+}
+#endif
+
 void remove_snapshot(const std::filesystem::path& path) noexcept {
     if (path.empty()) return;
 #ifdef _WIN32
@@ -578,8 +742,12 @@ std::string descriptor_path(int descriptor) {
 #endif
 
 SnapshotCapture snapshot(const std::filesystem::path& source) {
+#ifdef _WIN32
     const auto temporary_root = std::filesystem::canonical(
         std::filesystem::temp_directory_path());
+#else
+    const auto temporary_root = trusted_system_temporary_directory();
+#endif
 #ifdef _WIN32
     const auto source_handle = CreateFileW(
         source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
@@ -779,7 +947,8 @@ const char* symbol_name(NativeSymbol symbol_value) {
     throw std::runtime_error("unknown native symbol");
 }
 
-void validate_identity(void* library, const Compatibility& compatibility, bool embedded) {
+void validate_identity(void* library, const Compatibility& compatibility, bool embedded,
+                       const Json* signed_identity = nullptr) {
     using Identity = codex_agent_status_t(CODEX_AGENT_CALL*)(char*, std::size_t*);
     const auto identity = reinterpret_cast<Identity>(symbol(library, "codex_agent_runtime_identity"));
     std::size_t required = 0;
@@ -792,7 +961,10 @@ void validate_identity(void* library, const Compatibility& compatibility, bool e
         throw std::runtime_error("native runtime identity read failed");
     }
     bytes.pop_back();
-    const auto root = object(JsonParser(std::string(bytes.begin(), bytes.end())).parse(), {
+    const auto actual_identity = JsonParser(std::string(bytes.begin(), bytes.end())).parse();
+    if (signed_identity && actual_identity != *signed_identity)
+        throw std::runtime_error("loaded Runtime identity differs from signed authorization");
+    const auto root = object(actual_identity, {
         "schemaVersion", "componentId", "runtimeCompatibilityVersion", "contractDigest",
         "contractComponentDigest", "cAbiVersion", "target", "appServerVersion", "buildInputDigest"});
     for (const auto key : {"componentId", "contractDigest", "contractComponentDigest", "buildInputDigest"}) require_sha256(string(root, key));
@@ -845,6 +1017,139 @@ struct LoaderState {
 
 LoaderState& state() { static LoaderState value; return value; }
 
+Json verify_external_runtime_evidence(const std::filesystem::path& source,
+                                      const std::filesystem::path& compatibility_file,
+                                      const Compatibility& compatibility,
+                                      const SnapshotCapture& snapshot) {
+    auto evidence = source;
+    evidence += ".evidence";
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(evidence, error);
+    if (error || !std::filesystem::is_directory(status) || std::filesystem::is_symlink(status)) {
+        throw std::runtime_error("external Runtime requires trusted release evidence beside the selected library");
+    }
+    std::string root_public;
+#ifdef CODEX_AGENT_NATIVE_LOADER_TEST_HOOK
+    if (!loader_test_root_public.empty()) root_public = loader_test_root_public;
+#endif
+    if (root_public.empty()) {
+        const auto root = compatibility_file.parent_path() / "sdk-runtime-root.pub";
+        if (!std::filesystem::exists(root)) {
+            throw std::runtime_error("external Runtime requires an SDK-pinned release root before dynamic loading");
+        }
+        root_public = read_evidence_file(root, 4096);
+    }
+    const auto root_fingerprint = public_key_fingerprint(root_public);
+    const auto keyring_bytes = read_evidence_file(evidence / "release-keyring.json");
+    const auto delegation_bytes = read_evidence_file(evidence / "root-delegation.json");
+    const auto delegation = object(parse_evidence_json(delegation_bytes),
+        {"schemaVersion", "kind", "scope", "rootFingerprint", "keyringSha256"});
+    if (integer(delegation, "schemaVersion") != 1 ||
+        string(delegation, "kind") != "sdk-runtime-release-keyring-delegation" ||
+        string(delegation, "scope") != "desktop-runtime-library" ||
+        string(delegation, "rootFingerprint") != root_fingerprint ||
+        string(delegation, "keyringSha256") != sha256_bytes(keyring_bytes)) {
+        throw std::runtime_error("external Runtime delegation differs from SDK root or exact keyring");
+    }
+    verify_sshsig(delegation_bytes, read_evidence_file(evidence / "root-delegation.sig"),
+        root_public, "codex-agent-sdk-runtime-root-v1", "codex-agent-sdk-runtime-root");
+    const auto keyring = object(parse_evidence_json(keyring_bytes),
+        {"schemaVersion", "namespace", "algorithm", "trustDomain", "activeKey", "retiredKeys"});
+    if (integer(keyring, "schemaVersion") != 1 || string(keyring, "namespace") != "codex-agent-product-v1" ||
+        string(keyring, "algorithm") != "ssh-ed25519" || string(keyring, "trustDomain") != "release") {
+        throw std::runtime_error("invalid root-delegated release keyring");
+    }
+    std::vector<std::pair<std::string, std::string>> records;
+    const auto record = [&](const Json& value) {
+        const auto entry = object(value, {"keyId", "fingerprint"});
+        const auto& id = string(entry, "keyId");
+        if (id.empty() || id.size() > 64 || !((id.front() >= 'a' && id.front() <= 'z') ||
+            (id.front() >= '0' && id.front() <= '9')) ||
+            !std::all_of(id.begin(), id.end(), [](char character) {
+                return (character >= 'a' && character <= 'z') ||
+                    (character >= '0' && character <= '9') || character == '-';
+            })) throw std::runtime_error("invalid release key ID");
+        require_sha256(string(entry, "fingerprint"));
+        records.emplace_back(id, string(entry, "fingerprint"));
+    };
+    if (!std::holds_alternative<std::nullptr_t>(keyring.at("activeKey").value))
+        record(keyring.at("activeKey"));
+    std::string previous;
+    for (const auto& entry : array(keyring.at("retiredKeys"))) {
+        record(entry);
+        if (records.back().first <= previous) throw std::runtime_error("release retired keys are not sorted");
+        previous = records.back().first;
+    }
+    std::map<std::string, std::string> keys;
+    std::set<std::string> fingerprints;
+    for (const auto& [id, fingerprint] : records) {
+        if (keys.contains(id) || !fingerprints.insert(fingerprint).second)
+            throw std::runtime_error("duplicate release signing key");
+        auto public_key = read_evidence_file(evidence / "keys" / (id + ".pub"), 4096);
+        if (public_key_fingerprint(public_key) != fingerprint)
+            throw std::runtime_error("release signer fingerprint differs from keyring");
+        keys.emplace(id, std::move(public_key));
+    }
+    const auto claim_bytes = read_evidence_file(evidence / "runtime-library-authorization.json");
+    const auto claim = object(parse_evidence_json(claim_bytes),
+        {"schemaVersion", "kind", "runtimeVersion", "runtimeIdentity", "runtimeLibrarySha256",
+         "variantBundleSha256", "variantManifestSha256", "aggregateManifestSha256",
+         "variantAttestationSha256", "aggregateAttestationSha256", "signing"});
+    if (integer(claim, "schemaVersion") != 1 ||
+        string(claim, "kind") != "desktop-runtime-library-authorization")
+        throw std::runtime_error("invalid external Runtime library authorization");
+    for (const auto field : {"runtimeLibrarySha256", "variantBundleSha256", "variantManifestSha256",
+        "aggregateManifestSha256", "variantAttestationSha256", "aggregateAttestationSha256"})
+        require_sha256(string(claim, field));
+    if (string(claim, "runtimeLibrarySha256") != snapshot.digest)
+        throw std::runtime_error("external Runtime private snapshot differs from signed authorization");
+    const auto signing = object(claim.at("signing"),
+        {"algorithm", "namespace", "trustDomain", "keyId", "fingerprint"});
+    const auto signer = keys.find(string(signing, "keyId"));
+    if (string(signing, "algorithm") != "ssh-ed25519" ||
+        string(signing, "namespace") != "codex-agent-product-v1" ||
+        string(signing, "trustDomain") != "release" || signer == keys.end() ||
+        public_key_fingerprint(signer->second) != string(signing, "fingerprint")) {
+        throw std::runtime_error("external Runtime authorization signer is not delegated");
+    }
+    verify_sshsig(claim_bytes, read_evidence_file(evidence / "runtime-library-authorization.sig"),
+        signer->second, "codex-agent-product-v1", "codex-agent-product");
+    std::set<std::string> expected{
+        "release-keyring.json", "root-delegation.json", "root-delegation.sig",
+        "runtime-library-authorization.json", "runtime-library-authorization.sig"};
+    for (const auto& [id, ignored] : keys) { (void)ignored; expected.insert("keys/" + id + ".pub"); }
+    std::set<std::string> actual;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(evidence)) {
+        const auto relative = entry.path().lexically_relative(evidence).generic_string();
+        if (entry.is_symlink()) throw std::runtime_error("external Runtime evidence contains a symbolic entry");
+        if (entry.is_directory()) {
+            if (relative != "keys") throw std::runtime_error("external Runtime evidence contains an extra directory");
+        } else if (entry.is_regular_file()) {
+            actual.insert(relative);
+        } else throw std::runtime_error("external Runtime evidence contains a nonregular entry");
+    }
+    if (actual != expected) throw std::runtime_error("external Runtime evidence has extra or missing files");
+    const auto identity = claim.at("runtimeIdentity");
+    const auto identity_fields = object(identity,
+        {"schemaVersion", "componentId", "runtimeCompatibilityVersion", "contractDigest",
+         "contractComponentDigest", "cAbiVersion", "target", "appServerVersion", "buildInputDigest"});
+    for (const auto field : {"componentId", "contractDigest", "contractComponentDigest", "buildInputDigest"})
+        require_sha256(string(identity_fields, field));
+    const auto abi = version(string(identity_fields, "cAbiVersion"));
+    (void)version(string(identity_fields, "appServerVersion"));
+    if (integer(identity_fields, "schemaVersion") != compatibility.identity_schema ||
+        string(identity_fields, "target") != host_target() ||
+        string(identity_fields, "contractDigest") != compatibility.contract_digest ||
+        !in_range(string(claim, "runtimeVersion"), compatibility.release_range) ||
+        !in_range(string(identity_fields, "runtimeCompatibilityVersion"), compatibility.compatibility_range) ||
+        abi[0] != static_cast<unsigned>(compatibility.abi_major) ||
+        abi[1] < static_cast<unsigned>(compatibility.abi_minor) ||
+        abi[0] > 255 || abi[1] > 255 || abi[2] > 65535) {
+        throw std::runtime_error("external Runtime authorization is incompatible with this SDK");
+    }
+    return identity;
+}
+
 void configure_native_library(const std::filesystem::path& path) {
     const auto canonical = safe_absolute_file(path, "configured native runtime");
     auto& loader = state();
@@ -859,6 +1164,9 @@ void configure_native_library(const std::filesystem::path& path) {
 #ifdef CODEX_AGENT_NATIVE_LOADER_TEST_HOOK
 void set_native_loader_test_hook(void (*hook)(const std::filesystem::path&)) {
     loader_test_hook.store(hook);
+}
+void set_native_loader_test_root(std::string root_public) {
+    loader_test_root_public = std::move(root_public);
 }
 #endif
 
@@ -876,6 +1184,9 @@ void* resolve_native_symbol(NativeSymbol requested, std::string_view default_lib
         const auto source = embedded ? default_path : loader.configured;
         (void)safe_absolute_file(source, "selected native runtime");
         auto selected = snapshot(source);
+        std::optional<Json> signed_identity;
+        if (!embedded) signed_identity = verify_external_runtime_evidence(
+            source, compatibility_file, compatibility, selected);
         if (embedded) {
             if (selected.digest != compatibility.library_sha256) {
                 throw std::runtime_error("embedded native runtime hash mismatch");
@@ -883,7 +1194,8 @@ void* resolve_native_symbol(NativeSymbol requested, std::string_view default_lib
         }
         loader.library = open_library(selected);
         try {
-            validate_identity(loader.library, compatibility, embedded);
+            validate_identity(loader.library, compatibility, embedded,
+                signed_identity ? &*signed_identity : nullptr);
         } catch (...) {
 #ifdef _WIN32
             FreeLibrary(static_cast<HMODULE>(loader.library));

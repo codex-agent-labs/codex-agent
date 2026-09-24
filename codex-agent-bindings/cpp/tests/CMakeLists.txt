@@ -81,8 +81,26 @@ add_custom_command(
     VERBATIM
 )
 add_custom_target(codex_agent_loader_compatibility DEPENDS "${CODEX_AGENT_LOADER_COMPATIBILITY}")
+add_library(codex_agent_loader_test_hooks STATIC ../src/native_loader.cpp)
+target_compile_features(codex_agent_loader_test_hooks PUBLIC cxx_std_20)
+target_compile_definitions(codex_agent_loader_test_hooks PRIVATE CODEX_AGENT_NATIVE_LOADER_TEST_HOOK)
+target_include_directories(codex_agent_loader_test_hooks PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include" "${CodexAgent_C_SDK_INCLUDE_DIR}")
+if(CMAKE_DL_LIBS)
+    target_link_libraries(codex_agent_loader_test_hooks PUBLIC ${CMAKE_DL_LIBS})
+endif()
+if(MSVC)
+    target_compile_options(codex_agent_loader_test_hooks PRIVATE /W4 /WX)
+else()
+    target_compile_options(codex_agent_loader_test_hooks PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
 add_executable(codex_agent_native_loader_test native_loader_test.cpp)
-target_link_libraries(codex_agent_native_loader_test PRIVATE CodexAgent::Loader)
+target_link_libraries(codex_agent_native_loader_test PRIVATE codex_agent_loader_test_hooks)
+if(UNIX)
+    add_test(NAME codex_agent_native_loader_no_test_root_symbol COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/test_no_test_root_symbol.py"
+        "${CMAKE_NM}" $<TARGET_FILE:CodexAgentLoader>)
+endif()
 add_dependencies(codex_agent_native_loader_test codex_agent_loader_compatibility
     codex_agent_loader_external codex_agent_loader_old_abi
     codex_agent_loader_abi_mismatch
@@ -99,6 +117,18 @@ add_test(NAME codex_agent_native_loader_hash_mismatch COMMAND codex_agent_native
 add_test(NAME codex_agent_native_loader_external_component COMMAND codex_agent_native_loader_test
     $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" external-component
     $<TARGET_FILE:codex_agent_loader_external>)
+add_test(NAME codex_agent_native_loader_external_no_evidence COMMAND codex_agent_native_loader_test
+    $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" external-no-evidence
+    $<TARGET_FILE:codex_agent_loader_external>)
+if(UNIX)
+    add_test(NAME codex_agent_native_loader_signed_external COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/test_signed_external_loader.py"
+        $<TARGET_FILE:codex_agent_native_loader_test>
+        $<TARGET_FILE:codex_agent_loader_valid>
+        "${CODEX_AGENT_LOADER_COMPATIBILITY}"
+        $<TARGET_FILE:codex_agent_loader_external>
+        "${CodexAgent_NATIVE_CLASSIFIER}")
+endif()
 add_test(NAME codex_agent_native_loader_old_abi COMMAND codex_agent_native_loader_test
     $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" failure
     $<TARGET_FILE:codex_agent_loader_old_abi>)

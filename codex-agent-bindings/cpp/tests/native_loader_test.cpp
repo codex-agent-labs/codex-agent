@@ -21,6 +21,8 @@ using AbiCompatible = std::int32_t(CODEX_AGENT_CALL*)(std::uint32_t);
 namespace loader_test_hook {
 std::atomic_bool attempted{}, changed{};
 
+void record_open(const std::filesystem::path&) { attempted = true; }
+
 void reject_ordinary_snapshot_replacement(const std::filesystem::path& snapshot) {
     attempted = true;
     std::error_code error;
@@ -43,6 +45,7 @@ void reject_ordinary_snapshot_replacement(const std::filesystem::path& snapshot)
 
 namespace codex_agent::detail {
 void set_native_loader_test_hook(void (*hook)(const std::filesystem::path&));
+void set_native_loader_test_root(std::string root_public);
 }
 
 namespace {
@@ -232,17 +235,34 @@ int execute(
 }
 
 int main(int argc, char** argv) {
-    if (argc < 4 || argc > 5) return 64;
+    if (argc < 4 || argc > 6) return 64;
     const auto mode = std::string_view(argv[3]);
-    const auto expect_success = mode == "success" || mode == "external-component" ||
-        mode == "compatible-patch" ||
-        mode == "valid-sdk-prerelease" || mode == "snapshot-aba";
+    const auto expect_success = mode == "success" || mode == "valid-sdk-prerelease" ||
+        mode == "snapshot-aba" || mode == "signed-external";
     const auto symlink_mode = mode == "parent-symlink-library" || mode == "final-symlink-library" ||
         mode == "parent-symlink-compatibility" || mode == "final-symlink-compatibility";
     bool hostile_link_prepared = false;
-    const std::filesystem::path external = argc == 5 ? argv[4] : "";
+    const std::filesystem::path external = argc >= 5 ? argv[4] : "";
+    if (argc == 6) {
+        std::ifstream root(argv[5], std::ios::binary);
+        if (!root) return 64;
+        codex_agent::detail::set_native_loader_test_root(
+            std::string(std::istreambuf_iterator<char>(root), {}));
+    }
+    if (mode == "external-no-evidence") {
+        if (argc != 5) return 64;
+        loader_test_hook::attempted = false;
+        codex_agent::detail::set_native_loader_test_hook(loader_test_hook::record_open);
+    }
+    if (mode == "signed-wrong-root" || mode == "signed-bad-signature" ||
+        mode == "signed-bad-library" || mode == "signed-identity-mismatch" ||
+        mode == "signed-abi-width") {
+        if (argc != 6) return 64;
+        loader_test_hook::attempted = false;
+        codex_agent::detail::set_native_loader_test_hook(loader_test_hook::record_open);
+    }
     try {
-        const auto result = execute(argv[1], argv[2], mode, argc == 5 ? &external : nullptr,
+        const auto result = execute(argv[1], argv[2], mode, argc >= 5 ? &external : nullptr,
                                     hostile_link_prepared);
         if (!expect_success) {
             std::cerr << "loader unexpectedly accepted incompatible input\n";
@@ -250,9 +270,28 @@ int main(int argc, char** argv) {
         }
         return result;
     } catch (const std::exception& error) {
+        const auto signed_failure = mode == "signed-wrong-root" || mode == "signed-bad-signature" ||
+            mode == "signed-bad-library" || mode == "signed-identity-mismatch" ||
+            mode == "signed-abi-width";
+        const auto expected_message = mode == "signed-wrong-root" ? "SDK root" :
+            mode == "signed-bad-signature" ? "signature verification failed" :
+            mode == "signed-bad-library" ? "private snapshot differs" :
+            mode == "signed-abi-width" ? "authorization is incompatible" : "loaded Runtime identity differs";
+        if (signed_failure &&
+            (loader_test_hook::attempted != (mode == "signed-identity-mismatch") ||
+             std::string_view(error.what()).find(expected_message) == std::string_view::npos)) {
+            std::cerr << "signed override was not rejected before dynamic loading: " << error.what() << '\n';
+            return 1;
+        }
+        if (mode == "external-no-evidence" &&
+            (loader_test_hook::attempted ||
+             std::string_view(error.what()).find("trusted release evidence") == std::string_view::npos)) {
+            std::cerr << "external override was not rejected before dynamic loading: " << error.what() << '\n';
+            return 1;
+        }
         if (mode == "abi-width-alias" &&
-            std::string_view(error.what()) != "native runtime ABI identity exceeds encoded field width") {
-            std::cerr << "ABI alias rejected for the wrong reason: " << error.what() << '\n';
+            std::string_view(error.what()).find("trusted release evidence") == std::string_view::npos) {
+            std::cerr << "unsigned ABI alias was not rejected at the evidence gate: " << error.what() << '\n';
             return 1;
         }
         if (symlink_mode && !hostile_link_prepared) {

@@ -48,6 +48,8 @@ if(CodexAgent_C_SDK_ROOT)
     set(CodexAgent_C_SDK_LIBRARY "${CodexAgent_C_SDK_ROOT}/${CODEX_AGENT_C_SDK_LIBRARY_RELATIVE}")
     set(CodexAgent_SDK_COMPATIBILITY
         "${CodexAgent_C_SDK_ROOT}/share/CodexAgent/native/sdk-compatibility.json")
+    set(CodexAgent_SDK_RUNTIME_ROOT
+        "${CodexAgent_C_SDK_ROOT}/share/CodexAgent/native/sdk-runtime-root.pub")
     foreach(required
         "${CodexAgent_C_SDK_INCLUDE_DIR}/codex_agent.h"
         "${CodexAgent_C_SDK_LIBRARY}"
@@ -168,9 +170,12 @@ if(NOT CodexAgent_C_SDK_LIBRARY AND NOT CODEX_AGENT_CPP_BUILD_TESTS)
     message(FATAL_ERROR "Set CodexAgent_C_SDK_LIBRARY to the verified native C SDK library")
 endif()
 if(CODEX_AGENT_CPP_BUILD_TESTS)
-    target_compile_definitions(CodexAgentLoader PRIVATE CODEX_AGENT_NATIVE_LOADER_TEST_HOOK)
     enable_testing()
     add_subdirectory(tests)
+    get_target_property(_codex_agent_release_loader_definitions CodexAgentLoader COMPILE_DEFINITIONS)
+    if(_codex_agent_release_loader_definitions MATCHES "CODEX_AGENT_NATIVE_LOADER_TEST_HOOK")
+        message(FATAL_ERROR "Installable CodexAgentLoader must not contain test trust-root hooks")
+    endif()
 endif()
 
 set(_codex_agent_install_default OFF)
@@ -203,6 +208,10 @@ if(CODEX_AGENT_CPP_INSTALL_PACKAGE)
         FILES "${CodexAgent_SDK_COMPATIBILITY}"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/CodexAgent/native"
     )
+    if(EXISTS "${CodexAgent_SDK_RUNTIME_ROOT}")
+        install(FILES "${CodexAgent_SDK_RUNTIME_ROOT}"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/CodexAgent/native")
+    endif()
     install(
         FILES src/native_loader.cpp tools/generate_native_dispatch.py
         DESTINATION "${CMAKE_INSTALL_DATADIR}/CodexAgent/loader"
@@ -213,6 +222,11 @@ if(CODEX_AGENT_CPP_INSTALL_PACKAGE)
     )
 
     file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/src/native_loader.cpp" CODEX_AGENT_CPP_LOADER_SOURCE_SHA256)
+    if(EXISTS "${CodexAgent_SDK_RUNTIME_ROOT}")
+        file(SHA256 "${CodexAgent_SDK_RUNTIME_ROOT}" CODEX_AGENT_SDK_RUNTIME_ROOT_SHA256)
+    else()
+        set(CODEX_AGENT_SDK_RUNTIME_ROOT_SHA256 "")
+    endif()
     configure_package_config_file(
         cmake/CodexAgentConfig.cmake.in
         "${CMAKE_CURRENT_BINARY_DIR}/CodexAgentConfig.cmake"

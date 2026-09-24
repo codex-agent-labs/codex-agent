@@ -5,6 +5,8 @@ set(CodexAgent_C_SDK_INCLUDE_DIR "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDI
 set(CodexAgent_C_SDK_LIBRARY "${PACKAGE_PREFIX_DIR}/@CODEX_AGENT_C_SDK_LIBRARY_RELATIVE@")
 set(CodexAgent_SDK_COMPATIBILITY
     "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_DATADIR@/CodexAgent/native/sdk-compatibility.json")
+set(CodexAgent_SDK_RUNTIME_ROOT
+    "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_DATADIR@/CodexAgent/native/sdk-runtime-root.pub")
 set(CodexAgent_CPP_LOADER_SOURCE
     "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_DATADIR@/CodexAgent/loader/native_loader.cpp")
 
@@ -24,6 +26,10 @@ set(_codex_agent_verified_files
     "${CodexAgent_SDK_COMPATIBILITY}|@CODEX_AGENT_SDK_COMPATIBILITY_SHA256@"
     "${CodexAgent_CPP_LOADER_SOURCE}|@CODEX_AGENT_CPP_LOADER_SOURCE_SHA256@"
 )
+if(NOT "@CODEX_AGENT_SDK_RUNTIME_ROOT_SHA256@" STREQUAL "")
+    list(APPEND _codex_agent_verified_files
+        "${CodexAgent_SDK_RUNTIME_ROOT}|@CODEX_AGENT_SDK_RUNTIME_ROOT_SHA256@")
+endif()
 if(CodexAgent_NATIVE_CLASSIFIER MATCHES "^linux-")
     list(APPEND _codex_agent_verified_files
         "${PACKAGE_PREFIX_DIR}/lib/libcodex_agent.so.1|@CODEX_AGENT_C_SDK_SONAME_SHA256@")
