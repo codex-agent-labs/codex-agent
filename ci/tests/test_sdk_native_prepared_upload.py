@@ -212,6 +212,18 @@ class SdkNativePreparedUploadTest(unittest.TestCase):
                 self.plan_path.write_bytes(self.original_plan)
                 self.phase = deepcopy(original_phase)
 
+    def test_late_copy_of_original_source_cannot_publish(self):
+        publisher = capture.publish_regular_tree
+
+        def mutate(source, destination, **kwargs):
+            original = Path(source) / "original/prepared-sources/python/opaque-source"
+            original.write_bytes(original.read_bytes() + b"changed after final check\n")
+            return publisher(source, destination, **kwargs)
+
+        with patch.object(capture, "publish_regular_tree", side_effect=mutate), self.assertRaises(ValueError):
+            self.call()
+        self.assertFalse(self.output.exists())
+
     def test_output_cannot_overlap_or_alias_original_source(self):
         link = self.work / "linked"
         link.symlink_to(self.root, target_is_directory=True)

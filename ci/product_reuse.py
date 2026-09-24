@@ -545,12 +545,17 @@ def capture_contract_original_ci_phases(
         root = Path(temporary).resolve()
         prepared = root / "captured"
         capture = prepared / "contract-input"
+        capture_files = regular_file_inventory(source)
         snapshot_regular_tree(source, capture)
+        if regular_file_inventory(capture) != capture_files:
+            raise ValueError("Original Contract capture changed during source copy")
         _verify_contract_ci_capture(capture, contract_version, with_transport=True)
         originals = {phase: read_regular_file_bytes(capture / f"execution-closure/receipts/{phase}.json",
                      max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) for phase in phases}
         producers = {phase: load_canonical_json_bytes(raw)["producer"] for phase, raw in originals.items()}
         releases = {}
+        release_files = {}
+        policy_files = []
         if release_handoffs:
             policy = prepared / "release-policy"
             policy.mkdir()
@@ -564,9 +569,13 @@ def capture_contract_original_ci_phases(
                 (captured_keys / f"{key_id}.pub").write_bytes(read_regular_file_bytes(
                     public_key_path(keys_directory, key_id), max_bytes=1024 * 1024, reject_symlink_parents=True))
             load_keyring(captured_keyring, captured_keys)
+            policy_files = regular_file_inventory(policy)
             for number, original in enumerate(release_handoffs):
                 retained = prepared / "release-handoffs" / str(number)
+                release_files[number] = regular_file_inventory(original)
                 snapshot_regular_tree(original, retained)
+                if regular_file_inventory(retained) != release_files[number]:
+                    raise ValueError("Retained Contract handoff changed during source copy")
                 stem = f"codex-agent-contract-{contract_version}"
                 payload = retained / f"{stem}.zip"
                 closure = retained / "execution-closure"
@@ -593,7 +602,7 @@ def capture_contract_original_ci_phases(
             {phase: producers[phase] for phase in ci_phases}, phases=ci_phases,
             trusted_workflow_sha=trusted_workflow_sha, token=token)
         attempts = {(value["run"]["id"], value["run"]["run_attempt"]): value for value in observed}
-        inventories, artifacts = {}, {}
+        inventories, artifacts, shard_files = {}, {}, {}
         for phase in ci_phases:
             producer = producers[phase]
             run_id = producer["runId"]
@@ -624,19 +633,39 @@ def capture_contract_original_ci_phases(
                 raise ValueError("Original Contract upload is outside its original producer job window")
             archive = root / f"{phase}.zip"
             archive.write_bytes(raw)
-            verified_zip_contents(archive, retained_paths=(), **_CATALOG_ZIP_LIMITS)
+            zipped, _, _ = verified_zip_contents(archive, retained_paths=(), **_CATALOG_ZIP_LIMITS)
             shard = prepared / "original-phases" / phase
             safe_extract(archive, shard)
+            if regular_file_inventory(shard) != zipped:
+                raise ValueError("Original Contract phase differs from its exact upload")
             verified = verify_phase_shard(shard, PhaseInstanceId("contract", "contract", phase, "common"))
             if verified["receiptBytes"] != originals[phase]:
                 raise ValueError(f"Original Contract {phase} upload differs from the retained phase receipt")
             artifacts[phase] = artifact
+            shard_files[phase] = zipped
         evidence = {"observed": observed, "artifacts": artifacts,
                     "receiptSha256s": {phase: sha256_bytes(raw) for phase, raw in originals.items()}}
         if release_handoffs:
             evidence["releaseAttestations"] = releases
         write_canonical_json(prepared / "transport/original-ci-phases.json", evidence)
-        publish_regular_tree(prepared, destination)
+        evidence_bytes = canonical_json_bytes(evidence)
+        expected_files = [
+            *({**record, "relativePath": f"contract-input/{record['relativePath']}"} for record in capture_files),
+            *({**record, "relativePath": f"release-policy/{record['relativePath']}"} for record in policy_files),
+            *({**record, "relativePath": f"release-handoffs/{number}/{record['relativePath']}"}
+              for number, records in release_files.items() for record in records),
+            *({**record, "relativePath": f"original-phases/{phase}/{record['relativePath']}"}
+              for phase, records in shard_files.items() for record in records),
+            {"relativePath": "transport/original-ci-phases.json", "bytes": len(evidence_bytes),
+             "sha256": sha256_bytes(evidence_bytes)},
+        ]
+        expected_files.sort(key=lambda record: record["relativePath"])
+        if (regular_file_inventory(source) != capture_files
+                or any(regular_file_inventory(original) != release_files[number]
+                       for number, original in enumerate(release_handoffs))
+                or regular_file_inventory(prepared) != expected_files):
+            raise ValueError("Original Contract capture changed before publication")
+        publish_regular_tree(prepared, destination, expected_inventory=expected_files)
     return evidence
 
 
@@ -4592,13 +4621,23 @@ def capture_runtime_supervisor_upload(
         private = Path(temporary).resolve()
         archive = private / "transport.zip"
         archive.write_bytes(raw)
-        verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+        zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
         prepared = private / "captured"
         safe_extract(archive, prepared / "original")
+        if regular_file_inventory(prepared / "original", allow_empty=True) != zipped:
+            raise ValueError("Runtime supervisor extraction differs from its exact upload")
         evidence = {"artifact": artifact, "captureProducer": producer, "observed": observed,
                     "buildKey": expected_build_key}
         write_canonical_json(prepared / "capture-transport.json", evidence)
-        publish_regular_tree(prepared, destination, allow_empty=True)
+        evidence_bytes = canonical_json_bytes(evidence)
+        expected_files = sorted([
+            {"relativePath": "capture-transport.json", "bytes": len(evidence_bytes),
+             "sha256": sha256_bytes(evidence_bytes)},
+            *({**record, "relativePath": f"original/{record['relativePath']}"} for record in zipped),
+        ], key=lambda record: record["relativePath"])
+        if sha256_file(archive) != artifact_sha256 or regular_file_inventory(prepared, allow_empty=True) != expected_files:
+            raise ValueError("Runtime supervisor upload changed before publication")
+        publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected_files)
     return evidence
 
 
@@ -5133,13 +5172,22 @@ def capture_sdk_javascript_validation_upload(plan_path, destination, *, validati
             "validationReceiptSha256": sha256_bytes(receipt_bytes),
             "originalConsumerDirectory": str(path / "codex-agent-sdk/build/npm/consumer")}
         write_canonical_json(prepared / "capture-transport.json", transport)
+        transport_bytes = canonical_json_bytes(transport)
+        expected_files = sorted([
+            {"relativePath": "plan/impact-plan.json", "bytes": len(plan_bytes), "sha256": sha256_bytes(plan_bytes)},
+            {"relativePath": "transport.zip", "bytes": len(raw), "sha256": artifact_sha256},
+            {"relativePath": "capture-transport.json", "bytes": len(transport_bytes),
+             "sha256": sha256_bytes(transport_bytes)},
+            *({**record, "relativePath": f"original/{record['relativePath']}"} for record in zipped),
+        ], key=lambda record: record["relativePath"])
         if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes
                 or read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != receipt_bytes
                 or captured_plan.read_bytes() != plan_bytes or sha256_file(archive) != artifact_sha256
-                or regular_file_inventory(original, allow_empty=True) != zipped):
+                or regular_file_inventory(original, allow_empty=True) != zipped
+                or regular_file_inventory(prepared, allow_empty=True) != expected_files):
             raise ValueError("JavaScript validation original inputs or upload changed before publication")
         output_safe()
-        publish_regular_tree(prepared, destination, allow_empty=True)
+        publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected_files)
     return transport
 
 
@@ -5219,13 +5267,22 @@ def capture_sdk_native_prepared_upload(plan_path, destination, *, expected_phase
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed,
                      "phasePlan": phase}
         write_canonical_json(prepared / "capture-transport.json", transport)
+        transport_bytes = canonical_json_bytes(transport)
+        expected_files = sorted([
+            {"relativePath": "plan/impact-plan.json", "bytes": len(plan_bytes), "sha256": sha256_bytes(plan_bytes)},
+            {"relativePath": "transport.zip", "bytes": len(raw), "sha256": artifact_sha256},
+            {"relativePath": "capture-transport.json", "bytes": len(transport_bytes),
+             "sha256": sha256_bytes(transport_bytes)},
+            *({**record, "relativePath": f"original/{record['relativePath']}"} for record in zipped),
+        ], key=lambda record: record["relativePath"])
         if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes
                 or captured_plan.read_bytes() != plan_bytes or canonical_json_bytes(expected_phase_plan) != phase_bytes
                 or sha256_file(archive) != artifact_sha256
-                or regular_file_inventory(original, allow_empty=True) != zipped):
+                or regular_file_inventory(original, allow_empty=True) != zipped
+                or regular_file_inventory(prepared, allow_empty=True) != expected_files):
             raise ValueError("Native preparation original plan or upload changed before publication")
         output_safe()
-        publish_regular_tree(prepared, destination, allow_empty=True)
+        publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected_files)
     return transport
 
 

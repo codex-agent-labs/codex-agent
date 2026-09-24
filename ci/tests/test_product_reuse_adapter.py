@@ -381,6 +381,29 @@ class ContractCiArtifactCaptureTest(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
 
+class ContractOriginalCiPublicationTest(unittest.TestCase):
+    def test_late_original_transport_mutation_cannot_publish(self):
+        from ci.tests.test_contract_ci_originals import ContractOriginalCiCaptureTest
+
+        fixture = ContractOriginalCiCaptureTest(
+            "test_cli_captures_exact_original_shards_and_preserves_all_inputs")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        actual_publish = product_inventory.publish_regular_tree
+
+        def mutate_before_copy(source, destination, **kwargs):
+            transport = Path(source) / "transport/original-ci-phases.json"
+            evidence = product_inventory.load_canonical_json_bytes(transport.read_bytes())
+            evidence["artifacts"]["binary"]["id"] = 999
+            transport.write_bytes(canonical_json_bytes(evidence))
+            return actual_publish(source, destination, **kwargs)
+
+        with mock.patch.object(product_reuse, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            fixture.capture()
+        self.assertFalse(fixture.output.exists())
+
+
 class ProductReuseAdapterTest(unittest.TestCase):
     def test_catalog_accepts_object_bound_and_rejects_oversized_member_before_extraction(self) -> None:
         limits = product_reuse._CATALOG_ZIP_LIMITS
