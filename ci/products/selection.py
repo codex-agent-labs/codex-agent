@@ -975,6 +975,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         return _runtime(("macos-arm64",), "validation").union(*(
             _from_phase("sdk", language, "package") for language in NATIVE_BINDINGS
         ))
+    if path == "ci/products/sdk_runtime_root.py":
+        return _bindings(NATIVE_BINDINGS)
     if path == "ci/products/runtime_attestation.py":
         return _runtime(NATIVE_TARGETS, "metadata") | _bindings(
             ("sdk-core", "sdk-android", "sdk-ios", *NATIVE_BINDINGS, "javascript")

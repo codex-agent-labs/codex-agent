@@ -1564,6 +1564,12 @@ class ProductSelectionTest(unittest.TestCase):
         )
         self.assertTrue(all(instance.phase in {"package", "validation", "metadata"} for instance in sdk.instances))
 
+        root = classify_paths(["ci/products/sdk_runtime_root.py"])
+        self.assertEqual(set(NATIVE_BINDINGS), {instance.component for instance in root.instances})
+        self.assertTrue(all(instance.product == "sdk" and instance.phase in {
+            "package", "validation", "metadata",
+        } for instance in root.instances))
+
     def test_sdk_package_and_runtime_identity_tools_have_exact_product_owners(self) -> None:
         maven = classify_paths(["ci/products/sdk_maven.py"])
         self.assertEqual(
