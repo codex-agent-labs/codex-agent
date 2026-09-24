@@ -45,6 +45,45 @@ void main() {
     );
   });
 
+  test('0.8.x accepts a compatible external Runtime only', () {
+    final runtime = _runtime(declaration);
+    runtime['compatibleReleaseRange'] = '>=0.8.0 <0.9.0';
+    runtime['compatibleRuntimeCompatibilityRange'] = '>=0.8.0 <0.9.0';
+    runtime['defaultRuntimeVersion'] = '0.8.0';
+    final compatibility = _writeCompatibility(temporary, declaration);
+    final target = currentClassifier();
+    final embedded = compatibility.embeddedVariants[target]!;
+
+    compatibility.verifyRuntimeIdentity(
+      _identity(target, componentId: _digestA, version: '0.8.5'),
+      target,
+      embedded: false,
+    );
+    for (final version in const ['0.7.9', '0.9.0']) {
+      expect(
+        () => compatibility.verifyRuntimeIdentity(
+          _identity(target, componentId: _digestA, version: version),
+          target,
+          embedded: false,
+        ),
+        throwsA(isA<CodexException>()),
+      );
+    }
+    expect(
+      () => compatibility.verifyRuntimeIdentity(
+        _identity(target, componentId: _digestA, version: '0.8.5'),
+        target,
+        embedded: true,
+      ),
+      throwsA(isA<CodexException>()),
+    );
+    compatibility.verifyRuntimeIdentity(
+      _identity(target, componentId: embedded.componentId, version: '0.8.0'),
+      target,
+      embedded: true,
+    );
+  });
+
   test('embedded bytes are authenticated and external bytes may differ', () {
     final library = File('${temporary.path}/runtime')
       ..writeAsStringSync('runtime');
@@ -186,7 +225,8 @@ void main() {
       (value) => _runtime(value)['defaultRuntimeVersion'] = '0.3.0',
     );
     expectRejected(
-      (value) => _runtime(value)['requiredContractDigest'] = _wrongContractDigest,
+      (value) =>
+          _runtime(value)['requiredContractDigest'] = _wrongContractDigest,
     );
     expectRejected((value) {
       final variants = _runtime(value)['embeddedVariants']! as List<Object?>;
@@ -466,16 +506,20 @@ Map<String, Object?> _runtime(Map<String, Object?> value) =>
     value['runtime']! as Map<String, Object?>;
 
 String get _wrongContractDigest =>
-    RuntimeCompatibility.load().contractDigest == _digestA ? _digestB : _digestA;
+    RuntimeCompatibility.load().contractDigest == _digestA
+        ? _digestB
+        : _digestA;
 
-String _identity(String target, {required String componentId}) => jsonEncode({
+String _identity(String target,
+        {required String componentId, String version = '0.2.0'}) =>
+    jsonEncode({
       'appServerVersion': '0.149.0',
       'buildInputDigest': _digestB,
       'cAbiVersion': '1.13.0',
       'componentId': componentId,
       'contractComponentDigest': _digestA,
       'contractDigest': RuntimeCompatibility.load().contractDigest,
-      'runtimeCompatibilityVersion': '0.2.0',
+      'runtimeCompatibilityVersion': version,
       'schemaVersion': 1,
       'target': target,
     });
