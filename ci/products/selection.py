@@ -251,7 +251,9 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/sdk_core_original_selection.py",
     "ci/products/sdk_javascript_validation_phase.py",
     "ci/products/sdk_phase10_maven.py",
+    "ci/products/runtime_library_authorization.py",
     "ci/runtime_phase10_sidecar_caller.py",
+    "ci/runtime_phase10_library_caller.py",
     "ci/runtime_phase11_bytes.py",
     "ci/sdk_android_archive_provision.py",
     "ci/sdk_android_core14_caller.py",
@@ -606,6 +608,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     }:
         return _from_phase("contract", "contract", "metadata")
     if path in {"ci/products/runtime_phase10_maven.py", "ci/runtime_phase10_sidecar_caller.py",
+                "ci/products/runtime_library_authorization.py", "ci/runtime_phase10_library_caller.py",
                 "ci/runtime_phase11_bytes.py"}:
         return _from_phase("runtime", "runtime-aggregate", "metadata")
     if path == "ci/products/sdk_phase10_maven.py":

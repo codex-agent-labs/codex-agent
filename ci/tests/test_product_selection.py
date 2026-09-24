@@ -64,6 +64,8 @@ class ProductSelectionTest(unittest.TestCase):
         cases = {
             "ci/contract_phase11_bytes.py": {PhaseInstanceId("contract", "contract", "metadata", "common")},
             "ci/products/runtime_phase10_maven.py": {PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")},
+            "ci/products/runtime_library_authorization.py": {PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")},
+            "ci/runtime_phase10_library_caller.py": {PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")},
             "ci/products/sdk_phase10_maven.py": {
                 PhaseInstanceId("sdk", "sdk-core", "metadata", "common"),
                 PhaseInstanceId("sdk", "sdk-android", "metadata", "android"),
