@@ -53,6 +53,7 @@ class ContractIsolationFixtureTest {
                 .withProjectDir(fixture.resolve("gradle/build-logic"))
                 .withArguments(
                     "compileKotlin",
+                    "--offline",
                     "--configuration-cache",
                     "--configuration-cache-problems=fail",
                     "--stacktrace",
@@ -139,6 +140,7 @@ class ContractIsolationFixtureTest {
                 .withProjectDir(fixture)
                 .withArguments(
                     "verifyContract",
+                    "--offline",
                     "--configuration-cache",
                     "--configuration-cache-problems=fail",
                     "--stacktrace",
@@ -250,6 +252,7 @@ class ContractIsolationFixtureTest {
                 ).forEachIndexed { index, selector ->
                     val arguments = mutableListOf(
                         selector,
+                        "--offline",
                         "--continue",
                         "--configuration-cache",
                         "--configuration-cache-problems=fail",
@@ -295,6 +298,7 @@ class ContractIsolationFixtureTest {
                 .withProjectDir(fixture)
                 .withArguments(
                     "deleteLegacyContractDevelopmentKey",
+                    "--offline",
                     "--configuration-cache",
                     "--configuration-cache-problems=fail",
                     "--stacktrace",
