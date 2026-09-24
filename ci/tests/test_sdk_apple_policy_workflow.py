@@ -82,7 +82,8 @@ class SdkApplePolicyWorkflowTest(unittest.TestCase):
         replay = re.compile(r'python3[^\n]*(?:'
             r'ci/product_reuse\.py (?:advance-contract|resume-products|execute-runtime-[a-z-]+)|'
             r'ci/runtime_workflow\.py (?:matrix|continuation)|'
-            r'-m ci\.(?:sdk_workflow|sdk_completion)\b)')
+            r'-m ci\.sdk_workflow --plan\b|'
+            r'-m ci\.sdk_completion\b)')
         count = 0
         for name, job in self.jobs.items():
             for step in self.steps(job):
@@ -93,7 +94,8 @@ class SdkApplePolicyWorkflowTest(unittest.TestCase):
                     self.assertIn('SDK_APPLE_VALIDATION_POLICY: ${{ ' + self.policy_output(job) + ' }}', step)
                     if 'inspected = inspect_products(' in step:
                         self.assertIn("tooling['sdk_apple_validation_policy'] = _canonical_control(", step)
-                        self.assertIn('environ=os.environ, **tooling)', step)
+                        self.assertIn('environ=os.environ,', step)
+                        self.assertIn("sdk_original_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'], **tooling)", step)
                     else:
                         self.assertIn('--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"', step)
                         self.assertIn('${tooling[@]+"${tooling[@]}"}', step)
@@ -109,7 +111,8 @@ class SdkApplePolicyWorkflowTest(unittest.TestCase):
                               ('sdk-inputs', '-m ci.sdk_workflow --plan'),
                               ('sdk-completion', '-m ci.sdk_completion --plan')):
             step = next(step for step in self.steps(self.jobs[name]) if command in step)
-            selected.append((name, textwrap.dedent(step.split('        run: |\n', 1)[1])))
+            selected.append((name, textwrap.dedent(step.split('        run: |\n', 1)[1])
+                             .replace('${{ inputs.trustedWorkflowSha }}', 'fixture-caller-workflow-sha')))
         with tempfile.TemporaryDirectory(prefix='apple-policy-workflow-') as temporary:
             root = Path(temporary)
             stub = root / 'python3'
@@ -126,7 +129,8 @@ class SdkApplePolicyWorkflowTest(unittest.TestCase):
                             environment.update(PATH=str(root), RECORDED_ARGS=str(recorded), CHILD_STATUS=str(status),
                                 GITHUB_OUTPUT=str(output), GITHUB_WORKSPACE=str(root / 'checkout'),
                                 SDK_SOURCE='released-default', SDK_VALIDATION_TOOLING='/caller policies/tooling.json',
-                                SDK_APPLE_VALIDATION_POLICY=policy, BUILD_KEY='sha256:' + 'a' * 64)
+                                SDK_APPLE_VALIDATION_POLICY=policy, BUILD_KEY='sha256:' + 'a' * 64,
+                                TRUSTED_WORKFLOW_SHA='fixture-caller-workflow-sha')
                             completed = subprocess.run([shutil.which('bash'), '-e', '-c', script], env=environment,
                                                        capture_output=True, text=True, cwd=root)
                             self.assertEqual(status, completed.returncode, completed.stderr)
@@ -156,7 +160,8 @@ class SdkApplePolicyWorkflowTest(unittest.TestCase):
             policy_path.write_bytes(canonical_json_bytes(policy))
             for selected in ('', str(policy_path)):
                 environment = {key: str(root / key) for key in ('PLAN', 'DISCOVERY', 'STATE', 'GITHUB_OUTPUT')}
-                environment.update(SDK_VALIDATION_TOOLING='', SDK_APPLE_VALIDATION_POLICY=selected)
+                environment.update(SDK_VALIDATION_TOOLING='', SDK_APPLE_VALIDATION_POLICY=selected,
+                                   TRUSTED_WORKFLOW_SHA='fixture-caller-workflow-sha')
                 with self.subTest(policy=selected), patch.dict(os.environ, environment, clear=True), \
                         patch.object(product_reuse, 'inspect_products', return_value={'readyPlans': []}) as inspect, \
                         patch.object(reuse, 'github_output'), patch.object(Path, 'cwd', return_value=ROOT):
@@ -165,6 +170,8 @@ class SdkApplePolicyWorkflowTest(unittest.TestCase):
                     self.assertEqual(policy, inspect.call_args.kwargs['sdk_apple_validation_policy'])
                 else:
                     self.assertNotIn('sdk_apple_validation_policy', inspect.call_args.kwargs)
+                self.assertEqual('fixture-caller-workflow-sha',
+                                 inspect.call_args.kwargs['sdk_original_workflow_sha'])
                 self.assertEqual(canonical_json_bytes(policy), policy_path.read_bytes())
 
 
