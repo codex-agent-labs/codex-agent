@@ -25,7 +25,9 @@ for (const expectedDefaultRuntimeVersion of ['0.8.0', '0.8.1']) {
   test(`actual installed consumer rejects a changed default when selected default is ${expectedDefaultRuntimeVersion}`, () => {
     const declaration = {
       contract: {}, platformRuntime: {},
-      runtime: { defaultRuntimeVersion: expectedDefaultRuntimeVersion, embeddedVariants: [{}, {}, {}, {}, {}] },
+      runtime: { defaultRuntimeVersion: expectedDefaultRuntimeVersion, embeddedVariants: [
+        'linux-arm64', 'linux-x64', 'macos-arm64', 'macos-x64', 'windows-x64',
+      ].map((target) => ({ target })) },
       schemaVersion: 1, sdkVersion: '0.8.0',
     };
     vm.runInNewContext(`${helpers}\nverifySdkCompatibility(compatibilityBytes);\n${mutation}\n` +
@@ -35,3 +37,21 @@ for (const expectedDefaultRuntimeVersion of ['0.8.0', '0.8.1']) {
     });
   });
 }
+
+test('actual installed consumer rejects duplicate or substituted Runtime targets', () => {
+  const declaration = {
+    contract: {}, platformRuntime: {},
+    runtime: { defaultRuntimeVersion: '0.8.0', embeddedVariants: [
+      'linux-arm64', 'linux-x64', 'macos-arm64', 'macos-x64', 'windows-x64',
+    ].map((target) => ({ target })) },
+    schemaVersion: 1, sdkVersion: '0.8.0',
+  };
+  for (const target of ['macos-arm64', 'unknown-target']) {
+    const changed = structuredClone(declaration);
+    changed.runtime.embeddedVariants[4].target = target;
+    assert.throws(() => vm.runInNewContext(`${helpers}\nverifySdkCompatibility(compatibilityBytes);`, {
+      assert, Buffer, expectedDefaultRuntimeVersion: '0.8.0',
+      compatibilityBytes: Buffer.from(`${JSON.stringify(changed)}\n`),
+    }), /exact five sorted Desktop Runtime targets/);
+  }
+});

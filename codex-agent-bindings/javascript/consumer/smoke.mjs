@@ -64,7 +64,11 @@ function verifySdkCompatibility(bytes) {
     expectedDefaultRuntimeVersion,
     'defaultRuntimeVersion must equal the selected SDK default Runtime',
   );
-  assert.equal(value.runtime.embeddedVariants.length, 5);
+  assert.deepEqual(
+    value.runtime.embeddedVariants.map((variant) => variant.target),
+    ['linux-arm64', 'linux-x64', 'macos-arm64', 'macos-x64', 'windows-x64'],
+    'SDK compatibility must declare the exact five sorted Desktop Runtime targets',
+  );
   return value;
 }
 

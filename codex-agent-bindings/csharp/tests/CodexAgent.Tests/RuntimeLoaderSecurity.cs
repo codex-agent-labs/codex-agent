@@ -62,6 +62,13 @@ internal static class RuntimeLoaderSecurity
         NativeLibraryLoader.ValidateCompatibilityForTests(compatibility);
         NativeLibraryLoader.ValidateIdentityForTests(compatibility, Identity().ToJsonString(), "macos-arm64", true);
 
+        if (NativeLibraryLoader.CheckedIdentitySize(CodexStatus.BufferTooSmall, 2) != 2 ||
+            NativeLibraryLoader.CheckedIdentitySize(CodexStatus.BufferTooSmall, 65536) != 65536)
+            throw new InvalidOperationException("valid Runtime identity size was rejected");
+        Reject<InvalidDataException>(() => NativeLibraryLoader.CheckedIdentitySize(CodexStatus.Ok, 2));
+        Reject<InvalidDataException>(() => NativeLibraryLoader.CheckedIdentitySize(CodexStatus.BufferTooSmall, 1));
+        Reject<InvalidDataException>(() => NativeLibraryLoader.CheckedIdentitySize(CodexStatus.BufferTooSmall, 65537));
+
         var external = Identity();
         external["componentId"] = DifferentDigest(external["componentId"]!.GetValue<string>());
         NativeLibraryLoader.ValidateIdentityForTests(compatibility, external.ToJsonString(), "macos-arm64", false);

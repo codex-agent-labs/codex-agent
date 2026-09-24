@@ -286,9 +286,8 @@ internal static class NativeLibraryLoader
         var identityFunction = (delegate* unmanaged[Cdecl]<byte*, nuint*, CodexStatus>)
             NativeLibrary.GetExport(handle, "codex_agent_runtime_identity");
         nuint required = 0;
-        if (identityFunction(null, &required) != CodexStatus.BufferTooSmall || required < 2)
-            throw new InvalidDataException("Runtime identity size query failed.");
-        var bytes = new byte[checked((int)required)];
+        var status = identityFunction(null, &required);
+        var bytes = new byte[CheckedIdentitySize(status, required)];
         fixed (byte* buffer = bytes)
         {
             var capacity = required;
@@ -311,6 +310,13 @@ internal static class NativeLibraryLoader
         var declared = Semver(String(identity.RootElement, "cAbiVersion"), "Runtime identity ABI");
         var declaredEncoded = checked((uint)((declared.Major << 24) | (declared.Minor << 16) | declared.Build));
         if (actual != declaredEncoded) throw new InvalidDataException("Runtime identity ABI disagrees with the loaded library.");
+    }
+
+    internal static int CheckedIdentitySize(CodexStatus status, nuint required)
+    {
+        if (status != CodexStatus.BufferTooSmall || required < 2 || required > 65536)
+            throw new InvalidDataException("Runtime identity size query failed.");
+        return (int)required;
     }
 
     private static void ValidateIdentity(Compatibility compatibility, JsonElement identity, string target, bool embedded)
