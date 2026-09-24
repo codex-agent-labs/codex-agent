@@ -14,7 +14,7 @@ from typing import Any
 
 from .aggregate import RUNTIME_TARGETS, _compatible_range, _stable_semver_tuple, validate_sdk_compatibility
 from .inventory import (
-    load_canonical_json_bytes,
+    load_canonical_json_bytes, publish_regular_tree,
     public_key_fingerprint,
     read_regular_file_bytes,
     regular_file_inventory,
@@ -22,7 +22,7 @@ from .inventory import (
     require_integer,
     require_sha256,
     sha256_bytes,
-    sha256_file,
+    sha256_file, write_canonical_json,
 )
 from .signatures import (
     NAMESPACE,
@@ -110,6 +110,55 @@ def _verify_sshsig(contents: bytes, signature: bytes, public_key: bytes, *, name
             raise ValueError("OpenSSH signature verifier is unavailable") from error
     if result.returncode != 0:
         raise ValueError("SDK Runtime release signature verification failed")
+
+
+def issue_root_delegation(
+    keyring_path: Path, keys_directory: Path, root_public_key: Path,
+    root_private_key: Path, destination: Path,
+) -> dict[str, Any]:
+    """Publish root-approved signer policy; protected caller owns root-key custody."""
+    keyring_bytes = read_regular_file_bytes(keyring_path, max_bytes=_JSON_LIMIT,
+                                            reject_symlink_parents=True)
+    keyring = validate_keyring(load_canonical_json_bytes(keyring_bytes), keys_directory)
+    root_public_bytes = read_regular_file_bytes(root_public_key, max_bytes=4096,
+                                               reject_symlink_parents=True)
+    delegation = validate_root_delegation({
+        "schemaVersion": 1, "kind": "sdk-runtime-release-keyring-delegation",
+        "scope": ROOT_SCOPE, "rootFingerprint": public_key_fingerprint(root_public_bytes),
+        "keyringSha256": sha256_bytes(keyring_bytes),
+    })
+    records = ([keyring["activeKey"]] if keyring["activeKey"] is not None else []) + keyring["retiredKeys"]
+    with tempfile.TemporaryDirectory(prefix="sdk-runtime-root-issue-") as temporary:
+        staged = Path(temporary).resolve() / "evidence"
+        (staged / "keys").mkdir(parents=True)
+        (staged / "release-keyring.json").write_bytes(keyring_bytes)
+        for record in records:
+            name = f"{record['keyId']}.pub"
+            contents = read_regular_file_bytes(Path(keys_directory) / name, max_bytes=4096,
+                                               reject_symlink_parents=True)
+            (staged / "keys" / name).write_bytes(contents)
+        validate_keyring(load_canonical_json_bytes(keyring_bytes), staged / "keys")
+        manifest = staged / "root-delegation.json"
+        write_canonical_json(manifest, delegation)
+        try:
+            subprocess.run(
+                ["ssh-keygen", "-Y", "sign", "-f", str(root_private_key),
+                 "-n", ROOT_NAMESPACE, str(manifest)],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            raise ValueError("SDK Runtime root delegation signing failed") from error
+        signature = Path(f"{manifest}.sig")
+        signature_bytes = read_regular_file_bytes(signature, max_bytes=_SIGNATURE_LIMIT,
+                                                  reject_symlink_parents=True)
+        _verify_sshsig(manifest.read_bytes(), signature_bytes, root_public_bytes,
+                       namespace=ROOT_NAMESPACE, principal=ROOT_PRINCIPAL)
+        signature.replace(staged / "root-delegation.sig")
+        if read_regular_file_bytes(keyring_path, max_bytes=_JSON_LIMIT,
+                                   reject_symlink_parents=True) != keyring_bytes:
+            raise ValueError("Release keyring changed while root delegation was issued")
+        publish_regular_tree(staged, destination, expected_inventory=regular_file_inventory(staged))
+    return delegation
 
 
 def verify_external_library_authorization(

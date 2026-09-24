@@ -8,7 +8,7 @@ import unittest
 from ci.products.inventory import (
     public_key_fingerprint, sha256_bytes, write_canonical_json,
 )
-from ci.products.sdk_runtime_root import verify_external_library_authorization
+from ci.products.sdk_runtime_root import issue_root_delegation, verify_external_library_authorization
 from ci.products.signatures import ALGORITHM, NAMESPACE, generate_development_key
 from ci.tests.test_products import sdk_compatibility
 
@@ -40,7 +40,8 @@ class SdkRuntimeRootTest(unittest.TestCase):
                  abi_version: str = "1.13.0") -> Path:
         signer_private, signer_public, _ = generate_development_key(self.root / f"signer-{name}")
         evidence = self.root / f"evidence-{name}"
-        keys = evidence / "keys"
+        policy = self.root / f"policy-{name}"
+        keys = policy / "keys"
         keys.mkdir(parents=True)
         signer_bytes = signer_public.read_bytes()
         (keys / f"{name}.pub").write_bytes(signer_bytes)
@@ -50,17 +51,9 @@ class SdkRuntimeRootTest(unittest.TestCase):
             "trustDomain": "release", "activeKey": {"keyId": name, "fingerprint": fingerprint},
             "retiredKeys": [],
         }
-        keyring_path = evidence / "release-keyring.json"
+        keyring_path = policy / "release-keyring.json"
         write_canonical_json(keyring_path, keyring)
-        delegation_path = evidence / "root-delegation.json"
-        write_canonical_json(delegation_path, {
-            "schemaVersion": 1, "kind": "sdk-runtime-release-keyring-delegation",
-            "scope": "desktop-runtime-library",
-            "rootFingerprint": public_key_fingerprint(self.root_public.read_bytes()),
-            "keyringSha256": sha256_bytes(keyring_path.read_bytes()),
-        })
-        self._sign(delegation_path, self.root_private, "codex-agent-sdk-runtime-root-v1",
-                   evidence / "root-delegation.sig")
+        issue_root_delegation(keyring_path, keys, self.root_public, self.root_private, evidence)
         claim_path = evidence / "runtime-library-authorization.json"
         write_canonical_json(claim_path, {
             "schemaVersion": 1, "kind": "desktop-runtime-library-authorization",
@@ -138,3 +131,12 @@ class SdkRuntimeRootTest(unittest.TestCase):
         overflow_abi = self.evidence("release-c", abi_version="1.256.0")
         with self.assertRaisesRegex(ValueError, "encoded field widths"):
             self.verify(overflow_abi)
+
+    def test_root_issuer_rejects_a_nonmatching_private_key_without_publishing(self) -> None:
+        source = self.evidence("release-a")
+        wrong_private, _, _ = generate_development_key(self.root / "wrong-root")
+        destination = self.root / "rejected-delegation"
+        with self.assertRaisesRegex(ValueError, "signature verification failed"):
+            issue_root_delegation(source / "release-keyring.json", source / "keys",
+                                  self.root_public, wrong_private, destination)
+        self.assertFalse(destination.exists())
