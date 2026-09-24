@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:codex_agent/src/errors.dart';
 import 'package:codex_agent/src/ffi.dart';
 import 'package:codex_agent/src/runtime_compatibility.dart';
@@ -368,6 +369,131 @@ void main() {
     );
   });
 
+  test('path-only override fails before dynamic loading', () {
+    final library = File('${temporary.path}/path-only-runtime')
+      ..writeAsStringSync('not a native library');
+    var reachedDynamicOpen = false;
+
+    expect(
+      () => authenticatedRuntimeLibraryForTesting(
+        library.path,
+        beforeDynamicOpen: (_) => reachedDynamicOpen = true,
+      ),
+      throwsA(isA<CodexException>().having(
+        (error) => error.message,
+        'message',
+        contains('release evidence is unavailable'),
+      )),
+    );
+    expect(reachedDynamicOpen, isFalse);
+    expect(
+      () => NativeApi.load(library.path),
+      throwsA(isA<CodexException>().having(
+        (error) => error.message,
+        'message',
+        contains('release evidence is unavailable'),
+      )),
+    );
+  });
+
+  test('Windows external signature verification fails closed', () {
+    expect(supportsExternalRuntimeSignatureVerifier('windows'), isFalse);
+    expect(supportsExternalRuntimeSignatureVerifier('macos'), isTrue);
+    expect(supportsExternalRuntimeSignatureVerifier('linux'), isTrue);
+  });
+
+  test('root-delegated release evidence binds exact external bytes', () {
+    if (Platform.isWindows) return;
+    final library = File('${temporary.path}/signed-runtime')
+      ..writeAsStringSync('synthetic runtime bytes');
+    final root = _testKey(temporary, 'root');
+    final signer = _testKey(temporary, 'signer');
+    final evidence = Directory('${library.path}.evidence')..createSync();
+    final keys = Directory('${evidence.path}/keys')..createSync();
+    File('${keys.path}/release-a.pub').writeAsBytesSync(signer.public);
+    final signerFingerprint = _fingerprint(signer.public);
+    final keyring = File('${evidence.path}/release-keyring.json')
+      ..writeAsStringSync(_canonicalJson({
+        'schemaVersion': 1,
+        'namespace': 'codex-agent-product-v1',
+        'algorithm': 'ssh-ed25519',
+        'trustDomain': 'release',
+        'activeKey': {
+          'keyId': 'release-a',
+          'fingerprint': signerFingerprint,
+        },
+        'retiredKeys': <Object>[],
+      }));
+    final delegation = File('${evidence.path}/root-delegation.json')
+      ..writeAsStringSync(_canonicalJson({
+        'schemaVersion': 1,
+        'kind': 'sdk-runtime-release-keyring-delegation',
+        'scope': 'desktop-runtime-library',
+        'rootFingerprint': _fingerprint(root.public),
+        'keyringSha256': _digest(keyring.readAsBytesSync()),
+      }));
+    _sign(delegation, root.privateKey, 'codex-agent-sdk-runtime-root-v1');
+    final claim = File('${evidence.path}/runtime-library-authorization.json')
+      ..writeAsStringSync(_canonicalJson({
+        'schemaVersion': 1,
+        'kind': 'desktop-runtime-library-authorization',
+        'runtimeVersion': '0.8.0',
+        'runtimeIdentity':
+            jsonDecode(_identity(currentClassifier(), componentId: _digestA)),
+        'runtimeLibrarySha256': runtimeFileSha256(library),
+        'variantBundleSha256': _digestA,
+        'variantManifestSha256': _digestA,
+        'aggregateManifestSha256': _digestA,
+        'variantAttestationSha256': _digestA,
+        'aggregateAttestationSha256': _digestA,
+        'signing': {
+          'algorithm': 'ssh-ed25519',
+          'namespace': 'codex-agent-product-v1',
+          'trustDomain': 'release',
+          'keyId': 'release-a',
+          'fingerprint': signerFingerprint,
+        },
+      }));
+    _sign(claim, signer.privateKey, 'codex-agent-product-v1');
+    final compatibility = RuntimeCompatibility.load();
+    Map<String, Object?> verify([List<int>? trustedRoot]) =>
+        verifyExternalRuntimeReleaseEvidence(
+          library,
+          library,
+          compatibility,
+          currentClassifier(),
+          trustedRootForTesting: trustedRoot ?? root.public,
+        );
+
+    expect(verify()['runtimeLibrarySha256'], runtimeFileSha256(library));
+    final originalClaim = claim.readAsStringSync();
+    for (final nested in const [false, true]) {
+      final altered = jsonDecode(originalClaim) as Map<String, Object?>;
+      if (nested) {
+        (altered['runtimeIdentity'] as Map<String, Object?>)['schemaVersion'] =
+            1.0;
+      } else {
+        altered['schemaVersion'] = 1.0;
+      }
+      claim.writeAsStringSync(_canonicalJson(altered));
+      expect(
+        () => verify(),
+        throwsA(isA<CodexException>().having(
+          (error) => error.message,
+          'message',
+          contains('not canonical JSON'),
+        )),
+      );
+    }
+    claim.writeAsStringSync(originalClaim);
+    expect(
+      () => verify(signer.public),
+      throwsA(isA<CodexException>()),
+    );
+    library.writeAsStringSync('changed runtime bytes');
+    expect(() => verify(), throwsA(isA<CodexException>()));
+  });
+
   test('identity ABI fields must fit the packed C ABI widths', () {
     final compatibility = _writeCompatibility(temporary, declaration);
     final target = currentClassifier();
@@ -390,6 +516,7 @@ void main() {
   });
 
   test('identity is authenticated before the exported ABI is called', () async {
+    if (Platform.isWindows) return;
     final target = currentClassifier();
     final library = await _compileLibrary(
       temporary,
@@ -399,17 +526,26 @@ void main() {
       requireIdentityBeforeAbi: true,
     );
 
-    expect(
-      authenticatedRuntimeLibraryForTesting(library.path)
-          .lookupFunction<Int32 Function(), int Function()>(
-        'codex_agent_test_marker',
-      )(),
-      1,
-    );
+    final root = _testKey(temporary, 'identity-root');
+    final signer = _testKey(temporary, 'identity-signer');
+    _writeSignedEvidence(
+        library, root, signer, _identity(target, componentId: _digestA));
+    final result = await _runIsolated(temporary, root.public, '''
+import 'dart:ffi';
+import 'package:codex_agent/src/ffi.dart';
+void main(List<String> arguments) {
+  final marker = authenticatedRuntimeLibraryForTesting(arguments.single)
+      .lookupFunction<Int32 Function(), int Function()>('codex_agent_test_marker')();
+  print(marker);
+}
+''', [library.path]);
+    expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+    expect((result.stdout as String).trim(), '1');
   });
 
   test('dynamic open remains bound to the authenticated private file',
       () async {
+    if (Platform.isWindows) return;
     final target = currentClassifier();
     final verified = await _compileLibrary(
       temporary,
@@ -425,31 +561,39 @@ void main() {
       abiVersion: requiredAbiVersion,
       marker: 2,
     );
-    var replacementWasBlocked = false;
-    final loaded = authenticatedRuntimeLibraryForTesting(
-      verified.path,
-      beforeDynamicOpen: (snapshot) {
-        try {
-          if (snapshot.existsSync()) {
-            snapshot.renameSync('${snapshot.path}.verified');
-          }
-          malicious.copySync(snapshot.path);
-        } on FileSystemException {
-          replacementWasBlocked = true;
-        }
-      },
-    );
-
-    expect(
-      loaded.lookupFunction<Int32 Function(), int Function()>(
-        'codex_agent_test_marker',
-      )(),
-      1,
-    );
-    expect(replacementWasBlocked, isNot(Platform.isLinux));
+    final root = _testKey(temporary, 'swap-root');
+    final signer = _testKey(temporary, 'swap-signer');
+    _writeSignedEvidence(
+        verified, root, signer, _identity(target, componentId: _digestA));
+    final result = await _runIsolated(temporary, root.public, '''
+import 'dart:ffi';
+import 'dart:io';
+import 'package:codex_agent/src/ffi.dart';
+void main(List<String> arguments) {
+  var blocked = false;
+  final library = authenticatedRuntimeLibraryForTesting(
+    arguments[0],
+    beforeDynamicOpen: (snapshot) {
+      try {
+        if (snapshot.existsSync()) snapshot.renameSync('\${snapshot.path}.verified');
+        File(arguments[1]).copySync(snapshot.path);
+      } on FileSystemException {
+        blocked = true;
+      }
+    },
+  );
+  final marker = library.lookupFunction<Int32 Function(), int Function()>(
+      'codex_agent_test_marker')();
+  print('\$marker,\$blocked');
+}
+''', [verified.path, malicious.path]);
+    expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+    expect((result.stdout as String).trim(),
+        Platform.isLinux ? '1,false' : '1,true');
   });
 
   test('child-process load leaves no owned Runtime snapshot behind', () async {
+    if (Platform.isWindows) return;
     final target = currentClassifier();
     final library = await _compileLibrary(
       temporary,
@@ -457,20 +601,17 @@ void main() {
       identity: _identity(target, componentId: _digestA),
       abiVersion: requiredAbiVersion,
     );
-    final child = File('${temporary.path}/load_runtime.dart')
-      ..writeAsStringSync('''
+    final root = _testKey(temporary, 'cleanup-root');
+    final signer = _testKey(temporary, 'cleanup-signer');
+    _writeSignedEvidence(
+        library, root, signer, _identity(target, componentId: _digestA));
+    final before = _runtimeSnapshots();
+    final result = await _runIsolated(temporary, root.public, '''
 import 'package:codex_agent/src/ffi.dart';
-
 void main(List<String> arguments) {
   authenticatedRuntimeLibraryForTesting(arguments.single);
 }
-''');
-    final before = _runtimeSnapshots();
-    final result = await Process.run(Platform.resolvedExecutable, [
-      '--packages=${File('.dart_tool/package_config.json').absolute.path}',
-      child.path,
-      library.path,
-    ]);
+''', [library.path]);
     expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
     expect(_runtimeSnapshots().difference(before), isEmpty);
 
@@ -492,6 +633,133 @@ Set<String> _runtimeSnapshots() => Directory(
             .last
             .startsWith('codex-agent-runtime-snapshot-'))
         .toSet();
+
+({String privateKey, List<int> public}) _testKey(
+    Directory directory, String name) {
+  final path = '${directory.path}/$name';
+  final result = Process.runSync('ssh-keygen', [
+    '-q',
+    '-t',
+    'ed25519',
+    '-N',
+    '',
+    '-f',
+    path,
+  ]);
+  expect(result.exitCode, 0, reason: '${result.stderr}');
+  final parts = File('$path.pub').readAsStringSync().split(' ');
+  return (privateKey: path, public: ascii.encode('${parts[0]} ${parts[1]}\n'));
+}
+
+String _digest(List<int> bytes) => 'sha256:${crypto.sha256.convert(bytes)}';
+
+String _fingerprint(List<int> public) =>
+    _digest(base64.decode(ascii.decode(public).split(' ')[1].trim()));
+
+void _sign(File manifest, String privateKey, String namespace) {
+  final result = Process.runSync('ssh-keygen', [
+    '-Y',
+    'sign',
+    '-f',
+    privateKey,
+    '-n',
+    namespace,
+    manifest.path,
+  ]);
+  expect(result.exitCode, 0, reason: '${result.stderr}');
+  File('${manifest.path}.sig').renameSync(
+      '${manifest.parent.path}/${manifest.uri.pathSegments.last.replaceAll('.json', '.sig')}');
+}
+
+void _writeSignedEvidence(
+  File library,
+  ({String privateKey, List<int> public}) root,
+  ({String privateKey, List<int> public}) signer,
+  String identity,
+) {
+  final evidence = Directory('${library.path}.evidence')..createSync();
+  final keys = Directory('${evidence.path}/keys')..createSync();
+  File('${keys.path}/release-a.pub').writeAsBytesSync(signer.public);
+  final fingerprint = _fingerprint(signer.public);
+  final keyring = File('${evidence.path}/release-keyring.json')
+    ..writeAsStringSync(_canonicalJson({
+      'schemaVersion': 1,
+      'namespace': 'codex-agent-product-v1',
+      'algorithm': 'ssh-ed25519',
+      'trustDomain': 'release',
+      'activeKey': {'keyId': 'release-a', 'fingerprint': fingerprint},
+      'retiredKeys': <Object>[],
+    }));
+  final delegation = File('${evidence.path}/root-delegation.json')
+    ..writeAsStringSync(_canonicalJson({
+      'schemaVersion': 1,
+      'kind': 'sdk-runtime-release-keyring-delegation',
+      'scope': 'desktop-runtime-library',
+      'rootFingerprint': _fingerprint(root.public),
+      'keyringSha256': _digest(keyring.readAsBytesSync()),
+    }));
+  _sign(delegation, root.privateKey, 'codex-agent-sdk-runtime-root-v1');
+  final claim = File('${evidence.path}/runtime-library-authorization.json')
+    ..writeAsStringSync(_canonicalJson({
+      'schemaVersion': 1,
+      'kind': 'desktop-runtime-library-authorization',
+      'runtimeVersion': '0.8.0',
+      'runtimeIdentity': jsonDecode(identity),
+      'runtimeLibrarySha256': runtimeFileSha256(library),
+      'variantBundleSha256': _digestA,
+      'variantManifestSha256': _digestA,
+      'aggregateManifestSha256': _digestA,
+      'variantAttestationSha256': _digestA,
+      'aggregateAttestationSha256': _digestA,
+      'signing': {
+        'algorithm': 'ssh-ed25519',
+        'namespace': 'codex-agent-product-v1',
+        'trustDomain': 'release',
+        'keyId': 'release-a',
+        'fingerprint': fingerprint,
+      },
+    }));
+  _sign(claim, signer.privateKey, 'codex-agent-product-v1');
+}
+
+Future<ProcessResult> _runIsolated(
+  Directory temporary,
+  List<int> rootKey,
+  String source,
+  List<String> arguments,
+) async {
+  final package = Directory('${temporary.path}/isolated-package')..createSync();
+  Directory('${package.path}/lib').createSync();
+  final original = Directory('lib');
+  for (final entity in original.listSync(recursive: true)) {
+    final relative = entity.path.substring(original.path.length + 1);
+    final destination = '${package.path}/lib/$relative';
+    if (entity is Directory) {
+      Directory(destination).createSync(recursive: true);
+    } else if (entity is File) {
+      File(entity.path).copySync(destination);
+    }
+  }
+  File('${package.path}/lib/src/native/sdk-runtime-root.pub')
+      .writeAsBytesSync(rootKey);
+  final configuration =
+      jsonDecode(File('.dart_tool/package_config.json').readAsStringSync())
+          as Map<String, Object?>;
+  final packages = configuration['packages']! as List<Object?>;
+  final codexAgent = packages
+      .cast<Map<String, Object?>>()
+      .singleWhere((entry) => entry['name'] == 'codex_agent');
+  codexAgent['rootUri'] = package.uri.toString();
+  final configFile = File('${temporary.path}/package_config.json')
+    ..writeAsStringSync(jsonEncode(configuration));
+  final script = File('${temporary.path}/isolated_test.dart')
+    ..writeAsStringSync(source);
+  return Process.run(Platform.resolvedExecutable, [
+    '--packages=${configFile.path}',
+    script.path,
+    ...arguments,
+  ]);
+}
 
 RuntimeCompatibility _writeCompatibility(
   Directory root,

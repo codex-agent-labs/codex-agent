@@ -1,10 +1,15 @@
 import 'dart:async';
+import 'dart:collection';
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:codex_agent/codex_agent.dart';
 import 'package:codex_agent/src/ffi.dart'
-    show authenticatedRuntimeLibraryForTesting;
+    show authenticatedRuntimeLibraryForTesting, readRuntimeIdentity;
+import 'package:codex_agent/src/runtime_compatibility.dart'
+    show runtimeFileSha256;
 import 'package:test/test.dart';
 
 import 'native_fixture.dart';
@@ -51,15 +56,68 @@ Future<String> _buildFixture() async {
 }
 
 void main() {
+  if (Platform.environment['CODEX_AGENT_TEST_ISOLATED'] != '1') {
+    test('native behavior with signed fixture evidence', () async {
+      final temporary = Directory(
+        Directory.systemTemp.resolveSymbolicLinksSync(),
+      ).createTempSync('codex-agent-native-behavior-');
+      try {
+        final rootKey = _testKey(temporary, 'root');
+        final config = _isolatedPackage(temporary, rootKey.public);
+        final result = await Process.run(Platform.resolvedExecutable, [
+          '--packages=${config.path}',
+          'run',
+          'test:test',
+          'test/native_behavior_test.dart',
+          '-r',
+          'expanded',
+        ], environment: {
+          ...Platform.environment,
+          'CODEX_AGENT_TEST_ISOLATED': '1',
+          'CODEX_AGENT_TEST_ROOT_PRIVATE': rootKey.privateKey,
+          'CODEX_AGENT_TEST_ROOT_PUBLIC': '${rootKey.privateKey}.pub',
+          'CODEX_AGENT_TEST_PACKAGE_CONFIG': config.path,
+        });
+        expect(result.exitCode, 0,
+            reason: '${result.stdout}\n${result.stderr}');
+      } finally {
+        temporary.deleteSync(recursive: true);
+      }
+    },
+        skip: Platform.isWindows
+            ? 'Windows external SSHSIG verification is unavailable'
+            : false);
+    return;
+  }
   late String libraryPath;
 
   setUpAll(() async {
     libraryPath = await _buildFixture();
+    _signFixture(libraryPath);
   });
 
   tearDownAll(() {
     final fixture = File(libraryPath);
     if (fixture.existsSync()) fixture.deleteSync();
+    final evidence = Directory('$libraryPath.evidence');
+    if (evidence.existsSync()) evidence.deleteSync(recursive: true);
+  });
+
+  test('cached runtime still requires intact signed evidence', () {
+    final loaded = authenticatedRuntimeLibraryForTesting(libraryPath);
+    final signature = File(
+        '$libraryPath.evidence/runtime-library-authorization.sig');
+    final original = signature.readAsBytesSync();
+    try {
+      signature.writeAsBytesSync([...original, 120]);
+      expect(
+        () => authenticatedRuntimeLibraryForTesting(libraryPath),
+        throwsA(isA<CodexException>()),
+      );
+    } finally {
+      signature.writeAsBytesSync(original);
+    }
+    expect(authenticatedRuntimeLibraryForTesting(libraryPath), same(loaded));
   });
 
   test('Host Agent Conversation lifecycle, values, state and ownership',
@@ -349,7 +407,7 @@ void main() {
       <String>[
         '--enable-vm-service=0',
         '--disable-service-auth-codes',
-        '--packages=${File('.dart_tool/package_config.json').absolute.path}',
+        '--packages=${Platform.environment['CODEX_AGENT_TEST_PACKAGE_CONFIG']}',
         'tool/finalizer_probe.dart',
         libraryPath,
       ],
@@ -367,7 +425,7 @@ void main() {
       <String>[
         '--enable-vm-service=0',
         '--disable-service-auth-codes',
-        '--packages=${File('.dart_tool/package_config.json').absolute.path}',
+        '--packages=${Platform.environment['CODEX_AGENT_TEST_PACKAGE_CONFIG']}',
         'tool/finalizer_probe.dart',
         libraryPath,
         'child',
@@ -380,4 +438,139 @@ void main() {
           'child retention probe failed:\n${result.stdout}\n${result.stderr}',
     );
   });
+}
+
+({String privateKey, List<int> public}) _testKey(
+    Directory directory, String name) {
+  final path = '${directory.path}/$name';
+  final result = Process.runSync('ssh-keygen', [
+    '-q',
+    '-t',
+    'ed25519',
+    '-N',
+    '',
+    '-f',
+    path,
+  ]);
+  if (result.exitCode != 0) {
+    throw StateError('test key generation failed: ${result.stderr}');
+  }
+  final parts = File('$path.pub').readAsStringSync().split(' ');
+  return (privateKey: path, public: ascii.encode('${parts[0]} ${parts[1]}\n'));
+}
+
+String _digest(List<int> bytes) => 'sha256:${crypto.sha256.convert(bytes)}';
+
+String _fingerprint(List<int> key) =>
+    _digest(base64.decode(ascii.decode(key).split(' ')[1].trim()));
+
+Object? _sorted(Object? value) => switch (value) {
+      Map<String, Object?> fields => SplayTreeMap<String, Object?>.of(
+          Map.fromEntries(fields.entries
+              .map((entry) => MapEntry(entry.key, _sorted(entry.value))))),
+      List<Object?> items => items.map(_sorted).toList(),
+      _ => value,
+    };
+
+String _canonical(Object? value) => '${jsonEncode(_sorted(value))}\n';
+
+void _sign(File manifest, String privateKey, String namespace) {
+  final result = Process.runSync('ssh-keygen', [
+    '-Y',
+    'sign',
+    '-f',
+    privateKey,
+    '-n',
+    namespace,
+    manifest.path,
+  ]);
+  if (result.exitCode != 0) {
+    throw StateError('test signing failed: ${result.stderr}');
+  }
+  File('${manifest.path}.sig').renameSync(
+      '${manifest.parent.path}/${manifest.uri.pathSegments.last.replaceAll('.json', '.sig')}');
+}
+
+File _isolatedPackage(Directory temporary, List<int> rootKey) {
+  final package = Directory('${temporary.path}/isolated-package')..createSync();
+  Directory('${package.path}/lib').createSync();
+  final original = Directory('lib');
+  for (final entity in original.listSync(recursive: true)) {
+    final relative = entity.path.substring(original.path.length + 1);
+    final destination = '${package.path}/lib/$relative';
+    if (entity is Directory) {
+      Directory(destination).createSync(recursive: true);
+    } else if (entity is File) {
+      File(entity.path).copySync(destination);
+    }
+  }
+  File('${package.path}/lib/src/native/sdk-runtime-root.pub')
+      .writeAsBytesSync(rootKey);
+  final configuration =
+      jsonDecode(File('.dart_tool/package_config.json').readAsStringSync())
+          as Map<String, Object?>;
+  final packages = configuration['packages']! as List<Object?>;
+  final codexAgent = packages
+      .cast<Map<String, Object?>>()
+      .singleWhere((entry) => entry['name'] == 'codex_agent');
+  codexAgent['rootUri'] = package.uri.toString();
+  return File('${temporary.path}/package_config.json')
+    ..writeAsStringSync(jsonEncode(configuration));
+}
+
+void _signFixture(String libraryPath) {
+  final rootPrivate = Platform.environment['CODEX_AGENT_TEST_ROOT_PRIVATE']!;
+  final rootPublicPath = Platform.environment['CODEX_AGENT_TEST_ROOT_PUBLIC']!;
+  final rootParts = File(rootPublicPath).readAsStringSync().split(' ');
+  final rootPublic = ascii.encode('${rootParts[0]} ${rootParts[1]}\n');
+  final signer = _testKey(File(rootPrivate).parent, 'release');
+  final library = File(libraryPath);
+  final identity =
+      jsonDecode(readRuntimeIdentity(DynamicLibrary.open(libraryPath)))
+          as Map<String, Object?>;
+  final evidence = Directory('$libraryPath.evidence')..createSync();
+  final keys = Directory('${evidence.path}/keys')..createSync();
+  File('${keys.path}/release.pub').writeAsBytesSync(signer.public);
+  final keyring = File('${evidence.path}/release-keyring.json')
+    ..writeAsStringSync(_canonical({
+      'schemaVersion': 1,
+      'namespace': 'codex-agent-product-v1',
+      'algorithm': 'ssh-ed25519',
+      'trustDomain': 'release',
+      'activeKey': {
+        'keyId': 'release',
+        'fingerprint': _fingerprint(signer.public),
+      },
+      'retiredKeys': <Object>[],
+    }));
+  final delegation = File('${evidence.path}/root-delegation.json')
+    ..writeAsStringSync(_canonical({
+      'schemaVersion': 1,
+      'kind': 'sdk-runtime-release-keyring-delegation',
+      'scope': 'desktop-runtime-library',
+      'rootFingerprint': _fingerprint(rootPublic),
+      'keyringSha256': _digest(keyring.readAsBytesSync()),
+    }));
+  _sign(delegation, rootPrivate, 'codex-agent-sdk-runtime-root-v1');
+  final claim = File('${evidence.path}/runtime-library-authorization.json')
+    ..writeAsStringSync(_canonical({
+      'schemaVersion': 1,
+      'kind': 'desktop-runtime-library-authorization',
+      'runtimeVersion': '0.8.0',
+      'runtimeIdentity': identity,
+      'runtimeLibrarySha256': runtimeFileSha256(library),
+      'variantBundleSha256': _digest(List<int>.filled(1, 1)),
+      'variantManifestSha256': _digest(List<int>.filled(1, 2)),
+      'aggregateManifestSha256': _digest(List<int>.filled(1, 3)),
+      'variantAttestationSha256': _digest(List<int>.filled(1, 4)),
+      'aggregateAttestationSha256': _digest(List<int>.filled(1, 5)),
+      'signing': {
+        'algorithm': 'ssh-ed25519',
+        'namespace': 'codex-agent-product-v1',
+        'trustDomain': 'release',
+        'keyId': 'release',
+        'fingerprint': _fingerprint(signer.public),
+      },
+    }));
+  _sign(claim, signer.privateKey, 'codex-agent-product-v1');
 }

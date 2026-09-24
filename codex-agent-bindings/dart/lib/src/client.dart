@@ -842,8 +842,7 @@ final class CodexHost {
     required CodexClientInfo clientInfo,
     String? libraryPath,
   }) async {
-    final path = await resolveLibraryPath(libraryPath);
-    final owner = _NativeContextOwner(NativeApi.load(path));
+    final owner = _NativeContextOwner(NativeApi.loadResolved(libraryPath));
     Pointer<Pointer<CodexNativeHost>>? host;
     Pointer<CodexHostOptionsStruct>? options;
     NativeString? bundle;

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as crypto;
 
@@ -10,14 +11,17 @@ final class RuntimeCompatibility {
   RuntimeCompatibility._({
     required this.contractDigest,
     required _VersionRange compatibleRuntimeRange,
+    required _VersionRange compatibleReleaseRange,
     required this.requiredIdentitySchema,
     required this.requiredAbiMajor,
     required this.minimumAbiMinor,
     required this.embeddedVariants,
-  }) : _compatibleRuntimeRange = compatibleRuntimeRange;
+  })  : _compatibleRuntimeRange = compatibleRuntimeRange,
+        _compatibleReleaseRange = compatibleReleaseRange;
 
   final String contractDigest;
   final _VersionRange _compatibleRuntimeRange;
+  final _VersionRange _compatibleReleaseRange;
   final int requiredIdentitySchema;
   final int requiredAbiMajor;
   final int minimumAbiMinor;
@@ -25,6 +29,9 @@ final class RuntimeCompatibility {
 
   bool supportsRuntimeVersion(String version) =>
       _compatibleRuntimeRange.contains(version);
+
+  bool supportsReleaseVersion(String version) =>
+      _compatibleReleaseRange.contains(version);
 
   static RuntimeCompatibility load() {
     final uri = Isolate.resolvePackageUriSync(
@@ -182,6 +189,7 @@ final class RuntimeCompatibility {
     return RuntimeCompatibility._(
       contractDigest: contractDigest,
       compatibleRuntimeRange: compatibilityRange,
+      compatibleReleaseRange: releaseRange,
       requiredIdentitySchema: identitySchema,
       requiredAbiMajor: abiMajor,
       minimumAbiMinor: abiMinor,
@@ -281,6 +289,359 @@ String runtimeFileSha256(File file) {
   return _fileSha256(file);
 }
 
+Map<String, Object?> verifyExternalRuntimeReleaseEvidence(
+  File snapshot,
+  File selectedLibrary,
+  RuntimeCompatibility compatibility,
+  String target, {
+  List<int>? trustedRootForTesting,
+}) {
+  final rootKey = trustedRootForTesting ?? _sdkRuntimeRoot();
+  final rootFingerprint = _publicKeyFingerprint(rootKey);
+  final evidence = Directory('${selectedLibrary.path}.evidence');
+  final keyringBytes = _evidenceFile(evidence, 'release-keyring.json');
+  final delegationBytes = _evidenceFile(evidence, 'root-delegation.json');
+  final delegation = _canonicalEvidence(delegationBytes, 'root delegation');
+  _object(delegation, 'root delegation', const {
+    'schemaVersion',
+    'kind',
+    'scope',
+    'rootFingerprint',
+    'keyringSha256',
+  });
+  if (delegation['schemaVersion'] != 1 ||
+      delegation['kind'] != 'sdk-runtime-release-keyring-delegation' ||
+      delegation['scope'] != 'desktop-runtime-library' ||
+      _sha256(delegation['rootFingerprint'], 'root fingerprint') !=
+          rootFingerprint ||
+      _sha256(delegation['keyringSha256'], 'keyring digest') !=
+          _digestBytes(keyringBytes)) {
+    throw const CodexException('external Runtime root delegation is invalid');
+  }
+  _verifySshsig(
+    delegationBytes,
+    _evidenceFile(evidence, 'root-delegation.sig'),
+    rootKey,
+    'codex-agent-sdk-runtime-root-v1',
+    'codex-agent-sdk-runtime-root',
+  );
+
+  final keyring = _canonicalEvidence(keyringBytes, 'release keyring');
+  _object(keyring, 'release keyring', const {
+    'schemaVersion',
+    'namespace',
+    'algorithm',
+    'trustDomain',
+    'activeKey',
+    'retiredKeys',
+  });
+  if (keyring['schemaVersion'] != 1 ||
+      keyring['namespace'] != 'codex-agent-product-v1' ||
+      keyring['algorithm'] != 'ssh-ed25519' ||
+      keyring['trustDomain'] != 'release') {
+    throw const CodexException('external Runtime release keyring is invalid');
+  }
+  final records = <Map<String, Object?>>[];
+  if (keyring['activeKey'] != null) {
+    records.add(_keyRecord(keyring['activeKey']));
+  }
+  final retired = keyring['retiredKeys'];
+  if (retired is! List<Object?>) {
+    throw const CodexException('external Runtime retired keys are invalid');
+  }
+  records.addAll(retired.map(_keyRecord));
+  final ids = records.map((record) => record['keyId'] as String).toList();
+  final retiredIds = ids.skip(keyring['activeKey'] == null ? 0 : 1).toList();
+  if (retiredIds.join(',') != (retiredIds.toList()..sort()).join(',') ||
+      ids.toSet().length != ids.length ||
+      records.map((record) => record['fingerprint']).toSet().length !=
+          records.length) {
+    throw const CodexException('external Runtime release keys are not unique');
+  }
+  final keys = <String, List<int>>{};
+  for (final record in records) {
+    final id = record['keyId'] as String;
+    final bytes = _evidenceFile(evidence, 'keys/$id.pub', maxBytes: 4096);
+    if (_publicKeyFingerprint(bytes) != record['fingerprint']) {
+      throw const CodexException(
+          'external Runtime release key differs from keyring');
+    }
+    keys[id] = bytes;
+  }
+
+  final claimBytes =
+      _evidenceFile(evidence, 'runtime-library-authorization.json');
+  final claim = _canonicalEvidence(claimBytes, 'Runtime authorization');
+  _object(claim, 'Runtime authorization', const {
+    'schemaVersion',
+    'kind',
+    'runtimeVersion',
+    'runtimeIdentity',
+    'runtimeLibrarySha256',
+    'variantBundleSha256',
+    'variantManifestSha256',
+    'aggregateManifestSha256',
+    'variantAttestationSha256',
+    'aggregateAttestationSha256',
+    'signing',
+  });
+  if (claim['schemaVersion'] != 1 ||
+      claim['kind'] != 'desktop-runtime-library-authorization' ||
+      !compatibility.supportsReleaseVersion(
+          _semver(claim['runtimeVersion'], 'authorized Runtime version'))) {
+    throw const CodexException('external Runtime release is incompatible');
+  }
+  final identity =
+      _object(claim['runtimeIdentity'], 'authorized identity', const {
+    'schemaVersion',
+    'componentId',
+    'runtimeCompatibilityVersion',
+    'contractDigest',
+    'contractComponentDigest',
+    'cAbiVersion',
+    'target',
+    'appServerVersion',
+    'buildInputDigest',
+  });
+  compatibility.verifyRuntimeIdentity(jsonEncode(identity), target,
+      embedded: false);
+  for (final field in const [
+    'runtimeLibrarySha256',
+    'variantBundleSha256',
+    'variantManifestSha256',
+    'aggregateManifestSha256',
+    'variantAttestationSha256',
+    'aggregateAttestationSha256',
+  ]) {
+    _sha256(claim[field], field);
+  }
+  final signing = _object(claim['signing'], 'authorization signing', const {
+    'algorithm',
+    'namespace',
+    'trustDomain',
+    'keyId',
+    'fingerprint',
+  });
+  if (signing['algorithm'] != 'ssh-ed25519' ||
+      signing['namespace'] != 'codex-agent-product-v1' ||
+      signing['trustDomain'] != 'release' ||
+      !keys.containsKey(signing['keyId']) ||
+      records.singleWhere(
+              (record) => record['keyId'] == signing['keyId'])['fingerprint'] !=
+          _sha256(signing['fingerprint'], 'signer fingerprint')) {
+    throw const CodexException(
+        'external Runtime release signer is not delegated');
+  }
+  _verifySshsig(
+    claimBytes,
+    _evidenceFile(evidence, 'runtime-library-authorization.sig'),
+    keys[signing['keyId']]!,
+    'codex-agent-product-v1',
+    'codex-agent-product',
+  );
+  final expected = <String>{
+    'release-keyring.json',
+    'root-delegation.json',
+    'root-delegation.sig',
+    'runtime-library-authorization.json',
+    'runtime-library-authorization.sig',
+    for (final id in ids) 'keys/$id.pub',
+  };
+  _requireExactEvidenceFiles(evidence, expected);
+  if (runtimeFileSha256(snapshot) != claim['runtimeLibrarySha256']) {
+    throw const CodexException(
+      'external Runtime snapshot differs from signed authorization',
+    );
+  }
+  return claim;
+}
+
+List<int> _sdkRuntimeRoot() {
+  final uri = Isolate.resolvePackageUriSync(
+    Uri.parse('package:codex_agent/src/native/sdk-runtime-root.pub'),
+  );
+  if (uri == null || uri.scheme != 'file') {
+    throw const CodexException(
+        'external Runtime release evidence is unavailable: SDK root is absent');
+  }
+  final file = File.fromUri(uri);
+  if (!file.existsSync()) {
+    throw const CodexException(
+        'external Runtime release evidence is unavailable: SDK root is absent');
+  }
+  requireAbsoluteRegularFile(file, 'SDK Runtime root');
+  return file.readAsBytesSync();
+}
+
+Map<String, Object?> _keyRecord(Object? value) {
+  final record = _object(value, 'release key', const {'keyId', 'fingerprint'});
+  final id = record['keyId'];
+  if (id is! String || !RegExp(r'^[a-z0-9][a-z0-9-]{0,63}$').hasMatch(id)) {
+    throw const CodexException('external Runtime release key ID is invalid');
+  }
+  _sha256(record['fingerprint'], 'release key fingerprint');
+  return record;
+}
+
+List<int> _evidenceFile(Directory root, String name,
+    {int maxBytes = 1024 * 1024}) {
+  final file = File('${root.path}${Platform.pathSeparator}$name');
+  requireAbsoluteRegularFile(file, 'external Runtime evidence $name');
+  final length = file.lengthSync();
+  if (length <= 0 || length > maxBytes) {
+    throw CodexException('external Runtime evidence $name has invalid size');
+  }
+  return file.readAsBytesSync();
+}
+
+Map<String, Object?> _canonicalEvidence(List<int> bytes, String label) {
+  late final Object? decoded;
+  try {
+    decoded = jsonDecode(utf8.decode(bytes, allowMalformed: false));
+  } on Object {
+    throw CodexException('$label is not UTF-8 JSON');
+  }
+  if (decoded is! Map<String, Object?> ||
+      _containsFloatingPoint(decoded) ||
+      !_hasRecursivelySortedKeys(decoded) ||
+      utf8.decode(bytes) != '${jsonEncode(decoded)}\n') {
+    throw CodexException('$label is not canonical JSON');
+  }
+  return decoded;
+}
+
+bool _containsFloatingPoint(Object? value) => switch (value) {
+      double _ => true,
+      List<Object?> items => items.any(_containsFloatingPoint),
+      Map<String, Object?> fields => fields.values.any(_containsFloatingPoint),
+      _ => false,
+    };
+
+String _digestBytes(List<int> bytes) =>
+    'sha256:${crypto.sha256.convert(bytes)}';
+
+String _publicKeyFingerprint(List<int> bytes) {
+  late final String line;
+  try {
+    line = ascii.decode(bytes);
+  } on Object {
+    throw const CodexException('external Runtime public key is not ASCII');
+  }
+  final match =
+      RegExp(r'^ssh-ed25519 ([A-Za-z0-9+/]+={0,2})\n$').firstMatch(line);
+  if (match == null) {
+    throw const CodexException('external Runtime public key is not canonical');
+  }
+  late final List<int> blob;
+  try {
+    blob = base64.decode(match.group(1)!);
+  } on Object {
+    throw const CodexException('external Runtime public key is malformed');
+  }
+  if (base64.encode(blob) != match.group(1) || blob.length != 51) {
+    throw const CodexException('external Runtime public key is malformed');
+  }
+  final data = ByteData.sublistView(Uint8List.fromList(blob));
+  if (data.getUint32(0) != 11 ||
+      ascii.decode(blob.sublist(4, 15)) != 'ssh-ed25519' ||
+      data.getUint32(15) != 32) {
+    throw const CodexException('external Runtime public key is malformed');
+  }
+  return _digestBytes(blob);
+}
+
+void _verifySshsig(List<int> message, List<int> signature, List<int> key,
+    String namespace, String principal) {
+  final armor = ascii.decode(signature, allowInvalid: true);
+  const header = '-----BEGIN SSH SIGNATURE-----\n';
+  const footer = '-----END SSH SIGNATURE-----\n';
+  if (!armor.startsWith(header) || !armor.endsWith(footer)) {
+    throw const CodexException('external Runtime signature armor is invalid');
+  }
+  final lines = armor
+      .substring(header.length, armor.length - footer.length)
+      .split('\n')
+    ..removeLast();
+  if (lines.isEmpty ||
+      lines.any((line) => line.isEmpty || line.length > 70) ||
+      lines.take(lines.length - 1).any((line) => line.length != 70)) {
+    throw const CodexException('external Runtime signature armor is invalid');
+  }
+  final encoded = lines.join();
+  late final List<int> blob;
+  try {
+    blob = base64.decode(encoded);
+  } on Object {
+    throw const CodexException('external Runtime signature armor is invalid');
+  }
+  if (base64.encode(blob) != encoded ||
+      ascii.decode(blob.take(6).toList(), allowInvalid: true) != 'SSHSIG') {
+    throw const CodexException('external Runtime signature armor is invalid');
+  }
+  if (!supportsExternalRuntimeSignatureVerifier(Platform.operatingSystem)) {
+    throw const CodexException(
+        'external Runtime SSHSIG verification is unavailable on Windows');
+  }
+  final directory = Directory.systemTemp.createTempSync('codex-agent-sshsig-');
+  try {
+    final allowed = File('${directory.path}/allowed-signers')
+      ..writeAsBytesSync([...ascii.encode('$principal '), ...key]);
+    final detached = File('${directory.path}/signature.sig')
+      ..writeAsBytesSync(signature);
+    final input = File('${directory.path}/message')..writeAsBytesSync(message);
+    const script =
+        'exec /usr/bin/ssh-keygen -Y verify -f "\$1" -I "\$2" -n "\$3" -s "\$4" < "\$5"';
+    final result = Process.runSync('/bin/sh', [
+      '-c',
+      script,
+      'sh',
+      allowed.path,
+      principal,
+      namespace,
+      detached.path,
+      input.path,
+    ]);
+    if (result.exitCode != 0) {
+      throw const CodexException('external Runtime SSHSIG verification failed');
+    }
+  } on ProcessException {
+    throw const CodexException(
+        'external Runtime SSHSIG verifier is unavailable');
+  } finally {
+    directory.deleteSync(recursive: true);
+  }
+}
+
+bool supportsExternalRuntimeSignatureVerifier(String operatingSystem) =>
+    operatingSystem == 'macos' || operatingSystem == 'linux';
+
+void _requireExactEvidenceFiles(Directory root, Set<String> expected) {
+  if (!root.existsSync()) {
+    throw const CodexException('external Runtime evidence directory is absent');
+  }
+  final actual = <String>{};
+  for (final entity in root.listSync(recursive: true, followLinks: false)) {
+    final relative = entity.path
+        .substring(root.path.length + 1)
+        .replaceAll(Platform.pathSeparator, '/');
+    if (entity is Directory) {
+      if (relative != 'keys') {
+        throw const CodexException(
+            'external Runtime evidence contains extra directories');
+      }
+    } else if (entity is File) {
+      actual.add(relative);
+    } else {
+      throw const CodexException(
+          'external Runtime evidence contains unsafe files');
+    }
+  }
+  if (actual.length != expected.length || !actual.containsAll(expected)) {
+    throw const CodexException(
+        'external Runtime evidence contains extra or missing files');
+  }
+}
+
 final class RuntimeLibrarySnapshot {
   const RuntimeLibrarySnapshot._(this.file, this.digest, this.directory);
 
@@ -361,9 +722,9 @@ RuntimeLibrarySnapshot snapshotRuntimeLibrary(
   try {
     snapshot.writeAsBytesSync(bytes, flush: true);
     if (!Platform.isWindows) {
-      final fileMode = Process.runSync('chmod', ['400', snapshot.path]);
+      final fileMode = Process.runSync('/bin/chmod', ['400', snapshot.path]);
       final directoryMode = Process.runSync(
-        'chmod',
+        '/bin/chmod',
         [Platform.isMacOS ? '500' : '700', directory.path],
       );
       if (fileMode.exitCode != 0 || directoryMode.exitCode != 0) {
@@ -382,7 +743,9 @@ RuntimeLibrarySnapshot snapshotRuntimeLibrary(
 }
 
 void _removeOwnedSnapshot(Directory directory) {
-  if (!Platform.isWindows) Process.runSync('chmod', ['700', directory.path]);
+  if (!Platform.isWindows) {
+    Process.runSync('/bin/chmod', ['700', directory.path]);
+  }
   directory.deleteSync(recursive: true);
 }
 

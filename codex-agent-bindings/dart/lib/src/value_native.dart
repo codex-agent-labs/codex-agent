@@ -578,8 +578,7 @@ final class _ValueNativeApi {
             _ContextHandleIntOutNative,
             _ContextHandleIntOutDart>('codex_agent_authorization_url_purpose');
 
-  factory _ValueNativeApi.load() =>
-      _ValueNativeApi._(NativeApi.load(resolveLibraryPathSync()));
+  factory _ValueNativeApi.load() => _ValueNativeApi._(NativeApi.loadResolved());
 
   final NativeApi core;
   final _ContextStringHandleOutDart conversationIdCreate;

@@ -934,7 +934,17 @@ final class NativeApi {
             'codex_agent_conversation_is_turn_active_subscribe');
 
   factory NativeApi.load(String path) {
-    return NativeApi._(_authenticatedRuntime(path).library);
+    return NativeApi._(
+        _authenticatedRuntime(path, explicitOverride: true).library);
+  }
+
+  factory NativeApi.loadResolved([String? explicit]) {
+    final override = explicit != null ||
+        Platform.environment.containsKey('CODEX_AGENT_LIBRARY');
+    return NativeApi._(_authenticatedRuntime(
+      resolveLibraryPathSync(explicit),
+      explicitOverride: override,
+    ).library);
   }
 
   final DynamicLibrary library;
@@ -1033,12 +1043,13 @@ final _authenticatedRuntimes = <String, _AuthenticatedRuntime>{};
 
 _AuthenticatedRuntime _authenticatedRuntime(
   String path, {
+  required bool explicitOverride,
   void Function(File snapshot)? beforeDynamicOpen,
 }) {
   final file = File(path);
   requireAbsoluteRegularFile(file, 'Codex Agent C SDK');
   final cached = _authenticatedRuntimes[path];
-  if (cached != null) {
+  if (cached != null && !explicitOverride) {
     if (runtimeFileSha256(file) != cached.digest) {
       throw const CodexException(
         'Codex Agent Runtime changed after authentication',
@@ -1064,12 +1075,35 @@ _AuthenticatedRuntime _authenticatedRuntime(
     embedded: embedded,
   );
   try {
+    final authorization = explicitOverride
+        ? verifyExternalRuntimeReleaseEvidence(
+            snapshot.file, file, compatibility, target)
+        : null;
+    if (cached != null && beforeDynamicOpen == null) {
+      if (snapshot.digest != cached.digest ||
+          (authorization != null &&
+              readRuntimeIdentity(cached.library) !=
+                  jsonEncode(authorization['runtimeIdentity']))) {
+        throw const CodexException(
+          'Codex Agent Runtime changed after authentication',
+        );
+      }
+      snapshot.removeAfterLoad();
+      return cached;
+    }
     final library = _openProtectedRuntime(
       snapshot,
       beforeDynamicOpen: beforeDynamicOpen,
     );
+    final identityJson = readRuntimeIdentity(library);
+    if (authorization != null &&
+        jsonEncode(authorization['runtimeIdentity']) != identityJson) {
+      throw const CodexException(
+        'external Runtime identity differs from signed authorization',
+      );
+    }
     final identityAbi = compatibility.verifyRuntimeIdentity(
-      readRuntimeIdentity(library),
+      identityJson,
       target,
       embedded: embedded,
     );
@@ -1111,6 +1145,7 @@ DynamicLibrary authenticatedRuntimeLibraryForTesting(
 }) =>
     _authenticatedRuntime(
       path,
+      explicitOverride: true,
       beforeDynamicOpen: beforeDynamicOpen,
     ).library;
 
