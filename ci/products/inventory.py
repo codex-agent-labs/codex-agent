@@ -815,7 +815,9 @@ def publish_regular_tree(
     if expected_inventory is not None:
         records = require_sorted_unique_records(expected_inventory, "pinned inventory")
         for index, record in enumerate(records):
-            validate_file_record(record, f"pinned inventory[{index}]", with_kind=False)
+            validate_file_record(
+                record, f"pinned inventory[{index}]", with_kind=False, allow_empty=allow_empty,
+            )
         expected = tuple((record["relativePath"], record["bytes"], record["sha256"]) for record in records)
     if _is_windows():
         _snapshot_regular_tree_windows(
@@ -999,7 +1001,9 @@ def require_relative_path(value: Any, label: str) -> str:
     return value
 
 
-def validate_file_record(value: Any, label: str, *, with_kind: bool) -> dict[str, Any]:
+def validate_file_record(
+    value: Any, label: str, *, with_kind: bool, allow_empty: bool = False,
+) -> dict[str, Any]:
     keys = {"relativePath", "bytes", "sha256"}
     if with_kind:
         keys.add("kind")
@@ -1007,7 +1011,7 @@ def validate_file_record(value: Any, label: str, *, with_kind: bool) -> dict[str
     if with_kind:
         require_identifier(record["kind"], f"{label}.kind")
     require_relative_path(record["relativePath"], f"{label}.relativePath")
-    require_integer(record["bytes"], f"{label}.bytes", minimum=1)
+    require_integer(record["bytes"], f"{label}.bytes", minimum=0 if allow_empty else 1)
     require_sha256(record["sha256"], f"{label}.sha256")
     return record
 

@@ -20,6 +20,7 @@ from .inventory import (
     _stat_identity,
     canonical_json_bytes,
     publish_regular_tree,
+    read_regular_file_bytes,
     regular_file_inventory,
     require_relative_path,
     sha256_bytes,
@@ -109,12 +110,25 @@ def stage_sdk_inputs(request: Path, output: Path, *, request_directory: Path | N
 
         staged_request = root / REQUEST_NAME
         staged_request.write_bytes(canonical_json_bytes(relocated))
+        source_inventory = regular_file_inventory(root)
         staged_arguments = load_sdk_compatibility_request(staged_request)
-        produce_sdk_compatibility(output=root / COMPATIBILITY_NAME, **staged_arguments)
-        inventory = {"schemaVersion": 1, "kind": "sdk-inputs", "files": regular_file_inventory(root)}
+        compatibility = produce_sdk_compatibility(output=root / COMPATIBILITY_NAME, **staged_arguments)
+        compatibility_bytes = canonical_json_bytes(compatibility)
+        if (regular_file_inventory(root, excluded_paths=(COMPATIBILITY_NAME,)) != source_inventory
+                or read_regular_file_bytes(root / COMPATIBILITY_NAME) != compatibility_bytes):
+            raise ValueError("SDK input source or verified compatibility changed before publication")
+        files = sorted([*source_inventory, {"relativePath": COMPATIBILITY_NAME,
+                         "bytes": len(compatibility_bytes), "sha256": sha256_bytes(compatibility_bytes)}],
+                       key=lambda record: record["relativePath"])
+        inventory = {"schemaVersion": 1, "kind": "sdk-inputs", "files": files}
         inventory_bytes = canonical_json_bytes(inventory)
         (root / INVENTORY_NAME).write_bytes(inventory_bytes)
-        publish_regular_tree(root, Path(output))
+        expected_inventory = sorted([*files, {"relativePath": INVENTORY_NAME,
+                                      "bytes": len(inventory_bytes), "sha256": sha256_bytes(inventory_bytes)}],
+                                    key=lambda record: record["relativePath"])
+        if regular_file_inventory(root) != expected_inventory:
+            raise ValueError("SDK input files differ from verified compatibility before publication")
+        publish_regular_tree(root, Path(output), expected_inventory=expected_inventory)
     return {"inventorySha256": sha256_bytes(inventory_bytes), "inventory": inventory}
 
 

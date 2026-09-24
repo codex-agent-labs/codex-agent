@@ -25,6 +25,21 @@ class ProductPublicationAtomicityTests(unittest.TestCase):
 
             self.assertEqual(expected, regular_file_inventory(destination))
 
+    def test_pinned_inventory_allows_empty_files_only_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "source"
+            source.mkdir()
+            (source / "empty").touch()
+            destination = root / "published"
+            expected = regular_file_inventory(source, allow_empty=True)
+
+            with self.assertRaises(ValueError):
+                publish_regular_tree(source, destination, expected_inventory=expected)
+            self.assertFalse(destination.exists())
+            publish_regular_tree(source, destination, allow_empty=True, expected_inventory=expected)
+            self.assertEqual(expected, regular_file_inventory(destination, allow_empty=True))
+
     def test_foreign_empty_destination_created_after_final_check_is_not_replaced(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

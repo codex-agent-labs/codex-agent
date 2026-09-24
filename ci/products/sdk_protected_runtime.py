@@ -11,13 +11,14 @@ from pathlib import Path
 import tempfile
 
 from .inventory import (
-    load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
+    canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
     regular_file_inventory, require_exact_keys, require_regular_directory,
-    require_sha256, sha256_bytes, snapshot_regular_tree,
+    require_sha256, sha256_bytes, snapshot_regular_tree, verify_regular_file_inventory,
 )
 from .receipt import validate_phase_receipt
 from .runtime_aggregate_handoff import _public_policy
 from .runtime_sdk_handoff import stage_runtime_sdk_handoff
+from .sdk_inputs import INVENTORY_NAME
 from .sdk_package import _require_capability_output_separate
 
 
@@ -120,13 +121,30 @@ def stage_protected_runtime_sdk_inputs(
             **({"expected_contract_payload_sha256": expected_contract_payload_sha256}
                if expected_contract_payload_sha256 is not None else {}))
         # All nested verification contexts have exited before external publication.
-        regular_file_inventory(prepared / "sdk-inputs")  # SDK product/input files remain nonempty.
+        sdk_inputs = prepared / "sdk-inputs"
+        manifest_bytes = canonical_json_bytes(result["inventory"])
+        if (sha256_bytes(manifest_bytes) != result["inventorySha256"]
+                or read_regular_file_bytes(sdk_inputs / INVENTORY_NAME,
+                                           max_bytes=16 * 1024 * 1024) != manifest_bytes):
+            raise ValueError("Protected SDK input inventory differs from verified bridge result")
+        verify_regular_file_inventory(
+            sdk_inputs, result["inventory"]["files"], with_kind=False,
+            excluded_paths=(INVENTORY_NAME,),
+        )
+        sdk_files = [*result["inventory"]["files"], {"relativePath": INVENTORY_NAME,
+            "bytes": len(manifest_bytes), "sha256": sha256_bytes(manifest_bytes)}]
+        expected_inventory = sorted([
+            *({**record, "relativePath": f"runtime-release/{record['relativePath']}"} for record in before),
+            *({**record, "relativePath": f"sdk-inputs/{record['relativePath']}"} for record in sdk_files),
+        ], key=lambda record: record["relativePath"])
         if (regular_file_inventory(original, allow_empty=True) != before
                 or regular_file_inventory(captured, allow_empty=True) != before
+                or regular_file_inventory(prepared, allow_empty=True) != expected_inventory
                 or regular_file_inventory(policy) != policy_inventory
                 or any(read_regular_file_bytes(path, max_bytes=64 * 1024, reject_symlink_parents=True)
                        != policy_bytes[name] for name, path in paths.items())):
             raise ValueError("Protected Runtime originals or caller policy changed before publication")
         output_safe()
-        publish_regular_tree(prepared, destination, allow_empty=True)
+        publish_regular_tree(prepared, destination, allow_empty=True,
+                             expected_inventory=expected_inventory)
     return result

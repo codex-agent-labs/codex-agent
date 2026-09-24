@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory,
-    sha256_bytes, snapshot_regular_tree, verify_regular_file_inventory,
+    publish_regular_tree as actual_publish_regular_tree, sha256_bytes,
+    snapshot_regular_tree, verify_regular_file_inventory,
 )
 from ci.products.sdk_compatibility import load_sdk_compatibility_request, produce_sdk_compatibility
 from ci.products.sdk_inputs import COMPATIBILITY_NAME, INVENTORY_NAME, REQUEST_NAME, main, stage_sdk_inputs
@@ -163,6 +164,36 @@ class SdkInputsTest(unittest.TestCase):
                 with self.assertRaises((OSError, ValueError)):
                     stage_sdk_inputs(request, output)
                 self.assertFalse(output.exists())
+
+    def test_late_prepared_input_mutation_fails_before_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary).resolve() / "late-inputs"
+
+            def mutate_before_copy(source, destination, **kwargs):
+                manifest = Path(source) / INVENTORY_NAME
+                manifest.write_bytes(manifest.read_bytes() + b"late mutation\n")
+                actual_publish_regular_tree(source, destination, **kwargs)
+
+            with patch("ci.products.sdk_inputs.publish_regular_tree", side_effect=mutate_before_copy), \
+                    self.assertRaisesRegex(ValueError, "pinned inventory"):
+                stage_sdk_inputs(self.original_request, output)
+            self.assertFalse(output.exists())
+
+    def test_input_mutation_before_inventory_pin_cannot_be_baselined(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary).resolve() / "changed-during-verification"
+
+            def mutate_after_compatibility(*args, **kwargs):
+                result = produce_sdk_compatibility(*args, **kwargs)
+                request = Path(kwargs["output"]).parent / REQUEST_NAME
+                request.write_bytes(request.read_bytes() + b"late mutation\n")
+                return result
+
+            with patch("ci.products.sdk_inputs.produce_sdk_compatibility",
+                       side_effect=mutate_after_compatibility), \
+                    self.assertRaisesRegex(ValueError, "source or verified compatibility"):
+                stage_sdk_inputs(self.original_request, output)
+            self.assertFalse(output.exists())
 
     def test_release_keyring_transport_is_public_only_and_preserves_product_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:

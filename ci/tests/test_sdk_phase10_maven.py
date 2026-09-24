@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from ci.products.inventory import (
     canonical_json_bytes, regular_file_inventory, sha256_bytes,
+    publish_regular_tree as actual_publish_regular_tree,
     snapshot_regular_tree as actual_snapshot_regular_tree,
 )
 from ci.products.receipt import compute_build_key, write_output_manifest, write_phase_receipt
@@ -129,6 +130,30 @@ class SdkPhase10MavenTest(unittest.TestCase):
                 self.stage, self.receipt, output, self.key, sha256_bytes(self.key.read_bytes()),
                 self.stage.parent, _FINGERPRINT, "",
             )
+
+    def test_late_verified_sidecar_mutation_fails_before_publication(self):
+        output = self.sidecars.with_name("late-mutated-sidecars")
+
+        def fake_gpg(*arguments, **_kwargs):
+            if "--output" in arguments:
+                Path(arguments[arguments.index("--output") + 1]).write_bytes(b"synthetic signature\n")
+            if "--list-keys" in arguments:
+                return f"pub:::::::::\nfpr:::::::::{_FINGERPRINT}:\n"
+            return ""
+
+        def mutate_before_copy(source, destination, **kwargs):
+            next(Path(source).rglob("*.asc")).write_bytes(b"changed after verification\n")
+            actual_publish_regular_tree(source, destination, **kwargs)
+
+        with patch("ci.products.sdk_phase10_maven._run_gpg", side_effect=fake_gpg), \
+                patch("ci.products.sdk_phase10_maven.publish_regular_tree",
+                      side_effect=mutate_before_copy):
+            with self.assertRaisesRegex(ValueError, "pinned inventory"):
+                produce_sdk_phase10_maven_sidecars(
+                    self.stage, self.receipt, output, self.key,
+                    sha256_bytes(self.key.read_bytes()), self.stage.parent, _FINGERPRINT, "",
+                )
+        self.assertFalse(output.exists())
 
     def test_cli_help_needs_no_pythonpath(self):
         environment = os.environ.copy()

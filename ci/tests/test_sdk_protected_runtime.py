@@ -11,7 +11,7 @@ from ci import runtime_aggregate_release as protected
 from products import sdk_protected_runtime as forwarding
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory,
-    sha256_bytes, snapshot_regular_tree,
+    publish_regular_tree as actual_publish_regular_tree, sha256_bytes, snapshot_regular_tree,
 )
 from products.sdk_inputs import INVENTORY_NAME
 
@@ -177,6 +177,31 @@ class SdkProtectedRuntimeTest(unittest.TestCase):
         with patch.object(forwarding, "stage_runtime_sdk_handoff", side_effect=mutate), \
                 self.assertRaisesRegex(ValueError, "changed before publication"):
             self.stage(original)
+        self.assertFalse(self.output.exists())
+
+    def test_prepared_late_mutation_cannot_publish_protected_sdk_inputs(self):
+        def mutate_before_copy(source, destination, **kwargs):
+            manifest = Path(source) / "sdk-inputs" / INVENTORY_NAME
+            manifest.write_bytes(manifest.read_bytes() + b"late mutation\n")
+            actual_publish_regular_tree(source, destination, **kwargs)
+
+        with patch.object(forwarding, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self.stage()
+        self.assertFalse(self.output.exists())
+
+    def test_bridge_result_mutation_before_outer_pin_cannot_be_baselined(self):
+        bridge = forwarding.stage_runtime_sdk_handoff
+
+        def mutate_after_bridge(carrier, destination, **kwargs):
+            result = bridge(carrier, destination, **kwargs)
+            manifest = Path(destination) / INVENTORY_NAME
+            manifest.write_bytes(manifest.read_bytes() + b"late mutation\n")
+            return result
+
+        with patch.object(forwarding, "stage_runtime_sdk_handoff", side_effect=mutate_after_bridge), \
+                self.assertRaisesRegex(ValueError, "inventory differs from verified bridge result"):
+            self.stage()
         self.assertFalse(self.output.exists())
 
     def test_existing_destination_and_symbolic_or_overlapping_paths_preserve_originals(self):
