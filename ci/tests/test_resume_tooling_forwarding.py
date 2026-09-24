@@ -92,7 +92,8 @@ class ResumeToolingForwardingTest(unittest.TestCase):
                         artifact_id=7, artifact_sha256=fixture.KEY, trusted_workflow_sha="a" * 40,
                         state_wave=4, repository_root=self.root, environ=self.environment, token="synthetic")
                     replay_args = (result["plan_path"], result["discovery_root"], result["state_root"], self.output)
-                    replay_kwargs = {"repository_root": self.root, "environ": self.environment, **optional}
+                    replay_kwargs = {"repository_root": self.root, "environ": self.environment,
+                        "sdk_original_workflow_sha": "a" * 40, **optional}
                     matrix.assert_called_once_with(*replay_args, **replay_kwargs)
                     if instance:
                         continuation.assert_called_once_with(*replay_args, **replay_kwargs)
