@@ -39,6 +39,17 @@ def handoff():
     value["sdk-core-package-result"] = job("success", **locator("88", sdk="8"))
     value["sdk-core-validation-result"] = job("success", **locator("88", sdk="8"))
     value["sdk-core-metadata-result"] = job("success", **locator("88", sdk="8"))
+    for name in ("sdk-android-binary-result", "sdk-android-package-result",
+                 "sdk-android-validation-result", "sdk-android-metadata-result"):
+        value[name] = job("success", **locator("88", sdk="8"))
+    return value
+
+
+def forward_android(value):
+    """Model unchanged Android gates after a predecessor-only test edit."""
+    for name in ("sdk-android-binary-result", "sdk-android-package-result",
+                 "sdk-android-validation-result", "sdk-android-metadata-result"):
+        value[name]["outputs"] = deepcopy(value["sdk-core-metadata-result"]["outputs"])
     return value
 
 
@@ -53,6 +64,7 @@ class SdkCompletionStateTest(unittest.TestCase):
             value["sdk-core-package-result"]["outputs"] = locator("88", runtime, sdk)
             value["sdk-core-validation-result"]["outputs"] = locator("88", runtime, sdk)
             value["sdk-core-metadata-result"]["outputs"] = locator("88", runtime, sdk)
+            forward_android(value)
             before = deepcopy(value)
             with self.subTest(runtime=runtime, sdk=sdk):
                 self.assertEqual(value["sdk-native-result"]["outputs"], state.select_sdk_completion_state(value))
@@ -66,6 +78,7 @@ class SdkCompletionStateTest(unittest.TestCase):
         value["sdk-core-package-result"] = job("success", **locator("99", sdk="9"))
         value["sdk-core-validation-result"] = job("success", **locator("99", sdk="9"))
         value["sdk-core-metadata-result"] = job("success", **locator("99", sdk="9"))
+        forward_android(value)
         before = deepcopy(value)
         self.assertEqual(locator("99", sdk="9"), state.select_sdk_completion_state(value))
         self.assertEqual(before, value)
@@ -89,6 +102,7 @@ class SdkCompletionStateTest(unittest.TestCase):
         value["sdk-core-package-result"] = job("success", **locator("110", sdk="10"))
         value["sdk-core-validation-result"] = job("success", **locator("110", sdk="10"))
         value["sdk-core-metadata-result"] = job("success", **locator("110", sdk="10"))
+        forward_android(value)
         before = deepcopy(value)
         self.assertEqual(locator("110", sdk="10"), state.select_sdk_completion_state(value))
         self.assertEqual(before, value)
@@ -117,6 +131,7 @@ class SdkCompletionStateTest(unittest.TestCase):
         value["sdk-core-package-result"] = job("success", **locator("111", sdk="11"))
         value["sdk-core-validation-result"] = job("success", **locator("111", sdk="11"))
         value["sdk-core-metadata-result"] = job("success", **locator("111", sdk="11"))
+        forward_android(value)
         self.assertEqual(locator("111", sdk="11"), state.select_sdk_completion_state(value))
         for status in ("failure", "cancelled", "skipped", "in_progress"):
             changed = deepcopy(value)
@@ -134,6 +149,7 @@ class SdkCompletionStateTest(unittest.TestCase):
         value["sdk-core-package-result"] = job("success", **locator("112", sdk="12"))
         value["sdk-core-validation-result"] = job("success", **locator("112", sdk="12"))
         value["sdk-core-metadata-result"] = job("success", **locator("112", sdk="12"))
+        forward_android(value)
         self.assertEqual(locator("112", sdk="12"), state.select_sdk_completion_state(value))
         for status in ("failure", "cancelled", "skipped", "in_progress"):
             changed = deepcopy(value)
@@ -151,6 +167,7 @@ class SdkCompletionStateTest(unittest.TestCase):
         value["sdk-core-package-result"] = job("success", **locator("112", sdk="12"))
         value["sdk-core-validation-result"] = job("success", **locator("113", sdk="13"))
         value["sdk-core-metadata-result"] = job("success", **locator("113", sdk="13"))
+        forward_android(value)
         self.assertEqual(locator("113", sdk="13"), state.select_sdk_completion_state(value))
         for status in ("failure", "cancelled", "skipped", "in_progress"):
             changed = deepcopy(value)
@@ -167,6 +184,7 @@ class SdkCompletionStateTest(unittest.TestCase):
         value = handoff()
         value["sdk-core-validation-result"] = job("success", **locator("113", sdk="13"))
         value["sdk-core-metadata-result"] = job("success", **locator("114", sdk="14"))
+        forward_android(value)
         self.assertEqual(locator("114", sdk="14"), state.select_sdk_completion_state(value))
         for status in ("failure", "cancelled", "skipped", "in_progress"):
             changed = deepcopy(value)
@@ -178,6 +196,30 @@ class SdkCompletionStateTest(unittest.TestCase):
             changed["sdk-core-metadata-result"]["outputs"] = invalid
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 state.select_sdk_completion_state(changed)
+
+    def test_android_waves_fifteen_through_eighteen_are_terminal_and_ordered(self):
+        value = handoff()
+        value["sdk-core-metadata-result"] = job("success", **locator("114", sdk="14"))
+        names = ("sdk-android-binary-result", "sdk-android-package-result",
+                 "sdk-android-validation-result", "sdk-android-metadata-result")
+        for wave, name in enumerate(names, start=15):
+            value[name] = job("success", **locator(str(100 + wave), sdk=str(wave)))
+        self.assertEqual(locator("118", sdk="18"), state.select_sdk_completion_state(value))
+        for name in names:
+            for result in ("failure", "cancelled", "skipped", "in_progress"):
+                changed = deepcopy(value)
+                changed[name]["result"] = result
+                with self.subTest(name=name, result=result), self.assertRaises(ValueError):
+                    state.select_sdk_completion_state(changed)
+            changed = deepcopy(value)
+            changed[name]["outputs"] = locator("199", sdk="14")
+            with self.subTest(name=name, wrong_wave=True), self.assertRaises(ValueError):
+                state.select_sdk_completion_state(changed)
+        unchanged = handoff()
+        unchanged["sdk-core-metadata-result"] = job("success", **locator("114", sdk="14"))
+        for name in names:
+            unchanged[name] = job("success", **locator("114", sdk="14"))
+        self.assertEqual(locator("114", sdk="14"), state.select_sdk_completion_state(unchanged))
 
     def test_full_reuse_initial_and_normal_empty_sdk_branch_preserve_original_resume(self):
         value = needs()

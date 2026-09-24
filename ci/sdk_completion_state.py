@@ -9,6 +9,8 @@ _JOBS = (
     "sdk-ios-binary-plan", "sdk-ios-binary", "sdk-collect-3", "sdk-plan", "sdk-native-result",
     "sdk-ios-validation-result", "sdk-ios-metadata-result", "sdk-core-binary-result",
     "sdk-core-package-result", "sdk-core-validation-result", "sdk-core-metadata-result",
+    "sdk-android-binary-result", "sdk-android-package-result",
+    "sdk-android-validation-result", "sdk-android-metadata-result",
 )
 
 
@@ -132,13 +134,28 @@ def select_sdk_completion_state(needs):
         metadata_state = _state(core_metadata["outputs"])
         if metadata_state != validation_state and metadata_state["sdk_state_wave"] != "14":
             raise ValueError("Core metadata state differs from its original validation parent or wave")
-        return metadata_state
+        parent = metadata_state
+        for name, wave in (("sdk-android-binary-result", "15"),
+                           ("sdk-android-package-result", "16"),
+                           ("sdk-android-validation-result", "17"),
+                           ("sdk-android-metadata-result", "18")):
+            android = jobs[name]
+            if android["result"] != "success":
+                raise ValueError("SDK completion Android gate did not succeed: " + name)
+            current = _state(android["outputs"])
+            if current != parent and current["sdk_state_wave"] != wave:
+                raise ValueError("Android state differs from its original predecessor or wave: " + name)
+            parent = current
+        return parent
     if (planned["result"] != "skipped" or any(_locator(native["outputs"]).values())
             or any(_locator(validation["outputs"]).values())
             or any(_locator(final["outputs"]).values())
             or core_binary["result"] != "skipped" or any(_locator(core_binary["outputs"]).values())
             or core_package["result"] != "skipped" or any(_locator(core_package["outputs"]).values())
             or core_validation["result"] != "skipped" or any(_locator(core_validation["outputs"]).values())
-            or core_metadata["result"] != "skipped" or any(_locator(core_metadata["outputs"]).values())):
+            or core_metadata["result"] != "skipped" or any(_locator(core_metadata["outputs"]).values())
+            or any(jobs[name]["result"] != "skipped" or any(_locator(jobs[name]["outputs"]).values())
+                   for name in ("sdk-android-binary-result", "sdk-android-package-result",
+                                "sdk-android-validation-result", "sdk-android-metadata-result"))):
         raise ValueError("Unexpected SDK handoff state without its election")
     return parent
