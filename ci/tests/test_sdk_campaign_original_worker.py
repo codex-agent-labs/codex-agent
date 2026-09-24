@@ -32,6 +32,7 @@ class SdkCampaignOriginalWorkerTest(TestCase):
         original = self.original if original is None else original
         return worker.held_fresh_sdk_worker_upload(
             self.instance, original, self.transport, artifact_id=artifact_id,
+            expected_receipt_sha256=sha256_bytes(self.original.receipt_bytes),
             artifact_sha256=sha256_bytes(self.raw) if digest is None else digest,
             trusted_workflow_sha=fixture_module.PIN, token="synthetic-token", environ={})
 
@@ -62,6 +63,16 @@ class SdkCampaignOriginalWorkerTest(TestCase):
                 pass
         query.assert_not_called()
 
+    def test_independent_receipt_pin_rejects_before_observation(self):
+        with patch.object(worker.product_reuse, "api_json") as query, \
+             self.assertRaisesRegex(ValueError, "independent caller receipt"):
+            with worker.held_fresh_sdk_worker_upload(self.instance, self.original,
+                    self.transport, expected_receipt_sha256="sha256:" + "0" * 64,
+                    artifact_id=901, artifact_sha256=sha256_bytes(self.raw),
+                    trusted_workflow_sha=fixture_module.PIN, token="synthetic-token", environ={}):
+                pass
+        query.assert_not_called()
+
     def test_wrong_official_id_or_digest_rejects(self):
         with self.fixture.official_api({self.instance: self.ready}, {self.instance: self.raw}) as (query, _, _):
             official = query.side_effect
@@ -88,7 +99,8 @@ class SdkCampaignOriginalWorkerTest(TestCase):
         with patch.object(worker.product_reuse, "api_json") as query, \
              self.assertRaisesRegex(ValueError, "signing-secret context"):
             with worker.held_fresh_sdk_worker_upload(self.instance, self.original,
-                    self.transport, artifact_id=901, artifact_sha256=sha256_bytes(self.raw),
+                    self.transport, expected_receipt_sha256=sha256_bytes(self.original.receipt_bytes),
+                    artifact_id=901, artifact_sha256=sha256_bytes(self.raw),
                     trusted_workflow_sha=fixture_module.PIN, token="synthetic-token",
                     environ={"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": ""}):
                 pass

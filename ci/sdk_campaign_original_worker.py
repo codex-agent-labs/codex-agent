@@ -29,11 +29,12 @@ from ci.sdk_campaign_original_locator import fresh_sdk_worker_route
 
 @contextmanager
 def held_fresh_sdk_worker_upload(instance, original, current_transport_bytes, *,
-        artifact_id, artifact_sha256, trusted_workflow_sha, token, environ):
+        expected_receipt_sha256, artifact_id, artifact_sha256, trusted_workflow_sha, token, environ):
     """Bind one retained phase to its official original job, upload and exact shard.
 
     ``original`` and ``current_transport_bytes`` must come from the active
-    held SDK campaign observation. This verifier does not accept reused phases,
+    held SDK campaign observation; the receipt digest must be independently
+    selected by its caller. This verifier does not accept reused phases,
     choose an index artifact path, or mint a release-admission token.
     """
     require_no_signing_secret(environ)
@@ -41,6 +42,9 @@ def held_fresh_sdk_worker_upload(instance, original, current_transport_bytes, *,
         raise ValueError("Fresh SDK worker requires one registered phase instance")
     if not isinstance(original, ObservedSdkOriginal):
         raise ValueError("Fresh SDK worker requires an observed original phase")
+    require_sha256(expected_receipt_sha256, "Caller-selected SDK receipt")
+    if sha256_bytes(original.receipt_bytes) != expected_receipt_sha256:
+        raise ValueError("Fresh SDK worker differs from independent caller receipt selection")
     require_integer(artifact_id, "Original SDK worker artifact ID", 1)
     require_sha256(artifact_sha256, "Original SDK worker artifact digest")
     receipt = validate_phase_receipt(load_canonical_json_bytes(original.receipt_bytes))

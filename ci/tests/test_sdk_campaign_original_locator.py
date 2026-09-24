@@ -78,6 +78,7 @@ class SdkCampaignOriginalLocatorTest(TestCase):
                     self.assertFalse(download.called)
                     with worker.held_fresh_sdk_worker_upload(instance, original,
                             canonical_json_bytes({"captureProducer": self.fixture.producer}),
+                            expected_receipt_sha256=sha256_bytes(original.receipt_bytes),
                             artifact_id=pin["artifact_id"], artifact_sha256=pin["artifact_sha256"],
                             trusted_workflow_sha=fixture_module.PIN, token="synthetic-token", environ={}) as (evidence, _):
                         self.assertEqual(901, evidence["artifact"]["id"])
