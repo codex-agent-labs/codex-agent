@@ -4722,13 +4722,23 @@ def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed,
                      "aggregateBuildKey": key, "aggregateReceiptSha256": digest}
         write_canonical_json(prepared / "capture-transport.json", transport)
+        transport_bytes = canonical_json_bytes(transport)
+        expected_files = sorted([
+            {"relativePath": "plan/impact-plan.json", "bytes": len(original_plan),
+             "sha256": sha256_bytes(original_plan)},
+            {"relativePath": "transport.zip", "bytes": len(raw), "sha256": artifact_sha256},
+            {"relativePath": "capture-transport.json", "bytes": len(transport_bytes),
+             "sha256": sha256_bytes(transport_bytes)},
+            *({**record, "relativePath": f"original/{record['relativePath']}"} for record in zipped),
+        ], key=lambda record: record["relativePath"])
         if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != original_plan
                 or captured_plan.read_bytes() != original_plan
                 or regular_file_inventory(original, allow_empty=True) != zipped
-                or sha256_file(archive) != artifact_sha256):
+                or sha256_file(archive) != artifact_sha256
+                or regular_file_inventory(prepared, allow_empty=True) != expected_files):
             raise ValueError("Aggregate original plan or upload changed before capture publication")
         output_safe()
-        publish_regular_tree(prepared, destination, allow_empty=True)
+        publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected_files)
     return transport
 
 
@@ -4865,15 +4875,29 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
             transport["packageReceiptSha256"] = sha256_bytes(receipt_bytes)
             (prepared / "original-package-receipt.json").write_bytes(receipt_bytes)
         write_canonical_json(prepared / "capture-transport.json", transport)
+        transport_bytes = canonical_json_bytes(transport)
+        expected_files = [
+            {"relativePath": "plan/impact-plan.json", "bytes": len(plan_bytes),
+             "sha256": sha256_bytes(plan_bytes)},
+            {"relativePath": "transport.zip", "bytes": len(raw), "sha256": artifact_sha256},
+            {"relativePath": "capture-transport.json", "bytes": len(transport_bytes),
+             "sha256": sha256_bytes(transport_bytes)},
+            *({**record, "relativePath": f"original/{record['relativePath']}"} for record in zipped),
+        ]
+        if receipt_bytes is not None:
+            expected_files.append({"relativePath": "original-package-receipt.json",
+                                   "bytes": len(receipt_bytes), "sha256": sha256_bytes(receipt_bytes)})
+        expected_files.sort(key=lambda record: record["relativePath"])
         if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes
                 or (receipt_path is not None and (
                     read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != receipt_bytes
                     or read_regular_file_bytes(prepared / "original-package-receipt.json") != receipt_bytes))
                 or captured_plan.read_bytes() != plan_bytes or sha256_file(archive) != artifact_sha256
-                or regular_file_inventory(original, allow_empty=True) != zipped):
+                or regular_file_inventory(original, allow_empty=True) != zipped
+                or regular_file_inventory(prepared, allow_empty=True) != expected_files):
             raise ValueError("SDK input original plan or upload changed before capture publication")
         output_safe()
-        publish_regular_tree(prepared, destination, allow_empty=True)
+        publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected_files)
     return transport
 
 

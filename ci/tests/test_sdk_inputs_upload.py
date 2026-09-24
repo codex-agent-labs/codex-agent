@@ -16,7 +16,7 @@ import zipfile
 
 from ci.tests import test_runtime_aggregate_upload as fixture
 from ci.tests.product_chain_support import output, write_receipt
-from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes
+from products.inventory import canonical_json_bytes, publish_regular_tree, regular_file_inventory, sha256_bytes
 
 
 capture = fixture.capture
@@ -364,6 +364,17 @@ class SdkInputsUploadTest(unittest.TestCase):
                 self.assertFalse(self.output.exists())
             finally:
                 self.plan_path.write_bytes(self.original_plan)
+
+    def test_late_extracted_input_mutation_rejects_before_publication(self):
+        def mutate_before_copy(source, destination, **kwargs):
+            input_path = source / "original/sdk-inputs/synthetic-input.json"
+            input_path.write_bytes(input_path.read_bytes() + b"late mutation\n")
+            return publish_regular_tree(source, destination, **kwargs)
+
+        with patch.object(capture, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self.call()
+        self.assertFalse(self.output.exists())
 
     def test_invalid_authority_and_output_overlap_reject_before_http(self):
         cases = ({"expected_source": "unknown"}, {"expected_source": []}, {"token": None}, {"token": ""},

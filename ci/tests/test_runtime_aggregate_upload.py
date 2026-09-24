@@ -15,7 +15,8 @@ import zipfile
 
 from ci.tests.test_products import phase_receipt
 from ci.tests import test_contract_ci_originals as fixture
-from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes
+from products.inventory import (canonical_json_bytes, publish_regular_tree as actual_publish_regular_tree,
+                                regular_file_inventory, sha256_bytes)
 from products.receipt import compute_build_key
 
 
@@ -162,6 +163,16 @@ class RuntimeAggregateUploadTest(unittest.TestCase):
         self.output = self.root / "nested"
         with patch.object(capture, "_observe_ci_producer_jobs") as observe, self.assertRaises(ValueError): self.call()
         observe.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_late_original_mutation_cannot_publish(self):
+        def mutate_during_copy(source, destination, **kwargs):
+            (Path(source) / "original/caller.json").write_bytes(b"changed during copy")
+            actual_publish_regular_tree(source, destination, **kwargs)
+
+        with patch.object(capture, "publish_regular_tree", side_effect=mutate_during_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self.call()
         self.assertFalse(self.output.exists())
 
 
