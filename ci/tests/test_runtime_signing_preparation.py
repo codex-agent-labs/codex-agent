@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from ci.tests import test_runtime_workflow as fixture
 from ci import runtime_signing_preparation as preparation
+from products.inventory import publish_regular_tree as actual_publish_regular_tree
 from products.inventory import canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory, sha256_bytes
 
 
@@ -300,6 +301,19 @@ class RuntimeSigningPreparationTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.invoke(destination, target="aggregate")
             self.assertFalse(destination.exists())
+
+    def test_late_prepared_original_mutation_cannot_publish(self):
+        destination = self.root / "late-copy"
+
+        def mutate_before_copy(source, output, **kwargs):
+            original = source / "selected-inputs/predecessors/phase-receipt.json"
+            original.write_bytes(original.read_bytes() + b"late mutation\n")
+            return actual_publish_regular_tree(source, output, **kwargs)
+
+        with patch.object(preparation, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self.invoke(destination)
+        self.assertFalse(destination.exists())
 
     def test_output_overlap_existing_and_symbolic_ancestry_reject_before_capture(self):
         occupied = self.root / "occupied"

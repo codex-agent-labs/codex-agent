@@ -148,7 +148,16 @@ def prepare_runtime_signing_inputs(
                 if regular_file_inventory(prepared / name, allow_empty=True) != baselines[source]:
                     raise ValueError("Runtime signing preparation changed while copying original bytes")
             write_canonical_json(prepared / "preparation.json", record)
+            record_bytes = canonical_json_bytes(record)
+            expected_files = sorted([
+                *({**item, "relativePath": f"{name}/{item['relativePath']}"}
+                  for source, name in copies for item in baselines[source]),
+                {"relativePath": "preparation.json", "bytes": len(record_bytes),
+                 "sha256": sha256_bytes(record_bytes)},
+            ], key=lambda item: item["relativePath"])
             unchanged()
             _destination(output, protected)
-            publish_regular_tree(prepared, output, allow_empty=True)
+            if regular_file_inventory(prepared, allow_empty=True) != expected_files:
+                raise ValueError("Runtime signing preparation differs from verified original inputs")
+            publish_regular_tree(prepared, output, allow_empty=True, expected_inventory=expected_files)
     return record
