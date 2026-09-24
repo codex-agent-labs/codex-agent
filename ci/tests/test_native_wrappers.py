@@ -1086,6 +1086,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
         self.assertIn("normalize_nupkg", calls["package_once"])
         self.assertIn("verify_native_wrapper_sdk_packages", calls["package_once"])
         self.assertIn("-p:PathMap=", ast.unparse(functions["package_once"]))
+        self.assertNotIn("CodexAgentRequireNativeAssets", ast.unparse(functions["package_once"]))
         self.assertIn("work = Path(temporary).resolve()", ast.unparse(functions["package_once"]))
         self.assertIn("-DCODEX_AGENT_CPP_PACKAGE_ONLY=ON", ast.unparse(functions["package_once"]))
         self.assertIn("require_embedded_package_versions", calls["_consume"])

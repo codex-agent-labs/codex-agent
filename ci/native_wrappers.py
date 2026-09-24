@@ -567,7 +567,7 @@ def package_once(
             csharp_output.mkdir()
             run(
                 "dotnet", "pack", "src/CodexAgent/CodexAgent.csproj", "--configuration", "Release",
-                "--output", csharp_output, "-p:CodexAgentRequireNativeAssets=true",
+                "--output", csharp_output,
                 f"-p:Version={sdk_version}",
                 f"-p:PathMap={csharp_source}=/_/csharp", cwd=csharp_source,
             )
