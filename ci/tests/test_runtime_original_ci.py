@@ -7,6 +7,7 @@ from unittest import mock
 
 from ci.tests import test_contract_ci_originals as fixture
 from ci.tests.test_products import phase_receipt
+from products.inventory import publish_regular_tree as actual_publish_regular_tree
 
 adapter = fixture.product_reuse
 TARGET = "linux-x64"
@@ -60,6 +61,17 @@ class RuntimeOriginalCiTest(unittest.TestCase):
             self.assertEqual(before[phase], self.receipts[phase].read_bytes())
         with self.assertRaisesRegex(ValueError, "must not exist"):
             self.capture()
+
+    def test_late_original_shard_mutation_cannot_publish(self):
+        def mutate_before_copy(source, destination, **kwargs):
+            (Path(source) / "phases/binary/original/shard/phase-receipt.json").write_bytes(
+                b"changed after verification")
+            actual_publish_regular_tree(source, destination, **kwargs)
+
+        with mock.patch.object(adapter, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self.capture()
+        self.assertFalse(self.output.exists())
 
     def test_failed_job_wrong_attempt_window_digest_and_workflow_reject(self):
         failed = copy.deepcopy(self.jobs)
@@ -174,6 +186,31 @@ class RuntimeRetainedOriginalTest(unittest.TestCase):
         self.assertEqual(dict.fromkeys(fixture.PHASES, 0), result["releaseAttestations"])
         self.assertEqual(before, fixture.regular_file_inventory(self.output / "release-handoffs/0"))
         self.assertEqual(before, fixture.regular_file_inventory(self.handoff))
+
+    def test_private_release_policy_swap_cannot_publish(self):
+        original = adapter.load_keyring
+        caller_bytes = self.keyring.read_bytes()
+        swapped = False
+
+        def swap_after_private_copy(keyring, keys):
+            nonlocal swapped
+            result = original(keyring, keys)
+            keyring, keys = Path(keyring), Path(keys)
+            if not swapped and keys.parent == keyring.parent:
+                value = fixture.load_canonical_json_bytes(keyring.read_bytes())
+                value["retiredKeys"] = [value["activeKey"]]
+                value["activeKey"] = None
+                keyring.write_bytes(fixture.canonical_json_bytes(value))
+                swapped = True
+            return result
+
+        with mock.patch.object(adapter, "load_keyring", side_effect=swap_after_private_copy), \
+                mock.patch("reuse.api_request", side_effect=AssertionError("network")), \
+                self.assertRaisesRegex(ValueError, "release policy differs from caller"):
+            self.capture()
+        self.assertTrue(swapped)
+        self.assertEqual(caller_bytes, self.keyring.read_bytes())
+        self.assertFalse(self.output.exists())
 
     def test_mixed_release_and_ci_preserves_originals_and_fetches_only_missing_phase(self):
         from products.receipt import write_output_manifest

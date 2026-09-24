@@ -560,16 +560,26 @@ def capture_contract_original_ci_phases(
             policy = prepared / "release-policy"
             policy.mkdir()
             captured_keyring = policy / "keyring.json"
-            captured_keyring.write_bytes(read_regular_file_bytes(keyring, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
+            keyring_bytes = read_regular_file_bytes(keyring, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+            captured_keyring.write_bytes(keyring_bytes)
+            policy_files = [{"relativePath": "keyring.json", "bytes": len(keyring_bytes),
+                             "sha256": sha256_bytes(keyring_bytes)}]
             captured_keys = policy / "keys"
             captured_keys.mkdir()
             public_policy = load_keyring(captured_keyring, keys_directory)
             for record in ([public_policy["activeKey"]] if public_policy["activeKey"] else []) + public_policy["retiredKeys"]:
                 key_id = record["keyId"]
-                (captured_keys / f"{key_id}.pub").write_bytes(read_regular_file_bytes(
-                    public_key_path(keys_directory, key_id), max_bytes=1024 * 1024, reject_symlink_parents=True))
+                public_bytes = read_regular_file_bytes(public_key_path(keys_directory, key_id),
+                                                       max_bytes=1024 * 1024, reject_symlink_parents=True)
+                (captured_keys / f"{key_id}.pub").write_bytes(public_bytes)
+                policy_files.append({"relativePath": f"keys/{key_id}.pub", "bytes": len(public_bytes),
+                                     "sha256": sha256_bytes(public_bytes)})
+            policy_files.sort(key=lambda value: value["relativePath"])
+            if regular_file_inventory(policy) != policy_files:
+                raise ValueError("Contract release policy differs from caller-owned bytes")
             load_keyring(captured_keyring, captured_keys)
-            policy_files = regular_file_inventory(policy)
+            if regular_file_inventory(policy) != policy_files:
+                raise ValueError("Contract release policy differs from caller-owned bytes")
             for number, original in enumerate(release_handoffs):
                 retained = prepared / "release-handoffs" / str(number)
                 release_files[number] = regular_file_inventory(original)
@@ -706,24 +716,40 @@ def capture_runtime_original_ci_phases(
         root = Path(temporary).resolve()
         prepared = root / "captured"
         releases = {}
+        release_files = {}
+        policy_files = []
         if release_handoffs:
             from products.runtime_attestation import read_runtime_variant_handoff
             policy = prepared / "release-policy"
             policy.mkdir(parents=True)
             captured_keyring = policy / "keyring.json"
-            captured_keyring.write_bytes(read_regular_file_bytes(keyring, max_bytes=16 * 1024 * 1024,
-                                                                 reject_symlink_parents=True))
+            keyring_bytes = read_regular_file_bytes(keyring, max_bytes=16 * 1024 * 1024,
+                                                    reject_symlink_parents=True)
+            captured_keyring.write_bytes(keyring_bytes)
+            policy_files = [{"relativePath": "keyring.json", "bytes": len(keyring_bytes),
+                             "sha256": sha256_bytes(keyring_bytes)}]
             captured_keys = policy / "keys"
             captured_keys.mkdir()
             public_policy = load_keyring(captured_keyring, keys_directory)
             for record in ([public_policy["activeKey"]] if public_policy["activeKey"] else []) + public_policy["retiredKeys"]:
                 key_id = record["keyId"]
-                (captured_keys / f"{key_id}.pub").write_bytes(read_regular_file_bytes(
-                    public_key_path(keys_directory, key_id), max_bytes=1024 * 1024, reject_symlink_parents=True))
+                public_bytes = read_regular_file_bytes(public_key_path(keys_directory, key_id),
+                                                       max_bytes=1024 * 1024, reject_symlink_parents=True)
+                (captured_keys / f"{key_id}.pub").write_bytes(public_bytes)
+                policy_files.append({"relativePath": f"keys/{key_id}.pub", "bytes": len(public_bytes),
+                                     "sha256": sha256_bytes(public_bytes)})
+            policy_files.sort(key=lambda value: value["relativePath"])
+            if regular_file_inventory(policy) != policy_files:
+                raise ValueError("Runtime release policy differs from caller-owned bytes")
             load_keyring(captured_keyring, captured_keys)
+            if regular_file_inventory(policy) != policy_files:
+                raise ValueError("Runtime release policy differs from caller-owned bytes")
             for number, original in enumerate(release_handoffs):
                 retained = prepared / "release-handoffs" / str(number)
+                release_files[number] = regular_file_inventory(original, allow_empty=True)
                 snapshot_regular_tree(original, retained)
+                if regular_file_inventory(retained, allow_empty=True) != release_files[number]:
+                    raise ValueError("Retained Runtime handoff changed during source copy")
                 verified = read_runtime_variant_handoff(retained, target=target,
                     keyring=captured_keyring, keys_directory=captured_keys)
                 matching = [phase for phase in phases if verified["receiptBytes"][phase] == originals[phase]]
@@ -739,7 +765,7 @@ def capture_runtime_original_ci_phases(
             {phase: receipts[phase]["producer"] for phase in ci_phases}, jobs_by_phase=jobs,
             trusted_workflow_sha=trusted_workflow_sha, token=token)
         attempts = {(value["run"]["id"], value["run"]["run_attempt"]): value for value in observed}
-        inventories, artifacts = {}, {}
+        inventories, artifacts, phase_files = {}, {}, {}
         for phase in ci_phases:
             receipt = receipts[phase]
             producer = receipt["producer"]
@@ -766,18 +792,42 @@ def capture_runtime_original_ci_phases(
             retained.mkdir(parents=True)
             archive = retained / "transport.zip"
             archive.write_bytes(raw)
-            verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+            zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
             safe_extract(archive, retained / "original")
+            if regular_file_inventory(retained / "original", allow_empty=True) != zipped:
+                raise ValueError("Original Runtime phase differs from its exact upload")
             verified = verify_phase_shard(retained / "original/shard", PhaseInstanceId("runtime", target, phase, target))
             if verified["receiptBytes"] != originals[phase]:
                 raise ValueError("Original Runtime upload differs from the requested original receipt")
             artifacts[phase] = artifact
+            phase_files[phase] = [
+                {"relativePath": f"phases/{phase}/transport.zip", "bytes": len(raw),
+                 "sha256": artifact["digest"]},
+                *({**record, "relativePath": f"phases/{phase}/original/{record['relativePath']}"} for record in zipped),
+            ]
         evidence = {"target": target, "observed": observed, "artifacts": artifacts,
                     "receiptSha256s": {phase: sha256_bytes(raw) for phase, raw in originals.items()}}
         if release_handoffs:
             evidence["releaseAttestations"] = releases
         write_canonical_json(prepared / "transport/original-ci-phases.json", evidence)
-        publish_regular_tree(prepared, destination, allow_empty=True)
+        evidence_bytes = canonical_json_bytes(evidence)
+        expected_files = [
+            *({**record, "relativePath": f"release-policy/{record['relativePath']}"} for record in policy_files),
+            *({**record, "relativePath": f"release-handoffs/{number}/{record['relativePath']}"}
+              for number, records in release_files.items() for record in records),
+            *(record for records in phase_files.values() for record in records),
+            {"relativePath": "transport/original-ci-phases.json", "bytes": len(evidence_bytes),
+             "sha256": sha256_bytes(evidence_bytes)},
+        ]
+        expected_files.sort(key=lambda record: record["relativePath"])
+        if (any(read_regular_file_bytes(path, max_bytes=16 * 1024 * 1024,
+                                        reject_symlink_parents=True) != originals[phase]
+                for phase, path in phase_receipts.items())
+                or any(regular_file_inventory(original, allow_empty=True) != release_files[number]
+                       for number, original in enumerate(release_handoffs))
+                or regular_file_inventory(prepared, allow_empty=True) != expected_files):
+            raise ValueError("Original Runtime capture changed before publication")
+        publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected_files)
     return evidence
 
 
@@ -3021,6 +3071,7 @@ def _product_materialization_paths(root, discovery_root, state_root, destination
 
 
 def _restore_product_objects(state, instances, destination):
+    restored_objects = {}
     for dependency in instances:
         record = state.prior_carrier_phases[dependency]
         name = "-".join((dependency.product, dependency.component, dependency.phase, dependency.target))
@@ -3032,6 +3083,8 @@ def _restore_product_objects(state, instances, destination):
             object_sha256=record["objectSha256"],
         )
         (predecessor / "phase-receipt.json").write_bytes(restored["receiptBytes"])
+        restored_objects[dependency] = restored
+    return restored_objects
 
 
 def _capture_sdk_runtime_predecessors(selected, destination):
@@ -3078,7 +3131,7 @@ def _materialize_product_predecessors(state, instance, destination, expected_bui
     with tempfile.TemporaryDirectory(prefix="codex-agent-product-inputs-", dir=root) as temporary:
         prepared = Path(temporary).resolve() / "inputs"
         prepared.mkdir()
-        _restore_product_objects(state, dependencies, prepared)
+        restored_objects = _restore_product_objects(state, dependencies, prepared)
         for dependency in runtime_dependencies:
             original = sdk_runtime_originals[dependency]
             fields = tuple(getattr(dependency, field) for field in _IDENTITY_KEYS)
@@ -3092,9 +3145,34 @@ def _materialize_product_predecessors(state, instance, destination, expected_bui
             if tuple(receipt[field] for field in _IDENTITY_KEYS) != fields or receipt["outputs"] != manifest["outputs"]:
                 raise ValueError("Captured SDK Runtime stage does not match its receipt")
             (predecessor / "phase-receipt.json").write_bytes(raw)
+            restored_objects[dependency] = {"receipt": receipt, "receiptBytes": raw}
         write_canonical_json(prepared / "phase-plan.json", ready)
         write_canonical_json(prepared / "producer.json", state.producer)
-        publish_regular_tree(prepared, destination)
+        plan_bytes, producer_bytes = canonical_json_bytes(ready), canonical_json_bytes(state.producer)
+        expected_files = []
+        for dependency, restored in restored_objects.items():
+            prefix = "-".join(getattr(dependency, field) for field in _IDENTITY_KEYS)
+            receipt = restored["receipt"]
+            receipt_bytes = restored["receiptBytes"]
+            manifest = {"schemaVersion": 1, **{field: receipt[field] for field in
+                ("product", "component", "phase", "target", "productVersion", "outputs")}}
+            manifest_bytes = canonical_json_bytes(manifest)
+            expected_files.extend([
+                *({"relativePath": f"{prefix}/stage/{record['relativePath']}",
+                   "bytes": record["bytes"], "sha256": record["sha256"]} for record in receipt["outputs"]),
+                {"relativePath": f"{prefix}/stage/output-manifest.json", "bytes": len(manifest_bytes),
+                 "sha256": sha256_bytes(manifest_bytes)},
+                {"relativePath": f"{prefix}/phase-receipt.json", "bytes": len(receipt_bytes),
+                 "sha256": sha256_bytes(receipt_bytes)},
+            ])
+        expected_files.extend([
+            {"relativePath": "phase-plan.json", "bytes": len(plan_bytes), "sha256": sha256_bytes(plan_bytes)},
+            {"relativePath": "producer.json", "bytes": len(producer_bytes), "sha256": sha256_bytes(producer_bytes)},
+        ])
+        expected_files.sort(key=lambda record: record["relativePath"])
+        if regular_file_inventory(prepared) != expected_files:
+            raise ValueError("Product predecessors differ from authenticated original receipts")
+        publish_regular_tree(prepared, destination, expected_inventory=expected_files)
     return ready
 
 
@@ -4581,7 +4659,22 @@ def materialize_contract(
         receipt = prepared / "receipt"
         receipt.mkdir()
         (receipt / "phase-receipt.json").write_bytes(restored["receiptBytes"])
-        publish_regular_tree(prepared, destination)
+        original_receipt = restored["receipt"]
+        manifest = {"schemaVersion": 1, **{field: original_receipt[field] for field in
+            ("product", "component", "phase", "target", "productVersion", "outputs")}}
+        manifest_bytes = canonical_json_bytes(manifest)
+        receipt_bytes = restored["receiptBytes"]
+        expected_files = sorted([
+            *({"relativePath": f"stage/{record['relativePath']}", "bytes": record["bytes"],
+               "sha256": record["sha256"]} for record in original_receipt["outputs"]),
+            {"relativePath": "stage/output-manifest.json", "bytes": len(manifest_bytes),
+             "sha256": sha256_bytes(manifest_bytes)},
+            {"relativePath": "receipt/phase-receipt.json", "bytes": len(receipt_bytes),
+             "sha256": sha256_bytes(receipt_bytes)},
+        ], key=lambda record: record["relativePath"])
+        if regular_file_inventory(prepared) != expected_files:
+            raise ValueError("Contract handoff differs from its authenticated original object")
+        publish_regular_tree(prepared, destination, expected_inventory=expected_files)
         return restored
 
 

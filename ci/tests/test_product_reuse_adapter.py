@@ -403,6 +403,63 @@ class ContractOriginalCiPublicationTest(unittest.TestCase):
             fixture.capture()
         self.assertFalse(fixture.output.exists())
 
+    @unittest.skipUnless(shutil.which("ssh-keygen"), "OpenSSH signing tool unavailable")
+    def test_prepared_release_policy_swap_cannot_publish(self):
+        from ci.tests.test_contract_ci_originals import ContractOriginalCiCaptureTest
+        from products.contract_attestation import build_contract_attestation
+        from products.signatures import generate_development_key
+
+        fixture = ContractOriginalCiCaptureTest(
+            "test_cli_captures_exact_original_shards_and_preserves_all_inputs")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+
+        def policy(directory):
+            private, public, signing = generate_development_key(fixture.root / directory)
+            keyring = fixture.root / f"{directory}-keyring.json"
+            keys = fixture.root / f"{directory}-keys"
+            keys.mkdir()
+            (keys / f"{signing['keyId']}.pub").write_bytes(public.read_bytes())
+            keyring.write_bytes(canonical_json_bytes({
+                "schemaVersion": 1, "namespace": signing["namespace"],
+                "algorithm": signing["algorithm"], "trustDomain": "release",
+                "activeKey": {"keyId": signing["keyId"], "fingerprint": signing["fingerprint"]},
+                "retiredKeys": [],
+            }))
+            return private, public, {**signing, "trustDomain": "release"}, keyring, keys
+
+        _, _, _, trusted_keyring, trusted_keys = policy("trusted")
+        attacker_private, attacker_public, attacker_signing, attacker_keyring, attacker_keys = policy("attacker")
+        handoff = fixture.root / "attacker-release"
+        build_contract_attestation(
+            fixture.payload, fixture.receipts["metadata"], attacker_signing,
+            attacker_private, attacker_public, handoff,
+            execution_closure=fixture.capture_root / "execution-closure",
+            keyring=attacker_keyring, keys_directory=attacker_keys, complete_handoff=True,
+        )
+        actual_load = product_reuse.load_keyring
+        swapped = []
+
+        def swap_after_policy_load(path, keys):
+            result = actual_load(path, keys)
+            if Path(path).parent.name == "release-policy" and Path(keys).parent == Path(path).parent:
+                Path(path).write_bytes(attacker_keyring.read_bytes())
+                for public in Path(keys).iterdir():
+                    public.unlink()
+                (Path(keys) / f"{attacker_signing['keyId']}.pub").write_bytes(attacker_public.read_bytes())
+                swapped.append(True)
+            return result
+
+        with mock.patch.object(product_reuse, "load_keyring", side_effect=swap_after_policy_load), \
+                self.assertRaises(ValueError):
+            product_reuse.capture_contract_original_ci_phases(
+                fixture.capture_root, fixture.output, contract_version="0.2.0",
+                trusted_workflow_sha=fixture.pin, token="not-a-real-token",
+                release_handoffs=(handoff,), keyring=trusted_keyring, keys_directory=trusted_keys,
+            )
+        self.assertEqual([True], swapped)
+        self.assertFalse(fixture.output.exists())
+
 
 class ProductReuseAdapterTest(unittest.TestCase):
     def test_catalog_accepts_object_bound_and_rejects_oversized_member_before_extraction(self) -> None:
@@ -3042,6 +3099,30 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
             )
         self.assertFalse(rejected_atomic_handoff.exists())
+
+        late_mutation_handoff = resolved_root / "late-mutated-contract-handoff"
+        actual_publish = product_inventory.publish_regular_tree
+
+        def mutate_original_receipt(source, target, **kwargs):
+            receipt_path = Path(source) / "receipt/phase-receipt.json"
+            value = product_inventory.load_canonical_json_bytes(receipt_path.read_bytes())
+            value["producer"]["runAttempt"] += 1
+            receipt_path.write_bytes(canonical_json_bytes(value))
+            return actual_publish(source, target, **kwargs)
+
+        with mock.patch.object(product_reuse, "_validate_plan", return_value=plan), \
+                mock.patch.object(product_reuse, "publish_regular_tree", side_effect=mutate_original_receipt), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            product_reuse.materialize_contract(
+                self.plan_path,
+                destination,
+                "binary",
+                late_mutation_handoff,
+                with_receipt=True,
+                repository_root=resolved_root,
+                environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+            )
+        self.assertFalse(late_mutation_handoff.exists())
 
         alternate_stage = resolved_root / "alternate-stage"
         alternate_output = alternate_stage / "outputs/value.bin"
