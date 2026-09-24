@@ -33,7 +33,7 @@
     <None Include="../../native/win-x64/codex_agent.dll" Pack="true" PackagePath="runtimes/win-x64/native/" Condition="Exists('../../native/win-x64/codex_agent.dll')" />
   </ItemGroup>
 
-  <Target Name="RequireCodexAgentNativeAssets" BeforeTargets="GenerateNuspec" Condition="'$(CodexAgentRequireNativeAssets)' == 'true'">
+  <Target Name="RequireCodexAgentNativeAssets" BeforeTargets="GenerateNuspec">
     <Error Condition="!Exists('$(CodexAgentSdkCompatibility)')" Text="Missing Codex Agent SDK compatibility declaration." />
     <Error Condition="!Exists('../../native/osx-arm64/libcodex_agent.dylib')" Text="Missing osx-arm64 Codex Agent C SDK library." />
     <Error Condition="!Exists('../../native/osx-x64/libcodex_agent.dylib')" Text="Missing osx-x64 Codex Agent C SDK library." />

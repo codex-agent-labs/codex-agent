@@ -135,10 +135,10 @@ prepared runtime bundle. The sample's `lifecycle` mode uses the repository test
 fixture and fixed fixture paths; a real lifecycle invocation needs a prepared
 bundle, data directory, and selectable workspace.
 
-Release packing is fail-closed when any verified native asset is absent:
+Packing always fails if any embedded native asset is absent. Release automation
+first stages all five verified Runtime libraries:
 
 ```sh
 dotnet pack src/CodexAgent/CodexAgent.csproj \
-  --configuration Release \
-  -p:CodexAgentRequireNativeAssets=true
+  --configuration Release
 ```

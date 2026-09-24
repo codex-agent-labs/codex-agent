@@ -10,5 +10,5 @@ linux-x64/libcodex_agent.so
 win-x64/codex_agent.dll
 ```
 
-Packing with `-p:CodexAgentRequireNativeAssets=true` fails closed if any target
-is absent. This directory never contains a second runtime implementation.
+Packing fails closed if any target is absent. This directory never contains a
+second runtime implementation.
