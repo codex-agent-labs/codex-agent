@@ -198,6 +198,7 @@ class ContractTaskGraphTest {
             val rejected = runner.withArguments(
                 "pAP",
                 "publishBravoPublication",
+                "--offline",
                 "--continue",
                 "--parallel",
                 "--configuration-cache",
@@ -218,6 +219,7 @@ class ContractTaskGraphTest {
                 "publishJulietPublication", "publishKiloPublication", "publishLimaPublication",
             )
             val cleanArguments = publicationTasks + listOf(
+                "--offline",
                 "--parallel",
                 "--configuration-cache",
                 "--configuration-cache-problems=fail",
@@ -288,6 +290,7 @@ class ContractTaskGraphTest {
                 .withProjectDir(root)
                 .withArguments(
                     "verifyContract",
+                    "--offline",
                     "--continue",
                     "--parallel",
                     "--configuration-cache",
@@ -351,6 +354,7 @@ class ContractTaskGraphTest {
                 .withProjectDir(root)
             val primed = runner.withArguments(
                 "verifyContract",
+                "--offline",
                 "--configuration-cache",
                 "--configuration-cache-problems=fail",
                 "--stacktrace",
@@ -363,6 +367,7 @@ class ContractTaskGraphTest {
             repeat(2) {
                 val rejected = runner.withArguments(
                     "verifyContract",
+                    "--offline",
                     "--continue",
                     "--configuration-cache",
                     "--configuration-cache-problems=fail",
