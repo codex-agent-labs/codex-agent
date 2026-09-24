@@ -451,7 +451,7 @@ class ContractAttestationTest(unittest.TestCase):
                 self.private_key,
                 self.public_key,
                 self.root / "retired-output",
-                execution_closure=self.root / "not-read-retired-closure",
+                execution_closure=_closure(self.payload, self.receipt, self.root / "retired-closure"),
                 keyring=keyring,
                 keys_directory=keys,
             )
