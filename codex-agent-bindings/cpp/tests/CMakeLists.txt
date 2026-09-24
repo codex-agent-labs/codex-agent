@@ -21,6 +21,12 @@ target_compile_definitions(codex_agent_loader_old_abi PRIVATE
 add_library(codex_agent_loader_abi_mismatch SHARED native_loader_fixture.cpp)
 target_compile_definitions(codex_agent_loader_abi_mismatch PRIVATE
     CODEX_AGENT_FIXTURE_ACTUAL_ABI_MINOR=14)
+add_library(codex_agent_loader_abi_major_alias SHARED native_loader_fixture.cpp)
+target_compile_definitions(codex_agent_loader_abi_major_alias PRIVATE CODEX_AGENT_FIXTURE_ABI="257.13.0")
+add_library(codex_agent_loader_abi_minor_alias SHARED native_loader_fixture.cpp)
+target_compile_definitions(codex_agent_loader_abi_minor_alias PRIVATE CODEX_AGENT_FIXTURE_ABI="1.269.0")
+add_library(codex_agent_loader_abi_patch_alias SHARED native_loader_fixture.cpp)
+target_compile_definitions(codex_agent_loader_abi_patch_alias PRIVATE CODEX_AGENT_FIXTURE_ABI="1.13.65536")
 add_library(codex_agent_loader_wrong_abi_major SHARED native_loader_fixture.cpp)
 target_compile_definitions(codex_agent_loader_wrong_abi_major PRIVATE
     CODEX_AGENT_FIXTURE_ABI="2.0.0" CODEX_AGENT_FIXTURE_ACTUAL_ABI_MAJOR=2
@@ -48,6 +54,8 @@ endif()
 add_library(codex_agent_loader_wrong_target SHARED native_loader_fixture.cpp)
 foreach(fixture codex_agent_loader_valid codex_agent_loader_external codex_agent_loader_old_abi
         codex_agent_loader_abi_mismatch codex_agent_loader_wrong_abi_major
+        codex_agent_loader_abi_major_alias codex_agent_loader_abi_minor_alias
+        codex_agent_loader_abi_patch_alias
         codex_agent_loader_incompatible_runtime codex_agent_loader_compatible_patch
         codex_agent_loader_next_minor
         codex_agent_loader_wrong_contract codex_agent_loader_missing_identity)
@@ -78,6 +86,8 @@ target_link_libraries(codex_agent_native_loader_test PRIVATE CodexAgent::Loader)
 add_dependencies(codex_agent_native_loader_test codex_agent_loader_compatibility
     codex_agent_loader_external codex_agent_loader_old_abi
     codex_agent_loader_abi_mismatch
+    codex_agent_loader_abi_major_alias codex_agent_loader_abi_minor_alias
+    codex_agent_loader_abi_patch_alias
     codex_agent_loader_wrong_abi_major codex_agent_loader_incompatible_runtime
     codex_agent_loader_compatible_patch codex_agent_loader_next_minor
     codex_agent_loader_wrong_contract codex_agent_loader_wrong_target
@@ -95,6 +105,11 @@ add_test(NAME codex_agent_native_loader_old_abi COMMAND codex_agent_native_loade
 add_test(NAME codex_agent_native_loader_actual_abi_mismatch COMMAND codex_agent_native_loader_test
     $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" failure
     $<TARGET_FILE:codex_agent_loader_abi_mismatch>)
+foreach(alias major minor patch)
+    add_test(NAME codex_agent_native_loader_abi_${alias}_alias COMMAND codex_agent_native_loader_test
+        $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" abi-width-alias
+        $<TARGET_FILE:codex_agent_loader_abi_${alias}_alias>)
+endforeach()
 add_test(NAME codex_agent_native_loader_wrong_abi_major COMMAND codex_agent_native_loader_test
     $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" failure
     $<TARGET_FILE:codex_agent_loader_wrong_abi_major>)

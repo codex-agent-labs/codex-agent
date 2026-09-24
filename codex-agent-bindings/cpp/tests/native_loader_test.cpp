@@ -250,6 +250,11 @@ int main(int argc, char** argv) {
         }
         return result;
     } catch (const std::exception& error) {
+        if (mode == "abi-width-alias" &&
+            std::string_view(error.what()) != "native runtime ABI identity exceeds encoded field width") {
+            std::cerr << "ABI alias rejected for the wrong reason: " << error.what() << '\n';
+            return 1;
+        }
         if (symlink_mode && !hostile_link_prepared) {
             std::cerr << "hostile link fixture setup failed: " << error.what() << '\n';
             return 1;

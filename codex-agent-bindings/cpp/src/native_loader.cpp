@@ -797,6 +797,9 @@ void validate_identity(void* library, const Compatibility& compatibility, bool e
         "contractComponentDigest", "cAbiVersion", "target", "appServerVersion", "buildInputDigest"});
     for (const auto key : {"componentId", "contractDigest", "contractComponentDigest", "buildInputDigest"}) require_sha256(string(root, key));
     const auto abi = version(string(root, "cAbiVersion"));
+    if (abi[0] > 0xffu || abi[1] > 0xffu || abi[2] > 0xffffu) {
+        throw std::runtime_error("native runtime ABI identity exceeds encoded field width");
+    }
     using AbiVersion = std::uint32_t(CODEX_AGENT_CALL*)();
     const auto actual_abi = reinterpret_cast<AbiVersion>(symbol(library, "codex_agent_abi_version"))();
     const auto encoded_identity_abi =
