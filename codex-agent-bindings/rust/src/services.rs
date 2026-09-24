@@ -3982,7 +3982,8 @@ mod tests {
     }
 
     fn context() -> Arc<ContextInner> {
-        let native = crate::CodexNativeLibrary::load(fixture()).expect("load leaf fixture");
+        let native =
+            crate::CodexNativeLibrary::load_fixture_for_test(fixture()).expect("load leaf fixture");
         ContextInner::create(native.inner.clone()).expect("create leaf context")
     }
 
@@ -5694,7 +5695,8 @@ mod tests {
         let _call_session = crate::ffi::test_call_session();
         use crate::{ClientInfo, CodexHost, HostOptions};
 
-        let native = crate::CodexNativeLibrary::load(fixture()).expect("load Agent fixture");
+        let native = crate::CodexNativeLibrary::load_fixture_for_test(fixture())
+            .expect("load Agent fixture");
         let host = CodexHost::create_with_library(
             &native,
             HostOptions {
@@ -6019,7 +6021,8 @@ mod tests {
             "Host Client",
             "1.0",
         ];
-        let native = crate::CodexNativeLibrary::load(fixture()).expect("load Host fixture");
+        let native =
+            crate::CodexNativeLibrary::load_fixture_for_test(fixture()).expect("load Host fixture");
         let control_context = context();
         let mut executed = BTreeSet::new();
 
@@ -6452,7 +6455,8 @@ mod tests {
             ClientInfo, CodexHost, CollaborationMode, ConversationId, ConversationOpenOptions,
             HostOptions, Invocation, PluginInvocation, SkillInvocation, TurnRequest,
         };
-        let native = crate::CodexNativeLibrary::load(fixture()).expect("load conversation fixture");
+        let native = crate::CodexNativeLibrary::load_fixture_for_test(fixture())
+            .expect("load conversation fixture");
         let host = CodexHost::create_with_library(
             &native,
             HostOptions {

@@ -11,7 +11,13 @@ const LIBRARIES: [(&str, &str); 5] = [
 ];
 
 fn require_package_assets(root: &Path) {
-    for path in std::iter::once(root.join("native/sdk-compatibility.json")).chain(
+    for path in [
+        "native/sdk-compatibility.json",
+        "native/sdk-runtime-root.pub",
+    ]
+    .into_iter()
+    .map(|path| root.join(path))
+    .chain(
         LIBRARIES
             .iter()
             .map(|(target, library)| root.join("native").join(target).join(library)),
@@ -28,6 +34,15 @@ fn require_package_assets(root: &Path) {
 
 fn main() {
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let root_key = root.join("native/sdk-runtime-root.pub");
+    let root_output =
+        PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR")).join("sdk-runtime-root.pub");
+    println!("cargo:rerun-if-changed={}", root_key.display());
+    if root_key.is_file() {
+        fs::copy(&root_key, root_output).expect("copy SDK-pinned Runtime root key");
+    } else {
+        fs::write(root_output, []).expect("write absent SDK Runtime root marker");
+    }
     // Cargo generates Cargo.toml.orig only in the package verification extraction.
     // Source builds may intentionally use an explicit external Runtime instead.
     if root.join("Cargo.toml.orig").is_file() {

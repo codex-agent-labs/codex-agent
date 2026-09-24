@@ -569,6 +569,10 @@ impl EmbeddedRuntimeSnapshot {
         self.path.clone()
     }
 
+    pub(crate) fn digest(&self) -> &str {
+        &self.expected_digest
+    }
+
     #[cfg(windows)]
     pub(crate) fn retain_until_exit(self, library_handle: usize) -> Result<(), String> {
         if let Err(error) = WINDOWS_CLEANUP
@@ -630,6 +634,39 @@ pub(crate) fn embedded_runtime_snapshot(
         .join(target)
         .join("snapshots");
     private_snapshot(&root, library_name, EMBEDDED_RUNTIME, &actual)
+}
+
+pub(crate) fn external_runtime_snapshot(
+    source: &Path,
+    target: &str,
+    snapshot_root: Option<&Path>,
+) -> Result<EmbeddedRuntimeSnapshot, String> {
+    let mut file = open_locked_snapshot(source)?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("inspect external Runtime: {error}"))?;
+    if !metadata.is_file() || metadata.len() > 1024 * 1024 * 1024 {
+        return Err("external Runtime must be a regular file of at most 1 GiB".into());
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("read external Runtime: {error}"))?;
+    if bytes.len() as u64 != metadata.len() {
+        return Err("external Runtime changed while being snapshotted".into());
+    }
+    let digest = format!("sha256:{}", hex(&sha256(&bytes)));
+    let name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("external Runtime filename is not UTF-8")?;
+    let root = match snapshot_root {
+        Some(root) => root.to_owned(),
+        None => cache_root()?
+            .join("codex-agent/runtime/external")
+            .join(target)
+            .join("snapshots"),
+    };
+    private_snapshot(&root, name, &bytes, &digest)
 }
 
 fn private_snapshot(
@@ -904,6 +941,10 @@ fn hex(bytes: &[u8]) -> String {
         value.push(DIGITS[(byte & 15) as usize] as char);
     }
     value
+}
+
+pub(crate) fn sha256_identity(bytes: &[u8]) -> String {
+    format!("sha256:{}", hex(&sha256(bytes)))
 }
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {

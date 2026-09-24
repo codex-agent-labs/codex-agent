@@ -17,8 +17,10 @@ native-targets = ["osx-arm64", "osx-x64", "linux-arm64", "linux-x64", "win-x64"]
 library-override = "CODEX_AGENT_LIBRARY"
 
 [dependencies]
+base64 = "0.22.1"
 futures-core = "0.3.32"
 libloading = "0.8.9"
+serde_json = "1.0.149"
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

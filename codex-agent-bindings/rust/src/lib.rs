@@ -8,6 +8,7 @@
 mod async_runtime;
 mod compatibility;
 mod enums;
+mod external_authorization;
 mod ffi;
 #[allow(dead_code)]
 mod native_values;
@@ -394,24 +395,87 @@ fn exact_external_runtime_path(requested: &Path) -> Result<PathBuf, CodexError> 
     Ok(canonical)
 }
 
+fn external_evidence_directory(path: &Path) -> Result<PathBuf, CodexError> {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".evidence");
+    let evidence = PathBuf::from(name);
+    if !std::fs::symlink_metadata(&evidence)
+        .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+    {
+        return Err(CodexError::load(
+            "external Runtime requires trusted release evidence beside the selected library",
+        ));
+    }
+    Ok(evidence)
+}
+
 impl CodexNativeLibrary {
     /// Loads an explicit absolute C SDK path and authenticates its Runtime identity.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, CodexError> {
-        let path = exact_external_runtime_path(path.as_ref())?;
-        Self::load_exact(&path, false)
-    }
-
-    fn load_exact(path: &Path, embedded: bool) -> Result<Self, CodexError> {
-        Self::load_exact_with(path, embedded, |path| {
-            // SAFETY: the authenticated Runtime path is exact and remains owned for the returned API.
+        const SDK_ROOT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sdk-runtime-root.pub"));
+        Self::load_external_with(path.as_ref(), SDK_ROOT, None, |path| {
+            // SAFETY: the signed private snapshot remains protected through authentication.
             unsafe { libloading::Library::new(path) }
                 .map_err(|error| format!("could not load {}: {error}", path.display()))
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn load_fixture_for_test(path: impl AsRef<Path>) -> Result<Self, CodexError> {
+        let path = exact_external_runtime_path(path.as_ref())?;
+        Self::load_exact_with(&path, false, None, |path| {
+            // SAFETY: test fixtures still pass the production ABI and identity checks.
+            unsafe { libloading::Library::new(path) }.map_err(|error| error.to_string())
+        })
+    }
+
+    fn load_external_with(
+        requested: &Path,
+        root_key: &[u8],
+        snapshot_root: Option<&Path>,
+        open_library: impl FnOnce(&Path) -> Result<libloading::Library, String>,
+    ) -> Result<Self, CodexError> {
+        let path = exact_external_runtime_path(requested)?;
+        let evidence = external_evidence_directory(&path)?;
+        if root_key.is_empty() {
+            return Err(CodexError::load(
+                "external Runtime requires an SDK-pinned release root before dynamic loading",
+            ));
+        }
+        let target = RuntimeTarget::current()?;
+        let snapshot = compatibility::external_runtime_snapshot(
+            &path,
+            target.identity_identifier(),
+            snapshot_root,
+        )
+        .map_err(CodexError::load)?;
+        let identity = external_authorization::verify(
+            &snapshot,
+            &evidence,
+            target.identity_identifier(),
+            root_key,
+        )
+        .map_err(CodexError::load)?;
+        snapshot.verify().map_err(CodexError::load)?;
+        let load_path = snapshot.load_path();
+        let native = Self::load_exact_with(&load_path, false, Some(&identity), |path| {
+            let library = open_library(path)?;
+            snapshot.verify()?;
+            Ok(library)
+        })?;
+        #[cfg(windows)]
+        snapshot
+            .retain_until_exit(native.inner.api.library_handle())
+            .map_err(CodexError::load)?;
+        #[cfg(not(windows))]
+        drop(snapshot);
+        Ok(native)
+    }
+
     fn load_exact_with(
         path: &Path,
         embedded: bool,
+        signed_identity: Option<&serde_json::Value>,
         open_library: impl FnOnce(&Path) -> Result<libloading::Library, String>,
     ) -> Result<Self, CodexError> {
         let target = RuntimeTarget::current()?;
@@ -420,6 +484,9 @@ impl CodexNativeLibrary {
             path,
             open_library,
             |identity| {
+                if let Some(expected) = signed_identity {
+                    external_authorization::identity_matches(expected, identity)?;
+                }
                 compatibility.authenticate_identity(
                     identity,
                     target.identity_identifier(),
@@ -471,7 +538,7 @@ impl CodexNativeLibrary {
     ) -> Result<Self, CodexError> {
         snapshot.verify().map_err(CodexError::load)?;
         let load_path = snapshot.load_path();
-        let native = Self::load_exact_with(&load_path, true, |path| {
+        let native = Self::load_exact_with(&load_path, true, None, |path| {
             let library = open_library(path)?;
             snapshot.verify()?;
             Ok(library)
@@ -2823,6 +2890,195 @@ mod loader_security_tests {
     use super::*;
     use std::process::Command;
 
+    fn canonical_json(path: &Path, value: &serde_json::Value) {
+        let mut bytes = serde_json::to_vec(value).unwrap();
+        bytes.push(b'\n');
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn signed_key(root: &Path, name: &str) -> (PathBuf, Vec<u8>) {
+        let private = root.join(name);
+        assert!(
+            Command::new("/usr/bin/ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .arg(&private)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let public_path = private.with_extension("pub");
+        let raw = std::fs::read_to_string(&public_path).unwrap();
+        let mut parts = raw.split_whitespace();
+        let public = format!("{} {}\n", parts.next().unwrap(), parts.next().unwrap()).into_bytes();
+        std::fs::write(public_path, &public).unwrap();
+        (private, public)
+    }
+
+    fn sign(path: &Path, private: &Path, namespace: &str, destination: &Path) {
+        assert!(
+            Command::new("/usr/bin/ssh-keygen")
+                .args(["-Y", "sign", "-f"])
+                .arg(private)
+                .args(["-n", namespace])
+                .arg(path)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        std::fs::rename(format!("{}.sig", path.display()), destination).unwrap();
+    }
+
+    #[test]
+    fn root_signed_external_snapshot_loads_and_wrong_root_fails_before_open() {
+        use serde_json::json;
+
+        let library = compile("signed-external", "0");
+        let fixture = library.parent().unwrap().to_owned();
+        let (root_private, root_public) = signed_key(&fixture, "root");
+        let (signer_private, signer_public) = signed_key(&fixture, "signer");
+        let mut evidence_name = library.as_os_str().to_os_string();
+        evidence_name.push(".evidence");
+        let evidence = PathBuf::from(evidence_name);
+        std::fs::create_dir(&evidence).unwrap();
+        std::fs::create_dir(evidence.join("keys")).unwrap();
+        std::fs::write(evidence.join("keys/release-a.pub"), &signer_public).unwrap();
+        let root_fingerprint = external_authorization::fingerprint_for_test(&root_public).unwrap();
+        let signer_fingerprint =
+            external_authorization::fingerprint_for_test(&signer_public).unwrap();
+        let keyring = json!({"schemaVersion":1,"namespace":"codex-agent-product-v1",
+            "algorithm":"ssh-ed25519","trustDomain":"release",
+            "activeKey":{"keyId":"release-a","fingerprint":signer_fingerprint},"retiredKeys":[]});
+        let keyring_path = evidence.join("release-keyring.json");
+        canonical_json(&keyring_path, &keyring);
+        let delegation_path = evidence.join("root-delegation.json");
+        canonical_json(
+            &delegation_path,
+            &json!({"schemaVersion":1,
+            "kind":"sdk-runtime-release-keyring-delegation","scope":"desktop-runtime-library",
+            "rootFingerprint":root_fingerprint,
+            "keyringSha256":compatibility::sha256_identity(&std::fs::read(&keyring_path).unwrap())}),
+        );
+        sign(
+            &delegation_path,
+            &root_private,
+            "codex-agent-sdk-runtime-root-v1",
+            &evidence.join("root-delegation.sig"),
+        );
+        let identity = json!({"schemaVersion":1,"componentId":component_id(),
+            "runtimeCompatibilityVersion":"0.8.0",
+            "contractDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "contractComponentDigest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "cAbiVersion":"1.13.0","target":RuntimeTarget::current().unwrap().identity_identifier(),
+            "appServerVersion":"0.149.0",
+            "buildInputDigest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"});
+        let dummy = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let claim_path = evidence.join("runtime-library-authorization.json");
+        canonical_json(
+            &claim_path,
+            &json!({"schemaVersion":1,"kind":"desktop-runtime-library-authorization",
+            "runtimeVersion":"0.8.4","runtimeIdentity":identity,
+            "runtimeLibrarySha256":compatibility::sha256_identity(&std::fs::read(&library).unwrap()),
+            "variantBundleSha256":dummy,"variantManifestSha256":dummy,
+            "aggregateManifestSha256":dummy,"variantAttestationSha256":dummy,
+            "aggregateAttestationSha256":dummy,
+            "signing":{"algorithm":"ssh-ed25519","namespace":"codex-agent-product-v1",
+                "trustDomain":"release","keyId":"release-a","fingerprint":signer_fingerprint}}),
+        );
+        sign(
+            &claim_path,
+            &signer_private,
+            "codex-agent-product-v1",
+            &evidence.join("runtime-library-authorization.sig"),
+        );
+
+        const SDK_ROOT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sdk-runtime-root.pub"));
+        if SDK_ROOT.is_empty() {
+            let production = CodexNativeLibrary::load(&library)
+                .err()
+                .expect("source build has no pinned root");
+            assert!(production.to_string().contains("SDK-pinned release root"));
+        }
+
+        let wrong = signed_key(&fixture, "wrong-root").1;
+        let error =
+            CodexNativeLibrary::load_external_with(&library, &wrong, Some(&fixture), |_| {
+                panic!("wrong root reached dynamic loader")
+            })
+            .err()
+            .expect("wrong root must fail");
+        assert!(error.to_string().contains("SDK-pinned root"), "{error}");
+        let native = CodexNativeLibrary::load_external_with(
+            &library,
+            &root_public,
+            Some(&fixture),
+            |path| {
+                // SAFETY: this fixture is signed and opened only through its private snapshot.
+                unsafe { libloading::Library::new(path) }.map_err(|error| error.to_string())
+            },
+        )
+        .expect("root-signed external fixture should load");
+        assert_eq!(native.abi_version(), CODEX_AGENT_ABI_VERSION);
+
+        let mut altered_claim: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&claim_path).unwrap()).unwrap();
+        altered_claim["runtimeIdentity"]["componentId"] = serde_json::Value::String(
+            "sha256:9999999999999999999999999999999999999999999999999999999999999999".into(),
+        );
+        canonical_json(&claim_path, &altered_claim);
+        sign(
+            &claim_path,
+            &signer_private,
+            "codex-agent-product-v1",
+            &evidence.join("runtime-library-authorization.sig"),
+        );
+        let error = CodexNativeLibrary::load_external_with(
+            &library,
+            &root_public,
+            Some(&fixture),
+            |path| {
+                // SAFETY: the signed snapshot is opened to exercise the post-load identity check.
+                unsafe { libloading::Library::new(path) }.map_err(|error| error.to_string())
+            },
+        )
+        .err()
+        .expect("signed identity must match the loaded Runtime");
+        assert!(
+            error
+                .to_string()
+                .contains("loaded Runtime identity differs"),
+            "{error}"
+        );
+
+        let mut changed = std::fs::read(&library).unwrap();
+        changed.push(0);
+        std::fs::write(&library, changed).unwrap();
+        let error =
+            CodexNativeLibrary::load_external_with(&library, &root_public, Some(&fixture), |_| {
+                panic!("mismatched library digest reached dynamic loader")
+            })
+            .err()
+            .expect("signed digest must match the private snapshot");
+        assert!(
+            error.to_string().contains("signed authorization"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn external_path_without_trusted_evidence_never_reaches_dynamic_loader() {
+        let verified = compile("no-evidence", "0");
+        let error = CodexNativeLibrary::load_external_with(
+            &verified,
+            &[],
+            Some(verified.parent().unwrap()),
+            |_| panic!("external Runtime reached dynamic loader without trusted evidence"),
+        )
+        .err()
+        .expect("path-only external Runtime must be rejected");
+        assert!(error.to_string().contains("trusted release evidence"));
+    }
+
     fn component_id() -> &'static str {
         match RuntimeTarget::current().unwrap() {
             RuntimeTarget::MacosArm64 => {
@@ -2842,13 +3098,20 @@ mod loader_security_tests {
     }
 
     fn compile(name: &str, context_create_status: &str) -> PathBuf {
-        let root = std::fs::canonicalize(std::env::temp_dir())
-            .unwrap()
-            .join(format!(
-                "codex-agent-rust-loader-fixtures-{}",
-                std::process::id()
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let temporary = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        let root = loop {
+            let candidate = temporary.join(format!(
+                "codex-agent-rust-loader-fixtures-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
             ));
-        std::fs::create_dir_all(&root).unwrap();
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create unique loader fixture: {error}"),
+            }
+        };
         let output = root.join(if cfg!(target_os = "macos") {
             format!("lib{name}.dylib")
         } else {
