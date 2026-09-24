@@ -833,7 +833,12 @@ def require_embedded_package_versions(
             dart = packages / "dart" / f"codex-agent-dart-{version_value}.tar.gz"
             extracted = work / "dart"
             safe_extract_tar(dart, extracted)
-            contents = require_one(extracted, "**/pubspec.yaml").read_text(encoding="utf-8")
+            pubspec = require_one(extracted, "**/pubspec.yaml")
+            if pubspec != extracted / f"codex_agent-{version_value}/pubspec.yaml":
+                raise ValueError("Dart package archive root does not match its coordinate")
+            contents = pubspec.read_text(encoding="utf-8")
+            if re.findall(r"(?m)^name: (\S+)$", contents) != ["codex_agent"]:
+                raise ValueError("Dart package name does not match its coordinate")
             versions = re.findall(r"(?m)^version: (\S+)$", contents)
             require_version(versions[0] if len(versions) == 1 else None, "Dart package")
 

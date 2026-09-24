@@ -1071,6 +1071,24 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 f'[package]\nname = "codex-agent"\nversion = "{version}"\n',
             )
 
+            dart_archive = packages / f"dart/codex-agent-dart-{version}.tar.gz"
+            write_tar_file(
+                dart_archive, f"other_package-{version}/pubspec.yaml",
+                f"name: codex_agent\nversion: {version}\n",
+            )
+            with self.assertRaisesRegex(ValueError, "Dart package archive root"):
+                require_embedded_package_versions(packages, version, ("dart",))
+            write_tar_file(
+                dart_archive, f"codex_agent-{version}/pubspec.yaml",
+                f"name: other_package\nversion: {version}\n",
+            )
+            with self.assertRaisesRegex(ValueError, "Dart package name"):
+                require_embedded_package_versions(packages, version, ("dart",))
+            write_tar_file(
+                dart_archive, f"codex_agent-{version}/pubspec.yaml",
+                f"name: codex_agent\nversion: {version}\n",
+            )
+
             classifier = next(iter(HOSTS))
             write_cpp_package(classifier, package_version="0.2.0")
             with self.assertRaisesRegex(ValueError, r"C\+\+ package"):
