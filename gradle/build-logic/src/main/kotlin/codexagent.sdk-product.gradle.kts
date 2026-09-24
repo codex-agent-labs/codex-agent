@@ -188,3 +188,67 @@ val writeSdkAndroidMetadataOutputManifest = if (
         referencedInputs = files(request.map { sdkAndroidMetadataInputFiles(it.asFile) }),
     )
 } else null
+
+tasks.register("sdkProductPhase") {
+    group = "build"
+    description = "Executes one exact SDK component/phase lifecycle mapping."
+    dependsOn(provider {
+        check(requestedProduct.get() == "sdk") { "SDK product phase requires codexAgent.product=sdk" }
+        val selection = Triple(requestedProduct.get(), requestedComponent.get(), requestedPhase.get())
+        when (selection) {
+            Triple("sdk", "sdk-core", "binary") -> tasks.named("writeSdkCoreBinaryOutputManifest")
+            Triple("sdk", "sdk-core", "package") ->
+                sdk.get().tasks.named("writeSdkCorePackageOutputManifest")
+            Triple("sdk", "sdk-core", "validation") -> tasks.named("writeSdkCoreValidationOutputManifest")
+            Triple("sdk", "sdk-core", "metadata") -> tasks.named("writeSdkCoreMetadataOutputManifest")
+            Triple("sdk", "sdk-android", "binary") -> tasks.named("writeSdkAndroidBinaryOutputManifest")
+            Triple("sdk", "sdk-android", "package") ->
+                sdk.get().tasks.named("writeSdkAndroidPackageOutputManifest")
+            Triple("sdk", "sdk-android", "metadata") -> tasks.named("writeSdkAndroidMetadataOutputManifest")
+            Triple("sdk", "sdk-ios", "binary") -> tasks.named("writeSdkIosBinaryOutputManifest")
+            Triple("sdk", "sdk-ios", "package") ->
+                sdk.get().tasks.named("writeSdkIosPackageOutputManifest")
+            Triple("sdk", "sdk-ios", "validation") ->
+                project(":codex-agent-runtime-ios").tasks.named("writeSdkIosValidationOutputManifest")
+            Triple("sdk", "sdk-ios", "metadata") ->
+                project(":codex-agent-runtime-ios").tasks.named("writeSdkIosMetadataOutputManifest")
+            Triple("sdk", "javascript", "package") ->
+                sdk.get().tasks.named("writeJavaScriptSdkPackageOutputManifest")
+            Triple("sdk", "javascript", "validation") ->
+                sdk.get().tasks.named("writeJavaScriptSdkValidationOutputManifest")
+            Triple("sdk", "javascript", "metadata") ->
+                sdk.get().tasks.named("writeJavaScriptSdkMetadataOutputManifest")
+            Triple("sdk", "python", "package") ->
+                sdk.get().tasks.named("writePythonNativeWrapperSdkPackageOutputManifest")
+            Triple("sdk", "csharp", "package") ->
+                sdk.get().tasks.named("writeCSharpNativeWrapperSdkPackageOutputManifest")
+            Triple("sdk", "rust", "package") ->
+                sdk.get().tasks.named("writeRustNativeWrapperSdkPackageOutputManifest")
+            Triple("sdk", "cpp", "package") ->
+                sdk.get().tasks.named("writeCppNativeWrapperSdkPackageOutputManifest")
+            Triple("sdk", "dart", "package") ->
+                sdk.get().tasks.named("writeDartNativeWrapperSdkPackageOutputManifest")
+            Triple("sdk", "python", "validation") ->
+                sdk.get().tasks.named("writePythonNativeWrapperSdkValidationOutputManifest")
+            Triple("sdk", "csharp", "validation") ->
+                sdk.get().tasks.named("writeCSharpNativeWrapperSdkValidationOutputManifest")
+            Triple("sdk", "rust", "validation") ->
+                sdk.get().tasks.named("writeRustNativeWrapperSdkValidationOutputManifest")
+            Triple("sdk", "cpp", "validation") ->
+                sdk.get().tasks.named("writeCppNativeWrapperSdkValidationOutputManifest")
+            Triple("sdk", "dart", "validation") ->
+                sdk.get().tasks.named("writeDartNativeWrapperSdkValidationOutputManifest")
+            Triple("sdk", "python", "metadata") ->
+                sdk.get().tasks.named("writePythonNativeWrapperSdkMetadataOutputManifest")
+            Triple("sdk", "csharp", "metadata") ->
+                sdk.get().tasks.named("writeCSharpNativeWrapperSdkMetadataOutputManifest")
+            Triple("sdk", "rust", "metadata") ->
+                sdk.get().tasks.named("writeRustNativeWrapperSdkMetadataOutputManifest")
+            Triple("sdk", "cpp", "metadata") ->
+                sdk.get().tasks.named("writeCppNativeWrapperSdkMetadataOutputManifest")
+            Triple("sdk", "dart", "metadata") ->
+                sdk.get().tasks.named("writeDartNativeWrapperSdkMetadataOutputManifest")
+            else -> error("Unsupported SDK product phase: ${selection.first}/${selection.second}/${selection.third}")
+        }
+    })
+}

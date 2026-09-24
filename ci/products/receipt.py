@@ -475,39 +475,40 @@ def build_key_payload(
         projection = upstream.get("contractProjection")
         semantic_projection = upstream.get("semanticProjection")
         if semantic_projection is not None:
-            from .registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId, phase_instance_dependencies
-
-            consumer = PhaseInstanceId(product, component, phase, target)
-            dependency = PhaseInstanceId(
-                upstream["product"], upstream["component"], upstream["phase"],
-                upstream["target"],
-            )
             contract_execution_edge = (
                 (product, component, phase, target) == ("contract", "contract", "package", "common")
                 and semantic_projection["kind"] == "contract-execution-content"
             )
-            runtime_metadata_edge = (
-                product == "runtime" and phase == "metadata"
-                and semantic_projection["kind"] == "runtime-validation-content"
-                and upstream["target"] != "node-js-binding"
-                and dependency in phase_instance_dependencies(consumer)
-            )
-            native_sdk_edge = (
-                product == "sdk" and component in NATIVE_BINDINGS and phase in {"package", "validation"}
-                and semantic_projection["kind"] == "runtime-native-validation-content"
-                and upstream["component"] == upstream["target"] and upstream["target"] in NATIVE_TARGETS
-                and dependency in phase_instance_dependencies(consumer)
-            )
-            sdk_metadata_edge = (
-                product == "sdk" and component in NATIVE_BINDINGS and phase == "metadata"
-                and semantic_projection["kind"] == "sdk-native-validation-content"
-                and upstream["product"] == "sdk" and upstream["component"] == component
-                and upstream["target"] in NATIVE_TARGETS and dependency in phase_instance_dependencies(consumer)
-            )
-            if not (contract_execution_edge or runtime_metadata_edge or native_sdk_edge or sdk_metadata_edge):
-                raise ValueError(
-                    "Runtime validation semantic projection is attached to an unauthorized edge"
+            if not contract_execution_edge:
+                from .registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId, phase_instance_dependencies
+
+                consumer = PhaseInstanceId(product, component, phase, target)
+                dependency = PhaseInstanceId(
+                    upstream["product"], upstream["component"], upstream["phase"],
+                    upstream["target"],
                 )
+                runtime_metadata_edge = (
+                    product == "runtime" and phase == "metadata"
+                    and semantic_projection["kind"] == "runtime-validation-content"
+                    and upstream["target"] != "node-js-binding"
+                    and dependency in phase_instance_dependencies(consumer)
+                )
+                native_sdk_edge = (
+                    product == "sdk" and component in NATIVE_BINDINGS and phase in {"package", "validation"}
+                    and semantic_projection["kind"] == "runtime-native-validation-content"
+                    and upstream["component"] == upstream["target"] and upstream["target"] in NATIVE_TARGETS
+                    and dependency in phase_instance_dependencies(consumer)
+                )
+                sdk_metadata_edge = (
+                    product == "sdk" and component in NATIVE_BINDINGS and phase == "metadata"
+                    and semantic_projection["kind"] == "sdk-native-validation-content"
+                    and upstream["product"] == "sdk" and upstream["component"] == component
+                    and upstream["target"] in NATIVE_TARGETS and dependency in phase_instance_dependencies(consumer)
+                )
+                if not (runtime_metadata_edge or native_sdk_edge or sdk_metadata_edge):
+                    raise ValueError(
+                        "Runtime validation semantic projection is attached to an unauthorized edge"
+                    )
             upstream_artifacts.append({
                 **{key: value for key, value in upstream.items() if key != "semanticProjection"},
                 "outputsDigest": semantic_projection["sha256"],

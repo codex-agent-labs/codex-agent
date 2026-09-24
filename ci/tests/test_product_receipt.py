@@ -245,6 +245,24 @@ class ProductReceiptEmissionTest(unittest.TestCase):
             self.skipTest(f"symbolic links are unavailable: {error}")
         self.assert_failure_removes_stale()
 
+    def test_contract_execution_projection_needs_no_runtime_or_sdk_registry(self) -> None:
+        inputs = self.inputs()
+        inputs["upstreamArtifacts"] = [{
+            "product": "contract", "component": "contract", "phase": "binary", "target": "common",
+            "buildKey": DIGEST_A, "outputsDigest": DIGEST_B,
+            "semanticProjection": {
+                "schemaVersion": 1, "kind": "contract-execution-content",
+                "sha256": DIGEST_C, "receiptSha256": DIGEST_A,
+            },
+        }]
+        with mock.patch.dict("sys.modules", {"ci.products.registry": None}):
+            normalized = build_key_payload(
+                product="contract", component="contract", phase="package",
+                target="common", inputs=validate_receipt_inputs(inputs),
+            )["upstreamArtifacts"][0]
+        self.assertEqual(DIGEST_C, normalized["outputsDigest"])
+        self.assertNotIn("semanticProjection", normalized)
+
     def test_runtime_validation_projection_normalizes_only_outputs_digest(self) -> None:
         def inputs(raw_digest: str, semantic_digest: str) -> dict:
             value = self.inputs()

@@ -16,13 +16,28 @@ class ProductPhaseMappingContractTest {
     private val manifestTask = File("src/main/kotlin/ProductOutputManifestGradleTask.kt").readText()
 
     @Test
-    fun root_lifecycle_maps_only_Contract_and_SDK_phases() {
+    fun Contract_phase_tasks_watch_only_the_Contract_Python_closure() {
+        val sources = between(contract, "val contractPythonSources = files(", "val contractMavenRepository =")
+        listOf("__init__.py", "__main__.py", "contract.py", "contract_model.py",
+            "inventory.py", "receipt.py", "test_results.py").forEach { file ->
+            assertTrue("\"ci/products/$file\"" in sources, file)
+        }
+        assertEquals(7, Regex("\"ci/products/").findAll(sources).count())
+        assertEquals(10, Regex("producerSources.from\\(contractPythonSources\\)").findAll(contract).count())
+        assertFalse("producerSources.from(layout.projectDirectory.dir(\"ci/products\"))" in contract)
+    }
+
+    @Test
+    fun root_lifecycle_delegates_SDK_mapping_to_the_SDK_plugin() {
         val mapping = between(contract, "val requestedProduct =", "val contractBundleDirectory =")
-        val expected = linkedMapOf(
+        val sdkMapping = sdkProduct.substringAfter("tasks.register(\"sdkProductPhase\")")
+        val contractExpected = linkedMapOf(
             Triple("contract", "contract", "binary") to "writeContractBinaryOutputManifest",
             Triple("contract", "contract", "package") to "writeContractPackageOutputManifest",
             Triple("contract", "contract", "validation") to "writeContractValidationOutputManifest",
             Triple("contract", "contract", "metadata") to "writeContractMetadataOutputManifest",
+        )
+        val sdkExpected = linkedMapOf(
             Triple("sdk", "sdk-core", "binary") to "writeSdkCoreBinaryOutputManifest",
             Triple("sdk", "sdk-core", "package") to "writeSdkCorePackageOutputManifest",
             Triple("sdk", "sdk-core", "validation") to "writeSdkCoreValidationOutputManifest",
@@ -62,22 +77,31 @@ class ProductPhaseMappingContractTest {
             Triple("sdk", "dart", "metadata") to "writeDartNativeWrapperSdkMetadataOutputManifest",
         )
 
-        assertEquals(expected.size, Regex("""Triple\("""").findAll(mapping).count())
-        expected.forEach { (selection, task) ->
+        assertEquals(contractExpected.size, Regex("""Triple\("""").findAll(mapping).count())
+        assertEquals(sdkExpected.size, Regex("""Triple\("""").findAll(sdkMapping).count())
+        (contractExpected.map { (selection, task) -> Triple(mapping, selection, task) } +
+            sdkExpected.map { (selection, task) -> Triple(sdkMapping, selection, task) })
+            .forEach { (owner, selection, task) ->
             val key = "Triple(\"" + selection.first + "\", \"" + selection.second +
                 "\", \"" + selection.third + "\")"
-            assertTrue(key in mapping, "Missing product phase selection: $key")
-            assertEquals(1, Regex(Regex.escape(task)).findAll(mapping).count(), task)
+            assertTrue(key in owner, "Missing product phase selection: $key")
+            assertEquals(1, Regex(Regex.escape(task)).findAll(owner).count(), task)
         }
         assertEquals(1, Regex("""tasks\.register\("ciProductPhase"\)""").findAll(mapping).count())
+        assertEquals(1, Regex("""tasks\.register\("sdkProductPhase"\)""").findAll(sdkProduct).count())
         assertTrue("requestedProduct.get()" in mapping)
         assertTrue("requestedComponent.get()" in mapping)
         assertTrue("requestedPhase.get()" in mapping)
-        assertTrue("else -> error(\"Unsupported product phase:" in mapping)
+        assertTrue("tasks.named(\"sdkProductPhase\")" in mapping)
+        assertFalse("Triple(\"sdk\"" in mapping)
+        assertFalse(":codex-agent-sdk" in mapping)
+        assertTrue("check(requestedProduct.get() == \"sdk\")" in sdkMapping)
+        assertTrue("error(\"Unsupported product phase:" in mapping)
         listOf("orNull", "orElse", "onlyIf", "enabled = false").forEach { fallback ->
             assertFalse(fallback in mapping, fallback)
         }
         assertFalse("Triple(\"runtime\"" in mapping)
+        assertTrue("else -> error(\"Unsupported SDK product phase:" in sdkMapping)
     }
 
     @Test
@@ -85,7 +109,7 @@ class ProductPhaseMappingContractTest {
         val packagePhase = between(
             contract,
             "val importedContractBinaryStage =",
-            "val sdk = providers.provider",
+            "val requestedProduct =",
         )
         assertTrue("codexAgent.contractBinaryStageRoot" in packagePhase)
         assertTrue("tasks.register<SnapshotImportedProductStageTask>" in packagePhase)
@@ -114,7 +138,7 @@ class ProductPhaseMappingContractTest {
         val validation = between(
             contract,
             "val importedContractPackageStage =",
-            "val sdk = providers.provider",
+            "val requestedProduct =",
         )
         for (required in listOf(
             "codexAgent.contractPackageStageRoot",
@@ -148,7 +172,7 @@ class ProductPhaseMappingContractTest {
         val metadata = between(
             contract,
             "val importedContractValidationStage =",
-            "val sdk = providers.provider",
+            "val requestedProduct =",
         )
         for (required in listOf(
             "codexAgent.contractValidationStageRoot",

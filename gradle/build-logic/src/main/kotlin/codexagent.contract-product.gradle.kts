@@ -10,6 +10,15 @@ check(core.group.toString() == CodexAgentBuild.MAVEN_GROUP && core.version.toStr
 }
 
 val contractProductRoot = layout.buildDirectory.dir("contract-product")
+val contractPythonSources = files(
+    "ci/products/__init__.py",
+    "ci/products/__main__.py",
+    "ci/products/contract.py",
+    "ci/products/contract_model.py",
+    "ci/products/inventory.py",
+    "ci/products/receipt.py",
+    "ci/products/test_results.py",
+)
 val contractMavenRepository = contractProductRoot.map { it.dir("maven-repository") }
 core.pluginManager.withPlugin("maven-publish") {
     core.extensions.configure<PublishingExtension> {
@@ -131,7 +140,7 @@ val writeContractBinaryOutputManifest = tasks.register<WriteProductOutputManifes
         "contract-execution" to "outputs/execution",
     ))
     outputsDirectory.set(contractStage)
-    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    producerSources.from(contractPythonSources)
     repositoryRoot.set(layout.projectDirectory)
     stageRoot.set(contractBinaryPhaseRoot)
     manifestFile.set(contractBinaryPhaseRoot.map { it.file("output-manifest.json") })
@@ -151,7 +160,7 @@ val snapshotImportedContractBinaryStage = tasks.register<SnapshotImportedProduct
     dependsOn(invalidateContractPackagePhase)
     sourceDirectory.set(importedContractBinaryStage)
     outputDirectory.set(importedContractBinarySnapshot)
-    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    producerSources.from(contractPythonSources)
     repositoryRoot.set(layout.projectDirectory)
 }
 val verifyImportedContractBinaryOutputManifest = tasks.register<VerifyImportedProductOutputManifestTask>(
@@ -164,7 +173,7 @@ val verifyImportedContractBinaryOutputManifest = tasks.register<VerifyImportedPr
     target.set("common")
     productVersion.set(contractVersion)
     stageRoot.set(importedContractBinarySnapshot)
-    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    producerSources.from(contractPythonSources)
     repositoryRoot.set(layout.projectDirectory)
 }
 val stageContractPackageFromImportedBinary = tasks.register<Sync>(
@@ -194,7 +203,7 @@ val writeContractPackageOutputManifest = tasks.register<WriteProductOutputManife
         "inventory" to "outputs/inventories",
     ))
     outputsDirectory.set(contractPackageOutputs)
-    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    producerSources.from(contractPythonSources)
     repositoryRoot.set(layout.projectDirectory)
     stageRoot.set(contractPackagePhaseRoot)
     manifestFile.set(contractPackagePhaseRoot.map { it.file("output-manifest.json") })
@@ -227,7 +236,7 @@ val snapshotImportedContractPackageStage = tasks.register<SnapshotImportedProduc
     dependsOn(invalidateContractValidationPhase)
     sourceDirectory.set(importedContractPackageStage)
     outputDirectory.set(importedContractPackageSnapshot)
-    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    producerSources.from(contractPythonSources)
     repositoryRoot.set(layout.projectDirectory)
 }
 val verifyImportedContractPackageOutputManifest = tasks.register<VerifyImportedProductOutputManifestTask>(
@@ -240,7 +249,7 @@ val verifyImportedContractPackageOutputManifest = tasks.register<VerifyImportedP
     target.set("common")
     productVersion.set(contractVersion)
     stageRoot.set(importedContractPackageSnapshot)
-    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    producerSources.from(contractPythonSources)
     repositoryRoot.set(layout.projectDirectory)
 }
 val stageContractValidationFromImportedPackage = tasks.register<Sync>(
@@ -294,7 +303,7 @@ val writeContractValidationOutputManifest = tasks.register<WriteProductOutputMan
         "validation" to "outputs/validation",
     ))
     outputsDirectory.set(contractValidationOutputs)
-    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    producerSources.from(contractPythonSources)
     repositoryRoot.set(layout.projectDirectory)
     stageRoot.set(contractValidationPhaseRoot)
     manifestFile.set(contractValidationPhaseRoot.map { it.file("output-manifest.json") })
@@ -318,7 +327,7 @@ val snapshotImportedContractValidationStage = tasks.register<SnapshotImportedPro
     dependsOn(invalidateContractMetadataPhase)
     sourceDirectory.set(importedContractValidationStage)
     outputDirectory.set(importedContractValidationSnapshot)
-    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    producerSources.from(contractPythonSources)
     repositoryRoot.set(layout.projectDirectory)
 }
 val verifyImportedContractValidationOutputManifest = tasks.register<VerifyImportedProductOutputManifestTask>(
@@ -331,7 +340,7 @@ val verifyImportedContractValidationOutputManifest = tasks.register<VerifyImport
     target.set("common")
     productVersion.set(contractVersion)
     stageRoot.set(importedContractValidationSnapshot)
-    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    producerSources.from(contractPythonSources)
     repositoryRoot.set(layout.projectDirectory)
 }
 val stageContractMetadataPayload = tasks.register<Sync>("stageContractMetadataPayload") {
@@ -373,15 +382,10 @@ val writeContractMetadataOutputManifest = tasks.register<WriteProductOutputManif
         "contract-bundle" to "outputs",
     ))
     outputsDirectory.set(contractMetadataOutputs)
-    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    producerSources.from(contractPythonSources)
     repositoryRoot.set(layout.projectDirectory)
     stageRoot.set(contractMetadataPhaseRoot)
     manifestFile.set(contractMetadataPhaseRoot.map { it.file("output-manifest.json") })
-}
-val sdk = providers.provider {
-    checkNotNull(findProject(":codex-agent-sdk")) {
-        "SDK product phases require :codex-agent-sdk"
-    }
 }
 val requestedProduct = providers.gradleProperty("codexAgent.product")
 val requestedComponent = providers.gradleProperty("codexAgent.component")
@@ -396,59 +400,8 @@ tasks.register("ciProductPhase") {
             Triple("contract", "contract", "package") -> writeContractPackageOutputManifest
             Triple("contract", "contract", "validation") -> writeContractValidationOutputManifest
             Triple("contract", "contract", "metadata") -> writeContractMetadataOutputManifest
-            Triple("sdk", "sdk-core", "binary") -> tasks.named("writeSdkCoreBinaryOutputManifest")
-            Triple("sdk", "sdk-core", "package") ->
-                sdk.get().tasks.named("writeSdkCorePackageOutputManifest")
-            Triple("sdk", "sdk-core", "validation") -> tasks.named("writeSdkCoreValidationOutputManifest")
-            Triple("sdk", "sdk-core", "metadata") -> tasks.named("writeSdkCoreMetadataOutputManifest")
-            Triple("sdk", "sdk-android", "binary") -> tasks.named("writeSdkAndroidBinaryOutputManifest")
-            Triple("sdk", "sdk-android", "package") ->
-                sdk.get().tasks.named("writeSdkAndroidPackageOutputManifest")
-            Triple("sdk", "sdk-android", "metadata") -> tasks.named("writeSdkAndroidMetadataOutputManifest")
-            Triple("sdk", "sdk-ios", "binary") -> tasks.named("writeSdkIosBinaryOutputManifest")
-            Triple("sdk", "sdk-ios", "package") ->
-                sdk.get().tasks.named("writeSdkIosPackageOutputManifest")
-            Triple("sdk", "sdk-ios", "validation") ->
-                project(":codex-agent-runtime-ios").tasks.named("writeSdkIosValidationOutputManifest")
-            Triple("sdk", "sdk-ios", "metadata") ->
-                project(":codex-agent-runtime-ios").tasks.named("writeSdkIosMetadataOutputManifest")
-            Triple("sdk", "javascript", "package") ->
-                sdk.get().tasks.named("writeJavaScriptSdkPackageOutputManifest")
-            Triple("sdk", "javascript", "validation") ->
-                sdk.get().tasks.named("writeJavaScriptSdkValidationOutputManifest")
-            Triple("sdk", "javascript", "metadata") ->
-                sdk.get().tasks.named("writeJavaScriptSdkMetadataOutputManifest")
-            Triple("sdk", "python", "package") ->
-                sdk.get().tasks.named("writePythonNativeWrapperSdkPackageOutputManifest")
-            Triple("sdk", "csharp", "package") ->
-                sdk.get().tasks.named("writeCSharpNativeWrapperSdkPackageOutputManifest")
-            Triple("sdk", "rust", "package") ->
-                sdk.get().tasks.named("writeRustNativeWrapperSdkPackageOutputManifest")
-            Triple("sdk", "cpp", "package") ->
-                sdk.get().tasks.named("writeCppNativeWrapperSdkPackageOutputManifest")
-            Triple("sdk", "dart", "package") ->
-                sdk.get().tasks.named("writeDartNativeWrapperSdkPackageOutputManifest")
-            Triple("sdk", "python", "validation") ->
-                sdk.get().tasks.named("writePythonNativeWrapperSdkValidationOutputManifest")
-            Triple("sdk", "csharp", "validation") ->
-                sdk.get().tasks.named("writeCSharpNativeWrapperSdkValidationOutputManifest")
-            Triple("sdk", "rust", "validation") ->
-                sdk.get().tasks.named("writeRustNativeWrapperSdkValidationOutputManifest")
-            Triple("sdk", "cpp", "validation") ->
-                sdk.get().tasks.named("writeCppNativeWrapperSdkValidationOutputManifest")
-            Triple("sdk", "dart", "validation") ->
-                sdk.get().tasks.named("writeDartNativeWrapperSdkValidationOutputManifest")
-            Triple("sdk", "python", "metadata") ->
-                sdk.get().tasks.named("writePythonNativeWrapperSdkMetadataOutputManifest")
-            Triple("sdk", "csharp", "metadata") ->
-                sdk.get().tasks.named("writeCSharpNativeWrapperSdkMetadataOutputManifest")
-            Triple("sdk", "rust", "metadata") ->
-                sdk.get().tasks.named("writeRustNativeWrapperSdkMetadataOutputManifest")
-            Triple("sdk", "cpp", "metadata") ->
-                sdk.get().tasks.named("writeCppNativeWrapperSdkMetadataOutputManifest")
-            Triple("sdk", "dart", "metadata") ->
-                sdk.get().tasks.named("writeDartNativeWrapperSdkMetadataOutputManifest")
-            else -> error("Unsupported product phase: ${selection.first}/${selection.second}/${selection.third}")
+            else -> if (selection.first == "sdk") tasks.named("sdkProductPhase")
+                else error("Unsupported product phase: ${selection.first}/${selection.second}/${selection.third}")
         }
     })
 }

@@ -90,12 +90,14 @@ class ContractIsolationFixtureTest {
             copyFile("settings-gradle.lockfile", fixture)
             copyDirectory("gradle/wrapper", fixture)
             copyFile("ci/impact.py", fixture)
-            copyDirectory("ci/products", fixture)
+            listOf("__init__.py", "__main__.py", "contract.py", "contract_model.py",
+                "inventory.py", "receipt.py", "test_results.py").forEach {
+                copyFile("ci/products/$it", fixture)
+            }
+            assertFalse(fixture.resolve("ci/products/registry.py").exists())
             copyFile("ci/lanes/contract-product.production.pathspec", fixture)
             copyFile("ci/lanes/contract-product.test.pathspec", fixture)
-            copyFile("ci/tests/test_contract_bundle.py", fixture)
-            copyFile("ci/tests/test_contract_output_containment.py", fixture)
-            copyFile("ci/tests/test_products.py", fixture)
+            assertFalse(fixture.resolve("ci/products/aggregate.py").exists())
 
             listOf(
                 "codex-agent-sdk",

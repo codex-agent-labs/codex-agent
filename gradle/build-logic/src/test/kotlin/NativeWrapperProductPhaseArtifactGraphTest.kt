@@ -82,7 +82,7 @@ class NativeWrapperProductPhaseArtifactGraphTest {
     private val desktop = File("../../runtime/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts")
         .readText()
     private val sdk = File("src/main/kotlin/codexagent.native-wrapper-sdk.gradle.kts").readText()
-    private val contract = File("src/main/kotlin/codexagent.contract-product.gradle.kts").readText()
+    private val sdkProduct = File("src/main/kotlin/codexagent.sdk-product.gradle.kts").readText()
     private val nativeWrapperTasks = File("src/main/kotlin/CrossLanguageNativeWrapperGradleTasks.kt").readText()
 
     @Test
@@ -166,8 +166,7 @@ class NativeWrapperProductPhaseArtifactGraphTest {
 
     @Test
     fun `ciProductPhase maps every native wrapper package component exactly`() {
-        val mapping = contract.substringAfter("val requestedProduct =")
-            .substringBefore("val contractBundleDirectory =")
+        val mapping = sdkProduct.substringAfter("tasks.register(\"sdkProductPhase\")")
         mapOf(
             "python" to "Python",
             "csharp" to "CSharp",
