@@ -150,6 +150,7 @@ def _attest_selected_runtime_aggregate(
                 snapshot_regular_tree(retained["directory"], prepared / "retained-release", allow_empty=True)
                 if regular_file_inventory(prepared / "retained-release", allow_empty=True) != retained["inventory"]:
                     raise ValueError("Retained aggregate changed during forwarding")
+                retained_inventory = retained["inventory"]
             # The direct original carrier stays byte-identical. Current selection
             # and consumer provenance live beside it, never inside that carrier.
             caller = {"schemaVersion": 1, "target": "aggregate", "trustedSourceCommit": trusted_source_sha,
@@ -163,6 +164,9 @@ def _attest_selected_runtime_aggregate(
                        for path in (source, prepared / name)):
                     raise ValueError("Runtime aggregate selected evidence changed during reuse")
             write_canonical_json(prepared / "caller.json", caller)
+            if (regular_file_inventory(release_handoff, allow_empty=True) != retained_inventory
+                    or regular_file_inventory(prepared / "retained-release", allow_empty=True) != retained_inventory):
+                raise ValueError("Retained aggregate changed before publication")
             publish_regular_tree(prepared, output, allow_empty=True)
             return caller
 

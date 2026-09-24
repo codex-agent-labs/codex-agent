@@ -22,6 +22,7 @@ from products.contract_attestation import build_contract_attestation
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory,
     sha256_bytes, sha256_file, snapshot_regular_tree,
+    write_canonical_json as actual_write_canonical_json,
 )
 from products.registry import NATIVE_TARGETS
 from products.runtime_attestation import build_runtime_variant_attestation
@@ -356,6 +357,20 @@ class RuntimeAggregateReleaseTest(unittest.TestCase):
             self.assertEqual("retained-release", result["releaseDirectory"])
             self.assertEqual(original_inventory, regular_file_inventory(
                 self.work / "reused/retained-release", allow_empty=True))
+            self.assertEqual(original_inventory, regular_file_inventory(self.output, allow_empty=True))
+            self.assertEqual(previous_reads, self.environment.secret_reads)
+            def mutate_forwarded_carrier(path, value):
+                actual_write_canonical_json(path, value)
+                (path.parent / "retained-release/late-injected").write_bytes(b"unverified\n")
+
+            with patch.object(caller, "write_canonical_json", side_effect=mutate_forwarded_carrier), \
+                    patch("reuse.api_request", side_effect=AssertionError("fallback after late mutation")), \
+                    self.assertRaisesRegex(ValueError, "Retained aggregate changed before publication"):
+                caller._attest_selected_runtime_aggregate(
+                    self.repository, self.work / "late-mutated", **self.arguments(
+                        trusted_source_sha=retired_pin, variant_handoffs={},
+                        release_handoff=self.output, token=None))
+            self.assertFalse((self.work / "late-mutated").exists())
             self.assertEqual(original_inventory, regular_file_inventory(self.output, allow_empty=True))
             self.assertEqual(previous_reads, self.environment.secret_reads)
             changed_selection = self.work / "changed-selection"
