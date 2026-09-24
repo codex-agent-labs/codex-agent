@@ -107,10 +107,12 @@ class NativeReuseAdapterTest(unittest.TestCase):
         plan = adapter_fixture.impact_plan(changed=["codex-agent-bindings/python/tests/example.py"])
         instance = adapter_fixture.PhaseInstanceId("sdk", "python", "package", "desktop")
         arguments = (plan, self.root, self.discovery, (instance,), adapter_fixture.VERSIONS, [])
-        request = adapter._wave_request(*arguments, [catalog], None)
+        with patch.object(adapter, "sdk_runtime_source", return_value=None):
+            request = adapter._wave_request(*arguments, [catalog], None)
         self.assertEqual(list(records), request["nativeRuntimeComparisonEvidence"])
         self.assertEqual(request_catalog, request["catalogs"]["samePr"])
-        ordinary = adapter._wave_request(*arguments, [plain], None)
+        with patch.object(adapter, "sdk_runtime_source", return_value=None):
+            ordinary = adapter._wave_request(*arguments, [plain], None)
         self.assertEqual([], ordinary.get("nativeRuntimeComparisonEvidence", []))
         self.assertEqual((), plain.native_runtime_evidence)
 
@@ -143,6 +145,7 @@ class NativeReuseAdapterTest(unittest.TestCase):
                 patch.object(adapter, "_requested", return_value=(instance,)), \
                 patch.object(adapter, "_authorities", return_value=([], None)), \
                 patch.object(adapter, "_versions", return_value=adapter_fixture.VERSIONS), \
+                patch.object(adapter, "sdk_runtime_source", return_value=None), \
                 patch.object(adapter, "plan_reuse_wave", side_effect=planner) as called, \
                 self.assertRaises(ReachedPlanner):
             adapter.advance_products(self.root / "plan.json", self.discovery, None, [], self.root / "advanced",
@@ -156,7 +159,9 @@ class NativeReuseAdapterTest(unittest.TestCase):
         with patch.object(adapter, "discover") as discover:
             self.assertEqual(0, adapter.main(["discover", *common]))
         discover.assert_called_once_with(Path("plan.json"), Path("next"), Path("output"),
-                                         native_evidence_roots=roots)
+                                         native_evidence_roots=roots, aggregate_evidence_roots=(),
+                                         adapter_evidence_roots=(), sdk_evidence_roots=(),
+                                         sdk_validation_tooling=None)
         with patch.object(adapter, "advance_products") as advance:
             self.assertEqual(0, adapter.main([
                 "advance-products", *common, "--discovery-root", "discovery", "--state-root", "state",
@@ -164,7 +169,9 @@ class NativeReuseAdapterTest(unittest.TestCase):
             ]))
         advance.assert_called_once_with(Path("plan.json"), Path("discovery"), Path("state"),
                                         [Path("shard-a"), Path("shard-b")], Path("next"), Path("output"),
-                                        native_evidence_roots=roots)
+                                        native_evidence_roots=roots, aggregate_evidence_roots=(),
+                                        adapter_evidence_roots=(), sdk_evidence_roots=(),
+                                        sdk_validation_tooling=None, failed_instances=())
 
     def test_evidence_only_discovery_wait_preserves_control_producer(self):
         plan = adapter_fixture.impact_plan(changed=["codex-agent-bindings/python/tests/example.py"])
@@ -178,6 +185,7 @@ class NativeReuseAdapterTest(unittest.TestCase):
                 patch.object(adapter, "_requested", return_value=(instance,)), \
                 patch.object(adapter, "_authorities", return_value=([], None)), \
                 patch.object(adapter, "_versions", return_value=adapter_fixture.VERSIONS), \
+                patch.object(adapter, "sdk_runtime_source", return_value=None), \
                 patch.object(adapter, "_release_trust", return_value=None), \
                 patch.object(adapter, "_discover_catalogs", return_value=[]), \
                 patch.object(adapter, "_contract_evidence", return_value=None), \

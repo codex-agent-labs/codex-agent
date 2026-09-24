@@ -48,6 +48,11 @@ def planned_chain(root: Path) -> dict:
         path = repository / f"gradle/release/versions/{product}.txt"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(version + "\n", encoding="utf-8")
+    (repository / "gradle/release/sdk-default-runtime.txt").write_text("0.2.7\n", encoding="utf-8")
+    write_canonical_json(repository / "gradle/release/sdk-runtime-compatibility.json", {
+        "compatibleReleaseRange": ">=0.2.0 <0.3.0",
+        "compatibleRuntimeCompatibilityRange": ">=0.2.0 <0.3.0",
+    })
     for relative in ("codex-agent-core/src/commonMain/kotlin/Fixture.kt",
                      "codex-agent-bindings/python/fixture.py"):
         path = repository / relative
