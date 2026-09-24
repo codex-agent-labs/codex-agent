@@ -275,49 +275,55 @@ API status_t codex_agent_runtime_identity(char *buffer, size_t *inout_size) {
         "\"cAbiVersion\":\"1.13.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
         "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
-        "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
+        "\"runtimeCompatibilityVersion\":\"0.8.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
     static const char schema[] =
         "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
         "\"cAbiVersion\":\"1.13.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
         "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
-        "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":2,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
+        "\"runtimeCompatibilityVersion\":\"0.8.0\",\"schemaVersion\":2,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
     static const char wrong_target[] =
         "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
         "\"cAbiVersion\":\"1.13.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
         "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
-        "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"wrong-target\"}";
+        "\"runtimeCompatibilityVersion\":\"0.8.0\",\"schemaVersion\":1,\"target\":\"wrong-target\"}";
     static const char wrong_contract[] =
         "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
         "\"cAbiVersion\":\"1.13.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
         "\"contractDigest\":\"" CODEX_AGENT_TEST_WRONG_CONTRACT_DIGEST "\","
-        "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
+        "\"runtimeCompatibilityVersion\":\"0.8.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
     static const char old_abi[] =
         "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
         "\"cAbiVersion\":\"1.12.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
         "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
-        "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
+        "\"runtimeCompatibilityVersion\":\"0.8.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
     static const char incompatible_runtime[] =
         "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
         "\"cAbiVersion\":\"1.13.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
         "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
-        "\"runtimeCompatibilityVersion\":\"0.3.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
+        "\"runtimeCompatibilityVersion\":\"0.9.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
+    static const char historical_runtime[] =
+        "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
+        "\"cAbiVersion\":\"1.13.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
+        "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
+        "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
+        "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
     static const char above_actual_abi[] =
         "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
         "\"cAbiVersion\":\"1.14.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
         "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
-        "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
+        "\"runtimeCompatibilityVersion\":\"0.8.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
     static const char wrong_abi_major[] =
         "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
         "\"cAbiVersion\":\"2.0.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
         "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
-        "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
+        "\"runtimeCompatibilityVersion\":\"0.8.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
     const char *identity = valid;
     switch (atomic_load(&identity_mode)) {
         case 1: identity = schema; break;
@@ -328,6 +334,7 @@ API status_t codex_agent_runtime_identity(char *buffer, size_t *inout_size) {
         case 6: identity = "not-json"; break;
         case 7: identity = above_actual_abi; break;
         case 8: identity = wrong_abi_major; break;
+        case 11: identity = historical_runtime; break;
         default: break;
     }
     if (inout_size == NULL) return 1;

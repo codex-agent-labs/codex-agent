@@ -991,7 +991,7 @@ mod tests {
 
     fn identity(abi: &str) -> Vec<u8> {
         format!(
-            "{{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"cAbiVersion\":\"{abi}\",\"componentId\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"contractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"macos-arm64\"}}"
+            "{{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"cAbiVersion\":\"{abi}\",\"componentId\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"contractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runtimeCompatibilityVersion\":\"0.8.0\",\"schemaVersion\":1,\"target\":\"macos-arm64\"}}"
         )
         .into_bytes()
     }
@@ -1000,6 +1000,7 @@ mod tests {
     fn declaration_and_hash_are_strict() {
         let parsed = Compatibility::parse(DECLARATION).expect("development declaration");
         assert_eq!(parsed.abi_major, 1);
+        assert_eq!(parsed.runtime_range, ((0, 8, 0), (0, 9, 0)));
         assert_eq!(
             hex(&sha256(b"abc")),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -1014,8 +1015,8 @@ mod tests {
         assert!(Compatibility::parse(&extra_lf).is_err());
 
         let leading_zero = String::from_utf8(DECLARATION.to_vec()).unwrap().replacen(
-            "\"sdkVersion\":\"0.2.0\"",
-            "\"sdkVersion\":\"00.2.0\"",
+            "\"sdkVersion\":\"0.8.0\"",
+            "\"sdkVersion\":\"00.8.0\"",
             1,
         );
         assert!(Compatibility::parse(leading_zero.as_bytes()).is_err());
@@ -1052,8 +1053,8 @@ mod tests {
         let declaration = String::from_utf8(DECLARATION.to_vec()).unwrap();
         let rejected = [
             declaration.replacen(
-                "\"defaultRuntimeVersion\":\"0.2.0\"",
-                "\"defaultRuntimeVersion\":\"0.3.0\"",
+                "\"defaultRuntimeVersion\":\"0.8.0\"",
+                "\"defaultRuntimeVersion\":\"0.9.0\"",
                 1,
             ),
             declaration.replacen(
@@ -1074,14 +1075,10 @@ mod tests {
 
     #[test]
     fn external_runtime_accepts_compatible_08_updates_only() {
-        let declaration = String::from_utf8(DECLARATION.to_vec())
-            .unwrap()
-            .replace("0.2.0", "0.8.0")
-            .replace("0.3.0", "0.9.0");
-        let parsed = Compatibility::parse(declaration.as_bytes()).unwrap();
+        let parsed = Compatibility::parse(DECLARATION).unwrap();
         let compatible = String::from_utf8(identity("1.13.0"))
             .unwrap()
-            .replace("0.2.0", "0.8.1");
+            .replace("0.8.0", "0.8.1");
         assert!(
             parsed
                 .authenticate_identity(compatible.as_bytes(), "macos-arm64", false)
@@ -1093,7 +1090,23 @@ mod tests {
                 .is_err()
         );
 
-        for version in ["0.7.9", "0.9.0"] {
+        for rejected in [
+            compatible.replace("\"cAbiVersion\":\"1.13.0\"", "\"cAbiVersion\":\"1.12.0\""),
+            compatible.replace("\"cAbiVersion\":\"1.13.0\"", "\"cAbiVersion\":\"2.0.0\""),
+            compatible.replace("\"target\":\"macos-arm64\"", "\"target\":\"linux-x64\""),
+            compatible.replace(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+        ] {
+            assert!(
+                parsed
+                    .authenticate_identity(rejected.as_bytes(), "macos-arm64", false)
+                    .is_err()
+            );
+        }
+
+        for version in ["0.2.0", "0.7.9", "0.9.0"] {
             let incompatible = compatible.replace("0.8.1", version);
             assert!(
                 parsed
@@ -1130,6 +1143,26 @@ mod tests {
         drop(snapshot);
         assert!(!owner.exists());
         std::fs::remove_file(&replacement).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn mismatched_embedded_snapshot_digest_leaves_no_library() {
+        let root = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "codex-agent-rust-digest-test-{}",
+                std::process::id()
+            ));
+        let expected = format!("sha256:{}", hex(&sha256(b"trusted")));
+        let error = private_snapshot(&root, "runtime", b"tampered", &expected)
+            .err()
+            .expect("reject embedded Runtime digest mismatch");
+        assert!(
+            error.starts_with("Runtime snapshot digest mismatch:"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
         std::fs::remove_dir(&root).unwrap();
     }
 }
