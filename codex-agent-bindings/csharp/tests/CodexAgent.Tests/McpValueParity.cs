@@ -36,6 +36,8 @@ internal static class McpValueParity
         IReadOnlyList<string[]> allClaims,
         ISet<string> canonicalCapabilities)
     {
+        if (!Directory.Exists(sdkPath + ".evidence"))
+            throw new InvalidDataException("Real SDK parity requires release-signed Runtime evidence beside the declared SDK library.");
         VerifyEvidenceReferences(McpClaims(allClaims));
         CodexNativeLibrary.Configure(sdkPath);
         var context = NativeContext.Create();
