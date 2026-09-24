@@ -255,6 +255,8 @@ class BindingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.kind, HostStateKind.READY)
         with self.assertRaises(StopAsyncIteration):
             await anext(subscription)
+        with self.assertRaises(StopAsyncIteration):
+            await asyncio.wait_for(anext(subscription), timeout=0.1)
         await host.aclose()
 
     async def test_structured_operation_failure_and_busy_quiescence(self) -> None:

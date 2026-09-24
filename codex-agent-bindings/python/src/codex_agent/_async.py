@@ -214,6 +214,7 @@ class StateSubscription(AsyncIterator[T], Generic[T]):
     async def __anext__(self) -> T:
         item = await self.queue.get()
         if item is _END:
+            self.queue.put_nowait(_END)
             raise StopAsyncIteration
         if isinstance(item, BaseException):
             raise item

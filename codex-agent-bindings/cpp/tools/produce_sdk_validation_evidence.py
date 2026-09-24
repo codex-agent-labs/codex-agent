@@ -33,7 +33,8 @@ VALUE_TEST = "codex_agent_cpp_value_test"
 LOADER_TESTS = {
     "codex_agent_native_loader_" + case for case in (
         "embedded", "hash_mismatch", "external_component", "old_abi", "actual_abi_mismatch",
-        "wrong_abi_major", "incompatible_runtime", "wrong_contract", "wrong_target",
+        "wrong_abi_major", "incompatible_runtime", "compatible_patch", "next_minor",
+        "wrong_contract", "wrong_target",
         "missing_identity", "no_fallback", "missing_compatibility_sidecar", "relative_override",
         "noncanonical_json", "reordered_json", "duplicate_json_key", "reordered_variants",
         "duplicate_component", "duplicate_manifest", "invalid_sdk_version", "valid_sdk_prerelease",

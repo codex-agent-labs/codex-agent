@@ -350,7 +350,8 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         security = (root / "test/runtime_compatibility_test.dart").read_text()
         self.assertIn("'contractDigest': RuntimeCompatibility.load().contractDigest,", security)
-        self.assertIn("RuntimeCompatibility.load().contractDigest == _digestA ? _digestB : _digestA;", security)
+        self.assertIn("RuntimeCompatibility.load().contractDigest == _digestA ? _digestB : _digestA;",
+                      " ".join(security.split()))
         self.assertIn("{...valid, 'contractDigest': _wrongContractDigest}", security)
         self.assertIn("_runtime(value)['requiredContractDigest'] = _wrongContractDigest", security)
         self.assertIn("identity['contractDigest'] = _wrongContractDigest;", security)

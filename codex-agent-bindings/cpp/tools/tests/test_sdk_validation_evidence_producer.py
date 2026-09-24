@@ -219,7 +219,7 @@ class ProducerTest(unittest.TestCase):
                              (self.output / "imported-c-sdk" / original.relative_to(self.sdk)).read_bytes())
 
     def test_each_existing_loader_case_is_required_without_skipping(self):
-        self.assertEqual(32, len(producer.LOADER_TESTS))
+        self.assertEqual(34, len(producer.LOADER_TESTS))
         for name in sorted(producer.LOADER_TESTS):
             with self.subTest(name=name):
                 def omit(evidence, build):
