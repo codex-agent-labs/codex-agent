@@ -121,7 +121,8 @@ class SdkMetadataCallerTest(unittest.TestCase):
             ]))
             execute.assert_called_once_with(Path("plan"), Path("discovery"), Path("state"), Path("output"),
                 component="python", expected_build_key=self.ready["buildKey"], compatibility_request=Path("request"),
-                runtime_stages=Path("runtime"), staged_sdks=Path("sdks"), sdk_validation_tooling=self.tooling)
+                runtime_stages=Path("runtime"), staged_sdks=Path("sdks"), sdk_validation_tooling=self.tooling,
+                sdk_original_workflow_sha=None)
 
     def test_pr_metadata_keeps_development_receipt_trust(self):
         self.state.plan["event"] = "pull_request"
