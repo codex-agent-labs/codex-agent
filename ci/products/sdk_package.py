@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 from typing import Any
+from zipfile import ZipFile
 
 from .contract import verify_contract_bundle
 from .contract_projection import verify_contract_component_projection
@@ -25,7 +26,7 @@ from .registry import (
     NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId, phase_instance_dependencies, required_contract_components,
 )
 from .sdk_compatibility import load_sdk_compatibility_request
-from .sdk_inputs import COMPATIBILITY_NAME, REQUEST_NAME, _copy_file, stage_sdk_inputs
+from .sdk_inputs import COMPATIBILITY_NAME, INVENTORY_NAME, REQUEST_NAME, _copy_file, stage_sdk_inputs
 from .selection import phase_git_inventory
 
 
@@ -134,7 +135,7 @@ def _verify_csharp_restore_execution(path: Path, target: str) -> None:
         raise ValueError("C# restore command differs from its fixed offline private recipe")
 
 
-def _capture_validation_sources(repository: Path, validation: dict[str, Any], stage: Path, output: Path) -> None:
+def _capture_validation_sources(repository: Path, validation: dict[str, Any], stage: Path, output: Path) -> list[dict]:
     # Original validation and package producers may differ. Never read mutable
     # checkout claims or execute an imported producer program.
     component, commit = validation["component"], validation["producer"]["commit"]
@@ -147,6 +148,7 @@ def _capture_validation_sources(repository: Path, validation: dict[str, Any], st
                "test-program-source": f"codex-agent-bindings/{component}/{program}"}
     if component == "cpp":
         sources["test_installed_package_tamper.py"] = "codex-agent-bindings/cpp/tests/test_installed_package_tamper.py"
+    records = []
     for name, path in sources.items():
         contents = git_regular_blob_bytes(repository, commit, path, max_bytes=_LIMIT)
         if not contents:
@@ -159,6 +161,9 @@ def _capture_validation_sources(repository: Path, validation: dict[str, Any], st
         destination = output / "validation-source" / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(contents)
+        records.append({"relativePath": f"validation-source/{name}",
+                        "bytes": len(contents), "sha256": sha256_bytes(contents)})
+    return records
 
 
 def _verify_plan(repository: Path, receipt: dict[str, Any], versions: dict[str, str], upstream: list, projection,
@@ -297,7 +302,7 @@ def verify_sdk_package_inputs(
         captured_receipt.write_bytes(original)
         handoff = root / "inputs"
         if validation_inputs_output is None:
-            stage_sdk_inputs(Path(compatibility_request), handoff)
+            handoff_result = stage_sdk_inputs(Path(compatibility_request), handoff)
         else:
             captured_request = root / "captured-request.json"
             captured_request.write_bytes(original_request_bytes)
@@ -318,7 +323,18 @@ def verify_sdk_package_inputs(
                 original_arguments,
                 original_arguments["contract_attestation"].parent / CONTRACT_EXECUTION_CLOSURE_DIRECTORY,
             ))
-            stage_sdk_inputs(captured_request, handoff, request_directory=request_directory)
+            handoff_result = stage_sdk_inputs(captured_request, handoff, request_directory=request_directory)
+        if validation_inputs_output is not None:
+            handoff_manifest = canonical_json_bytes(handoff_result["inventory"])
+            if (sha256_bytes(handoff_manifest) != handoff_result["inventorySha256"]
+                    or read_regular_file_bytes(handoff / INVENTORY_NAME) != handoff_manifest):
+                raise ValueError("SDK input handoff differs from verified staging result")
+            handoff_inventory = sorted([*handoff_result["inventory"]["files"], {
+                "relativePath": INVENTORY_NAME, "bytes": len(handoff_manifest),
+                "sha256": sha256_bytes(handoff_manifest),
+            }], key=lambda record: record["relativePath"])
+            if regular_file_inventory(handoff) != handoff_inventory:
+                raise ValueError("SDK input handoff differs from verified staging result")
         arguments = load_sdk_compatibility_request(handoff / REQUEST_NAME)
         if apple_policy is not None and apple_policy["required_trust_domain"] != arguments["required_trust_domain"]:
             raise ValueError("Apple package verification cannot change the authenticated trust domain")
@@ -460,22 +476,55 @@ def verify_sdk_package_inputs(
         if validation_inputs_output is not None:
             from .sdk_native import _stage_native_capability_inputs
             prepared = root / "capability-inputs"
+            expected_files = []
+
+            def include_file(path: str, contents: bytes) -> None:
+                expected_files.append({"relativePath": path, "bytes": len(contents),
+                                       "sha256": sha256_bytes(contents)})
+
+            def include_tree(prefix: str, records: list[dict]) -> None:
+                expected_files.extend({**record, "relativePath": f"{prefix}/{record['relativePath']}"}
+                                      for record in records)
+
+            native_validation = runtime_stage_root / "macos-arm64/validation/outputs"
+            include_tree("bootstrap", regular_file_inventory(native_validation / "c-abi-bootstrap"))
+            include_tree("bootstrap-reference", regular_file_inventory(native_validation / "c-abi-reference"))
+            include_tree("sdks", sdks_inventory)
+            with ZipFile(arguments["contract_payload"]) as bundle:
+                for name in ("canonical-api.json", "canonical-coverage.json"):
+                    include_file(f"contract/{name}", bundle.read(f"evidence/{name}"))
+                include_file("contract/contract-manifest.json", bundle.read("contract-manifest.json"))
+            for name, source in (
+                ("runtime-macos-arm64-validation", arguments["variant_phase_receipts"]["macos-arm64"]["validation"]),
+                ("runtime-macos-arm64-package", arguments["variant_phase_receipts"]["macos-arm64"]["package"]),
+                ("contract-metadata", arguments["contract_metadata_receipt"]),
+            ):
+                include_file(f"receipts/{name}.json", read_regular_file_bytes(source, max_bytes=_LIMIT))
             _stage_native_capability_inputs(arguments, runtime_stage_root, staged_sdks, prepared)
             (prepared / "receipts/sdk-package.json").write_bytes(original)
+            include_file("receipts/sdk-package.json", original)
             if validation_stage_root is not None:
-                _capture_validation_sources(repository, validation, validation_stage, prepared)
+                expected_files.extend(_capture_validation_sources(repository, validation, validation_stage, prepared))
                 snapshot_regular_tree(validation_stage, prepared / "validation")
+                include_tree("validation", validation_inventory)
                 (prepared / "receipts/sdk-validation.json").write_bytes(validation_bytes)
+                include_file("receipts/sdk-validation.json", validation_bytes)
                 if regular_file_inventory(Path(validation_stage_root)) != validation_inventory:
                     raise ValueError("Native validation stage changed before publication")
+            expected_files.sort(key=lambda record: record["relativePath"])
+            if regular_file_inventory(prepared) != expected_files:
+                raise ValueError("Native capability handoff differs from authenticated source inventory")
             if (regular_file_inventory(runtime_original) != runtime_inventory
+                    or regular_file_inventory(runtime_stage_root) != runtime_inventory
                     or regular_file_inventory(sdks_original) != sdks_inventory
+                    or regular_file_inventory(staged_sdks) != sdks_inventory
+                    or regular_file_inventory(handoff) != handoff_inventory
                     or read_regular_file_bytes(Path(compatibility_request), max_bytes=_LIMIT, reject_symlink_parents=True) != original_request_bytes
                     or validation is not None and _receipt(validation_receipt_path)[1] != validation_bytes
                     or _receipt(receipt_path)[1] != original
                     or regular_file_inventory(stage_root) != original_inventory):
                 raise ValueError("Native capability sources changed before publication")
-            publish_regular_tree(prepared, Path(validation_inputs_output))
+            publish_regular_tree(prepared, Path(validation_inputs_output), expected_inventory=expected_files)
     if _receipt(receipt_path)[1] != original or regular_file_inventory(stage_root) != original_inventory:
         raise ValueError("SDK package stage or receipt changed during input verification")
     if validation is not None and _receipt(validation_receipt_path)[1] != validation_bytes:

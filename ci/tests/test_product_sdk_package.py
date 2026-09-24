@@ -7,7 +7,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, run_git, snapshot_regular_tree
+from ci.products.inventory import (
+    canonical_json_bytes, load_canonical_json_bytes,
+    publish_regular_tree as actual_publish_regular_tree, run_git, snapshot_regular_tree,
+)
 from ci.products.plan import (
     NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST,
     _contract_projection_from_request, plan_phase,
@@ -538,8 +541,10 @@ class SdkPackagePlanTest(unittest.TestCase):
                     package_main(arguments + ["--validation-content-output", str(protected / "new-content.json")])
                 self.assertFalse(output.exists())
                 self.assertFalse((protected / "new-content.json").exists())
+            from ci.products.sdk_native import _stage_native_capability_inputs
+
             def fixture_handoff(arguments, runtime, sdks, prepared):
-                (prepared / "receipts").mkdir(parents=True)
+                _stage_native_capability_inputs(arguments, runtime, sdks, prepared)
 
             source = self.repository / "codex-agent-bindings/csharp/parity/capability-claims.tsv"
             original_source = source.read_bytes()
@@ -632,6 +637,44 @@ class SdkPackagePlanTest(unittest.TestCase):
             self.assertTrue((output / "bootstrap/bootstrap-content.json").is_file())
             # Byte/receipt closure only; synthetic claims do not establish Kotlin/host parity.
             self.assertEqual(original, self.native_receipt.read_bytes())
+
+    def test_native_capability_pre_pin_and_late_copy_mutations_do_not_publish(self):
+        from ci.products.sdk_native import _stage_native_capability_inputs
+        from ci.products.sdk_inputs import INVENTORY_NAME, stage_sdk_inputs as actual_stage_sdk_inputs
+
+        def mutate_handoff_before_join(request, destination, **kwargs):
+            result = actual_stage_sdk_inputs(request, destination, **kwargs)
+            manifest = Path(destination) / INVENTORY_NAME
+            manifest.write_bytes(manifest.read_bytes() + b"changed before caller handoff join\n")
+            return result
+
+        def mutate_before_pin(arguments, runtime, sdks, prepared):
+            _stage_native_capability_inputs(arguments, runtime, sdks, prepared)
+            path = prepared / "contract/canonical-api.json"
+            path.write_bytes(path.read_bytes() + b"changed after source verification\n")
+
+        def mutate_before_copy(source, destination, **kwargs):
+            path = Path(source) / "receipts/sdk-package.json"
+            path.write_bytes(path.read_bytes() + b"changed after inventory check\n")
+            actual_publish_regular_tree(source, destination, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            before_join, before_pin, before_copy = (root / name for name in
+                                                   ("before-join", "before-pin", "before-copy"))
+            with patch("ci.products.sdk_package.stage_sdk_inputs", side_effect=mutate_handoff_before_join), \
+                    self.assertRaisesRegex(ValueError, "verified staging result"):
+                package_main(self.native_cli_arguments() + ["--validation-inputs-output", str(before_join)])
+            self.assertFalse(before_join.exists())
+            with patch("ci.products.sdk_native._stage_native_capability_inputs",
+                       side_effect=mutate_before_pin), \
+                    self.assertRaisesRegex(ValueError, "authenticated source inventory"):
+                package_main(self.native_cli_arguments() + ["--validation-inputs-output", str(before_pin)])
+            self.assertFalse(before_pin.exists())
+            with patch("ci.products.sdk_package.publish_regular_tree", side_effect=mutate_before_copy), \
+                    self.assertRaisesRegex(ValueError, "pinned inventory"):
+                package_main(self.native_cli_arguments() + ["--validation-inputs-output", str(before_copy)])
+            self.assertFalse(before_copy.exists())
 
     def test_native_capability_output_cannot_mutate_original_input_trees(self):
         from ci.products.inventory import regular_file_inventory
