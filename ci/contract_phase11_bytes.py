@@ -6,6 +6,8 @@ evidence. This helper does not establish official upload or landed-tree authorit
 
 from __future__ import annotations
 
+import argparse
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -166,3 +168,25 @@ def forward_verified_contract_phase10_bytes(
                 "metadataBuildKey": expected_metadata_build_key,
                 "phase10InventorySha256": expected_inventory_sha256,
                 "candidateInventory": regular_file_inventory(destination)}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    for option in ("protected-output", "destination", "landed-repository"):
+        parser.add_argument(f"--{option}", type=Path, required=True)
+    for option in (
+        "expected-inventory-sha256", "expected-contract-version",
+        "expected-payload-sha256", "expected-metadata-build-key",
+        "expected-source-commit", "expected-source-tree",
+        "expected-validation-tree", "expected-workflow-sha",
+        "expected-caller-sha256", "expected-keyring-sha256",
+        "expected-keys-inventory-sha256", "expected-pgp-key-sha256",
+    ):
+        parser.add_argument(f"--{option}", required=True)
+    result = forward_verified_contract_phase10_bytes(**vars(parser.parse_args(argv)))
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

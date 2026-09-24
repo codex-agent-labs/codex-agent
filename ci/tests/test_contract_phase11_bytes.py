@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+import io
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -63,6 +66,26 @@ class ContractPhase11BytesTest(unittest.TestCase):
         self.assertEqual(regular_file_inventory(source), regular_file_inventory(destination))
         self.assertEqual(payload.read_bytes(),
                          (destination / "contract-release-evidence/contract-input" / payload.name).read_bytes())
+        cli_destination = phase10.fixture.root / "contract-candidate-cli"
+        arguments = ["--protected-output", str(source), "--destination", str(cli_destination)]
+        for name, value in pins.items():
+            arguments.extend(["--" + name.replace("_", "-"), str(value)])
+        with self.assertRaises(SystemExit) as missing:
+            candidate.main(arguments[:-2])
+        self.assertEqual(2, missing.exception.code)
+        self.assertFalse(cli_destination.exists())
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(0, candidate.main(arguments))
+        self.assertEqual(result, json.loads(output.getvalue()))
+        self.assertEqual(regular_file_inventory(source), regular_file_inventory(cli_destination))
+        bad_arguments = arguments.copy()
+        bad_arguments[bad_arguments.index("--expected-pgp-key-sha256") + 1] = "sha256:" + "0" * 64
+        bad_arguments[bad_arguments.index("--destination") + 1] = str(
+            phase10.fixture.root / "bad-cli-pin",
+        )
+        with self.assertRaisesRegex(ValueError, "verifier keys differ"):
+            candidate.main(bad_arguments)
+        self.assertFalse((phase10.fixture.root / "bad-cli-pin").exists())
         with self.assertRaisesRegex(ValueError, "already exists"):
             candidate.forward_verified_contract_phase10_bytes(source, destination, **pins)
         landed_tree.return_value = "0" * 40
