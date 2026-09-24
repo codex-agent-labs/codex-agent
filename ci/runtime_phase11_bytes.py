@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 
@@ -33,12 +34,31 @@ def _tree_digest(directory: Path, *, allow_empty: bool = False) -> str:
     return sha256_bytes(canonical_json_bytes(regular_file_inventory(directory, allow_empty=allow_empty)))
 
 
+def _landed_tree(repository: Path) -> str:
+    root = repository.resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("Runtime candidate checkout must be a directory")
+    result = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--show-toplevel", "HEAD^{tree}"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode:
+        raise ValueError("Runtime candidate checkout has no landed Git tree")
+    lines = result.stdout.splitlines()
+    if len(lines) != 2 or Path(lines[0]).resolve(strict=True) != root or not re.fullmatch(
+        r"[0-9a-f]{40}|[0-9a-f]{64}", lines[1],
+    ):
+        raise ValueError("Runtime candidate checkout is not the exact Git root")
+    return lines[1]
+
+
 def forward_verified_runtime_phase10_bytes(
-    protected_output: Path, maven_sidecars: Path, destination: Path, *,
+    protected_output: Path, maven_sidecars: Path, destination: Path, *, landed_repository: Path,
     expected_protected_inventory_sha256: str, expected_sidecar_inventory_sha256: str,
     expected_metadata_receipt_sha256: str, expected_build_key: str,
     expected_runtime_version: str, expected_manifest_sha256: str,
-    expected_source_commit: str, expected_source_tree: str, expected_workflow_sha: str,
+    expected_source_commit: str, expected_source_tree: str, expected_validation_tree: str,
+    expected_workflow_sha: str,
     keyring: Path, expected_keyring_sha256: str, keys_directory: Path,
     expected_keys_inventory_sha256: str, pgp_public_key: Path,
     expected_pgp_key_sha256: str,
@@ -68,9 +88,12 @@ def forward_verified_runtime_phase10_bytes(
     require_semver(expected_runtime_version, "Phase-10 Runtime version")
     for label, revision in (("source commit", expected_source_commit),
                             ("source tree", expected_source_tree),
+                            ("validation tree", expected_validation_tree),
                             ("workflow SHA", expected_workflow_sha)):
         if type(revision) is not str or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", revision) is None:
             raise ValueError(f"Phase-10 {label} must be a full Git object ID")
+    if _landed_tree(Path(landed_repository)) != expected_validation_tree:
+        raise ValueError("Runtime candidate landed tree differs from Phase-10 validation")
     if destination.exists() or destination.is_symlink():
         raise ValueError("Runtime candidate destination already exists")
     output = destination.resolve(strict=False)
@@ -156,6 +179,8 @@ def forward_verified_runtime_phase10_bytes(
                 or read_regular_file_bytes(prepared / "pgp-public-key.asc", max_bytes=1024 * 1024,
                                            reject_symlink_parents=True) != pgp_bytes):
             raise ValueError("Verified Runtime candidate bytes changed before publication")
+        if _landed_tree(Path(landed_repository)) != expected_validation_tree:
+            raise ValueError("Runtime candidate landed tree changed during verification")
         publish_regular_tree(prepared, destination, expected_inventory=prepared_inventory)
         if (regular_file_inventory(destination) != prepared_inventory
                 or read_regular_file_bytes(destination / "product-policy/product-signing-keys.json",
@@ -163,6 +188,8 @@ def forward_verified_runtime_phase10_bytes(
                 or read_regular_file_bytes(destination / "pgp-public-key.asc", max_bytes=1024 * 1024,
                                            reject_symlink_parents=True) != pgp_bytes):
             raise ValueError("Published Runtime candidate bytes differ from verified bytes")
+        if _landed_tree(Path(landed_repository)) != expected_validation_tree:
+            raise ValueError("Runtime candidate landed tree changed during publication")
         return {"product": "runtime", "runtimeVersion": maven["runtimeVersion"],
                 "manifestSha256": maven["manifestSha256"],
                 "protectedInventorySha256": expected_protected_inventory_sha256,

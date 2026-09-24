@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -69,7 +70,9 @@ class RuntimePhase11BytesTest(unittest.TestCase):
             expected_manifest_sha256=sha256_bytes(_MANIFEST),
             expected_source_commit=self.commit,
             expected_source_tree=self.tree,
+            expected_validation_tree=self.tree,
             expected_workflow_sha=self.workflow,
+            landed_repository=self.root,
             keyring=self.keyring,
             expected_keyring_sha256=sha256_bytes(self.keyring.read_bytes()),
             keys_directory=self.keys,
@@ -78,7 +81,7 @@ class RuntimePhase11BytesTest(unittest.TestCase):
             expected_pgp_key_sha256=sha256_bytes(self.pgp_key.read_bytes()),
         )
 
-    def forward(self, **changes):
+    def forward(self, _landed_trees=None, **changes):
         @contextmanager
         def verified(root, *, keyring, keys_directory):
             self.assertEqual(self.keyring.read_bytes(), keyring.read_bytes())
@@ -94,7 +97,9 @@ class RuntimePhase11BytesTest(unittest.TestCase):
             self.assertEqual(regular_file_inventory(self.sidecars), regular_file_inventory(sidecars))
             return {"runtimeVersion": "0.8.0", "manifestSha256": sha256_bytes(manifest.read_bytes())}
 
-        with patch.object(candidate, "verified_runtime_aggregate_handoff", side_effect=verified) as full, \
+        with patch.object(candidate, "_landed_tree",
+                          side_effect=_landed_trees or (lambda _: self.tree)), \
+                patch.object(candidate, "verified_runtime_aggregate_handoff", side_effect=verified) as full, \
                 patch.object(candidate, "verify_runtime_phase10_maven", side_effect=verify) as maven:
             result = candidate.forward_verified_runtime_phase10_bytes(
                 self.release, self.sidecars, self.destination, **{**self.kwargs(), **changes},
@@ -149,6 +154,20 @@ class RuntimePhase11BytesTest(unittest.TestCase):
             self.forward(expected_keyring_sha256=sha256_bytes(b"other"))
         with self.assertRaisesRegex(ValueError, "release identity"):
             self.forward(expected_runtime_version="0.8.1")
+        with self.assertRaisesRegex(ValueError, "landed tree differs"):
+            self.forward(expected_validation_tree="d" * 40)
+        self.assertFalse(self.destination.exists())
+
+    def test_landed_tree_requires_exact_checkout_root(self):
+        with patch.object(candidate.subprocess, "run", return_value=SimpleNamespace(
+            returncode=0, stdout=f"{self.root.parent}\n{self.tree}\n",
+        )):
+            with self.assertRaisesRegex(ValueError, "exact Git root"):
+                candidate._landed_tree(self.root)
+
+    def test_landed_tree_change_before_publication_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "landed tree changed during verification"):
+            self.forward(_landed_trees=[self.tree, "d" * 40])
         self.assertFalse(self.destination.exists())
 
     def test_mutation_during_publication_fails_after_no_replace_copy(self):
@@ -183,7 +202,8 @@ class RuntimePhase11BytesTest(unittest.TestCase):
             (sidecars / "signature.asc").write_bytes(b"changed verified copy\n")
             return {"runtimeVersion": "0.8.0", "manifestSha256": sha256_bytes(_MANIFEST)}
 
-        with patch.object(candidate, "verified_runtime_aggregate_handoff", side_effect=altered), \
+        with patch.object(candidate, "_landed_tree", return_value=self.tree), \
+                patch.object(candidate, "verified_runtime_aggregate_handoff", side_effect=altered), \
                 patch.object(candidate, "verify_runtime_phase10_maven", side_effect=mutate), \
                 self.assertRaisesRegex(ValueError, "Verified Runtime candidate bytes changed"):
             candidate.forward_verified_runtime_phase10_bytes(
