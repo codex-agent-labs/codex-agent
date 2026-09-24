@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 
@@ -30,11 +31,30 @@ def _inventory_digest(directory: Path) -> str:
     return sha256_bytes(canonical_json_bytes(regular_file_inventory(directory)))
 
 
+def _landed_tree(repository: Path) -> str:
+    root = repository.resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("Contract candidate checkout must be a directory")
+    result = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--show-toplevel", "HEAD^{tree}"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode:
+        raise ValueError("Contract candidate checkout has no landed Git tree")
+    lines = result.stdout.splitlines()
+    if len(lines) != 2 or Path(lines[0]).resolve(strict=True) != root or not re.fullmatch(
+        r"[0-9a-f]{40}|[0-9a-f]{64}", lines[1],
+    ):
+        raise ValueError("Contract candidate checkout is not the exact Git root")
+    return lines[1]
+
+
 def forward_verified_contract_phase10_bytes(
-    protected_output: Path, destination: Path, *,
+    protected_output: Path, destination: Path, *, landed_repository: Path,
     expected_inventory_sha256: str, expected_contract_version: str,
     expected_payload_sha256: str, expected_metadata_build_key: str,
     expected_source_commit: str, expected_source_tree: str,
+    expected_validation_tree: str,
     expected_workflow_sha: str, expected_caller_sha256: str,
     expected_keyring_sha256: str, expected_keys_inventory_sha256: str,
     expected_pgp_key_sha256: str,
@@ -55,10 +75,13 @@ def forward_verified_contract_phase10_bytes(
     for name, value in (
         ("source commit", expected_source_commit),
         ("source tree", expected_source_tree),
+        ("validation tree", expected_validation_tree),
         ("workflow SHA", expected_workflow_sha),
     ):
         if type(value) is not str or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value) is None:
             raise ValueError(f"Contract Phase-10 {name} must be a full Git object ID")
+    if _landed_tree(Path(landed_repository)) != expected_validation_tree:
+        raise ValueError("Contract candidate landed tree differs from Phase-10 validation")
     if destination.exists() or destination.is_symlink():
         raise ValueError("Contract candidate destination already exists")
     source = protected_output.resolve(strict=True)
@@ -88,7 +111,8 @@ def forward_verified_contract_phase10_bytes(
             ("trustedSourceCommit", expected_source_commit),
             ("trustedSourceTree", expected_source_tree),
             ("trustedWorkflowSha", expected_workflow_sha),
-        )):
+        )) or type(caller.get("transportProducer")) is not dict or \
+                caller["transportProducer"].get("tree") != expected_validation_tree:
             raise ValueError("Contract Phase-10 caller differs from selected source context")
         keyring_bytes = read_regular_file_bytes(keyring, max_bytes=16 * 1024 * 1024,
                                                 reject_symlink_parents=True)
@@ -129,11 +153,13 @@ def forward_verified_contract_phase10_bytes(
         if {row["relativePath"] for row in regular_file_inventory(prepared)} != expected_paths:
             raise ValueError("Contract Phase-10 output has unexpected candidate files")
         if (_inventory_digest(source) != expected_inventory_sha256
-                or _inventory_digest(prepared) != expected_inventory_sha256):
+                or _inventory_digest(prepared) != expected_inventory_sha256
+                or _landed_tree(Path(landed_repository)) != expected_validation_tree):
             raise ValueError("Contract Phase-10 bytes changed during candidate verification")
         publish_regular_tree(prepared, destination)
-        if _inventory_digest(destination) != expected_inventory_sha256:
-            raise ValueError("Forwarded Contract candidate differs from Phase-10 bytes")
+        if (_inventory_digest(destination) != expected_inventory_sha256
+                or _landed_tree(Path(landed_repository)) != expected_validation_tree):
+            raise ValueError("Forwarded Contract candidate or landed tree differs from Phase-10 bytes")
         return {"product": "contract", "contractVersion": expected_contract_version,
                 "payloadSha256": expected_payload_sha256,
                 "metadataBuildKey": expected_metadata_build_key,
