@@ -3,12 +3,14 @@
 import os
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+ROOT_KEY = ROOT.parents[1] / "gradle/release/keys/sdk-runtime-root.pub"
 LIBRARIES = (
     "native/osx-arm64/libcodex_agent.dylib",
     "native/osx-x64/libcodex_agent.dylib",
@@ -27,7 +29,7 @@ class PackageAssetsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             script = root / "build-script"
-            subprocess.run([str(rustc), str(ROOT / "build.rs"), "-o", str(script)], check=True)
+            subprocess.run([str(rustc), "--edition=2024", str(ROOT / "build.rs"), "-o", str(script)], check=True)
             (root / "Cargo.toml.orig").touch()
             output = root / "out"
             output.mkdir()
@@ -42,11 +44,14 @@ class PackageAssetsTest(unittest.TestCase):
                 return subprocess.run([str(script)], cwd=root, env=environment, capture_output=True, text=True)
 
             self.assertNotEqual(run_script().returncode, 0)
-            for name in ("native/sdk-compatibility.json", *LIBRARIES):
+            for name in ("native/sdk-compatibility.json", "native/sdk-runtime-root.pub", *LIBRARIES):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"fixture")
             self.assertEqual(run_script().returncode, 0)
+            (root / "native/sdk-runtime-root.pub").write_bytes(b"")
+            self.assertNotEqual(run_script().returncode, 0)
+            (root / "native/sdk-runtime-root.pub").write_bytes(b"fixture")
             (root / LIBRARIES[0]).write_bytes(b"")
             self.assertNotEqual(run_script().returncode, 0)
 
@@ -61,6 +66,7 @@ class PackageAssetsTest(unittest.TestCase):
                 path = source / name
                 path.parent.mkdir(parents=True)
                 path.write_bytes(b"fixture")
+            shutil.copyfile(ROOT_KEY, source / "native/sdk-runtime-root.pub")
             result = subprocess.run(
                 [cargo, "package", "--list", "--locked", "--offline", "--allow-dirty"],
                 cwd=source, capture_output=True, text=True, check=True,
@@ -68,7 +74,67 @@ class PackageAssetsTest(unittest.TestCase):
             members = set(result.stdout.splitlines())
             self.assertIn("Cargo.toml.orig", members)
             self.assertIn("native/sdk-compatibility.json", members)
+            self.assertIn("native/sdk-runtime-root.pub", members)
             self.assertTrue(set(LIBRARIES) <= members)
+
+    def test_extracted_crate_rejects_unauthenticated_external_library_before_loading(self) -> None:
+        cargo = os.environ.get("CODEX_AGENT_TEST_CARGO") or shutil.which("cargo")
+        if cargo is None:
+            self.skipTest("local Cargo is unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary).resolve()
+            source = work / "rust"
+            shutil.copytree(ROOT, source, ignore=shutil.ignore_patterns("target", "__pycache__"))
+            for name in LIBRARIES:
+                path = source / name
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"fixture")
+            shutil.copyfile(ROOT_KEY, source / "native/sdk-runtime-root.pub")
+            subprocess.run(
+                [cargo, "package", "--no-verify", "--locked", "--offline", "--allow-dirty"],
+                cwd=source, capture_output=True, text=True, check=True,
+            )
+            archive = source / "target/package/codex-agent-0.8.0.crate"
+            extracted = work / "installed"
+            extracted.mkdir()
+            with tarfile.open(archive, "r:gz") as package:
+                names = package.getnames()
+                self.assertEqual(len(names), len(set(names)))
+                self.assertTrue(all(name.startswith("codex-agent-0.8.0/") and ".." not in Path(name).parts
+                                    for name in names))
+                self.assertTrue(all(member.isfile() or member.isdir() for member in package.getmembers()))
+                package.extractall(extracted, filter="data")
+            installed = extracted / "codex-agent-0.8.0"
+            self.assertEqual((installed / "native/sdk-runtime-root.pub").read_bytes(), ROOT_KEY.read_bytes())
+            consumer = work / "consumer"
+            (consumer / "src").mkdir(parents=True)
+            (consumer / "Cargo.toml").write_text(
+                '[package]\nname = "installed-rust-security-smoke"\nversion = "0.0.0"\n'
+                'edition = "2024"\n[dependencies]\ncodex-agent = { path = "../installed/codex-agent-0.8.0" }\n'
+            )
+            (consumer / "src/main.rs").write_text(
+                'fn main() {\n'
+                '  let path = std::env::args().nth(1).expect("library path");\n'
+                '  let error = codex_agent::CodexNativeLibrary::load(path).err().expect("must reject");\n'
+                '  assert!(error.to_string().contains("trusted release evidence"), "{error}");\n'
+                '}\n'
+            )
+            library = work / "unauthenticated.dylib"
+            library.write_bytes(b"not a native library")
+            environment = os.environ | {"RUSTC": str(Path(cargo).with_name("rustc"))}
+            if os.name != "nt":
+                cargo_home = work / "cargo-home"
+                (cargo_home / "registry").mkdir(parents=True)
+                original_registry = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo")) / "registry"
+                for name in ("cache", "index"):
+                    (cargo_home / "registry" / name).symlink_to(original_registry / name, target_is_directory=True)
+                environment["CARGO_HOME"] = str(cargo_home)
+            result = subprocess.run(
+                [cargo, "run", "--offline", "--quiet", "--", str(library)],
+                cwd=consumer, env=environment,
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":
