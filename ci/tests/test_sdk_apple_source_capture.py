@@ -22,7 +22,8 @@ import receipt as lane_receipt  # noqa: E402
 import reuse  # noqa: E402
 import sdk_apple_source  # noqa: E402
 from products.inventory import (  # noqa: E402
-    load_canonical_json_bytes, regular_file_inventory, sha256_bytes,
+    load_canonical_json_bytes, publish_regular_tree as actual_publish_regular_tree,
+    regular_file_inventory, sha256_bytes, write_canonical_json as actual_write_canonical_json,
 )
 from ci.tests import test_ci as ci_fixture  # noqa: E402
 from ci.tests import test_sdk_apple_source as source_fixture  # noqa: E402
@@ -276,6 +277,42 @@ class SdkAppleSourceCaptureTest(unittest.TestCase):
             self._capture(gate=mutate_private_lane)
         self.assertFalse(self.output.exists())
 
+    def test_pre_pin_and_late_transport_mutations_do_not_publish(self) -> None:
+        extract = sdk_apple_source.safe_extract
+
+        def mutate_extracted_lane(archive, destination):
+            result = extract(archive, destination)
+            if Path(destination).name == "lane":
+                (Path(destination) / "lane-receipt.json").write_bytes(b"changed extraction")
+            return result
+
+        with mock.patch.object(sdk_apple_source, "safe_extract",
+                               side_effect=mutate_extracted_lane), \
+                self.assertRaisesRegex(ValueError, "extraction differs from authenticated upload"):
+            self._capture()
+        self.assertFalse(self.output.exists())
+
+        def mutate_before_pin(path, value):
+            actual_write_canonical_json(path, value)
+            (Path(path).parent / "upload.zip").write_bytes(b"changed before pin")
+
+        with mock.patch.object(sdk_apple_source, "write_canonical_json",
+                               side_effect=mutate_before_pin), \
+                self.assertRaisesRegex(ValueError, "changed before publication"):
+            self._capture()
+        self.assertFalse(self.output.exists())
+
+        def mutate_before_copy(source, destination, **kwargs):
+            (Path(source) / "transport/original-apple-ci.json").write_bytes(
+                b"changed after pin")
+            actual_publish_regular_tree(source, destination, **kwargs)
+
+        with mock.patch.object(sdk_apple_source, "publish_regular_tree",
+                               side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self._capture()
+        self.assertFalse(self.output.exists())
+
     def test_same_commit_original_receipt_attempt_is_observed_separately(self) -> None:
         lane_receipt.create_receipt(Namespace(
             plan=self.source.plan, lane="ios-swift-tests", output=self.upload_lane,
@@ -485,6 +522,17 @@ class SdkAppleSourceCaptureTest(unittest.TestCase):
             self.assertEqual(
                 original_plan_before, regular_file_inventory(original_plan_root, allow_empty=True),
             )
+
+        def mutate_original_zip_before_copy(source, destination, **kwargs):
+            (Path(source) / "transport/original-lane-upload.zip").write_bytes(
+                b"changed original upload after pin")
+            actual_publish_regular_tree(source, destination, **kwargs)
+
+        with mock.patch.object(sdk_apple_source, "publish_regular_tree",
+                               side_effect=mutate_original_zip_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self._capture(api=api, gate=gate)
+        self.assertFalse(self.output.exists())
         evidence = self._capture(api=api, gate=gate)
         self.assertEqual(self.source.commit, evidence["originalProducer"]["commit"])
         self.assertEqual(

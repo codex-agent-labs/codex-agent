@@ -19,6 +19,7 @@ if __package__:
     from .receipt import INPUT_NAMES, safe_extract, validate_receipt
     from .products.contract_projection import VerifiedContractProjection
     from .products.inventory import (
+        canonical_json_bytes,
         publish_regular_tree,
         git_regular_blob_bytes,
         load_json_bytes,
@@ -40,6 +41,7 @@ else:
     from receipt import INPUT_NAMES, safe_extract, validate_receipt
     from products.contract_projection import VerifiedContractProjection
     from products.inventory import (
+        canonical_json_bytes,
         publish_regular_tree,
         git_regular_blob_bytes,
         load_json_bytes,
@@ -260,13 +262,15 @@ def capture_sdk_apple_original_ci(
         product_reuse._require_artifact_job_window(observed[0], _JOB, artifact)
         archive = private / "transport.zip"
         archive.write_bytes(raw)
-        verified_zip_contents(
+        uploaded_files, _, _ = verified_zip_contents(
             archive, retained_paths=(), allow_empty_members=True,
             **product_reuse._CATALOG_ZIP_LIMITS,
         )
         lane = private / "lane"
         safe_extract(archive, lane)
         lane_before = regular_file_inventory(lane, allow_empty=True)
+        if lane_before != uploaded_files:
+            raise ValueError("Apple source lane extraction differs from authenticated upload")
         receipt_path = lane / "lane-receipt.json"
         receipt_bytes = _read(receipt_path)
         receipt = validate_receipt(
@@ -320,20 +324,24 @@ def capture_sdk_apple_original_ci(
             }
             original_lane_archive = private / "original-lane-upload.zip"
             original_lane_archive.write_bytes(original_lane_raw)
-            verified_zip_contents(
+            original_lane_files, _, _ = verified_zip_contents(
                 original_lane_archive, retained_paths=(), allow_empty_members=True,
                 **product_reuse._CATALOG_ZIP_LIMITS,
             )
             source_lane = private / "original-lane"
             safe_extract(original_lane_archive, source_lane)
+            if regular_file_inventory(source_lane, allow_empty=True) != original_lane_files:
+                raise ValueError("Apple original lane extraction differs from authenticated upload")
             original_plan_archive = private / "original-plan-upload.zip"
             original_plan_archive.write_bytes(original_plan_raw)
-            verified_zip_contents(
+            original_plan_files, _, _ = verified_zip_contents(
                 original_plan_archive, retained_paths=(), allow_empty_members=True,
                 **product_reuse._CATALOG_ZIP_LIMITS,
             )
             original_plan_root = private / "original-plan"
             safe_extract(original_plan_archive, original_plan_root)
+            if regular_file_inventory(original_plan_root, allow_empty=True) != original_plan_files:
+                raise ValueError("Apple original plan extraction differs from authenticated upload")
             source_plan = original_plan_root / "impact-plan.json"
             source_repository = _private_original_repository(
                 root, private / "original-repository", original_producer["commit"], policy_revision,
@@ -357,8 +365,9 @@ def capture_sdk_apple_original_ci(
                 raise ValueError("Apple original lane receipt differs from its upload identity")
             receipt_bytes = _read(original_receipt_path)
 
-        source_lane_before = regular_file_inventory(source_lane, allow_empty=True)
-        source_plan_before = regular_file_inventory(source_plan.parent, allow_empty=True)
+        source_lane_before = uploaded_files if transport is None else original_lane_files
+        source_plan_before = (regular_file_inventory(source_plan.parent, allow_empty=True)
+                              if transport is None else original_plan_files)
 
         verify_sdk_apple_original_source(
             repository=source_repository,
@@ -420,11 +429,35 @@ def capture_sdk_apple_original_ci(
             ) != lane_before:
                 raise ValueError("Published Apple current lane differs from its verified input")
         write_canonical_json(output / "transport/original-apple-ci.json", evidence)
+        evidence_bytes = canonical_json_bytes(evidence)
+        expected_files = [
+            *({**record, "relativePath": f"lane/{record['relativePath']}"}
+              for record in source_lane_before),
+            {"relativePath": "transport/upload.zip", "bytes": len(raw),
+             "sha256": artifact_sha256},
+            {"relativePath": "transport/original-apple-ci.json", "bytes": len(evidence_bytes),
+             "sha256": sha256_bytes(evidence_bytes)},
+        ]
+        if original_artifacts is not None:
+            expected_files.extend([
+                *({**record, "relativePath": f"original-plan/{record['relativePath']}"}
+                  for record in source_plan_before),
+                *({**record, "relativePath": f"transport/current-lane/{record['relativePath']}"}
+                  for record in lane_before),
+                {"relativePath": "transport/original-lane-upload.zip",
+                 "bytes": len(original_lane_raw), "sha256": sha256_bytes(original_lane_raw)},
+                {"relativePath": "transport/original-plan-upload.zip",
+                 "bytes": len(original_plan_raw), "sha256": sha256_bytes(original_plan_raw)},
+            ])
+        expected_files.sort(key=lambda record: record["relativePath"])
         if (regular_file_inventory(lane, allow_empty=True) != lane_before
                 or regular_file_inventory(source_lane, allow_empty=True) != source_lane_before
                 or regular_file_inventory(source_plan.parent, allow_empty=True) != source_plan_before):
             raise ValueError("Captured Apple source lane or original plan changed before publication")
         if regular_file_inventory(output / "lane", allow_empty=True) != source_lane_before:
             raise ValueError("Published Apple source lane differs from its verified input")
-        publish_regular_tree(output, prepared_destination, allow_empty=True)
+        if regular_file_inventory(output, allow_empty=True) != expected_files:
+            raise ValueError("Apple source capture changed before publication")
+        publish_regular_tree(output, prepared_destination, allow_empty=True,
+                             expected_inventory=expected_files)
     return evidence
