@@ -89,6 +89,9 @@ target_include_directories(codex_agent_loader_test_hooks PUBLIC
 if(CMAKE_DL_LIBS)
     target_link_libraries(codex_agent_loader_test_hooks PUBLIC ${CMAKE_DL_LIBS})
 endif()
+if(WIN32)
+    target_link_libraries(codex_agent_loader_test_hooks PUBLIC advapi32 ole32 shell32)
+endif()
 if(MSVC)
     target_compile_options(codex_agent_loader_test_hooks PRIVATE /W4 /WX)
 else()
@@ -120,15 +123,13 @@ add_test(NAME codex_agent_native_loader_external_component COMMAND codex_agent_n
 add_test(NAME codex_agent_native_loader_external_no_evidence COMMAND codex_agent_native_loader_test
     $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" external-no-evidence
     $<TARGET_FILE:codex_agent_loader_external>)
-if(UNIX)
-    add_test(NAME codex_agent_native_loader_signed_external COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/test_signed_external_loader.py"
-        $<TARGET_FILE:codex_agent_native_loader_test>
-        $<TARGET_FILE:codex_agent_loader_valid>
-        "${CODEX_AGENT_LOADER_COMPATIBILITY}"
-        $<TARGET_FILE:codex_agent_loader_external>
-        "${CodexAgent_NATIVE_CLASSIFIER}")
-endif()
+add_test(NAME codex_agent_native_loader_signed_external COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_signed_external_loader.py"
+    $<TARGET_FILE:codex_agent_native_loader_test>
+    $<TARGET_FILE:codex_agent_loader_valid>
+    "${CODEX_AGENT_LOADER_COMPATIBILITY}"
+    $<TARGET_FILE:codex_agent_loader_external>
+    "${CodexAgent_NATIVE_CLASSIFIER}")
 add_test(NAME codex_agent_native_loader_old_abi COMMAND codex_agent_native_loader_test
     $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" failure
     $<TARGET_FILE:codex_agent_loader_old_abi>)

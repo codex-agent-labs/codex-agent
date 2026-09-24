@@ -11,7 +11,19 @@ import sys
 import tempfile
 
 
-SSH = "/usr/bin/ssh-keygen"
+def system_ssh_keygen() -> str:
+    if sys.platform != "win32":
+        return "/usr/bin/ssh-keygen"
+    import ctypes
+
+    directory = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetSystemDirectoryW(directory, len(directory))
+    if not 0 < length < len(directory):
+        raise RuntimeError("Windows system OpenSSH directory is unavailable")
+    return str(Path(directory.value) / "OpenSSH" / "ssh-keygen.exe")
+
+
+SSH = system_ssh_keygen()
 
 
 def canonical(value: dict) -> bytes:

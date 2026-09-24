@@ -21,6 +21,7 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#include <shlobj.h>
 #else
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -627,8 +628,149 @@ void verify_sshsig(std::string_view message, std::string_view signature, std::st
         throw std::runtime_error("external Runtime signature verification failed");
 }
 #else
-void verify_sshsig(std::string_view, std::string_view, std::string_view, std::string_view, std::string_view) {
-    throw std::runtime_error("trusted Windows OpenSSH verifier is unavailable");
+struct WindowsHandle {
+    HANDLE value = INVALID_HANDLE_VALUE;
+    explicit WindowsHandle(HANDLE handle = INVALID_HANDLE_VALUE) : value(handle) {}
+    ~WindowsHandle() { if (value != INVALID_HANDLE_VALUE && value != nullptr) CloseHandle(value); }
+    WindowsHandle(const WindowsHandle&) = delete;
+    WindowsHandle& operator=(const WindowsHandle&) = delete;
+};
+
+std::filesystem::path private_windows_directory(std::wstring_view prefix) {
+    PWSTR known_folder = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &known_folder)) ||
+        known_folder == nullptr)
+        throw std::runtime_error("private Windows verifier directory is unavailable");
+    const std::filesystem::path base(known_folder);
+    CoTaskMemFree(known_folder);
+    if (!base.is_absolute() || GetDriveTypeW(base.root_path().c_str()) != DRIVE_FIXED)
+        throw std::runtime_error("private Windows verifier directory is unsafe");
+    auto current = base.root_path();
+    for (const auto& part : base.relative_path()) {
+        current /= part;
+        const auto flags = GetFileAttributesW(current.c_str());
+        if (flags == INVALID_FILE_ATTRIBUTES ||
+            (flags & FILE_ATTRIBUTE_DIRECTORY) == 0 || (flags & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+            throw std::runtime_error("private Windows verifier directory is unsafe");
+    }
+
+    WindowsHandle token;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token.value))
+        throw std::runtime_error("Windows verifier identity is unavailable");
+    DWORD token_size = 0;
+    (void)GetTokenInformation(token.value, TokenUser, nullptr, 0, &token_size);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || token_size == 0)
+        throw std::runtime_error("Windows verifier identity is unavailable");
+    std::vector<BYTE> token_bytes(token_size);
+    if (!GetTokenInformation(token.value, TokenUser, token_bytes.data(), token_size, &token_size))
+        throw std::runtime_error("Windows verifier identity is unavailable");
+    const auto user = reinterpret_cast<TOKEN_USER*>(token_bytes.data())->User.Sid;
+    std::vector<BYTE> acl_bytes(sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE) + GetLengthSid(user));
+    auto* acl = reinterpret_cast<ACL*>(acl_bytes.data());
+    if (!InitializeAcl(acl, static_cast<DWORD>(acl_bytes.size()), ACL_REVISION) ||
+        !AddAccessAllowedAceEx(acl, ACL_REVISION, OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+            GENERIC_ALL, user))
+        throw std::runtime_error("private Windows verifier ACL is unavailable");
+    SECURITY_DESCRIPTOR descriptor{};
+    if (!InitializeSecurityDescriptor(&descriptor, SECURITY_DESCRIPTOR_REVISION) ||
+        !SetSecurityDescriptorDacl(&descriptor, TRUE, acl, FALSE) ||
+        !SetSecurityDescriptorControl(&descriptor, SE_DACL_PROTECTED, SE_DACL_PROTECTED))
+        throw std::runtime_error("private Windows verifier ACL is unavailable");
+    SECURITY_ATTRIBUTES security{static_cast<DWORD>(sizeof(SECURITY_ATTRIBUTES)), &descriptor, FALSE};
+    static std::atomic_uint64_t sequence{};
+    const auto directory = base / (std::wstring(prefix) + L"-" + std::to_wstring(GetCurrentProcessId()) +
+        L"-" + std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(sequence++));
+    if (!CreateDirectoryW(directory.c_str(), &security))
+        throw std::runtime_error("create private Windows verifier directory failed");
+    return directory;
+}
+
+void verify_sshsig(std::string_view message, std::string_view signature, std::string_view public_key,
+                   std::string_view namespace_name, std::string_view principal) {
+    canonical_sshsig(signature);
+    (void)public_key_fingerprint(public_key);
+    wchar_t system_directory[MAX_PATH + 1]{};
+    const auto system_length = GetSystemDirectoryW(system_directory, MAX_PATH + 1);
+    if (system_length == 0 || system_length > MAX_PATH)
+        throw std::runtime_error("trusted Windows OpenSSH directory is unavailable");
+    const auto verifier = std::filesystem::path(system_directory) / "OpenSSH" / "ssh-keygen.exe";
+    const auto attributes = GetFileAttributesW(verifier.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
+        throw std::runtime_error("trusted Windows OpenSSH verifier is unavailable");
+    const auto directory = private_windows_directory(L"sdk-runtime-sshsig");
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); }
+    } cleanup{directory};
+    const auto allowed = directory / "allowed-signers";
+    const auto detached = directory / "signature.sig";
+    const auto input = directory / "message";
+    const auto write_file = [](const std::filesystem::path& path, std::string_view bytes) {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        output.close();
+        if (!output) throw std::runtime_error("write private Windows verifier input failed");
+    };
+    write_file(allowed, std::string(principal) + " " + std::string(public_key));
+    write_file(detached, signature);
+    write_file(input, message);
+
+    WindowsHandle stdin_file(CreateFileW(input.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+    WindowsHandle null_file(CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_WRITE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (stdin_file.value == INVALID_HANDLE_VALUE || null_file.value == INVALID_HANDLE_VALUE)
+        throw std::runtime_error("open Windows verifier input failed");
+    WindowsHandle child_stdin, child_null;
+    if (!DuplicateHandle(GetCurrentProcess(), stdin_file.value, GetCurrentProcess(), &child_stdin.value,
+            0, TRUE, DUPLICATE_SAME_ACCESS) ||
+        !DuplicateHandle(GetCurrentProcess(), null_file.value, GetCurrentProcess(), &child_null.value,
+            0, TRUE, DUPLICATE_SAME_ACCESS))
+        throw std::runtime_error("inherit Windows verifier input failed");
+    SIZE_T attribute_size = 0;
+    (void)InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_size);
+    if (attribute_size == 0) throw std::runtime_error("restrict Windows verifier handles failed");
+    std::vector<BYTE> attribute_bytes(attribute_size);
+    auto* attributes_list = reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(attribute_bytes.data());
+    if (!InitializeProcThreadAttributeList(attributes_list, 1, 0, &attribute_size))
+        throw std::runtime_error("restrict Windows verifier handles failed");
+    struct AttributeCleanup {
+        PPROC_THREAD_ATTRIBUTE_LIST value;
+        ~AttributeCleanup() { DeleteProcThreadAttributeList(value); }
+    } attribute_cleanup{attributes_list};
+    HANDLE inherited[]{child_stdin.value, child_null.value};
+    if (!UpdateProcThreadAttribute(attributes_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            inherited, sizeof(inherited), nullptr, nullptr))
+        throw std::runtime_error("restrict Windows verifier handles failed");
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = static_cast<DWORD>(sizeof(startup));
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = child_stdin.value;
+    startup.StartupInfo.hStdOutput = child_null.value;
+    startup.StartupInfo.hStdError = child_null.value;
+    startup.lpAttributeList = attributes_list;
+    const auto quote = [](const std::filesystem::path& path) { return L"\"" + path.wstring() + L"\""; };
+    std::wstring command = quote(verifier) + L" -Y verify -f " + quote(allowed) +
+        L" -I " + std::wstring(principal.begin(), principal.end()) +
+        L" -n " + std::wstring(namespace_name.begin(), namespace_name.end()) +
+        L" -s " + quote(detached);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(verifier.c_str(), command.data(), nullptr, nullptr, TRUE,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW, nullptr, nullptr,
+            &startup.StartupInfo, &process))
+        throw std::runtime_error("trusted Windows OpenSSH verifier is unavailable");
+    WindowsHandle child_process(process.hProcess), child_thread(process.hThread);
+    const auto waited = WaitForSingleObject(child_process.value, 10000);
+    if (waited != WAIT_OBJECT_0) {
+        (void)TerminateProcess(child_process.value, 1);
+        (void)WaitForSingleObject(child_process.value, 1000);
+        throw std::runtime_error(waited == WAIT_TIMEOUT ?
+            "trusted Windows OpenSSH verifier timed out" : "trusted Windows OpenSSH verifier wait failed");
+    }
+    DWORD exit_code = 0;
+    if (!GetExitCodeProcess(child_process.value, &exit_code) || exit_code != 0)
+        throw std::runtime_error("external Runtime signature verification failed");
 }
 #endif
 
@@ -742,10 +884,7 @@ std::string descriptor_path(int descriptor) {
 #endif
 
 SnapshotCapture snapshot(const std::filesystem::path& source) {
-#ifdef _WIN32
-    const auto temporary_root = std::filesystem::canonical(
-        std::filesystem::temp_directory_path());
-#else
+#ifndef _WIN32
     const auto temporary_root = trusted_system_temporary_directory();
 #endif
 #ifdef _WIN32
@@ -766,10 +905,7 @@ SnapshotCapture snapshot(const std::filesystem::path& source) {
         (before.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
         throw std::runtime_error("native runtime source identity failed");
     }
-    const auto directory = temporary_root /
-        ("codex-agent-runtime-" + std::to_string(GetCurrentProcessId()) + "-" +
-         std::to_string(GetTickCount64()) + "-" + std::to_string(reinterpret_cast<std::uintptr_t>(source_handle)));
-    if (!CreateDirectoryW(directory.c_str(), nullptr)) throw std::runtime_error("native snapshot directory creation failed");
+    const auto directory = private_windows_directory(L"codex-agent-runtime");
     const auto destination = directory / source.filename();
     SnapshotCapture capture(destination, {});
     const auto output = CreateFileW(destination.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
