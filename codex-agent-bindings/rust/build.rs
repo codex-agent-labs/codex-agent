@@ -1,8 +1,38 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+const LIBRARIES: [(&str, &str); 5] = [
+    ("osx-arm64", "libcodex_agent.dylib"),
+    ("osx-x64", "libcodex_agent.dylib"),
+    ("linux-arm64", "libcodex_agent.so"),
+    ("linux-x64", "libcodex_agent.so"),
+    ("win-x64", "codex_agent.dll"),
+];
+
+fn require_package_assets(root: &Path) {
+    for path in std::iter::once(root.join("native/sdk-compatibility.json")).chain(
+        LIBRARIES
+            .iter()
+            .map(|(target, library)| root.join("native").join(target).join(library)),
+    ) {
+        let metadata = fs::symlink_metadata(&path)
+            .unwrap_or_else(|_| panic!("missing package asset: {}", path.display()));
+        assert!(
+            metadata.file_type().is_file() && metadata.len() > 0,
+            "invalid package asset: {}",
+            path.display()
+        );
+    }
+}
 
 fn main() {
+    let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    // Cargo generates Cargo.toml.orig only in the package verification extraction.
+    // Source builds may intentionally use an explicit external Runtime instead.
+    if root.join("Cargo.toml.orig").is_file() {
+        require_package_assets(&root);
+    }
     let (classifier, library) = match (
         env::var("CARGO_CFG_TARGET_OS").as_deref(),
         env::var("CARGO_CFG_TARGET_ARCH").as_deref(),

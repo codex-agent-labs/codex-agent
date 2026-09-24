@@ -292,31 +292,34 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             compatibility = (
                 CI_ROOT.parent / "codex-agent-bindings/csharp/native/sdk-compatibility.json"
             ).read_bytes()
+            version = load_canonical_json_bytes(compatibility)["sdkVersion"]
+            wrong_version = "0.2.1" if version != "0.2.1" else "0.2.0"
             (sdks / "sdk-compatibility.json").write_bytes(compatibility)
-            package = root / "packages/csharp/CodexAgent.0.2.0.nupkg"
+            package = root / f"packages/csharp/CodexAgent.{version}.nupkg"
             write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json", compatibility.decode())
 
-            require_embedded_sdk_compatibility(root / "packages", sdks, "0.2.0", ("csharp",))
+            require_embedded_sdk_compatibility(root / "packages", sdks, version, ("csharp",))
             with self.assertRaisesRegex(ValueError, "compatibility version mismatch"):
-                require_embedded_sdk_compatibility(root / "packages", sdks, "0.2.1", ("csharp",))
+                require_embedded_sdk_compatibility(root / "packages", sdks, wrong_version, ("csharp",))
 
             write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json", "changed")
             with self.assertRaisesRegex(ValueError, "exact SDK compatibility"):
-                require_embedded_sdk_compatibility(root / "packages", sdks, "0.2.0", ("csharp",))
+                require_embedded_sdk_compatibility(root / "packages", sdks, version, ("csharp",))
 
             write_zip_file(package, "wrong/location/sdk-compatibility.json", compatibility.decode())
             with self.assertRaisesRegex(ValueError, "exact SDK compatibility"):
-                require_embedded_sdk_compatibility(root / "packages", sdks, "0.2.0", ("csharp",))
+                require_embedded_sdk_compatibility(root / "packages", sdks, version, ("csharp",))
 
     def test_public_native_package_verifier_is_read_only_and_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             packages = root / "packages"
             sdks = root / "sdks"
-            version = "0.2.0"
             compatibility = (
                 CI_ROOT.parent / "codex-agent-bindings/csharp/native/sdk-compatibility.json"
             ).read_bytes()
+            version = load_canonical_json_bytes(compatibility)["sdkVersion"]
+            wrong_version = "0.2.1" if version != "0.2.1" else "0.2.0"
             (sdks / "sdk-compatibility.json").parent.mkdir(parents=True)
             (sdks / "sdk-compatibility.json").write_bytes(compatibility)
             libraries: dict[str, bytes] = {}
@@ -371,7 +374,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "SDK product version"):
                 verify_native_wrapper_sdk_packages(packages, sdks, "invalid", "csharp")
             with self.assertRaisesRegex(ValueError, "compatibility version mismatch"):
-                verify_native_wrapper_sdk_packages(packages, sdks, "0.2.1", "csharp")
+                verify_native_wrapper_sdk_packages(packages, sdks, wrong_version, "csharp")
 
             (sdks / "sdk-compatibility.json").write_bytes(b" " + compatibility)
             with self.assertRaisesRegex(ValueError, "canonical"):
@@ -381,7 +384,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             write_package(duplicate_compatibility=True)
             with self.assertRaisesRegex(ValueError, "exact SDK compatibility"):
                 verify_native_wrapper_sdk_packages(packages, sdks, version, "csharp")
-            write_package(package_version="0.2.1")
+            write_package(package_version=wrong_version)
             with self.assertRaisesRegex(ValueError, "embeds SDK version"):
                 verify_native_wrapper_sdk_packages(packages, sdks, version, "csharp")
             write_package(tampered_classifier="linux-x64")
