@@ -1050,6 +1050,27 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                         require_embedded_package_versions(packages, version)
             write_sdist(source_records)
 
+            rust_archive = packages / f"rust/codex-agent-{version}.crate"
+            write_tar_file(
+                rust_archive,
+                f"other-package-{version}/Cargo.toml",
+                f'[package]\nname = "codex-agent"\nversion = "{version}"\n',
+            )
+            with self.assertRaisesRegex(ValueError, "Rust package archive root"):
+                require_embedded_package_versions(packages, version, ("rust",))
+            write_tar_file(
+                rust_archive,
+                f"codex-agent-{version}/Cargo.toml",
+                f'[package]\nname = "other-package"\nversion = "{version}"\n',
+            )
+            with self.assertRaisesRegex(ValueError, "Rust package name"):
+                require_embedded_package_versions(packages, version, ("rust",))
+            write_tar_file(
+                rust_archive,
+                f"codex-agent-{version}/Cargo.toml",
+                f'[package]\nname = "codex-agent"\nversion = "{version}"\n',
+            )
+
             classifier = next(iter(HOSTS))
             write_cpp_package(classifier, package_version="0.2.0")
             with self.assertRaisesRegex(ValueError, r"C\+\+ package"):

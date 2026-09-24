@@ -804,8 +804,14 @@ def require_embedded_package_versions(
             rust = packages / "rust" / f"codex-agent-{version_value}.crate"
             extracted = work / "rust"
             safe_extract_tar(rust, extracted)
-            rust_manifest = tomllib.loads(require_one(extracted, "**/Cargo.toml").read_text(encoding="utf-8"))
-            require_version(rust_manifest.get("package", {}).get("version"), "Rust package")
+            manifest_path = require_one(extracted, "**/Cargo.toml")
+            if manifest_path != extracted / f"codex-agent-{version_value}/Cargo.toml":
+                raise ValueError("Rust package archive root does not match its coordinate")
+            rust_manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+            package = rust_manifest.get("package")
+            if not isinstance(package, dict) or package.get("name") != "codex-agent":
+                raise ValueError("Rust package name does not match its coordinate")
+            require_version(package.get("version"), "Rust package")
 
         if "cpp" in languages:
             for classifier in HOSTS:
