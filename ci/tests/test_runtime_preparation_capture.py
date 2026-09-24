@@ -7,7 +7,8 @@ from unittest.mock import patch
 
 from ci import runtime_preparation_capture as capture
 from ci.tests import test_runtime_aggregate_upload as fixtures
-from products.inventory import canonical_json_bytes, regular_file_inventory
+from products.inventory import (canonical_json_bytes, publish_regular_tree as actual_publish_regular_tree,
+    regular_file_inventory, write_canonical_json as actual_write_canonical_json)
 from products.registry import NATIVE_TARGETS
 
 
@@ -123,6 +124,27 @@ class RuntimePreparationCaptureTest(unittest.TestCase):
             f.plan_path.write_bytes(b'changed original plan\n')
         with patch.object(capture.products, '_require_artifact_job_window', side_effect=mutate), \
                 self.assertRaisesRegex(ValueError, 'changed before publication'):
+            self.call()
+        self.assertFalse(f.output.exists())
+
+    def test_pre_pin_and_late_copy_mutations_do_not_publish(self):
+        f = self.fixture
+
+        def mutate_before_pin(path, value):
+            actual_write_canonical_json(path, value)
+            (Path(path).parent / "original/selected-inputs/selection.json").write_bytes(b"changed before pin\n")
+
+        with patch.object(capture, "write_canonical_json", side_effect=mutate_before_pin), \
+                self.assertRaisesRegex(ValueError, "changed before publication"):
+            self.call()
+        self.assertFalse(f.output.exists())
+
+        def mutate_before_copy(source, destination, **kwargs):
+            (Path(source) / "original/selected-inputs/selection.json").write_bytes(b"changed after pin\n")
+            actual_publish_regular_tree(source, destination, **kwargs)
+
+        with patch.object(capture, "publish_regular_tree", side_effect=mutate_before_copy), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
             self.call()
         self.assertFalse(f.output.exists())
 

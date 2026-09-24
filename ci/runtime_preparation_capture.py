@@ -14,8 +14,8 @@ if __package__:
 
 import product_reuse as products
 from products.inventory import (
-    publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
-    require_integer, require_sha256, sha256_file, verified_zip_contents, write_canonical_json,
+    canonical_json_bytes, publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
+    require_integer, require_sha256, sha256_bytes, sha256_file, verified_zip_contents, write_canonical_json,
 )
 from products.registry import NATIVE_TARGETS
 from products.sdk_package import _require_capability_output_separate
@@ -75,12 +75,20 @@ def capture_runtime_signing_preparation(plan_path, destination, *, target, artif
                                 reject_symlink_parents=True)
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed, "target": target}
         write_canonical_json(prepared / "capture-transport.json", transport)
+        transport_bytes = canonical_json_bytes(transport)
+        expected_files = sorted([
+            {"relativePath": "original-upload.zip", "bytes": len(raw), "sha256": artifact_sha256},
+            {"relativePath": "capture-transport.json", "bytes": len(transport_bytes),
+             "sha256": sha256_bytes(transport_bytes)},
+            *({**record, "relativePath": f"original/{record['relativePath']}"} for record in zipped),
+        ], key=lambda record: record["relativePath"])
         if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024,
                                    reject_symlink_parents=True) != plan_bytes
                 or read_regular_file_bytes(captured_plan) != plan_bytes
                 or regular_file_inventory(original, allow_empty=True) != zipped
-                or sha256_file(archive) != artifact_sha256):
+                or sha256_file(archive) != artifact_sha256
+                or regular_file_inventory(prepared, allow_empty=True) != expected_files):
             raise ValueError("Runtime preparation original plan or upload changed before publication")
         output_safe()
-        publish_regular_tree(prepared, destination, allow_empty=True)
+        publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected_files)
     return transport
