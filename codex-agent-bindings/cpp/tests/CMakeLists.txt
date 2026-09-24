@@ -13,7 +13,8 @@ add_test(
 add_library(codex_agent_loader_valid SHARED native_loader_fixture.cpp)
 add_library(codex_agent_loader_external SHARED native_loader_fixture.cpp)
 target_compile_definitions(codex_agent_loader_external PRIVATE
-    CODEX_AGENT_FIXTURE_COMPONENT="3333333333333333333333333333333333333333333333333333333333333333")
+    CODEX_AGENT_FIXTURE_COMPONENT="3333333333333333333333333333333333333333333333333333333333333333"
+    CODEX_AGENT_FIXTURE_RUNTIME="0.8.5")
 add_library(codex_agent_loader_old_abi SHARED native_loader_fixture.cpp)
 target_compile_definitions(codex_agent_loader_old_abi PRIVATE
     CODEX_AGENT_FIXTURE_ABI="1.12.0" CODEX_AGENT_FIXTURE_ACTUAL_ABI_MINOR=12)
