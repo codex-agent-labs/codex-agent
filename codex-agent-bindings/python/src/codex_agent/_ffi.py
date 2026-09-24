@@ -133,9 +133,13 @@ def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
+def _reject_float(value: str) -> None:
+    raise ValueError(f"floating-point JSON token is forbidden: {value}")
+
+
 def _strict_json(data: bytes, description: str) -> dict[str, Any]:
     try:
-        value = json.loads(data, object_pairs_hook=_object)
+        value = json.loads(data, object_pairs_hook=_object, parse_float=_reject_float)
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise OSError(f"invalid {description}: {error}") from error
     if not isinstance(value, dict):
@@ -397,6 +401,35 @@ def resolve_library_path(explicit: str | os.PathLike[str] | None = None) -> Path
     return _validate_absolute_regular_path(path, "Codex Agent C SDK library")
 
 
+def _read_sdk_runtime_root() -> bytes:
+    resource = files("codex_agent").joinpath("native", "sdk-runtime-root.pub")
+    try:
+        return resource.read_bytes()
+    except FileNotFoundError as error:
+        raise OSError("External Runtime requires release-attested evidence: SDK-pinned root is unavailable") from error
+
+
+def _require_external_runtime_evidence(
+    path: Path, classifier: str, compatibility: dict[str, Any]
+) -> tuple[Path, dict[str, Any]]:
+    from ._runtime_evidence import _read, verify_external_runtime
+
+    evidence = Path(str(path) + ".evidence")
+    pinned_root = _read_sdk_runtime_root()
+    # The digest is only a snapshot hint until the root and release signatures verify.
+    authorization = _strict_json(_read(evidence / "runtime-library-authorization.json"), "Runtime authorization")
+    expected_digest = _sha256(authorization.get("runtimeLibrarySha256"), "Runtime library digest")
+    snapshot = _snapshot_embedded_library(path, expected_digest)
+    try:
+        signed = verify_external_runtime(snapshot.resolve(), evidence, pinned_root, compatibility, classifier)
+        return snapshot, signed["runtimeIdentity"]
+    except Exception:
+        directory = next(item for item in _SNAPSHOT_DIRECTORIES if item.name == str(snapshot.parent))
+        _SNAPSHOT_DIRECTORIES.remove(directory)
+        directory.cleanup()
+        raise
+
+
 class NativeLibrary:
     """Strict ctypes declarations for the Python-owned portion of ABI 1.13."""
 
@@ -416,11 +449,16 @@ class NativeLibrary:
         classifier = current_classifier()
         library_path = resolve_library_path(path)
         embedded = path is None and "CODEX_AGENT_LIBRARY" not in os.environ
+        signed_identity = None
         if embedded:
             variant = next(item for item in compatibility["runtime"]["embeddedVariants"] if item["target"] == classifier)
             library_path = _snapshot_embedded_library(library_path, variant["runtimeLibrarySha256"])
+        else:
+            library_path, signed_identity = _require_external_runtime_evidence(library_path, classifier, compatibility)
         library = ctypes.CDLL(str(library_path))
         identity = _read_runtime_identity(library)
+        if signed_identity is not None and identity != signed_identity:
+            raise OSError("Loaded Runtime identity differs from its signed authorization")
         _validate_runtime_identity(identity, compatibility, classifier, embedded)
         abi = _semver(identity["cAbiVersion"], "Runtime identity ABI")
         encoded_abi = (abi[0] << 24) | (abi[1] << 16) | abi[2]

@@ -15,7 +15,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-NATIVE_LOADER_TESTS = ("test_real_missing_identity_and_abi_mismatch_above_floor_fail",
+NATIVE_LOADER_TESTS = ("test_signed_external_runtime_loads_and_tampering_fails",
+                       "test_real_missing_identity_and_abi_mismatch_above_floor_fail",
                        "test_noncanonical_native_identity_fails")
 _native_loader_directory: Path | None = None
 sys.path.insert(0, str(ROOT / "src"))
@@ -31,6 +32,8 @@ from codex_agent._ffi import (  # noqa: E402
     current_classifier,
     resolve_library_path,
 )
+from codex_agent._runtime_evidence import _json  # noqa: E402
+from runtime_signed_fixture import authorize  # noqa: E402
 
 
 def digest(character: str) -> str:
@@ -318,7 +321,58 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, "symlinks"):
                 resolve_library_path(linked_parent / "library")
 
-    def test_real_missing_identity_and_abi_mismatch_above_floor_fail(self) -> None:
+    def test_external_path_and_environment_require_evidence_before_loading(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            library = Path(directory) / _library_name(current_classifier())
+            library.write_bytes(b"unverified Runtime")
+            with patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility), \
+                    patch("codex_agent._ffi.ctypes.CDLL") as dynamic_loader:
+                with self.assertRaisesRegex(OSError, "release-attested evidence"):
+                    NativeLibrary.load(library)
+                with patch.dict(os.environ, {"CODEX_AGENT_LIBRARY": str(library)}):
+                    with self.assertRaisesRegex(OSError, "release-attested evidence"):
+                        NativeLibrary.load()
+            dynamic_loader.assert_not_called()
+
+    def test_evidence_json_rejects_floating_point_tokens(self) -> None:
+        for raw in (b'{"schemaVersion":1.0}\n', b'{"nested":{"value":1e0}}\n'):
+            with self.subTest(raw=raw), self.assertRaisesRegex(OSError, "floating-point"):
+                _json(raw, "Runtime evidence")
+
+    def test_signed_external_runtime_loads_and_tampering_fails(self) -> None:
+        if _native_loader_directory is None:
+            _run_native_loader_test(self._testMethodName)
+            return
+        temporary = tempfile.TemporaryDirectory(dir=_native_loader_directory)
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        target = current_classifier()
+        runtime_identity = identity(target)
+        library = compile_library(root, "signed_external", canonical(runtime_identity, False), 0x010D0000)
+        evidence = Path(str(library) + ".evidence")
+        root_public = authorize(library, runtime_identity, "0.8.5")
+        release_public = (evidence / "keys/release.pub").read_bytes()
+        authorization = evidence / "runtime-library-authorization.json"
+        with patch("codex_agent._ffi._read_sdk_runtime_root", return_value=release_public), \
+                patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility), \
+                patch("codex_agent._ffi.ctypes.CDLL") as dynamic_loader:
+            with self.assertRaises(OSError):
+                NativeLibrary.load(library)
+            dynamic_loader.assert_not_called()
+        with patch("codex_agent._ffi._read_sdk_runtime_root", return_value=root_public), \
+                patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility), \
+                patch.object(NativeLibrary, "_declare_all", return_value=None):
+            loaded = NativeLibrary.load(library)
+            self.assertEqual(int(loaded.library.codex_agent_abi_version()), 0x010D0000)
+            original = authorization.read_bytes()
+            authorization.write_bytes(original + b"x")
+            with patch("codex_agent._ffi.ctypes.CDLL") as dynamic_loader:
+                with self.assertRaises(OSError):
+                    NativeLibrary.load(library)
+                dynamic_loader.assert_not_called()
+
+    @patch("codex_agent._ffi._require_external_runtime_evidence", side_effect=lambda path, *_: (path, None))
+    def test_real_missing_identity_and_abi_mismatch_above_floor_fail(self, _test_only_evidence_bypass: object) -> None:
         if _native_loader_directory is None:
             _run_native_loader_test(self._testMethodName)
             return
