@@ -22,9 +22,10 @@ internal fun installRuntimeLogPrivacyGuard(database: SQLiteConnection) {
             """.trimIndent(),
         )
         database.execSQL("DELETE FROM logs")
+        database.execSQL("DROP TRIGGER IF EXISTS codex_agent_drop_runtime_logs")
         database.execSQL(
             """
-            CREATE TRIGGER IF NOT EXISTS codex_agent_drop_runtime_logs
+            CREATE TRIGGER codex_agent_drop_runtime_logs
             BEFORE INSERT ON logs
             BEGIN
                 SELECT RAISE(IGNORE);
