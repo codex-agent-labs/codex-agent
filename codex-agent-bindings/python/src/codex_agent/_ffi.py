@@ -355,7 +355,8 @@ def _read_runtime_identity(library: Any) -> dict[str, Any]:
     function.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.c_size_t)]
     function.restype = ctypes.c_int32
     required = ctypes.c_size_t()
-    if int(function(None, ctypes.byref(required))) != Status.BUFFER_TOO_SMALL or required.value < 2:
+    if (int(function(None, ctypes.byref(required))) != Status.BUFFER_TOO_SMALL
+            or not 2 <= required.value <= 65536):
         raise OSError("Runtime identity size query failed")
     buffer = (ctypes.c_char * required.value)()
     capacity = ctypes.c_size_t(required.value)

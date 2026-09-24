@@ -176,6 +176,22 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
         with self.assertRaisesRegex(OSError, "component mismatch"):
             _validate_runtime_identity(external, self.compatibility, "macos-arm64", True)
 
+    def test_runtime_identity_size_is_bounded_before_allocation(self) -> None:
+        class OversizedIdentity:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def __call__(self, buffer: object, size: object) -> int:
+                self.calls += 1
+                ctypes.cast(size, ctypes.POINTER(ctypes.c_size_t))[0] = 65537
+                return 9
+
+        function = OversizedIdentity()
+        library = type("Library", (), {"codex_agent_runtime_identity": function})()
+        with self.assertRaisesRegex(OSError, "size query failed"):
+            _read_runtime_identity(library)
+        self.assertEqual(function.calls, 1)
+
     def test_identity_incompatibilities_fail_closed(self) -> None:
         changes = {
             "missing schema field": lambda value: value.pop("schemaVersion"),
