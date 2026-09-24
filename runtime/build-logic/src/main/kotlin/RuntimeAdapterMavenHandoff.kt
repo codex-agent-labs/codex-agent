@@ -266,7 +266,7 @@ fun Project.registerRuntimeAdapterMavenHandoff(
         groupId = original.groupId; artifactId = original.artifactId; version = original.version
         from(importedComponent)
     }
-    // Pinned Gradle 9.4.1 seam: retain the ORIGINAL KGP POM generator and its target dependency rewrite.
+    // Gradle API seam: retain the ORIGINAL KGP POM generator and its target dependency rewrite.
     (publication as MavenPublicationInternal).setPomGenerator(tasks.named("generatePomFileFor${publicationName.replaceFirstChar(Char::uppercaseChar)}Publication", GenerateMavenPom::class.java))
     (publication as DefaultMavenPublication).withoutBuildIdentifier()
     val repositoryName = "imported${title}Runtime"
