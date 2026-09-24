@@ -46,7 +46,8 @@ def _transport_identity(root):
     value = load_canonical_json_bytes(_read(Path(root) / "capture-transport.json"))
     fields = {"schemaVersion", "kind", "locator", "captureProducer", "laneReceiptSha256"}
     if value.get("kind") == "android-firebase-transport":
-        fields.add("inputBindingSha256")
+        fields.update(("inputBindingSha256", "linkedFinalCaptureSha256",
+                       "linkedFinalLaneReceiptSha256"))
     return {name: value[name] for name in fields}
 
 

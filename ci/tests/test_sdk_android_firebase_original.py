@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from ci import sdk_android_firebase_original as original
-from ci.products.inventory import load_canonical_json_bytes, write_canonical_json
+from ci.products.inventory import load_canonical_json_bytes, sha256_bytes, write_canonical_json
 
 
 class OriginalAndroidFirebaseValidationTest(unittest.TestCase):
@@ -59,6 +59,13 @@ class OriginalAndroidFirebaseValidationTest(unittest.TestCase):
             (self.final / "capture-transport.json").read_bytes())
         (linked / "lane-receipt.json").write_bytes(
             (self.final / "original/lane-receipt.json").read_bytes())
+        protected_transport = load_canonical_json_bytes(
+            (self.protected / "capture-transport.json").read_bytes())
+        protected_transport["linkedFinalCaptureSha256"] = sha256_bytes(
+            (linked / "capture-transport.json").read_bytes())
+        protected_transport["linkedFinalLaneReceiptSha256"] = sha256_bytes(
+            (linked / "lane-receipt.json").read_bytes())
+        write_canonical_json(self.protected / "capture-transport.json", protected_transport)
         self.environment = {"GITHUB_RUN_ID": "999", "GITHUB_RUN_ATTEMPT": "9"}
         self.events = []
         self.reader_exit_failure = None
@@ -201,6 +208,27 @@ class OriginalAndroidFirebaseValidationTest(unittest.TestCase):
         self.reader_exit_failure = ValueError("full reader exit rejected")
         with self.assertRaisesRegex(ValueError, "full reader exit rejected"):
             self.call()
+
+    def test_retained_protected_link_digest_must_match_official_capture(self):
+        path = self.protected / "capture-transport.json"
+        value = load_canonical_json_bytes(path.read_bytes())
+        value["linkedFinalCaptureSha256"] = "sha256:" + "0" * 64
+        write_canonical_json(path, value)
+
+        def official_protected(plan, repository, final, destination, **kwargs):
+            self.capture_protected(plan, repository, final, destination, **kwargs)
+            path = destination / "capture-transport.json"
+            value = load_canonical_json_bytes(path.read_bytes())
+            value["linkedFinalCaptureSha256"] = sha256_bytes(
+                (destination / "linked-final/capture-transport.json").read_bytes())
+            write_canonical_json(path, value)
+
+        with patch.object(original, "verified_original_android_validation", side_effect=self.reader), \
+                patch.object(original, "capture_android_evidence", side_effect=self.capture_final), \
+                patch.object(original, "capture_android_firebase_evidence", side_effect=official_protected), \
+                self.assertRaisesRegex(ValueError, "official artifact"):
+            with self.context():
+                pass
 
     def test_caller_use_mutation_is_caught_before_reader_exit(self):
         with patch.object(original, "verified_original_android_validation", side_effect=self.reader), \
