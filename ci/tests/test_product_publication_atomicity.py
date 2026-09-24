@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from ci.products import inventory as product_inventory
 from ci.products.inventory import publish_regular_tree, regular_file_inventory
 
 
@@ -39,6 +40,40 @@ class ProductPublicationAtomicityTests(unittest.TestCase):
             self.assertFalse(destination.exists())
             publish_regular_tree(source, destination, allow_empty=True, expected_inventory=expected)
             self.assertEqual(expected, regular_file_inventory(destination, allow_empty=True))
+
+    def test_pinned_modes_reject_identical_bytes_with_wrong_executable_bit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "source"
+            source.mkdir()
+            script = source / "gradlew"
+            script.write_bytes(b"#!/bin/sh\n")
+            script.chmod(0o644)
+            destination = root / "published"
+            expected = regular_file_inventory(source)
+
+            with self.assertRaisesRegex(ValueError, "pinned inventory"):
+                publish_regular_tree(source, destination, expected_inventory=expected,
+                                     expected_modes={"gradlew": 0o755})
+            self.assertFalse(destination.exists())
+            script.chmod(0o755)
+            publish_regular_tree(source, destination, expected_inventory=expected,
+                                 expected_modes={"gradlew": 0o755})
+            self.assertEqual(0o755, destination.joinpath("gradlew").stat().st_mode & 0o777)
+
+    def test_mode_pinned_publication_fails_closed_on_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "source"
+            source.mkdir()
+            (source / "gradlew").write_bytes(b"#!/bin/sh\n")
+            destination = root / "published"
+            with mock.patch.object(product_inventory, "_is_windows", return_value=True), \
+                    self.assertRaisesRegex(ValueError, "unavailable on Windows"):
+                publish_regular_tree(source, destination,
+                                     expected_inventory=regular_file_inventory(source),
+                                     expected_modes={"gradlew": 0o755})
+            self.assertFalse(destination.exists())
 
     def test_foreign_empty_destination_created_after_final_check_is_not_replaced(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

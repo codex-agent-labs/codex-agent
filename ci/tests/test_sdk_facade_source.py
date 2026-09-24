@@ -6,7 +6,10 @@ import unittest
 from unittest.mock import patch
 
 from ci.products import sdk_facade_source as source
-from ci.products.inventory import git_file_inventory, regular_file_inventory
+from ci.products.inventory import (
+    git_file_inventory, publish_regular_tree as actual_publish_regular_tree,
+    regular_file_inventory,
+)
 from ci.tests import test_sdk_apple_package_source as fixtures
 
 
@@ -118,6 +121,33 @@ class FacadeSourceTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "already exists"):
                 source.capture_facade_validation_sources(fixture.repository, revision, fixture.output)
             self.assertEqual(b"preserve caller output\n", sentinel.read_bytes())
+
+    def test_late_captured_blob_mutation_cannot_be_published(self):
+        with repository_fixture() as fixture:
+            revision = fixture.commit()
+
+            def mutate_before_copy(captured, output, **kwargs):
+                wrapper = captured / "gradlew"
+                wrapper.write_bytes(wrapper.read_bytes() + b"late mutation\n")
+                actual_publish_regular_tree(captured, output, **kwargs)
+
+            with patch.object(source, "publish_regular_tree", side_effect=mutate_before_copy), \
+                    self.assertRaisesRegex(ValueError, "pinned inventory"):
+                source.capture_facade_validation_sources(fixture.repository, revision, fixture.output)
+            self.assertFalse(fixture.output.exists())
+
+    def test_late_executable_mode_mutation_cannot_be_published(self):
+        with repository_fixture() as fixture:
+            revision = fixture.commit()
+
+            def mutate_before_copy(captured, output, **kwargs):
+                os.chmod(captured / "gradlew", 0o644)
+                actual_publish_regular_tree(captured, output, **kwargs)
+
+            with patch.object(source, "publish_regular_tree", side_effect=mutate_before_copy), \
+                    self.assertRaisesRegex(ValueError, "pinned inventory"):
+                source.capture_facade_validation_sources(fixture.repository, revision, fixture.output)
+            self.assertFalse(fixture.output.exists())
 
 
 if __name__ == "__main__":

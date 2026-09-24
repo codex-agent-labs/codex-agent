@@ -809,6 +809,7 @@ def _rename_directory_noreplace(source_name: str, destination_name: str, parent:
 def publish_regular_tree(
     source: Path, destination: Path, *, allow_empty: bool = False,
     expected_inventory: list[dict[str, Any]] | None = None,
+    expected_modes: dict[str, int] | None = None,
 ) -> None:
     """Publish a verified tree atomically without following a replaced parent path."""
     expected = None
@@ -819,7 +820,15 @@ def publish_regular_tree(
                 record, f"pinned inventory[{index}]", with_kind=False, allow_empty=allow_empty,
             )
         expected = tuple((record["relativePath"], record["bytes"], record["sha256"]) for record in records)
+    if expected_modes is not None:
+        if expected is None or set(expected_modes) != {relative for relative, _, _ in expected} or any(
+            type(mode) is not int or mode < 0 or mode > 0o777 for mode in expected_modes.values()
+        ):
+            raise ValueError("Mode-pinned publication requires exact regular-file modes and inventory")
     if _is_windows():
+        if expected_modes is not None:
+            # ponytail: Windows cannot attest POSIX Git executable modes here; fail closed until needed.
+            raise ValueError("Mode-pinned publication is unavailable on Windows")
         _snapshot_regular_tree_windows(
             Path(source), Path(destination), allow_empty=allow_empty, expected_inventory=expected,
         )
@@ -863,6 +872,11 @@ def publish_regular_tree(
             for relative, kind, _mode, size, digest in staged_inventory if kind == "file"
         )) != expected:
             raise ValueError("Snapshot staged contents do not match the pinned inventory")
+        if expected_modes is not None and {
+            relative: stat.S_IMODE(mode)
+            for relative, kind, mode, _size, _digest in staged_inventory if kind == "file"
+        } != expected_modes:
+            raise ValueError("Snapshot staged modes do not match the pinned inventory")
         named = os.stat(staged_name, dir_fd=parent_descriptor, follow_symlinks=False)
         if _stat_identity(named) != _stat_identity(os.fstat(staged_descriptor)):
             raise ValueError("Snapshot staging directory changed before publication")

@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import stat
 import tempfile
 
 from .inventory import (
@@ -63,6 +64,8 @@ def capture_facade_validation_sources(repository: Path, revision: str, output: P
     inventory = git_file_inventory(repository, tree, paths)
     if any(record["bytes"] == 0 for record in inventory):
         raise ValueError("Facade source capture contains an empty blob")
+    modes = {record["relativePath"]: 0o755 if entries[record["relativePath"]][0] == "100755" else 0o644
+             for record in inventory}
     with tempfile.TemporaryDirectory(prefix="sdk-facade-source-") as temporary:
         captured = Path(temporary).resolve() / "source"
         captured.mkdir()
@@ -72,10 +75,12 @@ def capture_facade_validation_sources(repository: Path, revision: str, output: P
             destination = captured / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(contents)
-            os.chmod(destination, 0o755 if entries[relative][0] == "100755" else 0o644)
+            os.chmod(destination, modes[relative])
         if regular_file_inventory(captured) != inventory or git_file_inventory(repository, tree, paths) != inventory:
             raise ValueError("Facade immutable source bytes changed during capture")
-        publish_regular_tree(captured, output)
-    if regular_file_inventory(output) != inventory:
+        publish_regular_tree(captured, output, expected_inventory=inventory, expected_modes=modes)
+    if regular_file_inventory(output) != inventory or any(
+        stat.S_IMODE((output / relative).lstat().st_mode) != mode for relative, mode in modes.items()
+    ):
         raise ValueError("Facade captured source bytes changed during publication")
     return {"tree": tree, "files": inventory}
