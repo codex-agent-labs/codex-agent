@@ -149,6 +149,30 @@ class AndroidFirebaseCaptureTest(unittest.TestCase):
         self.assertNotIn("admission", canonical_json_bytes(result).decode())
         self.assertNotIn("trustedSourceCommit", canonical_json_bytes(result).decode())
 
+    def test_final_copy_rejects_late_prepared_transport_change(self):
+        publish = capture.publish_regular_tree
+
+        def mutate(source, destination, **kwargs):
+            (source / "capture-transport.json").write_bytes(b"late\n")
+            return publish(source, destination, **kwargs)
+
+        with patch.object(capture, "publish_regular_tree", side_effect=mutate), \
+                self.assertRaisesRegex(ValueError, "pinned inventory"):
+            self.call()
+        self.assertFalse(self.output.exists())
+
+    def test_prepared_extra_before_inventory_never_becomes_authority(self):
+        write = capture.write_canonical_json
+
+        def mutate(path, value):
+            write(path, value)
+            (path.parent / "unexpected.txt").write_bytes(b"untrusted")
+
+        with patch.object(capture, "write_canonical_json", side_effect=mutate), \
+                self.assertRaisesRegex(ValueError, "before publication"):
+            self.call()
+        self.assertFalse(self.output.exists())
+
     def test_original_commit_is_replayed_after_checkout_head_advances(self):
         revision = self.final.plan["validationCommit"]
         subprocess.run(["git", "commit", "--allow-empty", "-qm", "later consumer"], cwd=self.root, check=True)

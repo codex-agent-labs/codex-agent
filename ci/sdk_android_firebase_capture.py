@@ -319,7 +319,21 @@ def capture_android_firebase_evidence(
         }
         write_canonical_json(prepared / "capture-transport.json", transport)
         transport_bytes = canonical_json_bytes(transport)
-        prepared_inventory = regular_file_inventory(prepared, allow_empty=True)
+        retained = {
+            "original-upload.zip": archive_bytes,
+            "plan/impact-plan.json": plan_bytes,
+            "capture-transport.json": transport_bytes,
+            "linked-final/capture-transport.json": final_transport_bytes,
+            "linked-final/lane-receipt.json": final_receipt_bytes,
+            **{f"plan/inventories/android/{name}": contents
+               for name, contents in inventory_bytes.items()},
+        }
+        expected_inventory = sorted((
+            [{**record, "relativePath": "original/" + record["relativePath"]}
+             for record in zipped] +
+            [{"relativePath": name, "bytes": len(contents),
+              "sha256": sha256_bytes(contents)} for name, contents in retained.items()]
+        ), key=lambda record: record["relativePath"])
         unchanged()
         if (sha256_file(archive) != artifact_sha256
                 or regular_file_inventory(original, allow_empty=True) != original_inventory
@@ -334,10 +348,11 @@ def capture_android_firebase_evidence(
                 or read_regular_file_bytes(linked / "lane-receipt.json") != final_receipt_bytes
                 or canonical_json_bytes(artifact) != artifact_bytes
                 or read_regular_file_bytes(prepared / "capture-transport.json") != transport_bytes
-                or regular_file_inventory(prepared, allow_empty=True) != prepared_inventory):
+                or regular_file_inventory(prepared, allow_empty=True) != expected_inventory):
             raise ValueError("Protected Firebase upload or retained linkage changed before publication")
         output_safe()
-        publish_regular_tree(prepared, destination, allow_empty=True)
+        publish_regular_tree(prepared, destination, allow_empty=True,
+                             expected_inventory=expected_inventory)
         unchanged()
     require_no_signing_secret(environment)
     return transport
