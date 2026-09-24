@@ -783,12 +783,21 @@ def require_embedded_package_versions(
             csharp = packages / "csharp" / f"CodexAgent.{version_value}.nupkg"
             extracted = work / "csharp"
             safe_extract_zip(csharp, extracted)
-            nuspec = ET.parse(require_one(extracted, "*.nuspec")).getroot()
-            versions = [
-                element.text
-                for element in nuspec.iter()
-                if element.tag.rsplit("}", 1)[-1] == "version"
-            ]
+            nuspec_path = require_one(extracted, "*.nuspec")
+            if nuspec_path != extracted / "CodexAgent.nuspec":
+                raise ValueError("C# package nuspec identity mismatch")
+            nuspec = ET.parse(nuspec_path).getroot()
+            official = "http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"
+            namespace = {"package": "", f"{{{official}}}package": f"{{{official}}}"}.get(nuspec.tag)
+            if namespace is None:
+                raise ValueError("C# package nuspec namespace mismatch")
+            metadata = [item for item in nuspec if item.tag == f"{namespace}metadata"]
+            if len(metadata) != 1:
+                raise ValueError("C# package nuspec metadata mismatch")
+            ids = [item.text for item in metadata[0] if item.tag == f"{namespace}id"]
+            versions = [item.text for item in metadata[0] if item.tag == f"{namespace}version"]
+            if ids != ["CodexAgent"]:
+                raise ValueError("C# package NuGet ID mismatch")
             require_version(versions[0] if len(versions) == 1 else None, "C# package")
 
         if "rust" in languages:

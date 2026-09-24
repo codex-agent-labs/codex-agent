@@ -206,7 +206,7 @@ class NativeSdkInputsTest(unittest.TestCase):
         package.mkdir(parents=True)
         compatibility = self.chain["compatibility"].read_bytes()
         with zipfile.ZipFile(package / "CodexAgent.0.2.9.nupkg", "w") as archive:
-            archive.writestr("CodexAgent.nuspec", "<package><metadata><version>0.2.9</version></metadata></package>")
+            archive.writestr("CodexAgent.nuspec", "<package><metadata><id>CodexAgent</id><version>0.2.9</version></metadata></package>")
             archive.writestr("META-INF/codex-agent/sdk-compatibility.json", compatibility)
             for classifier, destination in PACKAGE_CLASSIFIERS.items():
                 path = self.sdks / classifier / HOSTS[classifier][4]

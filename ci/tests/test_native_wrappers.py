@@ -336,14 +336,28 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             def write_package(
                 *,
                 package_version: str = version,
+                package_id: str = "CodexAgent",
+                nuspec_name: str = "CodexAgent.nuspec",
+                nested_version: bool = False,
+                namespaced: bool = False,
+                foreign_id: bool = False,
+                foreign_version: bool = False,
                 embedded_compatibility: bytes = compatibility,
                 duplicate_compatibility: bool = False,
                 tampered_classifier: str | None = None,
             ) -> None:
                 with zipfile.ZipFile(archive, "w") as output:
+                    namespace = ' xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"' if namespaced else ""
+                    foreign = ' xmlns:foreign="urn:untrusted"' if foreign_id or foreign_version else ""
+                    id_tag = "foreign:id" if foreign_id else "id"
+                    version_tag = "foreign:version" if foreign_version else "version"
                     output.writestr(
-                        "CodexAgent.nuspec",
-                        f"<package><metadata><version>{package_version}</version></metadata></package>",
+                        nuspec_name,
+                        (f"<package{namespace}{foreign}><metadata><{id_tag}>{package_id}</{id_tag}><dependencies>"
+                         f"<version>{package_version}</version></dependencies></metadata></package>"
+                         if nested_version else
+                         f"<package{namespace}{foreign}><metadata><{id_tag}>{package_id}</{id_tag}>"
+                         f"<{version_tag}>{package_version}</{version_tag}></metadata></package>"),
                     )
                     output.writestr(
                         "META-INF/codex-agent/sdk-compatibility.json",
@@ -368,6 +382,9 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             before = snapshot()
             verify_native_wrapper_sdk_packages(packages, sdks, version, "csharp")
             self.assertEqual(before, snapshot())
+            write_package(namespaced=True)
+            verify_native_wrapper_sdk_packages(packages, sdks, version, "csharp")
+            write_package()
 
             with self.assertRaisesRegex(ValueError, "unsupported native wrapper language"):
                 verify_native_wrapper_sdk_packages(packages, sdks, version, "javascript")
@@ -387,6 +404,15 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             write_package(package_version=wrong_version)
             with self.assertRaisesRegex(ValueError, "embeds SDK version"):
                 verify_native_wrapper_sdk_packages(packages, sdks, version, "csharp")
+            for kwargs in ({"package_id": "OtherPackage"},
+                           {"nuspec_name": "OtherPackage.nuspec"},
+                           {"nested_version": True},
+                           {"foreign_id": True},
+                           {"foreign_version": True}):
+                with self.subTest(nuspec_coordinate=kwargs):
+                    write_package(**kwargs)
+                    with self.assertRaisesRegex(ValueError, "C# package"):
+                        verify_native_wrapper_sdk_packages(packages, sdks, version, "csharp")
             write_package(tampered_classifier="linux-x64")
             with self.assertRaisesRegex(ValueError, "native library differs"):
                 verify_native_wrapper_sdk_packages(packages, sdks, version, "csharp")
@@ -930,7 +956,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             write_zip_file(
                 packages / f"csharp/CodexAgent.{version}.nupkg",
                 "CodexAgent.nuspec",
-                f"<package><metadata><version>{version}</version></metadata></package>",
+                f"<package><metadata><id>CodexAgent</id><version>{version}</version></metadata></package>",
             )
             write_tar_file(
                 packages / f"rust/codex-agent-{version}.crate",
