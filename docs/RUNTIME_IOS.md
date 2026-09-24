@@ -142,21 +142,23 @@ credential store inside the configured Codex home.
 
 `assembleCodexAgentReleaseXCFramework` creates the static umbrella framework.
 `packageCodexAgentAppleDistribution` stages its local Swift Package and creates
-`build/distributions/CodexAgentPackage-0.2.0.zip`. The package exports the
-shared host plus iOS runtime as `CodexAgent`, the native browser adapter as
-`CodexAgentAuthentication`, and the state overlay as
-`CodexAgentObservation`; `CodexAgentSwiftSupport` supplies the small Swift call
-overlay. `apple/TestApp` is a standalone SwiftUI consumer that constructs
+`build/distributions/CodexAgentPackage-0.8.0.zip` for the planned initial SDK
+release. The package exports the shared host plus iOS runtime as `CodexAgent`,
+the native browser adapter as `CodexAgentAuthentication`, and the state overlay
+as `CodexAgentObservation`; `CodexAgentSwiftSupport` supplies the small Swift
+call overlay. `apple/TestApp` is a standalone SwiftUI consumer that constructs
 `CodexHost`, observes its ready `CodexAgent`, opens a `CodexConversation`, and
 closes the host. All Rust binaries, package metadata, and the test app target
 iOS 15 or newer.
-The `0.2.0` binary supports iPhoneOS Arm64 and Apple Silicon Simulator Arm64.
+The planned `0.8.0` binary supports iPhoneOS Arm64 and Apple Silicon Simulator
+Arm64.
 Intel Simulator (`iosX64`) is intentionally unsupported.
 
 `packageCodexAgentSwiftPackageBinary` creates the reproducible release asset
-`CodexAgent-0.2.0.xcframework.zip`; its generated checksum must match the root
-URL-based `Package.swift`. `apple/RemoteConsumer` is a clean consumer of the
-public repository. It can resolve only after the matching immutable release
+`CodexAgent-0.8.0.xcframework.zip` for that planned release; its generated
+checksum must match the root URL-based `Package.swift`. `apple/RemoteConsumer`
+is a clean consumer of the public repository. It can resolve only after the
+matching immutable release
 asset exists, so it runs after release publication and is not claimed by local
 pre-release verification.
 

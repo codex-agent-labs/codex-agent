@@ -374,7 +374,6 @@ report. The current focused gates are:
   -PcodexAgent.repositoryTrustDomain=<development-or-release>
 # macOS only
 ./gradlew verifyIosRuntime
-./gradlew :codex-agent-runtime-desktop:generateCodexAgentCAbiScenarioProof
 ```
 
 `verifyContract` produces only canonical Contract and Kotlin evidence.
