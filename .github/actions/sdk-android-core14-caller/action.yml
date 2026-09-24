@@ -1,0 +1,177 @@
+name: Prepare fresh Android Core metadata caller inputs
+description: Rebuild the eleven-target Core replay policy on the Android runner; this is not release admission.
+inputs:
+  plan-id:
+    required: true
+    description: Original impact-plan upload ID.
+  core13-artifact-id:
+    required: true
+    description: Independently selected wave-13 state upload ID.
+  core13-artifact-sha256:
+    required: true
+    description: Independently selected wave-13 state upload digest.
+  metadata-artifact-id:
+    required: true
+    description: Successful Core-14 worker's official upload ID, not a value read from that upload.
+  metadata-artifact-sha256:
+    required: true
+    description: Successful Core-14 worker's official upload digest.
+  metadata-build-key:
+    required: true
+    description: Independently elected Core-14 metadata build key.
+  metadata-receipt-sha256:
+    required: true
+    description: Successful Core-14 worker's receipt digest.
+  metadata-original-context:
+    required: true
+    description: Original Core worker invocation context from successful job outputs.
+  sdk-inputs-id:
+    required: true
+    description: Original SDK inputs upload ID.
+  sdk-inputs-sha256:
+    required: true
+    description: Original SDK inputs upload digest.
+  trusted-workflow-sha:
+    required: true
+    description: Independently reviewed workflow revision.
+  sdk-validation-tooling:
+    required: true
+    description: Independently captured release-tooling policy path.
+  keyring:
+    required: true
+    description: Caller-supplied release keyring path.
+  keys-directory:
+    required: true
+    description: Caller-supplied release public-key directory.
+  native-compiler-archive-ios-arm64:
+    required: true
+    description: Caller-owned Git-pinned macOS Arm64 archive.
+  native-compiler-archive-ios-simulator-arm64:
+    required: true
+    description: Caller-owned Git-pinned macOS Arm64 archive.
+  native-compiler-archive-linux-arm64:
+    required: true
+    description: Caller-owned Git-pinned Linux Arm64 archive.
+  native-compiler-archive-linux-x64:
+    required: true
+    description: Caller-owned Git-pinned Linux x64 archive.
+  native-compiler-archive-macos-arm64:
+    required: true
+    description: Caller-owned Git-pinned macOS Arm64 archive.
+  native-compiler-archive-macos-x64:
+    required: true
+    description: Caller-owned Git-pinned macOS x64 archive.
+  native-compiler-archive-windows-x64:
+    required: true
+    description: Caller-owned Git-pinned Windows x64 archive.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional independently captured Apple validation policy.
+outputs:
+  metadata-receipt:
+    description: Absolute downloaded receipt path; candidate only until official-upload replay.
+    value: ${{ steps.prepare.outputs.metadata_receipt }}
+  replay-policy:
+    description: Absolute caller-owned eleven-target policy path.
+    value: ${{ steps.prepare.outputs.replay_policy }}
+  original-context:
+    description: Absolute caller-owned canonical original-context path.
+    value: ${{ steps.prepare.outputs.original_context }}
+runs:
+  using: composite
+  steps:
+    - id: core13
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: sdk
+        sdk-family: core-metadata
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.core13-artifact-id }}
+        artifact-sha256: ${{ inputs.core13-artifact-sha256 }}
+        sdk-state-wave: '13'
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        artifact-ids: ${{ inputs.metadata-artifact-id }}
+        path: build/sdk-core-metadata-worker
+        merge-multiple: true
+    - id: prepare
+      name: Rebuild fresh Core originals from independent caller authority
+      shell: bash
+      env:
+        PLAN: ${{ steps.core13.outputs.plan-path }}
+        DISCOVERY: ${{ steps.core13.outputs.discovery-root }}
+        BEFORE_STATE: ${{ steps.core13.outputs.state-root }}
+        METADATA_BUILD_KEY: ${{ inputs.metadata-build-key }}
+        METADATA_RECEIPT_SHA256: ${{ inputs.metadata-receipt-sha256 }}
+        METADATA_ARTIFACT_ID: ${{ inputs.metadata-artifact-id }}
+        METADATA_ARTIFACT_SHA256: ${{ inputs.metadata-artifact-sha256 }}
+        METADATA_ORIGINAL_CONTEXT: ${{ inputs.metadata-original-context }}
+        SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        KEYRING: ${{ inputs.keyring }}
+        KEYS_DIRECTORY: ${{ inputs.keys-directory }}
+        IOS_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-ios-arm64 }}
+        IOS_SIMULATOR_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-ios-simulator-arm64 }}
+        LINUX_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-linux-arm64 }}
+        LINUX_X64_ARCHIVE: ${{ inputs.native-compiler-archive-linux-x64 }}
+        MACOS_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-macos-arm64 }}
+        MACOS_X64_ARCHIVE: ${{ inputs.native-compiler-archive-macos-x64 }}
+        WINDOWS_X64_ARCHIVE: ${{ inputs.native-compiler-archive-windows-x64 }}
+        APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        caller_dir=$(mktemp -d "$RUNNER_TEMP/android-core14-caller.XXXXXXXX")
+        export CALLER_DIR="$caller_dir"
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+
+        from ci.products.inventory import canonical_json_bytes, load_json_bytes
+        from ci.products.signing_isolation import require_no_signing_secret
+        from ci.sdk_android_core14_fresh_inputs import prepare
+
+        require_no_signing_secret(os.environ)
+        root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        destination = Path(os.environ['CALLER_DIR']) / 'replay-policy.json'
+        context_path = Path(os.environ['CALLER_DIR']) / 'original-context.json'
+        archives = {
+            'ios-arm64': os.environ['IOS_ARM64_ARCHIVE'],
+            'ios-simulator-arm64': os.environ['IOS_SIMULATOR_ARM64_ARCHIVE'],
+            'linux-arm64': os.environ['LINUX_ARM64_ARCHIVE'],
+            'linux-x64': os.environ['LINUX_X64_ARCHIVE'],
+            'macos-arm64': os.environ['MACOS_ARM64_ARCHIVE'],
+            'macos-x64': os.environ['MACOS_X64_ARCHIVE'],
+            'windows-x64': os.environ['WINDOWS_X64_ARCHIVE'],
+        }
+        result = prepare(
+            Path(os.environ['PLAN']), Path(os.environ['DISCOVERY']),
+            Path(os.environ['BEFORE_STATE']), root / 'build/sdk-core-metadata-worker',
+            root / 'build/sdk-android-core14-requests', destination,
+            expected_metadata_build_key=os.environ['METADATA_BUILD_KEY'],
+            expected_metadata_receipt_sha256=os.environ['METADATA_RECEIPT_SHA256'],
+            metadata_artifact_id=int(os.environ['METADATA_ARTIFACT_ID']),
+            metadata_artifact_sha256=os.environ['METADATA_ARTIFACT_SHA256'],
+            metadata_original_context=load_json_bytes(os.environ['METADATA_ORIGINAL_CONTEXT'].encode('utf-8')),
+            sdk_inputs_artifact_id=int(os.environ['SDK_INPUTS_ID']),
+            sdk_inputs_artifact_sha256=os.environ['SDK_INPUTS_SHA256'],
+            trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
+            sdk_validation_tooling=Path(os.environ['SDK_VALIDATION_TOOLING']),
+            native_compiler_archives=archives,
+            keyring=Path(os.environ['KEYRING']),
+            keys_directory=Path(os.environ['KEYS_DIRECTORY']),
+            repository_root=root, environ=os.environ, token=os.environ['GITHUB_TOKEN'],
+            **({'sdk_apple_validation_policy': Path(os.environ['APPLE_POLICY'])}
+               if os.environ['APPLE_POLICY'] else {}),
+        )
+        context_path.write_bytes(canonical_json_bytes(result['originalContext']))
+        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+            output.write(f"metadata_receipt={result['metadataReceipt']}\n")
+            output.write(f'replay_policy={destination}\n')
+            output.write(f'original_context={context_path}\n')
+        PY
