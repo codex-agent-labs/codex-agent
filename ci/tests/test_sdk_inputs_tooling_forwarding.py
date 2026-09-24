@@ -28,14 +28,17 @@ class SdkInputsToolingForwardingTest(unittest.TestCase):
                     optional = {'sdk_validation_tooling': policy} if policy is not None else {}
                     with patch.object(workflow, '_selection', wraps=workflow._selection) as selected:
                         f.stage(**f.upload, **optional)
-                    self.assertEqual(optional, selected.call_args.kwargs)
+                    self.assertEqual({'trusted_workflow_sha': f.upload['trusted_workflow_sha'], **optional},
+                        selected.call_args.kwargs)
                     f.inspect.assert_called_once_with(f.plan, f.discovery, f.state,
                         repository_root=f.repository, environ=f.arguments['environ'],
-                        include_sdk_selection=True, **optional)
+                        include_sdk_selection=True,
+                        sdk_original_workflow_sha=f.upload['trusted_workflow_sha'], **optional)
                     if source == 'released-default':
                         f.released.assert_called_once_with(f.plan, f.discovery, f.state, f.destination,
                             keyring=f.arguments['keyring'], keys_directory=f.arguments['keys_directory'],
-                            repository_root=f.repository, environ=f.arguments['environ'], **optional)
+                            repository_root=f.repository, environ=f.arguments['environ'],
+                            sdk_original_workflow_sha=f.upload['trusted_workflow_sha'], **optional)
                         f.fresh.assert_not_called()
                     else:
                         f.released.assert_not_called()

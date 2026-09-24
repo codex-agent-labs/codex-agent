@@ -84,7 +84,8 @@ class SdkInputReceiverTest(unittest.TestCase):
                 patch("reuse.api_request", side_effect=AssertionError("unexpected receiver network")):
             with receiver.verified_inputs(self.plan, self.discovery, self.state, **{**self.options, **changes}) as value:
                 selection.assert_called_once_with(self.plan, self.discovery, self.state, self.repository,
-                                                self.options["environ"], sdk_validation_tooling=None)
+                                                self.options["environ"], sdk_validation_tooling=None,
+                                                trusted_workflow_sha=self.options["trusted_workflow_sha"])
                 yield value
 
     def test_both_layouts_join_exact_signed_receipts_full_runtime_and_sdk_inputs(self):
