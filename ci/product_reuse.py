@@ -912,7 +912,7 @@ def _authorities(
     return records, None
 
 
-def _release_trust(root: Path, revision: str, destination: Path) -> ReleaseTrust | None:
+def _release_trust(root: Path, revision: str, destination: Path, *, original_inventory=None) -> ReleaseTrust | None:
     paths = {path for path, _ in tree_entries(root, revision)}
     if _KEYRING_PATH not in paths:
         return None
@@ -929,17 +929,22 @@ def _release_trust(root: Path, revision: str, destination: Path) -> ReleaseTrust
     keys.mkdir(parents=True)
     keyring = trust / "product-signing-keys.json"
     keyring.write_bytes(keyring_bytes)
+    pinned = [{"relativePath": "trust/product-signing-keys.json", "bytes": len(keyring_bytes),
+               "sha256": sha256_bytes(keyring_bytes)}]
     for record in records:
         if type(record) is not dict or type(record.get("keyId")) is not str:
             raise ValueError("Tracked product-signing key record is malformed")
         relative = f"{_KEYS_ROOT}/{record['keyId']}.pub"
-        (keys / f"{record['keyId']}.pub").write_bytes(
-            git_regular_blob_bytes(root, revision, relative, max_bytes=64 * 1024),
-        )
+        raw = git_regular_blob_bytes(root, revision, relative, max_bytes=64 * 1024)
+        (keys / f"{record['keyId']}.pub").write_bytes(raw)
+        pinned.append({"relativePath": f"trust/keys/{record['keyId']}.pub",
+                       "bytes": len(raw), "sha256": sha256_bytes(raw)})
     load_keyring(keyring, keys)
     if not records:
         shutil.rmtree(trust)
         return None
+    if original_inventory is not None:
+        original_inventory.extend(pinned)
     return ReleaseTrust(keyring, keys)
 
 
@@ -2377,6 +2382,7 @@ def _materialize_runtime_validation_handoffs(
     sources: Mapping[PhaseInstanceId, Path],
     destination: Path,
     artifact_root: Path,
+    original_inventory: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     records = []
     for metadata in closure:
@@ -2386,6 +2392,7 @@ def _materialize_runtime_validation_handoffs(
         handoff = destination / f"{metadata.component}-{metadata.target}"
         receipts = {}
         reports = {}
+        handoff_inventory = []
         for dependency in dependencies:
             dependency_root = handoff / "validation" / f"{dependency.component}-{dependency.target}"
             restored = restore_object(
@@ -2398,6 +2405,20 @@ def _materialize_runtime_validation_handoffs(
             receipt_root = dependency_root / "receipt"
             receipt_root.mkdir()
             (receipt_root / "phase-receipt.json").write_bytes(restored["receiptBytes"])
+            if original_inventory is not None:
+                prefix = f"{metadata.component}-{metadata.target}/validation/{dependency.component}-{dependency.target}"
+                receipt = restored["receipt"]
+                manifest = {"schemaVersion": 1, **{field: receipt[field] for field in
+                    ("product", "component", "phase", "target", "productVersion", "outputs")}}
+                manifest_bytes, receipt_bytes = canonical_json_bytes(manifest), restored["receiptBytes"]
+                handoff_inventory.extend([
+                    *({"relativePath": f"{prefix}/stage/{record['relativePath']}",
+                       "bytes": record["bytes"], "sha256": record["sha256"]} for record in receipt["outputs"]),
+                    {"relativePath": f"{prefix}/stage/output-manifest.json", "bytes": len(manifest_bytes),
+                     "sha256": sha256_bytes(manifest_bytes)},
+                    {"relativePath": f"{prefix}/receipt/phase-receipt.json", "bytes": len(receipt_bytes),
+                     "sha256": sha256_bytes(receipt_bytes)},
+                ])
             receipts[dependency.target] = restored["receipt"]
             reports[dependency.target] = _runtime_report_output(
                 metadata, dependency, dependency_root / "stage", restored["receipt"],
@@ -2412,6 +2433,11 @@ def _materialize_runtime_validation_handoffs(
             [receipts[dependency.target] for dependency in dependencies],
         )
         write_canonical_json(handoff / "projection.json", projection)
+        if original_inventory is not None:
+            projection_bytes = canonical_json_bytes(projection)
+            handoff_inventory.append({"relativePath": f"{metadata.component}-{metadata.target}/projection.json",
+                                      "bytes": len(projection_bytes), "sha256": sha256_bytes(projection_bytes)})
+            original_inventory.extend(handoff_inventory)
         records.append({
             **_identity_record(metadata),
             "reports": [path.relative_to(artifact_root).as_posix() for path in ordered_reports],
@@ -3110,7 +3136,8 @@ def _capture_sdk_runtime_predecessors(selected, destination):
     return result
 
 
-def _materialize_product_predecessors(state, instance, destination, expected_build_key, root, *, sdk_runtime_originals=None):
+def _materialize_product_predecessors(state, instance, destination, expected_build_key, root, *,
+                                      sdk_runtime_originals=None, original_inventory=None):
     expected_build_key = require_sha256(expected_build_key, "Expected elected build key")
     if instance not in PHASE_INSTANCE_IDS:
         raise ValueError("Unknown product phase instance")
@@ -3173,6 +3200,8 @@ def _materialize_product_predecessors(state, instance, destination, expected_bui
         if regular_file_inventory(prepared) != expected_files:
             raise ValueError("Product predecessors differ from authenticated original receipts")
         publish_regular_tree(prepared, destination, expected_inventory=expected_files)
+        if original_inventory is not None:
+            original_inventory.extend(expected_files)
     return ready
 
 
@@ -3605,11 +3634,17 @@ def _prepare_runtime_phase(state, instance, destination, expected_build_key, roo
     with tempfile.TemporaryDirectory(prefix="codex-agent-runtime-worker-", dir=root) as temporary:
         prepared = Path(temporary).resolve() / "worker"
         prepared.mkdir()
-        trust = _release_trust(root, state.plan["validationCommit"], prepared)
+        expected_files = []
+        trust = _release_trust(root, state.plan["validationCommit"], prepared,
+                               original_inventory=expected_files)
         if trust is None:
             raise ValueError("Runtime worker requires Git-authoritative release policy")
         inputs = prepared / "predecessors"
-        ready = _materialize_product_predecessors(state, instance, inputs, expected_build_key, root)
+        predecessor_files = []
+        ready = _materialize_product_predecessors(state, instance, inputs, expected_build_key, root,
+                                                  original_inventory=predecessor_files)
+        expected_files.extend({**record, "relativePath": f"predecessors/{record['relativePath']}"}
+                              for record in predecessor_files)
 
         def original(product, component, phase, target):
             dependency = PhaseInstanceId(product, component, phase, target)
@@ -3633,8 +3668,10 @@ def _prepare_runtime_phase(state, instance, destination, expected_build_key, roo
                 raise ValueError(f"Runtime worker requires one exact original {kind} output")
             return value["stage"] / outputs[0]["relativePath"]
 
-        contract, version, handoff, manifest, _ = _capture_runtime_contract(
+        contract, version, handoff, manifest, handoff_files = _capture_runtime_contract(
             root, evidence, original, one_output, prepared, trust)
+        expected_files.extend({**record, "relativePath": f"contract-input/{record['relativePath']}"}
+                              for record in handoff_files)
         stem = f"codex-agent-contract-{version}"
         properties = {
             **{f"codexAgent.{key}": value for key, value in _identity_record(instance).items()},
@@ -3663,10 +3700,14 @@ def _prepare_runtime_phase(state, instance, destination, expected_build_key, roo
                     expected_contract_version=version, required_components=required_contract_components(instance),
                     keyring=trust.keyring, keys_directory=trust.keys)
                 binary_plan_path = prepared / "runtime-binary-plan.json"
-                write_canonical_json(binary_plan_path, binary_plan(
+                binary_plan_value = binary_plan(
                     ready, repository_root=root, revision=state.producer["commit"],
                     contract_projection=projection, verified_contract_manifest=manifest,
-                    runtime_version=state.expected_fixed["versions"]["runtime-release"]))
+                    runtime_version=state.expected_fixed["versions"]["runtime-release"])
+                write_canonical_json(binary_plan_path, binary_plan_value)
+                binary_plan_bytes = canonical_json_bytes(binary_plan_value)
+                expected_files.append({"relativePath": "runtime-binary-plan.json",
+                                       "bytes": len(binary_plan_bytes), "sha256": sha256_bytes(binary_plan_bytes)})
 
             def report(component, target):
                 dependency = PhaseInstanceId("runtime", component, "validation", target)
@@ -3682,9 +3723,12 @@ def _prepare_runtime_phase(state, instance, destination, expected_build_key, roo
             from runtime_adapter_phase import properties as adapter_properties
             validation_handoff = None
             if instance.phase == "metadata":
+                validation_files = []
                 _materialize_runtime_validation_handoffs(
                     (instance,), state.prior_by_instance, state.sources,
-                    prepared / "runtime-validation", root)
+                    prepared / "runtime-validation", root, original_inventory=validation_files)
+                expected_files.extend({**record, "relativePath": f"runtime-validation/{record['relativePath']}"}
+                                      for record in validation_files)
                 validation_handoff = prepared / f"runtime-validation/{instance.component}-{instance.target}"
             specific = adapter_properties(ready, predecessor=predecessor, validation_handoff=validation_handoff)
         if properties.keys() & specific.keys():
@@ -3696,7 +3740,13 @@ def _prepare_runtime_phase(state, instance, destination, expected_build_key, roo
             for key, value in properties.items()
         }
         write_canonical_json(prepared / "gradle-properties.json", properties)
-        publish_regular_tree(prepared, destination)
+        properties_bytes = canonical_json_bytes(properties)
+        expected_files.append({"relativePath": "gradle-properties.json", "bytes": len(properties_bytes),
+                               "sha256": sha256_bytes(properties_bytes)})
+        expected_files.sort(key=lambda record: record["relativePath"])
+        if regular_file_inventory(prepared) != expected_files:
+            raise ValueError("Runtime worker inputs differ from authenticated originals")
+        publish_regular_tree(prepared, destination, expected_inventory=expected_files)
     return properties, manifest
 
 

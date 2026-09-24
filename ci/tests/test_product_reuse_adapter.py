@@ -2825,13 +2825,18 @@ class ProductReuseAdapterTest(unittest.TestCase):
             target.parent.mkdir(parents=True)
             evidence_target = product_reuse.RUNTIME_EVIDENCE_TARGETS[dependency.target]
             target.write_bytes(report_paths[evidence_target].read_bytes())
+            product_inventory.write_canonical_json(destination / "output-manifest.json", {"schemaVersion": 1,
+                **{field: receipt[field] for field in ("product", "component", "phase", "target", "productVersion", "outputs")}})
             return {"receipt": receipt, "receiptBytes": canonical_json_bytes(receipt)}
 
+        pinned = []
         with mock.patch.object(product_reuse, "restore_object", side_effect=restore):
             records = product_reuse._materialize_runtime_validation_handoffs(
-                (metadata,), phases, sources, root / "handoffs", root,
+                (metadata,), phases, sources, root / "handoffs", root, original_inventory=pinned,
             )
         self.assertEqual(1, len(records))
+        self.assertEqual(product_inventory.regular_file_inventory(root / "handoffs"),
+                         sorted(pinned, key=lambda record: record["relativePath"]))
         self.assertEqual(
             [product_reuse.RUNTIME_EVIDENCE_TARGETS[target] for target in product_reuse.RUNTIME_TARGETS],
             [

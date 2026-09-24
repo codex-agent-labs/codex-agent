@@ -8,6 +8,7 @@ from unittest import mock
 from ci.products.contract_attestation import build_contract_attestation
 from ci.products.inventory import (
     load_canonical_json,
+    publish_regular_tree as actual_publish_regular_tree,
     regular_file_inventory,
     write_canonical_json,
 )
@@ -166,6 +167,29 @@ class RuntimePhasePreparationTest(unittest.TestCase):
 
         self.assertFalse(destination.exists())
         self.assertEqual(changed_inventory, regular_file_inventory(changed))
+
+    def test_late_worker_predecessor_mutation_cannot_publish(self):
+        resumed = self.resume()
+        original = regular_file_inventory(resumed)
+        destination = self.scratch / "late-worker"
+        mutated = False
+
+        def mutate_before_copy(source, output, **kwargs):
+            nonlocal mutated
+            phase_plan = Path(source) / "predecessors/phase-plan.json"
+            if (Path(source) / "gradle-properties.json").exists() and phase_plan.exists():
+                phase_plan.write_bytes(b"changed after verification")
+                mutated = True
+            return actual_publish_regular_tree(source, output, **kwargs)
+
+        with mock.patch.object(adapter, "publish_regular_tree", side_effect=mutate_before_copy):
+            try:
+                with self.assertRaisesRegex(ValueError, "pinned inventory"):
+                    self.prepare(resumed, destination)
+            finally:
+                self.assertTrue(mutated)
+        self.assertFalse(destination.exists())
+        self.assertEqual(original, regular_file_inventory(resumed))
 
     def test_post_replay_valid_signer_swap_rejects_against_captured_git_policy(self):
         resumed = self.resume()
