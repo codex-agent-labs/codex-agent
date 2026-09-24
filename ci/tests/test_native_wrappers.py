@@ -889,22 +889,28 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             python = packages / "python"
             python.mkdir()
 
-            def write_wheel(tag: str, wheel_metadata: str | None = None) -> None:
+            def write_wheel(
+                tag: str, wheel_metadata: str | None = None, *,
+                distribution: str = "codex-agent", dist_info: str = "codex_agent",
+            ) -> None:
                 with zipfile.ZipFile(python / f"codex_agent-{version}-py3-none-{tag}.whl", "w") as archive:
-                    archive.writestr(f"codex_agent-{version}.dist-info/METADATA", f"Metadata-Version: 2.1\nVersion: {version}\n")
                     archive.writestr(
-                        f"codex_agent-{version}.dist-info/WHEEL",
+                        f"{dist_info}-{version}.dist-info/METADATA",
+                        f"Metadata-Version: 2.1\nName: {distribution}\nVersion: {version}\n",
+                    )
+                    archive.writestr(
+                        f"{dist_info}-{version}.dist-info/WHEEL",
                         wheel_metadata if wheel_metadata is not None else
                         f"Wheel-Version: 1.0\nRoot-Is-Purelib: false\nTag: py3-none-{tag}\n",
                     )
 
             for tag in PYTHON_TAGS.values():
                 write_wheel(tag)
-            source_metadata = f"Metadata-Version: 2.1\nVersion: {version}\n"
+            source_metadata = f"Metadata-Version: 2.1\nName: codex-agent\nVersion: {version}\n"
             source_build = (
                 '[build-system]\nrequires = ["setuptools>=68", "wheel==0.45.1"]\n'
                 'build-backend = "setuptools.build_meta"\n'
-                f'[project]\nversion = "{version}"\n'
+                f'[project]\nname = "codex-agent"\nversion = "{version}"\n'
             )
             source_records = {
                 "PKG-INFO": source_metadata,
@@ -951,6 +957,12 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             require_embedded_package_versions(packages, version)
 
             tag = next(iter(PYTHON_TAGS.values()))
+            for kwargs in ({"distribution": "other-package"}, {"dist_info": "other_package"}):
+                with self.subTest(wheel_coordinate=kwargs):
+                    write_wheel(tag, **kwargs)
+                    with self.assertRaisesRegex(ValueError, "Python wheel distribution"):
+                        require_embedded_package_versions(packages, version)
+            write_wheel(tag)
             for wheel_metadata in (
                 f"Root-Is-Purelib: false\nTag: cp313-cp313-{tag}\n",
                 f"Root-Is-Purelib: true\nTag: py3-none-{tag}\n",
@@ -972,6 +984,17 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 with self.subTest(sdist_records=records):
                     write_sdist(records)
                     with self.assertRaisesRegex(ValueError, "Python sdist"):
+                        require_embedded_package_versions(packages, version)
+            write_sdist(source_records)
+
+            for records in (
+                {**source_records, "PKG-INFO": source_metadata.replace("codex-agent", "other-package"),
+                 "src/codex_agent.egg-info/PKG-INFO": source_metadata.replace("codex-agent", "other-package")},
+                {**source_records, "pyproject.toml": source_build.replace('name = "codex-agent"', 'name = "other-package"')},
+            ):
+                with self.subTest(sdist_coordinate=records):
+                    write_sdist(records)
+                    with self.assertRaisesRegex(ValueError, "Python sdist.*name"):
                         require_embedded_package_versions(packages, version)
             write_sdist(source_records)
 

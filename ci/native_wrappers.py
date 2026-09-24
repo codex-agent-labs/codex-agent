@@ -734,10 +734,17 @@ def require_embedded_package_versions(
             for index, wheel in enumerate(sorted((packages / "python").glob("*.whl"))):
                 extracted = work / f"python-wheel-{index}"
                 safe_extract_zip(wheel, extracted)
-                metadata = require_one(extracted, "**/*.dist-info/METADATA").read_text(encoding="utf-8")
+                dist_info = extracted / f"codex_agent-{version_value}.dist-info"
+                metadata_path = require_one(extracted, "**/*.dist-info/METADATA")
+                wheel_path = require_one(extracted, "**/*.dist-info/WHEEL")
+                if metadata_path != dist_info / "METADATA" or wheel_path != dist_info / "WHEEL":
+                    raise ValueError(f"Python wheel distribution identity mismatch: {wheel.name}")
+                metadata = metadata_path.read_text(encoding="utf-8")
+                if re.findall(r"(?m)^Name: (\S+)$", metadata) != ["codex-agent"]:
+                    raise ValueError(f"Python wheel distribution name mismatch: {wheel.name}")
                 versions = re.findall(r"(?m)^Version: (\S+)$", metadata)
                 require_version(versions[0] if len(versions) == 1 else None, f"Python wheel {wheel.name}")
-                wheel_metadata = require_one(extracted, "**/*.dist-info/WHEEL").read_text(encoding="utf-8")
+                wheel_metadata = wheel_path.read_text(encoding="utf-8")
                 tag = wheel.name.removeprefix(f"codex_agent-{version_value}-").removesuffix(".whl")
                 if (re.findall(r"(?m)^Tag: (\S+)$", wheel_metadata) != [tag] or
                         re.findall(r"(?m)^Root-Is-Purelib: (\S+)$", wheel_metadata) != ["false"]):
@@ -754,6 +761,8 @@ def require_embedded_package_versions(
             if root_metadata.read_bytes() != ancillary_metadata.read_bytes():
                 raise ValueError("Python sdist root and generated package metadata differ")
             metadata = root_metadata.read_text(encoding="utf-8")
+            if re.findall(r"(?m)^Name: (\S+)$", metadata) != ["codex-agent"]:
+                raise ValueError("Python sdist distribution name mismatch")
             versions = re.findall(r"(?m)^Version: (\S+)$", metadata)
             require_version(versions[0] if len(versions) == 1 else None, "Python sdist")
             source_manifest = root_metadata.parent / "pyproject.toml"
@@ -766,6 +775,8 @@ def require_embedded_package_versions(
             }:
                 raise ValueError("Python sdist build dependencies/backend mismatch")
             project = source_project.get("project")
+            if not isinstance(project, dict) or project.get("name") != "codex-agent":
+                raise ValueError("Python sdist manifest distribution name mismatch")
             require_version(project.get("version") if isinstance(project, dict) else None, "Python sdist manifest")
 
         if "csharp" in languages:
