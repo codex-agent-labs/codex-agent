@@ -43,27 +43,28 @@ class SdkWorkerCollectionTest(unittest.TestCase):
 
     def names(self, instance, key):
         identity = f"{instance.component}-{instance.phase}-{instance.target}"
-        return (f"product-validation / sdk-{identity}",
+        component = instance.component if instance.component in {"sdk-core", "sdk-android"} else f"sdk-{instance.component}"
+        return (f"product-validation / {component}-{instance.phase}-{instance.target}",
             f"codex-agent-sdk-worker-{identity}-{key.removeprefix('sha256:')}-"
             f"{self.producer['tree']}-attempt-{self.producer['runAttempt']}")
 
-    def shard(self, phase, *, wrong=None):
+    def shard(self, phase, *, wrong=None, component="javascript", target="node"):
         self.counter += 1
         base = self.repository / f"build/original-{self.counter}"
         stage = base / "stage"
         (stage / "outputs").mkdir(parents=True)
         (stage / "outputs/synthetic").write_bytes(b"original synthetic SDK output\x00\xff")
         version = "0.2.7" if wrong == "version" else "0.3.0"
-        manifest = write_output_manifest(stage, "sdk", "javascript", phase, "node", version,
+        manifest = write_output_manifest(stage, "sdk", component, phase, target, version,
                                          {"evidence": "outputs"})
-        receipt = write_receipt(base / "fixture-receipt.json", product="sdk", component="javascript",
-            phase=phase, target="node", outputs=manifest["outputs"], upstream=[], version=version,
+        receipt = write_receipt(base / "fixture-receipt.json", product="sdk", component=component,
+            phase=phase, target=target, outputs=manifest["outputs"], upstream=[], version=version,
             version_identity=version, context={"producer": self.producer})
         ready = {name: receipt[name] for name in PHASE_PLAN_KEYS}
         emitted_plan = ready
         if wrong == "key":
-            other = write_receipt(base / "different-receipt.json", product="sdk", component="javascript",
-                phase=phase, target="node", outputs=manifest["outputs"], upstream=[], version="0.3.0",
+            other = write_receipt(base / "different-receipt.json", product="sdk", component=component,
+                phase=phase, target=target, outputs=manifest["outputs"], upstream=[], version="0.3.0",
                 version_identity="0.3.0", context={"producer": self.producer},
                 toolchain=sha256_bytes(b"different synthetic elected key"))
             emitted_plan = {name: other[name] for name in PHASE_PLAN_KEYS}
@@ -81,18 +82,25 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                  for row in regular_file_inventory(original)}
         files.update({"gradle.log": b"", "execution.json": b'{"synthetic":"not execution proof"}\n',
                       "inputs/original.bin": b"exact original input\x00\xff"})
-        return PhaseInstanceId("sdk", "javascript", phase, "node"), ready, original, descriptor, files
+        return PhaseInstanceId("sdk", component, phase, target), ready, original, descriptor, files
 
     def state(self, ready):
         return SimpleNamespace(producer=self.producer, plan=self.plan, prior_ready_plans=ready,
             expected_fixed={"versions": {"sdk": "0.3.0", "runtime-release": "0.2.7"}})
 
-    def collect(self, ready, uploads, destination):
+    def collect(self, ready, uploads, destination, *, family=None):
         with patch.object(adapter, "_verified_product_state", return_value=self.state(ready)), \
                 self.official_api(ready, uploads):
             return adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery, destination,
                 trusted_workflow_sha=PIN, repository_root=self.repository, environ=self.environment,
-                token="synthetic-token", sdk_javascript_only=True)
+                token="synthetic-token", sdk_javascript_only=family is None, sdk_family=family)
+
+    def test_core_worker_uses_exact_workflow_job_without_extra_sdk_prefix(self):
+        instance, ready, _, _, files = self.shard("binary", component="sdk-core", target="common")
+        result = self.collect({instance: ready}, {instance: archive(files)},
+                              self.repository / "build/collected-core", family="core-binary")
+        self.assertEqual("success", result["rows"][0]["result"])
+        self.assertEqual("product-validation / sdk-core-binary-common", result["rows"][0]["jobName"])
 
     def test_each_js_phase_preserves_exact_original_shard_and_whole_worker_upload(self):
         for phase in ("package", "validation"):

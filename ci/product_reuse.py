@@ -3889,6 +3889,12 @@ def execute_runtime_aggregate(
         destination=destination / "shard")
 
 
+def _worker_job_name(product: str, instance: PhaseInstanceId) -> str:
+    component = instance.component if product == "sdk" and instance.component in {
+        "sdk-core", "sdk-android"} else f"{product}-{instance.component}"
+    return f"product-validation / {component}-{instance.phase}-{instance.target}"
+
+
 def collect_runtime_workers(
     plan_path: Path, discovery_root: Path, state_root: Path | None, destination: Path, *,
     trusted_workflow_sha: str, repository_root: Path | None = None,
@@ -3941,7 +3947,7 @@ def collect_runtime_workers(
             f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{producer['runId']}/artifacts",
             "artifacts", token)
     for instance, _ready in selected:
-        name = f"product-validation / {product}-{instance.component}-{instance.phase}-{instance.target}"
+        name = _worker_job_name(product, instance)
         if any(job.get("name") == name and job.get("status") != "completed" for job in jobs):
             raise ValueError("An elected Runtime worker is still running; collect after all siblings finish")
         if sdk_family == "ios-validation":
@@ -3955,7 +3961,7 @@ def collect_runtime_workers(
         rows = []
         for instance, ready in selected:
             name = f"{instance.component}-{instance.phase}-{instance.target}"
-            job_name = f"product-validation / {product}-{name}"
+            job_name = _worker_job_name(product, instance)
             artifact_name = (f"codex-agent-{product}-worker-{name}-{ready['buildKey'].removeprefix('sha256:')}-"
                              f"{producer['tree']}-attempt-{producer['runAttempt']}")
             row = {**_identity_record(instance), "buildKey": ready["buildKey"],
