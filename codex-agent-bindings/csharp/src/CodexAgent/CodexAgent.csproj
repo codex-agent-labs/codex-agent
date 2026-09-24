@@ -39,6 +39,7 @@
 
   <Target Name="RequireCodexAgentNativeAssets" BeforeTargets="GenerateNuspec">
     <Error Condition="!Exists('$(CodexAgentSdkCompatibility)')" Text="Missing Codex Agent SDK compatibility declaration." />
+    <Error Condition="!Exists('$(CodexAgentSdkRuntimeRoot)')" Text="Missing Codex Agent SDK Runtime trust root." />
     <Error Condition="!Exists('../../native/osx-arm64/libcodex_agent.dylib')" Text="Missing osx-arm64 Codex Agent C SDK library." />
     <Error Condition="!Exists('../../native/osx-x64/libcodex_agent.dylib')" Text="Missing osx-x64 Codex Agent C SDK library." />
     <Error Condition="!Exists('../../native/linux-arm64/libcodex_agent.so')" Text="Missing linux-arm64 Codex Agent C SDK library." />

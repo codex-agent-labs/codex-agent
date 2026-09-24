@@ -1,5 +1,6 @@
 """The public C# package cannot silently omit its embedded Runtime."""
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -9,6 +10,10 @@ from pathlib import Path
 
 
 PROJECT = Path(__file__).resolve().parents[1] / "src/CodexAgent/CodexAgent.csproj"
+ROOT = Path(__file__).resolve().parents[3]
+CONSUMER = Path(__file__).resolve().parents[1] / "samples/CodexAgent.Consumer"
+ROOT_INSPECTOR = Path(__file__).resolve().parents[1] / "tools/VerifySdkRuntimeRoot/VerifySdkRuntimeRoot.csproj"
+PINNED_ROOT = ROOT / "gradle/release/keys/sdk-runtime-root.pub"
 MEMBERS = (
     "osx-arm64/libcodex_agent.dylib",
     "osx-x64/libcodex_agent.dylib",
@@ -47,12 +52,72 @@ class PackageEmbeddedRuntimeTest(unittest.TestCase):
                 path = root / "native" / member
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"fixture")
+            no_root = check()
+            self.assertNotEqual(0, no_root.returncode)
+            self.assertIn("Missing Codex Agent SDK Runtime trust root", no_root.stdout + no_root.stderr)
+
+            (root / "native/sdk-runtime-root.pub").write_text("fixture\n")
             self.assertEqual(0, check().returncode)
 
             (root / "native" / MEMBERS[-1]).unlink()
             absent = check()
             self.assertNotEqual(0, absent.returncode)
             self.assertIn("Missing win-x64 Codex Agent C SDK library", absent.stdout + absent.stderr)
+
+    @unittest.skipUnless(os.environ.get("CODEX_AGENT_CSHARP_NUPKG"), "staged C# package not supplied")
+    def test_installed_package_pins_root_and_rejects_unattested_override(self) -> None:
+        package = Path(os.environ["CODEX_AGENT_CSHARP_NUPKG"]).resolve(strict=True)
+        self.assertEqual("CodexAgent.0.8.0.nupkg", package.name)
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary).resolve()
+            feed = work / "feed"
+            feed.mkdir()
+            shutil.copyfile(package, feed / package.name)
+            config = work / "NuGet.Config"
+            root = ET.Element("configuration")
+            sources = ET.SubElement(root, "packageSources")
+            ET.SubElement(sources, "clear")
+            ET.SubElement(sources, "add", key="local", value=str(feed))
+            config.write_bytes(ET.tostring(root, encoding="utf-8", xml_declaration=True))
+            consumer = work / "consumer"
+            shutil.copytree(CONSUMER, consumer, ignore=shutil.ignore_patterns("bin", "obj"))
+            environment = {
+                **os.environ,
+                "DOTNET_CLI_HOME": str(work / "dotnet-home"),
+                "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
+                "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1",
+                "NUGET_PACKAGES": str(work / "packages"),
+            }
+            environment.pop("CODEX_AGENT_LIBRARY", None)
+            (work / "dotnet-home").mkdir()
+
+            def run(*args: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(["dotnet", *args], cwd=work, env=environment,
+                                      capture_output=True, text=True, check=False)
+
+            project = str(consumer / "CodexAgent.Consumer.csproj")
+            restored = run("restore", project, "--configfile", str(config), "--packages",
+                           str(work / "packages"), "--force", "--no-cache", "-p:NuGetAudit=false")
+            self.assertEqual(0, restored.returncode, restored.stdout + restored.stderr)
+            compiled = run("build", project, "--configuration", "Release", "--no-restore")
+            self.assertEqual(0, compiled.returncode, compiled.stdout + compiled.stderr)
+
+            installed = work / "packages/codexagent/0.8.0/lib/net8.0/CodexAgent.dll"
+            self.assertTrue(installed.is_file(), "the consumer did not install the package DLL")
+            tool_restored = run("restore", str(ROOT_INSPECTOR), "--configfile", str(config),
+                                "--packages", str(work / "packages"), "--force", "--no-cache",
+                                "-p:NuGetAudit=false")
+            self.assertEqual(0, tool_restored.returncode, tool_restored.stdout + tool_restored.stderr)
+            inspected = run("run", "--project", str(ROOT_INSPECTOR), "--configuration", "Release",
+                            "--no-restore", "--", str(installed), str(PINNED_ROOT))
+            self.assertEqual(0, inspected.returncode, inspected.stdout + inspected.stderr)
+
+            invalid_library = work / "unattested-runtime"
+            invalid_library.write_bytes(b"must fail before native loading")
+            rejected = run("run", "--project", project, "--configuration", "Release",
+                           "--no-build", "--no-restore", "--", str(invalid_library))
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertIn("Runtime evidence", rejected.stdout + rejected.stderr)
 
 
 if __name__ == "__main__":
