@@ -57,10 +57,14 @@ transport evidence, not rewritten into reusable payloads. Release trust signs
 or attests exact pre-existing payload bytes without rebuilding them.
 
 A target-specific Runtime release reuses an unchanged native variant's exact
-bytes and original provenance. Its new aggregate identifies the selected five
-variants and its own Runtime release version. SDK compatibility hashes those
-deterministic Runtime payloads, so a different CI run or signing key cannot
-silently change an otherwise identical embedded default.
+bytes and original provenance. For example, a Windows-only `0.8.1` change may
+reuse the four unchanged `0.8.0` native variants without relabeling their
+original producers. The new aggregate identifies exactly five compatible
+variants and its own Runtime release version; producer runs and source release
+versions may differ, but Contract compatibility, ABI, target, toolchain, and
+App Server policy must agree. SDK compatibility hashes deterministic Runtime
+payloads, so a different CI run or signing key cannot silently change an
+otherwise identical embedded default.
 
 Verification flows forward across artifacts: `verifyContract` produces
 Contract evidence, standalone `verifyRuntime` consumes the authenticated
@@ -70,6 +74,24 @@ wrapper-only change must not compile Runtime source; a no-change reusable
 campaign must not start a product compiler. The protected final campaign and
 publication gates remain mandatory; local helper tests are not substitutes
 for five matching-host package/consumer receipts or the merge gate.
+
+## Commands and release status
+
+`./gradlew verifyContract` is the Contract verification entry point. The
+standalone Runtime uses `./gradlew -p runtime verifyRuntime` with explicit
+`-PcodexAgent.target`, Contract payload, metadata receipt, detached attestation,
+attestation signature, public key, Contract version, and Runtime version
+properties; `runtime/settings.gradle.kts` rejects missing inputs before
+configuration. The root SDK and repository verification commands, including
+their required artifact/evidence properties, are listed in the
+[README](../README.md#capability-boundary). `ciProductPhase` selects an exact
+product, component, phase, and target; it is not a whole-graph build command.
+
+The existing combined candidate and publish workflows are a migration baseline,
+not commands for a product-specific `0.8.0` release. The planned separate
+Contract, Runtime, and SDK candidate/publish entries remain subject to the
+local, protected, and five-host acceptance gates in [releasing](RELEASING.md).
+No candidate tag or publication is asserted here.
 
 See [releasing](RELEASING.md) for the intended candidate/publication policy and
 the [support matrix](SUPPORT_MATRIX.md) for language/host scope. Do not extract
