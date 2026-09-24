@@ -1980,6 +1980,30 @@ class ContractBundleTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "incomplete or noncanonical"):
                 verify_contract_git_inventories(prepared)
 
+    def test_contract_git_inventories_require_canonical_content_only_records(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            inventory = f"100644\tblob\t{'a' * 40}\tcontract/Contract.kt\n".encode()
+            for name in (
+                "contract-binary-inputs.git-tree",
+                "contract-validation-inputs.git-tree",
+            ):
+                _write_file(root / "inventories" / name, inventory)
+            verify_contract_git_inventories(root)
+
+            path = root / "inventories/contract-binary-inputs.git-tree"
+            for altered in (
+                inventory.replace(b"100644", b"100755"),
+                inventory.replace(b"\n", b"\r\n"),
+                inventory.rstrip(b"\n"),
+                inventory + f"100644\tblob\t{'b' * 40}\tcontract/Contract.kt\n".encode(),
+            ):
+                path.write_bytes(altered)
+                with self.assertRaisesRegex(ValueError, "noncanonical|malformed|duplicate path"):
+                    verify_contract_git_inventories(root)
+            path.write_bytes(inventory)
+            verify_contract_git_inventories(root)
+
     def test_prepared_git_provenance_uses_commit_bound_pathspec_policy(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

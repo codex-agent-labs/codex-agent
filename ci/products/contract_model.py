@@ -1241,20 +1241,23 @@ def verify_contract_git_inventories(root: Path) -> None:
         "inventories/contract-validation-inputs.git-tree",
     ):
         path = root / relative
-        if path.is_symlink() or not path.is_file():
-            raise ValueError(f"Contract Git inventory is missing or unsafe: {relative}")
         try:
-            lines = path.read_text(encoding="utf-8", errors="strict").splitlines()
+            contents = read_regular_file_bytes(path).decode("utf-8", errors="strict")
         except UnicodeError as error:
             raise ValueError(f"Contract Git inventory is not UTF-8: {relative}") from error
-        if not lines or lines != sorted(set(lines)):
+        lines = contents.splitlines()
+        if not lines or contents != "".join(f"{line}\n" for line in lines) or lines != sorted(set(lines)):
             raise ValueError(f"Contract Git inventory is incomplete or noncanonical: {relative}")
+        paths: set[str] = set()
         for line in lines:
             fields = line.split("\t")
-            if len(fields) != 4 or fields[0] not in {"100644", "100755"} or fields[1] != "blob" or \
+            if len(fields) != 4 or fields[0] != "100644" or fields[1] != "blob" or \
                     len(fields[2]) != 40 or any(character not in "0123456789abcdef" for character in fields[2]):
                 raise ValueError(f"Contract Git inventory record is malformed: {relative}")
-            require_relative_path(fields[3], f"Contract Git inventory path in {relative}")
+            selected = require_relative_path(fields[3], f"Contract Git inventory path in {relative}")
+            if selected in paths:
+                raise ValueError(f"Contract Git inventory contains a duplicate path: {relative}")
+            paths.add(selected)
 
 
 def _verify_contract_evidence(root: Path, manifest: dict[str, Any]) -> None:
