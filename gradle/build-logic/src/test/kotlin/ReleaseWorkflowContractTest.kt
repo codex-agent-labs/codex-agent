@@ -280,6 +280,8 @@ class ReleaseWorkflowContractTest {
         assertTrue(validation in 0 until checkout)
         assertTrue(checkout < ancestry)
         assertTrue("GITHUB_REF_PROTECTED" in candidate)
+        assertTrue("release_version=\"${'$'}{BASH_REMATCH[1]}\"" in candidate)
+        assertTrue("[[ \"${'$'}release_version\" =~ ^0\\.[0-7]\\.[0-9]+${'$'} ]]" in candidate)
         assertTrue("git merge-base --is-ancestor \"${'$'}candidate_commit\" origin/main" in candidate)
         assertTrue("git rev-parse \"${'$'}candidate_commit^{tree}\"" in candidate)
     }

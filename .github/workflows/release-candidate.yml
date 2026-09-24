@@ -31,7 +31,9 @@ jobs:
           test "$GITHUB_REF_TYPE" = tag
           test "$GITHUB_REF_PROTECTED" = true
           [[ "$GITHUB_REF_NAME" =~ ^candidate/v([0-9]+\.[0-9]+\.[0-9]+)-rc\.([1-9][0-9]*)$ ]]
-          printf 'release_tag=v%s\n' "${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          release_version="${BASH_REMATCH[1]}"
+          [[ "$release_version" =~ ^0\.[0-7]\.[0-9]+$ ]]
+          printf 'release_tag=v%s\n' "$release_version" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
