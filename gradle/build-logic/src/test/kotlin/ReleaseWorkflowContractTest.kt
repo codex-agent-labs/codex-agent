@@ -107,12 +107,14 @@ class ReleaseWorkflowContractTest {
         val checkouts = uses.count { it.startsWith("uses: actions/checkout@") }
         val uploads = uses.count { it.startsWith("uses: actions/upload-artifact@") }
         val optionalDiagnostics = Regex("(?m)^\\s+if-no-files-found: ignore$").findAll(combined).count()
+        val warningDiagnostics = Regex("(?m)^\\s+if-no-files-found: warn$").findAll(combined).count()
         assertEquals(checkouts, Regex("(?m)^\\s+persist-credentials: false$").findAll(combined).count())
         assertEquals(
             uploads,
-            Regex("(?m)^\\s+if-no-files-found: error$").findAll(combined).count() + optionalDiagnostics,
+            Regex("(?m)^\\s+if-no-files-found: error$").findAll(combined).count() + optionalDiagnostics + warningDiagnostics,
         )
         assertEquals(2, optionalDiagnostics)
+        assertEquals(11, warningDiagnostics)
         val lane = actions.getValue("run-ci-lane")
         assertTrue("name: codex-agent-diagnostics-" in lane)
         assertTrue(lane.indexOf("PYTHONDONTWRITEBYTECODE=1") in 0 until lane.indexOf("python3 "))
