@@ -410,11 +410,14 @@ class RuntimeAggregateIntegrationTest(unittest.TestCase):
             return_value=(fixture["contract"], fixture["contract_receipt"],
                           fixture["contract_attestation"]),
         ), patch.object(
+            runtime_aggregate_module, "verify_runtime_aggregate_presigning_content",
+            side_effect=lambda *args, **kwargs: self.verify(fixture),
+        ) as presigning, patch.object(
             runtime_aggregate_module, "verify_runtime_aggregate_attestation_closure",
             return_value=(fixture["variant_manifests"], fixture["variant_receipts"],
                           fixture["adapter_receipt_values"]),
         ):
-            return build_runtime_aggregate_attestation(
+            result = build_runtime_aggregate_attestation(
                 manifest, receipt_path, {}, {}, {}, {}, {}, {}, [], signing,
                 private_key, public_key, output,
                 required_variant_trust_domain="development",
@@ -427,6 +430,8 @@ class RuntimeAggregateIntegrationTest(unittest.TestCase):
                 runtime_maven_files=fixture["maven_files"],
                 adapter_evidence=fixture["projection_files"],
             )
+            presigning.assert_called_once()
+            return result
 
     def test_composes_external_trust_with_exact_receipt_owned_content(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
