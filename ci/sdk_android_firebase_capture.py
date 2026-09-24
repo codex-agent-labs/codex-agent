@@ -256,10 +256,14 @@ def capture_android_firebase_evidence(
         listed = selected[0]
         artifact_id = require_integer(listed.get("id"), "Firebase artifact ID", 1)
         artifact_sha256 = require_sha256(listed.get("digest"), "Firebase artifact digest")
+        artifact_size = require_integer(listed.get("size_in_bytes"), "Firebase artifact bytes", 1)
+        if artifact_size > products._CATALOG_LIMIT:
+            raise ValueError("Protected Firebase upload exceeds the transport limit")
         url = f"{api}/artifacts/{artifact_id}"
         artifact = products.api_json(url, token)
         if (type(artifact) is not dict or any(artifact.get(field) != listed.get(field) for field in (
-                "id", "name", "digest", "expired", "workflow_run", "created_at", "archive_download_url"))
+                "id", "name", "digest", "expired", "workflow_run", "created_at",
+                "archive_download_url", "size_in_bytes"))
                 or artifact.get("archive_download_url") != url + "/zip"
                 or type(artifact.get("workflow_run")) is not dict
                 or require_integer(artifact["workflow_run"].get("id"), "Firebase artifact run", 1)
@@ -270,6 +274,8 @@ def capture_android_firebase_evidence(
         artifact_bytes = canonical_json_bytes(artifact)
         unchanged()
         archive_bytes = download_artifact(artifact, token)
+        if len(archive_bytes) != artifact_size:
+            raise ValueError("Protected Firebase upload differs from its official byte length")
 
         prepared = private / "captured"
         prepared.mkdir()

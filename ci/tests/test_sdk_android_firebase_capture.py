@@ -87,6 +87,7 @@ class AndroidFirebaseCaptureTest(unittest.TestCase):
             "id": 702,
             "name": "codex-agent-ci-android-firebase-" + self.final.plan["validationCommit"],
             "expired": False, "digest": sha256_bytes(self.raw),
+            "size_in_bytes": len(self.raw),
             "created_at": "2026-09-11T09:30:00Z",
             "archive_download_url": (
                 "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/702/zip"),
@@ -218,7 +219,9 @@ class AndroidFirebaseCaptureTest(unittest.TestCase):
 
     def test_job_listing_detail_digest_window_and_final_locator_are_exact(self):
         baseline = deepcopy((self.artifact, self.observation, self.final_transport))
-        for case in ("missing", "ambiguous", "detail", "run", "head", "url", "window", "final"):
+        for case in ("missing", "ambiguous", "detail", "run", "head", "url",
+                     "window", "final", "missing-size", "oversize", "wrong-size",
+                     "detail-size"):
             self.artifact, self.observation, self.final_transport = deepcopy(baseline)
             listings = [deepcopy(self.artifact)]
             detail = deepcopy(self.artifact)
@@ -232,6 +235,17 @@ class AndroidFirebaseCaptureTest(unittest.TestCase):
             elif case == "window":
                 detail["created_at"] = "2026-09-11T10:30:00Z"
                 listings[0]["created_at"] = detail["created_at"]
+            elif case == "missing-size":
+                detail.pop("size_in_bytes")
+                listings[0].pop("size_in_bytes")
+            elif case == "oversize":
+                detail["size_in_bytes"] = capture.products._CATALOG_LIMIT + 1
+                listings[0]["size_in_bytes"] = detail["size_in_bytes"]
+            elif case == "wrong-size":
+                detail["size_in_bytes"] += 1
+                listings[0]["size_in_bytes"] += 1
+            elif case == "detail-size":
+                detail["size_in_bytes"] += 1
             else: final_locator = {**final_locator, "artifact_id": final_locator["artifact_id"] + 1}
             with self.subTest(case=case), patch.object(
                     capture.upload_locator, "locate_android_validation_upload", return_value=final_locator), \
