@@ -17,7 +17,7 @@
 #define CODEX_AGENT_FIXTURE_CONTRACT "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 #endif
 #ifndef CODEX_AGENT_FIXTURE_RUNTIME
-#define CODEX_AGENT_FIXTURE_RUNTIME "0.2.0"
+#define CODEX_AGENT_FIXTURE_RUNTIME "0.8.0"
 #endif
 #ifndef CODEX_AGENT_FIXTURE_ACTUAL_ABI_MAJOR
 #define CODEX_AGENT_FIXTURE_ACTUAL_ABI_MAJOR 1

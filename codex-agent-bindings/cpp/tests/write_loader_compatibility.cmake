@@ -22,10 +22,10 @@ string(TOUPPER "${SELECTED_VARIABLE}" SELECTED_VARIABLE)
 set(${SELECTED_VARIABLE}_SHA256 "${LIBRARY_SHA256}")
 set(${SELECTED_VARIABLE}_COMPONENT "2222222222222222222222222222222222222222222222222222222222222222")
 file(WRITE "${OUTPUT}"
-    "{\"contract\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"version\":\"0.2.0\"},"
+    "{\"contract\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"version\":\"0.8.0\"},"
     "\"platformRuntime\":{\"android\":{\"desktopRuntimeApplicable\":false,\"owner\":\"sdk\"},\"ios\":{\"desktopRuntimeApplicable\":false,\"owner\":\"sdk\"}},"
-    "\"runtime\":{\"compatibleReleaseRange\":\">=0.2.0 <0.3.0\",\"compatibleRuntimeCompatibilityRange\":\">=0.2.0 <0.3.0\","
-    "\"defaultManifestSha256\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"defaultRuntimeVersion\":\"0.2.0\","
+    "\"runtime\":{\"compatibleReleaseRange\":\">=0.8.0 <0.9.0\",\"compatibleRuntimeCompatibilityRange\":\">=0.8.0 <0.9.0\","
+    "\"defaultManifestSha256\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"defaultRuntimeVersion\":\"0.8.0\","
     "\"embeddedVariants\":["
     "{\"bundleSha256\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"componentId\":\"sha256:${LINUX_ARM64_COMPONENT}\",\"manifestSha256\":\"sha256:${LINUX_ARM64_MANIFEST}\",\"runtimeLibrarySha256\":\"sha256:${LINUX_ARM64_SHA256}\",\"target\":\"linux-arm64\"},"
     "{\"bundleSha256\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"componentId\":\"sha256:${LINUX_X64_COMPONENT}\",\"manifestSha256\":\"sha256:${LINUX_X64_MANIFEST}\",\"runtimeLibrarySha256\":\"sha256:${LINUX_X64_SHA256}\",\"target\":\"linux-x64\"},"
@@ -33,4 +33,4 @@ file(WRITE "${OUTPUT}"
     "{\"bundleSha256\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"componentId\":\"sha256:${MACOS_X64_COMPONENT}\",\"manifestSha256\":\"sha256:${MACOS_X64_MANIFEST}\",\"runtimeLibrarySha256\":\"sha256:${MACOS_X64_SHA256}\",\"target\":\"macos-x64\"},"
     "{\"bundleSha256\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"componentId\":\"sha256:${WINDOWS_X64_COMPONENT}\",\"manifestSha256\":\"sha256:${WINDOWS_X64_MANIFEST}\",\"runtimeLibrarySha256\":\"sha256:${WINDOWS_X64_SHA256}\",\"target\":\"windows-x64\"}],"
     "\"minimumAbiMinor\":13,\"requiredAbiMajor\":1,\"requiredContractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"requiredIdentitySchema\":1},"
-    "\"schemaVersion\":1,\"sdkVersion\":\"0.2.0\"}\n")
+    "\"schemaVersion\":1,\"sdkVersion\":\"0.8.0\"}\n")

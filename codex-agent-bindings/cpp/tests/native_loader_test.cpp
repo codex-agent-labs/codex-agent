@@ -84,7 +84,7 @@ std::filesystem::path mutated_compatibility(
         value.erase(offset, field.size());
         value.insert(1, "\"schemaVersion\":1,");
     } else if (mode == "duplicate-json-key") {
-        value.insert(value.size() - 2, ",\"sdkVersion\":\"0.2.0\"");
+        value.insert(value.size() - 2, ",\"sdkVersion\":\"0.8.0\"");
     } else if (mode == "reordered-variants") {
         replace_once(value, "\"target\":\"linux-arm64\"", "\"target\":\"temporary-target\"");
         replace_once(value, "\"target\":\"linux-x64\"", "\"target\":\"linux-arm64\"");
@@ -103,11 +103,11 @@ std::filesystem::path mutated_compatibility(
         value.replace(second + marker.size(), second_end - second - marker.size(),
             value.substr(first + marker.size(), first_end - first - marker.size()));
     } else if (mode == "invalid-sdk-version") {
-        replace_once(value, "\"sdkVersion\":\"0.2.0\"", "\"sdkVersion\":\"00.2.0\"");
+        replace_once(value, "\"sdkVersion\":\"0.8.0\"", "\"sdkVersion\":\"00.8.0\"");
     } else if (mode == "invalid-sdk-prerelease") {
-        replace_once(value, "\"sdkVersion\":\"0.2.0\"", "\"sdkVersion\":\"0.2.0-01\"");
+        replace_once(value, "\"sdkVersion\":\"0.8.0\"", "\"sdkVersion\":\"0.8.0-01\"");
     } else if (mode == "valid-sdk-prerelease") {
-        replace_once(value, "\"sdkVersion\":\"0.2.0\"", "\"sdkVersion\":\"0.2.0-rc.1+build.07\"");
+        replace_once(value, "\"sdkVersion\":\"0.8.0\"", "\"sdkVersion\":\"0.8.0-rc.1+build.07\"");
     } else if (mode == "invalid-identity-schema") {
         replace_once(value, "\"requiredIdentitySchema\":1", "\"requiredIdentitySchema\":2");
     } else if (mode == "invalid-abi-major") {
@@ -235,6 +235,7 @@ int main(int argc, char** argv) {
     if (argc < 4 || argc > 5) return 64;
     const auto mode = std::string_view(argv[3]);
     const auto expect_success = mode == "success" || mode == "external-component" ||
+        mode == "compatible-patch" ||
         mode == "valid-sdk-prerelease" || mode == "snapshot-aba";
     const auto symlink_mode = mode == "parent-symlink-library" || mode == "final-symlink-library" ||
         mode == "parent-symlink-compatibility" || mode == "final-symlink-compatibility";

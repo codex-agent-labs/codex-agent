@@ -5,7 +5,7 @@ option(
     "Configure the target-specific source package without enabling a host C++ toolchain"
     OFF
 )
-project(CodexAgent VERSION 0.2.0 LANGUAGES NONE)
+project(CodexAgent VERSION 0.8.0 LANGUAGES NONE)
 if(NOT CODEX_AGENT_CPP_PACKAGE_ONLY)
     enable_language(CXX)
 endif()
@@ -221,7 +221,7 @@ if(CODEX_AGENT_CPP_INSTALL_PACKAGE)
     write_basic_package_version_file(
         "${CMAKE_CURRENT_BINARY_DIR}/CodexAgentConfigVersion.cmake"
         VERSION "${PROJECT_VERSION}"
-        COMPATIBILITY SameMajorVersion
+        COMPATIBILITY SameMinorVersion
     )
     install(
         FILES

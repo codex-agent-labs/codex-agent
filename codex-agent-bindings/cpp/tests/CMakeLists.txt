@@ -27,6 +27,12 @@ target_compile_definitions(codex_agent_loader_wrong_abi_major PRIVATE
 add_library(codex_agent_loader_incompatible_runtime SHARED native_loader_fixture.cpp)
 target_compile_definitions(codex_agent_loader_incompatible_runtime PRIVATE
     CODEX_AGENT_FIXTURE_RUNTIME="0.3.0")
+add_library(codex_agent_loader_compatible_patch SHARED native_loader_fixture.cpp)
+target_compile_definitions(codex_agent_loader_compatible_patch PRIVATE
+    CODEX_AGENT_FIXTURE_RUNTIME="0.8.1")
+add_library(codex_agent_loader_next_minor SHARED native_loader_fixture.cpp)
+target_compile_definitions(codex_agent_loader_next_minor PRIVATE
+    CODEX_AGENT_FIXTURE_RUNTIME="0.9.0")
 add_library(codex_agent_loader_wrong_contract SHARED native_loader_fixture.cpp)
 target_compile_definitions(codex_agent_loader_wrong_contract PRIVATE
     CODEX_AGENT_FIXTURE_CONTRACT="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
@@ -41,7 +47,8 @@ endif()
 add_library(codex_agent_loader_wrong_target SHARED native_loader_fixture.cpp)
 foreach(fixture codex_agent_loader_valid codex_agent_loader_external codex_agent_loader_old_abi
         codex_agent_loader_abi_mismatch codex_agent_loader_wrong_abi_major
-        codex_agent_loader_incompatible_runtime
+        codex_agent_loader_incompatible_runtime codex_agent_loader_compatible_patch
+        codex_agent_loader_next_minor
         codex_agent_loader_wrong_contract codex_agent_loader_missing_identity)
     target_compile_features(${fixture} PRIVATE cxx_std_20)
     target_compile_definitions(${fixture} PRIVATE CODEX_AGENT_BUILD)
@@ -71,6 +78,7 @@ add_dependencies(codex_agent_native_loader_test codex_agent_loader_compatibility
     codex_agent_loader_external codex_agent_loader_old_abi
     codex_agent_loader_abi_mismatch
     codex_agent_loader_wrong_abi_major codex_agent_loader_incompatible_runtime
+    codex_agent_loader_compatible_patch codex_agent_loader_next_minor
     codex_agent_loader_wrong_contract codex_agent_loader_wrong_target
     codex_agent_loader_missing_identity)
 add_test(NAME codex_agent_native_loader_embedded COMMAND codex_agent_native_loader_test
@@ -92,6 +100,12 @@ add_test(NAME codex_agent_native_loader_wrong_abi_major COMMAND codex_agent_nati
 add_test(NAME codex_agent_native_loader_incompatible_runtime COMMAND codex_agent_native_loader_test
     $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" failure
     $<TARGET_FILE:codex_agent_loader_incompatible_runtime>)
+add_test(NAME codex_agent_native_loader_compatible_patch COMMAND codex_agent_native_loader_test
+    $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" compatible-patch
+    $<TARGET_FILE:codex_agent_loader_compatible_patch>)
+add_test(NAME codex_agent_native_loader_next_minor COMMAND codex_agent_native_loader_test
+    $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" failure
+    $<TARGET_FILE:codex_agent_loader_next_minor>)
 add_test(NAME codex_agent_native_loader_wrong_contract COMMAND codex_agent_native_loader_test
     $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" failure
     $<TARGET_FILE:codex_agent_loader_wrong_contract>)
