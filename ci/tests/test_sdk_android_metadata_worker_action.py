@@ -175,8 +175,7 @@ class AndroidMetadataWorkerActionTest(unittest.TestCase):
                 exec(compile(identity_source, "android-identity", "exec"), {})
 
     def test_existing_observed_controller_receives_every_original_pin_and_diagnostics(self):
-        block = self.action.split("- name: Execute exact Android metadata controller", 1)[1]
-        script = textwrap.dedent(block.split("        python3 -B - <<'PY'\n", 1)[1].split("\n        PY", 1)[0])
+        script = self.source("execute")
         compile(script, "android-metadata-execute", "exec")
         for flag in ("--validation-artifact-id", "--validation-artifact-sha256",
                      "--expected-validation-receipt-sha256",
@@ -190,6 +189,23 @@ class AndroidMetadataWorkerActionTest(unittest.TestCase):
         self.assertIn("attempt-${{ github.run_attempt }}", self.action)
         for forbidden in ("secrets.", "PRIVATE_KEY", "ssh-keygen", "gradlew "):
             self.assertNotIn(forbidden, self.action)
+
+    def test_original_locator_outputs_require_execution_and_official_upload(self):
+        self.assertIn("- id: execute\n", self.action)
+        self.assertIn("- id: upload\n", self.action)
+        for name in ("metadata-receipt-sha256", "metadata-artifact-id",
+                     "metadata-artifact-sha256", "metadata-run-id", "metadata-run-attempt"):
+            match = re.search(rf"(?ms)^  {re.escape(name)}:\n(.*?)(?=^  [a-z][\w-]*:|^runs:)", self.action)
+            self.assertIsNotNone(match, name)
+            expression = match[1]
+            self.assertIn("steps.execute.outcome == 'success'", expression)
+            self.assertIn("steps.upload.outcome == 'success'", expression)
+            self.assertIn("steps.execute.outputs.receipt_sha256 != ''", expression)
+        script = self.source("execute")
+        self.assertIn("verify_phase_shard(root / 'build/sdk-android-metadata-worker/shard'", script)
+        self.assertIn("producer['runId'] != int(os.environ['GITHUB_RUN_ID'])", script)
+        self.assertIn("producer['runAttempt'] != int(os.environ['GITHUB_RUN_ATTEMPT'])", script)
+        self.assertIn("output.write('receipt_sha256=' + shard['receiptSha256']", script)
 
 
 if __name__ == "__main__":

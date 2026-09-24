@@ -34,6 +34,37 @@ inputs:
   sdk-android-metadata-policy:
     default: ''
     description: Optional independently supplied retained Android metadata replay policy.
+outputs:
+  metadata-receipt-sha256:
+    description: Verified original metadata receipt digest after successful execution and official upload.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.execute.outputs.receipt_sha256 != '' && steps.execute.outputs.receipt_sha256 || '' }}
+  metadata-artifact-id:
+    description: Official original metadata upload ID after successful execution.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.execute.outputs.receipt_sha256 != '' && steps.upload.outputs.artifact-id || '' }}
+  metadata-artifact-sha256:
+    description: Official original metadata upload digest after successful execution.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.execute.outputs.receipt_sha256 != '' && format('sha256:{0}', steps.upload.outputs.artifact-digest) || '' }}
+  metadata-run-id:
+    description: Original metadata producer run ID after successful execution and official upload.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.execute.outputs.receipt_sha256 != '' && github.run_id || '' }}
+  metadata-run-attempt:
+    description: Original metadata producer run attempt after successful execution and official upload.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.execute.outputs.receipt_sha256 != '' && github.run_attempt || '' }}
 runs:
   using: composite
   steps:
@@ -230,13 +261,15 @@ runs:
       with:
         cache-read-only: 'true'
         product-worker: 'true'
-    - name: Execute exact Android metadata controller
+    - id: execute
+      name: Execute exact Android metadata controller
       shell: bash
       env:
         PLAN: ${{ steps.captured.outputs.plan-path }}
         DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
         STATE: ${{ steps.captured.outputs.state-root }}
         BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
         ORIGINAL_POLICY: ${{ inputs.original-policy }}
         APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         CORE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
@@ -319,8 +352,24 @@ runs:
         if held_policy_digest()[0] != before:
             raise ValueError('Android metadata caller policy changed after original reader exit')
         require_no_signing_secret(os.environ)
+        from products.receipt import validate_producer
+        from products.registry import PhaseInstanceId
+        from products.restore import verify_phase_shard
+        shard = verify_phase_shard(root / 'build/sdk-android-metadata-worker/shard',
+            PhaseInstanceId('sdk', 'sdk-android', 'metadata', 'android'))
+        producer = validate_producer(shard['receipt']['producer'], 'Android metadata producer')
+        plan = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN'])))
+        if (shard['buildKey'] != os.environ['BUILD_KEY'] or
+                producer['tree'] != os.environ['TREE'] or
+                producer['commit'] != plan['validationCommit'] or
+                producer['runId'] != int(os.environ['GITHUB_RUN_ID']) or
+                producer['runAttempt'] != int(os.environ['GITHUB_RUN_ATTEMPT'])):
+            raise ValueError('Android metadata result differs from elected key or current producer')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('receipt_sha256=' + shard['receiptSha256'] + '\n')
         PY
-    - if: always() && steps.identity.outcome == 'success'
+    - id: upload
+      if: always() && steps.identity.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-sdk-worker-sdk-android-metadata-android-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
