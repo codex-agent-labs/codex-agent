@@ -324,6 +324,12 @@ API status_t codex_agent_runtime_identity(char *buffer, size_t *inout_size) {
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
         "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
         "\"runtimeCompatibilityVersion\":\"0.8.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
+    static const char overflowing_abi_patch[] =
+        "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
+        "\"cAbiVersion\":\"1.13.65536\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
+        "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
+        "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
+        "\"runtimeCompatibilityVersion\":\"0.8.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
     const char *identity = valid;
     switch (atomic_load(&identity_mode)) {
         case 1: identity = schema; break;
@@ -335,6 +341,7 @@ API status_t codex_agent_runtime_identity(char *buffer, size_t *inout_size) {
         case 7: identity = above_actual_abi; break;
         case 8: identity = wrong_abi_major; break;
         case 11: identity = historical_runtime; break;
+        case 12: identity = overflowing_abi_patch; break;
         default: break;
     }
     if (inout_size == NULL) return 1;
