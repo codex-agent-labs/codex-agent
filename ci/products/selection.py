@@ -264,8 +264,10 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_android_validation_policy.py",
     "ci/sdk_apple_original_package_selection.py",
     "ci/sdk_campaign_observation.py",
+    "ci/sdk_campaign_catalog_producer.py",
     "ci/sdk_campaign_original_locator.py",
     "ci/sdk_campaign_original_worker.py",
+    "ci/sdk_campaign_reused_original.py",
     "ci/sdk_core_context_preparation_locator.py",
     "ci/sdk_core_context_preparation_capture.py",
     "ci/sdk_core_metadata_bootstrap.py",
@@ -273,6 +275,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_core_metadata_context_preparation.py",
     "ci/sdk_core_metadata_history.py",
     "ci/sdk_core_metadata_same_campaign.py",
+    "ci/sdk_core_metadata_protected_handoff.py",
     "ci/sdk_core_native_archive_provision.py",
     "ci/sdk_core_package_policy.py",
     "ci/sdk_core_validation_policy.py",
@@ -619,6 +622,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
                 _from_phase("sdk", "sdk-android", "binary"))
     if path in {"ci/products/sdk_campaign_selection.py", "ci/products/sdk_campaign_semantics.py",
                 "ci/products/sdk_campaign_index.py", "ci/sdk_campaign_observation.py",
+                "ci/sdk_campaign_catalog_producer.py", "ci/sdk_campaign_reused_original.py",
                 "ci/sdk_campaign_original_locator.py", "ci/sdk_campaign_original_worker.py",
                 "ci/sdk_policy_snapshot.py"}:
         return {instance for instance in ALL_INSTANCES if instance.product == "sdk"}
@@ -642,6 +646,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
                 "ci/sdk_core_metadata_bootstrap.py",
                 "ci/sdk_core_metadata_context_policy.py", "ci/sdk_core_metadata_context_preparation.py",
                 "ci/sdk_core_metadata_history.py", "ci/sdk_core_metadata_same_campaign.py",
+                "ci/sdk_core_metadata_protected_handoff.py",
                 "ci/sdk_facade_original_inputs.py"}:
         return _from_phase("sdk", "sdk-core", "metadata")
     if path == "ci/sdk_core_package_policy.py":

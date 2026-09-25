@@ -1761,6 +1761,24 @@ class ProductSelectionTest(unittest.TestCase):
                              identities(classify_paths((path,))))
             self.assertEqual((), classify_paths((path,)).inventory_paths)
 
+    def test_sdk_campaign_controls_never_enter_contract_binary_inventory(self):
+        paths = (
+            "ci/sdk_campaign_catalog_producer.py",
+            "ci/sdk_campaign_reused_original.py",
+            "ci/sdk_core_metadata_protected_handoff.py",
+        )
+        for path in paths:
+            result = classify_paths((path,))
+            self.assertEqual((), result.unknown_paths)
+            self.assertEqual((), result.inventory_paths)
+            self.assertFalse(any(instance.product == "contract" for instance in result.instances))
+            self.assertTrue(all(instance.product == "sdk" for instance in result.instances))
+            self.assertEqual((), phase_inventory_paths(
+                (path,), PhaseInstanceId("contract", "contract", "binary", "common")))
+        self.assertEqual(("ci/truly-unknown-control.py",), phase_inventory_paths(
+            ("ci/truly-unknown-control.py",),
+            PhaseInstanceId("contract", "contract", "binary", "common")))
+
     def test_native_validation_and_metadata_actions_replan_only_their_owners_without_binary_inputs(self):
         for phase, phases in (("validation", {"validation", "metadata"}), ("metadata", {"metadata"})):
             path = f".github/actions/sdk-native-{phase}-worker/action.yml"
