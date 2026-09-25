@@ -99,6 +99,12 @@ class ProductSelectionTest(unittest.TestCase):
                 instance for instance in sdk if instance.component == "sdk-core"
                 and instance.phase in {"validation", "metadata"}
             },
+            ".github/workflows/sdk-core-binary-validation.yml": {
+                instance for instance in sdk if instance.component == "sdk-core"
+            },
+            ".github/workflows/sdk-validation.yml": sdk,
+            ".github/workflows/sdk-binding-parity.yml": sdk,
+            ".github/workflows/sdk-consumer-validation.yml": sdk,
         }
         for path, expected in cases.items():
             with self.subTest(path=path):
@@ -108,6 +114,12 @@ class ProductSelectionTest(unittest.TestCase):
                 self.assertEqual((), result.inventory_paths)
                 for instance in PHASE_INSTANCE_IDS:
                     self.assertEqual((), phase_inventory_paths([path], instance))
+
+        contract_workflow = ".github/workflows/contract-validation.yml"
+        contract_selection = classify_paths([contract_workflow])
+        self.assertTrue(any(instance.product == "contract" for instance in contract_selection.instances))
+        self.assertEqual((), contract_selection.unknown_paths)
+        self.assertEqual((), contract_selection.inventory_paths)
 
         future = classify_paths(["ci/products/sdk_campaign_unreviewed.py"])
         self.assertEqual(("ci/products/sdk_campaign_unreviewed.py",), future.unknown_paths)

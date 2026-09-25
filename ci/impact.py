@@ -127,6 +127,11 @@ SUPPORT_TRIGGER_ACTIONS = {
 FULL_VALIDATION_PATHS = {
     ".github/workflows/ci.yml",
     ".github/workflows/product-validation.yml",
+    ".github/workflows/contract-validation.yml",
+    ".github/workflows/sdk-validation.yml",
+    ".github/workflows/sdk-binding-parity.yml",
+    ".github/workflows/sdk-consumer-validation.yml",
+    ".github/workflows/sdk-core-binary-validation.yml",
     ".github/workflows/android-runtime-evidence.yml",
     ".github/workflows/apple-runtime-evidence.yml",
     ".github/workflows/desktop-runtime-evidence.yml",

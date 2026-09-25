@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SELECTOR_JOBS = {
     "product-resume", "runtime-continuation", "runtime-aggregate-continuation",
     "sdk-ios-binary-plan", "sdk-ios-binary", "sdk-collect-3", "sdk-plan", "sdk-native-result",
-    "sdk-ios-validation-result", "sdk-ios-metadata-result", "sdk-core-binary-result",
+    "sdk-ios-validation-result", "sdk-ios-metadata-result", "sdk-core-binary-wave",
     "sdk-core-package-result", "sdk-core-validation-result", "sdk-core-metadata-result",
 }
 

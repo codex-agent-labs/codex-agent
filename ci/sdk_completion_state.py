@@ -7,7 +7,7 @@ from .products.inventory import require_object
 _JOBS = (
     "product-resume", "runtime-continuation", "runtime-aggregate-continuation",
     "sdk-ios-binary-plan", "sdk-ios-binary", "sdk-collect-3", "sdk-plan", "sdk-native-result",
-    "sdk-ios-validation-result", "sdk-ios-metadata-result", "sdk-core-binary-result",
+    "sdk-ios-validation-result", "sdk-ios-metadata-result", "sdk-core-binary-wave",
     "sdk-core-package-result", "sdk-core-validation-result", "sdk-core-metadata-result",
     "sdk-android-binary-result", "sdk-android-package-result",
     "sdk-android-validation-result", "sdk-android-metadata-result",
@@ -92,7 +92,7 @@ def select_sdk_completion_state(needs):
 
     planned, native, validation, final, core_binary, core_package, core_validation, core_metadata = (jobs[name] for name in
         ("sdk-plan", "sdk-native-result", "sdk-ios-validation-result", "sdk-ios-metadata-result",
-         "sdk-core-binary-result", "sdk-core-package-result", "sdk-core-validation-result",
+         "sdk-core-binary-wave", "sdk-core-package-result", "sdk-core-validation-result",
          "sdk-core-metadata-result"))
     if native["result"] != "success":
         raise ValueError("SDK completion final native gate did not succeed")

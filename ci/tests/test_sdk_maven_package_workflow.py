@@ -202,7 +202,7 @@ class MavenPackageWorkflowTest(unittest.TestCase):
 
     def test_binary_child_route_is_caller_pinned_before_original_capture(self):
         path = ".github/workflows/sdk-core-binary-validation.yml"
-        job = "product-validation / sdk-core-binary-validation / sdk-core-binary-common"
+        job = "product-validation / sdk-core-binary-wave / sdk-core-binary-common"
         self.invoke(binary_original_workflow_path=path, binary_original_job_name=job)
         self.assertEqual(path, self.binary_reader.call_args.kwargs["trusted_workflow_path"])
         self.assertEqual(job, self.binary_reader.call_args.kwargs["trusted_job_name"])
@@ -375,7 +375,7 @@ class MavenPackageWorkflowTest(unittest.TestCase):
             self.assertEqual(7, execute.call_args.kwargs["binary_artifact_id"])
             self.assertEqual("env-token", execute.call_args.kwargs["token"])
             child_path = ".github/workflows/sdk-core-binary-validation.yml"
-            child_job = "product-validation / sdk-core-binary-validation / sdk-core-binary-common"
+            child_job = "product-validation / sdk-core-binary-wave / sdk-core-binary-common"
             self.assertEqual(0, workflow.main([*argv, "--binary-original-workflow-path", child_path,
                                                 "--binary-original-job-name", child_job]))
             self.assertEqual(child_path, execute.call_args.kwargs["binary_original_workflow_path"])
