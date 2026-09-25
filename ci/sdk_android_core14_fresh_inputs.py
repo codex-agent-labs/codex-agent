@@ -11,7 +11,8 @@ if __package__:
 import product_reuse
 import sdk_core_metadata_bootstrap
 from products.inventory import (canonical_json_bytes, load_canonical_json_bytes, load_json_bytes,
-    read_regular_file_bytes, regular_file_inventory, require_integer, require_sha256, sha256_bytes)
+    PRODUCT_JSON_LIMIT, read_regular_file_bytes, regular_file_inventory, require_integer,
+    require_sha256, sha256_bytes)
 from products.receipt import validate_phase_receipt
 from products.signing_isolation import require_no_signing_secret
 from sdk_facade_metadata_original import _context
@@ -42,7 +43,8 @@ def prepare(plan, discovery, before_state, worker_root, requests_root, destinati
     # paths are caller-pinned for the later official-upload replay, not paths
     # in this Android checkout.
     receipt_path = worker / "shard/phase-receipt.json"
-    raw = read_regular_file_bytes(receipt_path, reject_symlink_parents=True)
+    raw = read_regular_file_bytes(receipt_path, max_bytes=PRODUCT_JSON_LIMIT,
+                                  reject_symlink_parents=True)
     receipt = validate_phase_receipt(load_canonical_json_bytes(raw))
     if (sha256_bytes(raw) != expected_metadata_receipt_sha256 or
             tuple(receipt[name] for name in ("product", "component", "phase", "target")) !=
@@ -65,7 +67,8 @@ def prepare(plan, discovery, before_state, worker_root, requests_root, destinati
         keyring=keyring, keys_directory=keys_directory, repository_root=root,
         environ=environ, token=token, sdk_apple_validation_policy=sdk_apple_validation_policy)
     if (regular_file_inventory(worker, allow_empty=True) != before or
-            read_regular_file_bytes(receipt_path, reject_symlink_parents=True) != raw):
+            read_regular_file_bytes(receipt_path, max_bytes=PRODUCT_JSON_LIMIT,
+                                    reject_symlink_parents=True) != raw):
         raise ValueError("Original Core worker changed during Android policy preparation")
     return {"metadataReceipt": str(receipt_path), "replayPolicy": str(destination),
             "originalContext": context, "metadataArtifactId": metadata_artifact_id,

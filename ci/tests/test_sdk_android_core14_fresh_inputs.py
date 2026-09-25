@@ -61,6 +61,11 @@ class AndroidFreshCoreInputsTest(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError, message):
                             fresh.prepare(**{**arguments, **change})
                         bootstrap.assert_not_called()
+                with receipt_path.open("wb") as candidate:
+                    candidate.truncate(fresh.PRODUCT_JSON_LIMIT + 1)
+                with self.assertRaisesRegex(ValueError, "too large"):
+                    fresh.prepare(**arguments)
+                bootstrap.assert_not_called()
 
     def test_rejects_other_run_before_bootstrap(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -648,12 +648,7 @@ pub(crate) fn external_runtime_snapshot(
     if !metadata.is_file() || metadata.len() > 1024 * 1024 * 1024 {
         return Err("external Runtime must be a regular file of at most 1 GiB".into());
     }
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .map_err(|error| format!("read external Runtime: {error}"))?;
-    if bytes.len() as u64 != metadata.len() {
-        return Err("external Runtime changed while being snapshotted".into());
-    }
+    let bytes = read_external_runtime_bytes(&mut file, metadata.len())?;
     let digest = format!("sha256:{}", hex(&sha256(&bytes)));
     let name = source
         .file_name()
@@ -667,6 +662,22 @@ pub(crate) fn external_runtime_snapshot(
             .join("snapshots"),
     };
     private_snapshot(&root, name, &bytes, &digest)
+}
+
+fn read_external_runtime_bytes(reader: impl Read, expected_len: u64) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(
+            expected_len
+                .checked_add(1)
+                .ok_or("external Runtime size limit overflows")?,
+        )
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read external Runtime: {error}"))?;
+    if bytes.len() as u64 != expected_len {
+        return Err("external Runtime changed while being snapshotted".into());
+    }
+    Ok(bytes)
 }
 
 fn private_snapshot(
@@ -1205,5 +1216,18 @@ mod tests {
         );
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
         std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn external_runtime_read_stops_after_one_byte_beyond_inspected_length() {
+        assert_eq!(
+            read_external_runtime_bytes(std::io::Cursor::new(b"trusted"), 7).unwrap(),
+            b"trusted",
+        );
+        assert!(
+            read_external_runtime_bytes(std::io::repeat(b'x'), 7)
+                .unwrap_err()
+                .contains("changed while being snapshotted")
+        );
     }
 }

@@ -274,7 +274,9 @@ internal static partial class NativeLibraryLoader
             abi.Major > 255 || abi.Major != compatibility.AbiMajor || abi.Minor < compatibility.AbiMinor ||
             abi.Minor > 255 || abi.Build > 65535)
             throw new InvalidDataException("Runtime authorization is incompatible with this SDK.");
-        if (Digest(File.ReadAllBytes(snapshot)) != String(claim, "runtimeLibrarySha256"))
+        using var snapshotStream = File.OpenRead(snapshot);
+        var snapshotDigest = "sha256:" + Convert.ToHexString(SHA256.HashData(snapshotStream)).ToLowerInvariant();
+        if (snapshotDigest != String(claim, "runtimeLibrarySha256"))
             throw new InvalidDataException("Runtime library differs from its signed authorization.");
         return JsonSerializer.Serialize(identity, CanonicalJson);
     }
