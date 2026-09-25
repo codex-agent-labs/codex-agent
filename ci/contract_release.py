@@ -33,9 +33,28 @@ def attest_contract_ci(
     transport_producer: Mapping[str, Any], contract_version: str,
     event_payload: dict[str, Any], environment: Mapping[str, str],
     token: str | None = None, release_handoffs: tuple[Path, ...] = (),
+    trusted_contract_workflow_path: str | None = None,
+    trusted_contract_binary_job: str | None = None,
+    trusted_contract_continuation_job: str | None = None,
 ) -> dict[str, Any]:
     """Authenticate original bytes before key access; publish external evidence once."""
     require_semver(contract_version, "Contract release version")
+    child_policy = (trusted_contract_workflow_path, trusted_contract_binary_job,
+                    trusted_contract_continuation_job)
+    if any(value is None for value in child_policy) and any(value is not None for value in child_policy):
+        raise ValueError("Contract child workflow path and both jobs must be pinned together")
+    capture_policy = ({} if trusted_contract_workflow_path is None else {
+        "trusted_workflow_path": trusted_contract_workflow_path,
+        "trusted_job_name": trusted_contract_continuation_job,
+    })
+    original_policy = ({} if trusted_contract_workflow_path is None else {
+        "trusted_workflows_by_phase": {phase: {
+            "path": trusted_contract_workflow_path, "sha": trusted_workflow_sha,
+        } for phase in ("binary", "package", "validation", "metadata")},
+        "jobs_by_phase": {phase: (trusted_contract_binary_job if phase == "binary"
+                                  else trusted_contract_continuation_job)
+                          for phase in ("binary", "package", "validation", "metadata")},
+    })
     repository_root, producer, source_tree, expected_environment, reason = verify_product_release_context(
         repository_root, trusted_source_sha=trusted_source_sha, trusted_workflow_sha=trusted_workflow_sha,
         transport_producer=transport_producer, event_payload=event_payload, environment=environment)
@@ -66,7 +85,7 @@ def attest_contract_ci(
         capture_contract_ci_artifact(
             capture, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
             transport_producer=producer, trusted_workflow_sha=trusted_workflow_sha,
-            contract_version=contract_version, token=token,
+            contract_version=contract_version, token=token, **capture_policy,
         )
         prepared = root / "prepared"
         originals = prepared / "original-evidence"
@@ -76,6 +95,7 @@ def attest_contract_ci(
             release_handoffs=release_handoffs,
             keyring=trust.keyring if release_handoffs else None,
             keys_directory=trust.keys if release_handoffs else None,
+            **original_policy,
         )
         authenticated = originals / "contract-input"
         closure = authenticated / "execution-closure"
@@ -124,6 +144,9 @@ def main() -> None:
     parser.add_argument("--destination", type=Path, required=True)
     parser.add_argument("--trusted-source-sha", required=True)
     parser.add_argument("--trusted-workflow-sha", required=True)
+    parser.add_argument("--trusted-contract-workflow-path")
+    parser.add_argument("--trusted-contract-binary-job")
+    parser.add_argument("--trusted-contract-continuation-job")
     parser.add_argument("--artifact-id", type=int, required=True)
     parser.add_argument("--artifact-sha256", required=True)
     parser.add_argument("--validation-tree", required=True)
@@ -145,6 +168,9 @@ def main() -> None:
         artifact_sha256=arguments.artifact_sha256, transport_producer=producer,
         contract_version=arguments.contract_version, event_payload=payload, environment=os.environ,
         release_handoffs=tuple(arguments.release_handoff),
+        trusted_contract_workflow_path=arguments.trusted_contract_workflow_path,
+        trusted_contract_binary_job=arguments.trusted_contract_binary_job,
+        trusted_contract_continuation_job=arguments.trusted_contract_continuation_job,
     )
 
 

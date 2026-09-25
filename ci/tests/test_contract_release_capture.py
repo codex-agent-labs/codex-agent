@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import unittest
 from unittest import mock
 import zipfile
@@ -81,6 +82,7 @@ class ContractReleaseCaptureTest(unittest.TestCase):
         self.upload_artifact = {
             "id": 700, "name": f"codex-agent-contract-attestation-inputs-{self.producer['tree']}",
             "size_in_bytes": len(self.upload_bytes), "digest": sha256_bytes(self.upload_bytes), "expired": False,
+            "created_at": "2026-09-06T10:15:00Z",
             "archive_download_url": f"https://api.github.com/repos/{originals_fixture.REPOSITORY}/actions/artifacts/700/zip",
             "workflow_run": {"id": self.producer["runId"], "head_sha": self.run["head_sha"]},
         }
@@ -99,13 +101,14 @@ class ContractReleaseCaptureTest(unittest.TestCase):
 
         return request
 
-    def attest(self, release_handoffs=()):
+    def attest(self, release_handoffs=(), **workflow_policy):
         return contract_release.attest_contract_ci(
             self.repository_root, self.destination, trusted_source_sha=self.source_sha,
             trusted_workflow_sha=self.pin, artifact_id=self.upload_artifact["id"],
             artifact_sha256=self.upload_artifact["digest"], transport_producer=self.producer,
             contract_version=VERSION, event_payload=self.event, environment=self.environment,
-            token="not-a-real-token", release_handoffs=release_handoffs)
+            token="not-a-real-token", release_handoffs=release_handoffs,
+            **workflow_policy)
 
     def assert_public_caller_policy(self):
         policy = self.destination / "caller-policy"
@@ -144,6 +147,75 @@ class ContractReleaseCaptureTest(unittest.TestCase):
         self.assert_public_caller_policy()
         secret_bytes = self.private_key.read_bytes()
         self.assertFalse(any(secret_bytes in path.read_bytes() for path in self.destination.rglob("*") if path.is_file()))
+
+    def test_child_workflow_path_and_jobs_are_pinned_before_signing(self):
+        path = ".github/workflows/contract-validation.yml"
+        binary_job = "product-validation / contract-validation / product-contracts"
+        continuation_job = "product-validation / contract-validation / contract-continuation"
+        self.run["referenced_workflows"] = [{
+            "path": f"{originals_fixture.REPOSITORY}/{path}@{self.pin}", "sha": self.pin,
+        }]
+        self.jobs[0]["name"] = binary_job
+        self.jobs[1]["name"] = continuation_job
+        policy = {
+            "trusted_contract_workflow_path": path,
+            "trusted_contract_binary_job": binary_job,
+            "trusted_contract_continuation_job": continuation_job,
+        }
+        for changes in (
+            {"trusted_contract_binary_job": "product-validation / wrong"},
+            {"trusted_contract_continuation_job": "product-validation / wrong"},
+            {"trusted_contract_workflow_path": ".github/workflows/wrong.yml"},
+            {"trusted_contract_workflow_path": None},
+        ):
+            with self.subTest(changes=changes), \
+                    mock.patch("reuse.api_request", side_effect=self.api()), \
+                    self.assertRaises(ValueError):
+                self.attest(**{**policy, **changes})
+            self.assertFalse(self.destination.exists())
+            self.assertEqual(0, self.environment.secret_reads)
+        with mock.patch("reuse.api_request", side_effect=self.api()):
+            self.attest(**policy)
+        self.assertTrue((self.destination / "contract-input" / f"codex-agent-contract-{VERSION}.zip").is_file())
+        observed = load_canonical_json_bytes((self.destination / "original-evidence/transport/original-ci-phases.json").read_bytes())
+        self.assertEqual(self.jobs, observed["observed"][0]["jobs"])
+
+    def test_current_upload_outside_pinned_job_window_cannot_reach_signer(self):
+        for created_at in ("2026-09-06T09:59:59Z", "2026-09-06T10:30:01Z"):
+            self.upload_artifact["created_at"] = created_at
+            with self.subTest(created_at=created_at), \
+                    mock.patch("reuse.api_request", side_effect=self.api()), \
+                    self.assertRaises(ValueError):
+                self.attest()
+            self.assertFalse(self.destination.exists())
+            self.assertEqual(0, self.environment.secret_reads)
+
+    def test_cli_forwards_pinned_child_policy(self):
+        event_path = self.root / "event.json"
+        event_path.write_bytes(canonical_json_bytes(self.event))
+        arguments = [
+            "contract_release.py", "--repository-root", str(self.repository_root),
+            "--destination", str(self.destination), "--trusted-source-sha", self.source_sha,
+            "--trusted-workflow-sha", self.pin,
+            "--trusted-contract-workflow-path", ".github/workflows/contract-validation.yml",
+            "--trusted-contract-binary-job", "product-validation / contract-validation / product-contracts",
+            "--trusted-contract-continuation-job", "product-validation / contract-validation / contract-continuation",
+            "--artifact-id", "700", "--artifact-sha256", self.upload_artifact["digest"],
+            "--validation-tree", self.producer["tree"], "--contract-version", VERSION,
+        ]
+        with mock.patch.object(sys, "argv", arguments), \
+                mock.patch.dict("os.environ", {**self.environment.values,
+                                                "GITHUB_EVENT_PATH": str(event_path),
+                                                "GITHUB_EVENT_NAME": "pull_request",
+                                                "GITHUB_REPOSITORY": originals_fixture.REPOSITORY}), \
+                mock.patch.object(contract_release, "attest_contract_ci") as attest:
+            contract_release.main()
+        self.assertEqual(".github/workflows/contract-validation.yml",
+                         attest.call_args.kwargs["trusted_contract_workflow_path"])
+        self.assertEqual("product-validation / contract-validation / product-contracts",
+                         attest.call_args.kwargs["trusted_contract_binary_job"])
+        self.assertEqual("product-validation / contract-validation / contract-continuation",
+                         attest.call_args.kwargs["trusted_contract_continuation_job"])
 
     def test_late_prepared_payload_mutation_cannot_be_published(self):
         original = self.payload.read_bytes()

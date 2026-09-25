@@ -114,6 +114,7 @@ class ContractProducerRunTest(unittest.TestCase):
         self.jobs = [{
             "id": number, "name": f"product-validation / {name}", "run_id": 7,
             "head_sha": self.run["head_sha"], "status": "completed", "conclusion": "success",
+            "started_at": "2026-09-06T10:00:00Z", "completed_at": "2026-09-06T10:30:00Z",
         } for number, name in enumerate(("product-contracts", "contract-continuation"), 10)]
         self.commit = {"sha": COMMIT, "tree": {"sha": TREE},
                        "parents": [{"sha": "1" * 40}, {"sha": "f" * 40}]}
@@ -309,6 +310,7 @@ class ContractCiArtifactCaptureTest(unittest.TestCase):
         self.artifact = {
             "id": 41, "name": f"codex-agent-contract-attestation-inputs-{TREE}",
             "size_in_bytes": len(self.raw), "digest": sha256_bytes(self.raw), "expired": False,
+            "created_at": "2026-09-06T10:15:00Z",
             "archive_download_url": "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/41/zip",
             "workflow_run": {"id": 7, "head_sha": self.run["head_sha"]},
         }
@@ -383,6 +385,18 @@ class ContractCiArtifactCaptureTest(unittest.TestCase):
                     self.capture()
                 download.assert_not_called()
                 self.assertFalse(self.output.exists())
+
+    def test_upload_outside_original_job_attempt_window_fails_before_capture(self):
+        for created_at in ("2026-09-06T09:59:59Z", "2026-09-06T10:30:01Z", None,
+                           "2026-09-06T12:15:00+02:00"):
+            artifact = {**self.artifact, "created_at": created_at}
+            with self.subTest(created_at=created_at), \
+                    mock.patch.object(product_reuse, "api_json", side_effect=[self.run, self.commit, artifact]), \
+                    mock.patch.object(product_reuse, "paginated_items", return_value=self.jobs[1:]), \
+                    mock.patch("reuse.api_request", return_value=self.raw), \
+                    self.assertRaises(ValueError):
+                self.capture()
+            self.assertFalse(self.output.exists())
 
     def test_digest_and_closure_tampering_never_publish_partial_capture(self):
         cases = [self.raw + b"changed"]

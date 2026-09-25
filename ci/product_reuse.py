@@ -503,6 +503,7 @@ def capture_contract_ci_artifact(
     destination: Path, *, artifact_id: int, artifact_sha256: str,
     transport_producer: Mapping[str, Any], trusted_workflow_sha: str,
     contract_version: str, token: str,
+    trusted_workflow_path: str | None = None, trusted_job_name: str | None = None,
 ) -> dict[str, Any]:
     """Capture one caller-bound upload; this is not release-signing authorization.
 
@@ -516,13 +517,21 @@ def capture_contract_ci_artifact(
     destination = Path(destination)
     if destination.exists() or destination.is_symlink():
         raise ValueError("Contract CI capture destination must not exist")
+    if (trusted_workflow_path is None) != (trusted_job_name is None):
+        raise ValueError("Contract CI workflow path and job must be pinned together")
+    selected_job = "product-validation / contract-continuation" if trusted_job_name is None else trusted_job_name
+    policy = ({"trusted_workflow_sha": trusted_workflow_sha} if trusted_workflow_path is None else
+              {"trusted_workflows_by_phase": {"metadata": {
+                  "path": trusted_workflow_path, "sha": trusted_workflow_sha,
+              }}, "jobs_by_phase": {"metadata": selected_job}})
     observed = _observe_contract_producer_runs(
         {"metadata": transport_producer}, phases=("metadata",),
-        trusted_workflow_sha=trusted_workflow_sha, token=token)
+        token=token, **policy)
     artifact, raw = _download_contract_ci_upload(
         artifact_id, artifact_sha256,
         f"codex-agent-contract-attestation-inputs-{transport_producer['tree']}",
         transport_producer, observed[0]["run"], token)
+    _require_artifact_job_window(observed[0], selected_job, artifact)
     with tempfile.TemporaryDirectory(prefix="contract-ci-capture-") as temporary:
         root = Path(temporary).resolve()
         archive = root / "transport.zip"
@@ -552,6 +561,8 @@ def capture_contract_original_ci_phases(
     trusted_workflow_sha: str, token: str,
     release_handoffs: tuple[Path, ...] = (), keyring: Path | None = None,
     keys_directory: Path | None = None,
+    trusted_workflows_by_phase: Mapping[str, Any] | None = None,
+    jobs_by_phase: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Bind original CI or release-attested receipts; never authorize new signing."""
     require_semver(contract_version, "Original Contract version")
@@ -635,9 +646,22 @@ def capture_contract_original_ci_phases(
                 for phase in matching:
                     releases.setdefault(phase, number)
         ci_phases = tuple(phase for phase in phases if phase not in releases)
+        if (trusted_workflows_by_phase is None) != (jobs_by_phase is None):
+            raise ValueError("Contract original workflow paths and jobs must be pinned together")
+        if trusted_workflows_by_phase is None:
+            policy = {"trusted_workflow_sha": trusted_workflow_sha}
+            selected_jobs = {phase: "product-validation / product-contracts" if phase == "binary"
+                             else "product-validation / contract-continuation" for phase in ci_phases}
+        else:
+            require_exact_keys(trusted_workflows_by_phase, set(phases), "Contract original workflow phases")
+            require_exact_keys(jobs_by_phase, set(phases), "Contract original workflow jobs")
+            policy = {"trusted_workflows_by_phase": {
+                phase: trusted_workflows_by_phase[phase] for phase in ci_phases
+            }, "jobs_by_phase": {phase: jobs_by_phase[phase] for phase in ci_phases}}
+            selected_jobs = jobs_by_phase
         observed = _observe_contract_producer_runs(
             {phase: producers[phase] for phase in ci_phases}, phases=ci_phases,
-            trusted_workflow_sha=trusted_workflow_sha, token=token)
+            token=token, **policy)
         attempts = {(value["run"]["id"], value["run"]["run_attempt"]): value for value in observed}
         inventories, artifacts, shard_files = {}, {}, {}
         for phase in ci_phases:
@@ -657,17 +681,8 @@ def capture_contract_original_ci_phases(
                 attempt["run"], token)
             # Artifact run IDs do not distinguish attempts. Bind the upload to
             # the successful original job observed through its exact-attempt API.
-            job_name = ("product-validation / product-contracts" if phase == "binary"
-                        else "product-validation / contract-continuation")
-            job = next(value for value in attempt["jobs"] if value.get("name") == job_name)
-            timestamps = []
-            for value in (job.get("started_at"), artifact.get("created_at"), job.get("completed_at")):
-                timestamp = datetime.fromisoformat(require_string(value, "Original Contract CI timestamp").replace("Z", "+00:00"))
-                if timestamp.utcoffset() != timedelta(0):
-                    raise ValueError("Original Contract CI timestamps must be UTC")
-                timestamps.append(timestamp)
-            if not timestamps[0] <= timestamps[1] <= timestamps[2]:
-                raise ValueError("Original Contract upload is outside its original producer job window")
+            job_name = selected_jobs[phase]
+            _require_artifact_job_window(attempt, job_name, artifact)
             archive = root / f"{phase}.zip"
             archive.write_bytes(raw)
             zipped, _, _ = verified_zip_contents(archive, retained_paths=(), **_CATALOG_ZIP_LIMITS)
