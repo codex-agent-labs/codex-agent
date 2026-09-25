@@ -14,6 +14,8 @@ class RuntimeIsolationFixtureTest {
             it.resolve("runtime/settings.gradle.kts").isFile &&
                 it.resolve("codex-agent-runtime-desktop").isDirectory
         }
+    private val currentContractVersion = repository.resolve("gradle/release/versions/contract.txt").readText().trim()
+    private val currentRuntimeVersion = repository.resolve("gradle/release/versions/runtime.txt").readText().trim()
     private val runtimePythonClosure = setOf(
         "ci/impact.py",
         "ci/products/__main__.py",
@@ -194,7 +196,7 @@ class RuntimeIsolationFixtureTest {
         val workspace = createTempDirectory("runtime-isolation-genuine").toFile().canonicalFile
         try {
             val base = workspace.resolve("base")
-            copyRuntimeClosure(base)
+            copyRuntimeClosure(base, currentRuntimeVersion)
             assertIsolatedClosure(base)
             val target = currentHostTarget()
             val positive = workspace.resolve("positive")
@@ -211,6 +213,7 @@ class RuntimeIsolationFixtureTest {
                 target,
                 testKit,
                 "projects",
+                currentContractVersion,
             ).build()
             assertAccepted(projects, ":projects")
             assertTrue("Project ':codex-agent-runtime-desktop'" in projects.output)
@@ -256,6 +259,7 @@ class RuntimeIsolationFixtureTest {
                 target,
                 testKit,
                 "projects",
+                currentContractVersion,
             ).build()
             assertAccepted(reusedProjects, ":projects")
             assertTrue("Reusing configuration cache." in reusedProjects.output)
@@ -270,12 +274,12 @@ class RuntimeIsolationFixtureTest {
             try {
                 payload.writeBytes(payloadBytes + byteArrayOf(' '.code.toByte()))
                 val rejectedContractMutation = runner(
-                    positive, positiveContract, positiveKey, target, testKit, "projects",
+                    positive, positiveContract, positiveKey, target, testKit, "projects", currentContractVersion,
                 ).buildAndFail()
                 assertTrue(
                     rejectedContractMutation.tasks.none { it.path.startsWith(":codex-agent-runtime-desktop:compile") },
                 )
-                val contractFailure = contractVerifierFailure(positiveContract, positiveKey, target, "0.2.0")
+                val contractFailure = contractVerifierFailure(positiveContract, positiveKey, target, currentContractVersion)
                 assertTrue("end-of-central-directory record is malformed" in contractFailure, contractFailure)
             } finally {
                 payload.writeBytes(payloadBytes)
@@ -289,12 +293,12 @@ class RuntimeIsolationFixtureTest {
                 }
                 positiveKey.writeBytes(differentValidKey)
                 val rejectedKeyMutation = runner(
-                    positive, positiveContract, positiveKey, target, testKit, "projects",
+                    positive, positiveContract, positiveKey, target, testKit, "projects", currentContractVersion,
                 ).buildAndFail()
                 assertTrue(
                     rejectedKeyMutation.tasks.none { it.path.startsWith(":codex-agent-runtime-desktop:compile") },
                 )
-                val keyFailure = contractVerifierFailure(positiveContract, positiveKey, target, "0.2.0")
+                val keyFailure = contractVerifierFailure(positiveContract, positiveKey, target, currentContractVersion)
                 assertTrue("fingerprint mismatch" in keyFailure, keyFailure)
             } finally {
                 positiveKey.writeBytes(publicKeyBytes)
@@ -310,7 +314,7 @@ class RuntimeIsolationFixtureTest {
                 target,
                 testKit,
                 "verifyRuntime",
-                "0.2.0",
+                currentContractVersion,
                 mapOf(
                     "PYTHONPATH" to workspace.resolve("hostile-python").apply {
                         mkdirs()
@@ -423,6 +427,7 @@ class RuntimeIsolationFixtureTest {
             target,
             testKit,
             "projects",
+            currentContractVersion,
         ).buildAndFail()
         assertTrue(expectedFailure in result.output, "$name did not fail for the expected reason:\n${result.output}")
         assertTrue(
@@ -448,16 +453,17 @@ class RuntimeIsolationFixtureTest {
             parentFile.mkdirs()
             if (!exists()) writeText("{}\n")
         }
+        val artifactBase = contractPayload(contract).name.removeSuffix(".zip")
         val arguments = mutableListOf(
             task,
             "--offline",
             "-PcodexAgent.contractPayload=${contractPayload(contract).absolutePath}",
             "-PcodexAgent.contractMetadataReceipt=${contract.resolve("phase-receipt.json").absolutePath}",
-            "-PcodexAgent.contractAttestation=${contract.resolve("attestation/codex-agent-contract-0.2.0.attestation.json").absolutePath}",
-            "-PcodexAgent.contractAttestationSignature=${contract.resolve("attestation/codex-agent-contract-0.2.0.attestation.sig").absolutePath}",
+            "-PcodexAgent.contractAttestation=${contract.resolve("attestation/$artifactBase.attestation.json").absolutePath}",
+            "-PcodexAgent.contractAttestationSignature=${contract.resolve("attestation/$artifactBase.attestation.sig").absolutePath}",
             "-PcodexAgent.contractPublicKey=${publicKey.absolutePath}",
             "-PcodexAgent.contractVersion=$contractVersion",
-            "-PcodexAgent.runtimeVersion=0.2.0",
+            "-PcodexAgent.runtimeVersion=${fixture.resolve("gradle/release/versions/runtime.txt").readText().trim()}",
             "-PcodexAgent.target=$target",
             "-PcodexAgent.runtimeBinaryFlagsDigest=${runtimeBinaryFlagsDigest(target)}",
             "-PcodexAgent.runtimeBinaryPlan=${unusedBinaryPlan.absolutePath}",
@@ -515,7 +521,7 @@ class RuntimeIsolationFixtureTest {
         )
     }
 
-    private fun copyRuntimeClosure(fixture: File) {
+    private fun copyRuntimeClosure(fixture: File, runtimeVersion: String = "0.2.0") {
         listOf(
             "runtime/settings.gradle.kts",
             "runtime/build.gradle.kts",
@@ -539,9 +545,8 @@ class RuntimeIsolationFixtureTest {
             "LICENSE",
             "THIRD_PARTY_NOTICES.md",
         ).forEach { copyFile(it, fixture) }
-        // This isolated adversarial fixture imports the 0.2.0 Contract fixture,
-        // so its copied Runtime version authority must describe the same release.
-        fixture.resolve("gradle/release/versions/runtime.txt").writeText("0.2.0\n")
+        // The copied release authority must match this isolated fixture's requested Runtime version.
+        fixture.resolve("gradle/release/versions/runtime.txt").writeText("$runtimeVersion\n")
         listOf(
             "runtime/build-logic/src/main",
             "codex-agent-runtime-desktop/src",
@@ -635,7 +640,7 @@ class RuntimeIsolationFixtureTest {
             ?.takeIf(String::isNotBlank)?.let(::File)
         check(source != null && source.isDirectory) {
             "Runtime isolation requires CODEX_AGENT_RUNTIME_TEST_CONTRACT_INPUT containing an existing " +
-                "codex-agent-contract-0.2.0.zip and execution-closure/ with all four original receipts and " +
+                "codex-agent-contract-$currentContractVersion.zip and execution-closure/ with all four original receipts and " +
                 "raw execution evidence; it never builds or repairs Contract inputs"
         }
         runPython(
@@ -645,9 +650,10 @@ class RuntimeIsolationFixtureTest {
             from ci.products.contract_attestation import build_contract_attestation
             from ci.products.inventory import read_regular_file_bytes, snapshot_regular_tree
             from ci.products.signatures import generate_development_key
-            source, root, contract = map(lambda value: Path(value).resolve(), sys.argv[1:])
+            source, root, contract = map(lambda value: Path(value).resolve(), sys.argv[1:4])
+            version = sys.argv[4]
             contract.mkdir(parents=True)
-            payload = contract / "codex-agent-contract-0.2.0.zip"
+            payload = contract / f"codex-agent-contract-{version}.zip"
             payload.write_bytes(read_regular_file_bytes(source / payload.name, reject_symlink_parents=True))
             closure = root / "execution-closure"
             snapshot_regular_tree(source / "execution-closure", closure)
@@ -662,6 +668,7 @@ class RuntimeIsolationFixtureTest {
             source.absolutePath,
             signing.absolutePath,
             contract.absolutePath,
+            currentContractVersion,
         )
     }
 
@@ -715,8 +722,13 @@ class RuntimeIsolationFixtureTest {
         check(process.waitFor() == 0) { "Contract fixture preparation failed:\n$output" }
     }
 
-    private fun contractPayload(contract: File) =
-        contract.resolve("codex-agent-contract-0.2.0.zip")
+    private fun contractPayload(contract: File): File {
+        val payloads = contract.listFiles().orEmpty().filter {
+            it.name.startsWith("codex-agent-contract-") && it.name.endsWith(".zip")
+        }
+        check(payloads.size == 1) { "Runtime isolation requires exactly one Contract payload" }
+        return payloads.single()
+    }
 
     private fun contractVerifierFailure(
         contract: File,
@@ -725,15 +737,16 @@ class RuntimeIsolationFixtureTest {
         contractVersion: String,
     ): String {
         val outputDirectory = contract.parentFile.resolve("verifier-${System.nanoTime()}")
+        val artifactBase = contractPayload(contract).name.removeSuffix(".zip")
         val process = ProcessBuilder(
             "python3", "-m", "ci.products.contract_attestation", "materialize",
             "--payload", contractPayload(contract).absolutePath,
             "--metadata-receipt", contract.resolve("phase-receipt.json").absolutePath,
             "--attestation", contract.resolve(
-                "attestation/codex-agent-contract-0.2.0.attestation.json",
+                "attestation/$artifactBase.attestation.json",
             ).absolutePath,
             "--signature", contract.resolve(
-                "attestation/codex-agent-contract-0.2.0.attestation.sig",
+                "attestation/$artifactBase.attestation.sig",
             ).absolutePath,
             "--public-key", publicKey.absolutePath,
             "--required-trust-domain", "development",
