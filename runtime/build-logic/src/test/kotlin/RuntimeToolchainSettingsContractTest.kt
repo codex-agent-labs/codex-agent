@@ -50,6 +50,11 @@ class RuntimeToolchainSettingsContractTest {
             .substringBefore("val desktopPackageTasks =")
         val nativeTargets = plugin.substringAfter("desktopTargets.forEach { target ->")
             .substringBefore("sourceSets.getByName(\"commonMain\")")
+        assertTrue(
+            "target.compilations.configureEach {\n            compileTaskProvider.configure {\n" +
+                "                verifyRuntimeProducerToolchain?.let { dependsOn(it) }" in nativeTargets,
+            "Every native compilation must verify its producer before the compiler starts",
+        )
         assertTrue("verifyRuntimeProducerToolchain?.let { dependsOn(it) }" in abiGenerator)
         assertTrue("verifyRuntimeProducerToolchain?.let { dependsOn(it) }" in supervisor)
         assertTrue(
@@ -59,8 +64,8 @@ class RuntimeToolchainSettingsContractTest {
         assertTrue(
             nativeTargets.lineSequence().count {
                 "verifyRuntimeProducerToolchain?.let { dependsOn(it) }" in it
-            } == 3,
-            "Native link and both C interop compiler paths must depend on producer verification",
+            } == 4,
+            "Native Kotlin compilation, link and both C interop compiler paths must depend on producer verification",
         )
         assertTrue("sourceSets.getByName(\"nativeMain\").kotlin.srcDir(generateRuntimeAbiSource)" in plugin)
 

@@ -350,6 +350,11 @@ extensions.configure<KotlinMultiplatformExtension> {
         getByName("nativeTest").dependsOn(getByName("desktopTest"))
     }
     desktopTargets.forEach { target ->
+        target.compilations.configureEach {
+            compileTaskProvider.configure {
+                verifyRuntimeProducerToolchain?.let { dependsOn(it) }
+            }
+        }
         target.binaries.sharedLib {
             val binaryFlags = runtimeBinaryFlagsForKotlinTarget(target.name)
             val exportPolicyFile = layout.file(providers.provider {
