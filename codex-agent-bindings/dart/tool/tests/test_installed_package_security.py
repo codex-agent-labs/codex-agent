@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import json
+import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -28,6 +29,10 @@ class InstalledDartPackageSecurityTest(unittest.TestCase):
             native = package / "lib/src/native"
             root = native / "sdk-runtime-root.pub"
             root.write_bytes(PUBLIC_ROOT.read_bytes())
+            compatibility = json.loads((native / "sdk-compatibility.json").read_bytes())
+            pubspec = (package / "pubspec.yaml").read_text()
+            self.assertEqual(["codex_agent"], re.findall(r"(?m)^name: (\S+)$", pubspec))
+            self.assertEqual([compatibility["sdkVersion"]], re.findall(r"(?m)^version: (\S+)$", pubspec))
             consumer = work / "consumer"
             (consumer / "bin").mkdir(parents=True)
             (consumer / "pubspec.yaml").write_text(

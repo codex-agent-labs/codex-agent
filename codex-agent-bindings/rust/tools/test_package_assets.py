@@ -1,10 +1,12 @@
 """Compiler-free check of Cargo's package-verification marker and native members."""
 
+import json
 import os
 import shutil
 import subprocess
 import tarfile
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -94,23 +96,29 @@ class PackageAssetsTest(unittest.TestCase):
                 [cargo, "package", "--no-verify", "--locked", "--offline", "--allow-dirty"],
                 cwd=source, capture_output=True, text=True, check=True,
             )
-            archive = source / "target/package/codex-agent-0.8.0.crate"
+            sdk_version = json.loads((source / "native/sdk-compatibility.json").read_bytes())["sdkVersion"]
+            archive = source / f"target/package/codex-agent-{sdk_version}.crate"
             extracted = work / "installed"
             extracted.mkdir()
             with tarfile.open(archive, "r:gz") as package:
                 names = package.getnames()
                 self.assertEqual(len(names), len(set(names)))
-                self.assertTrue(all(name.startswith("codex-agent-0.8.0/") and ".." not in Path(name).parts
+                self.assertTrue(all(name.startswith(f"codex-agent-{sdk_version}/") and ".." not in Path(name).parts
                                     for name in names))
                 self.assertTrue(all(member.isfile() or member.isdir() for member in package.getmembers()))
                 package.extractall(extracted, filter="data")
-            installed = extracted / "codex-agent-0.8.0"
+            installed = extracted / f"codex-agent-{sdk_version}"
+            compatibility = json.loads((installed / "native/sdk-compatibility.json").read_bytes())
+            package = tomllib.loads((installed / "Cargo.toml").read_text())["package"]
+            self.assertEqual("codex-agent", package["name"])
+            self.assertEqual(compatibility["sdkVersion"], package["version"])
+            self.assertEqual(f"codex-agent-{package['version']}", installed.name)
             self.assertEqual((installed / "native/sdk-runtime-root.pub").read_bytes(), ROOT_KEY.read_bytes())
             consumer = work / "consumer"
             (consumer / "src").mkdir(parents=True)
             (consumer / "Cargo.toml").write_text(
                 '[package]\nname = "installed-rust-security-smoke"\nversion = "0.0.0"\n'
-                'edition = "2024"\n[dependencies]\ncodex-agent = { path = "../installed/codex-agent-0.8.0" }\n'
+                f'edition = "2024"\n[dependencies]\ncodex-agent = {{ path = "../installed/codex-agent-{sdk_version}" }}\n'
             )
             (consumer / "src/main.rs").write_text(
                 'fn main() {\n'
