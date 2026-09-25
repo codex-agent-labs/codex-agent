@@ -162,12 +162,12 @@ class SdkWorkerCollectionTest(unittest.TestCase):
             self.assertIsNotNone(failed["originalDirectory"])
             self.assertIsNone(failed["shardDirectory"])
 
-    def test_core_child_path_and_job_are_inseparable_before_state_replay(self):
+    def test_child_path_and_job_are_inseparable_before_state_replay(self):
         for route in ({"sdk_worker_workflow_path": self.child_path},
                       {"sdk_worker_job_name": self.child_job},
                       {"sdk_worker_workflow_path": "../other.yml", "sdk_worker_job_name": self.child_job},
                       {"sdk_worker_workflow_path": self.child_path, "sdk_worker_job_name": self.child_job,
-                       "sdk_family": "android-binary"}):
+                       "sdk_family": "ios-validation"}):
             with self.subTest(route=route), patch.object(adapter, "_verified_product_state", side_effect=AssertionError):
                 with self.assertRaises(ValueError):
                     adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
@@ -244,6 +244,39 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                 repository_root=self.repository, environ=self.environment, token="synthetic-token",
                 sdk_family="core-metadata", sdk_worker_workflow_path=child_path,
                 sdk_worker_job_name=child_job)
+        self.assertEqual("success", result["rows"][0]["result"])
+        self.assertEqual(child_job, result["rows"][0]["jobName"])
+
+    def test_android_binary_child_binds_original_workflow_and_job(self):
+        instance, ready, _, _, files = self.shard("binary", component="sdk-android", target="android")
+        child_path = ".github/workflows/sdk-android-binary-validation.yml"
+        child_job = "product-validation / sdk-android-binary-wave / sdk-android-binary-android"
+        names = self.names
+        with patch.object(self, "names", side_effect=lambda row, key: (child_job, names(row, key)[1])), \
+                patch.object(adapter, "_verified_product_state", return_value=self.state({instance: ready})), \
+                self.official_api({instance: ready}, {instance: archive(files)}) as (query, _, _):
+            original_query = query.side_effect
+
+            def child_run(url, token):
+                result = original_query(url, token)
+                if url.endswith(f"/attempts/{self.producer['runAttempt']}"):
+                    return {**result, "referenced_workflows": [*result["referenced_workflows"], {
+                        "path": f"{self.producer['repository']}/{child_path}@{PIN}", "sha": PIN}]}
+                return result
+
+            query.side_effect = child_run
+            result = adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
+                self.repository / "build/android-binary-child", trusted_workflow_sha=PIN,
+                repository_root=self.repository, environ=self.environment, token="synthetic-token",
+                sdk_family="android-binary", sdk_worker_workflow_path=child_path,
+                sdk_worker_job_name=child_job)
+            query.side_effect = original_query
+            with self.assertRaisesRegex(ValueError, "caller-pinned workflow"):
+                adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
+                    self.repository / "build/android-binary-unpinned", trusted_workflow_sha=PIN,
+                    repository_root=self.repository, environ=self.environment, token="synthetic-token",
+                    sdk_family="android-binary", sdk_worker_workflow_path=child_path,
+                    sdk_worker_job_name=child_job)
         self.assertEqual("success", result["rows"][0]["result"])
         self.assertEqual(child_job, result["rows"][0]["jobName"])
 

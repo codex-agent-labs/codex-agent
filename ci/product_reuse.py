@@ -4257,11 +4257,12 @@ def collect_runtime_workers(
     if (sdk_worker_workflow_path is None) != (sdk_worker_job_name is None):
         raise ValueError("SDK collection child workflow path and job must be pinned together")
     if sdk_worker_workflow_path is not None and (
-            sdk_family not in {"core-binary", "core-package", "core-validation", "core-metadata"}
+            sdk_family not in {"core-binary", "core-package", "core-validation", "core-metadata",
+                               "android-binary"}
             or type(sdk_worker_workflow_path) is not str
             or re.fullmatch(r"\.github/workflows/[a-z0-9-]+\.yml", sdk_worker_workflow_path) is None
             or type(sdk_worker_job_name) is not str or not sdk_worker_job_name):
-        raise ValueError("SDK collection requires one valid caller-pinned Core child route")
+        raise ValueError("SDK collection requires one valid caller-pinned child route")
     if sdk_family == "core-validation" and sdk_worker_job_name is not None and re.fullmatch(
             r"product-validation / [a-z0-9-]+ / sdk-core-validation-\{target\}", sdk_worker_job_name) is None:
         raise ValueError("Core validation child route requires one exact target job template")
