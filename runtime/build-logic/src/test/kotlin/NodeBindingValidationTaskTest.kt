@@ -63,20 +63,26 @@ class NodeBindingValidationTaskTest {
             val packed = archive(staged, root.resolve("runner.zip"))
             val packedDigest = packed.releaseDigest()
             val output = root.resolve("output")
-            executeNodeBindingValidation(packed, "node", output)
-            val raw = output.resolve("test-report/raw-mocha.xml")
+            val raw = root.resolve("raw-mocha.xml")
+            executeNodeBindingValidation(packed, "node", output, raw)
             assertTrue(raw.readText().contains("classname=\"CodexNodeApiTest\""))
+            assertTrue(!output.resolve("test-report/raw-mocha.xml").exists())
             val results = readCanonicalTestReport(output.resolve("test-report/TEST-jsNodeTest.CodexNodeApiTest.xml"))
             assertEquals(nodeBindingMethods.map { "jsNodeTest.CodexNodeApiTest#$it[js, node]" }.toSet(),
                 results.map { it.testId }.toSet())
             assertTrue(results.all { it.status == CanonicalTestStatus.PASSED })
             assertEquals(before, inventory(output.resolve("test-program")))
             assertEquals(packedDigest, packed.releaseDigest())
+            val secondOutput = root.resolve("second-output")
+            executeNodeBindingValidation(packed, "node", secondOutput, root.resolve("second-raw-mocha.xml"))
+            assertEquals(inventory(output), inventory(secondOutput))
+            assertTrue(!output.resolve("test-report/TEST-jsNodeTest.CodexNodeApiTest.xml").readText()
+                .contains(root.absolutePath))
 
             for (failure in listOf("failure", "skip", "extra")) {
                 stageNodeBindingRunner(program(root, failure), modules, lock, staged)
                 archive(staged, root.resolve("runner.zip"))
-                assertFailsWith<IllegalStateException> { executeNodeBindingValidation(packed, "node", output) }
+                assertFailsWith<IllegalStateException> { executeNodeBindingValidation(packed, "node", output, raw) }
                 assertTrue(!output.resolve("test-report/TEST-jsNodeTest.CodexNodeApiTest.xml").exists())
             }
             Files.createSymbolicLink(source.resolve("unsafe.js").toPath(), source.resolve(NODE_BINDING_PROGRAM).toPath())
@@ -100,7 +106,7 @@ class NodeBindingValidationTaskTest {
             }
             patchDesktopRuntimeUnixModes(zip, emptySet())
             assertFailsWith<IllegalStateException> {
-                executeNodeBindingValidation(zip, "missing-node-must-not-start", root.resolve("output"))
+                executeNodeBindingValidation(zip, "missing-node-must-not-start", root.resolve("output"), root.resolve("raw.xml"))
             }
             assertTrue(!root.resolve("escape.js").exists())
         } finally {

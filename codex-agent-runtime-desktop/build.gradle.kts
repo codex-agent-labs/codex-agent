@@ -581,6 +581,7 @@ val executeNodeBindingValidation = tasks.register<ExecuteNodeBindingValidationTa
     })
     nodeExecutable.set(providers.gradleProperty("codexAgent.nodeExecutable").orElse("node"))
     outputDirectory.set(layout.buildDirectory.dir("node-binding-validation-results"))
+    rawReportFile.set(layout.buildDirectory.file("reports/node-binding-validation/raw-mocha.xml"))
 }
 val stageNodeJsBindingValidation = tasks.register<Sync>("stageNodeJsBindingValidation") {
     group = "verification"

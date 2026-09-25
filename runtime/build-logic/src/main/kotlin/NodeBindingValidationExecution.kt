@@ -13,6 +13,7 @@ import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
@@ -34,16 +35,19 @@ abstract class ExecuteNodeBindingValidationTask : DefaultTask() {
     abstract val runnerArchive: RegularFileProperty
     @get:Input abstract val nodeExecutable: Property<String>
     @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
+    @get:OutputFile abstract val rawReportFile: RegularFileProperty
 
     init { outputs.upToDateWhen { false } }
 
     @TaskAction fun execute() = executeNodeBindingValidation(
         runnerArchive.get().asFile, nodeExecutable.get(), outputDirectory.get().asFile,
+        rawReportFile.get().asFile,
     )
 }
 
-internal fun executeNodeBindingValidation(archive: File, node: String, output: File) {
+internal fun executeNodeBindingValidation(archive: File, node: String, output: File, rawReportFile: File) {
     output.deleteRecursively()
+    rawReportFile.delete()
     val workspace = Files.createTempDirectory("node-binding-validation-").toFile()
     try {
         check(archive.length() in 1..(512L * 1024 * 1024)) { "Node binding archive exceeds bound" }
@@ -109,19 +113,29 @@ internal fun executeNodeBindingValidation(archive: File, node: String, output: F
             cases.all { it.getAttribute("classname").trim() == "CodexNodeApiTest" &&
                 it.getElementsByTagName("failure").length == 0 && it.getElementsByTagName("error").length == 0 &&
                 it.getElementsByTagName("skipped").length == 0 }) { "Node binding test inventory differs" }
-        // Preserve the raw Mocha report; only project its observed IDs to the
-        // established Gradle naming convention used by the shared parity reader.
+        // Mocha's raw timestamp, durations and extraction paths are execution
+        // evidence, not reusable product bytes.
+        rawReportFile.parentFile.mkdirs()
+        raw.copyTo(rawReportFile)
         val reports = output.resolve("test-report").also { it.mkdirs() }
-        raw.copyTo(reports.resolve("raw-mocha.xml"))
-        suite.setAttribute("name", "jsNodeTest.CodexNodeApiTest")
-        cases.forEach {
-            it.setAttribute("classname", "jsNodeTest.CodexNodeApiTest")
-            it.setAttribute("name", it.getAttribute("name") + "[js, node]")
+        val canonical = secureDocumentBuilderFactory().newDocumentBuilder().newDocument()
+        val canonicalSuite = canonical.createElement("testsuite")
+        canonicalSuite.setAttribute("name", "jsNodeTest.CodexNodeApiTest")
+        canonicalSuite.setAttribute("tests", nodeBindingMethods.size.toString())
+        canonicalSuite.setAttribute("failures", "0")
+        canonicalSuite.setAttribute("errors", "0")
+        canonicalSuite.setAttribute("skipped", "0")
+        canonical.appendChild(canonicalSuite)
+        cases.map { it.getAttribute("name") }.sorted().forEach { name ->
+            canonicalSuite.appendChild(canonical.createElement("testcase").apply {
+                setAttribute("classname", "jsNodeTest.CodexNodeApiTest")
+                setAttribute("name", "$name[js, node]")
+            })
         }
         TransformerFactory.newInstance().apply {
             setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "")
             setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "")
-        }.newTransformer().transform(DOMSource(document), StreamResult(
+        }.newTransformer().transform(DOMSource(canonical), StreamResult(
             reports.resolve("TEST-jsNodeTest.CodexNodeApiTest.xml"),
         ))
         copyNodeBindingTree(workspace.resolve("program"), output.resolve("test-program"))
