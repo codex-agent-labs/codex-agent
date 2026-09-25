@@ -24,9 +24,21 @@ internal static partial class NativeLibraryLoader
     private static byte[] ReadEvidence(string path, int limit = 1024 * 1024)
     {
         _ = ValidateAbsoluteRegularPath(path, "Runtime evidence");
-        var file = new FileInfo(path);
-        if (file.Length > limit) throw new InvalidDataException("Runtime evidence exceeds its size limit.");
-        return File.ReadAllBytes(path);
+        using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+            4096, FileOptions.SequentialScan);
+        if (!source.CanSeek || source.Length > limit)
+            throw new InvalidDataException("Runtime evidence exceeds its size limit.");
+        var bytes = new byte[limit + 1];
+        var length = 0;
+        while (length < bytes.Length)
+        {
+            var count = source.Read(bytes.AsSpan(length));
+            if (count == 0) break;
+            length += count;
+        }
+        if (length > limit) throw new InvalidDataException("Runtime evidence exceeds its size limit.");
+        Array.Resize(ref bytes, length);
+        return bytes;
     }
 
     private static JsonDocument EvidenceJson(byte[] raw, string description)

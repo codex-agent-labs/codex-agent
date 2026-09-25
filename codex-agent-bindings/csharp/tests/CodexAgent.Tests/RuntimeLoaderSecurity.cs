@@ -174,6 +174,20 @@ internal static class RuntimeLoaderSecurity
 
             var source = Path.Combine(root, "runtime-library");
             File.WriteAllText(source, "verified Runtime");
+            var readEvidence = typeof(NativeLibraryLoader).GetMethod(
+                "ReadEvidence", BindingFlags.Static | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("Runtime evidence reader is unavailable");
+            var bounded = Path.Combine(root, "bounded-evidence");
+            File.WriteAllText(bounded, "12345678");
+            if (!((byte[])readEvidence.Invoke(null, [bounded, 8])!).SequenceEqual("12345678"u8.ToArray()))
+                throw new InvalidOperationException("exact-limit Runtime evidence changed during reading");
+            File.WriteAllText(bounded, "123456789");
+            try
+            {
+                _ = readEvidence.Invoke(null, [bounded, 8]);
+                throw new InvalidOperationException("oversized Runtime evidence was accepted");
+            }
+            catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { }
             NativeLibraryLoader.ValidateExplicitPathForTests(source);
             Reject<FileNotFoundException>(() => NativeLibraryLoader.RejectUnverifiedExternalForTests(
                 source, Compatibility(), Target));
