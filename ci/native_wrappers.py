@@ -645,12 +645,12 @@ def package_once(
         if "dart" in languages:
             dart_source = sources / "dart"
             run("dart", "pub", "get", "--enforce-lockfile", cwd=dart_source)
-            run("dart", "pub", "publish", "--dry-run", cwd=dart_source)
             dart_release = work / "dart-release"
             stage_dart_release(dart_source, dart_release)
+            dart_archive = output / f"dart/codex-agent-dart-{sdk_version}.tar.gz"
             deterministic_tar(
                 dart_release,
-                output / f"dart/codex-agent-dart-{sdk_version}.tar.gz",
+                dart_archive,
                 f"codex_agent-{sdk_version}",
             )
 
@@ -678,6 +678,11 @@ def package_once(
         write_package_toolchains(output, languages)
         for language in languages:
             verify_native_wrapper_sdk_packages(output, sdks, sdk_version, language)
+        if "dart" in languages:
+            extracted = work / "dart-publish"
+            safe_extract_tar(dart_archive, extracted)
+            run("dart", "pub", "publish", "--dry-run",
+                cwd=extracted / f"codex_agent-{sdk_version}")
 
 
 def package_all(

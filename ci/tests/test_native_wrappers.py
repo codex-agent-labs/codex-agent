@@ -39,6 +39,7 @@ from native_wrappers import (  # noqa: E402
     normalize_nupkg,
     normalize_python_sdist,
     package_python,
+    package_once,
     reject_raw_c_abi_proofs,
     main,
     package_all,
@@ -306,6 +307,34 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 path.relative_to(root / "packages").as_posix()
                 for path in files(root / "packages")
             ])
+
+    def test_dart_publish_dry_run_reads_the_verified_final_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "sources/dart"
+            (source / "lib").mkdir(parents=True)
+            (source / "pubspec.yaml").write_text("name: codex_agent\nversion: 0.8.0\n", encoding="utf-8")
+            (source / "lib/codex_agent.dart").write_text("library codex_agent;\n", encoding="utf-8")
+            (source / "test").mkdir()
+            (source / "test/omitted.dart").write_text("not shipped\n", encoding="utf-8")
+            calls = []
+
+            def observe_run(*command, cwd, **_kwargs):
+                calls.append(tuple(command))
+                if command[-2:] == ("publish", "--dry-run"):
+                    self.assertEqual("codex_agent-0.8.0", cwd.name)
+                    self.assertEqual("library codex_agent;\n", (cwd / "lib/codex_agent.dart").read_text())
+                    self.assertFalse((cwd / "test").exists())
+
+            with patch("native_wrappers.require_prepared_native_assets"), \
+                    patch("native_wrappers.run", side_effect=observe_run), \
+                    patch("native_wrappers.write_package_toolchains"), \
+                    patch("native_wrappers.verify_native_wrapper_sdk_packages") as verify:
+                package_once(root / "sources", root / "sdks", root / "packages", "0.8.0", ("dart",))
+            self.assertEqual([("dart", "pub", "get", "--enforce-lockfile"),
+                              ("dart", "pub", "publish", "--dry-run")], calls)
+            verify.assert_called_once()
+            self.assertTrue((root / "packages/dart/codex-agent-dart-0.8.0.tar.gz").is_file())
 
     @patch("native_wrappers.run")
     @patch("native_wrappers.subprocess.run")
