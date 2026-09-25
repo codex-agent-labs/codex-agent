@@ -27,7 +27,9 @@ from products.signing_isolation import require_no_signing_secret
 from products.toolchain import _properties
 from reuse import github_output
 from sdk_core_metadata_same_campaign import held_same_campaign_core_metadata_policy
+from ci.sdk_core_metadata_history import verify_signed_original_core_context
 from sdk_facade_original_inputs import held_original_facade_metadata_policy
+from sdk_facade_upload_locator import locate_original_facade_upload
 
 
 _BINARY = PhaseInstanceId("sdk", "sdk-android", "binary", "android")
@@ -44,7 +46,9 @@ def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
         binary_artifact_id=None, binary_artifact_sha256=None,
         binary_contract_evidence=None, binary_original_context=None,
         keyring=None, keys_directory=None, reused_catalog=None, reused_catalog_root=None,
-        reused_catalog_source=None, reused_receipt_sha256=None):
+        reused_catalog_source=None, reused_receipt_sha256=None,
+        reused_context_manifest=None, reused_context_signature=None,
+        reused_context_keyring=None, reused_context_keys_directory=None):
     """Preflight or execute an Android Maven phase under one live Core admission.
 
     ``destination=None`` performs the pre-setup check. A destination executes
@@ -82,16 +86,21 @@ def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
         require_sha256(expected_build_key, "Android Maven build key")
     phase_state = after_state if selected_state is None else selected_state
     reused = any(value is not None for value in
-        (reused_catalog, reused_catalog_root, reused_catalog_source, reused_receipt_sha256))
+        (reused_catalog, reused_catalog_root, reused_catalog_source, reused_receipt_sha256,
+         reused_context_manifest, reused_context_signature, reused_context_keyring,
+         reused_context_keys_directory))
     if reused:
         if (type(reused_catalog) is not RemoteCatalog or reused_catalog_root is None or
                 reused_catalog_source not in ("same-pr", "stable", "promoted-main") or
                 not isinstance(reused_receipt_sha256, dict) or
-                reused_receipt_sha256.get("common") != expected_metadata_receipt_sha256):
-            raise ValueError("Reused Core metadata requires an independent catalog and twelve pinned receipts")
+                reused_receipt_sha256.get("common") != expected_metadata_receipt_sha256 or
+                any(value is None for value in (reused_context_manifest, reused_context_signature,
+                    reused_context_keyring, reused_context_keys_directory))):
+            raise ValueError("Reused Core metadata requires signed context, independent catalog and twelve pinned receipts")
         carrier = _path(str(reused_catalog_root), "Reused Core carrier root")
         trust = tuple(_path(str(path), "Reused Core caller trust") for path in
-            (reused_catalog.public_key, reused_catalog.keyring, reused_catalog.keys_directory)
+            (reused_catalog.public_key, reused_catalog.keyring, reused_catalog.keys_directory,
+             reused_context_keyring, reused_context_keys_directory)
             if path is not None)
         if any(path == carrier or carrier in path.parents for path in trust):
             raise ValueError("Reused Core caller trust must be independent of its carrier")
@@ -102,6 +111,18 @@ def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
                 ("sdk", "sdk-core", "metadata", "common") or
                 receipt["buildKey"] != expected_metadata_build_key):
             raise ValueError("Reused Core metadata receipt differs from caller election")
+        locator = locate_original_facade_upload(metadata_receipt,
+            expected_receipt_sha256=expected_metadata_receipt_sha256,
+            trusted_workflow_sha=trusted_workflow_sha, token=token)
+        signed_context = verify_signed_original_core_context(reused_context_manifest,
+            reused_context_signature, metadata_receipt,
+            expected_build_key=expected_metadata_build_key,
+            expected_receipt_sha256=expected_metadata_receipt_sha256,
+            expected_artifact_id=locator["artifact_id"],
+            expected_artifact_sha256=locator["artifact_sha256"],
+            keyring_path=reused_context_keyring, keys_directory=reused_context_keys_directory)
+        if signed_context != original_context:
+            raise ValueError("Reused Core original context differs from protected signed context")
         held = held_original_facade_metadata_policy(plan, catalog=reused_catalog,
             catalog_source=reused_catalog_source, metadata_receipt_path=metadata_receipt,
             expected_receipt_sha256=reused_receipt_sha256,
@@ -123,6 +144,14 @@ def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
     with held as descriptor:
         selected = load_canonical_json_bytes(read_regular_file_bytes(
             descriptor, reject_symlink_parents=True))
+        if reused:
+            transport = load_canonical_json_bytes(read_regular_file_bytes(
+                Path(selected["evidenceRoot"]) / "common/capture-transport.json",
+                reject_symlink_parents=True))
+            artifact = transport["artifact"]
+            if (artifact["id"] != locator["artifact_id"] or
+                    artifact["digest"] != locator["artifact_sha256"]):
+                raise ValueError("Reused Core replay selected another original upload")
         admission = FacadeMetadataAdmission(selected["evidenceRoot"], selected["records"],
             repository=root, policy_revision=product_reuse._validate_plan(plan, root)["validationCommit"],
             policy=selected["policy"])
@@ -212,7 +241,9 @@ def main(argv=None):
     for name in ("sdk-inputs-artifact-sha256", "binary-artifact-sha256"):
         parser.add_argument("--" + name)
     for name in ("reused-catalog", "reused-catalog-root", "reused-receipt-sha256",
-                 "reused-public-key", "reused-keyring", "reused-keys-directory"):
+                 "reused-public-key", "reused-keyring", "reused-keys-directory",
+                 "reused-context-manifest", "reused-context-signature", "reused-context-keyring",
+                 "reused-context-keys-directory"):
         parser.add_argument("--" + name, type=Path)
     parser.add_argument("--reused-catalog-source", choices=("same-pr", "stable", "promoted-main"))
     arguments = vars(parser.parse_args(argv))
@@ -249,19 +280,23 @@ def main(argv=None):
         if any(arguments[name] is not None for name in
                ("reused_catalog", "reused_catalog_root", "reused_catalog_source",
                 "reused_receipt_sha256", "reused_public_key", "reused_keyring",
-                "reused_keys_directory")):
+                "reused_keys_directory", "reused_context_manifest", "reused_context_signature",
+                "reused_context_keyring", "reused_context_keys_directory")):
             if any(arguments[name] is None for name in
                    ("reused_catalog", "reused_catalog_root", "reused_catalog_source",
-                    "reused_receipt_sha256")):
-                raise ValueError("Reused Core metadata requires catalog, root, source and twelve receipt digests")
+                    "reused_receipt_sha256", "reused_context_manifest", "reused_context_signature",
+                    "reused_context_keyring", "reused_context_keys_directory")):
+                raise ValueError("Reused Core metadata requires signed context, catalog and twelve receipt digests")
             carrier = _path(str(arguments["reused_catalog_root"]), "Android caller catalog root")
             repository = _path(str(arguments["repository_root"]), "Android caller repository")
             controls = tuple(_path(str(path), "Android independent caller input") for path in
                 (arguments["reused_catalog"], arguments["reused_receipt_sha256"],
+                 arguments["reused_context_manifest"], arguments["reused_context_signature"],
                  replay_control, context_control))
             trust = tuple(_path(str(arguments[name]), "Android independent trust input")
                           for name in ("reused_public_key", "reused_keyring",
-                                       "reused_keys_directory") if arguments[name] is not None)
+                                       "reused_keys_directory", "reused_context_keyring",
+                                       "reused_context_keys_directory") if arguments[name] is not None)
             if any(path == carrier or carrier in path.parents for path in (*controls, *trust)) or any(
                     path == repository or repository in path.parents for path in controls):
                 raise ValueError("Reused Core caller controls and trust must be independent of retained carriers")

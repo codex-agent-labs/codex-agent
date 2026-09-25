@@ -41,6 +41,16 @@ class AndroidCore14CallerTest(unittest.TestCase):
         archive.write_bytes(b"Git-pinned Android archive fixture")
         caller_key = fixture.root / "caller-pinned.pub"
         caller_key.write_bytes(fixture.catalog.public_key.read_bytes())
+        context_manifest, context_signature, context_keyring = (fixture.root / name for name in
+            ("signed-context.json", "signed-context.sig", "context-keyring.json"))
+        for path in (context_manifest, context_signature, context_keyring):
+            path.write_bytes(b"caller-owned test input")
+        context_keys = fixture.root / "context-keys"
+        context_keys.mkdir()
+        metadata_transport = load_canonical_json_bytes(
+            (source.f.retained / "capture-transport.json").read_bytes())["artifact"]
+        original_locator = {"artifact_id": metadata_transport["id"],
+            "artifact_sha256": metadata_transport["digest"]}
         catalog = replace(fixture.catalog, public_key=caller_key)
         android_key = "sha256:" + "b" * 64
         metadata_key = source.envelope["receipt"]["buildKey"]
@@ -96,9 +106,15 @@ class AndroidCore14CallerTest(unittest.TestCase):
             trusted_workflow_sha="e" * 40, repository_root=fixture.root,
             android_runtime_archive=archive, token="token", environ={},
             reused_catalog=catalog, reused_catalog_root=catalog.manifest.parent,
-            reused_catalog_source="same-pr", reused_receipt_sha256=digests)
+            reused_catalog_source="same-pr", reused_receipt_sha256=digests,
+            reused_context_manifest=context_manifest, reused_context_signature=context_signature,
+            reused_context_keyring=context_keyring, reused_context_keys_directory=context_keys)
         with (patch.object(original_inputs, "locate_original_facade_upload",
                            return_value={"artifact_id": 123, "artifact_sha256": "sha256:" + "d" * 64}),
+              patch.object(caller, "locate_original_facade_upload",
+                           return_value=original_locator),
+              patch.object(caller, "verify_signed_original_core_context",
+                           return_value=original_context) as signed_context,
               patch.object(original_metadata, "verified_retained_sdk_facade_metadata",
                            side_effect=replay_original),
               patch.object(original_inputs, "capture_sdk_facade_validation_upload", side_effect=copy_original),
@@ -108,7 +124,15 @@ class AndroidCore14CallerTest(unittest.TestCase):
               patch.object(caller, "_properties", return_value={
                   "codexAgent.codexArchiveSha256": sha256_file(archive).split(":", 1)[1]})):
             self.assertEqual(android_key, caller.with_core14(**arguments)["buildKey"])
+            self.assertEqual(metadata_transport["id"], signed_context.call_args.kwargs["expected_artifact_id"])
             self.assertEqual(1, len(admissions))
+            with self.assertRaisesRegex(ValueError, "protected signed context"):
+                caller.with_core14(**{**arguments, "original_context": {"foreign": "context"}})
+            with patch.object(caller, "locate_original_facade_upload", return_value={
+                    "artifact_id": metadata_transport["id"],
+                    "artifact_sha256": "sha256:" + "0" * 64}):
+                with self.assertRaisesRegex(ValueError, "another original upload"):
+                    caller.with_core14(**arguments)
             wrong = {**digests, "jvm": "sha256:" + "0" * 64}
             with self.assertRaisesRegex(ValueError, "original receipt differs"):
                 caller.with_core14(**{**arguments, "reused_receipt_sha256": wrong})
@@ -129,6 +153,12 @@ class AndroidCore14CallerTest(unittest.TestCase):
             checkout.mkdir()
             catalog, digests, key = (root / name for name in
                 ("catalog.json", "digests.json", "caller.pub"))
+            signed, signature, context_keyring = (root / name for name in
+                ("signed.json", "signed.sig", "context-keyring.json"))
+            context_keys = root / "context-keys"
+            context_keys.mkdir()
+            for path in (signed, signature, context_keyring):
+                path.write_bytes(b"independent caller test input")
             catalog.write_bytes(canonical_json_bytes({}))
             digests.write_bytes(canonical_json_bytes({}))
             key.write_bytes(b"caller key")
@@ -147,7 +177,11 @@ class AndroidCore14CallerTest(unittest.TestCase):
                 "--reused-catalog-root", str(carrier),
                 "--reused-catalog-source", "same-pr",
                 "--reused-receipt-sha256", str(digests),
-                "--reused-public-key", str(key)]
+                "--reused-public-key", str(key),
+                "--reused-context-manifest", str(signed),
+                "--reused-context-signature", str(signature),
+                "--reused-context-keyring", str(context_keyring),
+                "--reused-context-keys-directory", str(context_keys)]
             with (patch.object(caller, "with_core14") as execute,
                   patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"})):
                 for control in ("replay-policy", "original-context"):
@@ -178,11 +212,21 @@ class AndroidCore14CallerTest(unittest.TestCase):
             archive.write_bytes(b"pinned archive")
             manifest.write_bytes(b"signed index bytes")
             (root / "caller.pub").write_bytes(b"caller key")
+            context_manifest, context_signature, context_keyring = (root / name for name in
+                ("signed-context.json", "signed-context.sig", "context-keyring.json"))
+            for path in (context_manifest, context_signature, context_keyring):
+                path.write_bytes(b"caller-owned test input")
+            context_keys = root / "context-keys"
+            context_keys.mkdir()
             receipt_path.write_bytes(canonical_json_bytes({"selected": "original"}))
             policy = {"toolingEvidence": "evidence", "toolingPublicKey": "key",
                 "javaExecutable": "java", "toolingTrustDomain": "release",
                 "toolingKeyring": "keyring", "toolingKeysDirectory": "keys"}
-            descriptor.write_bytes(canonical_json_bytes({"evidenceRoot": "originals",
+            original_capture = root / "originals/common"
+            original_capture.mkdir(parents=True)
+            (original_capture / "capture-transport.json").write_bytes(canonical_json_bytes({
+                "artifact": {"id": 123, "digest": "sha256:" + "d" * 64}}))
+            descriptor.write_bytes(canonical_json_bytes({"evidenceRoot": str(root / "originals"),
                 "records": [], "policy": policy}))
             digests = {"common": sha256_bytes(receipt_path.read_bytes()), "native": "sha256:" + "f" * 64}
             key = "sha256:" + "b" * 64
@@ -220,8 +264,14 @@ class AndroidCore14CallerTest(unittest.TestCase):
                 android_runtime_archive=archive, token="token", environ={},
                 reused_catalog=catalog, reused_catalog_root=carrier,
                 reused_catalog_source="same-pr",
-                reused_receipt_sha256=digests)
+                reused_receipt_sha256=digests,
+                reused_context_manifest=context_manifest, reused_context_signature=context_signature,
+                reused_context_keyring=context_keyring, reused_context_keys_directory=context_keys)
             with (patch.object(caller, "held_original_facade_metadata_policy", held),
+                  patch.object(caller, "locate_original_facade_upload",
+                               return_value={"artifact_id": 123, "artifact_sha256": "sha256:" + "d" * 64}),
+                  patch.object(caller, "verify_signed_original_core_context",
+                               return_value={"original": "context"}),
                   patch.object(caller, "held_same_campaign_core_metadata_policy") as fresh,
                   patch.object(caller, "validate_phase_receipt", return_value={
                       "product": "sdk", "component": "sdk-core", "phase": "metadata",
