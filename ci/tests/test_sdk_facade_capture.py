@@ -226,6 +226,24 @@ class CoreBinaryCaptureTest(FacadeCaptureTest):
     targets = ("common",)
     required_directories = ("inputs", "worker", "selection")
 
+    def test_paired_caller_pinned_child_route(self):
+        if self.component != "sdk-core" or self.phase != "binary":
+            self.skipTest("Only Core binary moves to the child workflow")
+        path = ".github/workflows/sdk-core-binary-validation.yml"
+        job = "product-validation / sdk-core-binary-validation / sdk-core-binary-common"
+        self.run["referenced_workflows"][0]["path"] = (
+            f"codex-agent-labs/codex-agent/{path}@{self.pin}")
+        self.jobs[0]["name"] = job
+        self.call(trusted_workflow_path=path, trusted_job_name=job)
+        shutil.rmtree(self.output)
+        with self.assertRaisesRegex(ValueError, "caller-pinned workflow"):
+            self.call(trusted_workflow_path=".github/workflows/product-validation.yml",
+                trusted_job_name=job)
+        with self.assertRaisesRegex(ValueError, "pinned together"):
+            self.call(trusted_workflow_path=path)
+        with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
+            self.call(trusted_workflow_path=path, trusted_job_name=job + "-wrong")
+
 
 class AndroidBinaryCaptureTest(CoreBinaryCaptureTest):
     component = "sdk-android"

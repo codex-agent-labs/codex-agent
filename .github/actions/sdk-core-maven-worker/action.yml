@@ -46,6 +46,12 @@ inputs:
   binary-original-context:
     default: ''
     description: Package only; independently supplied canonical original binary invocation context path.
+  binary-original-workflow-path:
+    default: ''
+    description: Package only; caller-pinned original Core binary child workflow path.
+  binary-original-job-name:
+    default: ''
+    description: Package only; caller-pinned original Core binary child job name.
   sdk-validation-tooling:
     default: ''
     description: Optional independently supplied caller tooling policy for predecessor replay.
@@ -89,6 +95,8 @@ runs:
         BINARY_ARTIFACT_SHA256: ${{ inputs.binary-artifact-sha256 }}
         BINARY_CONTRACT_EVIDENCE: ${{ inputs.binary-contract-evidence }}
         BINARY_ORIGINAL_CONTEXT: ${{ inputs.binary-original-context }}
+        BINARY_ORIGINAL_WORKFLOW_PATH: ${{ inputs.binary-original-workflow-path }}
+        BINARY_ORIGINAL_JOB_NAME: ${{ inputs.binary-original-job-name }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
@@ -108,6 +116,9 @@ runs:
         if ((phase == 'package' and not all(os.environ[name] for name in package))
                 or (phase == 'binary' and any(os.environ[name] for name in package))):
             raise ValueError('Core Maven package requires all original caller inputs; binary accepts none')
+        if (bool(os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']) != bool(os.environ['BINARY_ORIGINAL_JOB_NAME'])
+                or phase == 'binary' and os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']):
+            raise ValueError('Core binary child workflow path and job must be pinned together for package only')
         if phase == 'package':
             for name in ('SDK_INPUTS_ID', 'BINARY_ARTIFACT_ID'):
                 if not os.environ[name].isascii() or not os.environ[name].isdecimal() or int(os.environ[name]) < 1:
@@ -126,6 +137,9 @@ runs:
             raw = read_regular_file_bytes(path, reject_symlink_parents=True)
             load_canonical_json_bytes(raw)
             policies[name] = sha256_bytes(raw)
+        if os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']:
+            policies['BINARY_ORIGINAL_WORKFLOW_PATH'] = os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']
+            policies['BINARY_ORIGINAL_JOB_NAME'] = os.environ['BINARY_ORIGINAL_JOB_NAME']
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('policy_sha256=' + sha256_bytes(canonical_json_bytes(policies)) + '\n')
         PY
@@ -157,6 +171,8 @@ runs:
         POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
         BINARY_CONTRACT_EVIDENCE: ${{ inputs.binary-contract-evidence }}
         BINARY_ORIGINAL_CONTEXT: ${{ inputs.binary-original-context }}
+        BINARY_ORIGINAL_WORKFLOW_PATH: ${{ inputs.binary-original-workflow-path }}
+        BINARY_ORIGINAL_JOB_NAME: ${{ inputs.binary-original-job-name }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
@@ -175,6 +191,9 @@ runs:
                      'SDK_APPLE_VALIDATION_POLICY', 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY'):
             if os.environ[name]:
                 policies[name] = sha256_bytes(read_regular_file_bytes(Path(os.environ[name]), reject_symlink_parents=True))
+        if os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']:
+            policies['BINARY_ORIGINAL_WORKFLOW_PATH'] = os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']
+            policies['BINARY_ORIGINAL_JOB_NAME'] = os.environ['BINARY_ORIGINAL_JOB_NAME']
         if sha256_bytes(canonical_json_bytes(policies)) != os.environ['POLICY_SHA256']:
             raise ValueError('Core Maven independent caller policy changed during state capture')
         phase, key, tree = os.environ['PHASE'], os.environ['BUILD_KEY'], os.environ['TREE']
@@ -236,6 +255,8 @@ runs:
         BINARY_ARTIFACT_SHA256: ${{ inputs.binary-artifact-sha256 }}
         BINARY_CONTRACT_EVIDENCE: ${{ inputs.binary-contract-evidence }}
         BINARY_ORIGINAL_CONTEXT: ${{ inputs.binary-original-context }}
+        BINARY_ORIGINAL_WORKFLOW_PATH: ${{ inputs.binary-original-workflow-path }}
+        BINARY_ORIGINAL_JOB_NAME: ${{ inputs.binary-original-job-name }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
@@ -255,6 +276,9 @@ runs:
                      'SDK_APPLE_VALIDATION_POLICY', 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY'):
             if os.environ[name]:
                 policies[name] = sha256_bytes(read_regular_file_bytes(Path(os.environ[name]), reject_symlink_parents=True))
+        if os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']:
+            policies['BINARY_ORIGINAL_WORKFLOW_PATH'] = os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']
+            policies['BINARY_ORIGINAL_JOB_NAME'] = os.environ['BINARY_ORIGINAL_JOB_NAME']
         if sha256_bytes(canonical_json_bytes(policies)) != os.environ['POLICY_SHA256']:
             raise ValueError('Core Maven caller policy changed before execution')
         phase = os.environ['PHASE']
@@ -282,6 +306,9 @@ runs:
                 '--keyring': str(root / 'gradle/release/product-signing-keys.json'),
                 '--keys-directory': str(root / 'gradle/release/keys'),
             })
+            if os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']:
+                fields['--binary-original-workflow-path'] = os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']
+                fields['--binary-original-job-name'] = os.environ['BINARY_ORIGINAL_JOB_NAME']
         command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'maven-' + phase]
         command += [part for flag, value in fields.items() for part in (flag, value)]
         subprocess.run(command, cwd=root, check=True)

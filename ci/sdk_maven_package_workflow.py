@@ -45,7 +45,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             repository_root, environ, token, binary_artifact_id=None, binary_artifact_sha256=None,
             binary_capture_root=None, android_runtime_archive=None,
             sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
+            binary_original_workflow_path=None, binary_original_job_name=None):
     """Publish one shard only after full original gates and successful context exit.
 
     The binary's original Contract evidence is mandatory caller policy, even if
@@ -67,6 +68,9 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
     if binary_capture_root is None:
         require_integer(binary_artifact_id, "Original binary upload ID", 1)
         require_sha256(binary_artifact_sha256, "Original binary upload digest")
+    if ((binary_original_workflow_path is None) != (binary_original_job_name is None)
+            or binary_capture_root is not None and binary_original_workflow_path is not None):
+        raise ValueError("Original binary workflow path and job must be pinned together")
     if (android_runtime_archive is not None) != (component == "sdk-android"):
         raise ValueError("Maven package requires the original Android archive only for Android binary replay")
     target = _TARGETS[component]
@@ -182,7 +186,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                     original_binary = binary_contexts.enter_context(verified_original_maven_phase(
                         plan, binary["receiptPath"], artifact_id=binary_artifact_id,
                         artifact_sha256=binary_artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
-                        token=token, **binary_arguments))
+                        token=token, trusted_workflow_path=binary_original_workflow_path,
+                        trusted_job_name=binary_original_job_name, **binary_arguments))
                 else:
                     original_binary = binary_contexts.enter_context(verified_retained_maven_phase(
                         plan, binary["receiptPath"], capture_root=trees["binaryCapture"], **binary_arguments))
@@ -294,6 +299,8 @@ def main(argv=None):
     source.add_argument("--binary-capture-root", type=Path)
     parser.add_argument("--binary-artifact-sha256")
     parser.add_argument("--android-runtime-archive", type=Path)
+    parser.add_argument("--binary-original-workflow-path")
+    parser.add_argument("--binary-original-job-name")
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
         parser.add_argument("--" + name, type=Path)
     add_metadata_admission_arguments(parser)

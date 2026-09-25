@@ -80,11 +80,13 @@ def capture_sdk_android_metadata_upload(
 def capture_sdk_maven_upload(
     plan_path, destination, *, receipt_path, artifact_id, artifact_sha256,
     trusted_workflow_sha, repository_root=None, environ=None, token,
+    trusted_workflow_path=None, trusted_job_name=None,
 ):
     """Capture only the four Core/Android binary/package routes."""
     return _capture_sdk_upload(plan_path, destination, family="maven",
         receipt_path=receipt_path, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
-        trusted_workflow_sha=trusted_workflow_sha, repository_root=repository_root, environ=environ, token=token)
+        trusted_workflow_sha=trusted_workflow_sha, repository_root=repository_root, environ=environ, token=token,
+        trusted_workflow_path=trusted_workflow_path, trusted_job_name=trusted_job_name)
 
 
 def _capture_route(receipt, family=None):
@@ -147,6 +149,7 @@ def verify_retained_sdk_phase_upload(capture, receipt_bytes):
 def _capture_sdk_upload(
     plan_path, destination, *, family, receipt_path, artifact_id, artifact_sha256,
     trusted_workflow_sha, repository_root=None, environ=None, token,
+    trusted_workflow_path=None, trusted_job_name=None,
 ):
     """Preserve the complete original upload after exact receipt/CI comparison.
 
@@ -156,6 +159,10 @@ def _capture_sdk_upload(
     """
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
+    if (trusted_workflow_path is None) != (trusted_job_name is None):
+        raise ValueError("Core original workflow path and job must be pinned together")
+    if trusted_workflow_path is not None and family != "maven":
+        raise ValueError("Core child workflow route is supported only for Maven originals")
     require_integer(artifact_id, "Core worker artifact ID", 1)
     require_sha256(artifact_sha256, "Core worker artifact digest")
     if type(token) is not str or not token:
@@ -176,6 +183,8 @@ def _capture_sdk_upload(
     plan_bytes, receipt_bytes = _read(plan_path), _read(receipt_path)
     receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
     instance, runner, directories, job, name, _ = _capture_route(receipt, family)
+    if trusted_job_name is not None:
+        job = trusted_job_name
     phase, producer = receipt["phase"], receipt["producer"]
     with tempfile.TemporaryDirectory(prefix="sdk-facade-upload-") as temporary:
         prepared = Path(temporary).resolve() / "capture"
@@ -195,8 +204,11 @@ def _capture_sdk_upload(
                 raise ValueError("Core capture original receipt or caller plan changed")
 
         unchanged()
+        workflow_policy = ({"trusted_workflow_sha": trusted_workflow_sha}
+            if trusted_workflow_path is None else {"trusted_workflows_by_phase": {family: {
+                "path": trusted_workflow_path, "sha": trusted_workflow_sha}}})
         observed = products._observe_ci_producer_jobs({family: producer},
-            jobs_by_phase={family: job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
+            jobs_by_phase={family: job}, token=token, **workflow_policy)
         jobs = [value for value in observed[0]["jobs"] if value.get("name") == job]
         if len(jobs) != 1:
             raise ValueError("Core original worker job is missing or ambiguous")

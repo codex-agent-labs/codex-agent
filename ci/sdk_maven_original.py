@@ -187,13 +187,15 @@ def _binary_origin(original, context, evidence, contract_version):
 @contextmanager
 def verified_original_maven_phase(plan, receipt_path, *, artifact_id, artifact_sha256, trusted_workflow_sha,
         binary_contract_evidence, original_context, repository_root, environ, token,
-        keyring=None, keys_directory=None, android_runtime_archive=None, binary_original_context=None):
+        keyring=None, keys_directory=None, android_runtime_archive=None, binary_original_context=None,
+        trusted_workflow_path=None, trusted_job_name=None):
     with _verified_maven_phase(plan, receipt_path, capture_root=None,
             artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
             binary_contract_evidence=binary_contract_evidence, original_context=original_context,
             repository_root=repository_root, environ=environ, token=token,
             keyring=keyring, keys_directory=keys_directory, android_runtime_archive=android_runtime_archive,
-            binary_original_context=binary_original_context) as result:
+            binary_original_context=binary_original_context,
+            trusted_workflow_path=trusted_workflow_path, trusted_job_name=trusted_job_name) as result:
         yield result
 
 
@@ -212,7 +214,8 @@ def verified_retained_maven_phase(plan, receipt_path, *, capture_root, binary_co
 @contextmanager
 def _verified_maven_phase(plan, receipt_path, *, capture_root, binary_contract_evidence, original_context,
         repository_root, environ, keyring, keys_directory, android_runtime_archive, binary_original_context,
-        artifact_id=None, artifact_sha256=None, trusted_workflow_sha=None, token=None):
+        artifact_id=None, artifact_sha256=None, trusted_workflow_sha=None, token=None,
+        trusted_workflow_path=None, trusted_job_name=None):
     require_no_signing_secret(environ)
     root, plan, receipt_path = Path(repository_root).resolve(strict=True), Path(plan), Path(receipt_path)
     raw = _read(receipt_path)
@@ -280,7 +283,8 @@ def _verified_maven_phase(plan, receipt_path, *, capture_root, binary_contract_e
             if capture_root is None:
                 capture_sdk_maven_upload(plan, capture, receipt_path=selected, artifact_id=artifact_id,
                     artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
-                    repository_root=root, environ=environ, token=token)
+                    repository_root=root, environ=environ, token=token,
+                    trusted_workflow_path=trusted_workflow_path, trusted_job_name=trusted_job_name)
             else:
                 snapshot_regular_tree(capture_root, capture, allow_empty=True)
                 if _inventory(capture, allow_empty=True) != trees_before["capture"]:

@@ -200,6 +200,19 @@ class MavenPackageWorkflowTest(unittest.TestCase):
         self.invoke()
         self.assertEqual("e" * 40, self.materialized.call_args.kwargs["sdk_original_workflow_sha"])
 
+    def test_binary_child_route_is_caller_pinned_before_original_capture(self):
+        path = ".github/workflows/sdk-core-binary-validation.yml"
+        job = "product-validation / sdk-core-binary-validation / sdk-core-binary-common"
+        self.invoke(binary_original_workflow_path=path, binary_original_job_name=job)
+        self.assertEqual(path, self.binary_reader.call_args.kwargs["trusted_workflow_path"])
+        self.assertEqual(job, self.binary_reader.call_args.kwargs["trusted_job_name"])
+        self.assertEqual("e" * 40, self.binary_reader.call_args.kwargs["trusted_workflow_sha"])
+        self.destination.rename(self.root / "completed-package")
+        self.materialized.reset_mock()
+        with self.assertRaisesRegex(ValueError, "pinned together"):
+            self.invoke(binary_original_workflow_path=path)
+        self.materialized.assert_not_called()
+
     def test_both_families_publish_only_after_context_and_keep_originals_external(self):
         for component in ("sdk-core", "sdk-android"):
             with self.subTest(component=component):
@@ -361,6 +374,12 @@ class MavenPackageWorkflowTest(unittest.TestCase):
             self.assertEqual(self.binary_context, execute.call_args.kwargs["binary_original_context"])
             self.assertEqual(7, execute.call_args.kwargs["binary_artifact_id"])
             self.assertEqual("env-token", execute.call_args.kwargs["token"])
+            child_path = ".github/workflows/sdk-core-binary-validation.yml"
+            child_job = "product-validation / sdk-core-binary-validation / sdk-core-binary-common"
+            self.assertEqual(0, workflow.main([*argv, "--binary-original-workflow-path", child_path,
+                                                "--binary-original-job-name", child_job]))
+            self.assertEqual(child_path, execute.call_args.kwargs["binary_original_workflow_path"])
+            self.assertEqual(child_job, execute.call_args.kwargs["binary_original_job_name"])
             self.assertNotIn("sdk_validation_tooling", execute.call_args.kwargs)
             for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
                 self.assertNotIn(name, execute.call_args.kwargs)
