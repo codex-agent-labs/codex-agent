@@ -1372,6 +1372,44 @@ class ProductAggregateTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("ssh-keygen"), "ssh-keygen is required")
 class ProductSigningTest(unittest.TestCase):
+    def test_signer_uses_checked_bytes_and_rejects_manifest_swap(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, _, metadata = generate_development_key(root / "keys")
+            manifest = root / "manifest.json"
+            write_canonical_json(manifest, {"schemaVersion": 1, "signing": metadata})
+            checked = manifest.read_bytes()
+            original_run = signatures_product.subprocess.run
+
+            def swap_after_sign(*args, **kwargs):
+                self.assertEqual(checked, kwargs["input"])
+                self.assertNotIn(str(manifest), args[0])
+                result = original_run(*args, **kwargs)
+                write_canonical_json(manifest, {"schemaVersion": 2, "signing": metadata})
+                return result
+
+            with mock.patch.object(signatures_product.subprocess, "run", side_effect=swap_after_sign):
+                with self.assertRaisesRegex(ValueError, "changed while signing"):
+                    sign_manifest(manifest, private_key, metadata)
+            self.assertFalse(manifest.with_suffix(".sig").exists())
+
+    def test_keyring_and_signature_reads_are_bounded(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, metadata = generate_development_key(root / "keys")
+            manifest = root / "manifest.json"
+            write_canonical_json(manifest, {"schemaVersion": 1, "signing": metadata})
+            signature = sign_manifest(manifest, private_key, metadata)
+            with signature.open("r+b") as output:
+                output.truncate(signatures_product.SIGNATURE_LIMIT + 1)
+            with self.assertRaisesRegex(ValueError, "too large"):
+                verify_manifest_signature(manifest, signature, public_key, metadata)
+            keyring = root / "keyring.json"
+            with keyring.open("wb") as output:
+                output.truncate(signatures_product.PRODUCT_JSON_LIMIT + 1)
+            with self.assertRaisesRegex(ValueError, "too large"):
+                signatures_product.load_keyring(keyring, root / "keys")
+
     def test_development_signing_and_all_cryptographic_negatives(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

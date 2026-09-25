@@ -11,7 +11,9 @@ import tempfile
 from typing import Any
 
 from .inventory import (
+    PRODUCT_JSON_LIMIT,
     load_canonical_json,
+    load_canonical_json_bytes,
     public_key_fingerprint,
     read_regular_file_bytes,
     require_array,
@@ -26,6 +28,8 @@ NAMESPACE = "codex-agent-product-v1"
 KEY_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 SSHSIG_HEADER = b"-----BEGIN SSH SIGNATURE-----\n"
 SSHSIG_FOOTER = b"-----END SSH SIGNATURE-----\n"
+SIGNATURE_LIMIT = 64 * 1024
+PUBLIC_KEY_LIMIT = 4096
 
 
 def _require_canonical_sshsig(contents: bytes) -> None:
@@ -87,7 +91,7 @@ def public_key_path(keys_directory: Path, key_id: str) -> Path:
 
 def _verify_public_key(record: dict[str, Any], keys_directory: Path) -> Path:
     path = public_key_path(keys_directory, record["keyId"])
-    contents = read_regular_file_bytes(path, reject_symlink_parents=True)
+    contents = read_regular_file_bytes(path, max_bytes=PUBLIC_KEY_LIMIT, reject_symlink_parents=True)
     if public_key_fingerprint(contents) != record["fingerprint"]:
         raise ValueError(f"Product public key fingerprint mismatch: {record['keyId']}")
     return path
@@ -123,7 +127,7 @@ def validate_keyring(value: Any, keys_directory: Path) -> dict[str, Any]:
 
 
 def load_keyring(path: Path, keys_directory: Path) -> dict[str, Any]:
-    return validate_keyring(load_canonical_json(path), keys_directory)
+    return validate_keyring(load_canonical_json(path, max_bytes=PRODUCT_JSON_LIMIT), keys_directory)
 
 
 def require_active_release_key(keyring: dict[str, Any], keys_directory: Path) -> tuple[dict[str, Any], Path]:
@@ -200,28 +204,34 @@ def sign_manifest(manifest: Path, private_key: Path, metadata: Any) -> Path:
         raise ValueError("Manifest to sign is missing or unsafe")
     if private_key.is_symlink() or not private_key.is_file():
         raise ValueError("Product signing private key is missing or unsafe")
-    manifest_value = load_canonical_json(manifest)
+    manifest_bytes = read_regular_file_bytes(
+        manifest, max_bytes=PRODUCT_JSON_LIMIT, reject_symlink_parents=True,
+    )
+    manifest_value = load_canonical_json_bytes(manifest_bytes)
     if type(manifest_value) is not dict or manifest_value.get("signing") != signing:
         raise ValueError("Manifest signing metadata does not match the requested signer")
-    generated_signature = Path(f"{manifest}.sig")
     signature = manifest.with_suffix(".sig")
-    if generated_signature.exists() or generated_signature.is_symlink() or \
-            signature.exists() or signature.is_symlink():
+    if signature.exists() or signature.is_symlink():
         raise ValueError("Product signature destination already exists")
-    try:
-        subprocess.run(
-            ["ssh-keygen", "-Y", "sign", "-f", str(private_key), "-n", signing["namespace"], str(manifest)],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        if generated_signature.is_symlink() or not generated_signature.is_file():
-            raise ValueError("ssh-keygen did not produce a canonical detached SSHSIG")
-        _require_canonical_sshsig(generated_signature.read_bytes())
-        os.replace(generated_signature, signature)
-    except Exception:
-        generated_signature.unlink(missing_ok=True)
-        raise
+    result = subprocess.run(
+        ["ssh-keygen", "-Y", "sign", "-f", str(private_key), "-n", signing["namespace"]],
+        input=manifest_bytes,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if len(result.stdout) > SIGNATURE_LIMIT:
+        raise ValueError("Product SSHSIG exceeds its size limit")
+    _require_canonical_sshsig(result.stdout)
+    if read_regular_file_bytes(manifest, max_bytes=PRODUCT_JSON_LIMIT, reject_symlink_parents=True) != manifest_bytes:
+        raise ValueError("Manifest changed while signing")
+    with tempfile.TemporaryDirectory(prefix=f".{signature.name}-", dir=signature.parent) as temporary:
+        staged = Path(temporary) / "signature.sig"
+        with staged.open("xb") as output:
+            output.write(result.stdout)
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(staged, signature)
     return signature
 
 
@@ -238,9 +248,17 @@ def verify_manifest_signature(
     for path, label in ((manifest, "manifest"), (signature, "signature"), (public_key, "public key")):
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"Product {label} is missing or unsafe")
-    public_key_bytes = read_regular_file_bytes(public_key, reject_symlink_parents=True)
-    _require_canonical_sshsig(signature.read_bytes())
-    manifest_value = load_canonical_json(manifest)
+    public_key_bytes = read_regular_file_bytes(
+        public_key, max_bytes=PUBLIC_KEY_LIMIT, reject_symlink_parents=True,
+    )
+    signature_bytes = read_regular_file_bytes(
+        signature, max_bytes=SIGNATURE_LIMIT, reject_symlink_parents=True,
+    )
+    _require_canonical_sshsig(signature_bytes)
+    manifest_bytes = read_regular_file_bytes(
+        manifest, max_bytes=PRODUCT_JSON_LIMIT, reject_symlink_parents=True,
+    )
+    manifest_value = load_canonical_json_bytes(manifest_bytes)
     if type(manifest_value) is not dict or manifest_value.get("signing") != signing:
         raise ValueError("Manifest signing metadata does not match the verifier metadata")
     if public_key_fingerprint(public_key_bytes) != signing["fingerprint"]:
@@ -248,6 +266,8 @@ def verify_manifest_signature(
     with tempfile.TemporaryDirectory(prefix="codex-agent-signature-") as temporary:
         allowed_signers = Path(temporary) / "allowed-signers"
         allowed_signers.write_bytes(b"codex-agent-product " + public_key_bytes)
+        detached = Path(temporary) / "manifest.sig"
+        detached.write_bytes(signature_bytes)
         result = subprocess.run(
             [
                 "ssh-keygen",
@@ -260,9 +280,9 @@ def verify_manifest_signature(
                 "-n",
                 signing["namespace"],
                 "-s",
-                str(signature),
+                str(detached),
             ],
-            input=manifest.read_bytes(),
+            input=manifest_bytes,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
