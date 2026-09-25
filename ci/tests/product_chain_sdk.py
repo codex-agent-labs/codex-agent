@@ -148,6 +148,8 @@ def _stage_sdks(
         raise ValueError("whole-chain raw C SDK library versions differ")
 
     (staged / "sdk-compatibility.json").write_bytes(compatibility_bytes)
+    shutil.copy2(_REPOSITORY / "gradle/release/keys/sdk-runtime-root.pub",
+                 staged / "sdk-runtime-root.pub")
     producer = context["producer"]
     index = {
         "schemaVersion": 2,
@@ -200,6 +202,7 @@ def _materialize_sources(root: Path, sdks: Path, languages: tuple[str, ...]) -> 
             shutil.copy2(original, native / "README.md")
 
     compatibility = sdks / "sdk-compatibility.json"
+    runtime_root = _REPOSITORY / "gradle/release/keys/sdk-runtime-root.pub"
     for classifier in HOSTS:
         sdk = sdks / classifier
         library = sdk / HOSTS[classifier][4]
@@ -224,6 +227,7 @@ def _materialize_sources(root: Path, sdks: Path, languages: tuple[str, ...]) -> 
             cpp_compatibility = cpp / "share/CodexAgent/native/sdk-compatibility.json"
             cpp_compatibility.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(compatibility, cpp_compatibility)
+            shutil.copy2(runtime_root, cpp_compatibility.parent / "sdk-runtime-root.pub")
     for language, relative in {
         "python": "sdk-compatibility.json",
         "csharp": "sdk-compatibility.json",
@@ -232,6 +236,7 @@ def _materialize_sources(root: Path, sdks: Path, languages: tuple[str, ...]) -> 
     }.items():
         if language in languages:
             shutil.copy2(compatibility, native_roots[language] / relative)
+            shutil.copy2(runtime_root, native_roots[language] / "sdk-runtime-root.pub")
     return sources
 
 

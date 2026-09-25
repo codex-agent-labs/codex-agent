@@ -48,7 +48,7 @@ class DartPackageContentChainTest(unittest.TestCase):
             self.chains[0]["variants"]["variant_phase_receipts"]["macos-arm64"]["package"].read_bytes(),
             self.chains[1]["variants"]["variant_phase_receipts"]["macos-arm64"]["package"].read_bytes())
         native = first[1] / "lib/src/native"
-        self.assertEqual({"README.md", "sdk-compatibility.json", *wrappers.HOSTS},
+        self.assertEqual({"README.md", "sdk-compatibility.json", "sdk-runtime-root.pub", *wrappers.HOSTS},
                          {path.name for path in native.iterdir()})
         with tempfile.TemporaryDirectory(prefix="s808-dart-content-extract-") as temporary:
             extracted = Path(temporary).resolve()
