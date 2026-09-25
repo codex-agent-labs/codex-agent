@@ -22,7 +22,7 @@ class CoreValidationWorkflowTest(unittest.TestCase):
             "sdk-core-validation-result"))
         for block in (plan, worker, collect, result):
             self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", block)
-            self.assertIn("needs.sdk-core-package-result.result == 'success'", block)
+            self.assertIn("needs.sdk-core-package-wave.result == 'success'", block)
         self.assertIn("sdk-family: core-validation", plan)
         self.assertIn("sdk-family: core-validation", collect)
         self.assertIn("wave: '13'", collect)

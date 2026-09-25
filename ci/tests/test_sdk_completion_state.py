@@ -36,7 +36,7 @@ def handoff():
     value["sdk-ios-validation-result"] = job("success", **locator("88", sdk="8"))
     value["sdk-ios-metadata-result"] = job("success", **locator("88", sdk="8"))
     value["sdk-core-binary-wave"] = job("success", **locator("88", sdk="8"))
-    value["sdk-core-package-result"] = job("success", **locator("88", sdk="8"))
+    value["sdk-core-package-wave"] = job("success", **locator("88", sdk="8"))
     value["sdk-core-validation-result"] = job("success", **locator("88", sdk="8"))
     value["sdk-core-metadata-result"] = job("success", **locator("88", sdk="8"))
     for name in ("sdk-android-binary-result", "sdk-android-package-result",
@@ -61,7 +61,7 @@ class SdkCompletionStateTest(unittest.TestCase):
             value["sdk-ios-validation-result"]["outputs"] = locator("88", runtime, sdk)
             value["sdk-ios-metadata-result"]["outputs"] = locator("88", runtime, sdk)
             value["sdk-core-binary-wave"]["outputs"] = locator("88", runtime, sdk)
-            value["sdk-core-package-result"]["outputs"] = locator("88", runtime, sdk)
+            value["sdk-core-package-wave"]["outputs"] = locator("88", runtime, sdk)
             value["sdk-core-validation-result"]["outputs"] = locator("88", runtime, sdk)
             value["sdk-core-metadata-result"]["outputs"] = locator("88", runtime, sdk)
             forward_android(value)
@@ -75,7 +75,7 @@ class SdkCompletionStateTest(unittest.TestCase):
         value["sdk-ios-validation-result"] = job("success", **locator("99", sdk="9"))
         value["sdk-ios-metadata-result"] = job("success", **locator("99", sdk="9"))
         value["sdk-core-binary-wave"] = job("success", **locator("99", sdk="9"))
-        value["sdk-core-package-result"] = job("success", **locator("99", sdk="9"))
+        value["sdk-core-package-wave"] = job("success", **locator("99", sdk="9"))
         value["sdk-core-validation-result"] = job("success", **locator("99", sdk="9"))
         value["sdk-core-metadata-result"] = job("success", **locator("99", sdk="9"))
         forward_android(value)
@@ -99,7 +99,7 @@ class SdkCompletionStateTest(unittest.TestCase):
         value["sdk-ios-validation-result"] = job("success", **locator("99", sdk="9"))
         value["sdk-ios-metadata-result"] = job("success", **locator("110", sdk="10"))
         value["sdk-core-binary-wave"] = job("success", **locator("110", sdk="10"))
-        value["sdk-core-package-result"] = job("success", **locator("110", sdk="10"))
+        value["sdk-core-package-wave"] = job("success", **locator("110", sdk="10"))
         value["sdk-core-validation-result"] = job("success", **locator("110", sdk="10"))
         value["sdk-core-metadata-result"] = job("success", **locator("110", sdk="10"))
         forward_android(value)
@@ -128,7 +128,7 @@ class SdkCompletionStateTest(unittest.TestCase):
         value = handoff()
         value["sdk-ios-metadata-result"] = job("success", **locator("110", sdk="10"))
         value["sdk-core-binary-wave"] = job("success", **locator("111", sdk="11"))
-        value["sdk-core-package-result"] = job("success", **locator("111", sdk="11"))
+        value["sdk-core-package-wave"] = job("success", **locator("111", sdk="11"))
         value["sdk-core-validation-result"] = job("success", **locator("111", sdk="11"))
         value["sdk-core-metadata-result"] = job("success", **locator("111", sdk="11"))
         forward_android(value)
@@ -146,25 +146,25 @@ class SdkCompletionStateTest(unittest.TestCase):
     def test_core_package_wave_twelve_requires_its_terminal_gate(self):
         value = handoff()
         value["sdk-core-binary-wave"] = job("success", **locator("111", sdk="11"))
-        value["sdk-core-package-result"] = job("success", **locator("112", sdk="12"))
+        value["sdk-core-package-wave"] = job("success", **locator("112", sdk="12"))
         value["sdk-core-validation-result"] = job("success", **locator("112", sdk="12"))
         value["sdk-core-metadata-result"] = job("success", **locator("112", sdk="12"))
         forward_android(value)
         self.assertEqual(locator("112", sdk="12"), state.select_sdk_completion_state(value))
         for status in ("failure", "cancelled", "skipped", "in_progress"):
             changed = deepcopy(value)
-            changed["sdk-core-package-result"]["result"] = status
+            changed["sdk-core-package-wave"]["result"] = status
             with self.subTest(status=status), self.assertRaises(ValueError):
                 state.select_sdk_completion_state(changed)
         for invalid in (locator("112", sdk="11"), locator("112", sdk="13")):
             changed = deepcopy(value)
-            changed["sdk-core-package-result"]["outputs"] = invalid
+            changed["sdk-core-package-wave"]["outputs"] = invalid
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 state.select_sdk_completion_state(changed)
 
     def test_core_validation_wave_thirteen_requires_its_terminal_gate(self):
         value = handoff()
-        value["sdk-core-package-result"] = job("success", **locator("112", sdk="12"))
+        value["sdk-core-package-wave"] = job("success", **locator("112", sdk="12"))
         value["sdk-core-validation-result"] = job("success", **locator("113", sdk="13"))
         value["sdk-core-metadata-result"] = job("success", **locator("113", sdk="13"))
         forward_android(value)

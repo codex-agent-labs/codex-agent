@@ -50,8 +50,9 @@ class SdkCoreBinaryWorkflowTest(unittest.TestCase):
         parent = WORKFLOW.read_text()
         self.assertIn("uses: ./.github/workflows/sdk-core-binary-validation.yml", parent)
         self.assertIn("sdk-core-binary-wave", parent.split("  sdk-completion:\n", 1)[1].split("\n", 1)[0])
-        self.assertIn("binary-original-workflow-path: .github/workflows/sdk-core-binary-validation.yml", parent)
-        self.assertIn("binary-original-job-name: product-validation / sdk-core-binary-wave / sdk-core-binary-common", parent)
+        package = WORKFLOW.with_name("sdk-core-package-validation.yml").read_text()
+        self.assertIn("binary-original-workflow-path: .github/workflows/sdk-core-binary-validation.yml", package)
+        self.assertIn("binary-original-job-name: product-validation / sdk-core-binary-wave / sdk-core-binary-common", package)
 
     def test_collected_original_outputs_require_successful_fresh_wave(self):
         source = CHILD.read_text()

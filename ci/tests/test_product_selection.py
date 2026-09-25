@@ -102,6 +102,10 @@ class ProductSelectionTest(unittest.TestCase):
             ".github/workflows/sdk-core-binary-validation.yml": {
                 instance for instance in sdk if instance.component == "sdk-core"
             },
+            ".github/workflows/sdk-core-package-validation.yml": {
+                instance for instance in sdk if instance.component == "sdk-core"
+                and instance.phase in {"package", "validation", "metadata"}
+            },
             ".github/workflows/sdk-validation.yml": sdk,
             ".github/workflows/sdk-binding-parity.yml": sdk,
             ".github/workflows/sdk-consumer-validation.yml": sdk,

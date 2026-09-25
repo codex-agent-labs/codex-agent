@@ -99,7 +99,7 @@ class FacadeCaptureTest(unittest.TestCase):
     def test_original_job_route_matches_declared_core_workflow_name(self):
         if self.component != "sdk-core":
             self.skipTest("Android worker jobs are not wired yet")
-        workflow_name = ("sdk-core-binary-validation.yml" if self.phase == "binary"
+        workflow_name = (f"sdk-core-{self.phase}-validation.yml" if self.phase in ("binary", "package")
                          else "product-validation.yml")
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows" / workflow_name).read_text()
         target = "${{ matrix.target }}" if self.phase == "validation" else "common"
@@ -229,10 +229,10 @@ class CoreBinaryCaptureTest(FacadeCaptureTest):
     required_directories = ("inputs", "worker", "selection")
 
     def test_paired_caller_pinned_child_route(self):
-        if self.component != "sdk-core" or self.phase != "binary":
-            self.skipTest("Only Core binary moves to the child workflow")
-        path = ".github/workflows/sdk-core-binary-validation.yml"
-        job = "product-validation / sdk-core-binary-wave / sdk-core-binary-common"
+        if self.component != "sdk-core" or self.phase not in ("binary", "package"):
+            self.skipTest("Only Core binary/package use child workflows")
+        path = f".github/workflows/sdk-core-{self.phase}-validation.yml"
+        job = f"product-validation / sdk-core-{self.phase}-wave / sdk-core-{self.phase}-common"
         self.run["referenced_workflows"][0]["path"] = (
             f"codex-agent-labs/codex-agent/{path}@{self.pin}")
         self.jobs[0]["name"] = job

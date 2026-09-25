@@ -105,11 +105,16 @@ class NativeStateSelectionTest(unittest.TestCase):
                 self.assertEqual((dict(artifact_id="456", artifact_digest="sha256:" + "b" * 64,
                     state_wave="0", sdk_state_wave=str(wave)) if required else current),
                     routing.select_native_state(selected, stage=family))
-            parent = "sdk-core-binary-wave" if family == "core-binary" else f"sdk-{family}-result"
+            parent = ("sdk-core-binary-wave" if family == "core-binary" else
+                      "sdk-core-package-wave" if family == "core-package" else f"sdk-{family}-result")
         stale = needs_for("core-package", required=True, state=locator("11", "0"))
         stale["sdk-core-binary-result"] = stale.pop("sdk-core-binary-wave")
         with self.assertRaises(ValueError):
             routing.select_native_state(stale, stage="core-package")
+        stale = needs_for("core-validation", required=True, state=locator("12", "0"))
+        stale["sdk-core-package-result"] = stale.pop("sdk-core-package-wave")
+        with self.assertRaises(ValueError):
+            routing.select_native_state(stale, stage="core-validation")
         for invalid in ("19", "0", "01", "-1"):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 routing._locator(locator(invalid, "0"))

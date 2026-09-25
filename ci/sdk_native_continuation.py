@@ -34,7 +34,7 @@ _STAGES = {
     "ios-metadata": ("sdk-ios-validation-result", "sdk-ios-metadata-plan", "sdk-ios-metadata", "sdk-collect-10", "10"),
     "core-binary": ("sdk-ios-metadata-result", "sdk-core-binary-plan", "sdk-core-binary", "sdk-collect-11", "11"),
     "core-package": ("sdk-core-binary-wave", "sdk-core-package-plan", "sdk-core-package", "sdk-collect-12", "12"),
-    "core-validation": ("sdk-core-package-result", "sdk-core-validation-plan", "sdk-core-validation", "sdk-collect-13", "13"),
+    "core-validation": ("sdk-core-package-wave", "sdk-core-validation-plan", "sdk-core-validation", "sdk-collect-13", "13"),
     "core-metadata": ("sdk-core-validation-result", "sdk-core-metadata-plan", "sdk-core-metadata", "sdk-collect-14", "14"),
     "android-binary": ("sdk-core-metadata-result", "sdk-android-binary-plan", "sdk-android-binary", "sdk-collect-15", "15"),
     "android-package": ("sdk-android-binary-result", "sdk-android-package-plan", "sdk-android-package", "sdk-collect-16", "16"),

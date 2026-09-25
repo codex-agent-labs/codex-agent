@@ -797,6 +797,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         ".github/workflows/product-validation.yml": set(ALL_INSTANCES),
         ".github/workflows/contract-validation.yml": _contract(),
         ".github/workflows/sdk-core-binary-validation.yml": _from_phase("sdk", "sdk-core", "binary"),
+        ".github/workflows/sdk-core-package-validation.yml": _from_phase("sdk", "sdk-core", "package"),
         ".github/workflows/sdk-validation.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/sdk-binding-parity.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/sdk-consumer-validation.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
