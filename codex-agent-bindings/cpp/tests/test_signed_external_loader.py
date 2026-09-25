@@ -112,6 +112,10 @@ def main() -> None:
         wrong_file.write_bytes(wrong_public)
         run(executable, default, compatibility, "signed-wrong-root", library, wrong_file)
         run(executable, default, compatibility, "signed-external", library, root_file)
+        keyring_file = evidence / "release-keyring.json"
+        keyring_file.write_bytes(keyring + b" " * (1024 * 1024))
+        run(executable, default, compatibility, "signed-oversized-evidence", library, root_file)
+        keyring_file.write_bytes(keyring)
         original = signature.read_bytes()
         changed = bytearray(original)
         offset = len(b"-----BEGIN SSH SIGNATURE-----\n") + 40

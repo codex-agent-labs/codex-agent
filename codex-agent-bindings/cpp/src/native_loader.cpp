@@ -488,7 +488,10 @@ std::string read_evidence_file(const std::filesystem::path& path, std::uintmax_t
     if (std::filesystem::file_size(path) > limit) throw std::runtime_error("external Runtime evidence is oversized");
     std::ifstream stream(path, std::ios::binary);
     if (!stream) throw std::runtime_error("external Runtime evidence is unavailable");
-    std::string bytes(std::istreambuf_iterator<char>(stream), {});
+    std::string bytes(static_cast<std::size_t>(limit + 1), '\0');
+    stream.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    bytes.resize(static_cast<std::size_t>(stream.gcount()));
+    if (stream.bad()) throw std::runtime_error("external Runtime evidence is unreadable");
     if (bytes.size() > limit) throw std::runtime_error("external Runtime evidence changed or is oversized");
     return bytes;
 }
