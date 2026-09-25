@@ -5675,6 +5675,12 @@ jobs:
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
 
+      - name: Reject elected Android binary until original Core authority is wired
+        if: steps.capture.outputs.sdk-workers-required == 'true'
+        run: |
+          echo 'Android binary work is elected but its original Core caller and worker route are not wired.' >&2
+          exit 1
+
   sdk-completion:
     needs: [plan, product-tooling, product-resume, runtime-continuation, runtime-aggregate-continuation, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, sdk-plan, sdk-native-result, sdk-ios-validation-result, sdk-ios-metadata-result, sdk-core-binary-result, sdk-core-package-result, sdk-core-validation-result, sdk-core-metadata-result]
     if: >-
