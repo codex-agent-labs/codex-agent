@@ -36,6 +36,7 @@ LOADER_TESTS = {
         "wrong_abi_major", "incompatible_runtime", "compatible_patch", "next_minor",
         "wrong_contract", "wrong_target",
         "missing_identity", "no_fallback", "missing_compatibility_sidecar", "relative_override",
+        "external_no_evidence", "signed_external", "abi_major_alias", "abi_minor_alias", "abi_patch_alias",
         "noncanonical_json", "reordered_json", "duplicate_json_key", "reordered_variants",
         "duplicate_component", "duplicate_manifest", "invalid_sdk_version", "valid_sdk_prerelease",
         "invalid_sdk_prerelease", "invalid_identity_schema", "invalid_abi_major", "invalid_abi_minor",
@@ -110,7 +111,7 @@ def _rows(path: Path, header: str) -> list[list[str]]:
     return rows
 
 
-def _verify_raw(build: Path, evidence: Path) -> None:
+def _verify_raw(build: Path, evidence: Path, classifier: str) -> None:
     raw = build / "parity"
     _tree(raw)
     if {path.name for path in raw.iterdir()} != set(REPORTS + AUXILIARIES):
@@ -138,7 +139,9 @@ def _verify_raw(build: Path, evidence: Path) -> None:
         ):
             raise ValueError("C++ CTest split does not isolate the final full-value proof")
         names.update(observed)
-    if not REQUIRED_TESTS.issubset(names):
+    required = REQUIRED_TESTS | ({"codex_agent_native_loader_no_test_root_symbol"}
+                                 if classifier != "windows-x64" else set())
+    if not required.issubset(names):
         raise ValueError("C++ CTest evidence omits an existing capability/native proof")
 
 
@@ -235,7 +238,7 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
                                                (build / "Testing", "prerequisite-ctest")):
                         _tree(original)
                         shutil.copytree(original, evidence / retained, symlinks=True)
-            _verify_raw(build, evidence)
+            _verify_raw(build, evidence, classifier)
             for name in REPORTS:
                 shutil.copyfile(build / "parity" / name, evidence / name)
             shutil.copyfile(source / "tests/value_parity_test.cpp", evidence / "test-program")

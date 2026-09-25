@@ -39,6 +39,7 @@ class ProducerTest(unittest.TestCase):
         self.compatibility = self.write(self.root / "input/sdk-compatibility.json", "explicit compatibility")
         self.library = self.write(self.sdk / "lib/libcodex_agent.dylib", "explicit native")
         self.output = self.root / "outputs/raw"
+        self.classifier = "macos-arm64"
         self.calls = []
         self.environments = []
         self.mutation = lambda evidence, build: None
@@ -78,6 +79,8 @@ class ProducerTest(unittest.TestCase):
             final = "-R" in command
             self.assertEqual(command[command.index("-R" if final else "-E") + 1], f"^{producer.VALUE_TEST}$")
             names = {producer.VALUE_TEST} if final else producer.REQUIRED_TESTS - {producer.VALUE_TEST}
+            if not final and self.classifier != "windows-x64":
+                names |= {"codex_agent_native_loader_no_test_root_symbol"}
             self.junit(Path(command[command.index("--output-junit") + 1]), names)
             self.write(build / "parity/compiler-evidence.tsv", "compilerEvidenceId\tpublicSymbols\nc-header:a\ta\n")
             self.write(build / "parity/executed-tests.tsv", "executedTestId\tstatus\n" +
@@ -98,6 +101,7 @@ class ProducerTest(unittest.TestCase):
         return subprocess.CompletedProcess(command, 0)
 
     def produce(self, **kwargs):
+        self.classifier = kwargs.get("classifier", "macos-arm64")
         with mock.patch.object(producer.subprocess, "run", side_effect=self.execute):
             producer.produce(self.api, self.bootstrap, self.sdk, self.library,
                              kwargs.pop("output", self.output), classifier=kwargs.pop("classifier", "macos-arm64"),
@@ -219,15 +223,34 @@ class ProducerTest(unittest.TestCase):
                              (self.output / "imported-c-sdk" / original.relative_to(self.sdk)).read_bytes())
 
     def test_each_existing_loader_case_is_required_without_skipping(self):
-        self.assertEqual(34, len(producer.LOADER_TESTS))
+        self.assertEqual(39, len(producer.LOADER_TESTS))
         for name in sorted(producer.LOADER_TESTS):
             with self.subTest(name=name):
                 def omit(evidence, build):
-                    self.junit(evidence / "ctest-suite.xml", producer.REQUIRED_TESTS - {producer.VALUE_TEST, name})
+                    self.junit(evidence / "ctest-suite.xml",
+                               (producer.REQUIRED_TESTS - {producer.VALUE_TEST, name}) |
+                               {"codex_agent_native_loader_no_test_root_symbol"})
                 self.mutation = omit
                 with self.assertRaisesRegex(ValueError, "omits an existing capability/native proof"):
                     self.produce()
                 self.assertFalse(self.output.exists())
+
+    def test_unix_symbol_hygiene_case_is_required_but_windows_does_not_register_it(self):
+        name = "codex_agent_native_loader_no_test_root_symbol"
+
+        def omit(evidence, build):
+            self.junit(evidence / "ctest-suite.xml", producer.REQUIRED_TESTS - {producer.VALUE_TEST})
+
+        self.mutation = omit
+        with self.assertRaisesRegex(ValueError, "omits an existing capability/native proof"):
+            self.produce()
+        self.assertFalse(self.output.exists())
+        self.mutation = lambda evidence, build: None
+        self.library = self.write(self.sdk / "bin/codex_agent.dll", "explicit Windows native")
+        for member in ("lib/codex_agent.lib", "lib/libcodex_agent.dll.a"):
+            self.write(self.sdk / member, "explicit import library")
+        self.produce(classifier="windows-x64")
+        self.assertTrue(self.output.is_dir())
 
     def test_output_scope_and_symbolic_inputs_fail_before_deletion(self):
         for output in (self.root, self.checkout, self.source, self.source / "tests/destroy",
@@ -327,8 +350,11 @@ class ProducerTest(unittest.TestCase):
         names = set(re.findall(r"\bNAME\s+(codex_agent_\w+)\s", cmake))
         for modes in re.findall(r"foreach\(mode\s+([^)]*)\)", cmake):
             names.update("codex_agent_native_loader_" + mode.replace("-", "_") for mode in modes.split())
+        for aliases in re.findall(r"foreach\(alias\s+([^)]*)\)", cmake):
+            names.update(f"codex_agent_native_loader_abi_{alias}_alias" for alias in aliases.split())
         self.assertEqual(producer.REQUIRED_TESTS,
-                         names - {"codex_agent_cpp_installed_package_tamper"})
+                         names - {"codex_agent_cpp_installed_package_tamper",
+                                  "codex_agent_native_loader_no_test_root_symbol"})
         self.assertNotIn("if(NOT WIN32)", cmake)
         full = (SCRIPT.parents[1] / "tests/value_parity_test.cpp").read_text()
         self.assertIn('require(all_claims.size() == 556', full)
