@@ -114,6 +114,19 @@ outputs:
           steps.upload.outcome == 'success' && steps.upload.outputs.artifact-id != '' &&
           steps.upload.outputs.artifact-digest != '' &&
           format('sha256:{0}', steps.upload.outputs.artifact-digest) || '' }}
+  package-artifact-id:
+    description: Package only; official original upload ID after successful phase execution and upload.
+    value: >-
+      ${{ inputs.phase == 'package' && steps.execute.outcome == 'success' &&
+          steps.upload.outcome == 'success' && steps.upload.outputs.artifact-id != '' &&
+          steps.upload.outputs.artifact-digest != '' && steps.upload.outputs.artifact-id || '' }}
+  package-artifact-sha256:
+    description: Package only; official original upload digest after successful phase execution and upload.
+    value: >-
+      ${{ inputs.phase == 'package' && steps.execute.outcome == 'success' &&
+          steps.upload.outcome == 'success' && steps.upload.outputs.artifact-id != '' &&
+          steps.upload.outputs.artifact-digest != '' &&
+          format('sha256:{0}', steps.upload.outputs.artifact-digest) || '' }}
 runs:
   using: composite
   steps:

@@ -81,6 +81,13 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
                           "steps.upload.outputs.artifact-id != ''",
                           "steps.upload.outputs.artifact-digest != ''"):
                 self.assertIn(guard, expression)
+        for name in ("package-artifact-id", "package-artifact-sha256"):
+            expression = outputs.split("  " + name + ":", 1)[1].split("\n  package-", 1)[0]
+            for guard in ("inputs.phase == 'package'", "steps.execute.outcome == 'success'",
+                          "steps.upload.outcome == 'success'",
+                          "steps.upload.outputs.artifact-id != ''",
+                          "steps.upload.outputs.artifact-digest != ''"):
+                self.assertIn(guard, expression)
         self.assertIn("- id: execute", self.action)
         self.assertIn("- id: upload", self.action)
         with tempfile.TemporaryDirectory() as temporary:
