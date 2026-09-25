@@ -38,6 +38,7 @@ class RuntimeValidationSettingsContractTest {
                         "codexAgent.runtimeBinaryStage" to ${quote(root.resolve("predecessor").path)},
                         "codexAgent.runtimePackageStage" to ${quote(root.resolve("predecessor").path)},
                         "codexAgent.runtimeNativePackageStage" to ${quote(root.resolve("predecessor").path)},
+                        "codexAgent.runtimeValidationHandoff" to ${quote(root.resolve("predecessor").path)},
                         "codexAgent.runtimePackageVersion" to "0.2.4",
                         "codexAgent.runtimeNativePackageVersion" to "0.2.1",
                     )
@@ -91,26 +92,15 @@ class RuntimeValidationSettingsContractTest {
                             }
                         }
                         for (component in adapters) {
-                            // Metadata consumes the original package/version,
+                            // Metadata consumes the verified validation handoff,
                             // never an unrelated caller-supplied Maven tree.
-                            check(route(component, "metadata", component,
-                                mapOf("codexAgent.runtimePackageVersion" to "0.2.4")) == component)
-                            check(route(component, "metadata", component,
-                                mapOf("codexAgent.runtimePackageVersion" to "0.2.4-rc.1")) == component)
                             for (bad in listOf(null, "", "relative", ${quote(root.resolve("missing").path)},
                                 ${quote(original.path)}, ${quote(root.resolve("symbolic-parent").path)},
                                 ${quote(root.resolve("symbolic-parent/predecessor").path)},
                                 ${quote(root.resolve("predecessor/../predecessor").path)})) {
                                 check(runCatching { route(component, "metadata", component,
-                                    mapOf("codexAgent.runtimePackageStage" to bad)) }.isFailure) {
-                                    component + " metadata package stage: " + bad
-                                }
-                            }
-                            for (bad in listOf(null, "", "latest", "0.2", "01.2.0", "0.2.4-01",
-                                "0.2.4-rc.01", " 0.2.4", "0.2.4\n")) {
-                                check(runCatching { route(component, "metadata", component,
-                                    mapOf("codexAgent.runtimePackageVersion" to bad)) }.isFailure) {
-                                    component + " metadata original version: " + bad
+                                    mapOf("codexAgent.runtimeValidationHandoff" to bad)) }.isFailure) {
+                                    component + " metadata validation handoff: " + bad
                                 }
                             }
                             for (bad in listOf("", ${quote(root.resolve("predecessor").path)})) {
@@ -119,12 +109,11 @@ class RuntimeValidationSettingsContractTest {
                                     component + " metadata must reject an external Maven tree"
                                 }
                             }
-                            for (property in listOf("runtimePackageStage", "runtimePackageVersion", "runtimeMavenRepository")) {
+                            for (property in listOf("runtimeValidationHandoff", "runtimeMavenRepository")) {
                                 val systemProperty = "org.gradle.project.codexAgent." + property
                                 val previous = System.getProperty(systemProperty)
                                 try {
-                                    System.setProperty(systemProperty, if (property == "runtimePackageVersion") "0.2.4"
-                                        else ${quote(root.resolve("predecessor").path)})
+                                    System.setProperty(systemProperty, ${quote(root.resolve("predecessor").path)})
                                     check(runCatching { route(component, "metadata", component) }.isFailure) {
                                         component + " metadata must reject system-property input: " + property
                                     }

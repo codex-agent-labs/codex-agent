@@ -173,6 +173,8 @@ class RuntimeProductStageRegistrationTest {
 
         private fun runner(task: String) = GradleRunner.create()
             .withProjectDir(root)
+            .withTestKitDir(File(System.getenv("GRADLE_USER_HOME") ?:
+                File(System.getProperty("user.home"), ".gradle").path))
             .withArguments(
                 task,
                 "--offline",
@@ -293,7 +295,10 @@ class RuntimeProductStageRegistrationTest {
             File(kotlinx.serialization.KSerializer::class.java.protectionDomain.codeSource.location.toURI())
                 .copyTo(dependencies.resolve("kotlinx-core.jar"))
             sources.resolve("RuntimeStageFixturePlugin.kt").writeText(FIXTURE_PLUGIN)
-            buildLogic.resolve("settings.gradle.kts").writeText("rootProject.name = \"runtime-stage-fixture\"\n")
+            buildLogic.resolve("settings.gradle.kts").writeText(
+                "pluginManagement { repositories { mavenCentral(); gradlePluginPortal() } }\n" +
+                    "rootProject.name = \"runtime-stage-fixture\"\n",
+            )
             buildLogic.resolve("build.gradle.kts").writeText(
                 """
                     plugins {

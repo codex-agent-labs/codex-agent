@@ -147,6 +147,7 @@ class RuntimeIsolationFixtureTest {
             rejectedBeforeBuildLogic(
                 workspace, base, contract, publicKey, target,
                 "source-escape", "source directory is missing, symbolic, or escapes",
+                verifyContractOnMismatch = false,
                 mutateFixture = { fixture ->
                     val sources = fixture.resolve("codex-agent-runtime-desktop")
                     val outside = workspace.resolve("outside-runtime-sources")
@@ -158,6 +159,7 @@ class RuntimeIsolationFixtureTest {
             rejectedBeforeBuildLogic(
                 workspace, base, contract, publicKey, target,
                 "nested-source-escape", "source directory is missing, symbolic, or escapes",
+                verifyContractOnMismatch = false,
                 mutateFixture = { fixture ->
                     val sources = fixture.resolve("codex-agent-runtime-desktop/src/commonMain")
                     val outside = workspace.resolve("outside-common-main")
@@ -357,6 +359,7 @@ class RuntimeIsolationFixtureTest {
         expectedFailure: String,
         contractVersion: String = "0.2.0",
         extraArguments: List<String> = emptyList(),
+        verifyContractOnMismatch: Boolean = true,
         mutateFixture: (File) -> Unit = {},
         mutate: (File) -> Unit = {},
     ) {
@@ -379,7 +382,8 @@ class RuntimeIsolationFixtureTest {
             *additionalArguments,
         ).buildAndFail()
         if (expectedFailure !in result.output) {
-            assertTrue(extraArguments.isEmpty(), "$name did not fail for the expected reason:\n${result.output}")
+            assertTrue(extraArguments.isEmpty() && verifyContractOnMismatch,
+                "$name did not fail for the expected reason:\n${result.output}")
             val verifierFailure = contractVerifierFailure(contract, publicKey, target, contractVersion)
             assertTrue(
                 expectedFailure in verifierFailure,
@@ -535,6 +539,9 @@ class RuntimeIsolationFixtureTest {
             "LICENSE",
             "THIRD_PARTY_NOTICES.md",
         ).forEach { copyFile(it, fixture) }
+        // This isolated adversarial fixture imports the 0.2.0 Contract fixture,
+        // so its copied Runtime version authority must describe the same release.
+        fixture.resolve("gradle/release/versions/runtime.txt").writeText("0.2.0\n")
         listOf(
             "runtime/build-logic/src/main",
             "codex-agent-runtime-desktop/src",

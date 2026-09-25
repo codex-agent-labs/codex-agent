@@ -228,6 +228,7 @@ class RuntimeToolchainSettingsContractTest {
                     """
                     val values = mapOf("codexAgent.target" to "macos-arm64")
                     val nativeRuntimeTargets = setOf("macos-arm64")
+                    val runtimeTargets = nativeRuntimeTargets
                     val commandLineProperties = gradle.startParameter.projectProperties
                     val requestedPhase = commandLineProperties["codexAgent.phase"]
                     val requestedProduct = "runtime"
@@ -235,6 +236,8 @@ class RuntimeToolchainSettingsContractTest {
                     val requestedTarget = "macos-arm64"
                     val bindingValidation = false
                     val adapterHostValidation = false
+                    val adapterMetadata = false
+                    val aggregateMetadata = false
                     val semver = Regex("[0-9]+\\.[0-9]+\\.[0-9]+")
                     fun absoluteNormalizedPath(name: String) = file(commandLineProperties.getValue(name)).toPath()
                     $boundary

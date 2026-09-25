@@ -1,3 +1,4 @@
+import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -23,6 +24,16 @@ class DesktopClassifierImportFunctionalTest {
                 .writeText("license")
             project.resolve("legal/openai-codex/openai-codex-NOTICE.txt")
                 .writeText("notice")
+            val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
+                .first { it.resolve("runtime/settings.gradle.kts").isFile }
+            listOf("abi-contract.json", "binary-flags.json").forEach { name ->
+                repository.resolve("codex-agent-runtime-desktop/native/c-api/$name")
+                    .copyTo(project.resolve("native/c-api/$name").apply { parentFile.mkdirs() })
+            }
+            listOf("linux.map", "macos.exports", "windows.def").forEach { name ->
+                val path = "codex-agent-runtime-desktop/native/c-api/exports/$name"
+                repository.resolve(path).copyTo(project.resolve(path).apply { parentFile.mkdirs() })
+            }
             project.resolve("settings.gradle.kts").writeText("rootProject.name = \"test\"\n")
             project.resolve("build.gradle.kts").writeText(
                 """
@@ -44,6 +55,7 @@ class DesktopClassifierImportFunctionalTest {
                     "generateDesktopDistributionSource",
                     "packageLinuxArm64AppServer",
                     "-PcodexAgent.desktopClassifierDirectory=${project.absolutePath}",
+                    "-PcodexAgent.target=jvm",
                     "--no-configuration-cache",
                     "--stacktrace",
                 )

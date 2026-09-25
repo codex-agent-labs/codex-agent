@@ -105,6 +105,8 @@ pluginManagement {
         listOf("codexAgent.runtimePackageStage", "codexAgent.runtimeNativePackageStage")
     } else if (aggregateMetadata) {
         runtimeTargets.map { "codexAgent.runtimeMavenStage.$it" }
+    } else if (adapterMetadata) {
+        listOf("codexAgent.runtimeValidationHandoff")
     } else {
         listOfNotNull(nativePredecessorProperty)
     }
