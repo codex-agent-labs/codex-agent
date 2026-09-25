@@ -1,5 +1,6 @@
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.security.MessageDigest
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -104,7 +105,11 @@ internal fun File.runtimeEvidenceTreeDigest(): String {
         true
     }.filter { file ->
         check(!Files.isSymbolicLink(file.toPath())) { "Runtime evidence input contains a symlink: $file" }
-        file.isFile
+        check(Files.isDirectory(file.toPath(), LinkOption.NOFOLLOW_LINKS) ||
+            Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+            "Runtime evidence input contains a non-regular entry: $file"
+        }
+        Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS)
     }.sortedBy { it.relativeTo(this).invariantSeparatorsPath }.toList()
     check(files.isNotEmpty()) { "Runtime evidence input directory is empty: $this" }
     val digest = MessageDigest.getInstance("SHA-256")

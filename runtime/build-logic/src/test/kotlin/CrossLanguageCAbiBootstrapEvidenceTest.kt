@@ -1,4 +1,5 @@
 import java.io.File
+import java.nio.file.Files
 import java.security.MessageDigest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -7,6 +8,24 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class CrossLanguageCAbiBootstrapEvidenceTest {
+    @Test
+    fun `evidence digest rejects a special entry as Contract inventory does`() {
+        if (System.getProperty("os.name").startsWith("Windows")) return
+        val root = Files.createTempDirectory("runtime-evidence-special-")
+        try {
+            Files.writeString(root.resolve("regular.txt"), "original bytes")
+            val fifo = root.resolve("unexpected-fifo")
+            assertEquals(0, ProcessBuilder("mkfifo", fifo.toString()).start().waitFor())
+            assertTrue("non-regular entry" in assertFailsWith<IllegalStateException> {
+                root.toFile().runtimeEvidenceTreeDigest()
+            }.message.orEmpty())
+        } finally {
+            Files.deleteIfExists(root.resolve("unexpected-fifo"))
+            Files.deleteIfExists(root.resolve("regular.txt"))
+            Files.delete(root)
+        }
+    }
+
     @Test
     fun `derives the exact reviewed 556 capability bootstrap slice`() {
         val inputs = validInputs()
