@@ -487,11 +487,23 @@ List<int> _evidenceFile(Directory root, String name,
     {int maxBytes = 1024 * 1024}) {
   final file = File('${root.path}${Platform.pathSeparator}$name');
   requireAbsoluteRegularFile(file, 'external Runtime evidence $name');
-  final length = file.lengthSync();
-  if (length <= 0 || length > maxBytes) {
-    throw CodexException('external Runtime evidence $name has invalid size');
+  final opened = file.openSync(mode: FileMode.read);
+  try {
+    final length = opened.lengthSync();
+    if (length <= 0 || length > maxBytes) {
+      throw CodexException('external Runtime evidence $name has invalid size');
+    }
+    // Bound the read on the opened file, even if the pathname changes after inspection.
+    final bytes = opened.readSync(length);
+    if (bytes.length != length || opened.lengthSync() != length) {
+      throw CodexException(
+          'external Runtime evidence $name changed while reading');
+    }
+    requireAbsoluteRegularFile(file, 'external Runtime evidence $name');
+    return bytes;
+  } finally {
+    opened.closeSync();
   }
-  return file.readAsBytesSync();
 }
 
 Map<String, Object?> _canonicalEvidence(List<int> bytes, String label) {

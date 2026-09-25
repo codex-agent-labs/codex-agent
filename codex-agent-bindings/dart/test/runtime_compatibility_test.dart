@@ -410,7 +410,8 @@ void main() {
     final signer = _testKey(temporary, 'signer');
     final evidence = Directory('${library.path}.evidence')..createSync();
     final keys = Directory('${evidence.path}/keys')..createSync();
-    File('${keys.path}/release-a.pub').writeAsBytesSync(signer.public);
+    final releaseKey = File('${keys.path}/release-a.pub')
+      ..writeAsBytesSync(signer.public);
     final signerFingerprint = _fingerprint(signer.public);
     final keyring = File('${evidence.path}/release-keyring.json')
       ..writeAsStringSync(_canonicalJson({
@@ -465,6 +466,17 @@ void main() {
           trustedRootForTesting: trustedRoot ?? root.public,
         );
 
+    expect(verify()['runtimeLibrarySha256'], runtimeFileSha256(library));
+    releaseKey.writeAsBytesSync(List<int>.filled(4097, 0x41));
+    expect(
+      () => verify(),
+      throwsA(isA<CodexException>().having(
+        (error) => error.message,
+        'message',
+        contains('has invalid size'),
+      )),
+    );
+    releaseKey.writeAsBytesSync(signer.public);
     expect(verify()['runtimeLibrarySha256'], runtimeFileSha256(library));
     final originalClaim = claim.readAsStringSync();
     for (final nested in const [false, true]) {
