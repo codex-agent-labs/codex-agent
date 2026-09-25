@@ -307,27 +307,36 @@ def _same_pr_run(
 
 
 def verify_contract_producer_runs(
-    producers: Mapping[str, Any], *, trusted_workflow_sha: str, token: str,
+    producers: Mapping[str, Any], *, token: str, trusted_workflow_sha: str | None = None,
+    trusted_workflows_by_phase: Mapping[str, Any] | None = None,
+    jobs_by_phase: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Observe exact original CI attempts, not whole-run success or signing authority.
 
-    The protected caller supplies the reviewed workflow pin. This does not bind
-    an uploaded artifact to these jobs: artifact/object/closure admission and
-    protected signing policy must still pass before a private key is used.
+    The protected caller supplies reviewed workflow pins and fixed job names.
+    This does not bind an upload to the jobs: artifact/object/closure admission
+    and protected signing policy must still pass before a private key is used.
     Returned API evidence stays external to reusable payloads and original receipts.
     """
     return _observe_contract_producer_runs(
         producers, phases=("binary", "package", "validation", "metadata"),
-        trusted_workflow_sha=trusted_workflow_sha, token=token)
+        trusted_workflow_sha=trusted_workflow_sha,
+        trusted_workflows_by_phase=trusted_workflows_by_phase,
+        jobs_by_phase=jobs_by_phase, token=token)
 
 
 def _observe_contract_producer_runs(
-    producers: Mapping[str, Any], *, phases: tuple[str, ...], trusted_workflow_sha: str, token: str,
+    producers: Mapping[str, Any], *, phases: tuple[str, ...], token: str,
+    trusted_workflow_sha: str | None = None,
+    trusted_workflows_by_phase: Mapping[str, Any] | None = None,
+    jobs_by_phase: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
+    if jobs_by_phase is None:
+        jobs_by_phase = {phase: "product-validation / product-contracts" if phase == "binary"
+                         else "product-validation / contract-continuation" for phase in phases}
     return _observe_ci_producer_jobs(
-        producers, jobs_by_phase={phase: "product-validation / product-contracts" if phase == "binary"
-                                 else "product-validation / contract-continuation" for phase in phases},
-        trusted_workflow_sha=trusted_workflow_sha, token=token)
+        producers, jobs_by_phase=jobs_by_phase, trusted_workflow_sha=trusted_workflow_sha,
+        trusted_workflows_by_phase=trusted_workflows_by_phase, token=token)
 
 
 def _observe_ci_producer_jobs(
@@ -336,6 +345,9 @@ def _observe_ci_producer_jobs(
 ) -> list[dict[str, Any]]:
     # Callers choose fixed jobs and workflow references; transported data selects neither.
     require_exact_keys(producers, set(jobs_by_phase), "Contract phase producers")
+    for phase, job in jobs_by_phase.items():
+        if type(job) is not str or not job:
+            raise ValueError(f"Contract {phase} producer job must be caller-pinned text")
     if (trusted_workflow_sha is None) == (trusted_workflows_by_phase is None):
         raise ValueError("Contract producer admission requires exactly one caller-owned workflow policy")
     repository = "codex-agent-labs/codex-agent"

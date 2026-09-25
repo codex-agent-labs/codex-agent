@@ -166,17 +166,17 @@ class ContractProducerRunTest(unittest.TestCase):
         }]
         run = {**self.run, "referenced_workflows": references}
         jobs = [self.jobs[0], {**self.jobs[1], "name": new_job}]
-        policy = {
-            "binary": {"path": ".github/workflows/product-validation.yml", "sha": self.pin},
-            "package": {"path": new_path, "sha": new_pin},
-        }
-        arguments = dict(producers={phase: self.producer for phase in policy},
-                         jobs_by_phase={"binary": self.jobs[0]["name"], "package": new_job},
+        policy = {phase: ({"path": ".github/workflows/product-validation.yml", "sha": self.pin}
+                          if phase == "binary" else {"path": new_path, "sha": new_pin})
+                  for phase in self.producers}
+        arguments = dict(producers=self.producers,
+                         jobs_by_phase={phase: self.jobs[0]["name"] if phase == "binary" else new_job
+                                        for phase in self.producers},
                          trusted_workflows_by_phase=policy, token="unused")
         with mock.patch.object(product_reuse, "api_json", side_effect=[run, self.commit]), \
                 mock.patch.object(product_reuse, "paginated_items", return_value=jobs):
             self.assertEqual([{"run": run, "testedCommit": self.commit, "jobs": jobs}],
-                             product_reuse._observe_ci_producer_jobs(**arguments))
+                             product_reuse.verify_contract_producer_runs(**arguments))
         for changed in (
             {**run, "referenced_workflows": references[:1]},
             {**run, "referenced_workflows": [*references, references[1]]},
@@ -193,7 +193,11 @@ class ContractProducerRunTest(unittest.TestCase):
                             {**policy, "package": {"path": "../untrusted.yml", "sha": new_pin}},
                             {**policy, "package": {"path": new_path, "sha": "main"}}):
                 with self.subTest(policy=invalid), self.assertRaises(ValueError):
-                    product_reuse._observe_ci_producer_jobs(**{**arguments, "trusted_workflows_by_phase": invalid})
+                    product_reuse.verify_contract_producer_runs(**{**arguments, "trusted_workflows_by_phase": invalid})
+            for jobs in ({**arguments["jobs_by_phase"], "package": None},
+                         {phase: job for phase, job in arguments["jobs_by_phase"].items() if phase != "package"}):
+                with self.subTest(jobs=jobs), self.assertRaises(ValueError):
+                    product_reuse.verify_contract_producer_runs(**{**arguments, "jobs_by_phase": jobs})
             query.assert_not_called()
 
     def test_dispatch_opt_in_requires_fixed_authorization_job_and_exact_tested_commit(self):
