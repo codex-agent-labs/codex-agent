@@ -48,7 +48,7 @@ class SdkPlatformMetadataDispatchTest {
                 val paths = result.output.lineSequence().filter { it.startsWith(":") && it.endsWith(" SKIPPED") }
                     .map { it.removeSuffix(" SKIPPED") }.toList()
                 assertEquals(listOf(":writeSdk${title}MetadataContent", ":writeSdk${title}MetadataOutputManifest",
-                    ":ciProductPhase"), paths, result.output)
+                    ":sdkProductPhase", ":ciProductPhase"), paths, result.output)
             }
         } finally {
             scratch.deleteRecursively()

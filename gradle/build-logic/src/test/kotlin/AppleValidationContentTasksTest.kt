@@ -94,7 +94,7 @@ class AppleValidationContentTasksTest {
         )) assertTrue(required in manifest, required)
         assertTrue("rootProject.layout.buildDirectory.dir(\"product-stage/sdk/sdk-ios/validation\")" in source)
         assertFalse("executionEnvelope" in manifest)
-        val routing = File("src/main/kotlin/codexagent.contract-product.gradle.kts").readText()
+        val routing = File("src/main/kotlin/codexagent.sdk-product.gradle.kts").readText()
             .substringAfter("Triple(\"sdk\", \"sdk-ios\", \"validation\") ->").substringBefore("Triple(")
         assertTrue("project(\":codex-agent-runtime-ios\").tasks.named(\"writeSdkIosValidationOutputManifest\")" in routing)
     }

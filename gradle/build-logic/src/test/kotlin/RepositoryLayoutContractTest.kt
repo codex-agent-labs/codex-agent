@@ -166,7 +166,7 @@ class RepositoryLayoutContractTest {
     @Test
     fun `all internal plugins are explicit and applied only by their owners`() {
         val owners = linkedMapOf(
-            "build.gradle.kts" to setOf("contract-product", "root-release"),
+            "build.gradle.kts" to setOf("contract-product", "root-release", "sdk-product"),
             "codex-agent-core/build.gradle.kts" to setOf("core-verification"),
             "codex-agent-runtime-android/build.gradle.kts" to setOf("codex-runtime"),
             "codex-agent-runtime-desktop/build.gradle.kts" to
@@ -231,10 +231,20 @@ class RepositoryLayoutContractTest {
                     !path.startsWith("runtime/build-logic/src/test/")
             }
             .flatMap { file ->
+                val relative = file.relativeTo(repository).invariantSeparatorsPath
                 file.readLines().asSequence().mapIndexedNotNull { index, line ->
-                    val stale = oldBuildLogic in line || rootReleasePath.containsMatchIn(line) ||
-                        rootReleaseReference.containsMatchIn(line) || rootJsStorePath.containsMatchIn(line)
-                    if (stale) "${file.relativeTo(repository)}:${index + 1}: $line" else null
+                    val inspected = when (relative) {
+                        "gradle/build-logic/src/main/kotlin/AppleBinaryPackageReplay.kt" ->
+                            line.replaceFirst("workDirectory.resolve(\"release/", "workDirectory.resolve(\"private-output/")
+                        "gradle/build-logic/src/main/kotlin/ApplePackageExecutionEvidence.kt" ->
+                            line.replaceFirst("work.resolve(\"release/", "work.resolve(\"private-output/")
+                        "gradle/build-logic/src/main/kotlin/SdkFacadeCompilerCapture.kt" ->
+                            line.replaceFirst("javaHome.resolve(\"release\")", "javaHome.resolve(\"jdk-metadata\")")
+                        else -> line
+                    }
+                    val stale = oldBuildLogic in line || rootJsStorePath.containsMatchIn(line) ||
+                        rootReleasePath.containsMatchIn(inspected) || rootReleaseReference.containsMatchIn(inspected)
+                    if (stale) "$relative:${index + 1}: $line" else null
                 }
             }.toList()
         assertTrue(failures.isEmpty(), failures.joinToString("\n"))

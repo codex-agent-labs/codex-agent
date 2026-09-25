@@ -153,8 +153,9 @@ abstract class PinnedCargoTask @Inject constructor(
         } else {
             configuredArguments
         }
+        val cargoWorkingDirectory = workingDirectory.get().asFile
         exec.exec {
-            workingDir(workingDirectory)
+            workingDir(cargoWorkingDirectory)
             commandLine(cargo, *effectiveArguments.toTypedArray())
             setEnvironment(environment)
         }.assertNormalExitValue()

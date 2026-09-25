@@ -63,7 +63,7 @@ class NodeDesktopWorkflowContractTest {
         val workerAction = repository.resolve(".github/actions/sdk-javascript-worker/action.yml").readText()
         assertTrue("-m ci.sdk_workflow javascript" in workerAction)
         val productRoute = repository.resolve(
-            "gradle/build-logic/src/main/kotlin/codexagent.contract-product.gradle.kts",
+            "gradle/build-logic/src/main/kotlin/codexagent.sdk-product.gradle.kts",
         ).readText()
         assertTrue("Triple(\"sdk\", \"javascript\", \"validation\") ->" in productRoute)
         assertTrue("sdk.get().tasks.named(\"writeJavaScriptSdkValidationOutputManifest\")" in productRoute)

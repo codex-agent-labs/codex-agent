@@ -84,13 +84,17 @@ class ReleaseToolingCliFunctionalTest {
             prepareStagedConsumer(template, consumer, "")
             consumer.resolve(".codex-consumer-task-outcomes.init.gradle.kts").writeText(
                 stagedConsumerOutcomeInitScript(listOf("compileKotlinJvm")) +
-                    stagedConsumerExecutionCaptureScript("/original/execution/task-outcomes.json"))
+                    stagedConsumerExecutionCaptureScript("/original/execution/task-outcomes.json") +
+                    sdkFacadeCompilerCaptureScript("jvm", "/original/compiler-inputs.json"))
+            val compilerInputs = root.resolve("compiler-inputs.json")
+            compilerInputs.atomicWriteJson(facadeCompilerCaptureFixture("jvm", "2.2.20"))
             val (replayExit, replayOutput) = runTool(root, "verify-original-sdk-facade-consumer-inputs",
                 "--source-snapshot", source.absolutePath, "--consumer-inputs", consumer.absolutePath,
                 "--package-stage", stage.absolutePath, "--target", "jvm",
                 "--contract-version", "1.2.3", "--runtime-version", "2.3.4", "--sdk-version", "3.4.5",
                 "--kotlin-version", "2.2.20", "--original-execution-directory", "/original/execution",
-                "--android-sdk-directory", "", "--forbidden-path", root.absolutePath)
+                "--android-sdk-directory", "", "--compiler-inputs", compilerInputs.absolutePath,
+                "--forbidden-path", root.absolutePath)
             assertEquals(0, replayExit, replayOutput)
         } finally {
             root.deleteRecursively()
@@ -351,7 +355,7 @@ class ReleaseToolingCliFunctionalTest {
         assertTrue("python3 -B -m ci.sdk_workflow javascript" in
             repository.resolve(".github/actions/sdk-javascript-worker/action.yml").readText())
         assertTrue("writeJavaScriptSdkValidationOutputManifest" in
-            repository.resolve("gradle/build-logic/src/main/kotlin/codexagent.contract-product.gradle.kts").readText())
+            repository.resolve("gradle/build-logic/src/main/kotlin/codexagent.sdk-product.gradle.kts").readText())
         assertTrue("dependsOn(verifyImportedJavaScriptSdkCompatibility, verifyJavaScriptTypeScriptBindingParity)" in
             repository.resolve("gradle/build-logic/src/main/kotlin/codexagent.javascript-sdk.gradle.kts").readText())
         assertTrue(":codex-agent-runtime-desktop:wasmJsNodeTest" in driver)

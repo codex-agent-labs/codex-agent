@@ -176,7 +176,7 @@ class SdkFacadeValidationTasksTest {
                 .map { it.removeSuffix(" SKIPPED") }.toList()
             assertEquals(listOf(":prepareSdkCoreValidationInputs", ":verifySdkCoreValidationPublicationMetadata",
                 ":verifySdkCoreValidationConsumer", ":writeSdkCoreValidationContent",
-                ":writeSdkCoreValidationOutputManifest", ":ciProductPhase"), paths, result.output)
+                ":writeSdkCoreValidationOutputManifest", ":sdkProductPhase", ":ciProductPhase"), paths, result.output)
             assertFalse(scratch.resolve("maven-repository").exists())
         } finally { scratch.deleteRecursively() }
     }
