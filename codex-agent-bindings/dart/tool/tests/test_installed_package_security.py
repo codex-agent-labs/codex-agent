@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import unittest
 
-from ci.native_wrappers import stage_dart_release
+from ci.native_wrappers import deterministic_tar, safe_extract_tar, stage_dart_release
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -24,12 +24,20 @@ class InstalledDartPackageSecurityTest(unittest.TestCase):
     def test_offline_path_install_rejects_unattested_override_and_missing_root(self):
         with tempfile.TemporaryDirectory(prefix="codex-agent-dart-installed-") as base:
             work = Path(base).resolve()
-            package = work / "codex_agent"
-            stage_dart_release(SOURCE, package)
-            native = package / "lib/src/native"
+            staged = work / "staged"
+            stage_dart_release(SOURCE, staged)
+            native = staged / "lib/src/native"
             root = native / "sdk-runtime-root.pub"
             root.write_bytes(PUBLIC_ROOT.read_bytes())
             compatibility = json.loads((native / "sdk-compatibility.json").read_bytes())
+            version = compatibility["sdkVersion"]
+            archive = work / f"codex-agent-dart-{version}.tar.gz"
+            deterministic_tar(staged, archive, f"codex_agent-{version}")
+            extracted = work / "archive"
+            safe_extract_tar(archive, extracted)
+            package = extracted / f"codex_agent-{version}"
+            native = package / "lib/src/native"
+            root = native / "sdk-runtime-root.pub"
             pubspec = (package / "pubspec.yaml").read_text()
             self.assertEqual(["codex_agent"], re.findall(r"(?m)^name: (\S+)$", pubspec))
             self.assertEqual([compatibility["sdkVersion"]], re.findall(r"(?m)^version: (\S+)$", pubspec))
@@ -39,7 +47,7 @@ class InstalledDartPackageSecurityTest(unittest.TestCase):
                 "name: installed_security_probe\n"
                 "publish_to: none\n"
                 "environment:\n  sdk: '>=3.6.0 <4.0.0'\n"
-                "dependencies:\n  codex_agent:\n    path: ../codex_agent\n"
+                f"dependencies:\n  codex_agent:\n    path: {os.path.relpath(package, consumer)}\n"
             )
             (consumer / "bin/probe.dart").write_text(
                 "import 'dart:io';\n"
