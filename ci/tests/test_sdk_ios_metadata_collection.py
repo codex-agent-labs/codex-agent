@@ -74,7 +74,7 @@ class SdkIosMetadataFamilyTest(unittest.TestCase):
             self.assertEqual(not failure, matrix.called)
             for name in ("product-resume-inputs", "product-resume-state"):
                 self.assertEqual(name.encode(), (destination / "handoff" / name / "retained.bin").read_bytes())
-        with self.assertRaisesRegex(ValueError, "exact family wave"):
+        with self.assertRaisesRegex(ValueError, "exact wave for its elected family"):
             workflow.collect(source, self.repository / "wrong-wave", self.repository / "unused-output",
                 wave=9, family="ios-metadata", trusted_workflow_sha=PIN,
                 repository_root=self.repository, environ={}, token="synthetic-token",

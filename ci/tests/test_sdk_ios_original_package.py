@@ -50,7 +50,7 @@ class SdkIosOriginalPackageTest(unittest.TestCase):
         package_stage = self.root / "package-stage"
         (package_stage / "outputs/evidence").mkdir(parents=True)
         (package_stage / "outputs/apple").mkdir()
-        self.compatibility_bytes = b"authenticated SDK compatibility\n"
+        self.compatibility_bytes = canonical_json_bytes({"sdkVersion": "0.8.0"})
         (package_stage / "outputs/evidence/sdk-compatibility.json").write_bytes(self.compatibility_bytes)
         (package_stage / "outputs/apple/CodexAgentPackage-0.8.0.zip").write_bytes(b"original package\x00\xff")
         manifest = write_output_manifest(
