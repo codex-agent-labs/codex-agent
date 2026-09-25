@@ -1,20 +1,23 @@
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 
-const string resourceName = "CodexAgent.sdk-runtime-root.pub";
 const int maxRootBytes = 4096;
+const int maxCompatibilityBytes = 65536;
 
-if (args.Length != 2)
+if (args.Length != 3)
 {
-    Console.Error.WriteLine("Usage: VerifySdkRuntimeRoot <package-dll> <expected-root-pub>");
+    Console.Error.WriteLine("Usage: VerifySdkRuntimeRoot <package-dll> <expected-root-pub> <expected-compatibility-json>");
     return 2;
 }
 
 try
 {
-    var expected = File.ReadAllBytes(args[1]);
-    if (expected.Length is 0 or > maxRootBytes)
+    var expectedRoot = File.ReadAllBytes(args[1]);
+    var expectedCompatibility = File.ReadAllBytes(args[2]);
+    if (expectedRoot.Length is 0 or > maxRootBytes)
         throw new InvalidDataException("Expected SDK root has invalid size.");
+    if (expectedCompatibility.Length is 0 or > maxCompatibilityBytes)
+        throw new InvalidDataException("Expected SDK compatibility has invalid size.");
 
     using var stream = File.OpenRead(args[0]);
     using var pe = new PEReader(stream);
@@ -24,35 +27,37 @@ try
         throw new InvalidDataException("Package DLL has no CLR metadata.");
 
     var metadata = pe.GetMetadataReader();
-    var matches = metadata.ManifestResources
-        .Where(handle => metadata.GetString(metadata.GetManifestResource(handle).Name) == resourceName)
-        .ToArray();
-    if (matches.Length != 1)
-        throw new InvalidDataException("Package DLL must contain exactly one SDK root resource.");
-
-    var resource = metadata.GetManifestResource(matches[0]);
-    if (!resource.Implementation.IsNil)
-        throw new InvalidDataException("SDK root resource is not embedded in the package DLL.");
-
     var directory = header.ResourcesDirectory;
-    var offset = (long)resource.Offset;
     var size = (long)directory.Size;
-    if (directory.RelativeVirtualAddress == 0 || size < 4 ||
-        offset < 0 || offset > size - 4 || size > int.MaxValue)
-        throw new InvalidDataException("SDK root resource is outside the CLR resource directory.");
-
+    if (directory.RelativeVirtualAddress == 0 || size < 4 || size > int.MaxValue)
+        throw new InvalidDataException("Package DLL has invalid CLR resource directory.");
     var block = pe.GetSectionData(directory.RelativeVirtualAddress);
     if (block.Length < size)
         throw new InvalidDataException("CLR resource directory is truncated.");
-    var length = block.GetReader((int)offset, sizeof(int)).ReadInt32();
-    if (length is <= 0 or > maxRootBytes || offset + sizeof(int) + length > size)
-        throw new InvalidDataException("SDK root resource has invalid bounds.");
+    foreach (var (name, expected, maximum, label) in new[] {
+        ("CodexAgent.sdk-runtime-root.pub", expectedRoot, maxRootBytes, "SDK root"),
+        ("CodexAgent.sdk-compatibility.json", expectedCompatibility, maxCompatibilityBytes, "SDK compatibility"),
+    })
+    {
+        var matches = metadata.ManifestResources
+            .Where(handle => metadata.GetString(metadata.GetManifestResource(handle).Name) == name)
+            .ToArray();
+        if (matches.Length != 1)
+            throw new InvalidDataException($"Package DLL must contain exactly one {label} resource.");
+        var resource = metadata.GetManifestResource(matches[0]);
+        if (!resource.Implementation.IsNil)
+            throw new InvalidDataException($"{label} resource is not embedded in the package DLL.");
+        var offset = (long)resource.Offset;
+        if (offset > size - sizeof(int))
+            throw new InvalidDataException($"{label} resource is outside the CLR resource directory.");
+        var length = block.GetReader((int)offset, sizeof(int)).ReadInt32();
+        if (length is <= 0 || length > maximum || offset + sizeof(int) + length > size)
+            throw new InvalidDataException($"{label} resource has invalid bounds.");
+        if (!block.GetContent((int)offset + sizeof(int), length).AsSpan().SequenceEqual(expected))
+            throw new InvalidDataException($"Embedded {label} differs from the expected {label}.");
+    }
 
-    var actual = block.GetContent((int)offset + sizeof(int), length);
-    if (!actual.AsSpan().SequenceEqual(expected))
-        throw new InvalidDataException("Embedded SDK root differs from the expected root.");
-
-    Console.WriteLine("Embedded SDK root matches expected bytes.");
+    Console.WriteLine("Embedded SDK root and compatibility match expected bytes.");
     return 0;
 }
 catch (Exception error) when (error is IOException or UnauthorizedAccessException or BadImageFormatException or InvalidDataException or OverflowException or ArgumentException)

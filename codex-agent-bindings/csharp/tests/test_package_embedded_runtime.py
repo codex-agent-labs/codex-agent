@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 
@@ -70,6 +71,11 @@ class PackageEmbeddedRuntimeTest(unittest.TestCase):
         self.assertEqual("CodexAgent.0.8.0.nupkg", package.name)
         with tempfile.TemporaryDirectory() as temporary:
             work = Path(temporary).resolve()
+            expected_compatibility = work / "expected-compatibility.json"
+            with zipfile.ZipFile(package) as archive:
+                name = "META-INF/codex-agent/sdk-compatibility.json"
+                self.assertEqual(1, archive.namelist().count(name))
+                expected_compatibility.write_bytes(archive.read(name))
             feed = work / "feed"
             feed.mkdir()
             shutil.copyfile(package, feed / package.name)
@@ -109,7 +115,8 @@ class PackageEmbeddedRuntimeTest(unittest.TestCase):
                                 "-p:NuGetAudit=false")
             self.assertEqual(0, tool_restored.returncode, tool_restored.stdout + tool_restored.stderr)
             inspected = run("run", "--project", str(ROOT_INSPECTOR), "--configuration", "Release",
-                            "--no-restore", "--", str(installed), str(PINNED_ROOT))
+                            "--no-restore", "--", str(installed), str(PINNED_ROOT),
+                            str(expected_compatibility))
             self.assertEqual(0, inspected.returncode, inspected.stdout + inspected.stderr)
 
             invalid_library = work / "unattested-runtime"

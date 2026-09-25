@@ -953,11 +953,11 @@ def require_embedded_sdk_compatibility(
                             cwd=tool_work)
                         csharp_inspector = tool_work / "bin/Debug/net8.0/VerifySdkRuntimeRoot.dll"
                     result = subprocess.run(
-                        ["dotnet", str(csharp_inspector), str(assembly), str(required_root)],
+                        ["dotnet", str(csharp_inspector), str(assembly), str(required_root), str(required)],
                         capture_output=True, text=True, check=False, timeout=30,
                     )
                     if result.returncode != 0:
-                        raise ValueError(f"C# package embedded SDK Runtime trust root is invalid: {result.stderr.strip()}")
+                        raise ValueError(f"C# package embedded SDK Runtime trust resources are invalid: {result.stderr.strip()}")
 
 
 def require_embedded_native_assets(

@@ -312,9 +312,12 @@ class NativeWrapperReleaseTest(unittest.TestCase):
 
             require_embedded_sdk_compatibility(root / "packages", sdks, version, ("csharp",))
             inspector.assert_called()
+            command = inspector.call_args.args[0]
+            self.assertEqual(5, len(command))
+            self.assertTrue(command[-1].endswith("/META-INF/codex-agent/sdk-compatibility.json"))
             inspector.return_value.returncode = 1
             inspector.return_value.stderr = "Embedded SDK root differs from the expected root."
-            with self.assertRaisesRegex(ValueError, "embedded SDK Runtime trust root is invalid"):
+            with self.assertRaisesRegex(ValueError, "embedded SDK Runtime trust resources are invalid"):
                 require_embedded_sdk_compatibility(root / "packages", sdks, version, ("csharp",))
             inspector.return_value.returncode = 0
             write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json",
