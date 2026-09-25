@@ -178,7 +178,8 @@ class SdkNativePackageExecutionTest(unittest.TestCase):
         self.assertTrue(self.live)
         self.events.append("inspect")
         self.assertEqual((self.plan_path, self.discovery, self.preparation_state), args)
-        self.assertEqual({"repository_root": self.root, "environ": self.arguments["environ"]}, kwargs)
+        self.assertEqual({"repository_root": self.root, "environ": self.arguments["environ"],
+                          "sdk_original_workflow_sha": self.arguments["trusted_workflow_sha"]}, kwargs)
         rows = [self.preparation]
         if self.failure == "missing-preparation": rows = []
         if self.failure == "duplicate-preparation": rows *= 2
