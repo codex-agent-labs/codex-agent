@@ -69,3 +69,29 @@ test('actual installed consumer binds npm package identity to the selected archi
   assert.throws(() => check(Buffer.from('{"name":"other","version":"0.8.0"}\n'), Buffer.from('{"name":"other","version":"0.8.0"}\n')), /@codex-agent-labs\/codex-agent/);
   assert.throws(() => check(Buffer.from('{"name":"@codex-agent-labs/codex-agent","version":"0.8.1"}\n'), Buffer.from('{"name":"@codex-agent-labs/codex-agent","version":"0.8.1"}\n')), /0\.8\.0/);
 });
+
+test('actual installed consumer binds declarations and entry points to npm archive bytes', () => {
+  const verifyMember = exactBlock('function verifyInstalledPackageMember(', 'function hasModifier(node, kind)');
+  const names = ['index.d.ts', 'index.cjs', 'index.mjs'];
+  const entries = names.map((name) => `package/${name}`);
+  const run = (archiveEntries, changedName, installedBytes, archiveBytes) =>
+    vm.runInNewContext(`const archiveEntries = ${JSON.stringify(archiveEntries)};\n${verifyMember}\nverifyInstalledPackageMember(archiveEntries, changedName);`, {
+      assert, Buffer, path, changedName, packageRoot: '/installed', tarballFile: '/selected.tgz',
+      fs: { readFileSync: (file) => {
+        assert.equal(file, `/installed/${changedName}`);
+        return installedBytes;
+      } },
+      execFileSync: (command, args) => {
+        assert.equal(command, 'tar');
+        assert.deepEqual(Array.from(args), ['-xOzf', '/selected.tgz', `package/${changedName}`]);
+        return archiveBytes;
+      },
+    });
+  for (const name of names) {
+    const bytes = Buffer.from(name);
+    run(entries, name, bytes, bytes);
+    assert.throws(() => run(entries, name, bytes, Buffer.from(`${name} changed`)), /selected npm archive member/);
+    assert.throws(() => run(entries.filter((entry) => entry !== `package/${name}`), name, bytes, bytes), /exactly one path/);
+    assert.throws(() => run([...entries, `elsewhere/${name}`], name, bytes, bytes), /exactly one path/);
+  }
+});

@@ -80,6 +80,20 @@ function verifyInstalledPackageIdentity(installedBytes, archiveBytes, compatibil
   assert.equal(metadata.version, compatibility.sdkVersion);
 }
 
+function verifyInstalledPackageMember(archiveEntries, name) {
+  const archivePath = `package/${name}`;
+  assert.deepEqual(
+    archiveEntries.filter((entry) => path.posix.basename(entry) === name),
+    [archivePath],
+    `The npm archive must contain ${name} at exactly one path`,
+  );
+  assert.deepEqual(
+    fs.readFileSync(path.join(packageRoot, name)),
+    execFileSync('tar', ['-xOzf', tarballFile, archivePath]),
+    `Installed ${name} must equal the selected npm archive member`,
+  );
+}
+
 function hasModifier(node, kind) {
   return node.modifiers?.some((modifier) => modifier.kind === kind) === true;
 }
@@ -702,6 +716,9 @@ test('typescript compiler discovers the exact installed public API', () => {
     execFileSync('tar', ['-xOzf', tarballFile, packageJsonArchivePath]),
     compatibility,
   );
+  for (const name of ['index.d.ts', 'index.cjs', 'index.mjs']) {
+    verifyInstalledPackageMember(archiveEntries, name);
+  }
   assert.equal(
     fs.existsSync(path.join(packageRoot, 'sdk-compatibility.json')),
     false,
