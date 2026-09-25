@@ -18,6 +18,7 @@ function exactBlock(start, end) {
 }
 
 const helpers = exactBlock('function canonicalJson(value)', 'function hasModifier(node, kind)');
+const readRegularFile = exactBlock('function readRegularFile(file)', 'function canonicalJson(value)');
 const verifyPackageIdentity = exactBlock('function verifyInstalledPackageIdentity(', 'function hasModifier(node, kind)');
 const mutation = exactBlock('  const wrongDefaultVersion =',
   '  assert.throws(\n    () => verifySdkCompatibility(Buffer.concat(');
@@ -75,9 +76,9 @@ test('actual installed consumer binds declarations and entry points to npm archi
   const names = ['index.d.ts', 'index.cjs', 'index.mjs'];
   const entries = names.map((name) => `package/${name}`);
   const run = (archiveEntries, changedName, installedBytes, archiveBytes) =>
-    vm.runInNewContext(`const archiveEntries = ${JSON.stringify(archiveEntries)};\n${verifyMember}\nverifyInstalledPackageMember(archiveEntries, changedName);`, {
+    vm.runInNewContext(`const archiveEntries = ${JSON.stringify(archiveEntries)};\n${readRegularFile}\n${verifyMember}\nverifyInstalledPackageMember(archiveEntries, changedName);`, {
       assert, Buffer, path, changedName, packageRoot: '/installed', tarballFile: '/selected.tgz',
-      fs: { readFileSync: (file) => {
+      fs: { lstatSync: () => ({ isFile: () => true, isSymbolicLink: () => false }), readFileSync: (file) => {
         assert.equal(file, `/installed/${changedName}`);
         return installedBytes;
       } },
@@ -93,6 +94,18 @@ test('actual installed consumer binds declarations and entry points to npm archi
     assert.throws(() => run(entries, name, bytes, Buffer.from(`${name} changed`)), /selected npm archive member/);
     assert.throws(() => run(entries.filter((entry) => entry !== `package/${name}`), name, bytes, bytes), /exactly one path/);
     assert.throws(() => run([...entries, `elsewhere/${name}`], name, bytes, bytes), /exactly one path/);
+  }
+});
+
+test('installed package metadata and entrypoints reject symlinks before reading', () => {
+  for (const name of ['package.json', 'META-INF/codex-agent/sdk-compatibility.json', 'index.cjs']) {
+    assert.throws(() => vm.runInNewContext(`${readRegularFile}\nreadRegularFile(file);`, {
+      assert, file: `/installed/${name}`,
+      fs: {
+        lstatSync: () => ({ isFile: () => true, isSymbolicLink: () => true }),
+        readFileSync: () => assert.fail('A symlink must never be read'),
+      },
+    }), /not a regular file/);
   }
 });
 

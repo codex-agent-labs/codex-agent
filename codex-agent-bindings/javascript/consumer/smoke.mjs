@@ -45,6 +45,12 @@ function identity(file) {
   };
 }
 
+function readRegularFile(file) {
+  const stat = fs.lstatSync(file);
+  assert.ok(stat.isFile() && !stat.isSymbolicLink(), `Installed package member is not a regular file: ${file}`);
+  return fs.readFileSync(file);
+}
+
 function canonicalJson(value) {
   if (Array.isArray(value)) return value.map(canonicalJson);
   if (value !== null && typeof value === 'object') {
@@ -88,7 +94,7 @@ function verifyInstalledPackageMember(archiveEntries, name) {
     `The npm archive must contain ${name} at exactly one path`,
   );
   assert.deepEqual(
-    fs.readFileSync(path.join(packageRoot, name)),
+    readRegularFile(path.join(packageRoot, name)),
     execFileSync('tar', ['-xOzf', tarballFile, archivePath]),
     `Installed ${name} must equal the selected npm archive member`,
   );
@@ -715,7 +721,7 @@ test('esm exposes the same runtime values as CommonJS', () => {
 
 test('typescript compiler discovers the exact installed public API', () => {
   assert.ok(tarballFile, 'The exact npm tarball path must be supplied by Gradle');
-  const compatibilityBytes = fs.readFileSync(sdkCompatibilityFile);
+  const compatibilityBytes = readRegularFile(sdkCompatibilityFile);
   const compatibility = verifySdkCompatibility(compatibilityBytes);
   const archiveEntries = execFileSync('tar', ['-tzf', tarballFile], { encoding: 'utf8' })
     .trimEnd()
@@ -736,7 +742,7 @@ test('typescript compiler discovers the exact installed public API', () => {
     'The npm archive must contain package.json at exactly one path',
   );
   verifyInstalledPackageIdentity(
-    fs.readFileSync(packageJsonFile),
+    readRegularFile(packageJsonFile),
     execFileSync('tar', ['-xOzf', tarballFile, packageJsonArchivePath]),
     compatibility,
   );
