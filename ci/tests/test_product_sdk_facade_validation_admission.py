@@ -156,7 +156,7 @@ class FacadeOriginalContentTest(unittest.TestCase):
                           side_effect=ValueError("bounded policy sentinel")) as gate:
             for target, host in (("ios-arm64", "macos-arm64"), ("ios-simulator-arm64", "macos-arm64"),
                                  ("macos-arm64", "macos-arm64"), ("macos-x64", "macos-x64"),
-                                 ("linux-arm64", "linux-arm64"), ("linux-x64", "linux-x64"),
+                                 ("linux-arm64", "linux-x64"), ("linux-x64", "linux-x64"),
                                  ("windows-x64", "windows-x64")):
                 archive = self.native_identity(target)
                 with self.subTest(target=target), self.assertRaisesRegex(ValueError, "bounded policy sentinel"):

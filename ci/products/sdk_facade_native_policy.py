@@ -35,7 +35,7 @@ _ROUTES = {
     "ios-arm64": ("macos-arm64", "macos_arm64", "macos-aarch64", "ios_arm64"),
     "ios-simulator-arm64": ("macos-arm64", "macos_arm64", "macos-aarch64", "ios_simulator_arm64"),
     "macos-x64": ("macos-x64", "macos_x64", "macos-x86_64", "macos_x64"),
-    "linux-arm64": ("linux-arm64", "linux_arm64", "linux-aarch64", "linux_arm64"),
+    "linux-arm64": ("linux-x64", "linux_x64", "linux-x86_64", "linux_arm64"),
     "linux-x64": ("linux-x64", "linux_x64", "linux-x86_64", "linux_x64"),
     "windows-x64": ("windows-x64", "mingw_x64", "windows-x86_64", "mingw_x64"),
 }

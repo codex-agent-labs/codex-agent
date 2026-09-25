@@ -83,7 +83,8 @@ runs:
             raise ValueError('Core validation requires a positive official S858 upload ID')
         require_sha256(os.environ['SDK_INPUTS_SHA256'], 'Original S858 upload digest')
         archive = _native_archive_path(target, os.environ['NATIVE_COMPILER_ARCHIVE'] or None)
-        if archive is not None and target not in ('macos-arm64', 'ios-arm64', 'ios-simulator-arm64'):
+        if archive is not None and target not in ('macos-arm64', 'ios-arm64', 'ios-simulator-arm64',
+                                                 'linux-arm64', 'linux-x64'):
             raise ValueError('Core validation has no reviewed caller archive policy for this native target')
         checkout = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
         if archive is not None and archive.is_relative_to(checkout):
@@ -174,13 +175,14 @@ runs:
             raise ValueError('Core validation differs from its exact elected target or key')
         row = selected[0]
         expected = route(row)
+        expected_host = ('macos-arm64' if target.startswith('ios-') else
+            'linux-x64' if target == 'linux-arm64' else
+            target if target in ('macos-arm64', 'macos-x64', 'linux-x64', 'windows-x64') else 'linux-x64')
         if (tuple(row.get(name) for name in ('runner', 'runnerOs', 'runnerArch')) !=
                 tuple(expected[name] for name in ('runner', 'runnerOs', 'runnerArch'))
                 or (os.environ['RUNNER_OS'], os.environ['RUNNER_ARCH']) !=
                     (expected['runnerOs'], expected['runnerArch'])
-                or host_classifier() != ('macos-arm64' if target.startswith('ios-') else
-                    target if target in ('macos-arm64', 'macos-x64', 'linux-arm64', 'linux-x64', 'windows-x64')
-                    else 'linux-x64')):
+                or host_classifier() != expected_host):
             raise ValueError('Core validation differs from its elected physical host')
         plan = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
         if plan['validationTree'] != tree or not re.fullmatch(r'[0-9a-f]{40}', plan['validationCommit']):

@@ -89,7 +89,7 @@ class CoreValidationWorkerActionTest(unittest.TestCase):
             values = self.fixture(root)
             archive = root / "compiler.tar.gz"
             archive.write_bytes(b"archive")
-            values.update(TARGET="linux-x64", NATIVE_COMPILER_ARCHIVE=str(archive))
+            values.update(TARGET="macos-x64", NATIVE_COMPILER_ARCHIVE=str(archive))
             with patch.dict(os.environ, values, clear=True), self.assertRaisesRegex(ValueError, "no reviewed"):
                 exec(self.script("policy"), {})
             values.update(TARGET="jvm", NATIVE_COMPILER_ARCHIVE="")
@@ -104,6 +104,35 @@ class CoreValidationWorkerActionTest(unittest.TestCase):
             (root / "tooling.json").write_bytes(canonical_json_bytes(tooling))
             with patch.dict(os.environ, values, clear=True), self.assertRaisesRegex(ValueError, "release tooling"):
                 exec(self.script("policy"), {})
+
+    def test_linux_arm64_target_requires_the_elected_x64_compiler_host(self):
+        from sdk_phase import route
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            values = self.fixture(root)
+            archive = root / "compiler.tar.gz"
+            archive.write_bytes(b"caller-owned compiler archive")
+            values.update(TARGET="linux-arm64", NATIVE_COMPILER_ARCHIVE=str(archive))
+            with patch.dict(os.environ, values, clear=True):
+                exec(self.script("policy"), {})
+            pin = (root / "output").read_text().splitlines()[0].split("=", 1)[1]
+            plan = root / "plan.json"
+            plan.write_bytes(canonical_json_bytes({"validationTree": TREE, "validationCommit": "c" * 40}))
+            row = {"product": "sdk", "component": "sdk-core", "phase": "validation",
+                   "target": "linux-arm64", "buildKey": KEY}
+            row.update(route(row))
+            self.assertEqual(("ubuntu-24.04", "Linux", "X64"),
+                             tuple(row[name] for name in ("runner", "runnerOs", "runnerArch")))
+            values.update(MATRIX=json.dumps({"include": [row]}), REQUIRED="true", PLAN=str(plan),
+                          BUILD_KEY=KEY, TREE=TREE, POLICY_SHA256=pin,
+                          RUNNER_OS="Linux", RUNNER_ARCH="X64")
+            with patch.dict(os.environ, values, clear=True), \
+                    patch("native_wrappers.host_classifier", return_value="linux-x64"):
+                exec(self.script("identity"), {})
+            with patch.dict(os.environ, values, clear=True), \
+                    patch("native_wrappers.host_classifier", return_value="linux-arm64"):
+                with self.assertRaisesRegex(ValueError, "physical host"):
+                    exec(self.script("identity"), {})
 
     def test_existing_full_controller_receives_request_and_separate_original_authorities(self):
         command = self.script("execute")

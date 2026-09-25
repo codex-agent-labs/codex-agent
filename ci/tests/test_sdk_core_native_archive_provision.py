@@ -82,7 +82,7 @@ class CoreNativeArchiveProvisionTest(unittest.TestCase):
                 self.assertEqual(self.payload, result.read_bytes())
                 result.unlink()
 
-    def test_four_other_native_routes_require_their_own_git_pin_before_retrieval(self):
+    def test_four_other_native_routes_require_their_host_git_pin_before_retrieval(self):
         for target in ("macos-x64", "linux-arm64", "linux-x64", "windows-x64"):
             with self.subTest(target=target):
                 with self.assertRaisesRegex(ValueError, "exact checksum"):
@@ -95,6 +95,12 @@ class CoreNativeArchiveProvisionTest(unittest.TestCase):
                 self.assertEqual([f"{provider._MAVEN_ROOT}/{VERSION}/{name}"], self.download_urls)
                 self.assertEqual(self.payload, result.read_bytes())
                 result.unlink()
+
+    def test_linux_arm64_target_uses_the_pinned_linux_x64_host_archive(self):
+        result = self.run_provider(target="linux-arm64", sources=self.sources(target="linux-x64"))
+        self.assertEqual([f"{provider._MAVEN_ROOT}/{VERSION}/"
+                          f"kotlin-native-prebuilt-{VERSION}-linux-x86_64.tar.gz"], self.download_urls)
+        self.assertEqual(self.payload, result.read_bytes())
 
     def test_missing_pin_wrong_bytes_and_redirect_fail_without_publishing(self):
         with self.assertRaisesRegex(ValueError, "exact checksum"):

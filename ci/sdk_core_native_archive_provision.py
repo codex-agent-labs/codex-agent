@@ -29,7 +29,7 @@ from sdk_android_archive_provision import _publish_archive
 _SUFFIXES = {
     "macos-arm64": "macos-aarch64", "ios-arm64": "macos-aarch64",
     "ios-simulator-arm64": "macos-aarch64", "macos-x64": "macos-x86_64",
-    "linux-arm64": "linux-aarch64", "linux-x64": "linux-x86_64",
+    "linux-arm64": "linux-x86_64", "linux-x64": "linux-x86_64",
     "windows-x64": "windows-x86_64",
 }
 _TARGETS = set(_SUFFIXES)

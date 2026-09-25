@@ -78,6 +78,7 @@ class SdkPhaseTest(unittest.TestCase):
         for target in SDK_FACADE_TARGETS:
             plan = {"product": "sdk", "component": "sdk-core", "phase": "validation", "target": target}
             host = ("macos-arm64" if target.startswith("ios-") else
+                    "linux-x64" if target == "linux-arm64" else
                     target if target.startswith(("linux-", "macos-", "windows-")) else "linux-x64")
             with self.subTest(target=target):
                 self.assertEqual(runtime_route({"product": "runtime", "component": "jvm",

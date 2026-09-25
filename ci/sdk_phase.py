@@ -31,7 +31,11 @@ def route(plan: Mapping[str, Any]) -> dict[str, Any]:
     _, component, _, target = _identity(plan)
     if component == "sdk-core":
         from runtime_adapter_phase import route as adapter_route
-        host = "macos-arm64" if target.startswith("ios-") else target if target in NATIVE_TARGETS else "linux-x64"
+        host = target if target in NATIVE_TARGETS else "linux-x64"
+        if target.startswith("ios-"):
+            host = "macos-arm64"
+        elif target == "linux-arm64":
+            host = "linux-x64"
         return adapter_route({"product": "runtime", "component": "jvm", "phase": "validation", "target": host})
     return {"runner": "ubuntu-24.04", "runnerOs": "Linux", "runnerArch": "X64",
             "toolchainProfile": None, "producerRole": None, "supervisor": None}

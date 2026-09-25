@@ -257,25 +257,35 @@ class FacadeNativePolicyTest(unittest.TestCase):
     def test_four_additional_host_routes_bind_archive_selection_and_original_paths(self):
         routes = {
             "macos-x64": ("macos_x64", "macos-x86_64"),
-            "linux-arm64": ("linux_arm64", "linux-aarch64"),
+            "linux-arm64": ("linux_x64", "linux-x86_64"),
             "linux-x64": ("linux_x64", "linux-x86_64"),
             "windows-x64": ("mingw_x64", "windows-x86_64"),
         }
         for target, (host_name, classifier) in routes.items():
             with self.subTest(target=target):
-                self.host, self.host_name, self.classifier = target, host_name, classifier
-                self.target_name = "mingw_x64" if target == "windows-x64" else host_name
+                self.host = "linux-x64" if target == "linux-arm64" else target
+                self.host_name, self.classifier = host_name, classifier
+                self.target_name = "mingw_x64" if target == "windows-x64" else target.replace("-", "_")
                 self.home = (r"C:\original\selected\kotlin-native" if target == "windows-x64"
                              else "/original/selected/kotlin-native")
                 self.prefix = f"kotlin-native-prebuilt-{classifier}-{self.version}"
+                dependency_suffix = "linux_x64-linux_arm64" if target == "linux-arm64" else host_name
                 self.selected["konan/konan.properties"] = (
                     f"llvmHome.{host_name} = llvm-reviewed\n"
                     f"libffiDir.{host_name} = libffi-reviewed\n"
-                    f"dependencies.{host_name} = lldb-reviewed\n").encode()
+                    f"dependencies.{dependency_suffix} = lldb-reviewed\n").encode()
                 self.write_archive()
                 self.value = self.observation_v2(target)
                 self.save()
                 self.assertIsNone(self.call())
+                if target == "linux-arm64":
+                    for field, incorrect in (("host", "linux_arm64"), ("target", "linux_x64")):
+                        self.value["nativeSelection"][field] = incorrect
+                        self.save()
+                        with self.subTest(field=field), self.assertRaisesRegex(ValueError, "host/target route"):
+                            self.call()
+                        self.value["nativeSelection"][field] = (host_name if field == "host" else "linux_arm64")
+                    self.save()
                 with self.assertRaisesRegex(ValueError, "supported host route"):
                     self.call(expected_host="macos-arm64")
                 self.sources[policy.RUNTIME_VERIFICATION_METADATA] = b"<verification-metadata/>"
