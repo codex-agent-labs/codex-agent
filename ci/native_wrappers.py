@@ -48,6 +48,7 @@ DART_RELEASE_EXCLUDES = (
     ".dart_tool",
     ".gitignore",
     ".pubignore",
+    "build",
     "consumer",
     "parity",
     "pubspec.lock",

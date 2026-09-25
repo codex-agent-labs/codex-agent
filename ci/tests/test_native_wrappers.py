@@ -1260,7 +1260,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             (source / "lib/codex_agent.dart").write_text("library codex_agent;\n", encoding="utf-8")
             for relative in DART_RELEASE_EXCLUDES:
                 path = source / relative
-                if relative in {".dart_tool", "consumer", "parity", "test", "tool"}:
+                if relative in {".dart_tool", "build", "consumer", "parity", "test", "tool"}:
                     path.mkdir()
                     (path / "payload").write_text("excluded\n", encoding="utf-8")
                 else:
