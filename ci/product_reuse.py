@@ -4257,7 +4257,7 @@ def collect_runtime_workers(
     if (sdk_worker_workflow_path is None) != (sdk_worker_job_name is None):
         raise ValueError("SDK collection child workflow path and job must be pinned together")
     if sdk_worker_workflow_path is not None and (
-            sdk_family not in {"core-binary", "core-package", "core-validation"}
+            sdk_family not in {"core-binary", "core-package", "core-validation", "core-metadata"}
             or type(sdk_worker_workflow_path) is not str
             or re.fullmatch(r"\.github/workflows/[a-z0-9-]+\.yml", sdk_worker_workflow_path) is None
             or type(sdk_worker_job_name) is not str or not sdk_worker_job_name):

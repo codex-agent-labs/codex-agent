@@ -59,9 +59,10 @@ class FacadeCaptureTest(unittest.TestCase):
         self.receipt_path, self.receipt_bytes, self.receipt, self.files = deepcopy(self.records[target])
         self.jobs[0].update(name=facade._capture_route(self.receipt)[3], runner_id=19,
                             labels=[facade._capture_route(self.receipt)[1]])
-        if self.component == "sdk-core" and self.phase == "validation":
-            self.run["referenced_workflows"][0]["path"] = (
-                f"codex-agent-labs/codex-agent/{facade._VALIDATION_WORKFLOW_PATH}@{self.pin}")
+        if self.component == "sdk-core" and self.phase in ("validation", "metadata"):
+            child = (facade._VALIDATION_WORKFLOW_PATH if self.phase == "validation" else
+                     facade._METADATA_WORKFLOW_PATH)
+            self.run["referenced_workflows"][0]["path"] = f"codex-agent-labs/codex-agent/{child}@{self.pin}"
         self.artifact["name"] = (f"codex-agent-sdk-worker-{self.component}-{self.phase}-{target}-"
             f"{self.receipt['buildKey'].removeprefix('sha256:')}-{self.producer['tree']}-attempt-{self.producer['runAttempt']}")
         self.archive()
@@ -104,12 +105,14 @@ class FacadeCaptureTest(unittest.TestCase):
             self.skipTest("Android worker jobs are not wired yet")
         workflow_name = (f"sdk-core-{self.phase}-validation.yml" if self.phase in ("binary", "package")
                          else "sdk-core-validation.yml" if self.phase == "validation"
+                         else "sdk-core-metadata-validation.yml" if self.phase == "metadata"
                          else "product-validation.yml")
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows" / workflow_name).read_text()
         target = "${{ matrix.target }}" if self.phase == "validation" else "common"
         self.assertIn(f"    name: sdk-core-{self.phase}-{target}\n", workflow)
-        job = (f"product-validation / sdk-core-validation-wave / sdk-core-validation-{self.targets[0]}"
-               if self.phase == "validation" else f"product-validation / sdk-core-{self.phase}-{self.targets[0]}")
+        job = (f"product-validation / sdk-core-{self.phase}-wave / sdk-core-{self.phase}-{self.targets[0]}"
+               if self.phase in ("validation", "metadata") else
+               f"product-validation / sdk-core-{self.phase}-{self.targets[0]}")
         self.assertEqual(job,
                          facade._capture_route(self.receipt)[3])
 

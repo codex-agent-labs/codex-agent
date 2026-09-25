@@ -15,7 +15,7 @@ from products.registry import SDK_FACADE_TARGETS
 from products.signing_isolation import require_no_signing_secret
 from reuse import github_output
 from sdk_apple_upload_locator import _locate
-from sdk_facade_capture import _capture_route, _VALIDATION_WORKFLOW_PATH
+from sdk_facade_capture import _capture_route, _VALIDATION_WORKFLOW_PATH, _METADATA_WORKFLOW_PATH
 
 
 _FACADE = ({("sdk", "sdk-core", "validation", target) for target in SDK_FACADE_TARGETS}
@@ -56,10 +56,12 @@ def _locate_selected(receipt_path, allowed, expected_receipt_sha256,
     if identity not in allowed:
         raise ValueError("SDK upload locator requires an exact selected phase receipt")
     _, _, _, job, name, phase = _capture_route(receipt)
-    child = identity[2] == "validation" and identity[1] == "sdk-core"
+    child_path = (_VALIDATION_WORKFLOW_PATH if identity[1:3] == ("sdk-core", "validation") else
+                  _METADATA_WORKFLOW_PATH if identity[1:3] == ("sdk-core", "metadata") else None)
     result = _locate(receipt["producer"], phase=phase, job=job, name=name, token=token,
-        **({"trusted_workflows_by_phase": {phase: {"path": _VALIDATION_WORKFLOW_PATH,
-            "sha": trusted_workflow_sha}}} if child else {"trusted_workflow_sha": trusted_workflow_sha}))
+        **({"trusted_workflows_by_phase": {phase: {"path": child_path,
+            "sha": trusted_workflow_sha}}} if child_path is not None else
+            {"trusted_workflow_sha": trusted_workflow_sha}))
     require_no_signing_secret(environment)
     if (read_regular_file_bytes(path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != raw
             or canonical_json_bytes(receipt) != raw):

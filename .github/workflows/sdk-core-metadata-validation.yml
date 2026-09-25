@@ -1,0 +1,290 @@
+name: SDK Core Metadata Validation
+
+on:
+  workflow_call:
+    inputs:
+      planOutputs:
+        required: true
+        type: string
+      sdkPlan:
+        required: true
+        type: string
+      sdkInputs:
+        required: true
+        type: string
+      validationWave:
+        required: true
+        type: string
+      trustedWorkflowSha:
+        required: true
+        type: string
+    outputs:
+      artifact_id:
+        value: ${{ jobs.sdk-core-metadata-result.outputs.artifact_id }}
+      artifact_digest:
+        value: ${{ jobs.sdk-core-metadata-result.outputs.artifact_digest }}
+      state_wave:
+        value: ${{ jobs.sdk-core-metadata-result.outputs.state_wave }}
+      sdk_state_wave:
+        value: ${{ jobs.sdk-core-metadata-result.outputs.sdk_state_wave }}
+      metadata_build_key:
+        value: ${{ jobs.sdk-core-metadata-result.outputs.metadata_build_key }}
+      metadata_original_context:
+        value: ${{ jobs.sdk-core-metadata-result.outputs.metadata_original_context }}
+      metadata_receipt_sha256:
+        value: ${{ jobs.sdk-core-metadata-result.outputs.metadata_receipt_sha256 }}
+      metadata_artifact_id:
+        value: ${{ jobs.sdk-core-metadata-result.outputs.metadata_artifact_id }}
+      metadata_artifact_sha256:
+        value: ${{ jobs.sdk-core-metadata-result.outputs.metadata_artifact_sha256 }}
+      preparation_artifact_id:
+        value: ${{ jobs.sdk-core-metadata-result.outputs.preparation_artifact_id }}
+      preparation_artifact_sha256:
+        value: ${{ jobs.sdk-core-metadata-result.outputs.preparation_artifact_sha256 }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  sdk-core-metadata-plan:
+    if: >-
+      always() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      fromJSON(inputs.sdkPlan).result == 'success' &&
+      fromJSON(inputs.validationWave).result == 'success' &&
+      fromJSON(inputs.validationWave).outputs.artifact_id != ''
+    runs-on: ubuntu-24.04
+    outputs:
+      sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
+      sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - name: Select installed caller Java
+        if: fromJSON(inputs.planOutputs).tooling_required == 'true'
+        run: |
+          set -euo pipefail
+          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
+          selected_java_home="${!java_home_variable}"
+          test -f "$selected_java_home/bin/java"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        if: fromJSON(inputs.planOutputs).tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
+          policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+      - id: capture
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          product: sdk
+          sdk-family: core-metadata
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          artifact-id: ${{ fromJSON(inputs.validationWave).outputs.artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.validationWave).outputs.artifact_digest }}
+          state-wave: ${{ fromJSON(inputs.validationWave).outputs.state_wave }}
+          sdk-state-wave: ${{ fromJSON(inputs.validationWave).outputs.sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+
+  sdk-core-metadata:
+    name: sdk-core-metadata-common
+    needs: [sdk-core-metadata-plan]
+    if: >-
+      always() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      fromJSON(inputs.sdkPlan).result == 'success' && fromJSON(inputs.sdkInputs).result == 'success' &&
+      fromJSON(inputs.validationWave).result == 'success' &&
+      needs.sdk-core-metadata-plan.result == 'success' &&
+      needs.sdk-core-metadata-plan.outputs.sdk_workers_required == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.sdk-core-metadata-plan.outputs.sdk_matrix || '{"include":[]}') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    outputs:
+      metadata_build_key: ${{ steps.metadata.outputs.metadata-artifact-id != '' && matrix.buildKey || '' }}
+      metadata_original_context: ${{ steps.metadata.outputs.metadata-original-context }}
+      metadata_receipt_sha256: ${{ steps.metadata.outputs.metadata-receipt-sha256 }}
+      metadata_artifact_id: ${{ steps.metadata.outputs.metadata-artifact-id }}
+      metadata_artifact_sha256: ${{ steps.metadata.outputs.metadata-artifact-sha256 }}
+      preparation_artifact_id: ${{ steps.metadata.outputs.preparation-artifact-id }}
+      preparation_artifact_sha256: ${{ steps.metadata.outputs.preparation-artifact-sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - name: Select installed caller Java
+        shell: bash
+        run: |
+          set -euo pipefail
+          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
+          selected_java_home="${!java_home_variable}"
+          test -f "$selected_java_home/bin/java"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
+          policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+      - id: native-archives
+        name: Provision each Git-pinned Core native compiler archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_archive() {
+            python3 -B -m ci.sdk_core_native_archive_provision \
+              --plan "${{ steps.tooling.outputs.plan-directory }}/impact-plan.json" \
+              --target "$1" --destination "$RUNNER_TEMP/core14-$2.tar.gz" \
+              --repository-root "$GITHUB_WORKSPACE"
+          }
+          macos_aarch64=$(native_archive macos-arm64 macos-aarch64)
+          macos_x86_64=$(native_archive macos-x64 macos-x86_64)
+          linux_x86_64=$(native_archive linux-x64 linux-x86_64)
+          windows_x86_64=$(native_archive windows-x64 windows-x86_64)
+          {
+            echo "macos_aarch64=$macos_aarch64"
+            echo "macos_x86_64=$macos_x86_64"
+            echo "linux_x86_64=$linux_x86_64"
+            echo "windows_x86_64=$windows_x86_64"
+          } >> "$GITHUB_OUTPUT"
+      - id: metadata
+        uses: ./.github/actions/sdk-core-metadata-worker
+        with:
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          artifact-id: ${{ fromJSON(inputs.validationWave).outputs.artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.validationWave).outputs.artifact_digest }}
+          state-wave: ${{ fromJSON(inputs.validationWave).outputs.state_wave }}
+          sdk-state-wave: ${{ fromJSON(inputs.validationWave).outputs.sdk_state_wave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          build-key: ${{ matrix.buildKey }}
+          tree: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+          sdk-inputs-id: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_id }}
+          sdk-inputs-sha256: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_digest }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          keyring: ${{ github.workspace }}/gradle/release/product-signing-keys.json
+          keys-directory: ${{ github.workspace }}/gradle/release/keys
+          native-compiler-archive-ios-arm64: ${{ steps.native-archives.outputs.macos_aarch64 }}
+          native-compiler-archive-ios-simulator-arm64: ${{ steps.native-archives.outputs.macos_aarch64 }}
+          native-compiler-archive-linux-arm64: ${{ steps.native-archives.outputs.linux_x86_64 }}
+          native-compiler-archive-linux-x64: ${{ steps.native-archives.outputs.linux_x86_64 }}
+          native-compiler-archive-macos-arm64: ${{ steps.native-archives.outputs.macos_aarch64 }}
+          native-compiler-archive-macos-x64: ${{ steps.native-archives.outputs.macos_x86_64 }}
+          native-compiler-archive-windows-x64: ${{ steps.native-archives.outputs.windows_x86_64 }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+
+  sdk-collect-14:
+    needs: [sdk-core-metadata-plan, sdk-core-metadata]
+    if: >-
+      always() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      fromJSON(inputs.sdkPlan).result == 'success' && fromJSON(inputs.validationWave).result == 'success' &&
+      needs.sdk-core-metadata-plan.result == 'success' &&
+      needs.sdk-core-metadata-plan.outputs.sdk_workers_required == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
+      wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - name: Select installed caller Java
+        run: |
+          set -euo pipefail
+          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
+          selected_java_home="${!java_home_variable}"
+          test -f "$selected_java_home/bin/java"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
+          policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+      - id: collect
+        uses: ./.github/actions/collect-runtime-wave
+        with:
+          product: sdk
+          sdk-family: core-metadata
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          artifact-id: ${{ fromJSON(inputs.validationWave).outputs.artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.validationWave).outputs.artifact_digest }}
+          state-wave: ${{ fromJSON(inputs.validationWave).outputs.state_wave }}
+          sdk-state-wave: ${{ fromJSON(inputs.validationWave).outputs.sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          wave: '14'
+          tree: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+          sdk-worker-workflow-path: .github/workflows/sdk-core-metadata-validation.yml
+          sdk-worker-job-name: product-validation / sdk-core-metadata-wave / sdk-core-metadata-common
+
+  sdk-core-metadata-result:
+    needs: [sdk-core-metadata-plan, sdk-core-metadata, sdk-collect-14]
+    if: >-
+      always() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      fromJSON(inputs.sdkPlan).result == 'success' && fromJSON(inputs.validationWave).result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.result.outputs.artifact_id }}
+      artifact_digest: ${{ steps.result.outputs.artifact_digest }}
+      state_wave: ${{ steps.result.outputs.state_wave }}
+      sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
+      metadata_build_key: ${{ steps.result.outcome == 'success' && needs.sdk-core-metadata.result == 'success' && needs.sdk-core-metadata.outputs.metadata_build_key || '' }}
+      metadata_original_context: ${{ steps.result.outcome == 'success' && needs.sdk-core-metadata.result == 'success' && needs.sdk-core-metadata.outputs.metadata_original_context || '' }}
+      metadata_receipt_sha256: ${{ steps.result.outcome == 'success' && needs.sdk-core-metadata.result == 'success' && needs.sdk-core-metadata.outputs.metadata_receipt_sha256 || '' }}
+      metadata_artifact_id: ${{ steps.result.outcome == 'success' && needs.sdk-core-metadata.result == 'success' && needs.sdk-core-metadata.outputs.metadata_artifact_id || '' }}
+      metadata_artifact_sha256: ${{ steps.result.outcome == 'success' && needs.sdk-core-metadata.result == 'success' && needs.sdk-core-metadata.outputs.metadata_artifact_sha256 || '' }}
+      preparation_artifact_id: ${{ steps.result.outcome == 'success' && needs.sdk-core-metadata.result == 'success' && needs.sdk-core-metadata.outputs.preparation_artifact_id || '' }}
+      preparation_artifact_sha256: ${{ steps.result.outcome == 'success' && needs.sdk-core-metadata.result == 'success' && needs.sdk-core-metadata.outputs.preparation_artifact_sha256 || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - id: result
+        name: Fail only after collecting Core metadata results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          VALIDATION_RESULT: ${{ inputs.validationWave }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_native_continuation import select_native_state
+          from ci.reuse import github_output
+          needs = json.loads(os.environ['RESULTS'])
+          needs['sdk-core-validation-wave'] = json.loads(os.environ['VALIDATION_RESULT'])
+          result = select_native_state(needs, stage='core-metadata')
+          github_output(Path(os.environ['GITHUB_OUTPUT']), result)
+          PY

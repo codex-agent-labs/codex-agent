@@ -32,6 +32,7 @@ from sdk_phase import route
 
 _LIMIT = 16 * 1024 * 1024
 _VALIDATION_WORKFLOW_PATH = ".github/workflows/sdk-core-validation.yml"
+_METADATA_WORKFLOW_PATH = ".github/workflows/sdk-core-metadata-validation.yml"
 
 
 def _read(path):
@@ -115,8 +116,9 @@ def _capture_route(receipt, family=None):
     if family is not None and family != selected:
         raise ValueError("Selected SDK original receipt differs from the fixed capture route")
     producer = receipt["producer"]
-    job = (f"product-validation / sdk-core-validation-wave / sdk-core-validation-{target}"
-           if selected == "facade-validation" else f"product-validation / {component}-{phase}-{target}")
+    job = (f"product-validation / sdk-core-{phase}-wave / sdk-core-{phase}-{target}"
+           if selected in {"facade-validation", "facade-metadata"} else
+           f"product-validation / {component}-{phase}-{target}")
     name = (f"codex-agent-sdk-worker-{component}-{phase}-{target}-"
             f"{receipt['buildKey'].removeprefix('sha256:')}-{producer['tree']}-attempt-{producer['runAttempt']}")
     return PhaseInstanceId(*identity), runner, directories, job, name, selected
@@ -206,8 +208,8 @@ def _capture_sdk_upload(
                 raise ValueError("Core capture original receipt or caller plan changed")
 
         unchanged()
-        workflow_path = (_VALIDATION_WORKFLOW_PATH if family == "facade-validation"
-                         else trusted_workflow_path)
+        workflow_path = (_VALIDATION_WORKFLOW_PATH if family == "facade-validation" else
+                         _METADATA_WORKFLOW_PATH if family == "facade-metadata" else trusted_workflow_path)
         workflow_policy = ({"trusted_workflow_sha": trusted_workflow_sha}
             if workflow_path is None else {"trusted_workflows_by_phase": {family: {
                 "path": workflow_path, "sha": trusted_workflow_sha}}})

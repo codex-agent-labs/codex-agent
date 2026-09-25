@@ -221,6 +221,32 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                         sdk_family="core-validation", sdk_worker_workflow_path=".github/workflows/sdk-core-validation.yml",
                         sdk_worker_job_name=job)
 
+    def test_core_metadata_child_binds_original_workflow_and_job(self):
+        instance, ready, _, _, files = self.shard("metadata", component="sdk-core", target="common")
+        child_path = ".github/workflows/sdk-core-metadata-validation.yml"
+        child_job = "product-validation / sdk-core-metadata-wave / sdk-core-metadata-common"
+        names = self.names
+        with patch.object(self, "names", side_effect=lambda row, key: (child_job, names(row, key)[1])), \
+                patch.object(adapter, "_verified_product_state", return_value=self.state({instance: ready})), \
+                self.official_api({instance: ready}, {instance: archive(files)}) as (query, _, _):
+            original_query = query.side_effect
+
+            def child_run(url, token):
+                result = original_query(url, token)
+                if url.endswith(f"/attempts/{self.producer['runAttempt']}"):
+                    return {**result, "referenced_workflows": [*result["referenced_workflows"], {
+                        "path": f"{self.producer['repository']}/{child_path}@{PIN}", "sha": PIN}]}
+                return result
+
+            query.side_effect = child_run
+            result = adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
+                self.repository / "build/metadata-child", trusted_workflow_sha=PIN,
+                repository_root=self.repository, environ=self.environment, token="synthetic-token",
+                sdk_family="core-metadata", sdk_worker_workflow_path=child_path,
+                sdk_worker_job_name=child_job)
+        self.assertEqual("success", result["rows"][0]["result"])
+        self.assertEqual(child_job, result["rows"][0]["jobName"])
+
     def test_each_js_phase_preserves_exact_original_shard_and_whole_worker_upload(self):
         for phase in ("package", "validation"):
             with self.subTest(phase=phase):

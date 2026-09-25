@@ -17,18 +17,18 @@ class AndroidBinaryPlanWorkflowTest(unittest.TestCase):
         )
         self.assertIsNotNone(match)
         job = match[0]
-        self.assertIn("needs: [plan, sdk-plan, sdk-core-metadata-result]", job)
+        self.assertIn("needs: [plan, sdk-plan, sdk-core-metadata-wave]", job)
         for condition in (
             "needs.plan.outputs.event_authorized == 'true'",
             "needs.plan.outputs.remote_build_authorized == 'true'",
             "needs.sdk-plan.result == 'success'",
-            "needs.sdk-core-metadata-result.result == 'success'",
-            "needs.sdk-core-metadata-result.outputs.artifact_id != ''",
+            "needs.sdk-core-metadata-wave.result == 'success'",
+            "needs.sdk-core-metadata-wave.outputs.artifact_id != ''",
         ):
             self.assertIn(condition, job)
         self.assertIn("sdk-family: android-binary", job)
-        self.assertIn("artifact-id: ${{ needs.sdk-core-metadata-result.outputs.artifact_id }}", job)
-        self.assertIn("artifact-sha256: ${{ needs.sdk-core-metadata-result.outputs.artifact_digest }}", job)
+        self.assertIn("artifact-id: ${{ needs.sdk-core-metadata-wave.outputs.artifact_id }}", job)
+        self.assertIn("artifact-sha256: ${{ needs.sdk-core-metadata-wave.outputs.artifact_digest }}", job)
         self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", job)
         self.assertIn("sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}", job)
         self.assertNotIn("    strategy:\n", job)

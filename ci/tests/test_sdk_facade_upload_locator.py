@@ -35,10 +35,11 @@ class CoreUploadLocatorTest(unittest.TestCase):
             context={"producer": self.f.producer}, version="0.8.0", version_identity="0.8.0")
         _, _, _, job, name, _ = _capture_route(self.receipt)
         self.f.jobs[0]["name"] = job
+        workflow = ("sdk-core-validation.yml" if component == "sdk-core" and phase == "validation" else
+                    "sdk-core-metadata-validation.yml" if component == "sdk-core" and phase == "metadata" else
+                    "product-validation.yml")
         self.f.run["referenced_workflows"][0]["path"] = (
-            f"codex-agent-labs/codex-agent/.github/workflows/sdk-core-validation.yml@{self.f.pin}"
-            if phase == "validation" and component == "sdk-core" else
-            f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{self.f.pin}")
+            f"codex-agent-labs/codex-agent/.github/workflows/{workflow}@{self.f.pin}")
         self.f.artifact["name"] = name
         self.listing = [deepcopy(self.f.artifact)]
 
