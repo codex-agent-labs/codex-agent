@@ -73,8 +73,9 @@ The release package must place the native library under
 `lib/src/native/<classifier>/` for `macos-arm64`, `macos-x64`,
 `linux-arm64`, `linux-x64`, and `windows-x64`. The Dart loader selects an
 explicit `libraryPath`, then `CODEX_AGENT_LIBRARY`, then the packaged library.
-An explicit path needs its adjacent release-authenticated `<library>.evidence/`
-directory; a path alone is rejected even for local development. External
+An explicit path to the packaged library uses the same embedded-byte checks
+as the default. Any other explicit path needs its adjacent release-authenticated
+`<library>.evidence/` directory; that path alone is rejected. External
 override verification currently fails closed on Windows because its SSHSIG
 verifier is unavailable. The loader requires ABI `1.13+` and Runtime identity
 schema 1. Before an embedded library is loaded, its SHA-256, target, and

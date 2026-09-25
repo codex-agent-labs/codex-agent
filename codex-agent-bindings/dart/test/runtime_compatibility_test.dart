@@ -396,6 +396,14 @@ void main() {
     );
   });
 
+  test('explicit packaged library uses embedded trust, not external evidence',
+      () {
+    expect(requiresExternalRuntimeEvidence(true, true), isFalse);
+    expect(requiresExternalRuntimeEvidence(false, true), isFalse);
+    expect(requiresExternalRuntimeEvidence(true, false), isTrue);
+    expect(requiresExternalRuntimeEvidence(false, false), isFalse);
+  });
+
   test('Windows external signature verification fails closed', () {
     expect(supportsExternalRuntimeSignatureVerifier('windows'), isFalse);
     expect(supportsExternalRuntimeSignatureVerifier('macos'), isTrue);

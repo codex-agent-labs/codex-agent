@@ -1041,6 +1041,9 @@ final class _AuthenticatedRuntime {
 
 final _authenticatedRuntimes = <String, _AuthenticatedRuntime>{};
 
+bool requiresExternalRuntimeEvidence(bool explicitOverride, bool embedded) =>
+    explicitOverride && !embedded;
+
 _AuthenticatedRuntime _authenticatedRuntime(
   String path, {
   required bool explicitOverride,
@@ -1075,10 +1078,11 @@ _AuthenticatedRuntime _authenticatedRuntime(
     embedded: embedded,
   );
   try {
-    final authorization = explicitOverride
-        ? verifyExternalRuntimeReleaseEvidence(
-            snapshot.file, file, compatibility, target)
-        : null;
+    final authorization =
+        requiresExternalRuntimeEvidence(explicitOverride, embedded)
+            ? verifyExternalRuntimeReleaseEvidence(
+                snapshot.file, file, compatibility, target)
+            : null;
     if (cached != null && beforeDynamicOpen == null) {
       if (snapshot.digest != cached.digest ||
           (authorization != null &&
