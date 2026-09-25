@@ -226,7 +226,7 @@ def require_matching_compatibility(
 ) -> None:
     declaration = require_one(root, pattern)
     if declaration.read_bytes() != expected.read_bytes():
-        raise ValueError(f"{language} installed SDK compatibility does not match the verified SDK")
+        raise ValueError(f"{language} installed SDK file does not match the verified SDK")
 
 
 def require_installed_zip_tree(
@@ -1367,6 +1367,10 @@ def _consume(
             )
             require_matching_compatibility(
                 venv, "**/codex_agent/native/sdk-compatibility.json", sdk_compatibility, "Python",
+            )
+            require_matching_compatibility(
+                venv, "**/codex_agent/native/sdk-runtime-root.pub",
+                sdks / "sdk-runtime-root.pub", "Python runtime root",
             )
             require_installed_zip_tree(
                 selected["python"], "codex_agent", python_library.parents[2], "Python",

@@ -140,6 +140,21 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                     root / "package", "native/sdk-compatibility.json", expected, "fixture",
                 )
 
+    def test_installed_python_root_must_exactly_match_the_staged_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected = root / "sdk-runtime-root.pub"
+            expected.write_bytes(TEST_SDK_ROOT)
+            installed = root / "venv/codex_agent/native/sdk-runtime-root.pub"
+            installed.parent.mkdir(parents=True)
+            installed.write_bytes(TEST_SDK_ROOT)
+            require_matching_compatibility(root / "venv",
+                "**/codex_agent/native/sdk-runtime-root.pub", expected, "Python runtime root")
+            installed.write_bytes(TEST_SDK_ROOT + b"changed")
+            with self.assertRaisesRegex(ValueError, "Python runtime root installed SDK file"):
+                require_matching_compatibility(root / "venv",
+                    "**/codex_agent/native/sdk-runtime-root.pub", expected, "Python runtime root")
+
     def test_python_wheels_retain_compatibility_and_only_the_selected_native_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1297,7 +1312,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             "reject_raw_c_abi_proofs(python_library.parents[2], 'Python')",
             consumer,
         )
-        self.assertEqual(5, consumer.count("require_matching_compatibility("))
+        self.assertEqual(6, consumer.count("require_matching_compatibility("))
         self.assertEqual(5, consumer.count("reject_raw_c_abi_proofs("))
         for embedded, override in (
             (
@@ -1598,6 +1613,13 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
                         if command[:2] == ("dotnet", "restore"):
                             self.assertTrue(probes["require_no_nuget_build_hooks"].called)
                     probes["run"].side_effect = before_restore
+                elif language == "python":
+                    def before_python_consumer(*command, **_kwargs):
+                        if any(str(value).endswith(("/lifecycle_example.py", "/host_smoke.py"))
+                               for value in command):
+                            self.assertEqual("**/codex_agent/native/sdk-runtime-root.pub",
+                                probes["require_matching_compatibility"].call_args_list[-1].args[1])
+                    probes["run"].side_effect = before_python_consumer
                 stack.enter_context(patch.dict("os.environ", {"CC": "cc", "CXX": "c++"}))
                 output = root / "output"
                 self.assertIsNone(consume_language(
@@ -1610,7 +1632,11 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
                 probes["select_packages"].assert_called_once_with(packages, "linux-x64", "0.2.0", (language,))
                 self.assertEqual(int(language == "csharp"), probes["require_no_nuget_build_hooks"].call_count)
                 self.assertEqual(1, probes["require_matching_native"].call_count)
-                self.assertEqual(1, probes["require_matching_compatibility"].call_count)
+                self.assertEqual(2 if language == "python" else 1,
+                                 probes["require_matching_compatibility"].call_count)
+                if language == "python":
+                    self.assertEqual("**/codex_agent/native/sdk-runtime-root.pub",
+                        probes["require_matching_compatibility"].call_args_list[1].args[1])
                 self.assertEqual(int(language in {"python", "csharp"}),
                                  probes["require_installed_zip_tree"].call_count)
                 self.assertEqual(1, probes["reject_raw_c_abi_proofs"].call_count)
@@ -1649,7 +1675,7 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
             repository, packages, sdks, library, selected = self.fixture(root, LANGUAGES)
             probes = self.controls(stack, selected, library)
             consume(repository, packages, sdks, root / "plan.json", root / "output", "0.2.0")
-            self.assertEqual(5, probes["require_matching_compatibility"].call_count)
+            self.assertEqual(6, probes["require_matching_compatibility"].call_count)
             self.assertEqual(2, probes["require_installed_zip_tree"].call_count)
             self.assertEqual(5, probes["reject_raw_c_abi_proofs"].call_count)
             self.assertEqual(15, probes["run_expect_failure"].call_count)
