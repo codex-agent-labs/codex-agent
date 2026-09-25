@@ -75,8 +75,8 @@ def _resolved_runner(config: Path) -> tuple[dict, Path]:
     roots = {}
     for package in packages:
         root = _package_root(config, package["rootUri"])
-        if package["name"] == "codex_agent" and package.get("packageUri") != "lib/":
-            raise ValueError("Dart codex_agent packageUri must select the private lib/ resources")
+        if package.get("packageUri") != "lib/":
+            raise ValueError("Dart packageUri must select each package's lib/ resources")
         roots[package["name"]] = root
         package["rootUri"] = root.as_uri() + "/"
     if roots["codex_agent"] != ROOT:

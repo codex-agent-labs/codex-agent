@@ -217,7 +217,7 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
                 self.assertEqual("original", retained.read_text())
 
     def test_package_resolution_has_no_remote_duplicate_or_wrong_source_fallback(self):
-        for mutation in ("remote", "duplicate", "missing-test", "wrong-source", "wrong-package-uri"):
+        for mutation in ("remote", "duplicate", "missing-test", "wrong-source", "wrong-package-uri", "dependency-package-uri"):
             with self.subTest(mutation=mutation), Fixture() as fixture:
                 config = json.loads(fixture.config.read_text())
                 if mutation == "remote":
@@ -228,6 +228,8 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
                     config["packages"].pop()
                 elif mutation == "wrong-package-uri":
                     config["packages"][0]["packageUri"] = (fixture.source / "lib").as_uri()
+                elif mutation == "dependency-package-uri":
+                    config["packages"][1]["packageUri"] = "../../outside/"
                 else:
                     config["packages"][0]["rootUri"] = fixture.test_package.as_uri()
                 fixture.config.write_text(json.dumps(config))

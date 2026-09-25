@@ -128,7 +128,7 @@ class DartDependencyProvisioningTest(unittest.TestCase):
             self.assertTrue((self.output / "execution.json").is_file())
 
     def test_wrong_root_missing_runner_duplicate_names_and_cache_escape_reject(self):
-        for mode in ("root", "missing-test", "duplicate", "escape", "package-uri", "symlink"):
+        for mode in ("root", "missing-test", "duplicate", "escape", "package-uri", "dependency-package-uri", "symlink"):
             self.fixture()
             if mode == "root": self.configuration["packages"][0]["rootUri"] = self.source.as_uri()
             elif mode == "missing-test": self.configuration["packages"] = self.configuration["packages"][:1]
@@ -136,6 +136,7 @@ class DartDependencyProvisioningTest(unittest.TestCase):
             elif mode == "escape":
                 self.configuration["packages"][1]["rootUri"] = self.source.as_uri()
             elif mode == "package-uri": self.configuration["packages"][0]["packageUri"] = "other/"
+            elif mode == "dependency-package-uri": self.configuration["packages"][1]["packageUri"] = "../../outside/"
             else:
                 link = self.cache / "linked-test"
                 link.symlink_to(self.test_package, target_is_directory=True)
