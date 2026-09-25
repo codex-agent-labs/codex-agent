@@ -48,6 +48,7 @@ from native_wrappers import (  # noqa: E402
     require_embedded_sdk_compatibility,
     require_matching_compatibility,
     require_installed_zip_tree,
+    require_no_nuget_build_hooks,
     require_one,
     require_prepared_native_assets,
     require_sdk_version_file,
@@ -491,6 +492,16 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             require_embedded_native_assets(root / "packages", sdks, "0.2.0", ("csharp",))
             with zipfile.ZipFile(package) as source:
                 entries = {name: source.read(name) for name in source.namelist()}
+            for hook in ("build/CodexAgent.targets", "buildTransitive/CodexAgent.props", "tools/init.ps1"):
+                with zipfile.ZipFile(package, "w") as archive:
+                    for name, contents in entries.items():
+                        archive.writestr(name, contents)
+                    archive.writestr(hook, b"untrusted hook")
+                with self.subTest(hook=hook), self.assertRaisesRegex(ValueError, "NuGet build hook"):
+                    require_embedded_native_assets(root / "packages", sdks, "0.2.0", ("csharp",))
+            with zipfile.ZipFile(package, "w") as archive:
+                for name, contents in entries.items():
+                    archive.writestr(name, contents)
             for proof in ("manifest", "evidence"):
                 name = f"codex-agent-c-abi-{proof}.json"
                 entries[f"unrelated/{name}"] = b"forbidden"
@@ -513,6 +524,17 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                     archive.writestr(name, contents)
             with self.assertRaisesRegex(ValueError, "native library differs"):
                 require_embedded_native_assets(root / "packages", sdks, "0.2.0", ("csharp",))
+
+    def test_nuget_restore_preflight_rejects_build_hooks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            package = Path(temporary) / "CodexAgent.0.8.0.nupkg"
+            write_zip_file(package, "lib/net8.0/CodexAgent.dll", "assembly")
+            require_no_nuget_build_hooks(package)
+            for hook in ("build/CodexAgent.targets", "buildTransitive/CodexAgent.props",
+                         "buildMultiTargeting/CodexAgent.targets", "tools/init.ps1", "other/CodexAgent.targets"):
+                write_zip_file(package, "lib/net8.0/CodexAgent.dll", "assembly", {hook: b"untrusted hook"})
+                with self.subTest(hook=hook), self.assertRaisesRegex(ValueError, "NuGet build hook"):
+                    require_no_nuget_build_hooks(package)
 
     def test_each_non_csharp_archive_rejects_native_tampering_or_extra_files(self) -> None:
         def prepare_sdks(root: Path) -> Path:
@@ -1543,6 +1565,7 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
             "host_classifier": {"return_value": "linux-x64"},
             "platform.system": {"return_value": "Linux"},
             "require_embedded_package_versions": {},
+            "require_no_nuget_build_hooks": {},
             "select_packages": {"return_value": selected},
             "require_matching_native": {"return_value": library},
             "require_matching_compatibility": {},
@@ -1570,6 +1593,11 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
                 root = Path(temporary).resolve()
                 repository, packages, sdks, library, selected = self.fixture(root, (language,))
                 probes = self.controls(stack, selected, library)
+                if language == "csharp":
+                    def before_restore(*command, **_kwargs):
+                        if command[:2] == ("dotnet", "restore"):
+                            self.assertTrue(probes["require_no_nuget_build_hooks"].called)
+                    probes["run"].side_effect = before_restore
                 stack.enter_context(patch.dict("os.environ", {"CC": "cc", "CXX": "c++"}))
                 output = root / "output"
                 self.assertIsNone(consume_language(
@@ -1580,6 +1608,7 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
                 self.assertEqual({language}, {path.name for path in (repository / "codex-agent-bindings").iterdir()})
                 probes["require_embedded_package_versions"].assert_called_once_with(packages, "0.2.0", (language,))
                 probes["select_packages"].assert_called_once_with(packages, "linux-x64", "0.2.0", (language,))
+                self.assertEqual(int(language == "csharp"), probes["require_no_nuget_build_hooks"].call_count)
                 self.assertEqual(1, probes["require_matching_native"].call_count)
                 self.assertEqual(1, probes["require_matching_compatibility"].call_count)
                 self.assertEqual(int(language in {"python", "csharp"}),

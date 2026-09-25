@@ -203,6 +203,21 @@ def reject_raw_c_abi_proofs(root: Path, language: str) -> None:
         raise ValueError(f"{language} package contains forbidden raw C ABI proof: {forbidden[0].name}")
 
 
+def reject_nuget_build_hooks(root: Path) -> None:
+    for path in files(root):
+        relative = path.relative_to(root)
+        if (relative.parts[0].casefold() in {"build", "buildtransitive", "buildmultitargeting", "tools"}
+                or path.suffix.casefold() in {".props", ".targets"}):
+            raise ValueError(f"C# package contains an unexpected NuGet build hook: {relative}")
+
+
+def require_no_nuget_build_hooks(package: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="codex-agent-nuget-preflight-") as temporary:
+        extracted = Path(temporary)
+        safe_extract_zip(package, extracted)
+        reject_nuget_build_hooks(extracted)
+
+
 def require_matching_compatibility(
     root: Path,
     pattern: str,
@@ -1054,6 +1069,7 @@ def require_embedded_native_assets(
             archive = packages / "csharp" / f"CodexAgent.{version_value}.nupkg"
             extracted = work / "csharp"
             safe_extract_zip(archive, extracted)
+            reject_nuget_build_hooks(extracted)
             reject_raw_c_abi_proofs(extracted, "C#")
             require_inventory(
                 extracted / "runtimes",
@@ -1312,6 +1328,8 @@ def _consume(
     require_embedded_package_versions(packages, sdk_version, languages)
     clean_output(output)
     selected = select_packages(packages, classifier, sdk_version, languages)
+    if "csharp" in languages:
+        require_no_nuget_build_hooks(selected["csharp"])
     with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-consumer-") as temporary:
         work = Path(temporary).resolve()
         consumer_env = os.environ.copy()
