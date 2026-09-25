@@ -111,6 +111,7 @@ abstract class ExecuteImportedNativeRuntimeEvidenceTask : DefaultTask() {
                 classifier,
                 targetName,
                 desktopRuntimeEvidenceTargets.getValue(targetName).classifier,
+                proof.archiveSha256,
                 runtimeRoot,
             ).environment(targetName)
             executeDesktopRuntimeEvidenceTests(targetName, test, environment, execution)

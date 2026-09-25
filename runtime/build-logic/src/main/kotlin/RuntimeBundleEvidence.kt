@@ -25,23 +25,10 @@ internal fun stageRuntimeBundleForEvidence(
     archive: File,
     expectedTarget: String,
     expectedClassifier: String,
+    expectedArchiveSha256: String,
     root: File,
 ): RuntimeEvidenceDirectories {
-    val identity = ZipFile(archive).use { zip ->
-        val entry = zip.getEntry("codex-runtime-manifest.json")
-            ?: error("Classifier runtime manifest is missing")
-        val manifest = Json.parseToJsonElement(
-            zip.getInputStream(entry).use { it.readBytes().decodeToString() },
-        ).jsonObject
-        check(manifest.getValue("schemaVersion").jsonPrimitive.content == "1" &&
-            manifest.getValue("target").jsonPrimitive.content == expectedTarget &&
-            manifest.getValue("classifier").jsonPrimitive.content == expectedClassifier) {
-            "Classifier runtime manifest identity is invalid"
-        }
-        manifest.getValue("libraryVersion").jsonPrimitive.content.also {
-            check(it.matches(Regex("[A-Za-z0-9._-]+"))) { "Classifier library version is invalid" }
-        }
-    }
+    check(expectedArchiveSha256.matches(Regex("[0-9a-f]{64}"))) { "Classifier archive digest is invalid" }
     val directories = RuntimeEvidenceDirectories(
         root.resolve("bundle"),
         root.resolve("data"),
@@ -50,8 +37,32 @@ internal fun stageRuntimeBundleForEvidence(
     listOf(directories.bundle, directories.data, directories.workspace).forEach { directory ->
         check(directory.mkdirs() || directory.isDirectory) { "Could not create runtime evidence directory" }
     }
-    val expectedName = "codex-agent-runtime-desktop-$identity-$expectedClassifier.zip"
-    Files.copy(archive.toPath(), directories.bundle.resolve(expectedName).toPath(), REPLACE_EXISTING)
+    val staged = Files.createTempFile(directories.bundle.toPath(), ".runtime-", ".zip")
+    try {
+        Files.copy(archive.toPath(), staged, REPLACE_EXISTING)
+        check(staged.toFile().releaseDigest() == expectedArchiveSha256) {
+            "Classifier runtime archive changed after inspection"
+        }
+        val identity = ZipFile(staged.toFile()).use { zip ->
+            val entry = zip.getEntry("codex-runtime-manifest.json")
+                ?: error("Classifier runtime manifest is missing")
+            val manifest = Json.parseToJsonElement(
+                zip.getInputStream(entry).use { it.readBytes().decodeToString() },
+            ).jsonObject
+            check(manifest.getValue("schemaVersion").jsonPrimitive.content == "1" &&
+                manifest.getValue("target").jsonPrimitive.content == expectedTarget &&
+                manifest.getValue("classifier").jsonPrimitive.content == expectedClassifier) {
+                "Classifier runtime manifest identity is invalid"
+            }
+            manifest.getValue("libraryVersion").jsonPrimitive.content.also {
+                check(it.matches(Regex("[A-Za-z0-9._-]+"))) { "Classifier library version is invalid" }
+            }
+        }
+        val expectedName = "codex-agent-runtime-desktop-$identity-$expectedClassifier.zip"
+        Files.move(staged, directories.bundle.resolve(expectedName).toPath(), REPLACE_EXISTING)
+    } finally {
+        Files.deleteIfExists(staged)
+    }
     return RuntimeEvidenceDirectories(
         directories.bundle.canonicalFile,
         directories.data.canonicalFile,

@@ -163,7 +163,8 @@ internal fun executeLinuxArm64RuntimeEvidenceBundle(
         val executables = extractDesktopRuntimeExecutables(classifier, classifierArchive, temporary.resolve("runtime"))
         executeLinuxArm64DesktopEvidenceInputs(
             candidateCommit, inputs.getValue(ARM_TEST), classifierArchive, executables,
-            classifier.binarySha256, classifier.supervisorSha256, desktopEvidence, desktopReport,
+            classifier.archiveSha256, classifier.binarySha256, classifier.supervisorSha256,
+            desktopEvidence, desktopReport,
             environment, desktopRunner,
         )
         executeJvmRuntimeEvidence(
@@ -241,6 +242,7 @@ internal fun executeLinuxArm64DesktopEvidenceInputs(
     test: File,
     classifier: File,
     executables: DesktopRuntimeExecutables,
+    classifierArchiveSha256: String,
     binarySha256: String,
     supervisorSha256: String,
     evidence: File,
@@ -270,6 +272,7 @@ internal fun executeLinuxArm64DesktopEvidenceInputs(
             classifier,
             ARM_TARGET,
             ARM_CLASSIFIER.removeSuffix(".zip"),
+            classifierArchiveSha256,
             runtimeRoot,
         ).environment(ARM_TARGET)
         executeDesktopRuntimeEvidenceTests(ARM_TARGET, test, processEnvironment, executionFile, runner)

@@ -74,6 +74,7 @@ internal fun executeNodeRuntimeEvidence(
             classifierArchive,
             target,
             classifier.classifier,
+            classifier.archiveSha256,
             temporary.resolve("runtime"),
         )
         val runnerEntry = extractNodeRuntimeRunner(

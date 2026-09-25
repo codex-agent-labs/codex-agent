@@ -57,6 +57,7 @@ internal fun executeJvmRuntimeEvidence(
             classifierArchive,
             target,
             classifier.classifier,
+            classifier.archiveSha256,
             temporary.resolve("runtime"),
         )
         val runnerRoot = temporary.resolve("runner")
