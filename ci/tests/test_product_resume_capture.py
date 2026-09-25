@@ -79,6 +79,8 @@ class ProductResumeCaptureTest(GitFixture):
         artifacts: dict | None = None,
         archives: dict | None = None,
         expected_error: str | None = None,
+        workflow_path: str | None = None,
+        continuation_job: str | None = None,
     ):
         selected_artifacts = self.artifacts if artifacts is None else artifacts
         selected_archives = self.archives if archives is None else archives
@@ -106,6 +108,8 @@ class ProductResumeCaptureTest(GitFixture):
                 "repository_root": self.root,
                 "environ": self.environment,
                 "token": "not-a-real-token",
+                "trusted_contract_workflow_path": workflow_path,
+                "trusted_contract_continuation_job": continuation_job,
             }
             if expected_error is None:
                 result = product_reuse.capture_product_resume_inputs(
@@ -140,6 +144,27 @@ class ProductResumeCaptureTest(GitFixture):
         self.assertEqual(result, load_canonical_json(destination / "capture-transport.json"))
         self.assertEqual(3, query.call_count)
         self.assertEqual(3, download.call_count)
+
+    def test_child_contract_continuation_policy_is_caller_pinned(self) -> None:
+        path = ".github/workflows/contract-validation.yml"
+        job = "product-validation / contract-validation / contract-continuation"
+        destination = self.root / "build/child-resume-capture"
+        _, observe, _, _ = self.capture(destination, workflow_path=path, continuation_job=job)
+        observe.assert_called_once_with(
+            {"metadata": self.producer}, phases=("metadata",), token="not-a-real-token",
+            trusted_workflows_by_phase={"metadata": {"path": path, "sha": "c" * 40}},
+            jobs_by_phase={"metadata": job},
+        )
+
+    def test_partial_child_contract_pin_fails_before_observation(self) -> None:
+        destination = self.root / "build/partial-child-resume-capture"
+        _, observe, query, download = self.capture(
+            destination, workflow_path=".github/workflows/contract-validation.yml",
+            expected_error="pinned together")
+        observe.assert_not_called()
+        query.assert_not_called()
+        download.assert_not_called()
+        self.assertFalse(destination.exists())
 
     def test_transport_identity_archive_and_plan_failures_publish_nothing(self) -> None:
         cases = []

@@ -5595,6 +5595,8 @@ def capture_product_resume_inputs(
     plan_path: Path, destination: Path, *, uploads: Mapping[str, Any],
     trusted_workflow_sha: str, repository_root: Path | None = None,
     environ: Mapping[str, str] | None = None, token: str,
+    trusted_contract_workflow_path: str | None = None,
+    trusted_contract_continuation_job: str | None = None,
 ) -> dict[str, Any]:
     """Capture exact caller-selected uploads; payload trust is verified on resume."""
     supplied_root = Path(__file__).resolve().parents[1] if repository_root is None else repository_root
@@ -5618,9 +5620,17 @@ def capture_product_resume_inputs(
         if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
             raise ValueError("Product resume capture requires an authorized PR or merge-group run")
         producer = _consumer(plan, os.environ if environ is None else environ)["producer"]
+        if (trusted_contract_workflow_path is None) != (trusted_contract_continuation_job is None):
+            raise ValueError("Contract original workflow path and job must be pinned together")
+        workflow_policy = (
+            {"trusted_workflow_sha": trusted_workflow_sha}
+            if trusted_contract_workflow_path is None else
+            {"trusted_workflows_by_phase": {"metadata": {
+                "path": trusted_contract_workflow_path, "sha": trusted_workflow_sha,
+            }}, "jobs_by_phase": {"metadata": trusted_contract_continuation_job}})
         observed = _observe_contract_producer_runs(
             {"metadata": producer}, phases=("metadata",),
-            trusted_workflow_sha=trusted_workflow_sha, token=token)
+            token=token, **workflow_policy)
         prepared = private / "result"
         prepared.mkdir()
         artifacts = {}
@@ -6177,6 +6187,8 @@ def parser() -> argparse.ArgumentParser:
     resume_capture.add_argument("--plan", type=Path, required=True)
     resume_capture.add_argument("--destination", type=Path, required=True)
     resume_capture.add_argument("--trusted-workflow-sha", required=True)
+    resume_capture.add_argument("--trusted-contract-workflow-path")
+    resume_capture.add_argument("--trusted-contract-continuation-job")
     for name in ("plan", "state", "release"):
         resume_capture.add_argument(f"--{name}-artifact-id", type=int, required=True)
         resume_capture.add_argument(f"--{name}-artifact-sha256", required=True)
@@ -6399,7 +6411,9 @@ def main(argv: list[str] | None = None) -> int:
                     uploads={name: {"artifactId": getattr(arguments, f"{name}_artifact_id"),
                                     "artifactSha256": getattr(arguments, f"{name}_artifact_sha256")}
                              for name in ("plan", "state", "release")},
-                    trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""))
+                    trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""),
+                    trusted_contract_workflow_path=arguments.trusted_contract_workflow_path,
+                    trusted_contract_continuation_job=arguments.trusted_contract_continuation_job)
             elif arguments.command == "resume-products":
                 resume_products(
                     arguments.plan, arguments.discovery_root, arguments.state_root,

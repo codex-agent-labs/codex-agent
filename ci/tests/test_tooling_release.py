@@ -214,6 +214,39 @@ class ToolingReleaseTest(unittest.TestCase):
         secret = self.private_key.read_bytes()
         self.assertFalse(any(secret in path.read_bytes() for path in self.destination.rglob("*") if path.is_file()))
 
+    def test_child_workflow_pin_authenticates_original_tooling_job(self):
+        path = ".github/workflows/contract-validation.yml"
+        job = "product-validation / contract-validation / product-contracts"
+        self.run["referenced_workflows"] = [{
+            "path": f"{REPOSITORY}/{path}@{WORKFLOW_PIN}", "sha": WORKFLOW_PIN,
+        }]
+        self.jobs[0]["name"] = job
+        with mock.patch("reuse.api_request", side_effect=self.api()):
+            self.attest(trusted_workflow_path=path, trusted_job_name=job)
+        self.assertTrue((self.destination / "tooling-evidence").is_dir())
+
+    def test_partial_child_workflow_pin_fails_before_secret_access(self):
+        with self.assertRaisesRegex(ValueError, "pinned together"):
+            self.attest(trusted_workflow_path=".github/workflows/contract-validation.yml")
+        self.assertEqual(0, self.environment.secret_reads)
+        self.assertFalse(self.destination.exists())
+
+    def test_empty_child_job_pin_cannot_fall_back_to_legacy_job(self):
+        with mock.patch("reuse.api_request", side_effect=self.api()), self.assertRaises(ValueError):
+            self.attest(
+                trusted_workflow_path=".github/workflows/contract-validation.yml",
+                trusted_job_name="")
+        self.assertEqual(0, self.environment.secret_reads)
+        self.assertFalse(self.destination.exists())
+
+    def test_unobserved_child_workflow_pin_fails_before_secret_access(self):
+        with mock.patch("reuse.api_request", side_effect=self.api()), self.assertRaises(ValueError):
+            self.attest(
+                trusted_workflow_path=".github/workflows/contract-validation.yml",
+                trusted_job_name="product-validation / contract-validation / product-contracts")
+        self.assertEqual(0, self.environment.secret_reads)
+        self.assertFalse(self.destination.exists())
+
     def test_invalid_context_fails_before_network_or_secret(self):
         self.environment.forbid_secret = True
         changed = copy.deepcopy(self.event)
@@ -308,6 +341,18 @@ class ToolingReleaseCliTest(unittest.TestCase):
                 self.assertEqual({"number": 17}, keywords["event_payload"])
                 self.assertIs(os.environ, keywords["environment"])
                 self.assertEqual([root / "retained"], keywords["release_handoffs"])
+                self.assertIsNone(keywords["trusted_workflow_path"])
+                self.assertIsNone(keywords["trusted_job_name"])
+
+                attest.reset_mock()
+                self.assertEqual(0, tooling_release.main([
+                    *argv, "--trusted-workflow-path", ".github/workflows/contract-validation.yml",
+                    "--trusted-job-name", "product-validation / contract-validation / product-contracts",
+                ]))
+                self.assertEqual(".github/workflows/contract-validation.yml",
+                                 attest.call_args.kwargs["trusted_workflow_path"])
+                self.assertEqual("product-validation / contract-validation / product-contracts",
+                                 attest.call_args.kwargs["trusted_job_name"])
 
                 attest.reset_mock()
                 for forbidden in ("--private-key", "--transport-producer"):

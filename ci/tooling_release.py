@@ -30,7 +30,8 @@ from products.tooling import ATTESTATION, INPUT_NAMES, _value, _verify_capture, 
 
 def attest_tooling_ci(repository_root, plan_path, destination, *, trusted_source_sha,
                      trusted_workflow_sha, transport_producer, event_payload,
-                     environment: Mapping[str, str], token=None, release_handoffs=()):
+                     environment: Mapping[str, str], token=None, release_handoffs=(),
+                     trusted_workflow_path=None, trusted_job_name=None):
     """Sign exact original tooling bytes, or forward their existing release envelope.
 
 release_handoffs contains complete tooling-evidence directories, not raw JARs
@@ -41,6 +42,8 @@ No executable or product bytes are built, executed or repacked here.
         trusted_source_sha=trusted_source_sha, trusted_workflow_sha=trusted_workflow_sha,
         transport_producer=transport_producer, event_payload=event_payload, environment=environment)
     repository_root, producer, source_tree, expected_environment, reason = context
+    if (trusted_workflow_path is None) != (trusted_job_name is None):
+        raise ValueError("Tooling original workflow path and job must be pinned together")
     release_handoffs = tuple(Path(path) for path in release_handoffs)
     plan_path = Path(plan_path).absolute()
     destination = Path(os.path.abspath(destination))
@@ -84,9 +87,16 @@ No executable or product bytes are built, executed or repacked here.
             token = environment.get("GITHUB_TOKEN")
         if type(token) is not str or not token:
             raise ValueError("Tooling caller requires a GitHub observation token")
-        job = "product-validation / product-contracts"
+        job = ("product-validation / product-contracts"
+               if trusted_job_name is None else trusted_job_name)
+        workflow_policy = (
+            {"trusted_workflow_sha": trusted_workflow_sha}
+            if trusted_workflow_path is None else
+            {"trusted_workflows_by_phase": {"tooling": {
+                "path": trusted_workflow_path, "sha": trusted_workflow_sha,
+            }}})
         observed = _observe_ci_producer_jobs({"tooling": producer}, jobs_by_phase={"tooling": job},
-            trusted_workflow_sha=trusted_workflow_sha, token=token)
+            token=token, **workflow_policy)
         name = f"codex-agent-ci-contracts-{producer['tree']}"
         artifacts = paginated_items(
             f"https://api.github.com/repos/{producer['repository']}/actions/runs/{producer['runId']}/artifacts",
@@ -169,6 +179,8 @@ def main(argv=None):
         parser.add_argument(f"--{name}", type=Path, required=True)
     for name in ("trusted-source-sha", "trusted-workflow-sha", "validation-tree"):
         parser.add_argument(f"--{name}", required=True)
+    parser.add_argument("--trusted-workflow-path")
+    parser.add_argument("--trusted-job-name")
     parser.add_argument("--release-handoff", type=Path, action="append", default=[])
     arguments = parser.parse_args(argv)
     try:
@@ -182,7 +194,9 @@ def main(argv=None):
         attest_tooling_ci(arguments.repository_root, arguments.plan, arguments.destination,
             trusted_source_sha=arguments.trusted_source_sha, trusted_workflow_sha=arguments.trusted_workflow_sha,
             transport_producer=producer, event_payload=payload, environment=os.environ,
-            release_handoffs=arguments.release_handoff)
+            release_handoffs=arguments.release_handoff,
+            trusted_workflow_path=arguments.trusted_workflow_path,
+            trusted_job_name=arguments.trusted_job_name)
     except (OSError, ValueError, KeyError) as error:
         parser.error(str(error))
     return 0
