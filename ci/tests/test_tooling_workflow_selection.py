@@ -103,13 +103,15 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
         self.assertIn("product_matrix: ${{ steps.product-selection.outputs.product_matrix }}", self.source)
         self.assertIn("contract_matrix: ${{ steps.product-selection.outputs.contract_matrix }}", self.source)
         self.assertIn("ORIGINAL_PRODUCT_MATRIX: ${{ steps.impact.outputs.product_matrix }}", self.selection)
-        product = self.source.split("\n  product:\n", 1)[1].split("\n  contract-binary:\n", 1)[0]
-        contract = self.source.split("\n  contract-binary:\n", 1)[1].split("\n  tooling-attestation:\n", 1)[0]
+        product = self.source.split("\n  product:\n", 1)[1].split("\n  contract-validation:\n", 1)[0]
+        child = (WORKFLOW.parent / "contract-validation.yml").read_text(encoding="utf-8")
+        contract = child.split("\n  contract-binary:\n", 1)[1].split("\n  tooling-attestation:\n", 1)[0]
         self.assertNotIn("matrix.lane == 'contracts'", product)
         self.assertIn("name: product-contracts", contract)
-        self.assertIn("force-build: ${{ needs.plan.outputs.tooling_miss == 'true' }}", contract)
-        self.assertIn("reuse-disabled: ${{ needs.plan.outputs.tooling_miss == 'true' }}", contract)
-        self.assertIn("needs: [workflow-lint, plan, contract-binary]", self.source)
+        self.assertIn("force-build: ${{ fromJSON(inputs.planOutputs).tooling_miss == 'true' }}", contract)
+        self.assertIn("reuse-disabled: ${{ fromJSON(inputs.planOutputs).tooling_miss == 'true' }}", contract)
+        self.assertIn("needs: [contract-binary]", child)
+        self.assertIn("uses: ./.github/workflows/contract-validation.yml", self.source)
 
 
 if __name__ == "__main__":

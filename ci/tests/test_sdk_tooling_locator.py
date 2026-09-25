@@ -28,8 +28,10 @@ class SdkToolingLocatorTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source_text = WORKFLOW.read_text(encoding="utf-8")
+        cls.child_text = (WORKFLOW.parent / "contract-validation.yml").read_text(encoding="utf-8")
         cls.job = cls.source_text.split("\n  sdk-plan:\n", 1)[1].split("\n  sdk-workers-1:\n", 1)[0]
-        cls.locator_job = cls.source_text.split("\n  product-tooling:\n", 1)[1].split("\n  sdk-plan:\n", 1)[0]
+        cls.locator_job = cls.child_text.split("\n  product-tooling:\n", 1)[1].split(
+            "\n  contract-continuation:\n", 1)[0]
         locator = cls.locator_job.split("      - id: tooling-locator\n", 1)[1]
         embedded = locator.split("          python3 - <<'PY'\n", 1)[1].rsplit("          PY", 1)[0]
         cls.script = textwrap.dedent(embedded)
@@ -60,12 +62,14 @@ class SdkToolingLocatorTest(unittest.TestCase):
         }
 
     def locate(self, needs):
+        plan_outputs = needs["plan"]["outputs"]
         with tempfile.TemporaryDirectory(prefix="sdk-tooling-locator-") as temporary:
             output = Path(temporary) / "github-output"
             result = subprocess.run(
                 [sys.executable, "-B", "-c", self.script],
                 cwd=ROOT,
-                env={"PREDECESSORS": json.dumps(needs), "GITHUB_OUTPUT": str(output)},
+                env={"PREDECESSORS": json.dumps({"tooling-attestation": needs["tooling-attestation"]}),
+                     "PLAN_OUTPUTS": json.dumps(plan_outputs), "GITHUB_OUTPUT": str(output)},
                 text=True,
                 capture_output=True,
             )
@@ -91,7 +95,7 @@ class SdkToolingLocatorTest(unittest.TestCase):
         self.assertEqual(73, json.loads(values["transport_producer"])["runId"])
 
     def test_selected_failure_has_no_fallback_to_the_other_source(self):
-        for miss, failed in (("false", "plan"), ("true", "tooling-attestation")):
+        for miss, failed in (("true", "tooling-attestation"),):
             needs = self.predecessors(miss)
             needs[failed]["result"] = "failure"
             with self.subTest(miss=miss):
@@ -119,8 +123,8 @@ class SdkToolingLocatorTest(unittest.TestCase):
                 self.assertIsNone(values)
 
     def test_tooling_capture_precedes_state_capture_and_forwards_only_its_policy(self):
-        self.assertIn("needs: [plan, product-tooling,", self.job)
-        self.assertIn("needs: [plan, tooling-attestation]", self.locator_job)
+        self.assertIn("needs: [plan, contract-validation,", self.job)
+        self.assertIn("needs: [tooling-attestation]", self.locator_job)
         self.assertNotIn("runtime-continuation", self.locator_job)
         self.assertNotIn("sdk-inputs", self.locator_job)
         tooling = self.job.index("      - id: tooling\n")
@@ -128,11 +132,11 @@ class SdkToolingLocatorTest(unittest.TestCase):
         capture = self.job.index("      - id: capture\n")
         self.assertLess(tooling, parent)
         self.assertLess(parent, capture)
-        self.assertIn("needs.plan.outputs.tooling_required == 'true'", self.locator_job)
+        self.assertIn("fromJSON(inputs.planOutputs).tooling_required == 'true'", self.locator_job)
         for binding in (
-            "artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}",
-            "artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}",
-            "transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}",
+            "artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}",
+            "artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}",
+            "transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}",
         ):
             self.assertIn(binding, self.job[tooling:parent])
         self.assertIn(
@@ -170,6 +174,8 @@ class SdkToolingLocatorTest(unittest.TestCase):
                     "artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}",
                     "transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}",
                     "trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}",
+                    "trusted-workflow-path: .github/workflows/contract-validation.yml",
+                    "trusted-job-name: product-validation / contract-validation / product-contracts",
                     "policy-revision: ${{ needs.plan.outputs.validation_commit }}",
                 ):
                     self.assertIn(binding, capture)
@@ -185,7 +191,7 @@ class SdkToolingLocatorTest(unittest.TestCase):
 
     def test_upstream_resume_and_sdk_input_jobs_capture_before_semantic_replay(self):
         gate = self.source_text.split('\n  merge-gate:\n', 1)[1]
-        self.assertIn('product-tooling', gate.split('    steps:', 1)[0])
+        self.assertIn('contract-validation', gate.split('    steps:', 1)[0])
         for name, end, marker in (
             ('product-resume', 'runtime-linux-arm64-supervisor', 'ci/product_reuse.py resume-products'),
             ('sdk-inputs', 'android', 'uses: ./.github/actions/capture-runtime-state'),
@@ -193,10 +199,10 @@ class SdkToolingLocatorTest(unittest.TestCase):
             job = self.source_text.split(f'\n  {name}:\n', 1)[1].split(f'\n  {end}:\n', 1)[0]
             with self.subTest(job=name):
                 header = job.split('    steps:', 1)[0]
-                self.assertIn('product-tooling', header)
+                self.assertIn('contract-validation', header)
                 self.assertIn('always()', header)
                 self.assertLess(job.index('uses: ./.github/actions/capture-sdk-tooling'), job.index(marker))
-                self.assertIn('artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}', job)
+                self.assertIn('artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}', job)
                 self.assertIn('SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}', job)
                 self.assertIn('--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"', job)
                 self.assertNotIn('tooling-policy', header)

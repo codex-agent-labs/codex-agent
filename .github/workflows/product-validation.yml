@@ -289,590 +289,18 @@ jobs:
           metadata: ${{ matrix.metadata }}
           node-version: ${{ contains(matrix.lane, 'node') && '24.18.0' || 'none' }}
 
-  contract-binary:
-    name: product-contracts
-    if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.contract_matrix != '{"include":[]}'
+  contract-validation:
+    name: contract-validation
     needs: [workflow-lint, plan]
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.contract_matrix) }}
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: ./.github/actions/run-ci-lane
-        with:
-          lane: contracts
-          force-build: ${{ needs.plan.outputs.tooling_miss == 'true' }}
-          reuse-disabled: ${{ needs.plan.outputs.tooling_miss == 'true' }}
-          plan-artifact: ${{ needs.plan.outputs.plan_artifact }}
-          validation-commit: ${{ needs.plan.outputs.validation_commit }}
-          validation-tree: ${{ needs.plan.outputs.validation_tree }}
-          build: ${{ matrix.build }}
-          test: ${{ matrix.test }}
-          metadata: ${{ matrix.metadata }}
-          node-version: '24.18.0'
-
-  tooling-attestation:
-    name: tooling-attestation
-    if: >-
-      always() && !cancelled() && needs.plan.result == 'success' &&
-      needs.workflow-lint.result == 'success' &&
-      needs.plan.outputs.event_authorized == 'true' &&
-      needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.plan.outputs.validation_reused != 'true' &&
-      github.event_name != 'workflow_dispatch' &&
-      needs.plan.outputs.tooling_required == 'true' &&
-      needs.plan.outputs.tooling_miss == 'true' &&
-      needs.contract-binary.result == 'success'
-    needs: [workflow-lint, plan, contract-binary]
-    runs-on: ubuntu-24.04
-    environment: product-attestation
-    permissions:
-      actions: read
-      contents: read
-    outputs:
-      artifact_id: ${{ steps.upload_tooling.outputs.artifact-id }}
-      artifact_sha256: sha256:${{ steps.upload_tooling.outputs.artifact-digest }}
-      transport_producer: ${{ steps.identity.outputs.transport_producer }}
-    steps:
-      - name: Check out reviewed tooling signer only
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: codex-agent-labs/codex-agent
-          ref: d3eb9635e71a2347a07a13a3874417df45c21403
-          path: trusted-source
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Import exact producer Git objects without checking out producer code
-        env:
-          VALIDATION_COMMIT: ${{ needs.plan.outputs.validation_commit }}
-          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
-        run: |
-          set -euo pipefail
-          [[ "$VALIDATION_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$VALIDATION_TREE" =~ ^[0-9a-f]{40}$ ]]
-          git -C trusted-source fetch --no-tags origin "$VALIDATION_COMMIT"
-          test "$(git -C trusted-source rev-parse "$VALIDATION_COMMIT^{tree}")" = "$VALIDATION_TREE"
-          test "$(git -C trusted-source rev-parse HEAD)" = d3eb9635e71a2347a07a13a3874417df45c21403
-      - name: Download original plan and source inventories
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ needs.plan.outputs.plan_id }}
-          path: ${{ runner.temp }}/tooling-original-plan
-          merge-multiple: true
-      - name: Authenticate original tooling and establish detached release trust
-        env:
-          TRUSTED_SOURCE_SHA: d3eb9635e71a2347a07a13a3874417df45c21403
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
-          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
-          GITHUB_TOKEN: ${{ github.token }}
-          CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          python3 -B trusted-source/ci/tooling_release.py \
-            --repository-root "$GITHUB_WORKSPACE/trusted-source" \
-            --plan "$RUNNER_TEMP/tooling-original-plan/impact-plan.json" \
-            --destination "$RUNNER_TEMP/tooling-release-evidence" \
-            --trusted-source-sha "$TRUSTED_SOURCE_SHA" \
-            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-            --validation-tree "$VALIDATION_TREE"
-      - id: identity
-        name: Expose authenticated transport locator
-        run: |
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          caller = json.loads((Path(os.environ['RUNNER_TEMP']) / 'tooling-release-evidence/caller.json').read_bytes())
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write('transport_producer=' + json.dumps(caller['transportProducer'], sort_keys=True, separators=(',', ':')) + '\n')
-          PY
-      - id: upload_tooling
-        name: Preserve exact signed tooling and original provenance
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          if-no-files-found: error
-          overwrite: false
-          include-hidden-files: true
-          name: codex-agent-release-tooling-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/tooling-release-evidence
-          compression-level: 0
-          retention-days: 90
-
-  contract-continuation:
-    name: contract-continuation
-    if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
-      needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.plan.outputs.validation_reused != 'true' &&
-      needs.plan.outputs.contract_reconciliation_required == 'true' &&
-      needs.plan.outputs.contract_next_phase != 'none' &&
-      (needs.plan.outputs.contract_next_phase != 'binary' || needs.contract-binary.result == 'success')
-    needs: [workflow-lint, plan, contract-binary, product-tooling]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    outputs:
-      contract_complete: ${{ steps.select_final_state.outputs.contract_complete }}
-      state_artifact: codex-agent-contract-phase-state-${{ needs.plan.outputs.validation_tree }}
-      state_id: ${{ steps.upload_final_state.outputs.artifact-id }}
-      state_digest: sha256:${{ steps.upload_final_state.outputs.artifact-digest }}
-      attestation_inputs_artifact: codex-agent-contract-attestation-inputs-${{ needs.plan.outputs.validation_tree }}
-      attestation_inputs_id: ${{ steps.upload_attestation_inputs.outputs.artifact-id }}
-      attestation_inputs_digest: sha256:${{ steps.upload_attestation_inputs.outputs.artifact-digest }}
-      contract_version: ${{ steps.capture_attestation_inputs.outputs.contract_version }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ needs.plan.outputs.validation_commit }}
-          fetch-depth: 0
-      - name: Select installed caller Java for SDK tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        shell: bash
-        run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
-          java_binary=java
-          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
-          test -f "$selected_java_home/bin/$java_binary"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: ${{ needs.plan.outputs.plan_artifact }}
-          path: build/ci
-      - if: needs.plan.outputs.contract_next_phase == 'binary'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: codex-agent-product-phase-contract-contract-binary-common-${{ needs.plan.outputs.validation_tree }}
-          path: build/product-phase/contract-contract-binary-common
-      - uses: ./.github/actions/setup-kmp
-        with:
-          cache-read-only: "true"
-      - name: Select Contract producer trust
-        shell: bash
-        run: |
-          case "$GITHUB_EVENT_NAME" in
-            pull_request) trust_domain=development ;;
-            merge_group) trust_domain=release ;;
-            *) exit 1 ;;
-          esac
-          printf 'CONTRACT_TRUST_DOMAIN=%s\n' "$trust_domain" >> "$GITHUB_ENV"
-      - name: Reconcile the fresh Contract binary phase
-        id: reconcile_binary
-        if: needs.plan.outputs.contract_next_phase == 'binary'
-        shell: bash
-        env:
-          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
-          SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
-        run: |
-          tooling=()
-          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
-          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
-          python3 ci/product_reuse.py advance-contract ${tooling[@]+"${tooling[@]}"} \
-            --plan build/ci/impact-plan.json \
-            --discovery-root build/ci/product-reuse \
-            --phase-shard build/product-phase/contract-contract-binary-common \
-            --destination build/contract-state/after-binary \
-            --github-output "$GITHUB_OUTPUT"
-      - name: Select Contract state after binary reconciliation
-        id: select_after_binary
-        env:
-          INITIAL_NEXT_PHASE: ${{ needs.plan.outputs.contract_next_phase }}
-          RECONCILED_COMPLETE: ${{ steps.reconcile_binary.outputs.contract_complete }}
-          RECONCILED_NEXT_PHASE: ${{ steps.reconcile_binary.outputs.next_phase }}
-        shell: bash
-        run: |
-          state=build/ci/product-reuse
-          next_phase=$INITIAL_NEXT_PHASE
-          complete=false
-          if [ "$INITIAL_NEXT_PHASE" = binary ]; then
-            state=build/contract-state/after-binary
-            next_phase=$RECONCILED_NEXT_PHASE
-            complete=$RECONCILED_COMPLETE
-          fi
-          case "$next_phase:$complete" in
-            package:false|validation:false|metadata:false|none:true) ;;
-            *) exit 1 ;;
-          esac
-          printf 'state=%s\nnext_phase=%s\ncontract_complete=%s\n' \
-            "$state" "$next_phase" "$complete" >> "$GITHUB_OUTPUT"
-      - name: Materialize the exact Contract binary stage and receipt
-        if: steps.select_after_binary.outputs.next_phase == 'package' || steps.select_after_binary.outputs.next_phase == 'validation'
-        shell: bash
-        run: |
-          python3 ci/product_reuse.py materialize-contract \
-            --plan build/ci/impact-plan.json \
-            --state-root "${{ steps.select_after_binary.outputs.state }}" \
-            --phase binary \
-            --destination build/contract-handoff/binary \
-            --with-receipt
-      - name: Produce and finalize the Contract package phase
-        if: steps.select_after_binary.outputs.next_phase == 'package'
-        env:
-          VALIDATION_COMMIT: ${{ needs.plan.outputs.validation_commit }}
-          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
-        shell: bash
-        run: |
-          ./gradlew ciProductPhase \
-            -PcodexAgent.product=contract \
-            -PcodexAgent.component=contract \
-            -PcodexAgent.phase=package \
-            -PcodexAgent.contractBinaryStageRoot="$PWD/build/contract-handoff/binary/stage" \
-            -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
-            -PcodexAgent.candidateTree="$VALIDATION_TREE" \
-            --stacktrace
-          IFS= read -r contract_version < gradle/release/versions/contract.txt
-          python3 -m ci.products restore store-phase \
-            --stage-root build/product-stage/contract/contract/package \
-            --phase-plan "${{ steps.select_after_binary.outputs.state }}/phase-plans/contract-contract-package-common.json" \
-            --producer "${{ steps.select_after_binary.outputs.state }}/producer.json" \
-            --product-version "$contract_version" \
-            --trust-domain "$CONTRACT_TRUST_DOMAIN" \
-            --destination build/product-phase/contract-contract-package-common
-      - name: Upload the Contract package phase
-        if: steps.select_after_binary.outputs.next_phase == 'package'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          if-no-files-found: error
-          overwrite: false
-          name: codex-agent-product-phase-contract-contract-package-common-${{ needs.plan.outputs.validation_tree }}
-          path: build/product-phase/contract-contract-package-common
-          compression-level: 0
-          retention-days: 90
-      - name: Reconcile the fresh Contract package phase
-        id: reconcile_package
-        if: steps.select_after_binary.outputs.next_phase == 'package'
-        shell: bash
-        env:
-          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
-          SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
-        run: |
-          tooling=()
-          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
-          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
-          python3 ci/product_reuse.py advance-contract ${tooling[@]+"${tooling[@]}"} \
-            --plan build/ci/impact-plan.json \
-            --discovery-root build/ci/product-reuse \
-            --state-root "${{ steps.select_after_binary.outputs.state }}" \
-            --phase-shard build/product-phase/contract-contract-package-common \
-            --destination build/contract-state/after-package \
-            --github-output "$GITHUB_OUTPUT"
-      - name: Select Contract state after package reconciliation
-        id: select_after_package
-        env:
-          CURRENT_COMPLETE: ${{ steps.select_after_binary.outputs.contract_complete }}
-          CURRENT_NEXT_PHASE: ${{ steps.select_after_binary.outputs.next_phase }}
-          CURRENT_STATE: ${{ steps.select_after_binary.outputs.state }}
-          RECONCILED_COMPLETE: ${{ steps.reconcile_package.outputs.contract_complete }}
-          RECONCILED_NEXT_PHASE: ${{ steps.reconcile_package.outputs.next_phase }}
-        shell: bash
-        run: |
-          state=$CURRENT_STATE
-          next_phase=$CURRENT_NEXT_PHASE
-          complete=$CURRENT_COMPLETE
-          if [ "$CURRENT_NEXT_PHASE" = package ]; then
-            state=build/contract-state/after-package
-            next_phase=$RECONCILED_NEXT_PHASE
-            complete=$RECONCILED_COMPLETE
-          fi
-          case "$next_phase:$complete" in
-            validation:false|metadata:false|none:true) ;;
-            *) exit 1 ;;
-          esac
-          printf 'state=%s\nnext_phase=%s\ncontract_complete=%s\n' \
-            "$state" "$next_phase" "$complete" >> "$GITHUB_OUTPUT"
-      - name: Materialize the exact Contract package stage and receipt
-        if: steps.select_after_package.outputs.next_phase == 'validation'
-        shell: bash
-        run: |
-          python3 ci/product_reuse.py materialize-contract \
-            --plan build/ci/impact-plan.json \
-            --state-root "${{ steps.select_after_package.outputs.state }}" \
-            --phase package \
-            --destination build/contract-handoff/package \
-            --with-receipt
-      - name: Produce and finalize the Contract validation phase
-        if: steps.select_after_package.outputs.next_phase == 'validation'
-        env:
-          VALIDATION_COMMIT: ${{ needs.plan.outputs.validation_commit }}
-          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
-        shell: bash
-        run: |
-          binary_receipt=$PWD/build/contract-handoff/binary/receipt/phase-receipt.json
-          package_receipt=$PWD/build/contract-handoff/package/receipt/phase-receipt.json
-          binary_digest=sha256:$(sha256sum "$binary_receipt" | cut -d' ' -f1)
-          package_digest=sha256:$(sha256sum "$package_receipt" | cut -d' ' -f1)
-          ./gradlew ciProductPhase \
-            -PcodexAgent.product=contract \
-            -PcodexAgent.component=contract \
-            -PcodexAgent.phase=validation \
-            -PcodexAgent.contractPackageStageRoot="$PWD/build/contract-handoff/package/stage" \
-            -PcodexAgent.contractPackageReceipt="$package_receipt" \
-            -PcodexAgent.contractPackageReceiptSha256="$package_digest" \
-            -PcodexAgent.contractBinaryReceipt="$binary_receipt" \
-            -PcodexAgent.contractBinaryReceiptSha256="$binary_digest" \
-            -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
-            -PcodexAgent.candidateTree="$VALIDATION_TREE" \
-            --stacktrace
-          IFS= read -r contract_version < gradle/release/versions/contract.txt
-          python3 -m ci.products restore store-phase \
-            --stage-root build/product-stage/contract/contract/validation \
-            --phase-plan "${{ steps.select_after_package.outputs.state }}/phase-plans/contract-contract-validation-common.json" \
-            --producer "${{ steps.select_after_package.outputs.state }}/producer.json" \
-            --product-version "$contract_version" \
-            --trust-domain "$CONTRACT_TRUST_DOMAIN" \
-            --destination build/product-phase/contract-contract-validation-common
-      - name: Upload the Contract validation phase
-        if: steps.select_after_package.outputs.next_phase == 'validation'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          if-no-files-found: error
-          overwrite: false
-          name: codex-agent-product-phase-contract-contract-validation-common-${{ needs.plan.outputs.validation_tree }}
-          path: build/product-phase/contract-contract-validation-common
-          compression-level: 0
-          retention-days: 90
-      - name: Reconcile the fresh Contract validation phase
-        id: reconcile_validation
-        if: steps.select_after_package.outputs.next_phase == 'validation'
-        shell: bash
-        env:
-          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
-          SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
-        run: |
-          tooling=()
-          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
-          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
-          python3 ci/product_reuse.py advance-contract ${tooling[@]+"${tooling[@]}"} \
-            --plan build/ci/impact-plan.json \
-            --discovery-root build/ci/product-reuse \
-            --state-root "${{ steps.select_after_package.outputs.state }}" \
-            --phase-shard build/product-phase/contract-contract-validation-common \
-            --destination build/contract-state/after-validation \
-            --github-output "$GITHUB_OUTPUT"
-      - name: Select Contract state after validation reconciliation
-        id: select_after_validation
-        env:
-          CURRENT_COMPLETE: ${{ steps.select_after_package.outputs.contract_complete }}
-          CURRENT_NEXT_PHASE: ${{ steps.select_after_package.outputs.next_phase }}
-          CURRENT_STATE: ${{ steps.select_after_package.outputs.state }}
-          RECONCILED_COMPLETE: ${{ steps.reconcile_validation.outputs.contract_complete }}
-          RECONCILED_NEXT_PHASE: ${{ steps.reconcile_validation.outputs.next_phase }}
-        shell: bash
-        run: |
-          state=$CURRENT_STATE
-          next_phase=$CURRENT_NEXT_PHASE
-          complete=$CURRENT_COMPLETE
-          if [ "$CURRENT_NEXT_PHASE" = validation ]; then
-            state=build/contract-state/after-validation
-            next_phase=$RECONCILED_NEXT_PHASE
-            complete=$RECONCILED_COMPLETE
-          fi
-          case "$next_phase:$complete" in
-            metadata:false|none:true) ;;
-            *) exit 1 ;;
-          esac
-          printf 'state=%s\nnext_phase=%s\ncontract_complete=%s\n' \
-            "$state" "$next_phase" "$complete" >> "$GITHUB_OUTPUT"
-      - name: Materialize the exact Contract validation stage and receipt
-        if: steps.select_after_validation.outputs.next_phase == 'metadata'
-        shell: bash
-        run: |
-          python3 ci/product_reuse.py materialize-contract \
-            --plan build/ci/impact-plan.json \
-            --state-root "${{ steps.select_after_validation.outputs.state }}" \
-            --phase validation \
-            --destination build/contract-handoff/validation \
-            --with-receipt
-      - name: Produce and finalize the deterministic Contract metadata phase
-        if: steps.select_after_validation.outputs.next_phase == 'metadata'
-        env:
-          VALIDATION_COMMIT: ${{ needs.plan.outputs.validation_commit }}
-          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
-        shell: bash
-        run: |
-          ./gradlew ciProductPhase \
-            -PcodexAgent.product=contract \
-            -PcodexAgent.component=contract \
-            -PcodexAgent.phase=metadata \
-            -PcodexAgent.contractValidationStageRoot="$PWD/build/contract-handoff/validation/stage" \
-            -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
-            -PcodexAgent.candidateTree="$VALIDATION_TREE" \
-            --stacktrace
-          IFS= read -r contract_version < gradle/release/versions/contract.txt
-          python3 -m ci.products restore store-phase \
-            --stage-root build/product-stage/contract/contract/metadata \
-            --phase-plan "${{ steps.select_after_validation.outputs.state }}/phase-plans/contract-contract-metadata-common.json" \
-            --producer "${{ steps.select_after_validation.outputs.state }}/producer.json" \
-            --product-version "$contract_version" \
-            --trust-domain "$CONTRACT_TRUST_DOMAIN" \
-            --destination build/product-phase/contract-contract-metadata-common
-      - name: Upload the Contract metadata phase
-        if: steps.select_after_validation.outputs.next_phase == 'metadata'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          if-no-files-found: error
-          overwrite: false
-          name: codex-agent-product-phase-contract-contract-metadata-common-${{ needs.plan.outputs.validation_tree }}
-          path: build/product-phase/contract-contract-metadata-common
-          compression-level: 0
-          retention-days: 90
-      - name: Reconcile the fresh Contract metadata phase
-        id: reconcile_metadata
-        if: steps.select_after_validation.outputs.next_phase == 'metadata'
-        shell: bash
-        env:
-          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
-          SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
-        run: |
-          tooling=()
-          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
-          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
-          python3 ci/product_reuse.py advance-contract ${tooling[@]+"${tooling[@]}"} \
-            --plan build/ci/impact-plan.json \
-            --discovery-root build/ci/product-reuse \
-            --state-root "${{ steps.select_after_validation.outputs.state }}" \
-            --phase-shard build/product-phase/contract-contract-metadata-common \
-            --destination build/contract-state/after-metadata \
-            --github-output "$GITHUB_OUTPUT"
-      - name: Select final Contract continuation state
-        id: select_final_state
-        env:
-          CURRENT_COMPLETE: ${{ steps.select_after_validation.outputs.contract_complete }}
-          CURRENT_NEXT_PHASE: ${{ steps.select_after_validation.outputs.next_phase }}
-          CURRENT_STATE: ${{ steps.select_after_validation.outputs.state }}
-          RECONCILED_COMPLETE: ${{ steps.reconcile_metadata.outputs.contract_complete }}
-          RECONCILED_NEXT_PHASE: ${{ steps.reconcile_metadata.outputs.next_phase }}
-        shell: bash
-        run: |
-          state=$CURRENT_STATE
-          next_phase=$CURRENT_NEXT_PHASE
-          complete=$CURRENT_COMPLETE
-          if [ "$CURRENT_NEXT_PHASE" = metadata ]; then
-            state=build/contract-state/after-metadata
-            next_phase=$RECONCILED_NEXT_PHASE
-            complete=$RECONCILED_COMPLETE
-          fi
-          test "$next_phase:$complete" = none:true
-          printf 'state=%s\nnext_phase=%s\ncontract_complete=%s\n' \
-            "$state" "$next_phase" "$complete" >> "$GITHUB_OUTPUT"
-      - name: Preserve the complete unsigned Contract state for separate attestation
-        id: upload_final_state
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          if-no-files-found: error
-          overwrite: false
-          include-hidden-files: true
-          name: codex-agent-contract-phase-state-${{ needs.plan.outputs.validation_tree }}
-          path: ${{ steps.select_final_state.outputs.state }}
-          compression-level: 0
-          retention-days: 90
-      - name: Capture unsigned Contract attestation inputs from exact original phases
-        id: capture_attestation_inputs
-        shell: bash
-        run: |
-          for phase in binary package validation metadata; do
-            python3 ci/product_reuse.py materialize-contract \
-              --plan build/ci/impact-plan.json \
-              --state-root "${{ steps.select_final_state.outputs.state }}" \
-              --phase "$phase" \
-              --destination "build/contract-attestation-inputs/phases/$phase" \
-              --with-receipt
-          done
-          IFS= read -r contract_version < gradle/release/versions/contract.txt
-          originals=build/contract-attestation-inputs/phases
-          printf 'contract_version=%s\n' "$contract_version" >> "$GITHUB_OUTPUT"
-          python3 -m ci.products.contract_attestation capture-closure \
-            --payload "$originals/metadata/stage/outputs/codex-agent-contract-$contract_version.zip" \
-            --execution-archive "$originals/binary/stage/outputs/execution/contract-execution.zip" \
-            --binary-receipt "$originals/binary/receipt/phase-receipt.json" \
-            --package-receipt "$originals/package/receipt/phase-receipt.json" \
-            --validation-receipt "$originals/validation/receipt/phase-receipt.json" \
-            --metadata-receipt "$originals/metadata/receipt/phase-receipt.json" \
-            --output-directory build/contract-attestation-inputs/execution-closure
-      - name: Preserve unsigned payload and full original execution closure
-        id: upload_attestation_inputs
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          if-no-files-found: error
-          overwrite: false
-          name: codex-agent-contract-attestation-inputs-${{ needs.plan.outputs.validation_tree }}
-          path: |
-            build/contract-attestation-inputs/phases/metadata/stage
-            build/contract-attestation-inputs/execution-closure
-          compression-level: 0
-          retention-days: 90
-
-  contract-attestation:
-    name: contract-attestation
     if: >-
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.plan.outputs.validation_reused != 'true' &&
-      github.event_name != 'workflow_dispatch' &&
-      needs.contract-continuation.result == 'success' &&
-      needs.contract-continuation.outputs.contract_complete == 'true'
-    needs: [workflow-lint, plan, contract-continuation]
-    runs-on: ubuntu-24.04
-    environment: product-attestation
-    permissions:
-      actions: read
-      contents: read
-    outputs:
-      artifact_name: codex-agent-contract-release-handoff-${{ needs.plan.outputs.validation_tree }}
-      artifact_id: ${{ steps.upload_attestation.outputs.artifact-id }}
-      artifact_digest: sha256:${{ steps.upload_attestation.outputs.artifact-digest }}
-    steps:
-      - name: Check out reviewed signer code only
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: codex-agent-labs/codex-agent
-          ref: 0953cb9ca87d30cf08b0f1227a204b701cafea75
-          path: trusted-source
-          persist-credentials: false
-      - name: Authenticate original Contract bytes and establish detached release trust
-        id: attest
-        env:
-          TRUSTED_SOURCE_SHA: 0953cb9ca87d30cf08b0f1227a204b701cafea75
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
-          ARTIFACT_ID: ${{ needs.contract-continuation.outputs.attestation_inputs_id }}
-          ARTIFACT_SHA256: ${{ needs.contract-continuation.outputs.attestation_inputs_digest }}
-          CONTRACT_VERSION: ${{ needs.contract-continuation.outputs.contract_version }}
-          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
-          GITHUB_TOKEN: ${{ github.token }}
-          CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          python3 -B trusted-source/ci/contract_release.py \
-            --repository-root "$GITHUB_WORKSPACE/trusted-source" \
-            --destination "$RUNNER_TEMP/contract-release-evidence" \
-            --trusted-source-sha "$TRUSTED_SOURCE_SHA" \
-            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-            --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
-            --contract-version "$CONTRACT_VERSION" --validation-tree "$VALIDATION_TREE"
-      - name: Preserve the exact release handoff and all external source evidence
-        id: upload_attestation
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          if-no-files-found: error
-          overwrite: false
-          include-hidden-files: true
-          name: codex-agent-contract-release-handoff-${{ needs.plan.outputs.validation_tree }}
-          path: ${{ runner.temp }}/contract-release-evidence
-          compression-level: 0
-          retention-days: 90
+      needs.plan.outputs.validation_reused != 'true'
+    uses: ./.github/workflows/contract-validation.yml
+    with:
+      planOutputs: ${{ toJSON(needs.plan.outputs) }}
+      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+    secrets: inherit
 
   product-resume:
     name: product-resume
@@ -881,10 +309,10 @@ jobs:
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&
       github.event_name != 'workflow_dispatch' &&
-      needs.contract-continuation.result == 'success' &&
-      needs.contract-continuation.outputs.contract_complete == 'true' &&
-      needs.contract-attestation.result == 'success'
-    needs: [workflow-lint, plan, product-tooling, contract-continuation, contract-attestation]
+      needs.contract-validation.outputs.contract_continuation_result == 'success' &&
+      needs.contract-validation.outputs.contract_complete == 'true' &&
+      needs.contract-validation.outputs.contract_attestation_result == 'success'
+    needs: [workflow-lint, plan, contract-validation]
     runs-on: ubuntu-24.04
     outputs:
       artifact_name: codex-agent-product-resume-${{ needs.plan.outputs.validation_tree }}
@@ -916,19 +344,21 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         uses: ./.github/actions/capture-sdk-tooling
         with:
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - name: Capture exact original plan, completed state and signed external evidence
         env:
           PLAN_ARTIFACT_ID: ${{ needs.plan.outputs.plan_id }}
           PLAN_ARTIFACT_SHA256: ${{ needs.plan.outputs.plan_digest }}
-          STATE_ARTIFACT_ID: ${{ needs.contract-continuation.outputs.state_id }}
-          STATE_ARTIFACT_SHA256: ${{ needs.contract-continuation.outputs.state_digest }}
-          RELEASE_ARTIFACT_ID: ${{ needs.contract-attestation.outputs.artifact_id }}
-          RELEASE_ARTIFACT_SHA256: ${{ needs.contract-attestation.outputs.artifact_digest }}
+          STATE_ARTIFACT_ID: ${{ needs.contract-validation.outputs.contract_state_id }}
+          STATE_ARTIFACT_SHA256: ${{ needs.contract-validation.outputs.contract_state_digest }}
+          RELEASE_ARTIFACT_ID: ${{ needs.contract-validation.outputs.contract_attestation_artifact_id }}
+          RELEASE_ARTIFACT_SHA256: ${{ needs.contract-validation.outputs.contract_attestation_artifact_digest }}
           TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -938,6 +368,8 @@ jobs:
             --state-artifact-id "$STATE_ARTIFACT_ID" --state-artifact-sha256 "$STATE_ARTIFACT_SHA256" \
             --release-artifact-id "$RELEASE_ARTIFACT_ID" --release-artifact-sha256 "$RELEASE_ARTIFACT_SHA256" \
             --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --trusted-contract-workflow-path .github/workflows/contract-validation.yml \
+            --trusted-contract-continuation-job "product-validation / contract-validation / contract-continuation" \
             --destination build/product-resume-inputs
       - id: apple-policy
         if: needs.plan.outputs.tooling_required == 'true'
@@ -992,7 +424,7 @@ jobs:
 
   runtime-linux-arm64-supervisor:
     name: runtime-linux-arm64-supervisor
-    needs: [plan, product-resume, product-tooling]
+    needs: [plan, product-resume, contract-validation]
     if: always() && needs.product-resume.result == 'success' && needs.product-resume.outputs.supervisor_key != ''
     runs-on: ubuntu-24.04-arm
     outputs:
@@ -1019,10 +451,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: captured
         uses: ./.github/actions/capture-runtime-state
@@ -1082,7 +516,7 @@ jobs:
 
   runtime-workers-1:
     name: runtime-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}
-    needs: [plan, product-resume, runtime-linux-arm64-supervisor, product-tooling]
+    needs: [plan, product-resume, runtime-linux-arm64-supervisor, contract-validation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -1117,10 +551,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: identity
         shell: bash
@@ -1167,7 +603,7 @@ jobs:
 
   runtime-collect-1:
     name: runtime-collect-1
-    needs: [plan, product-resume, runtime-workers-1, product-tooling]
+    needs: [plan, product-resume, runtime-workers-1, contract-validation]
     if: >-
       always() && needs.product-resume.result == 'success' &&
       needs.product-resume.outputs.runtime_workers_required == 'true' &&
@@ -1201,10 +637,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -1221,7 +659,7 @@ jobs:
 
   runtime-workers-2:
     name: runtime-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}
-    needs: [plan, runtime-collect-1, product-tooling]
+    needs: [plan, runtime-collect-1, contract-validation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -1256,10 +694,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: identity
         shell: bash
@@ -1304,7 +744,7 @@ jobs:
 
   runtime-collect-2:
     name: runtime-collect-2
-    needs: [plan, runtime-collect-1, runtime-workers-2, product-tooling]
+    needs: [plan, runtime-collect-1, runtime-workers-2, contract-validation]
     if: >-
       always() && needs.runtime-collect-1.result == 'success' &&
       needs.runtime-collect-1.outputs.runtime_workers_required == 'true' &&
@@ -1338,10 +778,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -1358,7 +800,7 @@ jobs:
 
   runtime-workers-3:
     name: runtime-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}
-    needs: [plan, runtime-collect-2, product-tooling]
+    needs: [plan, runtime-collect-2, contract-validation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -1393,10 +835,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: identity
         shell: bash
@@ -1441,7 +885,7 @@ jobs:
 
   runtime-collect-3:
     name: runtime-collect-3
-    needs: [plan, runtime-collect-2, runtime-workers-3, product-tooling]
+    needs: [plan, runtime-collect-2, runtime-workers-3, contract-validation]
     if: >-
       always() && needs.runtime-collect-2.result == 'success' &&
       needs.runtime-collect-2.outputs.runtime_workers_required == 'true' &&
@@ -1475,10 +919,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -1495,7 +941,7 @@ jobs:
 
   runtime-workers-4:
     name: runtime-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}
-    needs: [plan, runtime-collect-3, product-tooling]
+    needs: [plan, runtime-collect-3, contract-validation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -1530,10 +976,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: identity
         shell: bash
@@ -1578,7 +1026,7 @@ jobs:
 
   runtime-collect-4:
     name: runtime-collect-4
-    needs: [plan, runtime-collect-3, runtime-workers-4, product-tooling]
+    needs: [plan, runtime-collect-3, runtime-workers-4, contract-validation]
     if: >-
       always() && needs.runtime-collect-3.result == 'success' &&
       needs.runtime-collect-3.outputs.runtime_workers_required == 'true' &&
@@ -1612,10 +1060,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -1633,7 +1083,7 @@ jobs:
 
   runtime-continuation:
     name: runtime-continuation
-    needs: [plan, product-resume, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, product-tooling]
+    needs: [plan, product-resume, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, contract-validation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -1673,10 +1123,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - name: Select the latest successful original state upload
         id: parent
@@ -1735,7 +1187,7 @@ jobs:
 
   runtime-signing-prepare-native:
     name: runtime-signing-prepare-${{ matrix.target }}
-    needs: [workflow-lint, plan, runtime-continuation, product-tooling]
+    needs: [workflow-lint, plan, runtime-continuation, contract-validation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -1784,9 +1236,9 @@ jobs:
           artifact-sha256: ${{ needs.runtime-continuation.outputs.artifact_digest }}
           state-wave: ${{ needs.runtime-continuation.outputs.state_wave }}
           validation-tree: ${{ needs.plan.outputs.validation_tree }}
-          tooling-artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          tooling-artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          tooling-transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          tooling-artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          tooling-artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          tooling-transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
@@ -1889,7 +1341,7 @@ jobs:
 
   runtime-aggregate:
     name: runtime-runtime-aggregate-metadata-aggregate
-    needs: [plan, runtime-continuation, runtime-native-attestation, product-tooling]
+    needs: [plan, runtime-continuation, runtime-native-attestation, contract-validation]
     if: >-
       always() &&
       needs.plan.outputs.event_authorized == 'true' &&
@@ -1919,10 +1371,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: captured
         uses: ./.github/actions/capture-runtime-state
@@ -1994,7 +1448,7 @@ jobs:
 
   runtime-collect-5:
     name: runtime-collect-5
-    needs: [plan, runtime-continuation, runtime-aggregate, product-tooling]
+    needs: [plan, runtime-continuation, runtime-aggregate, contract-validation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -2030,10 +1484,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -2050,7 +1506,7 @@ jobs:
 
   runtime-aggregate-continuation:
     name: runtime-aggregate-continuation
-    needs: [plan, runtime-continuation, runtime-collect-5, product-tooling]
+    needs: [plan, runtime-continuation, runtime-collect-5, contract-validation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -2086,10 +1542,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - name: Select the exact completed original aggregate state
         id: parent
@@ -2157,7 +1615,7 @@ jobs:
 
   runtime-signing-prepare-aggregate:
     name: runtime-signing-prepare-aggregate
-    needs: [workflow-lint, plan, runtime-aggregate-continuation, product-tooling]
+    needs: [workflow-lint, plan, runtime-aggregate-continuation, contract-validation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -2202,9 +1660,9 @@ jobs:
           artifact-sha256: ${{ needs.runtime-aggregate-continuation.outputs.artifact_digest }}
           state-wave: ${{ needs.runtime-aggregate-continuation.outputs.state_wave }}
           validation-tree: ${{ needs.plan.outputs.validation_tree }}
-          tooling-artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          tooling-artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          tooling-transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          tooling-artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          tooling-artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          tooling-transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
@@ -2324,7 +1782,7 @@ jobs:
 
   sdk-inputs:
     name: sdk-inputs
-    needs: [workflow-lint, plan, product-tooling, runtime-continuation, runtime-aggregate-attestation]
+    needs: [workflow-lint, plan, contract-validation, runtime-continuation, runtime-aggregate-attestation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -2356,10 +1814,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: captured
         uses: ./.github/actions/capture-runtime-state
@@ -2540,7 +2000,7 @@ jobs:
           node-version: ${{ contains(matrix.lane, 'node') && '24.18.0' || 'none' }}
 
   sdk-ios-binary-plan:
-    needs: [plan, product-resume, product-tooling]
+    needs: [plan, product-resume, contract-validation]
     if: >-
       always() &&
       needs.plan.outputs.event_authorized == 'true' &&
@@ -2570,10 +2030,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
         uses: ./.github/actions/capture-runtime-state
@@ -2588,7 +2050,7 @@ jobs:
 
   sdk-ios-binary:
     name: sdk-sdk-ios-binary-ios
-    needs: [plan, product-resume, sdk-ios-binary-plan, apple, product-tooling]
+    needs: [plan, product-resume, sdk-ios-binary-plan, apple, contract-validation]
     if: >-
       always() && needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-ios-binary-plan.result == 'success' &&
@@ -2621,10 +2083,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-ios-binary-worker
         with:
@@ -2645,7 +2109,7 @@ jobs:
 
   sdk-collect-3:
     name: sdk-collect-3
-    needs: [plan, sdk-ios-binary-plan, sdk-ios-binary, runtime-continuation, runtime-aggregate-continuation, product-tooling]
+    needs: [plan, sdk-ios-binary-plan, sdk-ios-binary, runtime-continuation, runtime-aggregate-continuation, contract-validation]
     if: >-
       always() && needs.sdk-ios-binary-plan.result == 'success' &&
       needs.sdk-ios-binary-plan.outputs.sdk_workers_required == 'true' &&
@@ -2677,10 +2141,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: parent
         env:
@@ -2711,55 +2177,8 @@ jobs:
           wave: '3'
           tree: ${{ needs.plan.outputs.validation_tree }}
 
-  product-tooling:
-    needs: [plan, tooling-attestation]
-    if: >-
-      always() && needs.plan.result == 'success' &&
-      needs.plan.outputs.event_authorized == 'true' &&
-      needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.plan.outputs.tooling_required == 'true'
-    runs-on: ubuntu-24.04
-    outputs:
-      artifact_id: ${{ steps.tooling-locator.outputs.artifact_id }}
-      artifact_sha256: ${{ steps.tooling-locator.outputs.artifact_sha256 }}
-      transport_producer: ${{ steps.tooling-locator.outputs.transport_producer }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-          ref: ${{ needs.plan.outputs.validation_commit }}
-      - id: tooling-locator
-        if: needs.plan.outputs.tooling_required == 'true'
-        env:
-          PREDECESSORS: ${{ toJSON(needs) }}
-        run: |
-          python3 - <<'PY'
-          import json, os, re
-          from ci.products.inventory import load_json_bytes, require_sha256
-          from ci.products.receipt import validate_producer
-          needs = json.loads(os.environ['PREDECESSORS'])
-          miss = needs['plan']['outputs']['tooling_miss']
-          if miss not in ('true', 'false'):
-              raise ValueError('Tooling selection is incomplete')
-          selected = needs['tooling-attestation' if miss == 'true' else 'plan']
-          if selected['result'] != 'success':
-              raise ValueError('Selected tooling producer is incomplete')
-          prefix = '' if miss == 'true' else 'tooling_'
-          values = {name: selected['outputs'][prefix + name] for name in
-                    ('artifact_id', 'artifact_sha256', 'transport_producer')}
-          if re.fullmatch(r'[1-9][0-9]*', values['artifact_id']) is None:
-              raise ValueError('Tooling artifact ID is invalid')
-          require_sha256(values['artifact_sha256'], 'Tooling artifact digest')
-          producer = validate_producer(load_json_bytes(values['transport_producer'].encode('utf-8')))
-          values['transport_producer'] = json.dumps(producer, sort_keys=True, separators=(',', ':'))
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              for name, value in values.items():
-                  output.write(name + '=' + value + '\n')
-          PY
-
   sdk-plan:
-    needs: [plan, product-tooling, runtime-continuation, runtime-aggregate-continuation, sdk-inputs, sdk-ios-binary-plan, sdk-collect-3]
+    needs: [plan, contract-validation, runtime-continuation, runtime-aggregate-continuation, sdk-inputs, sdk-ios-binary-plan, sdk-collect-3]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-inputs.result == 'success'
@@ -2771,9 +2190,9 @@ jobs:
       sdk_state_wave: ${{ steps.parent.outputs.sdk_state_wave }}
       sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
       sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
-      tooling_artifact_id: ${{ needs.product-tooling.outputs.artifact_id }}
-      tooling_artifact_sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-      tooling_transport_producer: ${{ needs.product-tooling.outputs.transport_producer }}
+      tooling_artifact_id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+      tooling_artifact_sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+      tooling_transport_producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2790,10 +2209,12 @@ jobs:
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: parent
         env:
@@ -2880,6 +2301,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-javascript-worker
         with:
@@ -2930,6 +2353,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -2978,6 +2403,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-javascript-worker
         with:
@@ -3026,6 +2453,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -3142,6 +2571,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
         uses: ./.github/actions/capture-runtime-state
@@ -3225,6 +2656,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: prepare
         uses: ./.github/actions/sdk-native-prepare
@@ -3280,6 +2713,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-native-package-worker
         with:
@@ -3338,6 +2773,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -3423,6 +2860,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
         uses: ./.github/actions/capture-runtime-state
@@ -3475,6 +2914,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-ios-package-worker
         with:
@@ -3531,6 +2972,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -3616,6 +3059,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
         uses: ./.github/actions/capture-runtime-state
@@ -3668,6 +3113,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-javascript-metadata-worker
         with:
@@ -3721,6 +3168,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -3806,6 +3255,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
         uses: ./.github/actions/capture-runtime-state
@@ -3859,6 +3310,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: dart-cache
         if: matrix.component == 'dart'
@@ -3941,6 +3394,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -4026,6 +3481,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
         uses: ./.github/actions/capture-runtime-state
@@ -4079,6 +3536,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-native-metadata-worker
         with:
@@ -4143,6 +3602,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -4224,6 +3685,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: needs.plan.outputs.tooling_required == 'true'
@@ -4285,6 +3748,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -4347,6 +3812,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -4445,6 +3912,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -4536,6 +4005,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: needs.plan.outputs.tooling_required == 'true'
@@ -4597,6 +4068,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -4654,6 +4127,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -4745,6 +4220,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: needs.plan.outputs.tooling_required == 'true'
@@ -4810,6 +4287,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -4869,6 +4348,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -4984,6 +4465,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: needs.plan.outputs.tooling_required == 'true'
@@ -5048,6 +4531,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -5162,6 +4647,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -5256,6 +4743,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
       - id: capture
@@ -5308,6 +4797,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
       - id: native-archive
@@ -5377,6 +4868,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
       - id: collect
@@ -5461,6 +4954,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
       - id: capture
@@ -5521,6 +5016,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
       - id: native-archives
@@ -5602,6 +5099,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
       - id: collect
@@ -5693,6 +5192,8 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
       - id: capture
@@ -5716,7 +5217,7 @@ jobs:
           exit 1
 
   sdk-completion:
-    needs: [plan, product-tooling, product-resume, runtime-continuation, runtime-aggregate-continuation, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, sdk-plan, sdk-native-result, sdk-ios-validation-result, sdk-ios-metadata-result, sdk-core-binary-result, sdk-core-package-result, sdk-core-validation-result, sdk-core-metadata-result]
+    needs: [plan, contract-validation, product-resume, runtime-continuation, runtime-aggregate-continuation, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, sdk-plan, sdk-native-result, sdk-ios-validation-result, sdk-ios-metadata-result, sdk-core-binary-result, sdk-core-package-result, sdk-core-validation-result, sdk-core-metadata-result]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -5756,10 +5257,12 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         uses: ./.github/actions/capture-sdk-tooling
         with:
-          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
-          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: needs.plan.outputs.tooling_required == 'true'
@@ -5813,7 +5316,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, contract-binary, tooling-attestation, product-tooling, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-plan, sdk-completion]
+    needs: [workflow-lint, plan, product, contract-validation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-plan, sdk-completion]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -5825,14 +5328,14 @@ jobs:
           RESULTS: ${{ join(needs.*.result, ' ') }}
           TOOLING_MISS: ${{ needs.plan.outputs.tooling_miss }}
           CONTRACT_BINARY_REQUIRED: ${{ needs.plan.outputs.contract_matrix != '{"include":[]}' }}
-          CONTRACT_BINARY_RESULT: ${{ needs.contract-binary.result }}
-          TOOLING_ATTESTATION_RESULT: ${{ needs.tooling-attestation.result }}
-          TOOLING_ARTIFACT_ID: ${{ needs.tooling-attestation.outputs.artifact_id }}
-          TOOLING_ARTIFACT_SHA256: ${{ needs.tooling-attestation.outputs.artifact_sha256 }}
-          CONTRACT_COMPLETE: ${{ needs.contract-continuation.outputs.contract_complete }}
-          CONTRACT_ATTESTATION_RESULT: ${{ needs.contract-attestation.result }}
-          CONTRACT_ATTESTATION_ARTIFACT_ID: ${{ needs.contract-attestation.outputs.artifact_id }}
-          CONTRACT_ATTESTATION_ARTIFACT_DIGEST: ${{ needs.contract-attestation.outputs.artifact_digest }}
+          CONTRACT_BINARY_RESULT: ${{ needs.contract-validation.outputs.contract_binary_result }}
+          TOOLING_ATTESTATION_RESULT: ${{ needs.contract-validation.outputs.tooling_attestation_result }}
+          TOOLING_ARTIFACT_ID: ${{ needs.contract-validation.outputs.tooling_attestation_artifact_id }}
+          TOOLING_ARTIFACT_SHA256: ${{ needs.contract-validation.outputs.tooling_attestation_artifact_sha256 }}
+          CONTRACT_COMPLETE: ${{ needs.contract-validation.outputs.contract_complete }}
+          CONTRACT_ATTESTATION_RESULT: ${{ needs.contract-validation.outputs.contract_attestation_result }}
+          CONTRACT_ATTESTATION_ARTIFACT_ID: ${{ needs.contract-validation.outputs.contract_attestation_artifact_id }}
+          CONTRACT_ATTESTATION_ARTIFACT_DIGEST: ${{ needs.contract-validation.outputs.contract_attestation_artifact_digest }}
           PRODUCT_RESUME_RESULT: ${{ needs.product-resume.result }}
           SDK_COMPLETION_RESULT: ${{ needs.sdk-completion.result }}
           SDK_COMPLETE: ${{ needs.sdk-completion.outputs.complete }}

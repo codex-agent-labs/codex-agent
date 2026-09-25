@@ -8,9 +8,6 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TRUSTED_SOURCE = "0953cb9ca87d30cf08b0f1227a204b701cafea75"
-
-
 def workflow_job(source: str, name: str) -> str:
     match = re.search(rf"^  {re.escape(name)}:\n(?P<body>.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)",
                       source, re.MULTILINE | re.DOTALL)
@@ -22,9 +19,10 @@ def workflow_job(source: str, name: str) -> str:
 class ContractAttestationWorkflowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.workflow = (ROOT / ".github/workflows/product-validation.yml").read_text(encoding="utf-8")
+        cls.workflow = (ROOT / ".github/workflows/contract-validation.yml").read_text(encoding="utf-8")
+        cls.parent = (ROOT / ".github/workflows/product-validation.yml").read_text(encoding="utf-8")
         cls.job = workflow_job(cls.workflow, "contract-attestation")
-        cls.gate = workflow_job(cls.workflow, "merge-gate")
+        cls.gate = workflow_job(cls.parent, "merge-gate")
 
     def test_signer_is_authorized_before_allocating_a_runner(self):
         condition = re.search(r"^    if: (?P<value>.*?)(?=^    [a-z][a-z-]*:)",
@@ -32,9 +30,9 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
         self.assertIsNotNone(condition)
         expression = condition.group("value")
         for guard in (
-            "needs.plan.outputs.event_authorized == 'true'",
-            "needs.plan.outputs.remote_build_authorized == 'true'",
-            "needs.plan.outputs.validation_reused != 'true'",
+            "fromJSON(inputs.planOutputs).event_authorized == 'true'",
+            "fromJSON(inputs.planOutputs).remote_build_authorized == 'true'",
+            "fromJSON(inputs.planOutputs).validation_reused != 'true'",
             "needs.contract-continuation.result == 'success'",
             "needs.contract-continuation.outputs.contract_complete == 'true'",
             "github.event_name != 'workflow_dispatch'",
@@ -44,7 +42,6 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
         self.assertIn("    environment: product-attestation", self.job)
         needs = re.search(r"^    needs: \[(.*?)\]$", self.job, re.MULTILINE)
         self.assertIsNotNone(needs)
-        self.assertIn("plan", [name.strip() for name in needs.group(1).split(",")])
         self.assertIn("contract-continuation", [name.strip() for name in needs.group(1).split(",")])
 
     def test_only_reviewed_source_is_executable_and_no_product_tasks_run(self):
@@ -52,14 +49,16 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
         checkout = re.search(r"uses: actions/checkout@.*?(?=^      -|\Z)",
                              self.job, re.MULTILINE | re.DOTALL)
         self.assertIsNotNone(checkout)
-        for setting in (f"ref: {TRUSTED_SOURCE}", "path: trusted-source", "persist-credentials: false"):
+        for setting in ("ref: ${{ inputs.trustedWorkflowSha }}", "path: trusted-source", "persist-credentials: false"):
             self.assertIn(setting, checkout.group())
         self.assertNotIn("ref: ${{ needs.plan.outputs.validation_commit }}", self.job)
         self.assertNotRegex(self.job, r"uses: (?:\./|actions/cache(?:/|@)|actions/setup-)")
         self.assertNotRegex(self.job, r"(?:\./gradlew|\bcargo\s+(?:build|test)|\bcmake\s|\bxcodebuild\b|\bnpm\s+(?:ci|install|run)|\bpip\s+install)")
         self.assertIn("ci/contract_release.py", self.job)
         self.assertIn("--trusted-source-sha", self.job)
-        self.assertIn(TRUSTED_SOURCE, self.job)
+        self.assertIn("--trusted-contract-workflow-path .github/workflows/contract-validation.yml", self.job)
+        self.assertIn("--trusted-contract-binary-job 'product-validation / contract-validation / product-contracts'", self.job)
+        self.assertIn("--trusted-contract-continuation-job 'product-validation / contract-validation / contract-continuation'", self.job)
         self.assertNotIn("ssh-keygen", self.job)
 
     def test_secret_is_scoped_to_the_single_existing_signer_invocation(self):
@@ -76,7 +75,7 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
         for value in (
             "needs.contract-continuation.outputs.attestation_inputs_id",
             "needs.contract-continuation.outputs.attestation_inputs_digest",
-            "needs.plan.outputs.validation_tree", "--artifact-id", "--artifact-sha256",
+            "fromJSON(inputs.planOutputs).validation_tree", "--artifact-id", "--artifact-sha256",
             "--trusted-workflow-sha", "--validation-tree", "--contract-version",
         ):
             self.assertIn(value, self.job)
@@ -101,7 +100,12 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
             ["git", "show", f"{selected.group(1)}:.github/workflows/product-validation.yml"],
             cwd=ROOT, check=True, capture_output=True, text=True,
         )
-        self.assertEqual(self.workflow, pinned.stdout, "Caller must execute the reviewed current workflow bytes")
+        self.assertEqual(self.parent, pinned.stdout, "Caller must execute the reviewed current parent workflow bytes")
+        child = subprocess.run(
+            ["git", "show", f"{selected.group(1)}:.github/workflows/contract-validation.yml"],
+            cwd=ROOT, check=True, capture_output=True, text=True,
+        )
+        self.assertEqual(self.workflow, child.stdout, "Nested Contract workflow must be part of the reviewed pin")
 
     def test_complete_external_capture_upload_is_immutable(self):
         uploads = re.findall(r"uses: actions/upload-artifact@.*?(?=^      -|\Z)",
@@ -122,10 +126,26 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
     def test_merge_gate_waits_for_the_protected_job(self):
         needs = re.search(r"^    needs: \[(.*?)\]$", self.gate, re.MULTILINE)
         self.assertIsNotNone(needs)
-        self.assertIn("contract-attestation", [name.strip() for name in needs.group(1).split(",")])
-        self.assertIn("needs.contract-attestation.result", self.gate)
-        self.assertIn("needs.contract-continuation.outputs.contract_complete", self.gate)
+        self.assertIn("contract-validation", [name.strip() for name in needs.group(1).split(",")])
+        self.assertIn("needs.contract-validation.outputs.contract_attestation_result", self.gate)
+        self.assertIn("needs.contract-validation.outputs.contract_complete", self.gate)
         self.assertIn("needs.plan.outputs.validation_reused", self.gate)
+
+    def test_nested_contract_graph_exports_every_parent_consumed_output(self):
+        declared = set(re.findall(r"(?m)^      ([a-z0-9_]+):\n        value:", self.workflow))
+        consumed = set(re.findall(r"needs\.contract-validation\.outputs\.([a-z0-9_]+)", self.parent))
+        self.assertTrue(consumed <= declared, consumed - declared)
+        self.assertIn("needs: [workflow-lint, plan]", workflow_job(self.parent, "contract-validation"))
+        for name, predecessors in (
+            ("tooling-attestation", "needs: [contract-binary]"),
+            ("product-tooling", "needs: [tooling-attestation]"),
+            ("contract-continuation", "needs: [contract-binary, product-tooling]"),
+            ("contract-attestation", "needs: [contract-continuation]"),
+        ):
+            self.assertIn(predecessors, workflow_job(self.workflow, name))
+        status = workflow_job(self.workflow, "contract-status")
+        self.assertIn("if: always()", status)
+        self.assertIn("needs: [contract-binary, tooling-attestation, product-tooling, contract-continuation, contract-attestation]", status)
 
     def test_actual_merge_gate_shell_rejects_missing_failed_or_skipped_required_attestation(self):
         # Execute only the existing prerequisite shell, never checkout/download/product steps.

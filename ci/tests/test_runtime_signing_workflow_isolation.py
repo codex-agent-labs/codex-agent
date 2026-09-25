@@ -42,7 +42,7 @@ class RuntimeSigningWorkflowIsolationTest(unittest.TestCase):
             with self.subTest(name=name):
                 before_runner = job.split("    runs-on:", 1)[0]
                 self.assertIn(f"name: {name}", job)
-                self.assertTrue({"workflow-lint", "plan", "product-tooling"}.issubset(job_needs(job)))
+                self.assertTrue({"workflow-lint", "plan", "contract-validation"}.issubset(job_needs(job)))
                 for guard in ("always()", "needs.plan.outputs.event_authorized == 'true'",
                               "needs.plan.outputs.remote_build_authorized == 'true'",
                               "github.event_name != 'workflow_dispatch'", upstream,

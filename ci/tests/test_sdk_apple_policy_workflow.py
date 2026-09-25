@@ -21,6 +21,9 @@ class SdkApplePolicyWorkflowTest(unittest.TestCase):
         source = (ROOT / '.github/workflows/product-validation.yml').read_text()
         cls.jobs = dict(re.findall(r'^  ([a-z][a-z0-9-]*):\n(.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)',
                                   source, re.M | re.S))
+        child = (ROOT / '.github/workflows/contract-validation.yml').read_text()
+        cls.jobs.update(re.findall(r'^  ([a-z][a-z0-9-]*):\n(.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)',
+                                   child, re.M | re.S))
 
     @staticmethod
     def steps(job):
@@ -48,7 +51,9 @@ class SdkApplePolicyWorkflowTest(unittest.TestCase):
                         self.assertIn('tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}', explicit[0])
                         self.assertIn('plan-path:', explicit[0])
                     else:
-                        self.assertIn('plan-id: ${{ needs.plan.outputs.plan_id }}', step)
+                        self.assertTrue(
+                            'plan-id: ${{ needs.plan.outputs.plan_id }}' in step or
+                            'plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}' in step)
                     header = job.split('    steps:', 1)[0]
                     self.assertNotIn('outputs.apple-policy', header)
         self.assertGreaterEqual(count, 40)

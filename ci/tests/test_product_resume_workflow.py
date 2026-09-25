@@ -28,15 +28,15 @@ class ProductResumeWorkflowTest(unittest.TestCase):
             "needs.plan.outputs.remote_build_authorized == 'true'",
             "needs.plan.outputs.validation_reused != 'true'",
             "github.event_name != 'workflow_dispatch'",
-            "needs.contract-continuation.outputs.contract_complete == 'true'",
-            "needs.contract-continuation.result == 'success'",
-            "needs.contract-attestation.result == 'success'",
+            "needs.contract-validation.outputs.contract_complete == 'true'",
+            "needs.contract-validation.outputs.contract_continuation_result == 'success'",
+            "needs.contract-validation.outputs.contract_attestation_result == 'success'",
         ):
             self.assertIn(guard, condition.group("body"))
         self.assertLess(condition.start(), self.job.index("    runs-on:"))
         needs = re.search(r"^    needs: \[(.*?)\]$", self.job, re.MULTILINE)
         self.assertIsNotNone(needs)
-        self.assertEqual({"workflow-lint", "plan", "product-tooling", "contract-continuation", "contract-attestation"},
+        self.assertEqual({"workflow-lint", "plan", "contract-validation"},
                          {value.strip() for value in needs.group(1).split(",")})
 
     def test_exact_original_uploads_are_authenticated_before_resuming(self):
@@ -48,8 +48,10 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertNotRegex(downloads[0], re.compile(r"^          (?:name|pattern):", re.MULTILINE))
         for reference in (
             "needs.plan.outputs.plan_id", "needs.plan.outputs.plan_digest",
-            "needs.contract-continuation.outputs.state_id", "needs.contract-continuation.outputs.state_digest",
-            "needs.contract-attestation.outputs.artifact_id", "needs.contract-attestation.outputs.artifact_digest",
+            "needs.contract-validation.outputs.contract_state_id",
+            "needs.contract-validation.outputs.contract_state_digest",
+            "needs.contract-validation.outputs.contract_attestation_artifact_id",
+            "needs.contract-validation.outputs.contract_attestation_artifact_digest",
             "inputs.trustedWorkflowSha",
         ):
             self.assertIn(reference, self.job)
@@ -57,6 +59,8 @@ class ProductResumeWorkflowTest(unittest.TestCase):
                      "--release-artifact-id", "--release-artifact-sha256", "--trusted-workflow-sha"):
             self.assertIn(flag, self.job)
         self.assertEqual(1, self.job.count("ci/product_reuse.py capture-product-resume-inputs"))
+        self.assertIn("--trusted-contract-workflow-path .github/workflows/contract-validation.yml", self.job)
+        self.assertIn('--trusted-contract-continuation-job "product-validation / contract-validation / contract-continuation"', self.job)
         self.assertEqual(1, self.job.count("ci/product_reuse.py resume-products"))
         self.assertLess(self.job.index("capture-product-resume-inputs"), self.job.index("resume-products"))
         for flag, path in (
@@ -110,9 +114,12 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertIn("sha256:", header)
         self.assertIn(".outputs.full_reuse", header)
         self.assertIn(".outputs.target_jobs_required", header)
-        for job_name, output_name, step_name in (("plan", "plan", "upload_plan"),
-                                                  ("contract-continuation", "state", "upload_final_state")):
-            job = workflow_job(self.workflow, job_name)
+        child = (ROOT / ".github/workflows/contract-validation.yml").read_text(encoding="utf-8")
+        for source, job_name, output_name, step_name in (
+            (self.workflow, "plan", "plan", "upload_plan"),
+            (child, "contract-continuation", "state", "upload_final_state"),
+        ):
+            job = workflow_job(source, job_name)
             self.assertIn(f"{output_name}_id: ${{{{ steps.{step_name}.outputs.artifact-id }}}}", job)
             self.assertIn(f"{output_name}_digest: sha256:${{{{ steps.{step_name}.outputs.artifact-digest }}}}", job)
 

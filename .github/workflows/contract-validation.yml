@@ -1,0 +1,709 @@
+name: Contract Validation
+
+on:
+  workflow_call:
+    inputs:
+      planOutputs:
+        required: true
+        type: string
+      trustedWorkflowSha:
+        required: true
+        type: string
+    outputs:
+      contract_binary_result:
+        value: ${{ jobs.contract-status.outputs.contract_binary_result }}
+      tooling_attestation_result:
+        value: ${{ jobs.contract-status.outputs.tooling_attestation_result }}
+      tooling_attestation_artifact_id:
+        value: ${{ jobs.tooling-attestation.outputs.artifact_id }}
+      tooling_attestation_artifact_sha256:
+        value: ${{ jobs.tooling-attestation.outputs.artifact_sha256 }}
+      tooling_artifact_id:
+        value: ${{ jobs.product-tooling.outputs.artifact_id }}
+      tooling_artifact_sha256:
+        value: ${{ jobs.product-tooling.outputs.artifact_sha256 }}
+      tooling_transport_producer:
+        value: ${{ jobs.product-tooling.outputs.transport_producer }}
+      contract_continuation_result:
+        value: ${{ jobs.contract-status.outputs.contract_continuation_result }}
+      contract_complete:
+        value: ${{ jobs.contract-continuation.outputs.contract_complete }}
+      contract_state_id:
+        value: ${{ jobs.contract-continuation.outputs.state_id }}
+      contract_state_digest:
+        value: ${{ jobs.contract-continuation.outputs.state_digest }}
+      contract_attestation_result:
+        value: ${{ jobs.contract-status.outputs.contract_attestation_result }}
+      contract_attestation_artifact_id:
+        value: ${{ jobs.contract-attestation.outputs.artifact_id }}
+      contract_attestation_artifact_digest:
+        value: ${{ jobs.contract-attestation.outputs.artifact_digest }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  contract-binary:
+    name: product-contracts
+    if: fromJSON(inputs.planOutputs).event_authorized == 'true' && fromJSON(inputs.planOutputs).remote_build_authorized == 'true' && fromJSON(inputs.planOutputs).validation_reused != 'true' && fromJSON(inputs.planOutputs).contract_matrix != '{"include":[]}'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(fromJSON(inputs.planOutputs).contract_matrix) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: contracts
+          force-build: ${{ fromJSON(inputs.planOutputs).tooling_miss == 'true' }}
+          reuse-disabled: ${{ fromJSON(inputs.planOutputs).tooling_miss == 'true' }}
+          plan-artifact: ${{ fromJSON(inputs.planOutputs).plan_artifact }}
+          validation-commit: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          validation-tree: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+          build: ${{ matrix.build }}
+          test: ${{ matrix.test }}
+          metadata: ${{ matrix.metadata }}
+          node-version: '24.18.0'
+
+  tooling-attestation:
+    name: tooling-attestation
+    if: >-
+      always() && !cancelled() &&
+      fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).validation_reused != 'true' &&
+      github.event_name != 'workflow_dispatch' &&
+      fromJSON(inputs.planOutputs).tooling_required == 'true' &&
+      fromJSON(inputs.planOutputs).tooling_miss == 'true' &&
+      needs.contract-binary.result == 'success'
+    needs: [contract-binary]
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload_tooling.outputs.artifact-id }}
+      artifact_sha256: sha256:${{ steps.upload_tooling.outputs.artifact-digest }}
+      transport_producer: ${{ steps.identity.outputs.transport_producer }}
+    steps:
+      - name: Check out reviewed tooling signer only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ inputs.trustedWorkflowSha }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Import exact producer Git objects without checking out producer code
+        env:
+          TRUSTED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+          VALIDATION_COMMIT: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          VALIDATION_TREE: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+        run: |
+          set -euo pipefail
+          [[ "$VALIDATION_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$VALIDATION_TREE" =~ ^[0-9a-f]{40}$ ]]
+          git -C trusted-source fetch --no-tags origin "$VALIDATION_COMMIT"
+          test "$(git -C trusted-source rev-parse "$VALIDATION_COMMIT^{tree}")" = "$VALIDATION_TREE"
+          test "$(git -C trusted-source rev-parse HEAD)" = "$TRUSTED_SOURCE_SHA"
+      - name: Download original plan and source inventories
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          path: ${{ runner.temp }}/tooling-original-plan
+          merge-multiple: true
+      - name: Authenticate original tooling and establish detached release trust
+        env:
+          TRUSTED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          VALIDATION_TREE: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/tooling_release.py \
+            --repository-root "$GITHUB_WORKSPACE/trusted-source" \
+            --plan "$RUNNER_TEMP/tooling-original-plan/impact-plan.json" \
+            --destination "$RUNNER_TEMP/tooling-release-evidence" \
+            --trusted-source-sha "$TRUSTED_SOURCE_SHA" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --trusted-workflow-path .github/workflows/contract-validation.yml \
+            --trusted-job-name 'product-validation / contract-validation / product-contracts' \
+            --validation-tree "$VALIDATION_TREE"
+      - id: identity
+        name: Expose authenticated transport locator
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          caller = json.loads((Path(os.environ['RUNNER_TEMP']) / 'tooling-release-evidence/caller.json').read_bytes())
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('transport_producer=' + json.dumps(caller['transportProducer'], sort_keys=True, separators=(',', ':')) + '\n')
+          PY
+      - id: upload_tooling
+        name: Preserve exact signed tooling and original provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-release-tooling-${{ fromJSON(inputs.planOutputs).validation_tree }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tooling-release-evidence
+          compression-level: 0
+          retention-days: 90
+
+  product-tooling:
+    needs: [tooling-attestation]
+    if: >-
+      always() &&
+      fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).tooling_required == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.tooling-locator.outputs.artifact_id }}
+      artifact_sha256: ${{ steps.tooling-locator.outputs.artifact_sha256 }}
+      transport_producer: ${{ steps.tooling-locator.outputs.transport_producer }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - id: tooling-locator
+        if: fromJSON(inputs.planOutputs).tooling_required == 'true'
+        env:
+          PREDECESSORS: ${{ toJSON(needs) }}
+          PLAN_OUTPUTS: ${{ inputs.planOutputs }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          from ci.products.inventory import load_json_bytes, require_sha256
+          from ci.products.receipt import validate_producer
+          needs = json.loads(os.environ['PREDECESSORS'])
+          needs['plan'] = {'result': 'success', 'outputs': json.loads(os.environ['PLAN_OUTPUTS'])}
+          miss = needs['plan']['outputs']['tooling_miss']
+          if miss not in ('true', 'false'):
+              raise ValueError('Tooling selection is incomplete')
+          selected = needs['tooling-attestation' if miss == 'true' else 'plan']
+          if selected['result'] != 'success':
+              raise ValueError('Selected tooling producer is incomplete')
+          prefix = '' if miss == 'true' else 'tooling_'
+          values = {name: selected['outputs'][prefix + name] for name in
+                    ('artifact_id', 'artifact_sha256', 'transport_producer')}
+          if re.fullmatch(r'[1-9][0-9]*', values['artifact_id']) is None:
+              raise ValueError('Tooling artifact ID is invalid')
+          require_sha256(values['artifact_sha256'], 'Tooling artifact digest')
+          producer = validate_producer(load_json_bytes(values['transport_producer'].encode('utf-8')))
+          values['transport_producer'] = json.dumps(producer, sort_keys=True, separators=(',', ':'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              for name, value in values.items():
+                  output.write(name + '=' + value + '\n')
+          PY
+
+  contract-continuation:
+    name: contract-continuation
+    if: >-
+      always() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).validation_reused != 'true' &&
+      fromJSON(inputs.planOutputs).contract_reconciliation_required == 'true' &&
+      fromJSON(inputs.planOutputs).contract_next_phase != 'none' &&
+      (fromJSON(inputs.planOutputs).contract_next_phase != 'binary' || needs.contract-binary.result == 'success')
+    needs: [contract-binary, product-tooling]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      contract_complete: ${{ steps.select_final_state.outputs.contract_complete }}
+      state_artifact: codex-agent-contract-phase-state-${{ fromJSON(inputs.planOutputs).validation_tree }}
+      state_id: ${{ steps.upload_final_state.outputs.artifact-id }}
+      state_digest: sha256:${{ steps.upload_final_state.outputs.artifact-digest }}
+      attestation_inputs_artifact: codex-agent-contract-attestation-inputs-${{ fromJSON(inputs.planOutputs).validation_tree }}
+      attestation_inputs_id: ${{ steps.upload_attestation_inputs.outputs.artifact-id }}
+      attestation_inputs_digest: sha256:${{ steps.upload_attestation_inputs.outputs.artifact-digest }}
+      contract_version: ${{ steps.capture_attestation_inputs.outputs.contract_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          fetch-depth: 0
+      - name: Select installed caller Java for SDK tooling
+        if: fromJSON(inputs.planOutputs).tooling_required == 'true'
+        shell: bash
+        run: |
+          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
+          selected_java_home="${!java_home_variable}"
+          java_binary=java
+          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
+          test -f "$selected_java_home/bin/$java_binary"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        if: fromJSON(inputs.planOutputs).tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          artifact-id: ${{ needs.product-tooling.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.product-tooling.outputs.artifact_sha256 }}
+          transport-producer: ${{ needs.product-tooling.outputs.transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
+          policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ fromJSON(inputs.planOutputs).plan_artifact }}
+          path: build/ci
+      - if: fromJSON(inputs.planOutputs).contract_next_phase == 'binary'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-product-phase-contract-contract-binary-common-${{ fromJSON(inputs.planOutputs).validation_tree }}
+          path: build/product-phase/contract-contract-binary-common
+      - uses: ./.github/actions/setup-kmp
+        with:
+          cache-read-only: "true"
+      - name: Select Contract producer trust
+        shell: bash
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) trust_domain=development ;;
+            merge_group) trust_domain=release ;;
+            *) exit 1 ;;
+          esac
+          printf 'CONTRACT_TRUST_DOMAIN=%s\n' "$trust_domain" >> "$GITHUB_ENV"
+      - name: Reconcile the fresh Contract binary phase
+        id: reconcile_binary
+        if: fromJSON(inputs.planOutputs).contract_next_phase == 'binary'
+        shell: bash
+        env:
+          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
+          SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
+        run: |
+          tooling=()
+          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+          python3 ci/product_reuse.py advance-contract ${tooling[@]+"${tooling[@]}"} \
+            --plan build/ci/impact-plan.json \
+            --discovery-root build/ci/product-reuse \
+            --phase-shard build/product-phase/contract-contract-binary-common \
+            --destination build/contract-state/after-binary \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Select Contract state after binary reconciliation
+        id: select_after_binary
+        env:
+          INITIAL_NEXT_PHASE: ${{ fromJSON(inputs.planOutputs).contract_next_phase }}
+          RECONCILED_COMPLETE: ${{ steps.reconcile_binary.outputs.contract_complete }}
+          RECONCILED_NEXT_PHASE: ${{ steps.reconcile_binary.outputs.next_phase }}
+        shell: bash
+        run: |
+          state=build/ci/product-reuse
+          next_phase=$INITIAL_NEXT_PHASE
+          complete=false
+          if [ "$INITIAL_NEXT_PHASE" = binary ]; then
+            state=build/contract-state/after-binary
+            next_phase=$RECONCILED_NEXT_PHASE
+            complete=$RECONCILED_COMPLETE
+          fi
+          case "$next_phase:$complete" in
+            package:false|validation:false|metadata:false|none:true) ;;
+            *) exit 1 ;;
+          esac
+          printf 'state=%s\nnext_phase=%s\ncontract_complete=%s\n' \
+            "$state" "$next_phase" "$complete" >> "$GITHUB_OUTPUT"
+      - name: Materialize the exact Contract binary stage and receipt
+        if: steps.select_after_binary.outputs.next_phase == 'package' || steps.select_after_binary.outputs.next_phase == 'validation'
+        shell: bash
+        run: |
+          python3 ci/product_reuse.py materialize-contract \
+            --plan build/ci/impact-plan.json \
+            --state-root "${{ steps.select_after_binary.outputs.state }}" \
+            --phase binary \
+            --destination build/contract-handoff/binary \
+            --with-receipt
+      - name: Produce and finalize the Contract package phase
+        if: steps.select_after_binary.outputs.next_phase == 'package'
+        env:
+          VALIDATION_COMMIT: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          VALIDATION_TREE: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+        shell: bash
+        run: |
+          ./gradlew ciProductPhase \
+            -PcodexAgent.product=contract \
+            -PcodexAgent.component=contract \
+            -PcodexAgent.phase=package \
+            -PcodexAgent.contractBinaryStageRoot="$PWD/build/contract-handoff/binary/stage" \
+            -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+            -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+            --stacktrace
+          IFS= read -r contract_version < gradle/release/versions/contract.txt
+          python3 -m ci.products restore store-phase \
+            --stage-root build/product-stage/contract/contract/package \
+            --phase-plan "${{ steps.select_after_binary.outputs.state }}/phase-plans/contract-contract-package-common.json" \
+            --producer "${{ steps.select_after_binary.outputs.state }}/producer.json" \
+            --product-version "$contract_version" \
+            --trust-domain "$CONTRACT_TRUST_DOMAIN" \
+            --destination build/product-phase/contract-contract-package-common
+      - name: Upload the Contract package phase
+        if: steps.select_after_binary.outputs.next_phase == 'package'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          name: codex-agent-product-phase-contract-contract-package-common-${{ fromJSON(inputs.planOutputs).validation_tree }}
+          path: build/product-phase/contract-contract-package-common
+          compression-level: 0
+          retention-days: 90
+      - name: Reconcile the fresh Contract package phase
+        id: reconcile_package
+        if: steps.select_after_binary.outputs.next_phase == 'package'
+        shell: bash
+        env:
+          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
+          SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
+        run: |
+          tooling=()
+          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+          python3 ci/product_reuse.py advance-contract ${tooling[@]+"${tooling[@]}"} \
+            --plan build/ci/impact-plan.json \
+            --discovery-root build/ci/product-reuse \
+            --state-root "${{ steps.select_after_binary.outputs.state }}" \
+            --phase-shard build/product-phase/contract-contract-package-common \
+            --destination build/contract-state/after-package \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Select Contract state after package reconciliation
+        id: select_after_package
+        env:
+          CURRENT_COMPLETE: ${{ steps.select_after_binary.outputs.contract_complete }}
+          CURRENT_NEXT_PHASE: ${{ steps.select_after_binary.outputs.next_phase }}
+          CURRENT_STATE: ${{ steps.select_after_binary.outputs.state }}
+          RECONCILED_COMPLETE: ${{ steps.reconcile_package.outputs.contract_complete }}
+          RECONCILED_NEXT_PHASE: ${{ steps.reconcile_package.outputs.next_phase }}
+        shell: bash
+        run: |
+          state=$CURRENT_STATE
+          next_phase=$CURRENT_NEXT_PHASE
+          complete=$CURRENT_COMPLETE
+          if [ "$CURRENT_NEXT_PHASE" = package ]; then
+            state=build/contract-state/after-package
+            next_phase=$RECONCILED_NEXT_PHASE
+            complete=$RECONCILED_COMPLETE
+          fi
+          case "$next_phase:$complete" in
+            validation:false|metadata:false|none:true) ;;
+            *) exit 1 ;;
+          esac
+          printf 'state=%s\nnext_phase=%s\ncontract_complete=%s\n' \
+            "$state" "$next_phase" "$complete" >> "$GITHUB_OUTPUT"
+      - name: Materialize the exact Contract package stage and receipt
+        if: steps.select_after_package.outputs.next_phase == 'validation'
+        shell: bash
+        run: |
+          python3 ci/product_reuse.py materialize-contract \
+            --plan build/ci/impact-plan.json \
+            --state-root "${{ steps.select_after_package.outputs.state }}" \
+            --phase package \
+            --destination build/contract-handoff/package \
+            --with-receipt
+      - name: Produce and finalize the Contract validation phase
+        if: steps.select_after_package.outputs.next_phase == 'validation'
+        env:
+          VALIDATION_COMMIT: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          VALIDATION_TREE: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+        shell: bash
+        run: |
+          binary_receipt=$PWD/build/contract-handoff/binary/receipt/phase-receipt.json
+          package_receipt=$PWD/build/contract-handoff/package/receipt/phase-receipt.json
+          binary_digest=sha256:$(sha256sum "$binary_receipt" | cut -d' ' -f1)
+          package_digest=sha256:$(sha256sum "$package_receipt" | cut -d' ' -f1)
+          ./gradlew ciProductPhase \
+            -PcodexAgent.product=contract \
+            -PcodexAgent.component=contract \
+            -PcodexAgent.phase=validation \
+            -PcodexAgent.contractPackageStageRoot="$PWD/build/contract-handoff/package/stage" \
+            -PcodexAgent.contractPackageReceipt="$package_receipt" \
+            -PcodexAgent.contractPackageReceiptSha256="$package_digest" \
+            -PcodexAgent.contractBinaryReceipt="$binary_receipt" \
+            -PcodexAgent.contractBinaryReceiptSha256="$binary_digest" \
+            -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+            -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+            --stacktrace
+          IFS= read -r contract_version < gradle/release/versions/contract.txt
+          python3 -m ci.products restore store-phase \
+            --stage-root build/product-stage/contract/contract/validation \
+            --phase-plan "${{ steps.select_after_package.outputs.state }}/phase-plans/contract-contract-validation-common.json" \
+            --producer "${{ steps.select_after_package.outputs.state }}/producer.json" \
+            --product-version "$contract_version" \
+            --trust-domain "$CONTRACT_TRUST_DOMAIN" \
+            --destination build/product-phase/contract-contract-validation-common
+      - name: Upload the Contract validation phase
+        if: steps.select_after_package.outputs.next_phase == 'validation'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          name: codex-agent-product-phase-contract-contract-validation-common-${{ fromJSON(inputs.planOutputs).validation_tree }}
+          path: build/product-phase/contract-contract-validation-common
+          compression-level: 0
+          retention-days: 90
+      - name: Reconcile the fresh Contract validation phase
+        id: reconcile_validation
+        if: steps.select_after_package.outputs.next_phase == 'validation'
+        shell: bash
+        env:
+          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
+          SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
+        run: |
+          tooling=()
+          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+          python3 ci/product_reuse.py advance-contract ${tooling[@]+"${tooling[@]}"} \
+            --plan build/ci/impact-plan.json \
+            --discovery-root build/ci/product-reuse \
+            --state-root "${{ steps.select_after_package.outputs.state }}" \
+            --phase-shard build/product-phase/contract-contract-validation-common \
+            --destination build/contract-state/after-validation \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Select Contract state after validation reconciliation
+        id: select_after_validation
+        env:
+          CURRENT_COMPLETE: ${{ steps.select_after_package.outputs.contract_complete }}
+          CURRENT_NEXT_PHASE: ${{ steps.select_after_package.outputs.next_phase }}
+          CURRENT_STATE: ${{ steps.select_after_package.outputs.state }}
+          RECONCILED_COMPLETE: ${{ steps.reconcile_validation.outputs.contract_complete }}
+          RECONCILED_NEXT_PHASE: ${{ steps.reconcile_validation.outputs.next_phase }}
+        shell: bash
+        run: |
+          state=$CURRENT_STATE
+          next_phase=$CURRENT_NEXT_PHASE
+          complete=$CURRENT_COMPLETE
+          if [ "$CURRENT_NEXT_PHASE" = validation ]; then
+            state=build/contract-state/after-validation
+            next_phase=$RECONCILED_NEXT_PHASE
+            complete=$RECONCILED_COMPLETE
+          fi
+          case "$next_phase:$complete" in
+            metadata:false|none:true) ;;
+            *) exit 1 ;;
+          esac
+          printf 'state=%s\nnext_phase=%s\ncontract_complete=%s\n' \
+            "$state" "$next_phase" "$complete" >> "$GITHUB_OUTPUT"
+      - name: Materialize the exact Contract validation stage and receipt
+        if: steps.select_after_validation.outputs.next_phase == 'metadata'
+        shell: bash
+        run: |
+          python3 ci/product_reuse.py materialize-contract \
+            --plan build/ci/impact-plan.json \
+            --state-root "${{ steps.select_after_validation.outputs.state }}" \
+            --phase validation \
+            --destination build/contract-handoff/validation \
+            --with-receipt
+      - name: Produce and finalize the deterministic Contract metadata phase
+        if: steps.select_after_validation.outputs.next_phase == 'metadata'
+        env:
+          VALIDATION_COMMIT: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          VALIDATION_TREE: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+        shell: bash
+        run: |
+          ./gradlew ciProductPhase \
+            -PcodexAgent.product=contract \
+            -PcodexAgent.component=contract \
+            -PcodexAgent.phase=metadata \
+            -PcodexAgent.contractValidationStageRoot="$PWD/build/contract-handoff/validation/stage" \
+            -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+            -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+            --stacktrace
+          IFS= read -r contract_version < gradle/release/versions/contract.txt
+          python3 -m ci.products restore store-phase \
+            --stage-root build/product-stage/contract/contract/metadata \
+            --phase-plan "${{ steps.select_after_validation.outputs.state }}/phase-plans/contract-contract-metadata-common.json" \
+            --producer "${{ steps.select_after_validation.outputs.state }}/producer.json" \
+            --product-version "$contract_version" \
+            --trust-domain "$CONTRACT_TRUST_DOMAIN" \
+            --destination build/product-phase/contract-contract-metadata-common
+      - name: Upload the Contract metadata phase
+        if: steps.select_after_validation.outputs.next_phase == 'metadata'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          name: codex-agent-product-phase-contract-contract-metadata-common-${{ fromJSON(inputs.planOutputs).validation_tree }}
+          path: build/product-phase/contract-contract-metadata-common
+          compression-level: 0
+          retention-days: 90
+      - name: Reconcile the fresh Contract metadata phase
+        id: reconcile_metadata
+        if: steps.select_after_validation.outputs.next_phase == 'metadata'
+        shell: bash
+        env:
+          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
+          SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
+        run: |
+          tooling=()
+          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+          python3 ci/product_reuse.py advance-contract ${tooling[@]+"${tooling[@]}"} \
+            --plan build/ci/impact-plan.json \
+            --discovery-root build/ci/product-reuse \
+            --state-root "${{ steps.select_after_validation.outputs.state }}" \
+            --phase-shard build/product-phase/contract-contract-metadata-common \
+            --destination build/contract-state/after-metadata \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Select final Contract continuation state
+        id: select_final_state
+        env:
+          CURRENT_COMPLETE: ${{ steps.select_after_validation.outputs.contract_complete }}
+          CURRENT_NEXT_PHASE: ${{ steps.select_after_validation.outputs.next_phase }}
+          CURRENT_STATE: ${{ steps.select_after_validation.outputs.state }}
+          RECONCILED_COMPLETE: ${{ steps.reconcile_metadata.outputs.contract_complete }}
+          RECONCILED_NEXT_PHASE: ${{ steps.reconcile_metadata.outputs.next_phase }}
+        shell: bash
+        run: |
+          state=$CURRENT_STATE
+          next_phase=$CURRENT_NEXT_PHASE
+          complete=$CURRENT_COMPLETE
+          if [ "$CURRENT_NEXT_PHASE" = metadata ]; then
+            state=build/contract-state/after-metadata
+            next_phase=$RECONCILED_NEXT_PHASE
+            complete=$RECONCILED_COMPLETE
+          fi
+          test "$next_phase:$complete" = none:true
+          printf 'state=%s\nnext_phase=%s\ncontract_complete=%s\n' \
+            "$state" "$next_phase" "$complete" >> "$GITHUB_OUTPUT"
+      - name: Preserve the complete unsigned Contract state for separate attestation
+        id: upload_final_state
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-contract-phase-state-${{ fromJSON(inputs.planOutputs).validation_tree }}
+          path: ${{ steps.select_final_state.outputs.state }}
+          compression-level: 0
+          retention-days: 90
+      - name: Capture unsigned Contract attestation inputs from exact original phases
+        id: capture_attestation_inputs
+        shell: bash
+        run: |
+          for phase in binary package validation metadata; do
+            python3 ci/product_reuse.py materialize-contract \
+              --plan build/ci/impact-plan.json \
+              --state-root "${{ steps.select_final_state.outputs.state }}" \
+              --phase "$phase" \
+              --destination "build/contract-attestation-inputs/phases/$phase" \
+              --with-receipt
+          done
+          IFS= read -r contract_version < gradle/release/versions/contract.txt
+          originals=build/contract-attestation-inputs/phases
+          printf 'contract_version=%s\n' "$contract_version" >> "$GITHUB_OUTPUT"
+          python3 -m ci.products.contract_attestation capture-closure \
+            --payload "$originals/metadata/stage/outputs/codex-agent-contract-$contract_version.zip" \
+            --execution-archive "$originals/binary/stage/outputs/execution/contract-execution.zip" \
+            --binary-receipt "$originals/binary/receipt/phase-receipt.json" \
+            --package-receipt "$originals/package/receipt/phase-receipt.json" \
+            --validation-receipt "$originals/validation/receipt/phase-receipt.json" \
+            --metadata-receipt "$originals/metadata/receipt/phase-receipt.json" \
+            --output-directory build/contract-attestation-inputs/execution-closure
+      - name: Preserve unsigned payload and full original execution closure
+        id: upload_attestation_inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          name: codex-agent-contract-attestation-inputs-${{ fromJSON(inputs.planOutputs).validation_tree }}
+          path: |
+            build/contract-attestation-inputs/phases/metadata/stage
+            build/contract-attestation-inputs/execution-closure
+          compression-level: 0
+          retention-days: 90
+
+  contract-attestation:
+    name: contract-attestation
+    if: >-
+      fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).validation_reused != 'true' &&
+      github.event_name != 'workflow_dispatch' &&
+      needs.contract-continuation.result == 'success' &&
+      needs.contract-continuation.outputs.contract_complete == 'true'
+    needs: [contract-continuation]
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      artifact_name: codex-agent-contract-release-handoff-${{ fromJSON(inputs.planOutputs).validation_tree }}
+      artifact_id: ${{ steps.upload_attestation.outputs.artifact-id }}
+      artifact_digest: sha256:${{ steps.upload_attestation.outputs.artifact-digest }}
+    steps:
+      - name: Check out reviewed signer code only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ inputs.trustedWorkflowSha }}
+          path: trusted-source
+          persist-credentials: false
+      - name: Authenticate original Contract bytes and establish detached release trust
+        id: attest
+        env:
+          TRUSTED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          ARTIFACT_ID: ${{ needs.contract-continuation.outputs.attestation_inputs_id }}
+          ARTIFACT_SHA256: ${{ needs.contract-continuation.outputs.attestation_inputs_digest }}
+          CONTRACT_VERSION: ${{ needs.contract-continuation.outputs.contract_version }}
+          VALIDATION_TREE: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/contract_release.py \
+            --repository-root "$GITHUB_WORKSPACE/trusted-source" \
+            --destination "$RUNNER_TEMP/contract-release-evidence" \
+            --trusted-source-sha "$TRUSTED_SOURCE_SHA" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
+            --contract-version "$CONTRACT_VERSION" --validation-tree "$VALIDATION_TREE" \
+            --trusted-contract-workflow-path .github/workflows/contract-validation.yml \
+            --trusted-contract-binary-job 'product-validation / contract-validation / product-contracts' \
+            --trusted-contract-continuation-job 'product-validation / contract-validation / contract-continuation'
+      - name: Preserve the exact release handoff and all external source evidence
+        id: upload_attestation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-contract-release-handoff-${{ fromJSON(inputs.planOutputs).validation_tree }}
+          path: ${{ runner.temp }}/contract-release-evidence
+          compression-level: 0
+          retention-days: 90
+
+  contract-status:
+    if: always()
+    needs: [contract-binary, tooling-attestation, product-tooling, contract-continuation, contract-attestation]
+    runs-on: ubuntu-24.04
+    outputs:
+      contract_binary_result: ${{ steps.status.outputs.contract_binary_result }}
+      tooling_attestation_result: ${{ steps.status.outputs.tooling_attestation_result }}
+      contract_continuation_result: ${{ steps.status.outputs.contract_continuation_result }}
+      contract_attestation_result: ${{ steps.status.outputs.contract_attestation_result }}
+    steps:
+      - id: status
+        env:
+          CONTRACT_BINARY_RESULT: ${{ needs.contract-binary.result }}
+          TOOLING_ATTESTATION_RESULT: ${{ needs.tooling-attestation.result }}
+          CONTRACT_CONTINUATION_RESULT: ${{ needs.contract-continuation.result }}
+          CONTRACT_ATTESTATION_RESULT: ${{ needs.contract-attestation.result }}
+        run: |
+          {
+            printf 'contract_binary_result=%s\n' "$CONTRACT_BINARY_RESULT"
+            printf 'tooling_attestation_result=%s\n' "$TOOLING_ATTESTATION_RESULT"
+            printf 'contract_continuation_result=%s\n' "$CONTRACT_CONTINUATION_RESULT"
+            printf 'contract_attestation_result=%s\n' "$CONTRACT_ATTESTATION_RESULT"
+          } >> "$GITHUB_OUTPUT"

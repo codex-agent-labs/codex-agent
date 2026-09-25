@@ -21,25 +21,32 @@ class RuntimeToolingWorkflowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = (ROOT / '.github/workflows/product-validation.yml').read_text()
+        cls.contract = (ROOT / '.github/workflows/contract-validation.yml').read_text()
 
     def job(self, name):
+        source = self.contract if name == 'contract-continuation' else self.source
         return re.search(r'^  ' + name + r':\n.*?(?=^  [a-z][a-z0-9-]*:\n)',
-                         self.source, re.M | re.S).group()
+                         source, re.M | re.S).group()
 
     def test_every_replay_job_captures_immutable_locator_locally_before_consumption(self):
         for name in NAMES:
             job = self.job(name)
             with self.subTest(job=name):
                 header = job.split('    steps:', 1)[0]
-                self.assertIn('product-tooling', header)
+                self.assertIn('product-tooling' if name == 'contract-continuation' else
+                              'contract-validation', header)
                 self.assertIn('always()', header)
                 self.assertNotIn('tooling-policy', header)
                 self.assertEqual(1, job.count('uses: ./.github/actions/capture-sdk-tooling'))
                 self.assertIn('fetch-depth: 0', job)
                 capture = job.index('      - id: tooling')
                 for field in ('artifact_id', 'artifact_sha256', 'transport_producer'):
-                    self.assertIn('needs.product-tooling.outputs.' + field, job)
-                self.assertIn('policy-revision: ${{ needs.plan.outputs.validation_commit }}', job)
+                    source_field = field if name == 'contract-continuation' else 'tooling_' + field
+                    self.assertIn(('needs.product-tooling.outputs.' if name == 'contract-continuation'
+                                   else 'needs.contract-validation.outputs.') + source_field, job)
+                self.assertIn('policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}'
+                              if name == 'contract-continuation' else
+                              'policy-revision: ${{ needs.plan.outputs.validation_commit }}', job)
                 self.assertNotIn('needs.sdk-plan', job)
                 for step in re.split(r'(?=^      - )', job, flags=re.M):
                     if any('uses: ./.github/actions/' + action in step for action in (

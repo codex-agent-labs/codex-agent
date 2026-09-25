@@ -40,7 +40,7 @@ class RuntimeContinuationWorkflowTest(unittest.TestCase):
         self.assertIn("path: build/runtime-aggregate-worker", aggregate)
         self.assertNotRegex(aggregate, r"secrets\.|PRIVATE_KEY|runtime_release.py|ssh-keygen")
         self.assertIn("always()", collector)
-        self.assertIn("needs: [plan, runtime-continuation, runtime-aggregate, product-tooling]", collector)
+        self.assertIn("needs: [plan, runtime-continuation, runtime-aggregate, contract-validation]", collector)
         self.assertNotIn("needs.runtime-aggregate.result == 'success'", collector)
         self.assertIn("wave: '5'", collector)
         for forwarding in ("artifact-id: ${{ needs.runtime-continuation.outputs.artifact_id }}",
@@ -164,7 +164,7 @@ class RuntimeContinuationWorkflowTest(unittest.TestCase):
         self.assertLess(condition.start(), self.job.index("    runs-on:"))
         needs = re.search(r"(?m)^    needs: \[(.*?)\]$", self.job)
         self.assertIsNotNone(needs)
-        self.assertEqual({"plan", "product-resume", "product-tooling", *(f"runtime-workers-{wave}" for wave in range(1, 5)),
+        self.assertEqual({"plan", "product-resume", "contract-validation", *(f"runtime-workers-{wave}" for wave in range(1, 5)),
                           *(f"runtime-collect-{wave}" for wave in range(1, 5))},
                          {name.strip() for name in needs.group(1).split(",")})
 

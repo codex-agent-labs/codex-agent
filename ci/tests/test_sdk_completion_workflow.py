@@ -120,7 +120,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertIsNotNone(needs)
         names = [name.strip() for name in needs[1].split(",")]
         self.assertEqual(len(names), len(set(names)))
-        self.assertEqual(SELECTOR_JOBS | {"plan", "product-tooling"}, set(names))
+        self.assertEqual(SELECTOR_JOBS | {"plan", "contract-validation"}, set(names))
         condition = job.split("    if:", 1)[1].split("    runs-on:", 1)[0]
         for expected in ("always()", "needs.plan.outputs.event_authorized == 'true'",
                          "needs.plan.outputs.remote_build_authorized == 'true'",
@@ -131,14 +131,15 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             self.assertNotIn(forbidden, job)
         self.assertIn("ref: ${{ needs.plan.outputs.validation_commit }}", job)
 
-    def test_tooling_is_job_local_from_product_tooling_not_sdk_plan(self):
+    def test_tooling_is_job_local_from_contract_child_not_sdk_plan(self):
         job = self.job("sdk-completion")
         block = job.split("uses: ./.github/actions/capture-sdk-tooling", 1)[1].split("\n      - ", 1)[0]
         for flag, field in (("artifact-id", "artifact_id"), ("artifact-sha256", "artifact_sha256"),
                             ("transport-producer", "transport_producer")):
-            self.assertIn(flag + ": ${{ needs.product-tooling.outputs." + field + " }}", block)
+            self.assertIn(flag + ": ${{ needs.contract-validation.outputs.tooling_" + field + " }}", block)
         self.assertIn("policy-revision: ${{ needs.plan.outputs.validation_commit }}", block)
         self.assertIn("trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}", block)
+        self.assertIn("trusted-workflow-path: .github/workflows/contract-validation.yml", block)
         self.assertNotIn("needs.sdk-plan.outputs.tooling_", job)
         self.assertLess(job.index("select_sdk_completion_state"), job.index("./.github/actions/capture-sdk-tooling"))
         self.assertLess(job.index("./.github/actions/capture-sdk-tooling"), job.index("./.github/actions/capture-runtime-state"))

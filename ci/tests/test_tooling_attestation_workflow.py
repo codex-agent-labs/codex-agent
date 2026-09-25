@@ -1,13 +1,13 @@
 """Protected tooling-attestation workflow boundary checks."""
 
 from pathlib import Path
+import re
 import subprocess
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / ".github/workflows/product-validation.yml"
-PIN = "d3eb9635e71a2347a07a13a3874417df45c21403"
+WORKFLOW = ROOT / ".github/workflows/contract-validation.yml"
 
 
 class ToolingAttestationWorkflowTest(unittest.TestCase):
@@ -15,26 +15,25 @@ class ToolingAttestationWorkflowTest(unittest.TestCase):
     def setUpClass(cls):
         cls.source = WORKFLOW.read_text(encoding="utf-8")
         cls.job = cls.source.split("\n  tooling-attestation:\n", 1)[1].split(
-            "\n  contract-continuation:\n", 1,
+            "\n  product-tooling:\n", 1,
         )[0]
-        cls.merge_gate = cls.source.split("\n  merge-gate:\n", 1)[1]
+        cls.merge_gate = (ROOT / ".github/workflows/product-validation.yml").read_text(
+            encoding="utf-8").split("\n  merge-gate:\n", 1)[1]
 
     def test_job_has_the_exact_protected_missing_tooling_guard(self):
         guard = self.job.split("    if: >-\n", 1)[1].split("    needs:", 1)[0]
         for condition in (
             "always() && !cancelled()",
-            "needs.plan.result == 'success'",
-            "needs.workflow-lint.result == 'success'",
-            "needs.plan.outputs.event_authorized == 'true'",
-            "needs.plan.outputs.remote_build_authorized == 'true'",
-            "needs.plan.outputs.validation_reused != 'true'",
+            "fromJSON(inputs.planOutputs).event_authorized == 'true'",
+            "fromJSON(inputs.planOutputs).remote_build_authorized == 'true'",
+            "fromJSON(inputs.planOutputs).validation_reused != 'true'",
             "github.event_name != 'workflow_dispatch'",
-            "needs.plan.outputs.tooling_required == 'true'",
-            "needs.plan.outputs.tooling_miss == 'true'",
+            "fromJSON(inputs.planOutputs).tooling_required == 'true'",
+            "fromJSON(inputs.planOutputs).tooling_miss == 'true'",
         ):
             self.assertIn(condition, guard)
         self.assertNotIn("needs.product.result", guard)
-        self.assertIn("needs: [workflow-lint, plan, product]", self.job)
+        self.assertIn("needs: [contract-binary]", self.job)
         self.assertIn("name: tooling-attestation", self.job)
         self.assertIn("environment: product-attestation", self.job)
         self.assertIn("permissions:\n      actions: read\n      contents: read", self.job)
@@ -50,22 +49,22 @@ class ToolingAttestationWorkflowTest(unittest.TestCase):
             "      - name: Authenticate original tooling and establish detached release trust\n", 1,
         )
         signer = signer_and_after.split("      - id: identity\n", 1)[0]
-        self.assertEqual(3, self.job.count(PIN))
-        self.assertIn("ref: " + PIN, checkout)
+        self.assertIn("ref: ${{ inputs.trustedWorkflowSha }}", checkout)
         self.assertIn("path: trusted-source", checkout)
         self.assertIn("fetch-depth: 0", checkout)
         self.assertIn("persist-credentials: false", checkout)
         self.assertIn('[[ "$VALIDATION_COMMIT" =~ ^[0-9a-f]{40}$ ]]', imported)
         self.assertIn('[[ "$VALIDATION_TREE" =~ ^[0-9a-f]{40}$ ]]', imported)
+        self.assertIn("TRUSTED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}", imported)
         self.assertIn('git -C trusted-source fetch --no-tags origin "$VALIDATION_COMMIT"', imported)
         self.assertIn(
             'test "$(git -C trusted-source rev-parse "$VALIDATION_COMMIT^{tree}")" = "$VALIDATION_TREE"',
             imported,
         )
-        self.assertIn(f'test "$(git -C trusted-source rev-parse HEAD)" = {PIN}', imported)
+        self.assertIn('test "$(git -C trusted-source rev-parse HEAD)" = "$TRUSTED_SOURCE_SHA"', imported)
         for operation in ("checkout", "switch", "reset"):
             self.assertNotIn(f"git -C trusted-source {operation}", imported)
-        self.assertIn("artifact-ids: ${{ needs.plan.outputs.plan_id }}", download)
+        self.assertIn("artifact-ids: ${{ fromJSON(inputs.planOutputs).plan_id }}", download)
         self.assertIn("path: ${{ runner.temp }}/tooling-original-plan", download)
         secret = "${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}"
         self.assertEqual(1, self.job.count(secret))
@@ -78,6 +77,8 @@ class ToolingAttestationWorkflowTest(unittest.TestCase):
             '--destination "$RUNNER_TEMP/tooling-release-evidence"',
             '--trusted-source-sha "$TRUSTED_SOURCE_SHA"',
             '--trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA"',
+            '--trusted-workflow-path .github/workflows/contract-validation.yml',
+            "--trusted-job-name 'product-validation / contract-validation / product-contracts'",
             '--validation-tree "$VALIDATION_TREE"',
         ):
             self.assertIn(argument, signer)
@@ -92,18 +93,18 @@ class ToolingAttestationWorkflowTest(unittest.TestCase):
         self.assertIn("overwrite: false", upload)
         self.assertIn("include-hidden-files: true", upload)
         self.assertIn(
-            "name: codex-agent-release-tooling-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}",
+            "name: codex-agent-release-tooling-${{ fromJSON(inputs.planOutputs).validation_tree }}-attempt-${{ github.run_attempt }}",
             upload,
         )
         self.assertIn("path: ${{ runner.temp }}/tooling-release-evidence", upload)
 
     def test_merge_gate_requires_the_selected_tooling_upload_on_a_miss(self):
-        self.assertIn("tooling-attestation", self.merge_gate.split("    runs-on:", 1)[0])
+        self.assertIn("contract-validation", self.merge_gate.split("    runs-on:", 1)[0])
         for binding in (
             "TOOLING_MISS: ${{ needs.plan.outputs.tooling_miss }}",
-            "TOOLING_ATTESTATION_RESULT: ${{ needs.tooling-attestation.result }}",
-            "TOOLING_ARTIFACT_ID: ${{ needs.tooling-attestation.outputs.artifact_id }}",
-            "TOOLING_ARTIFACT_SHA256: ${{ needs.tooling-attestation.outputs.artifact_sha256 }}",
+            "TOOLING_ATTESTATION_RESULT: ${{ needs.contract-validation.outputs.tooling_attestation_result }}",
+            "TOOLING_ARTIFACT_ID: ${{ needs.contract-validation.outputs.tooling_attestation_artifact_id }}",
+            "TOOLING_ARTIFACT_SHA256: ${{ needs.contract-validation.outputs.tooling_attestation_artifact_sha256 }}",
         ):
             self.assertIn(binding, self.merge_gate)
         requirement = self.merge_gate.split('          if [ "$TOOLING_MISS" = true ]; then\n', 1)[1].split(
@@ -117,8 +118,12 @@ class ToolingAttestationWorkflowTest(unittest.TestCase):
         )
 
     def test_reviewed_pin_contains_the_protected_signer(self):
+        caller = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        match = re.search(r"product-validation\.yml@([0-9a-f]{40})", caller)
+        self.assertIsNotNone(match)
+        pin = match.group(1)
         result = subprocess.run(
-            ["git", "show", f"{PIN}:ci/tooling_release.py"],
+            ["git", "show", f"{pin}:ci/tooling_release.py"],
             cwd=ROOT,
             text=True,
             capture_output=True,
@@ -130,12 +135,19 @@ class ToolingAttestationWorkflowTest(unittest.TestCase):
             "_verify_original(original, repository_root)",
             'environment.get("CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY")',
             "sign_manifest(fresh / ATTESTATION, private_key, signing)",
+            "trusted_workflow_path=None, trusted_job_name=None",
         ):
             self.assertIn(source, result.stdout)
         self.assertLess(
             result.stdout.index("_verify_original(original, repository_root)"),
             result.stdout.index('environment.get("CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY")'),
         )
+        child = subprocess.run(
+            ["git", "show", f"{pin}:.github/workflows/contract-validation.yml"],
+            cwd=ROOT, text=True, capture_output=True,
+        )
+        self.assertEqual(0, child.returncode, child.stderr)
+        self.assertEqual(self.source, child.stdout)
 
 
 if __name__ == "__main__":

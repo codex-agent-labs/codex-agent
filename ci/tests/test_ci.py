@@ -221,8 +221,7 @@ class RunLaneContractTest(unittest.TestCase):
         planner_guard = "needs.plan.outputs.remote_build_authorized == 'true'"
         for name in (
             "product",
-            "contract-continuation",
-            "contract-attestation",
+            "contract-validation",
             "product-resume",
             "android",
             "android-runtime-evidence",
@@ -234,6 +233,9 @@ class RunLaneContractTest(unittest.TestCase):
             with self.subTest(job=name):
                 self.assertIn(event_guard, job(name))
                 self.assertIn(planner_guard, job(name))
+        child = (CI_ROOT.parent / ".github/workflows/contract-validation.yml").read_text()
+        self.assertGreaterEqual(child.count("fromJSON(inputs.planOutputs).event_authorized == 'true'"), 2)
+        self.assertGreaterEqual(child.count("fromJSON(inputs.planOutputs).remote_build_authorized == 'true'"), 2)
 
         lint = job("workflow-lint")
         self.assertEqual(2, lint.count(event_guard))
@@ -293,7 +295,7 @@ class RunLaneContractTest(unittest.TestCase):
         )
 
     def test_contract_package_validation_and_metadata_continue_from_exact_phase_artifacts(self) -> None:
-        workflow = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text(
+        workflow = (CI_ROOT.parent / ".github/workflows/contract-validation.yml").read_text(
             encoding="utf-8"
         )
         match = re.search(
@@ -304,18 +306,18 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertIsNotNone(match)
         job = match.group("body")
         for guard in (
-            "needs.plan.outputs.event_authorized == 'true'",
-            "needs.plan.outputs.remote_build_authorized == 'true'",
-            "needs.plan.outputs.validation_reused != 'true'",
-            "needs.plan.outputs.contract_reconciliation_required == 'true'",
-            "needs.plan.outputs.contract_next_phase != 'none'",
+            "fromJSON(inputs.planOutputs).event_authorized == 'true'",
+            "fromJSON(inputs.planOutputs).remote_build_authorized == 'true'",
+            "fromJSON(inputs.planOutputs).validation_reused != 'true'",
+            "fromJSON(inputs.planOutputs).contract_reconciliation_required == 'true'",
+            "fromJSON(inputs.planOutputs).contract_next_phase != 'none'",
         ):
             self.assertIn(guard, job)
-        self.assertIn("needs: [workflow-lint, plan, contract-binary, product-tooling]", job)
-        self.assertIn("needs.plan.outputs.contract_next_phase != 'binary' || needs.contract-binary.result == 'success'", job)
+        self.assertIn("needs: [contract-binary, product-tooling]", job)
+        self.assertIn("fromJSON(inputs.planOutputs).contract_next_phase != 'binary' || needs.contract-binary.result == 'success'", job)
         self.assertNotIn("contains(needs.*.result", job)
         self.assertIn("cache-read-only: \"true\"", job)
-        self.assertNotIn("needs.plan.outputs.contract_next_phase != 'metadata'", job)
+        self.assertNotIn("fromJSON(inputs.planOutputs).contract_next_phase != 'metadata'", job)
         self.assertEqual(4, job.count("python3 ci/product_reuse.py advance-contract"))
         self.assertEqual(4, job.count("python3 ci/product_reuse.py materialize-contract"))
         self.assertEqual(4, job.count("--with-receipt"))
@@ -335,12 +337,12 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertIn("build/contract-attestation-inputs/phases/metadata/stage", job)
         self.assertIn("build/contract-attestation-inputs/execution-closure", job)
         self.assertIn(
-            "codex-agent-product-phase-contract-contract-binary-common-${{ needs.plan.outputs.validation_tree }}",
+            "codex-agent-product-phase-contract-contract-binary-common-${{ fromJSON(inputs.planOutputs).validation_tree }}",
             job,
         )
         for phase in ("package", "validation", "metadata"):
             self.assertIn(
-                f"codex-agent-product-phase-contract-contract-{phase}-common-${{{{ needs.plan.outputs.validation_tree }}}}",
+                f"codex-agent-product-phase-contract-contract-{phase}-common-${{{{ fromJSON(inputs.planOutputs).validation_tree }}}}",
                 job,
             )
         self.assertIn("binary/receipt/phase-receipt.json", job)
@@ -382,12 +384,13 @@ class RunLaneContractTest(unittest.TestCase):
         )
         positions = [job.index(value) for value in ordered]
         self.assertEqual(sorted(positions), positions)
-        self.assertIn("codex-agent-contract-phase-state-${{ needs.plan.outputs.validation_tree }}", job)
-        merge_gate = workflow.split("\n  merge-gate:\n", 1)[1]
-        self.assertIn("contract-continuation", merge_gate.split("\n    runs-on:", 1)[0])
+        self.assertIn("codex-agent-contract-phase-state-${{ fromJSON(inputs.planOutputs).validation_tree }}", job)
+        parent = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text()
+        merge_gate = parent.split("\n  merge-gate:\n", 1)[1]
+        self.assertIn("contract-validation", merge_gate.split("\n    runs-on:", 1)[0])
 
     def test_contract_workflow_state_scripts_cover_metadata_only_and_fail_closed(self) -> None:
-        workflow = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text()
+        workflow = (CI_ROOT.parent / ".github/workflows/contract-validation.yml").read_text()
         job = workflow.split("\n  contract-continuation:\n", 1)[1].split("\n  contract-attestation:\n", 1)[0]
         selectors = (("select_after_binary", "binary", "package"),
                      ("select_after_package", "package", "validation"),
@@ -1470,7 +1473,7 @@ class ImpactPlanTest(GitFixture):
             self.assertEqual(2, workflow.count(f"matrix.lane == '{consumer}'"))
         gate = workflow[workflow.index("\n  merge-gate:"):]
         self.assertIn(
-            "needs: [workflow-lint, plan, product, contract-binary, tooling-attestation, product-tooling, contract-continuation, contract-attestation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-plan, sdk-completion]",
+            "needs: [workflow-lint, plan, product, contract-validation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-plan, sdk-completion]",
             gate,
         )
         self.assertIn("pattern: codex-agent-ci-*", gate)
