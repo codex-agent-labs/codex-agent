@@ -22,6 +22,7 @@ from functools import lru_cache
 
 
 SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
+PRODUCT_JSON_LIMIT = 16 * 1024 * 1024
 IDENTIFIER = re.compile(r"[a-z0-9]+(?:[._-][a-z0-9]+)*")
 SEMVER = re.compile(
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
@@ -283,8 +284,8 @@ def load_canonical_json_bytes(contents: bytes) -> Any:
     return value
 
 
-def load_canonical_json(path: Path) -> Any:
-    return load_canonical_json_bytes(read_regular_file_bytes(path))
+def load_canonical_json(path: Path, *, max_bytes: int | None = None) -> Any:
+    return load_canonical_json_bytes(read_regular_file_bytes(path, max_bytes=max_bytes))
 
 
 def load_json(path: Path) -> Any:

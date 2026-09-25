@@ -15,6 +15,7 @@ from typing import Any
 import zipfile
 
 from .inventory import (
+    PRODUCT_JSON_LIMIT,
     _is_windows,
     _open_directory,
     _open_regular_file,
@@ -60,7 +61,6 @@ OBJECT_ZIP_LIMITS = {
     "max_total_bytes": 2 * 1024 * 1024 * 1024,
     "max_compression_ratio": 200,
 }
-PRODUCT_JSON_LIMIT = 16 * 1024 * 1024
 REMOTE_SOURCES = {"stable", "promoted-main", "same-pr"}
 CARRIER_NAME = "carrier.json"
 CARRIER_RESOLUTION_NAME = "resolution.json"
@@ -801,7 +801,9 @@ def restore_object(
 
 def _write_object(stage: Path, receipt_bytes: bytes, output: Path) -> None:
     manifest = validate_output_manifest(
-        load_canonical_json_bytes(read_regular_file_bytes(stage / OUTPUT_MANIFEST_NAME)),
+        load_canonical_json_bytes(read_regular_file_bytes(
+            stage / OUTPUT_MANIFEST_NAME, max_bytes=PRODUCT_JSON_LIMIT,
+        )),
     )
     members = [PHASE_RECEIPT_NAME, STAGE_MANIFEST_NAME, *[
         f"{STAGE_PREFIX}{record['relativePath']}" for record in manifest["outputs"]
@@ -937,7 +939,9 @@ def store_local_object(stage_root: Path, receipt_path: Path, cache_root: Path) -
     receipt_sha256 = sha256_bytes(receipt_bytes)
     manifest = verify_output_manifest(
         stage_root,
-        load_canonical_json_bytes(read_regular_file_bytes(stage_root / OUTPUT_MANIFEST_NAME)),
+        load_canonical_json_bytes(read_regular_file_bytes(
+            stage_root / OUTPUT_MANIFEST_NAME, max_bytes=PRODUCT_JSON_LIMIT,
+        )),
     )
     _validate_receipt_manifest(receipt, manifest)
     target = cache_root / object_relative_path(receipt["buildKey"], receipt_sha256)

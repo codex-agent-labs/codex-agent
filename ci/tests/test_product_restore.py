@@ -108,6 +108,14 @@ class ProductRestoreTest(unittest.TestCase):
     def store(self) -> dict[str, object]:
         return store_local_object(self.stage, self.receipt_path, self.cache)
 
+    def test_oversized_stage_manifest_is_rejected_before_cache_store(self) -> None:
+        manifest = self.stage / "output-manifest.json"
+        with manifest.open("r+b") as output:
+            output.truncate(product_restore.PRODUCT_JSON_LIMIT + 1)
+        with self.assertRaisesRegex(ValueError, "too large"):
+            self.store()
+        self.assertFalse(self.cache.exists())
+
     @staticmethod
     def entries(path: Path) -> dict[str, bytes]:
         with zipfile.ZipFile(path) as archive:

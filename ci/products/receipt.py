@@ -7,6 +7,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from .inventory import (
+    PRODUCT_JSON_LIMIT,
     _is_windows,
     _open_directory,
     _windows_directory_path,
@@ -253,7 +254,7 @@ def write_output_manifest(
 def verify_output_manifest(root: Any, value: Any) -> dict[str, Any]:
     manifest = validate_output_manifest(value)
     root = require_regular_directory(Path(root), "Output-manifest root")
-    if load_canonical_json(root / OUTPUT_MANIFEST_NAME) != manifest:
+    if load_canonical_json(root / OUTPUT_MANIFEST_NAME, max_bytes=PRODUCT_JSON_LIMIT) != manifest:
         raise ValueError("Staged output-manifest.json does not match the supplied manifest")
     verify_regular_file_inventory(
         root,
@@ -273,7 +274,7 @@ def verify_output_manifest_identity(
     product_version: Any,
 ) -> dict[str, Any]:
     root = Path(root)
-    manifest = verify_output_manifest(root, load_canonical_json(root / OUTPUT_MANIFEST_NAME))
+    manifest = verify_output_manifest(root, load_canonical_json(root / OUTPUT_MANIFEST_NAME, max_bytes=PRODUCT_JSON_LIMIT))
     expected = {
         "product": _product(product, "expected product"),
         "component": require_identifier(component, "expected component"),
@@ -674,7 +675,7 @@ def write_phase_receipt(
         })
         receipt_path = receipt_root / PHASE_RECEIPT_NAME
         write_canonical_json(receipt_path, receipt)
-        stored = validate_phase_receipt(load_canonical_json(receipt_path))
+        stored = validate_phase_receipt(load_canonical_json(receipt_path, max_bytes=PRODUCT_JSON_LIMIT))
         verified_manifest = verify_output_manifest_identity(
             stage_root,
             product,

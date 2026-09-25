@@ -13,6 +13,7 @@ from ci.products.receipt import (
     build_key_payload,
     compute_build_key,
     validate_receipt_inputs,
+    verify_output_manifest,
     write_output_manifest,
     write_phase_receipt,
 )
@@ -120,6 +121,14 @@ class ProductReceiptEmissionTest(unittest.TestCase):
             self.assertFalse((self.stage / "output-manifest.json").exists())
             self.assertEqual(b"preserve me", sibling.read_bytes())
             self.assertEqual(b"payload", (self.stage / expected[0]).read_bytes())
+
+    def test_oversized_output_manifest_is_rejected_before_json_read(self) -> None:
+        manifest = self.stage / "output-manifest.json"
+        expected = product_receipt.load_canonical_json(manifest)
+        with manifest.open("r+b") as output:
+            output.truncate(product_receipt.PRODUCT_JSON_LIMIT + 1)
+        with self.assertRaisesRegex(ValueError, "too large"):
+            verify_output_manifest(self.stage, expected)
 
     def test_exact_file_root_can_share_outputs_with_a_disjoint_directory(self) -> None:
         manifest_file = self.stage / "outputs/aggregate.json"
