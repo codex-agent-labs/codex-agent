@@ -214,6 +214,32 @@ def require_matching_compatibility(
         raise ValueError(f"{language} installed SDK compatibility does not match the verified SDK")
 
 
+def require_installed_zip_tree(
+    archive: Path,
+    archive_subdir: str,
+    installed_root: Path,
+    language: str,
+    *,
+    excluded: frozenset[str] = frozenset(),
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="codex-agent-installed-code-") as temporary:
+        extracted = Path(temporary)
+        safe_extract_zip(archive, extracted)
+        source = extracted / archive_subdir
+
+        def inventory(root: Path, ignored: frozenset[str]) -> dict[str, bytes]:
+            return {
+                path.relative_to(root).as_posix(): path.read_bytes()
+                for path in files(root)
+                if not ignored.intersection(path.relative_to(root).parts)
+            }
+
+        expected = inventory(source, excluded)
+        actual = inventory(installed_root, excluded)
+        if not expected or actual != expected:
+            raise ValueError(f"{language} installed binding code differs from the selected package archive")
+
+
 def normalize_python_sdist(package: Path, work: Path) -> None:
     extracted = work / "python-sdist"
     safe_extract_tar(package, extracted)
@@ -1318,17 +1344,21 @@ def _consume(
             run(python, "-m", "pip", "install", "--no-deps", "--no-index", selected["python"], cwd=work)
             python_smoke = repository / "codex-agent-bindings/python/consumer/host_smoke.py"
             python_example = repository / "codex-agent-bindings/python/consumer/lifecycle_example.py"
-            run(
-                python, "-c", "import runpy,sys; runpy.run_path(sys.argv[1])", python_example,
-                cwd=work, env=consumer_env,
-            )
             python_library = require_matching_native(
                 venv, f"**/codex_agent/native/{classifier}/{native_name}", sdk_library, "Python",
             )
             require_matching_compatibility(
                 venv, "**/codex_agent/native/sdk-compatibility.json", sdk_compatibility, "Python",
             )
+            require_installed_zip_tree(
+                selected["python"], "codex_agent", python_library.parents[2], "Python",
+                excluded=frozenset({"native", "__pycache__"}),
+            )
             reject_raw_c_abi_proofs(python_library.parents[2], "Python")
+            run(
+                python, "-c", "import runpy,sys; runpy.run_path(sys.argv[1])", python_example,
+                cwd=work, env=consumer_env,
+            )
             run(python, python_smoke, cwd=work, env=consumer_env)
             run(python, python_smoke, python_library, cwd=work, env=consumer_env)
             run_expect_failure(python, python_smoke, native_name, cwd=work, env=consumer_env)
@@ -1349,8 +1379,6 @@ def _consume(
             cache = work / "nuget-cache"
             run("dotnet", "restore", csharp_consumer / "CodexAgent.Consumer.csproj", "--force", "--no-http-cache",
                 "--packages", cache, "--configfile", config, cwd=work)
-            run("dotnet", "build", csharp_consumer / "CodexAgent.Consumer.csproj", "--configuration", "Release",
-                "--no-restore", cwd=work)
             csharp_library = require_matching_native(
                 cache,
                 f"**/runtimes/{PACKAGE_CLASSIFIERS[classifier]}/native/{native_name}",
@@ -1360,7 +1388,11 @@ def _consume(
             require_matching_compatibility(
                 cache, "**/META-INF/codex-agent/sdk-compatibility.json", sdk_compatibility, "C#",
             )
+            assembly = require_one(cache, "**/lib/net8.0/CodexAgent.dll")
+            require_installed_zip_tree(selected["csharp"], "lib/net8.0", assembly.parent, "C#")
             reject_raw_c_abi_proofs(cache, "C#")
+            run("dotnet", "build", csharp_consumer / "CodexAgent.Consumer.csproj", "--configuration", "Release",
+                "--no-restore", cwd=work)
             run(
                 "dotnet", "run", "--project", csharp_consumer / "CodexAgent.Consumer.csproj",
                 "--configuration", "Release", "--no-build", "--", cwd=work, env=consumer_env,

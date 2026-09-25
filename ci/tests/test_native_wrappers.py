@@ -47,6 +47,8 @@ from native_wrappers import (  # noqa: E402
     require_embedded_package_versions,
     require_embedded_sdk_compatibility,
     require_matching_compatibility,
+    require_installed_zip_tree,
+    require_one,
     require_prepared_native_assets,
     require_sdk_version_file,
     require_source_sdk_version,
@@ -1458,6 +1460,39 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
             self.assertFalse(negatives.exists())
             self.assertTrue(selected["cpp"].is_file())
 
+    def test_installed_python_and_csharp_code_matches_selected_archive_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            wheel = root / "codex_agent-0.8.0-py3-none-any.whl"
+            write_zip_file(wheel, "codex_agent/__init__.py", "original\n", {
+                "codex_agent/py.typed": b"",
+                "codex_agent/native/libcodex_agent.so": b"native",
+            })
+            python = root / "installed/codex_agent"
+            python.mkdir(parents=True)
+            (python / "__init__.py").write_text("original\n")
+            (python / "py.typed").write_bytes(b"")
+            (python / "native").mkdir()
+            (python / "native/libcodex_agent.so").write_bytes(b"native")
+            (python / "__pycache__").mkdir()
+            (python / "__pycache__/__init__.pyc").write_bytes(b"generated")
+            require_installed_zip_tree(wheel, "codex_agent", python, "Python",
+                                       excluded=frozenset({"native", "__pycache__"}))
+            (python / "__init__.py").write_text("changed\n")
+            with self.assertRaisesRegex(ValueError, "Python installed binding code differs"):
+                require_installed_zip_tree(wheel, "codex_agent", python, "Python",
+                                           excluded=frozenset({"native", "__pycache__"}))
+
+            nupkg = root / "CodexAgent.0.8.0.nupkg"
+            write_zip_file(nupkg, "lib/net8.0/CodexAgent.dll", "original assembly")
+            csharp = root / "installed/lib/net8.0"
+            csharp.mkdir(parents=True)
+            (csharp / "CodexAgent.dll").write_text("original assembly")
+            require_installed_zip_tree(nupkg, "lib/net8.0", csharp, "C#")
+            (csharp / "CodexAgent.dll").write_text("changed assembly")
+            with self.assertRaisesRegex(ValueError, "C# installed binding code differs"):
+                require_installed_zip_tree(nupkg, "lib/net8.0", csharp, "C#")
+
     def fixture(self, root: Path, languages: tuple[str, ...]):
         from ci.tests.test_products import sdk_compatibility
 
@@ -1511,6 +1546,7 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
             "select_packages": {"return_value": selected},
             "require_matching_native": {"return_value": library},
             "require_matching_compatibility": {},
+            "require_installed_zip_tree": {},
             "reject_raw_c_abi_proofs": {},
             "executable": {"side_effect": lambda build, name: build / name},
             "run": {}, "run_expect_failure": {},
@@ -1519,6 +1555,9 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
             values[name] = stack.enter_context(patch("native_wrappers." + name, **options))
         stack.enter_context(patch("native_wrappers.subprocess.run", side_effect=AssertionError("No external tools")))
         stack.enter_context(patch("native_wrappers.package_all", side_effect=AssertionError("No package rebuild")))
+        stack.enter_context(patch("native_wrappers.require_one", side_effect=lambda root, pattern:
+            root / "codexagent/0.2.0/lib/net8.0/CodexAgent.dll"
+            if pattern == "**/lib/net8.0/CodexAgent.dll" else require_one(root, pattern)))
         return values
 
     def test_one_language_needs_no_sibling_sources_packages_or_tools(self) -> None:
@@ -1543,6 +1582,8 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
                 probes["select_packages"].assert_called_once_with(packages, "linux-x64", "0.2.0", (language,))
                 self.assertEqual(1, probes["require_matching_native"].call_count)
                 self.assertEqual(1, probes["require_matching_compatibility"].call_count)
+                self.assertEqual(int(language in {"python", "csharp"}),
+                                 probes["require_installed_zip_tree"].call_count)
                 self.assertEqual(1, probes["reject_raw_c_abi_proofs"].call_count)
                 self.assertEqual(3, probes["run_expect_failure"].call_count)
                 observed_tools = {Path(call.args[0]).name for call in probes["version"].call_args_list}
@@ -1580,6 +1621,7 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
             probes = self.controls(stack, selected, library)
             consume(repository, packages, sdks, root / "plan.json", root / "output", "0.2.0")
             self.assertEqual(5, probes["require_matching_compatibility"].call_count)
+            self.assertEqual(2, probes["require_installed_zip_tree"].call_count)
             self.assertEqual(5, probes["reject_raw_c_abi_proofs"].call_count)
             self.assertEqual(15, probes["run_expect_failure"].call_count)
             command = list(map(str, probes["run"].call_args.args))
