@@ -24,7 +24,13 @@ from products.signing_isolation import require_no_signing_secret
 def fresh_sdk_worker_route(instance, receipt):
     """Return the fixed original workflow job and upload name for one phase."""
     if instance.component == "sdk-android":
-        raise ValueError("SDK Android worker route is not yet defined in the product workflow")
+        if instance.phase not in ("binary", "package", "validation", "metadata") or instance.target != "android":
+            raise ValueError("SDK Android original route requires one exact worker phase")
+        job = f"product-validation / sdk-sdk-android-{instance.phase}-android"
+        producer = receipt["producer"]
+        name = (f"codex-agent-sdk-worker-sdk-android-{instance.phase}-android-"
+                f"{receipt['buildKey'].removeprefix('sha256:')}-{producer['tree']}-attempt-{producer['runAttempt']}")
+        return job, name
     if instance.component == "sdk-core":
         routed, _, _, job, name, _ = _capture_route(receipt)
         if routed != instance:

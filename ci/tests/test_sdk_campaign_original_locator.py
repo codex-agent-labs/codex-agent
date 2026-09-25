@@ -23,17 +23,18 @@ class SdkCampaignOriginalLocatorTest(TestCase):
         self.addCleanup(self.fixture.doCleanups)
         self.original_names = self.fixture.names
 
-    def selected(self, *, core=False):
-        if core:
-            instance = PhaseInstanceId("sdk", "sdk-core", "package", "common")
-            base = self.fixture.repository / "core-original"
+    def selected(self, *, core=False, android_phase=None):
+        if core or android_phase is not None:
+            instance = (PhaseInstanceId("sdk", "sdk-core", "package", "common") if core else
+                PhaseInstanceId("sdk", "sdk-android", android_phase, "android"))
+            base = self.fixture.repository / ("core-original" if core else f"android-{android_phase}-original")
             stage = base / "stage"
             (stage / "outputs").mkdir(parents=True)
             (stage / "outputs/package").write_bytes(b"exact Core package")
-            manifest = write_output_manifest(stage, "sdk", "sdk-core", "package", "common", "0.3.0",
+            manifest = write_output_manifest(stage, "sdk", instance.component, instance.phase, instance.target, "0.3.0",
                 {"package": "outputs"})
-            receipt = write_receipt(base / "fixture-receipt.json", product="sdk", component="sdk-core",
-                phase="package", target="common", outputs=manifest["outputs"], upstream=[],
+            receipt = write_receipt(base / "fixture-receipt.json", product="sdk", component=instance.component,
+                phase=instance.phase, target=instance.target, outputs=manifest["outputs"], upstream=[],
                 version="0.3.0", version_identity="0.3.0",
                 context={"producer": self.fixture.producer})
             ready = {name: receipt[name] for name in PHASE_PLAN_KEYS}
@@ -115,10 +116,32 @@ class SdkCampaignOriginalLocatorTest(TestCase):
                 self.locate(instance, original)
             download.assert_not_called()
 
-    def test_undefined_android_and_signing_context_reject_before_api(self):
+    def test_four_android_original_routes_match_worker_uploads(self):
+        producer = self.fixture.producer
+        for phase in ("binary", "package", "validation", "metadata"):
+            with self.subTest(phase=phase):
+                instance, _, original, raw = self.selected(android_phase=phase)
+                receipt = validate_phase_receipt(load_canonical_json_bytes(original.receipt_bytes))
+                job, name = locator.fresh_sdk_worker_route(instance, receipt)
+                self.assertEqual(f"product-validation / sdk-sdk-android-{phase}-android", job)
+                self.assertEqual(f"codex-agent-sdk-worker-sdk-android-{phase}-android-"
+                    f"{receipt['buildKey'].removeprefix('sha256:')}-{producer['tree']}-attempt-{producer['runAttempt']}", name)
+                with self.fixture.official_api({instance: receipt}, {instance: raw}) as (_, _, download):
+                    pin = self.locate(instance, original)
+                    self.assertEqual({"artifact_id": 901, "artifact_sha256": sha256_bytes(raw)}, pin)
+                    download.assert_not_called()
+                    with worker.held_fresh_sdk_worker_upload(instance, original,
+                            canonical_json_bytes({"captureProducer": producer}),
+                            expected_receipt_sha256=sha256_bytes(original.receipt_bytes),
+                            artifact_id=pin["artifact_id"], artifact_sha256=pin["artifact_sha256"],
+                            trusted_workflow_sha=fixture_module.PIN, token="synthetic-token", environ={}) as (evidence, _):
+                        self.assertEqual(901, evidence["artifact"]["id"])
+                    download.assert_called_once()
+
+    def test_invalid_android_route_and_signing_context_reject_before_api(self):
         instance, _, original, _ = self.selected()
-        android = PhaseInstanceId("sdk", "sdk-android", "package", "android")
-        with self.assertRaisesRegex(ValueError, "not yet defined"):
+        android = PhaseInstanceId("sdk", "sdk-android", "package", "desktop")
+        with self.assertRaisesRegex(ValueError, "one exact worker phase"):
             locator.fresh_sdk_worker_route(android, {"producer": self.fixture.producer})
         with patch.object(locator.products, "api_json") as api, self.assertRaisesRegex(ValueError, "signing-secret"):
             self.locate(instance, original, environ={"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": ""})
