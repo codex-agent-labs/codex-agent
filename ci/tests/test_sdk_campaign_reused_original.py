@@ -76,20 +76,23 @@ class ReusedSdkOriginalTest(unittest.TestCase):
             "started_at": "2026-01-01T00:00:00Z", "completed_at": "2026-01-01T00:10:00Z"}
         worker_job, _ = fresh_sdk_worker_route(self.instance, descriptor["receipt"])
         self.worker_job = {**self.catalog_job, "name": worker_job}
+        self.observed_routes = []
 
-    def held(self, *, original=None, key=None, key_digest=None, raw=None):
+    def held(self, *, original=None, key=None, key_digest=None, raw=None, **routes):
         return reused.held_reused_sdk_original(self.instance, original or self.original, self.transport,
             expected_receipt_sha256=self.descriptor["receiptSha256"], catalog_artifact_id=902,
             catalog_artifact_sha256=sha256_bytes(raw or self.raw), catalog_public_key=key or self.key,
             original_artifact_id=901, original_artifact_sha256=sha256_bytes(self.worker_raw),
             expected_public_key_sha256=key_digest or sha256_bytes(self.key.read_bytes()),
-            pull_request=31, trusted_workflow_sha=fixture_module.PIN, token="synthetic-token", environ={})
+            pull_request=31, trusted_workflow_sha=fixture_module.PIN, token="synthetic-token", environ={},
+            **routes)
 
     def official(self, raw=None):
         artifact = {**self.catalog_artifact, "digest": sha256_bytes(raw or self.raw),
                     "size_in_bytes": len(raw or self.raw)}
         observed = {"run": self.run, "testedCommit": self.tested}
-        def producer_jobs(producers, *, jobs_by_phase, **_kwargs):
+        def producer_jobs(producers, *, jobs_by_phase, **kwargs):
+            self.observed_routes.append((jobs_by_phase, kwargs))
             if jobs_by_phase == {"catalog": "product-validation / sdk-catalog"}:
                 return [{**observed, "jobs": [self.catalog_job]}]
             self.assertEqual({"worker": self.fixture.producer}, producers)
@@ -111,6 +114,25 @@ class ReusedSdkOriginalTest(unittest.TestCase):
                 self.assertEqual(self.original_object.read_bytes(), object_path.read_bytes())
                 self.assertEqual(self.descriptor["receiptSha256"], evidence["originalReceiptSha256"])
         self.assertEqual(before, regular_file_inventory(self.original_object.parent))
+
+    def test_independent_worker_and_catalog_workflow_pairs(self):
+        path = ".github/workflows/product-validation.yml"
+        with self.official():
+            with self.held(trusted_worker_workflow_path=path,
+                    trusted_worker_job_name=self.worker_job["name"],
+                    trusted_catalog_workflow_path=path,
+                    trusted_catalog_job_name=self.catalog_job["name"]):
+                pass
+        self.assertEqual([{"worker": {"path": path, "sha": fixture_module.PIN}},
+                          {"catalog": {"path": path, "sha": fixture_module.PIN}}],
+            [route[1]["trusted_workflows_by_phase"] for route in self.observed_routes])
+        for routes in ({"trusted_worker_workflow_path": path},
+                       {"trusted_catalog_job_name": self.catalog_job["name"]}):
+            self.observed_routes.clear()
+            with self.official(), self.assertRaisesRegex(ValueError, "pinned together"):
+                with self.held(**routes):
+                    pass
+            self.assertFalse(self.observed_routes)
 
     def test_catalog_requires_future_attempt_bound_job(self):
         original = self.catalog_job

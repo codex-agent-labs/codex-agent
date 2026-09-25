@@ -24,12 +24,13 @@ from products.restore import verify_object, verify_phase_shard
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from products.signing_isolation import require_no_signing_secret
 from ci.sdk_campaign_observation import ObservedSdkOriginal
-from ci.sdk_campaign_original_locator import fresh_sdk_worker_route
+from ci.sdk_campaign_original_locator import fresh_sdk_worker_route, original_workflow_route
 
 
 @contextmanager
 def held_fresh_sdk_worker_upload(instance, original, current_transport_bytes, *,
-        expected_receipt_sha256, artifact_id, artifact_sha256, trusted_workflow_sha, token, environ):
+        expected_receipt_sha256, artifact_id, artifact_sha256, trusted_workflow_sha, token, environ,
+        trusted_workflow_path=None, trusted_job_name=None):
     """Bind one retained phase to its official original job, upload and exact shard.
 
     ``original`` and ``current_transport_bytes`` must come from the active
@@ -66,10 +67,12 @@ def held_fresh_sdk_worker_upload(instance, original, current_transport_bytes, *,
         receipt_sha256=replay["receiptSha256"], object_sha256=replay["objectSha256"])
     if selected_object["receiptBytes"] != original.receipt_bytes:
         raise ValueError("Fresh SDK selected object changed its original receipt")
-    job_name, artifact_name = fresh_sdk_worker_route(instance, receipt)
+    default_job, artifact_name = fresh_sdk_worker_route(instance, receipt)
+    job_name, policy = original_workflow_route("worker", default_job, trusted_workflow_sha,
+        trusted_workflow_path, trusted_job_name)
     observed = product_reuse._observe_ci_producer_jobs(
         {"worker": producer}, jobs_by_phase={"worker": job_name},
-        trusted_workflow_sha=trusted_workflow_sha, token=token)
+        token=token, **policy)
     artifact, raw = product_reuse._download_contract_ci_upload(
         artifact_id, artifact_sha256, artifact_name, producer, observed[0]["run"], token)
     product_reuse._require_artifact_job_window(observed[0], job_name, artifact)

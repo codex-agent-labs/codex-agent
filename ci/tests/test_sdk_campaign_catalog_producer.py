@@ -96,3 +96,29 @@ class SdkCampaignCatalogProducerTest(TestCase):
             reused.assert_called_once()
             self.assertEqual(101, reused.call_args.kwargs["original_artifact_id"])
             self.assertEqual(201, reused.call_args.kwargs["catalog_artifact_id"])
+
+    def test_caller_owned_routes_are_forwarded_and_unpaired_routes_fail_before_observation(self):
+        instance = self.instances[0]
+        self.pins[instance] = catalog.FreshSdkOriginalPin(
+            _DIGEST, 1, _DIGEST, ".github/workflows/sdk-validation.yml",
+            "product-validation / sdk-validation / sdk-worker")
+
+        @contextmanager
+        def holder(*_args, **_kwargs):
+            yield {}, Path("unused-upload")
+
+        with patch.object(catalog, "held_fresh_sdk_worker_upload", side_effect=holder) as fresh:
+            with self.held():
+                pass
+            selected = next(call for call in fresh.call_args_list if call.args[0] == instance)
+            self.assertEqual(".github/workflows/sdk-validation.yml",
+                             selected.kwargs["trusted_workflow_path"])
+            self.assertEqual("product-validation / sdk-validation / sdk-worker",
+                             selected.kwargs["trusted_job_name"])
+        self.pins[instance] = catalog.FreshSdkOriginalPin(
+            _DIGEST, 1, _DIGEST, ".github/workflows/sdk-validation.yml")
+        with patch.object(catalog, "held_fresh_sdk_worker_upload") as fresh, \
+             self.assertRaisesRegex(ValueError, "pinned together"):
+            with self.held():
+                pass
+        fresh.assert_not_called()

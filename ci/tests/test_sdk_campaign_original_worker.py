@@ -48,6 +48,39 @@ class SdkCampaignOriginalWorkerTest(TestCase):
             self.assertEqual(3, query.call_count)
             download.assert_called_once()
 
+    def test_caller_pinned_child_route_is_observed_as_an_exact_pair(self):
+        path = ".github/workflows/product-validation.yml"
+        job = f"product-validation / sdk-{self.instance.component}-{self.instance.phase}-{self.instance.target}"
+        with self.fixture.official_api({self.instance: self.ready}, {self.instance: self.raw}):
+            with worker.held_fresh_sdk_worker_upload(
+                    self.instance, self.original, self.transport,
+                    expected_receipt_sha256=sha256_bytes(self.original.receipt_bytes),
+                    artifact_id=901, artifact_sha256=sha256_bytes(self.raw),
+                    trusted_workflow_sha=fixture_module.PIN, token="synthetic-token", environ={},
+                    trusted_workflow_path=path, trusted_job_name=job):
+                pass
+        with self.fixture.official_api({self.instance: self.ready}, {self.instance: self.raw}) as (query, _, _):
+            with self.assertRaisesRegex(ValueError, "caller-pinned workflow"):
+                with worker.held_fresh_sdk_worker_upload(
+                        self.instance, self.original, self.transport,
+                        expected_receipt_sha256=sha256_bytes(self.original.receipt_bytes),
+                        artifact_id=901, artifact_sha256=sha256_bytes(self.raw),
+                        trusted_workflow_sha=fixture_module.PIN, token="synthetic-token", environ={},
+                        trusted_workflow_path=".github/workflows/sdk-validation.yml",
+                        trusted_job_name=job):
+                    pass
+            self.assertEqual(1, query.call_count)
+        with patch.object(worker.product_reuse, "api_json") as query, \
+             self.assertRaisesRegex(ValueError, "pinned together"):
+            with worker.held_fresh_sdk_worker_upload(
+                    self.instance, self.original, self.transport,
+                    expected_receipt_sha256=sha256_bytes(self.original.receipt_bytes),
+                    artifact_id=901, artifact_sha256=sha256_bytes(self.raw),
+                    trusted_workflow_sha=fixture_module.PIN, token="synthetic-token", environ={},
+                    trusted_workflow_path=path):
+                pass
+        query.assert_not_called()
+
     def test_reused_or_crosspaired_original_rejects_before_observation(self):
         reused = replace(self.original, replay_record_canonical=canonical_json_bytes({
             **self.record, "state": "reused", "source": "same-pr",

@@ -18,11 +18,13 @@ from products.signing_isolation import require_no_signing_secret
 from reuse import github_output
 
 
-def _locate(producer, *, phase, job, name, trusted_workflow_sha, token):
+def _locate(producer, *, phase, job, name, token, trusted_workflow_sha=None,
+            trusted_workflows_by_phase=None):
     """Shared fixed-callsite observation/list/detail/window checks, no downloads."""
     producer_bytes = canonical_json_bytes(producer)
     observation = products._observe_ci_producer_jobs({phase: producer},
-        jobs_by_phase={phase: job}, trusted_workflow_sha=trusted_workflow_sha, token=token)[0]
+        jobs_by_phase={phase: job}, trusted_workflow_sha=trusted_workflow_sha,
+        trusted_workflows_by_phase=trusted_workflows_by_phase, token=token)[0]
     api = f"https://api.github.com/repos/{producer['repository']}/actions"
     artifacts = products.paginated_items(f"{api}/runs/{producer['runId']}/artifacts", "artifacts", token)
     selected = [value for value in artifacts if type(value) is dict

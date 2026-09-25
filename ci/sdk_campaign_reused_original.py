@@ -17,7 +17,7 @@ if __package__:
 
 import product_reuse
 from ci.sdk_campaign_observation import ObservedSdkOriginal
-from ci.sdk_campaign_original_locator import fresh_sdk_worker_route
+from ci.sdk_campaign_original_locator import fresh_sdk_worker_route, original_workflow_route
 from products.index import SignedProductIndex, _verify_index_receipt, verify_signed_product_index
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
@@ -36,7 +36,9 @@ def held_reused_sdk_original(instance, original, current_transport_bytes, *,
         expected_receipt_sha256, catalog_artifact_id, catalog_artifact_sha256,
         original_artifact_id, original_artifact_sha256,
         catalog_public_key, expected_public_key_sha256, pull_request,
-        trusted_workflow_sha, token, environ=None):
+        trusted_workflow_sha, token, environ=None,
+        trusted_worker_workflow_path=None, trusted_worker_job_name=None,
+        trusted_catalog_workflow_path=None, trusted_catalog_job_name=None):
     """Hold exact original bytes under independently pinned same-PR catalog trust.
 
     The public key and artifact ID/digest are selected outside the replay and
@@ -45,6 +47,10 @@ def held_reused_sdk_original(instance, original, current_transport_bytes, *,
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
     require_no_signing_secret(os.environ)
+    original_workflow_route("worker", "unused", trusted_workflow_sha,
+        trusted_worker_workflow_path, trusted_worker_job_name)
+    original_workflow_route("catalog", "unused", trusted_workflow_sha,
+        trusted_catalog_workflow_path, trusted_catalog_job_name)
     if not isinstance(instance, PhaseInstanceId) or instance not in SDK_CAMPAIGN_INSTANCES:
         raise ValueError("Reused SDK original requires one registered phase")
     if not isinstance(original, ObservedSdkOriginal):
@@ -102,10 +108,12 @@ def held_reused_sdk_original(instance, original, current_transport_bytes, *,
         receipt_sha256=expected_receipt_sha256, object_sha256=replay["objectSha256"])
     if original_object["receiptBytes"] != receipt_bytes:
         raise ValueError("Reused SDK original object changes its receipt")
-    original_job, original_name = fresh_sdk_worker_route(instance, receipt)
+    default_job, original_name = fresh_sdk_worker_route(instance, receipt)
+    original_job, worker_policy = original_workflow_route("worker", default_job,
+        trusted_workflow_sha, trusted_worker_workflow_path, trusted_worker_job_name)
     producer_observation = product_reuse._observe_ci_producer_jobs(
         {"worker": producer}, jobs_by_phase={"worker": original_job},
-        trusted_workflow_sha=trusted_workflow_sha, token=token)
+        token=token, **worker_policy)
     original_artifact, original_raw = product_reuse._download_contract_ci_upload(
         original_artifact_id, original_artifact_sha256, original_name,
         producer, producer_observation[0]["run"], token)
@@ -169,10 +177,12 @@ def held_reused_sdk_original(instance, original, current_transport_bytes, *,
             artifact=artifact, token=token, api=api)
         if index != catalog.index:
             raise ValueError("Reused SDK catalog changed during provenance verification")
-        catalog_job = "product-validation / sdk-catalog"
+        catalog_job, catalog_policy = original_workflow_route("catalog",
+            "product-validation / sdk-catalog", trusted_workflow_sha,
+            trusted_catalog_workflow_path, trusted_catalog_job_name)
         catalog_observation = product_reuse._observe_ci_producer_jobs(
             {"catalog": index["producer"]}, jobs_by_phase={"catalog": catalog_job},
-            trusted_workflow_sha=trusted_workflow_sha, token=token)
+            token=token, **catalog_policy)
         if (len(catalog_observation) != 1
                 or catalog_observation[0]["run"]["id"] != index["producer"]["runId"]
                 or catalog_observation[0]["run"]["run_attempt"] != index["producer"]["runAttempt"]):

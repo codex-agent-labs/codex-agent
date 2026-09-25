@@ -25,6 +25,8 @@ class FreshSdkOriginalPin:
     receipt_sha256: str
     artifact_id: int
     artifact_sha256: str
+    workflow_path: str | None = None
+    job_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +39,10 @@ class ReusedSdkOriginalPin:
     catalog_public_key: Path
     catalog_public_key_sha256: str
     pull_request: int
+    worker_workflow_path: str | None = None
+    worker_job_name: str | None = None
+    catalog_workflow_path: str | None = None
+    catalog_job_name: str | None = None
 
 
 @contextmanager
@@ -66,6 +72,8 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
             require_sha256(pin.receipt_sha256, "Fresh SDK receipt pin")
             require_sha256(pin.artifact_sha256, "Fresh SDK artifact pin")
             require_integer(pin.artifact_id, "Fresh SDK artifact ID", 1)
+            if (pin.workflow_path is None) != (pin.job_name is None):
+                raise ValueError("Fresh SDK workflow path and job must be pinned together")
         elif replay.get("state") == "reused" and replay.get("source") == "same-pr":
             if type(pin) is not ReusedSdkOriginalPin:
                 raise ValueError("Reused SDK original requires a same-PR catalog pin")
@@ -80,6 +88,9 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
                 require_integer(value, label, 1)
             if not isinstance(pin.catalog_public_key, Path):
                 raise ValueError("Reused SDK catalog key requires an independent path")
+            if ((pin.worker_workflow_path is None) != (pin.worker_job_name is None)
+                    or (pin.catalog_workflow_path is None) != (pin.catalog_job_name is None)):
+                raise ValueError("Reused SDK workflow paths and jobs must be pinned together")
         else:
             raise ValueError("SDK original upload has no authenticated retained/same-PR route")
 
@@ -92,7 +103,8 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
                     instance, original, current_transport_bytes,
                     expected_receipt_sha256=pin.receipt_sha256,
                     artifact_id=pin.artifact_id, artifact_sha256=pin.artifact_sha256,
-                    trusted_workflow_sha=trusted_workflow_sha, token=token, environ=environ))
+                    trusted_workflow_sha=trusted_workflow_sha, token=token, environ=environ,
+                    trusted_workflow_path=pin.workflow_path, trusted_job_name=pin.job_name))
             else:
                 evidence, _ = stack.enter_context(held_reused_sdk_original(
                     instance, original, current_transport_bytes,
@@ -104,7 +116,11 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
                     catalog_public_key=pin.catalog_public_key,
                     expected_public_key_sha256=pin.catalog_public_key_sha256,
                     pull_request=pin.pull_request,
-                    trusted_workflow_sha=trusted_workflow_sha, token=token, environ=environ))
+                    trusted_workflow_sha=trusted_workflow_sha, token=token, environ=environ,
+                    trusted_worker_workflow_path=pin.worker_workflow_path,
+                    trusted_worker_job_name=pin.worker_job_name,
+                    trusted_catalog_workflow_path=pin.catalog_workflow_path,
+                    trusted_catalog_job_name=pin.catalog_job_name))
             held[instance] = evidence
         require_no_signing_secret(environ)
         try:

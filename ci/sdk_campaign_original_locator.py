@@ -43,8 +43,20 @@ def fresh_sdk_worker_route(instance, receipt):
             f"{producer['tree']}-attempt-{producer['runAttempt']}")
 
 
+def original_workflow_route(phase, default_job, sha, path=None, job=None):
+    """Keep a caller-pinned child path and job paired at the original-run gate."""
+    if (path is None) != (job is None):
+        raise ValueError("SDK original workflow path and job must be pinned together")
+    if path is None:
+        return default_job, {"trusted_workflow_sha": sha}
+    if type(job) is not str or not job:
+        raise ValueError("SDK original workflow job must be caller-pinned text")
+    return job, {"trusted_workflows_by_phase": {phase: {"path": path, "sha": sha}}}
+
+
 def locate_fresh_sdk_original_upload(instance, original, *, expected_receipt_sha256,
-        trusted_workflow_sha, token, environ=None):
+        trusted_workflow_sha, token, environ=None,
+        trusted_workflow_path=None, trusted_job_name=None):
     """Return an official ID/digest for an independently selected retained receipt.
 
     The caller supplies the original receipt digest independently of the held
@@ -80,9 +92,11 @@ def locate_fresh_sdk_original_upload(instance, original, *, expected_receipt_sha
             or replay["receiptSha256"] != expected_receipt_sha256):
         raise ValueError("SDK original locator requires the exact retained phase")
     producer = receipt["producer"]
-    job, name = fresh_sdk_worker_route(instance, receipt)
+    default_job, name = fresh_sdk_worker_route(instance, receipt)
+    job, policy = original_workflow_route("worker", default_job, trusted_workflow_sha,
+        trusted_workflow_path, trusted_job_name)
     result = _locate(producer, phase="worker", job=job, name=name,
-        trusted_workflow_sha=trusted_workflow_sha, token=token)
+        token=token, **policy)
     require_no_signing_secret(environment)
     if (original.receipt_bytes != receipt_bytes or original.replay_record_canonical != replay_bytes
             or sha256_bytes(receipt_bytes) != expected_receipt_sha256):
