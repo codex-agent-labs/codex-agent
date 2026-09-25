@@ -90,6 +90,8 @@ def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
          reused_context_manifest, reused_context_signature, reused_context_keyring,
          reused_context_keys_directory))
     if reused:
+        if expected_metadata_artifact_id is not None or expected_metadata_artifact_sha256 is not None:
+            raise ValueError("Fresh Core upload pins cannot accompany reused Core metadata")
         if (type(reused_catalog) is not RemoteCatalog or reused_catalog_root is None or
                 reused_catalog_source not in ("same-pr", "stable", "promoted-main") or
                 not isinstance(reused_receipt_sha256, dict) or

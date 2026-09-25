@@ -286,6 +286,11 @@ class AndroidCore14CallerTest(unittest.TestCase):
                 self.assertEqual(caller.with_core14(**arguments)["buildKey"], key)
                 self.assertFalse(active)
                 fresh.assert_not_called()
+                for pin in ({"expected_metadata_artifact_id": 123},
+                            {"expected_metadata_artifact_sha256": "sha256:" + "d" * 64}):
+                    with self.subTest(pin=pin), self.assertRaisesRegex(ValueError,
+                            "Fresh Core upload pins cannot accompany reused Core metadata"):
+                        caller.with_core14(**{**arguments, **pin})
                 state_row["transportSource"]["indexSha256"] = "sha256:" + "0" * 64
                 with self.assertRaisesRegex(ValueError, "signed reused election"):
                     caller.with_core14(**arguments)
