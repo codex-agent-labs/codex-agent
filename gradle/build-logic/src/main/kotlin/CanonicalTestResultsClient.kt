@@ -22,7 +22,9 @@ private fun readCanonicalTestResultsFromProductTooling(
     arguments: List<String>,
     requireSortedUnique: Boolean,
 ): List<CanonicalTestResult> {
-    val root = releaseJson.parseToJsonElement(runProductPythonModule("test_results", arguments)).jsonObject
+    val root = releaseJson.parseToJsonElement(runPackagedProductPython(
+        "test_results", listOf("ci/products/test_results.py"), arguments,
+    )).jsonObject
     check(root.keys == setOf("schemaVersion", "tests") && root.releaseInt("schemaVersion") == 1) {
         "Canonical test result projection schema is invalid"
     }

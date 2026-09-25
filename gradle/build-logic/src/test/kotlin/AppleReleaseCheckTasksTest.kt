@@ -135,8 +135,8 @@ class AppleReleaseCheckTasksTest {
                 "pythonExecutable.convention(\"python3\")",
                 "pythonExecutable.convention(\"python3\")",
             ),
-            "ProductPythonTooling.kt" to listOf(
-                "ProcessBuilder(listOf(\"python3\", \"-I\", \"-S\", \"-B\", \"-c\", bootstrap, root.absolutePath) + script + arguments)",
+            "PackagedProductPython.kt" to listOf(
+                "ProcessBuilder(listOf(\"python3\", \"-I\", \"-S\", \"-B\", \"-c\", bootstrap, root.absolutePath) + scriptPath + arguments)",
             ),
             "CrossLanguageNativeWrapperGradleTasks.kt" to listOf(
                 "pythonExecutable.convention(\"python3\")",

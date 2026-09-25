@@ -49,6 +49,7 @@ _NATIVE_METADATA_VERIFIERS = frozenset({
         "NativeWrapperInstalledConsumerTask", "CrossLanguageApiEvidence", "CrossLanguageCAbiBindingEvidence",
         "CrossLanguageBindingParity", "CrossLanguageCAbiClient",
         "ProductPythonTooling",
+        "PackagedProductPython",
     )),
     "ci/native_wrappers.py",
     "gradle/build-logic/build.gradle.kts",
@@ -1301,13 +1302,15 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         if name in {
             "CodexAgentBuild.kt",
             "ProductOutputManifestGradleTask.kt",
-            "ProductPythonTooling.kt",
+            "PackagedProductPython.kt",
             "ProductVersions.kt",
             "ProductVersionIdentity.kt",
             "PrepareCodexRuntimeTask.kt",
             "codexagent.codex-runtime.gradle.kts",
         }:
             return set(ALL_INSTANCES)
+        if name == "ProductPythonTooling.kt":
+            return {instance for instance in ALL_INSTANCES if instance.product == "sdk"}
         selected = sdk_build_logic.get(name)
         if selected is not None:
             return selected
@@ -1342,7 +1345,8 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
     if path == "ci/products/sdk_apple_validation_content.py":
         return {instance for instance in selected if instance.phase == "validation"}
     if path in {"gradle/build-logic/build.gradle.kts", "gradle/build-logic/settings.gradle.kts",
-                "gradle/build-logic/src/main/kotlin/ProductPythonTooling.kt"}:
+                "gradle/build-logic/src/main/kotlin/ProductPythonTooling.kt",
+                "gradle/build-logic/src/main/kotlin/PackagedProductPython.kt"}:
         # Standalone Runtime includes only runtime/build-logic; still plan broad reuse.
         selected = {instance for instance in selected if instance.product != "runtime"}
     if path in {"ci/products/sdk_inputs.py", "ci/products/sdk_native.py", "ci/products/sdk_package.py"}:
@@ -1359,7 +1363,8 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
 
     direct: set[PhaseInstanceId] = set()
     if path in {"gradle/build-logic/build.gradle.kts",
-                "gradle/build-logic/src/main/kotlin/ProductPythonTooling.kt"}:
+                "gradle/build-logic/src/main/kotlin/ProductPythonTooling.kt",
+                "gradle/build-logic/src/main/kotlin/PackagedProductPython.kt"}:
         # Imported native validation executes packaged tooling even when its package is reused.
         direct.update(PhaseInstanceId("sdk", language, "validation", target)
                       for language in NATIVE_BINDINGS for target in NATIVE_TARGETS)

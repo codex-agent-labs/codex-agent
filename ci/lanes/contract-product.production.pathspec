@@ -29,8 +29,8 @@ gradle/build-logic/src/main/kotlin/CrossLanguageBindingParity.kt
 gradle/build-logic/src/main/kotlin/CrossLanguageBindingReceipt.kt
 gradle/build-logic/src/main/kotlin/CrossLanguageBindingTasks.kt
 gradle/build-logic/src/main/kotlin/CrossLanguageKotlinBindingEvidence.kt
+gradle/build-logic/src/main/kotlin/PackagedProductPython.kt
 gradle/build-logic/src/main/kotlin/ProductOutputManifestGradleTask.kt
-gradle/build-logic/src/main/kotlin/ProductPythonTooling.kt
 gradle/build-logic/src/main/kotlin/ProductVersionIdentity.kt
 gradle/build-logic/src/main/kotlin/ProductVersions.kt
 gradle/build-logic/src/main/kotlin/ReleaseIo.kt

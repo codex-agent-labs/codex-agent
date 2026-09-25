@@ -35,6 +35,7 @@ class ContractIsolationFixtureTest {
         "CrossLanguageCAbiClient.kt",
         "CrossLanguageKotlinBindingEvidence.kt",
         "MavenRepositoryTasks.kt",
+        "PackagedProductPython.kt",
         "ProductOutputManifestGradleTask.kt",
         "ProductPythonTooling.kt",
         "ProductVersionIdentity.kt",

@@ -1836,6 +1836,20 @@ class ProductSelectionTest(unittest.TestCase):
             if instance.product == "runtime":
                 self.assertEqual((), phase_inventory_paths(paths, instance))
 
+    def test_sdk_python_dispatch_does_not_invalidate_contract_payloads(self):
+        dispatch = "gradle/build-logic/src/main/kotlin/ProductPythonTooling.kt"
+        runner = "gradle/build-logic/src/main/kotlin/PackagedProductPython.kt"
+        pathspec = Path("ci/lanes/contract-product.production.pathspec").read_text().splitlines()
+        self.assertNotIn(dispatch, pathspec)
+        self.assertIn(runner, pathspec)
+        for instance in PHASE_INSTANCE_IDS:
+            if instance.product == "contract":
+                self.assertEqual((), phase_inventory_paths((dispatch,), instance))
+        binary = PhaseInstanceId("contract", "contract", "binary", "common")
+        self.assertEqual((runner,), phase_inventory_paths((runner,), binary))
+        sdk = PhaseInstanceId("sdk", "python", "validation", "macos-arm64")
+        self.assertEqual(tuple(sorted((dispatch, runner))), phase_inventory_paths((dispatch, runner), sdk))
+
     def test_runtime_adapter_metadata_safety_keys_only_metadata_and_shared_mac_validation(self):
         path = "runtime/build-logic/src/main/kotlin/RuntimeAdapterMetadataInputsTask.kt"
         direct = {PhaseInstanceId("runtime", component, "metadata", component) for component in ("jvm", "node-js", "node-wasm")}
