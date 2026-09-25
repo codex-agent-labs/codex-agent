@@ -95,6 +95,8 @@ class RuntimeValidationSettingsContractTest {
                             // never an unrelated caller-supplied Maven tree.
                             check(route(component, "metadata", component,
                                 mapOf("codexAgent.runtimePackageVersion" to "0.2.4")) == component)
+                            check(route(component, "metadata", component,
+                                mapOf("codexAgent.runtimePackageVersion" to "0.2.4-rc.1")) == component)
                             for (bad in listOf(null, "", "relative", ${quote(root.resolve("missing").path)},
                                 ${quote(original.path)}, ${quote(root.resolve("symbolic-parent").path)},
                                 ${quote(root.resolve("symbolic-parent/predecessor").path)},
@@ -104,7 +106,8 @@ class RuntimeValidationSettingsContractTest {
                                     component + " metadata package stage: " + bad
                                 }
                             }
-                            for (bad in listOf(null, "", "latest", "0.2", "01.2.0", " 0.2.4", "0.2.4\n")) {
+                            for (bad in listOf(null, "", "latest", "0.2", "01.2.0", "0.2.4-01",
+                                "0.2.4-rc.01", " 0.2.4", "0.2.4\n")) {
                                 check(runCatching { route(component, "metadata", component,
                                     mapOf("codexAgent.runtimePackageVersion" to bad)) }.isFailure) {
                                     component + " metadata original version: " + bad

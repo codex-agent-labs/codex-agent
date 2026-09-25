@@ -46,7 +46,7 @@ pluginManagement {
         "Runtime version authority must contain one LF-terminated SemVer"
     }
     val runtimeVersion = runtimeVersionBytes.dropLast(1).toByteArray().toString(Charsets.US_ASCII)
-    val semver = Regex("(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?")
+    val semver = Regex("(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?")
     require(semver.matches(runtimeVersion) && semver.matches(values.getValue("codexAgent.contractVersion")) &&
         semver.matches(values.getValue("codexAgent.runtimeVersion"))) {
         "Contract and Runtime versions must be strict SemVer"
