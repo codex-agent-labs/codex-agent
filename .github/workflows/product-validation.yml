@@ -5326,10 +5326,27 @@ jobs:
             --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
             ${tooling[@]+"${tooling[@]}"}
 
+  sdk-parity:
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.plan.outputs.validation_reused != 'true' &&
+      (needs.plan.outputs.lane_ios_swift_tests_test == 'true' ||
+       needs.plan.outputs.native_wrappers == 'true') &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    needs: [workflow-lint, plan, product, contract-validation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-plan, sdk-completion]
+    uses: ./.github/workflows/sdk-binding-parity.yml
+    with:
+      validationCommit: ${{ needs.plan.outputs.validation_commit }}
+      validationTree: ${{ needs.plan.outputs.validation_tree }}
+      nodeJs: ${{ fromJSON(needs.plan.outputs.lane_node_js) }}
+      nativeWrappers: ${{ fromJSON(needs.plan.outputs.native_wrappers) }}
+
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, contract-validation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-plan, sdk-completion]
+    needs: [workflow-lint, plan, product, contract-validation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-plan, sdk-completion, sdk-parity]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -5367,6 +5384,10 @@ jobs:
           PRODUCT_FULL_REUSE: ${{ needs.sdk-completion.outputs.full_reuse }}
           NATIVE_WRAPPERS_REQUIRED: ${{ needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.native_wrappers == 'true' }}
           NATIVE_WRAPPERS_RESULT: ${{ needs.sdk-native-wrappers.result }}
+          SDK_PARITY_REQUIRED: ${{ needs.plan.outputs.validation_reused != 'true' && (needs.plan.outputs.lane_ios_swift_tests_test == 'true' || needs.plan.outputs.native_wrappers == 'true') }}
+          SDK_PARITY_RESULT: ${{ needs.sdk-parity.result }}
+          SDK_PARITY_ARTIFACT_ID: ${{ needs.sdk-parity.outputs.artifact_id }}
+          SDK_PARITY_ARTIFACT_DIGEST: ${{ needs.sdk-parity.outputs.artifact_digest }}
         run: |
           if [ "$EVENT_AUTHORIZED" != true ]; then
             echo 'The workflow-owned event gate did not authorize remote product CI.' >&2
@@ -5385,6 +5406,11 @@ jobs:
           fi
           if [ "$NATIVE_WRAPPERS_REQUIRED" = true ]; then
             test "$NATIVE_WRAPPERS_RESULT" = success || exit 1
+          fi
+          if [ "$SDK_PARITY_REQUIRED" = true ]; then
+            test "$SDK_PARITY_RESULT" = success || exit 1
+            [[ "$SDK_PARITY_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+            [[ "$SDK_PARITY_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           fi
           if [ "$CONTRACT_BINARY_REQUIRED" = true ]; then
             test "$CONTRACT_BINARY_RESULT" = success || exit 1
@@ -5438,16 +5464,6 @@ jobs:
         with:
           name: codex-agent-sdk-javascript-parity-${{ needs.plan.outputs.validation_tree }}
           path: build/ci/receipts/sdk-javascript
-      - if: needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.native_wrappers == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: codex-agent-native-wrapper-packages-${{ needs.plan.outputs.validation_tree }}
-          path: build/ci/native-wrapper-release
-      - if: needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.native_wrappers == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: codex-agent-native-wrapper-host-*-${{ needs.plan.outputs.validation_tree }}
-          path: build/ci/native-wrapper-hosts
       - name: Restore the exact reused native-wrapper release
         id: restore-reused-native-wrapper-release
         if: needs.plan.outputs.validation_reused == 'true'
@@ -5479,196 +5495,11 @@ jobs:
             python3 ci/receipt.py aggregate --plan build/ci/plan/impact-plan.json \
               --receipts build/ci/receipts --output build/ci/validation-receipt.json "${auxiliary[@]}"
           fi
-      - name: Require complete six-language M8 binding parity
-        if: >-
-          needs.plan.outputs.validation_reused != 'true' &&
-          (needs.plan.outputs.lane_ios_swift_tests_test == 'true' || needs.plan.outputs.native_wrappers == 'true')
-        env:
-          VALIDATION_COMMIT: ${{ needs.plan.outputs.validation_commit }}
-          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
-        shell: bash
-        run: |
-          one_file() {
-            mapfile -t matches < <(find build/ci/receipts -type f -name "$1" -print)
-            test "${#matches[@]}" -eq 1
-            printf '%s\n' "${matches[0]}"
-          }
-          one_desktop_file() {
-            mapfile -t matches < <(find build/ci/receipts -type f \
-              -path '*/payload/codex-agent-runtime-desktop/build/*' -name "$1" -print)
-            test "${#matches[@]}" -eq 1
-            printf '%s\n' "${matches[0]}"
-          }
-          binding_root=build/ci/cross-language-bindings
-          mkdir -p "$binding_root/receipts" "$binding_root/c-abi-packages" "$binding_root/c-abi-proofs"
-          release_tool=$(one_file codex-agent-release-tooling.jar)
-          api_report=$(one_file canonical-api.json)
-          coverage_receipt=$(one_file canonical-coverage.json)
-          bootstrap=$(one_desktop_file bootstrap-evidence.json)
-          scenario_proof=$(one_desktop_file c-abi-scenarios.json)
-          for proof in c-abi-package-macos-arm64.json c-abi-package-macos-x64.json \
-              c-abi-package-linux-arm64.json c-abi-package-linux-x64.json c-abi-package-windows-x64.json; do
-            cp "$(one_desktop_file "$proof")" "$binding_root/c-abi-proofs/$proof"
-          done
-          mapfile -t versions < <(jq -r '.libraryVersion' "$binding_root"/c-abi-proofs/*.json | sort -u)
-          test "${#versions[@]}" -eq 1
-          version=${versions[0]}
-          test -n "$version"
-          for classifier in macos-arm64 macos-x64 linux-arm64 linux-x64 windows-x64; do
-            archive=$(one_desktop_file "*-$version-c-abi-$classifier.zip")
-            cp "$archive" "$binding_root/c-abi-packages/$(basename "$archive")"
-          done
-          java -jar "$release_tool" assemble-c-abi-binding-receipt \
-            --repository "$PWD" \
-            --bootstrap "$bootstrap" \
-            --scenario-proof "$scenario_proof" \
-            --packages "$binding_root/c-abi-packages" \
-            --proofs "$binding_root/c-abi-proofs" \
-            --version "$version" \
-            --commit "$VALIDATION_COMMIT" \
-            --tree "$VALIDATION_TREE" \
-            --output "$binding_root/receipts/c-abi-parity.json"
-          for receipt in kotlin-parity.json java-parity.json javascript-typescript-parity.json swift-parity.json objective-c-parity.json; do
-            cp "$(one_file "$receipt")" "$binding_root/receipts/$receipt"
-          done
-          java -jar "$release_tool" audit-cross-language-bindings \
-            --phase M8 \
-            --api-report "$api_report" \
-            --coverage-receipt "$coverage_receipt" \
-            --receipts "$binding_root/receipts" \
-            --output "$binding_root/binding-obligations-m8.json"
-          jq -e '
-            .result == "complete" and .phase == "M8" and
-            .summary == {
-              total: 6116, active: 3324, pending: 2780,
-              excluded: 12, satisfied: 3324, missing: 0
-            }
-          ' "$binding_root/binding-obligations-m8.json" >/dev/null
-          mkdir -p "$binding_root/m8"
-          cp "$api_report" "$binding_root/m8/canonical-api.json"
-          cp "$coverage_receipt" "$binding_root/m8/canonical-coverage.json"
-          cp "$binding_root"/receipts/*.json "$binding_root/m8/"
-          cp "$binding_root/binding-obligations-m8.json" "$binding_root/m8/"
-          test "$(find "$binding_root/m8" -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 9
-      - name: Require complete native-wrapper parity through M11
-        if: needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.native_wrappers == 'true'
-        env:
-          VALIDATION_COMMIT: ${{ needs.plan.outputs.validation_commit }}
-          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          one_file() {
-            mapfile -t matches < <(find build/ci/receipts -type f -name "$1" -print)
-            test "${#matches[@]}" -eq 1
-            printf '%s\n' "${matches[0]}"
-          }
-          one_host_evidence() {
-            mapfile -t matches < <(find build/ci/native-wrapper-hosts -type f \
-              -path "*/evidence/$1/$2.tsv" -print)
-            test "${#matches[@]}" -eq 1
-            printf '%s\n' "${matches[0]}"
-          }
-          binding_root=build/ci/cross-language-bindings
-          release=build/ci/native-wrapper-release
-          release_tool=$(one_file codex-agent-release-tooling.jar)
-          api_report=$(one_file canonical-api.json)
-          coverage_receipt=$(one_file canonical-coverage.json)
-          mapfile -t bootstraps < <(find build/ci/receipts -type f \
-            -path '*/payload/codex-agent-runtime-desktop/build/*' \
-            -name bootstrap-evidence.json -print)
-          test "${#bootstraps[@]}" -eq 1
-          bootstrap=${bootstraps[0]}
-          for classifier in macos-arm64 macos-x64 linux-arm64 linux-x64 windows-x64; do
-            for language in python csharp rust cpp dart; do
-              evidence=$(one_host_evidence "$language" "$classifier")
-              artifact_root=$(dirname "$(dirname "$(dirname "$evidence")")")
-              test -f "$artifact_root/lane-receipt.json"
-              host="$binding_root/host/$language"
-              mkdir -p "$host"
-              cp "$evidence" "$host/$classifier.tsv"
-              cp "$artifact_root/lane-receipt.json" "$host/$classifier-lane-receipt.json"
-            done
-          done
-          ./gradlew \
-            :codex-agent-sdk:verifyPythonBindingParity \
-            :codex-agent-sdk:verifyCSharpBindingParity \
-            :codex-agent-sdk:verifyRustBindingParity \
-            :codex-agent-sdk:verifyCppBindingParity \
-            :codex-agent-sdk:verifyDartBindingParity \
-            -PcodexAgent.nativeWrapperReleaseDirectory="$PWD/$release" \
-            -PcodexAgent.nativeWrapperHostEvidenceDirectory="$PWD/$binding_root/host" \
-            -PcodexAgent.nativeWrapperApiReport="$PWD/$api_report" \
-            -PcodexAgent.nativeWrapperCoverageReceipt="$PWD/$coverage_receipt" \
-            -PcodexAgent.nativeWrapperBootstrapEvidence="$PWD/$bootstrap" \
-            --stacktrace
-
-          languages=(python csharp rust cpp dart)
-          phases=(M9_PYTHON M9_CSHARP M9_RUST M9_CPP M9_DART)
-          satisfied=(3880 4436 4992 5548 6104)
-          pending=(2224 1668 1112 556 0)
-          previous="$binding_root/m8"
-          for index in "${!languages[@]}"; do
-            language=${languages[$index]}
-            phase=${phases[$index]}
-            phase_root="$binding_root/${phase,,}"
-            receipts="$phase_root/receipts"
-            mkdir -p "$receipts"
-            for source in "$previous"/*-parity.json; do
-              java -jar "$release_tool" advance-cross-language-binding-receipt \
-                --phase "$phase" --source "$source" --output "$receipts/$(basename "$source")"
-            done
-            cp "codex-agent-sdk/build/reports/cross-language-api/bindings/$language-parity.json" \
-              "$receipts/$language-parity.json"
-            audit="$phase_root/binding-obligations-${phase,,}.json"
-            java -jar "$release_tool" audit-cross-language-bindings \
-              --phase "$phase" \
-              --api-report "$api_report" \
-              --coverage-receipt "$coverage_receipt" \
-              --receipts "$receipts" \
-              --output "$audit"
-            jq -e --arg phase "$phase" --argjson satisfied "${satisfied[$index]}" \
-              --argjson pending "${pending[$index]}" '
-                .result == "complete" and .phase == $phase and
-                .summary == {
-                  total: 6116, active: 6104, pending: $pending,
-                  excluded: 12, satisfied: $satisfied, missing: 0
-                }
-              ' "$audit" >/dev/null
-            previous="$receipts"
-          done
-
-          m11_receipts="$binding_root/m11-receipts"
-          mkdir -p "$m11_receipts"
-          for source in "$previous"/*-parity.json; do
-            java -jar "$release_tool" advance-cross-language-binding-receipt \
-              --phase M11 --source "$source" --output "$m11_receipts/$(basename "$source")"
-          done
-          m11_audit="$binding_root/binding-obligations-m11.json"
-          java -jar "$release_tool" audit-cross-language-bindings \
-            --phase M11 \
-            --api-report "$api_report" \
-            --coverage-receipt "$coverage_receipt" \
-            --receipts "$m11_receipts" \
-            --output "$m11_audit"
-          jq -e '
-            .result == "complete" and .phase == "M11" and
-            .summary == {
-              total: 6116, active: 6104, pending: 0,
-              excluded: 12, satisfied: 6104, missing: 0
-            }
-          ' "$m11_audit" >/dev/null
-          mkdir -p "$binding_root/m11"
-          cp "$api_report" "$binding_root/m11/canonical-api.json"
-          cp "$coverage_receipt" "$binding_root/m11/canonical-coverage.json"
-          cp "$m11_receipts"/*.json "$binding_root/m11/"
-          cp "$m11_audit" "$binding_root/m11/"
-          test "$(find "$binding_root/m11" -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 14
-          ./gradlew verifySdkBindingParity \
-            -PcodexAgent.sdkBindingEvidenceDirectory="$PWD/$binding_root/m11" \
-            -PcodexAgent.sdkCanonicalApiReport="$PWD/$api_report" \
-            -PcodexAgent.sdkCanonicalCoverageReceipt="$PWD/$coverage_receipt" \
-            --stacktrace
+      - if: needs.plan.outputs.validation_reused != 'true' && (needs.plan.outputs.lane_ios_swift_tests_test == 'true' || needs.plan.outputs.native_wrappers == 'true')
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.sdk-parity.outputs.artifact_id }}
+          path: build/ci/cross-language-bindings
       - name: Stage the exact reusable validation artifact
         env:
           M8_REQUIRED: ${{ needs.plan.outputs.lane_ios_swift_tests_test }}

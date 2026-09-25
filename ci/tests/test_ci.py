@@ -747,85 +747,62 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertNotIn(":codex-agent-runtime-ios:verifyCodexAgentSwiftAuthenticationTests", swift_tests)
         self.assertNotIn(":codex-agent-runtime-ios:generateCodexAgentAppleCompilerEvidence", swift_tests)
 
-    def test_merge_gate_carries_exact_receipts_from_m8_through_native_wrappers_to_m11(self) -> None:
-        workflow = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text(encoding="utf-8")
-        merge_gate = workflow.split("\n  merge-gate:", 1)[1]
+    def test_sdk_parity_owns_m8_through_m11_and_merge_gate_consumes_exact_handoff(self) -> None:
+        workflows = CI_ROOT.parent / ".github/workflows"
+        parent = (workflows / "product-validation.yml").read_text(encoding="utf-8")
+        parity = (workflows / "sdk-binding-parity.yml").read_text(encoding="utf-8")
+        caller = parent.split("\n  sdk-parity:", 1)[1].split("\n  merge-gate:", 1)[0]
+        merge_gate = parent.split("\n  merge-gate:", 1)[1]
         assemble = 'java -jar "$release_tool" assemble-c-abi-binding-receipt'
         audit = 'java -jar "$release_tool" audit-cross-language-bindings'
 
+        for dependency in ("product", "desktop", "apple", "sdk-javascript", "sdk-native-wrappers"):
+            self.assertIn(dependency, caller.split("    needs:", 1)[1].split("    uses:", 1)[0])
+        for condition in (
+            "needs.plan.outputs.event_authorized == 'true'",
+            "needs.plan.outputs.remote_build_authorized == 'true'",
+            "needs.plan.outputs.validation_reused != 'true'",
+            "needs.plan.outputs.lane_ios_swift_tests_test == 'true'",
+            "needs.plan.outputs.native_wrappers == 'true'",
+        ):
+            self.assertIn(condition, caller)
+        self.assertIn("uses: ./.github/workflows/sdk-binding-parity.yml", caller)
+        self.assertIn("sdk-parity", merge_gate.split("    needs:", 1)[1].split("    runs-on:", 1)[0])
         self.assertLess(
             merge_gate.index("name: Require readiness and successful prerequisites"),
             merge_gate.index("uses: actions/checkout@"),
         )
-        self.assertLess(
-            merge_gate.index("name: Require readiness and successful prerequisites"),
-            merge_gate.index("uses: actions/download-artifact@"),
-        )
         self.assertIn("if grep -Eq 'failure|cancelled' <<<\"$RESULTS\"; then", merge_gate)
-        self.assertEqual(1, merge_gate.count(assemble))
-        self.assertEqual(3, merge_gate.count(audit))
-        self.assertEqual(2, merge_gate.count("advance-cross-language-binding-receipt"))
-        self.assertIn("--phase M8", merge_gate)
-        self.assertIn("phases=(M9_PYTHON M9_CSHARP M9_RUST M9_CPP M9_DART)", merge_gate)
-        self.assertIn("--phase M11", merge_gate)
-        parity_gate = "./gradlew verifySdkBindingParity"
-        self.assertEqual(1, merge_gate.count(parity_gate))
-        for argument in (
-            '-PcodexAgent.sdkBindingEvidenceDirectory="$PWD/$binding_root/m11"',
-            '-PcodexAgent.sdkCanonicalApiReport="$PWD/$api_report"',
-            '-PcodexAgent.sdkCanonicalCoverageReceipt="$PWD/$coverage_receipt"',
-        ):
-            self.assertEqual(1, merge_gate.count(argument))
+        self.assertIn('test "$SDK_PARITY_RESULT" = success || exit 1', merge_gate)
+        self.assertIn('[[ "$SDK_PARITY_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1', merge_gate)
+        self.assertIn('artifact-ids: ${{ needs.sdk-parity.outputs.artifact_id }}', merge_gate)
         self.assertLess(
-            merge_gate.index("--phase M11"),
-            merge_gate.index(parity_gate),
-        )
-        self.assertLess(
-            merge_gate.index(parity_gate),
+            merge_gate.index('artifact-ids: ${{ needs.sdk-parity.outputs.artifact_id }}'),
             merge_gate.index("name: Stage the exact reusable validation artifact"),
         )
-        for task in (
-            "verifyPythonBindingParity", "verifyCSharpBindingParity", "verifyRustBindingParity",
-            "verifyCppBindingParity", "verifyDartBindingParity",
-        ):
-            self.assertEqual(1, merge_gate.count(f":codex-agent-sdk:{task}"))
-            self.assertNotIn(f":codex-agent-runtime-desktop:{task}", merge_gate)
-        self.assertNotIn("--phase M7_5", merge_gate)
-        self.assertLess(merge_gate.index("lane_ios_swift_tests_test"), merge_gate.index(assemble))
-        self.assertLess(merge_gate.index(assemble), merge_gate.index(audit))
-        self.assertEqual({
-            "kotlin-parity.json",
-            "java-parity.json",
-            "javascript-typescript-parity.json",
-            "swift-parity.json",
-            "objective-c-parity.json",
-            "c-abi-parity.json",
-            "python-parity.json",
-            "csharp-parity.json",
-            "rust-parity.json",
-            "cpp-parity.json",
-            "dart-parity.json",
-        }, set(re.findall(r"[a-z]+(?:-[a-z]+)*-parity\.json", merge_gate)) - {"language-parity.json"})
-        for literal in ("6116", "3324", "2780", "3880", "4436", "4992", "5548", "6104", "12", "0"):
-            self.assertIn(literal, merge_gate)
-        for evidence in (
-            "canonical-api.json", "canonical-coverage.json", "kotlin-parity.json",
-            "java-parity.json", "javascript-typescript-parity.json", "swift-parity.json",
-            "objective-c-parity.json", "c-abi-parity.json", "binding-obligations-m8.json",
-            "python-parity.json", "csharp-parity.json", "rust-parity.json",
-            "cpp-parity.json", "dart-parity.json", "binding-obligations-m11.json",
-        ):
-            self.assertIn(evidence, merge_gate)
-        self.assertIn("codex-agent-native-wrapper-packages-", merge_gate)
-        self.assertIn("codex-agent-native-wrapper-host-*", merge_gate)
-        self.assertIn("build/ci/plan/reused-native-wrapper-release", merge_gate)
-        self.assertIn("needs.plan.outputs.validation_reused == 'true'", merge_gate)
-        self.assertIn("id: restore-reused-native-wrapper-release", merge_gate)
-        self.assertIn("steps.restore-reused-native-wrapper-release.outputs.restored == 'true'", merge_gate)
-        self.assertNotIn(
-            "needs.plan.outputs.validation_reused == 'true' && needs.plan.outputs.native_wrappers == 'true'",
-            merge_gate,
+        self.assertNotIn(assemble, merge_gate)
+        self.assertNotIn("./gradlew verifySdkBindingParity", merge_gate)
+        self.assertEqual(1, parity.count(assemble))
+        self.assertEqual(3, parity.count(audit))
+        self.assertEqual(2, parity.count("advance-cross-language-binding-receipt"))
+        self.assertIn("--phase M8", parity)
+        self.assertIn("phases=(M9_PYTHON M9_CSHARP M9_RUST M9_CPP M9_DART)", parity)
+        self.assertIn("--phase M11", parity)
+        self.assertEqual(1, parity.count("./gradlew verifySdkBindingParity"))
+        self.assertLess(parity.index("--phase M11"), parity.index("./gradlew verifySdkBindingParity"))
+        self.assertLess(
+            parity.index("./gradlew verifySdkBindingParity"),
+            parity.index("name: Stage exact SDK parity evidence"),
         )
+        for task in ("Python", "CSharp", "Rust", "Cpp", "Dart"):
+            self.assertEqual(1, parity.count(f":codex-agent-sdk:verify{task}BindingParity"))
+            self.assertNotIn(f":codex-agent-runtime-desktop:verify{task}BindingParity", parity)
+        for literal in ("6116", "3324", "2780", "3880", "4436", "4992", "5548", "6104", "12"):
+            self.assertIn(literal, parity)
+        self.assertIn("codex-agent-native-wrapper-packages-", parity)
+        self.assertIn("codex-agent-native-wrapper-host-*", parity)
+        self.assertIn("path: build/ci/sdk-parity-evidence", parity)
+        self.assertIn("build/ci/plan/reused-native-wrapper-release", merge_gate)
         self.assertIn("path: build/ci/final-validation/*", merge_gate)
 
 
