@@ -1993,11 +1993,20 @@ class ProductSelectionTest(unittest.TestCase):
         )
         result = classify_paths(paths)
         self.assertTrue(component(result, "runtime", "windows-x64"))
-        self.assertFalse(any(instance.product == "sdk" for instance in result.instances))
+        self.assertEqual(set(NATIVE_BINDINGS),
+                         {instance.component for instance in result.instances if instance.product == "sdk"})
         self.assertEqual((), result.inventory_paths)
         self.assertEqual((), result.unknown_paths)
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((), phase_inventory_paths(paths, instance))
+
+    def test_desktop_workflow_change_selects_its_five_sdk_binding_owners_only(self) -> None:
+        result = classify_paths([".github/workflows/desktop-runtime-evidence.yml"])
+        sdk = {instance for instance in result.instances if instance.product == "sdk"}
+        self.assertEqual({instance for instance in PHASE_INSTANCE_IDS
+                          if instance.product == "sdk" and instance.component in NATIVE_BINDINGS}, sdk)
+        self.assertFalse(any(instance.product == "contract" for instance in result.instances))
+        self.assertEqual((), result.inventory_paths)
 
 
 if __name__ == "__main__":

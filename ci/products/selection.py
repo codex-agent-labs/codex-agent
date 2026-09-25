@@ -792,7 +792,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         ".github/workflows/apple-runtime-evidence.yml": _from_phase(
             "sdk", "sdk-ios", "validation"
         ),
-        ".github/workflows/desktop-runtime-evidence.yml": _runtime(RUNTIME_COMPONENTS),
+        ".github/workflows/desktop-runtime-evidence.yml": _runtime(RUNTIME_COMPONENTS) | _bindings(NATIVE_BINDINGS),
         ".github/workflows/runtime-toolchain-capture.yml": _runtime(NATIVE_TARGETS),
         ".github/workflows/product-validation.yml": set(ALL_INSTANCES),
         ".github/workflows/promote.yml": set(ALL_METADATA),
