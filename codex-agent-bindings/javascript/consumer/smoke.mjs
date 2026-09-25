@@ -18,6 +18,7 @@ const packageJsonFile = path.join(packageRoot, 'package.json');
 const sdkCompatibilityRelativePath = 'META-INF/codex-agent/sdk-compatibility.json';
 const sdkCompatibilityFile = path.join(packageRoot, sdkCompatibilityRelativePath);
 const sdkCompatibilityArchivePath = `package/${sdkCompatibilityRelativePath}`;
+const packageJsonArchivePath = 'package/package.json';
 const expectedDefaultRuntimeVersion = process.env.CODEX_AGENT_EXPECTED_DEFAULT_RUNTIME_VERSION;
 const tarballFile = process.env.CODEX_AGENT_NPM_TARBALL;
 const keywordTypeKinds = new Set([
@@ -70,6 +71,13 @@ function verifySdkCompatibility(bytes) {
     'SDK compatibility must declare the exact five sorted Desktop Runtime targets',
   );
   return value;
+}
+
+function verifyInstalledPackageIdentity(installedBytes, archiveBytes, compatibility) {
+  assert.deepEqual(installedBytes, archiveBytes, 'Installed package.json must equal the selected npm archive member');
+  const metadata = JSON.parse(installedBytes.toString('utf8'));
+  assert.equal(metadata.name, '@codex-agent-labs/codex-agent');
+  assert.equal(metadata.version, compatibility.sdkVersion);
 }
 
 function hasModifier(node, kind) {
@@ -684,6 +692,16 @@ test('typescript compiler discovers the exact installed public API', () => {
     compatibilityBytes,
     'Installed compatibility bytes must equal the exact npm archive member',
   );
+  assert.deepEqual(
+    archiveEntries.filter((entry) => path.posix.basename(entry) === 'package.json'),
+    [packageJsonArchivePath],
+    'The npm archive must contain package.json at exactly one path',
+  );
+  verifyInstalledPackageIdentity(
+    fs.readFileSync(packageJsonFile),
+    execFileSync('tar', ['-xOzf', tarballFile, packageJsonArchivePath]),
+    compatibility,
+  );
   assert.equal(
     fs.existsSync(path.join(packageRoot, 'sdk-compatibility.json')),
     false,
@@ -716,7 +734,6 @@ test('typescript compiler discovers the exact installed public API', () => {
     /canonical/,
     'Tampered compatibility bytes must fail',
   );
-  assert.equal(compatibility.sdkVersion, JSON.parse(fs.readFileSync(packageJsonFile, 'utf8')).version);
   const compilerApi = compilerPublicApi();
   const commonJsExports = Object.getOwnPropertyNames(require('@codex-agent-labs/codex-agent')).sort();
   const esmExports = Object.keys(sdk).sort();

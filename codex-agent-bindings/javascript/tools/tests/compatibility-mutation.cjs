@@ -18,6 +18,7 @@ function exactBlock(start, end) {
 }
 
 const helpers = exactBlock('function canonicalJson(value)', 'function hasModifier(node, kind)');
+const verifyPackageIdentity = exactBlock('function verifyInstalledPackageIdentity(', 'function hasModifier(node, kind)');
 const mutation = exactBlock('  const wrongDefaultVersion =',
   '  assert.throws(\n    () => verifySdkCompatibility(Buffer.concat(');
 
@@ -54,4 +55,17 @@ test('actual installed consumer rejects duplicate or substituted Runtime targets
       compatibilityBytes: Buffer.from(`${JSON.stringify(changed)}\n`),
     }), /exact five sorted Desktop Runtime targets/);
   }
+});
+
+test('actual installed consumer binds npm package identity to the selected archive and SDK declaration', () => {
+  const compatibility = { sdkVersion: '0.8.0' };
+  const packageBytes = Buffer.from('{"name":"@codex-agent-labs/codex-agent","version":"0.8.0"}\n');
+  const check = (installedBytes, archiveBytes) => vm.runInNewContext(
+    `${verifyPackageIdentity}\nverifyInstalledPackageIdentity(installedBytes, archiveBytes, compatibility);`,
+    { assert, Buffer, installedBytes, archiveBytes, compatibility },
+  );
+  check(packageBytes, packageBytes);
+  assert.throws(() => check(packageBytes, Buffer.concat([packageBytes, Buffer.from('\n')])), /selected npm archive member/);
+  assert.throws(() => check(Buffer.from('{"name":"other","version":"0.8.0"}\n'), Buffer.from('{"name":"other","version":"0.8.0"}\n')), /@codex-agent-labs\/codex-agent/);
+  assert.throws(() => check(Buffer.from('{"name":"@codex-agent-labs/codex-agent","version":"0.8.1"}\n'), Buffer.from('{"name":"@codex-agent-labs/codex-agent","version":"0.8.1"}\n')), /0\.8\.0/);
 });
