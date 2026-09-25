@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import textwrap
 import unittest
 import urllib.error
 import urllib.request
@@ -573,23 +574,30 @@ class RunLaneContractTest(unittest.TestCase):
         )[0]
         consumers = workflow.split("\n  native-wrapper-host-consumers:", 1)[1]
 
-        self.assertEqual(1, workflow.count("name: Reassemble and verify the exact five Runtime product stages"))
-        self.assertEqual(1, workflow.count("prepareNativeWrapperPackageSources"))
-        self.assertIn(":codex-agent-sdk:prepareNativeWrapperPackageSources", stage)
-        self.assertNotIn(":codex-agent-runtime-desktop:prepareNativeWrapperPackageSources", stage)
-        self.assertIn("-PcodexAgent.nativeWrapperRuntimeStageRoot=\"$PWD/$stages\"", stage)
-        self.assertNotIn("-PcodexAgent.cAbiPackageEvidenceDirectory=", stage)
-        self.assertNotIn("-PcodexAgent.desktopClassifierDirectory=", stage)
-        self.assertIn(
-            "for component in macos-arm64 macos-x64 linux-arm64 linux-x64 windows-x64; do",
-            stage,
-        )
-        self.assertIn(
-            "*/payload/codex-agent-runtime-desktop/build/product-stage/runtime/$component",
-            stage,
-        )
-        self.assertEqual(2, stage.count('output-manifest.json"'))
+        self.assertEqual(1, stage.count("python3 -B -m ci.sdk_native_prepared_receiver"))
+        self.assertIn("uses: ./.github/actions/capture-sdk-tooling", stage)
+        self.assertIn("uses: ./.github/actions/capture-runtime-state", stage)
+        self.assertIn("product: sdk", stage)
+        self.assertIn("sdk-family: ${{ format('native-{0}', inputs.preparationPhase) }}", stage)
+        self.assertIn('test "$STATE_ID" = "$PREPARATION_STATE_ID"', stage)
+        self.assertIn('test "$STATE_SHA" = "$PREPARATION_STATE_SHA"', stage)
+        self.assertIn('test "$STATE_WAVE" = "$PREPARATION_STATE_WAVE"', stage)
+        self.assertIn('test "$SDK_STATE_WAVE" = "$PREPARATION_SDK_STATE_WAVE"', stage)
+        self.assertIn('--preparation-state-root "$STATE"', stage)
+        self.assertIn('--prepared-artifact-id "$PREPARED_ARTIFACT_ID"', stage)
+        self.assertIn('--prepared-artifact-sha256 "$PREPARED_ARTIFACT_SHA256"', stage)
+        self.assertIn('--sdk-inputs-artifact-id "$SDK_INPUTS_ARTIFACT_ID"', stage)
+        self.assertIn('--sdk-inputs-artifact-sha256 "$SDK_INPUTS_ARTIFACT_SHA256"', stage)
+        self.assertIn('--trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA"', stage)
+        self.assertLess(stage.index("name: Require one exact original preparation state"),
+                        stage.index("uses: ./.github/actions/capture-runtime-state"))
+        self.assertLess(stage.index("python3 -B -m ci.sdk_native_prepared_receiver"),
+                        stage.index("uses: actions/upload-artifact@"))
+        for forbidden in ("setup-kmp", "./gradlew", "prepareNativeWrapperPackageSources",
+                          "codex-agent-ci-desktop-", "codex-agent-ci-contracts-"):
+            self.assertNotIn(forbidden, stage)
         self.assertIn("name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}", stage)
+        self.assertIn("path: build/sdk-native-prepared-receiver/upload", stage)
         self.assertIn("retention-days: 1", stage)
         versioned_sdk_root = "native-wrapper-c-abi-sdks/${{ inputs.validationTree }}"
         self.assertEqual(3, workflow.count(versioned_sdk_root))
@@ -697,19 +705,76 @@ class RunLaneContractTest(unittest.TestCase):
 
         self.assertNotIn("native-wrapper-", desktop)
         self.assertNotIn("nativeWrappers", desktop)
-        self.assertIn("needs: [workflow-lint, plan, desktop]", caller)
+        self.assertIn("needs: [workflow-lint, plan, sdk-plan, sdk-javascript, sdk-native-prepare, sdk-inputs]", caller)
         for condition in (
             "needs.plan.outputs.event_authorized == 'true'",
             "needs.plan.outputs.remote_build_authorized == 'true'",
             "needs.plan.outputs.validation_reused != 'true'",
             "needs.plan.outputs.native_wrappers == 'true'",
-            "needs.desktop.result == 'success'",
+            "needs.sdk-native-prepare.result == 'success'",
         ):
             self.assertIn(condition, caller)
+        for field, source in (
+            ("planId", "needs.plan.outputs.plan_id"),
+            ("trustedWorkflowSha", "inputs.trustedWorkflowSha"),
+            ("stateArtifactId", "needs.sdk-javascript.outputs.artifact_id"),
+            ("stateArtifactSha256", "needs.sdk-javascript.outputs.artifact_digest"),
+            ("stateWave", "needs.sdk-javascript.outputs.state_wave"),
+            ("sdkStateWave", "needs.sdk-javascript.outputs.sdk_state_wave"),
+            ("preparationStateArtifactId", "needs.sdk-native-prepare.outputs.preparation_state_id"),
+            ("preparationStateArtifactSha256", "needs.sdk-native-prepare.outputs.preparation_state_digest"),
+            ("preparationStateWave", "needs.sdk-native-prepare.outputs.preparation_state_wave"),
+            ("preparationSdkStateWave", "needs.sdk-native-prepare.outputs.preparation_sdk_state_wave"),
+            ("preparationComponent", "needs.sdk-native-prepare.outputs.preparation_component"),
+            ("preparationPhase", "needs.sdk-native-prepare.outputs.preparation_phase"),
+            ("preparationTarget", "needs.sdk-native-prepare.outputs.preparation_target"),
+            ("preparationBuildKey", "needs.sdk-native-prepare.outputs.preparation_build_key"),
+            ("sdkPreparedArtifactId", "needs.sdk-native-prepare.outputs.artifact_id"),
+            ("sdkPreparedArtifactSha256", "needs.sdk-native-prepare.outputs.artifact_digest"),
+            ("sdkInputsArtifactId", "needs.sdk-inputs.outputs.artifact_id"),
+            ("sdkInputsArtifactSha256", "needs.sdk-inputs.outputs.artifact_digest"),
+            ("toolingRequired", "needs.plan.outputs.tooling_required"),
+            ("toolingArtifactId", "needs.sdk-plan.outputs.tooling_artifact_id"),
+            ("toolingArtifactSha256", "needs.sdk-plan.outputs.tooling_artifact_sha256"),
+            ("toolingTransportProducer", "needs.sdk-plan.outputs.tooling_transport_producer"),
+        ):
+            self.assertIn(f"{field}: ${{{{ {source} }}}}", caller)
         self.assertIn("uses: ./.github/workflows/sdk-validation.yml", caller)
         self.assertIn("sdk-native-wrappers", gate.split("\n    needs:", 1)[1].split("\n    runs-on:", 1)[0])
         self.assertIn('test "$NATIVE_WRAPPERS_RESULT" = success || exit 1', gate)
         self.assertIn("native-wrapper-release-assembly:", sdk)
+
+    def test_native_wrapper_preparation_state_guard_fails_closed(self) -> None:
+        workflow = (CI_ROOT.parent / ".github/workflows/sdk-validation.yml").read_text(encoding="utf-8")
+        guard = workflow.split("      - name: Require one exact original preparation state\n", 1)[1].split(
+            "      - name: Select installed caller Java for SDK tooling\n", 1
+        )[0]
+        script = textwrap.dedent(guard.split("        run: |\n", 1)[1])
+        values = {
+            "STATE_ID": "11", "STATE_SHA": "sha256:" + "a" * 64,
+            "STATE_WAVE": "0", "SDK_STATE_WAVE": "2",
+            "PREPARATION_STATE_ID": "11", "PREPARATION_STATE_SHA": "sha256:" + "a" * 64,
+            "PREPARATION_STATE_WAVE": "0", "PREPARATION_SDK_STATE_WAVE": "2",
+            "TOOLING_REQUIRED": "false", "TOOLING_ARTIFACT_ID": "",
+            "TOOLING_ARTIFACT_SHA256": "", "TOOLING_TRANSPORT_PRODUCER": "",
+        }
+
+        def accepted(changes: dict[str, str]) -> bool:
+            result = subprocess.run(["bash", "-c", script], env={**os.environ, **values, **changes},
+                                    capture_output=True, text=True)
+            return result.returncode == 0
+
+        self.assertTrue(accepted({}))
+        for field, wrong in (
+            ("PREPARATION_STATE_ID", "12"), ("PREPARATION_STATE_SHA", "sha256:" + "b" * 64),
+            ("PREPARATION_STATE_WAVE", "1"), ("PREPARATION_SDK_STATE_WAVE", "3"),
+            ("TOOLING_REQUIRED", "unknown"), ("TOOLING_ARTIFACT_ID", "12"),
+        ):
+            with self.subTest(field=field):
+                self.assertFalse(accepted({field: wrong}))
+        self.assertTrue(accepted({"TOOLING_REQUIRED": "true", "TOOLING_ARTIFACT_ID": "12",
+                                  "TOOLING_ARTIFACT_SHA256": "sha256:" + "b" * 64,
+                                  "TOOLING_TRANSPORT_PRODUCER": "{}"}))
 
     def test_action_and_lane_driver_bind_every_execution_to_the_candidate_tree(self) -> None:
         action = (CI_ROOT.parent / ".github/actions/run-ci-lane/action.yml").read_text(encoding="utf-8")

@@ -1939,13 +1939,35 @@ jobs:
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&
       needs.plan.outputs.native_wrappers == 'true' &&
-      needs.desktop.result == 'success'
-    needs: [workflow-lint, plan, desktop]
+      needs.sdk-native-prepare.result == 'success'
+    needs: [workflow-lint, plan, sdk-plan, sdk-javascript, sdk-native-prepare, sdk-inputs]
     uses: ./.github/workflows/sdk-validation.yml
     with:
       planArtifact: ${{ needs.plan.outputs.plan_artifact }}
+      planId: ${{ needs.plan.outputs.plan_id }}
       validationCommit: ${{ needs.plan.outputs.validation_commit }}
       validationTree: ${{ needs.plan.outputs.validation_tree }}
+      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      stateArtifactId: ${{ needs.sdk-javascript.outputs.artifact_id }}
+      stateArtifactSha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
+      stateWave: ${{ needs.sdk-javascript.outputs.state_wave }}
+      sdkStateWave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+      preparationStateArtifactId: ${{ needs.sdk-native-prepare.outputs.preparation_state_id }}
+      preparationStateArtifactSha256: ${{ needs.sdk-native-prepare.outputs.preparation_state_digest }}
+      preparationStateWave: ${{ needs.sdk-native-prepare.outputs.preparation_state_wave }}
+      preparationSdkStateWave: ${{ needs.sdk-native-prepare.outputs.preparation_sdk_state_wave }}
+      preparationComponent: ${{ needs.sdk-native-prepare.outputs.preparation_component }}
+      preparationPhase: ${{ needs.sdk-native-prepare.outputs.preparation_phase }}
+      preparationTarget: ${{ needs.sdk-native-prepare.outputs.preparation_target }}
+      preparationBuildKey: ${{ needs.sdk-native-prepare.outputs.preparation_build_key }}
+      sdkPreparedArtifactId: ${{ needs.sdk-native-prepare.outputs.artifact_id }}
+      sdkPreparedArtifactSha256: ${{ needs.sdk-native-prepare.outputs.artifact_digest }}
+      sdkInputsArtifactId: ${{ needs.sdk-inputs.outputs.artifact_id }}
+      sdkInputsArtifactSha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
+      toolingRequired: ${{ needs.plan.outputs.tooling_required }}
+      toolingArtifactId: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+      toolingArtifactSha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+      toolingTransportProducer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
 
   apple:
     if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.any_apple == 'true'
