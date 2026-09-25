@@ -129,7 +129,7 @@ class ToolingCaptureTest(unittest.TestCase):
 
         return request
 
-    def capture(self, *, raw=None, artifact=None, policy_revision=None, api=None):
+    def capture(self, *, raw=None, artifact=None, policy_revision=None, api=None, **workflow_policy):
         selected_raw = self.raw if raw is None else raw
         selected_artifact = self.artifact_for(selected_raw) if artifact is None else artifact
         with mock.patch("reuse.api_request", side_effect=api or self.api(
@@ -140,6 +140,7 @@ class ToolingCaptureTest(unittest.TestCase):
                 transport_producer=self.producer, trusted_workflow_sha=WORKFLOW_PIN,
                 policy_revision=policy_revision or self.source.source_sha,
                 java_executable=self.java, token=TOKEN,
+                **workflow_policy,
             )
 
     def uploaded_copy(self) -> Path:
@@ -181,6 +182,28 @@ class ToolingCaptureTest(unittest.TestCase):
         capture = load_canonical_json_bytes((self.destination / "transport/capture.json").read_bytes())
         self.assertEqual(self.artifact_for(raw), capture["artifact"])
         self.assertEqual(self.producer, capture["captureProducer"])
+
+    def test_child_workflow_path_and_job_are_pinned_before_capture(self):
+        path = ".github/workflows/contract-validation.yml"
+        job = "product-validation / contract-validation / tooling-attestation"
+        self.run["referenced_workflows"] = [{
+            "path": f"{release_fixture.REPOSITORY}/{path}@{WORKFLOW_PIN}",
+            "sha": WORKFLOW_PIN,
+        }]
+        self.jobs[0]["name"] = job
+        policy = {"trusted_workflow_path": path, "trusted_job_name": job}
+        for changes in (
+            {"trusted_workflow_path": ".github/workflows/wrong.yml"},
+            {"trusted_job_name": "product-validation / wrong"},
+            {"trusted_workflow_path": None},
+            {"trusted_job_name": None},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.capture(**{**policy, **changes})
+            self.assertFalse(self.destination.exists())
+        self.capture(**policy)
+        observed = load_canonical_json_bytes((self.destination / "transport/capture.json").read_bytes())
+        self.assertEqual(self.jobs, observed["observed"][0]["jobs"])
 
     def test_wrong_git_key_and_tampered_signed_evidence_never_publish_policy(self):
         _, public, signing = generate_development_key(self.source.repository / "replacement-key")
@@ -226,6 +249,11 @@ class ToolingCaptureTest(unittest.TestCase):
 
 class ToolingCaptureCliTest(unittest.TestCase):
     def test_cli_forwards_caller_inputs_and_rejects_key_overrides(self):
+        action = (Path(__file__).resolve().parents[2] /
+                  ".github/actions/capture-sdk-tooling/action.yml").read_text(encoding="utf-8")
+        self.assertIn("TRUSTED_WORKFLOW_PATH: ${{ inputs.trusted-workflow-path }}", action)
+        self.assertIn("TRUSTED_JOB_NAME: ${{ inputs.trusted-job-name }}", action)
+        self.assertIn("*workflow_policy]", action)
         with tempfile.TemporaryDirectory(prefix="tooling-capture-cli-") as temporary:
             root = Path(temporary).resolve()
             producer = root / "producer.json"
@@ -245,7 +273,17 @@ class ToolingCaptureCliTest(unittest.TestCase):
                     artifact_sha256="sha256:" + "b" * 64, transport_producer=value,
                     trusted_workflow_sha="c" * 40, policy_revision="d" * 40,
                     java_executable=root / "java", token=TOKEN,
+                    trusted_workflow_path=None, trusted_job_name=None,
                 )
+                capture.reset_mock()
+                self.assertEqual(0, tooling_capture.main([
+                    *argv, "--trusted-workflow-path", ".github/workflows/contract-validation.yml",
+                    "--trusted-job-name", "product-validation / contract-validation / tooling-attestation",
+                ]))
+                self.assertEqual(".github/workflows/contract-validation.yml",
+                                 capture.call_args.kwargs["trusted_workflow_path"])
+                self.assertEqual("product-validation / contract-validation / tooling-attestation",
+                                 capture.call_args.kwargs["trusted_job_name"])
                 capture.reset_mock()
                 for option in ("--private-key", "--keyring", "--keys-directory"):
                     with self.subTest(option=option), mock.patch("sys.stderr", new=io.StringIO()), \

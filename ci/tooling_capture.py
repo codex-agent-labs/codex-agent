@@ -47,7 +47,8 @@ def _ensure_original_source(repository, producer):
 
 def capture_tooling_ci(destination, repository_root, *, artifact_id, artifact_sha256,
                       transport_producer, trusted_workflow_sha, policy_revision,
-                      java_executable, token):
+                      java_executable, token, trusted_workflow_path=None,
+                      trusted_job_name=None):
     """Create the existing SDK tooling policy from independently authenticated bytes.
 
     Upload ID/digest and producer come from the trusted caller, not the download.
@@ -78,9 +79,15 @@ def capture_tooling_ci(destination, repository_root, *, artifact_id, artifact_sh
         if trust is None:
             raise ValueError("Tooling capture requires caller-pinned release keys")
         keyring = load_keyring(trust.keyring, trust.keys)
-        job = "product-validation / tooling-attestation"
+        if (trusted_workflow_path is None) != (trusted_job_name is None):
+            raise ValueError("Tooling workflow path and job must be pinned together")
+        job = "product-validation / tooling-attestation" if trusted_job_name is None else trusted_job_name
+        workflow_policy = ({"trusted_workflow_sha": trusted_workflow_sha} if trusted_workflow_path is None else
+                           {"trusted_workflows_by_phase": {"tooling": {
+                               "path": trusted_workflow_path, "sha": trusted_workflow_sha,
+                           }}})
         observed = _observe_ci_producer_jobs({"tooling": transport_producer},
-            jobs_by_phase={"tooling": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
+            jobs_by_phase={"tooling": job}, token=token, **workflow_policy)
         name = (f"codex-agent-release-tooling-{transport_producer['tree']}"
                 f"-attempt-{transport_producer['runAttempt']}")
         artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256, name,
@@ -133,6 +140,8 @@ def main(argv=None):
     parser.add_argument("--artifact-id", type=int, required=True)
     for name in ("artifact-sha256", "trusted-workflow-sha", "policy-revision"):
         parser.add_argument(f"--{name}", required=True)
+    parser.add_argument("--trusted-workflow-path")
+    parser.add_argument("--trusted-job-name")
     args = parser.parse_args(argv)
     try:
         producer = load_canonical_json_bytes(read_regular_file_bytes(args.transport_producer,
@@ -140,7 +149,9 @@ def main(argv=None):
         capture_tooling_ci(args.destination, args.repository_root, artifact_id=args.artifact_id,
             artifact_sha256=args.artifact_sha256, transport_producer=producer,
             trusted_workflow_sha=args.trusted_workflow_sha, policy_revision=args.policy_revision,
-            java_executable=args.java_executable, token=os.environ["GITHUB_TOKEN"])
+            java_executable=args.java_executable, token=os.environ["GITHUB_TOKEN"],
+            trusted_workflow_path=args.trusted_workflow_path,
+            trusted_job_name=args.trusted_job_name)
     except (OSError, ValueError, KeyError) as error:
         parser.error(str(error))
     return 0

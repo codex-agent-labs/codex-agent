@@ -13,6 +13,12 @@ inputs:
   trusted-workflow-sha:
     required: true
     description: Exact reviewed workflow pin for the observed original upload.
+  trusted-workflow-path:
+    default: ''
+    description: Optional caller-pinned child workflow path; requires trusted-job-name.
+  trusted-job-name:
+    default: ''
+    description: Optional caller-pinned original producer job; requires trusted-workflow-path.
   policy-revision:
     required: true
     description: Exact consumer Git revision owning the public signing and tooling policy.
@@ -40,6 +46,8 @@ runs:
         ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
         TRANSPORT_PRODUCER: ${{ inputs.transport-producer }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        TRUSTED_WORKFLOW_PATH: ${{ inputs.trusted-workflow-path }}
+        TRUSTED_JOB_NAME: ${{ inputs.trusted-job-name }}
         POLICY_REVISION: ${{ inputs.policy-revision }}
         PLAN_ID: ${{ inputs.plan-id }}
         GITHUB_TOKEN: ${{ github.token }}
@@ -62,11 +70,18 @@ runs:
         parent = Path(tempfile.mkdtemp(prefix='sdk-tooling-capture-', dir=scratch_root)).resolve(strict=True)
         producer_path, destination = parent / 'transport-producer.json', parent / 'capture'
         producer_path.write_bytes(canonical_json_bytes(producer))
+        if bool(os.environ['TRUSTED_WORKFLOW_PATH']) != bool(os.environ['TRUSTED_JOB_NAME']):
+            raise ValueError('Tooling workflow path and job must be pinned together')
+        workflow_policy = ([
+            '--trusted-workflow-path', os.environ['TRUSTED_WORKFLOW_PATH'],
+            '--trusted-job-name', os.environ['TRUSTED_JOB_NAME'],
+        ] if os.environ['TRUSTED_WORKFLOW_PATH'] else [])
         subprocess.run([sys.executable, '-B', '-m', 'ci.tooling_capture',
             '--destination', str(destination), '--repository-root', str(repository),
             '--transport-producer', str(producer_path), '--java-executable', str(java),
             '--artifact-id', os.environ['ARTIFACT_ID'], '--artifact-sha256', os.environ['ARTIFACT_SHA256'],
-            '--trusted-workflow-sha', os.environ['TRUSTED_WORKFLOW_SHA'], '--policy-revision', os.environ['POLICY_REVISION']],
+            '--trusted-workflow-sha', os.environ['TRUSTED_WORKFLOW_SHA'], '--policy-revision', os.environ['POLICY_REVISION'],
+            *workflow_policy],
             cwd=repository, env=os.environ, check=True)
         policy = destination / 'tooling-policy.json'
         read_regular_file_bytes(policy, reject_symlink_parents=True)
