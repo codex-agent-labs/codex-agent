@@ -54,6 +54,7 @@ if(CodexAgent_C_SDK_ROOT)
         "${CodexAgent_C_SDK_INCLUDE_DIR}/codex_agent.h"
         "${CodexAgent_C_SDK_LIBRARY}"
         "${CodexAgent_SDK_COMPATIBILITY}"
+        "${CodexAgent_SDK_RUNTIME_ROOT}"
     )
         if(NOT EXISTS "${required}")
             message(FATAL_ERROR "Verified CodexAgent C SDK package member is missing: ${required}")
@@ -211,10 +212,8 @@ if(CODEX_AGENT_CPP_INSTALL_PACKAGE)
         FILES "${CodexAgent_SDK_COMPATIBILITY}"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/CodexAgent/native"
     )
-    if(EXISTS "${CodexAgent_SDK_RUNTIME_ROOT}")
-        install(FILES "${CodexAgent_SDK_RUNTIME_ROOT}"
-            DESTINATION "${CMAKE_INSTALL_DATADIR}/CodexAgent/native")
-    endif()
+    install(FILES "${CodexAgent_SDK_RUNTIME_ROOT}"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/CodexAgent/native")
     install(
         FILES src/native_loader.cpp tools/generate_native_dispatch.py
         DESTINATION "${CMAKE_INSTALL_DATADIR}/CodexAgent/loader"
@@ -225,11 +224,7 @@ if(CODEX_AGENT_CPP_INSTALL_PACKAGE)
     )
 
     file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/src/native_loader.cpp" CODEX_AGENT_CPP_LOADER_SOURCE_SHA256)
-    if(EXISTS "${CodexAgent_SDK_RUNTIME_ROOT}")
-        file(SHA256 "${CodexAgent_SDK_RUNTIME_ROOT}" CODEX_AGENT_SDK_RUNTIME_ROOT_SHA256)
-    else()
-        set(CODEX_AGENT_SDK_RUNTIME_ROOT_SHA256 "")
-    endif()
+    file(SHA256 "${CodexAgent_SDK_RUNTIME_ROOT}" CODEX_AGENT_SDK_RUNTIME_ROOT_SHA256)
     configure_package_config_file(
         cmake/CodexAgentConfig.cmake.in
         "${CMAKE_CURRENT_BINARY_DIR}/CodexAgentConfig.cmake"

@@ -124,6 +124,16 @@ def verify_installed_loader(cmake: str, baseline: Path, root: Path, libdir: str,
     if not executable.is_file():
         executable = build / config / "installed_trust.exe"
     run([str(executable), str(external)], succeed=True)
+    original_root = installed_root.read_bytes()
+    try:
+        installed_root.write_bytes(original_root + b"\n")
+        run([cmake, "-S", str(source), "-B", str(root / "tampered-root-build"),
+             f"-DCodexAgent_DIR={baseline / libdir / 'cmake/CodexAgent'}"], succeed=False)
+        installed_root.unlink()
+        run([cmake, "-S", str(source), "-B", str(root / "missing-root-build"),
+             f"-DCodexAgent_DIR={baseline / libdir / 'cmake/CodexAgent'}"], succeed=False)
+    finally:
+        installed_root.write_bytes(original_root)
 
 
 def main() -> int:

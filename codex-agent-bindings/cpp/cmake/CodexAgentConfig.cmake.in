@@ -24,12 +24,9 @@ set(_codex_agent_verified_files
     "${CodexAgent_C_SDK_INCLUDE_DIR}/codex_agent.h|@CODEX_AGENT_C_SDK_HEADER_SHA256@"
     "${CodexAgent_C_SDK_LIBRARY}|@CODEX_AGENT_C_SDK_LIBRARY_SHA256@"
     "${CodexAgent_SDK_COMPATIBILITY}|@CODEX_AGENT_SDK_COMPATIBILITY_SHA256@"
+    "${CodexAgent_SDK_RUNTIME_ROOT}|@CODEX_AGENT_SDK_RUNTIME_ROOT_SHA256@"
     "${CodexAgent_CPP_LOADER_SOURCE}|@CODEX_AGENT_CPP_LOADER_SOURCE_SHA256@"
 )
-if(NOT "@CODEX_AGENT_SDK_RUNTIME_ROOT_SHA256@" STREQUAL "")
-    list(APPEND _codex_agent_verified_files
-        "${CodexAgent_SDK_RUNTIME_ROOT}|@CODEX_AGENT_SDK_RUNTIME_ROOT_SHA256@")
-endif()
 if(CodexAgent_NATIVE_CLASSIFIER MATCHES "^linux-")
     list(APPEND _codex_agent_verified_files
         "${PACKAGE_PREFIX_DIR}/lib/libcodex_agent.so.1|@CODEX_AGENT_C_SDK_SONAME_SHA256@")

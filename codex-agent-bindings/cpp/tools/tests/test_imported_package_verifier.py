@@ -27,7 +27,8 @@ class ImportedPackageVerifierTest(unittest.TestCase):
         self.members = ("include/codex_agent.h", self.library,
                         "share/CodexAgent/native/sdk-compatibility.json",
                         "share/CodexAgent/loader/native_loader.cpp",
-                        "lib/cmake/CodexAgent/CodexAgentConfig.cmake")
+                        "lib/cmake/CodexAgent/CodexAgentConfig.cmake",
+                        "share/CodexAgent/native/sdk-runtime-root.pub")
         for name in self.members:
             path = self.package / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -95,6 +96,13 @@ class ImportedPackageVerifierTest(unittest.TestCase):
             self.assertIn(f"\nreturncode: {0 if name == 'baseline' else 1}\n",
                           (self.output / f"configure-{name}.log").read_text())
             self.assertTrue((self.output / f"build-{name}/CMakeCache.txt").is_file())
+
+    def test_missing_sdk_runtime_root_fails_before_configure(self):
+        (self.package / "share/CodexAgent/native/sdk-runtime-root.pub").unlink()
+        with patch.object(subprocess, "run") as run, self.assertRaisesRegex(ValueError, "sdk-runtime-root.pub"):
+            self.invoke()
+        run.assert_not_called()
+        self.assertFalse(self.output.exists())
 
     def test_case_inventory_records_actual_nonzero_exit_without_inventing_a_fixed_code(self):
         def observed(command, **kwargs):

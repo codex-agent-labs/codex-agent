@@ -165,6 +165,7 @@ def verify_imported_package(package_root: Path, output: Path, *, cmake: str,
     package = _regular(package_root, directory=True)
     for member in ("include/codex_agent.h", library,
                    "share/CodexAgent/native/sdk-compatibility.json",
+                   "share/CodexAgent/native/sdk-runtime-root.pub",
                    "share/CodexAgent/loader/native_loader.cpp",
                    f"{libdir}/cmake/CodexAgent/CodexAgentConfig.cmake"):
         _regular(package / member)
