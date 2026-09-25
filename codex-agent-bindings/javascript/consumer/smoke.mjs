@@ -95,7 +95,7 @@ function verifyInstalledPackageMember(archiveEntries, name) {
   );
   assert.deepEqual(
     readRegularFile(path.join(packageRoot, name)),
-    execFileSync('tar', ['-xOzf', tarballFile, archivePath]),
+    execFileSync('tar', ['-xOzf', tarballFile, archivePath], { maxBuffer: 64 * 1024 * 1024 }),
     `Installed ${name} must equal the selected npm archive member`,
   );
 }
@@ -119,7 +119,7 @@ function verifyInstalledRuntimeMembers(archiveEntries) {
     const member = fs.lstatSync(file);
     assert.ok(member.isFile() && !member.isSymbolicLink(), `Installed Runtime member is not a regular file: ${name}`);
     assert.deepEqual(fs.readFileSync(file),
-      execFileSync('tar', ['-xOzf', tarballFile, `package/dist/${name}`]),
+      execFileSync('tar', ['-xOzf', tarballFile, `package/dist/${name}`], { maxBuffer: 64 * 1024 * 1024 }),
       `Installed Runtime member differs from the selected npm archive: ${name}`);
   }
 }
@@ -723,7 +723,7 @@ test('typescript compiler discovers the exact installed public API', () => {
   assert.ok(tarballFile, 'The exact npm tarball path must be supplied by Gradle');
   const compatibilityBytes = readRegularFile(sdkCompatibilityFile);
   const compatibility = verifySdkCompatibility(compatibilityBytes);
-  const archiveEntries = execFileSync('tar', ['-tzf', tarballFile], { encoding: 'utf8' })
+  const archiveEntries = execFileSync('tar', ['-tzf', tarballFile], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
     .trimEnd()
     .split('\n');
   assert.deepEqual(
@@ -732,7 +732,7 @@ test('typescript compiler discovers the exact installed public API', () => {
     'The npm archive must contain the compatibility resource at exactly one path',
   );
   assert.deepEqual(
-    execFileSync('tar', ['-xOzf', tarballFile, sdkCompatibilityArchivePath]),
+    execFileSync('tar', ['-xOzf', tarballFile, sdkCompatibilityArchivePath], { maxBuffer: 64 * 1024 * 1024 }),
     compatibilityBytes,
     'Installed compatibility bytes must equal the exact npm archive member',
   );
@@ -743,7 +743,7 @@ test('typescript compiler discovers the exact installed public API', () => {
   );
   verifyInstalledPackageIdentity(
     readRegularFile(packageJsonFile),
-    execFileSync('tar', ['-xOzf', tarballFile, packageJsonArchivePath]),
+    execFileSync('tar', ['-xOzf', tarballFile, packageJsonArchivePath], { maxBuffer: 64 * 1024 * 1024 }),
     compatibility,
   );
   for (const name of ['index.d.ts', 'index.cjs', 'index.mjs']) {

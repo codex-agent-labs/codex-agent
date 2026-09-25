@@ -82,9 +82,10 @@ test('actual installed consumer binds declarations and entry points to npm archi
         assert.equal(file, `/installed/${changedName}`);
         return installedBytes;
       } },
-      execFileSync: (command, args) => {
+      execFileSync: (command, args, options) => {
         assert.equal(command, 'tar');
         assert.deepEqual(Array.from(args), ['-xOzf', '/selected.tgz', `package/${changedName}`]);
+        assert.equal(options.maxBuffer, 64 * 1024 * 1024);
         return archiveBytes;
       },
     });
@@ -126,13 +127,16 @@ test('actual installed consumer binds Runtime dist inventory and bytes to npm ar
         readdirSync: () => Object.keys(installed),
         readFileSync: (file) => installed[path.basename(file)],
       },
-      execFileSync: (command, args) => {
+      execFileSync: (command, args, options) => {
         assert.equal(command, 'tar');
         assert.deepEqual(Array.from(args.slice(0, 2)), ['-xOzf', '/selected.tgz']);
+        assert.equal(options.maxBuffer, 64 * 1024 * 1024);
         return archive[path.posix.basename(args[2])];
       },
     });
   check();
+  const large = { ...contents, [names[0]]: Buffer.alloc(2 * 1024 * 1024, 0x61) };
+  check(entries, large, large);
   assert.throws(() => check(entries, { ...contents, [names[0]]: Buffer.from('changed') }), /differs from the selected npm archive/);
   assert.throws(() => check(entries, { ...contents, extra: Buffer.from('extra') }), /inventory must equal/);
   assert.throws(() => check(entries, contents, contents, names[0]), /not a regular file/);
