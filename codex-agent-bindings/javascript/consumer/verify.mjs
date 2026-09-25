@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -21,6 +21,66 @@ function exactFile(file, label) {
     throw new Error(`${label} is missing, empty, or not a regular file: ${file}`);
   }
   return file;
+}
+
+function systemTar() {
+  const executable = process.platform === 'win32'
+    ? path.join(process.env.SystemRoot ?? '', 'System32', 'tar.exe')
+    : process.platform === 'darwin' ? '/usr/bin/bsdtar' : '/usr/bin/tar';
+  if (!path.isAbsolute(executable)) throw new Error('The system tar path must be absolute');
+  return exactFile(executable, 'System tar');
+}
+
+export function verifySelectedPackage(cwd, archive = process.env.CODEX_AGENT_NPM_TARBALL) {
+  if (!archive) throw new Error('The selected npm archive must be supplied before SDK execution');
+  exactFile(archive, 'Selected npm archive');
+  const tar = systemTar();
+  const packageRoot = path.join(cwd, 'node_modules', '@codex-agent-labs', 'codex-agent');
+  const entries = execFileSync(tar, ['-tzf', archive], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    .trimEnd().split('\n');
+  const expected = [];
+  for (const entry of entries) {
+    const parts = entry.split('/');
+    if (parts[0] !== 'package' || parts.slice(1).some((part, index) =>
+      part === '.' || part === '..' || part.includes('\\') || (part === '' && index < parts.length - 2)) ||
+        parts.some((part) => /[\x00-\x1f\x7f]/.test(part)) || parts.length < 2) {
+      throw new Error(`Selected npm archive has an unsafe member: ${entry}`);
+    }
+    if (!entry.endsWith('/')) expected.push(parts.slice(1).join('/'));
+  }
+  if (new Set(expected).size !== expected.length || !expected.includes('package.json') ||
+      !expected.includes('index.cjs') || !expected.includes('index.mjs') ||
+      !expected.some((name) => name.startsWith('dist/') && name.endsWith('.js'))) {
+    throw new Error('Selected npm archive has missing or duplicate executable members');
+  }
+  const installed = [];
+  function visit(directory, prefix = '') {
+    const stat = fs.lstatSync(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Installed npm directory is not real: ${directory}`);
+    for (const name of fs.readdirSync(directory)) {
+      const relative = prefix ? `${prefix}/${name}` : name;
+      const file = path.join(directory, name);
+      const member = fs.lstatSync(file);
+      if (member.isDirectory() && !member.isSymbolicLink()) visit(file, relative);
+      else {
+        if (!member.isFile() || member.isSymbolicLink()) {
+          throw new Error(`Installed npm member is not a regular file: ${file}`);
+        }
+        installed.push(relative);
+      }
+    }
+  }
+  visit(packageRoot);
+  if (installed.sort().join('\n') !== expected.sort().join('\n')) {
+    throw new Error('Installed npm inventory differs from the selected archive');
+  }
+  for (const name of expected) {
+    const member = `package/${name}`;
+    const archiveBytes = execFileSync(tar, ['-xOzf', archive, member], { maxBuffer: 64 * 1024 * 1024 });
+    if (!fs.readFileSync(path.join(packageRoot, ...name.split('/'))).equals(archiveBytes)) {
+      throw new Error(`Installed npm member differs from the selected archive: ${name}`);
+    }
+  }
 }
 
 function installedTypeScriptCompiler(cwd) {
@@ -75,10 +135,12 @@ export function runValidation({
   spawn = spawnSync,
   stdout = process.stdout,
   stderr = process.stderr,
+  preflight = verifySelectedPackage,
 } = {}) {
   cwd = path.resolve(cwd);
   removeOutputs(cwd);
   try {
+    preflight(cwd);
     const typeScript = installedTypeScriptCompiler(cwd);
     const compiler = run([executable, typeScript, '--noEmit'], cwd, spawn, stdout, stderr);
     const tests = run([

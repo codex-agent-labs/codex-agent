@@ -23,6 +23,8 @@ class JavaScriptConsumerExecutionTest {
     fun `exact installed compiler and consumer records preserve binary and empty streams`() = fixture { root ->
         verifyJavaScriptConsumerExecutions(root)
         val plugin = File("src/main/kotlin/codexagent.javascript-sdk.gradle.kts").readText()
+        assertTrue("commandLine(\"node\", \"verify.mjs\")" in plugin)
+        assertTrue("commandLine(\"npm\", \"run\", \"verify\")" !in plugin)
         assertTrue("verifyJavaScriptConsumerExecutions(publicApi.parentFile)" in plugin)
         assertTrue("from(listOf(npmCompilerExecution, npmConsumerExecution)) { into(\"execution\") }" in plugin)
         assertTrue("\"execution\" to \"outputs/execution\"" in plugin)

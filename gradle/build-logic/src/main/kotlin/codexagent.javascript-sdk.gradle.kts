@@ -1758,7 +1758,7 @@ val verifyPackedNpmConsumers = tasks.register<Exec>("verifyPackedNpmConsumers") 
         "CODEX_AGENT_EXPECTED_DEFAULT_RUNTIME_VERSION",
         rootProject.extra["codexAgent.sdkDefaultRuntimeVersion"].toString(),
     )
-    commandLine("npm", "run", "verify")
+    commandLine("node", "verify.mjs")
     doFirst {
         outputs.files.forEach(File::delete)
     }

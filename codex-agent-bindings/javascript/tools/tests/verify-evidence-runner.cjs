@@ -1,5 +1,6 @@
 // Subprocesses are injected fixtures. This never runs TypeScript, SDK code, npm, or a Runtime.
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -60,7 +61,7 @@ test('retains exact compiler and behavior bytes from the installed consumer comm
     }
     return { ...raw[commands.length - 1], error: undefined, signal: null, status: 0 };
   };
-  runValidation({ cwd: root, executable: '/fixture/node', spawn, stdout, stderr });
+  runValidation({ cwd: root, executable: '/fixture/node', spawn, stdout, stderr, preflight: () => {} });
   assert.deepEqual(commands, [
     ['/fixture/node', typeScript, '--noEmit'],
     ['/fixture/node', '--test', '--test-reporter=junit',
@@ -104,7 +105,7 @@ test('failure forwards exact diagnostics and publishes no success evidence', asy
       };
     };
     assert.throws(
-      () => runValidation({ cwd: root, executable: '/fixture/node', spawn, stdout, stderr }),
+      () => runValidation({ cwd: root, executable: '/fixture/node', spawn, stdout, stderr, preflight: () => {} }),
       /validation command failed/,
     );
     assert.equal(calls, failure);
@@ -143,7 +144,7 @@ test('installed compiler and required semantic outputs fail closed without fallb
       return { error: undefined, signal: null, status: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
     };
     assert.throws(
-      () => runValidation({ cwd: root, spawn }),
+      () => runValidation({ cwd: root, spawn, preflight: () => {} }),
       mutation.startsWith('compiler-') ? /Installed TypeScript compiler/ : /missing, empty, or not a regular file/,
     );
     assert.equal(calls, mutation.startsWith('compiler-') ? 0 : 2);
@@ -152,4 +153,55 @@ test('installed compiler and required semantic outputs fail closed without fallb
       assert.equal(fs.existsSync(path.join(root, name)), false, name);
     }
   }
+});
+
+test('selected npm archive is checked before any compiler or SDK test process', async (context) => {
+  const { runValidation, verifySelectedPackage } = await import(runnerUrl);
+  const { root } = fixture();
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = path.join(root, 'source/package');
+  const installed = path.join(root, 'node_modules/@codex-agent-labs/codex-agent');
+  for (const directory of [source, installed]) fs.mkdirSync(path.join(directory, 'dist'), { recursive: true });
+  const members = {
+    'package.json': '{"name":"@codex-agent-labs/codex-agent"}\n',
+    'index.cjs': 'module.exports = {};\n',
+    'index.mjs': 'export default {};\n',
+    'dist/runtime.js': 'export const loaded = true;\n',
+  };
+  for (const [name, bytes] of Object.entries(members)) {
+    for (const directory of [source, installed]) fs.writeFileSync(path.join(directory, name), bytes);
+  }
+  const archive = path.join(root, 'selected.tgz');
+  const systemTar = process.platform === 'win32'
+    ? path.join(process.env.SystemRoot, 'System32', 'tar.exe')
+    : process.platform === 'darwin' ? '/usr/bin/bsdtar' : '/usr/bin/tar';
+  execFileSync(systemTar, ['-czf', archive, '-C', path.join(root, 'source'), 'package']);
+  const shadowDirectory = path.join(root, 'node_modules/.bin');
+  fs.mkdirSync(shadowDirectory, { recursive: true });
+  for (const name of new Set([process.platform === 'win32' ? 'tar.exe' : 'tar', path.basename(systemTar)])) {
+    fs.writeFileSync(path.join(shadowDirectory, name), 'This package-controlled tar must never execute', { mode: 0o755 });
+  }
+  const pathKey = Object.keys(process.env).find((name) => name.toLowerCase() === 'path') ?? 'PATH';
+  const originalPath = process.env[pathKey];
+  try {
+    process.env[pathKey] = `${shadowDirectory}${path.delimiter}${originalPath ?? ''}`;
+    verifySelectedPackage(root, archive);
+  } finally {
+    if (originalPath === undefined) delete process.env[pathKey];
+    else process.env[pathKey] = originalPath;
+  }
+  let spawned = 0;
+  const spawn = () => { spawned += 1; assert.fail('SDK or compiler must not execute before archive verification'); };
+  fs.writeFileSync(path.join(installed, 'index.cjs'), 'module.exports = { tampered: true };\n');
+  assert.throws(() => runValidation({ cwd: root, spawn, preflight: (cwd) => verifySelectedPackage(cwd, archive) }),
+    /differs from the selected archive/);
+  assert.equal(spawned, 0);
+  assert.equal(fs.existsSync(path.join(root, 'packed-consumer-execution.json')), false);
+  fs.writeFileSync(path.join(installed, 'index.cjs'), members['index.cjs']);
+  fs.writeFileSync(path.join(installed, 'extra.cjs'), 'malicious');
+  assert.throws(() => verifySelectedPackage(root, archive), /inventory differs/);
+  fs.rmSync(path.join(installed, 'extra.cjs'));
+  fs.rmSync(path.join(installed, 'index.mjs'));
+  fs.symlinkSync(path.join(source, 'index.mjs'), path.join(installed, 'index.mjs'));
+  assert.throws(() => verifySelectedPackage(root, archive), /not a regular file/);
 });
