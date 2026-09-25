@@ -1,4 +1,4 @@
-"""Core metadata wave14 wiring; host archives and release originals remain pending."""
+"""Core metadata wave14 wiring; hosted originals remain pending."""
 
 from pathlib import Path
 import re
@@ -29,7 +29,9 @@ class CoreMetadataWorkflowTest(unittest.TestCase):
         self.assertIn("fail-fast: false", worker)
         self.assertIn("needs.sdk-inputs.result == 'success'", worker)
         self.assertIn("uses: ./.github/actions/capture-sdk-tooling", worker)
-        self.assertEqual(5, worker.count("$(native_archive "))
+        self.assertIn("name: Provision each Git-pinned Core native compiler archive\n        shell: bash", worker)
+        self.assertEqual(4, worker.count("$(native_archive "))
+        self.assertIn("native-compiler-archive-linux-arm64: ${{ steps.native-archives.outputs.linux_x86_64 }}", worker)
         self.assertLess(worker.index("ci.sdk_core_native_archive_provision"),
                         worker.index("uses: ./.github/actions/sdk-core-metadata-worker"))
         self.assertIn("metadata_build_key: ${{ steps.metadata.outputs.metadata-artifact-id != '' && matrix.buildKey || '' }}", worker)

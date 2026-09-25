@@ -5262,6 +5262,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
       - name: Select installed caller Java
+        shell: bash
         run: |
           set -euo pipefail
           java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
@@ -5279,6 +5280,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
       - id: native-archive
         name: Provision only Git-pinned native compiler archives
+        shell: bash
         env:
           TARGET: ${{ matrix.target }}
         run: |
@@ -5473,6 +5475,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
       - name: Select installed caller Java
+        shell: bash
         run: |
           set -euo pipefail
           java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
@@ -5490,6 +5493,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
       - id: native-archives
         name: Provision each Git-pinned Core native compiler archive
+        shell: bash
         run: |
           set -euo pipefail
           native_archive() {
@@ -5500,13 +5504,11 @@ jobs:
           }
           macos_aarch64=$(native_archive macos-arm64 macos-aarch64)
           macos_x86_64=$(native_archive macos-x64 macos-x86_64)
-          linux_aarch64=$(native_archive linux-arm64 linux-aarch64)
           linux_x86_64=$(native_archive linux-x64 linux-x86_64)
           windows_x86_64=$(native_archive windows-x64 windows-x86_64)
           {
             echo "macos_aarch64=$macos_aarch64"
             echo "macos_x86_64=$macos_x86_64"
-            echo "linux_aarch64=$linux_aarch64"
             echo "linux_x86_64=$linux_x86_64"
             echo "windows_x86_64=$windows_x86_64"
           } >> "$GITHUB_OUTPUT"
@@ -5528,7 +5530,7 @@ jobs:
           keys-directory: ${{ github.workspace }}/gradle/release/keys
           native-compiler-archive-ios-arm64: ${{ steps.native-archives.outputs.macos_aarch64 }}
           native-compiler-archive-ios-simulator-arm64: ${{ steps.native-archives.outputs.macos_aarch64 }}
-          native-compiler-archive-linux-arm64: ${{ steps.native-archives.outputs.linux_aarch64 }}
+          native-compiler-archive-linux-arm64: ${{ steps.native-archives.outputs.linux_x86_64 }}
           native-compiler-archive-linux-x64: ${{ steps.native-archives.outputs.linux_x86_64 }}
           native-compiler-archive-macos-arm64: ${{ steps.native-archives.outputs.macos_aarch64 }}
           native-compiler-archive-macos-x64: ${{ steps.native-archives.outputs.macos_x86_64 }}

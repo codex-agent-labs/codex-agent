@@ -83,9 +83,6 @@ runs:
             raise ValueError('Core validation requires a positive official S858 upload ID')
         require_sha256(os.environ['SDK_INPUTS_SHA256'], 'Original S858 upload digest')
         archive = _native_archive_path(target, os.environ['NATIVE_COMPILER_ARCHIVE'] or None)
-        if archive is not None and target not in ('macos-arm64', 'ios-arm64', 'ios-simulator-arm64',
-                                                 'linux-arm64', 'linux-x64'):
-            raise ValueError('Core validation has no reviewed caller archive policy for this native target')
         checkout = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
         if archive is not None and archive.is_relative_to(checkout):
             raise ValueError('Core native archive cannot be selected from captured checkout state')

@@ -31,6 +31,8 @@ class CoreValidationWorkflowTest(unittest.TestCase):
         self.assertIn("needs.sdk-inputs.result == 'success'", worker)
         self.assertIn("uses: ./.github/actions/capture-sdk-tooling", worker)
         self.assertIn("ci.sdk_core_native_archive_provision", worker)
+        self.assertIn("name: Provision only Git-pinned native compiler archives\n        shell: bash", worker)
+        self.assertIn("name: Select installed caller Java\n        shell: bash", worker)
         self.assertIn("uses: ./.github/actions/sdk-core-validation-worker", worker)
         self.assertLess(worker.index("ci.sdk_core_native_archive_provision"),
                         worker.index("uses: ./.github/actions/sdk-core-validation-worker"))

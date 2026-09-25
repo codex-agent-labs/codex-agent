@@ -83,14 +83,14 @@ class CoreValidationWorkerActionTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "physical host"):
                     exec(self.script("identity"), {})
 
-    def test_unreviewed_native_archive_and_unsigned_tooling_fail_before_capture(self):
+    def test_unregistered_native_target_and_unsigned_tooling_fail_before_capture(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             values = self.fixture(root)
             archive = root / "compiler.tar.gz"
             archive.write_bytes(b"archive")
-            values.update(TARGET="macos-x64", NATIVE_COMPILER_ARCHIVE=str(archive))
-            with patch.dict(os.environ, values, clear=True), self.assertRaisesRegex(ValueError, "no reviewed"):
+            values.update(TARGET="unknown-native", NATIVE_COMPILER_ARCHIVE=str(archive))
+            with patch.dict(os.environ, values, clear=True), self.assertRaisesRegex(ValueError, "registered target"):
                 exec(self.script("policy"), {})
             values.update(TARGET="jvm", NATIVE_COMPILER_ARCHIVE="")
             captured_policy = root / "checkout/tooling.json"
@@ -133,6 +133,34 @@ class CoreValidationWorkerActionTest(unittest.TestCase):
                     patch("native_wrappers.host_classifier", return_value="linux-arm64"):
                 with self.assertRaisesRegex(ValueError, "physical host"):
                     exec(self.script("identity"), {})
+
+    def test_registered_x64_native_hosts_pass_preflight_only_on_matching_runner(self):
+        from sdk_phase import route
+        for target, host in (("macos-x64", "macos-x64"), ("windows-x64", "windows-x64")):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                values = self.fixture(root)
+                archive = root / "caller-owned-compiler-archive"
+                archive.write_bytes(b"caller-owned compiler archive")
+                values.update(TARGET=target, NATIVE_COMPILER_ARCHIVE=str(archive))
+                with patch.dict(os.environ, values, clear=True):
+                    exec(self.script("policy"), {})
+                pin = (root / "output").read_text().splitlines()[0].split("=", 1)[1]
+                plan = root / "plan.json"
+                plan.write_bytes(canonical_json_bytes({"validationTree": TREE, "validationCommit": "c" * 40}))
+                row = {"product": "sdk", "component": "sdk-core", "phase": "validation",
+                       "target": target, "buildKey": KEY}
+                row.update(route(row))
+                values.update(MATRIX=json.dumps({"include": [row]}), REQUIRED="true", PLAN=str(plan),
+                              BUILD_KEY=KEY, TREE=TREE, POLICY_SHA256=pin,
+                              RUNNER_OS=row["runnerOs"], RUNNER_ARCH=row["runnerArch"])
+                with patch.dict(os.environ, values, clear=True), \
+                        patch("native_wrappers.host_classifier", return_value=host):
+                    exec(self.script("identity"), {})
+                with patch.dict(os.environ, values, clear=True), \
+                        patch("native_wrappers.host_classifier", return_value="linux-x64"):
+                    with self.assertRaisesRegex(ValueError, "physical host"):
+                        exec(self.script("identity"), {})
 
     def test_existing_full_controller_receives_request_and_separate_original_authorities(self):
         command = self.script("execute")
