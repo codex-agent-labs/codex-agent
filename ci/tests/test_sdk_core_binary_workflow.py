@@ -44,6 +44,8 @@ class SdkCoreBinaryWorkflowTest(unittest.TestCase):
         for output in ("binary-artifact-id", "binary-artifact-sha256", "binary-original-context"):
             self.assertIn(f"steps.binary.outputs.{output}", worker)
         self.assertIn("wave: '11'", collect)
+        self.assertIn("sdk-worker-workflow-path: .github/workflows/sdk-core-binary-validation.yml", collect)
+        self.assertIn("sdk-worker-job-name: product-validation / sdk-core-binary-wave / sdk-core-binary-common", collect)
         self.assertIn("select_native_state(needs, stage='core-binary')", result)
         parent = WORKFLOW.read_text()
         self.assertIn("uses: ./.github/workflows/sdk-core-binary-validation.yml", parent)

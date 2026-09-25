@@ -25,6 +25,8 @@ PIN = transport_fixture.PIN
 
 class SdkWorkerCollectionTest(unittest.TestCase):
     official_api = transport_fixture.RuntimeAdapterCollectionTest.official_api
+    child_path = ".github/workflows/sdk-core-binary-validation.yml"
+    child_job = "product-validation / sdk-core-binary-wave / sdk-core-binary-common"
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="sdk-worker-collection-")
@@ -101,6 +103,77 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                               self.repository / "build/collected-core", family="core-binary")
         self.assertEqual("success", result["rows"][0]["result"])
         self.assertEqual("product-validation / sdk-core-binary-common", result["rows"][0]["jobName"])
+
+    def test_core_child_collection_binds_workflow_and_job(self):
+        instance, ready, _, _, files = self.shard("binary", component="sdk-core", target="common")
+        original_names = self.names
+        with patch.object(self, "names", side_effect=lambda row, key: (self.child_job, original_names(row, key)[1])), \
+                patch.object(adapter, "_verified_product_state", return_value=self.state({instance: ready})), \
+                self.official_api({instance: ready}, {instance: archive(files)}) as (query, listed, _):
+            original_query = query.side_effect
+
+            def child_run(url, token):
+                result = original_query(url, token)
+                if url.endswith(f"/attempts/{self.producer['runAttempt']}"):
+                    return {**result, "referenced_workflows": [*result["referenced_workflows"], {
+                        "path": f"{self.producer['repository']}/{self.child_path}@{PIN}", "sha": PIN}]}
+                return result
+
+            query.side_effect = child_run
+            result = adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
+                self.repository / "build/collected-child", trusted_workflow_sha=PIN,
+                repository_root=self.repository, environ=self.environment, token="synthetic-token",
+                sdk_family="core-binary", sdk_worker_workflow_path=self.child_path,
+                sdk_worker_job_name=self.child_job)
+            self.assertEqual("success", result["rows"][0]["result"])
+            self.assertEqual(self.child_job, result["rows"][0]["jobName"])
+
+            for mutation in ("missing", "duplicate", "sha"):
+                def wrong_run(url, token):
+                    result = child_run(url, token)
+                    if url.endswith(f"/attempts/{self.producer['runAttempt']}"):
+                        references = result["referenced_workflows"]
+                        if mutation == "missing": references = references[:-1]
+                        elif mutation == "duplicate": references = [*references, references[-1]]
+                        else: references = [*references[:-1], {**references[-1], "sha": "f" * 40}]
+                        return {**result, "referenced_workflows": references}
+                    return result
+                query.side_effect = wrong_run
+                with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, "caller-pinned workflow"):
+                    adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
+                        self.repository / f"build/rejected-child-{mutation}", trusted_workflow_sha=PIN,
+                        repository_root=self.repository, environ=self.environment, token="synthetic-token",
+                        sdk_family="core-binary", sdk_worker_workflow_path=self.child_path,
+                        sdk_worker_job_name=self.child_job)
+            query.side_effect = child_run
+            original_listing = listed.side_effect
+            def failed_worker(url, field, token):
+                rows = original_listing(url, field, token)
+                if field == "jobs":
+                    return [{**row, "conclusion": "failure"} if row["name"] == self.child_job else row for row in rows]
+                return rows
+            listed.side_effect = failed_worker
+            failed = adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
+                self.repository / "build/failed-child", trusted_workflow_sha=PIN,
+                repository_root=self.repository, environ=self.environment, token="synthetic-token",
+                sdk_family="core-binary", sdk_worker_workflow_path=self.child_path,
+                sdk_worker_job_name=self.child_job)["rows"][0]
+            self.assertEqual("failure", failed["result"])
+            self.assertIsNotNone(failed["originalDirectory"])
+            self.assertIsNone(failed["shardDirectory"])
+
+    def test_core_child_path_and_job_are_inseparable_before_state_replay(self):
+        for route in ({"sdk_worker_workflow_path": self.child_path},
+                      {"sdk_worker_job_name": self.child_job},
+                      {"sdk_worker_workflow_path": "../other.yml", "sdk_worker_job_name": self.child_job},
+                      {"sdk_worker_workflow_path": self.child_path, "sdk_worker_job_name": self.child_job,
+                       "sdk_family": "android-binary"}):
+            with self.subTest(route=route), patch.object(adapter, "_verified_product_state", side_effect=AssertionError):
+                with self.assertRaises(ValueError):
+                    adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
+                        self.repository / "build/invalid-child", trusted_workflow_sha=PIN,
+                        repository_root=self.repository, environ=self.environment, token="synthetic-token",
+                        **({"sdk_family": "core-binary"} | route))
 
     def test_each_js_phase_preserves_exact_original_shard_and_whole_worker_upload(self):
         for phase in ("package", "validation"):

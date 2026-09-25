@@ -376,6 +376,7 @@ def capture_transport(plan, destination, github_output_path, *, artifact_id,
 def collect(input_root, destination, github_output_path, *, wave, trusted_workflow_sha,
             repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None,
             sdk_apple_validation_policy=None,
+            sdk_worker_workflow_path=None, sdk_worker_job_name=None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Advance only the exact elected SDK partition using the shared collector."""
     family_waves = {"native-package": 4, "ios-package": 5, "javascript-metadata": 6,
@@ -402,6 +403,7 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     state = input_root / "runtime-state" if (input_root / "runtime-state").exists() else discovery
     collection = product_reuse.collect_runtime_workers(plan, discovery, state, destination / "collection",
         trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token,
+        sdk_worker_workflow_path=sdk_worker_workflow_path, sdk_worker_job_name=sdk_worker_job_name,
         **scope, **tooling)
     shards = [destination / "collection" / row["shardDirectory"]
               for row in collection["rows"] if row["result"] == "success"]
@@ -647,6 +649,8 @@ def _workflow_main(argv):
     captured.add_argument("--sdk-state-wave", type=int)
     parsers["collect"].add_argument("--input-root", type=Path, required=True)
     parsers["collect"].add_argument("--wave", type=int, choices=range(1, 19), required=True)
+    parsers["collect"].add_argument("--sdk-worker-workflow-path")
+    parsers["collect"].add_argument("--sdk-worker-job-name")
     arguments = vars(parser.parse_args(argv))
     command = arguments.pop("command")
     try:

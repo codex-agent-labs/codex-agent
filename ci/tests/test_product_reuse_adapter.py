@@ -140,7 +140,8 @@ class ContractProducerRunTest(unittest.TestCase):
         self.assertEqual(before, (self.producers, self.run, self.jobs))
         source = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text()
         self.assertIn("  product:\n    name: product-${{ matrix.lane }}\n", source)
-        self.assertIn("  contract-continuation:\n    name: contract-continuation\n", source)
+        contract = (CI_ROOT.parent / ".github/workflows/contract-validation.yml").read_text()
+        self.assertIn("  contract-continuation:\n    name: contract-continuation\n", contract)
 
     def test_mixed_original_runs_commits_and_attempts_remain_distinct(self):
         other = {**self.producer, "runId": 9, "runAttempt": 1, "commit": "d" * 40,
@@ -367,7 +368,7 @@ class ContractCiArtifactCaptureTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "must not exist"):
                 self.capture()
             query.assert_not_called()
-        workflow = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text()
+        workflow = (CI_ROOT.parent / ".github/workflows/contract-validation.yml").read_text()
         self.assertIn("attestation_inputs_id: ${{ steps.upload_attestation_inputs.outputs.artifact-id }}", workflow)
         self.assertIn("attestation_inputs_digest: sha256:${{ steps.upload_attestation_inputs.outputs.artifact-digest }}", workflow)
 

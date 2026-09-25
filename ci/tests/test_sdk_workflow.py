@@ -152,6 +152,18 @@ class SdkWorkflowTest(unittest.TestCase):
                 "--trusted-workflow-sha", pin]))
         self.assertEqual(pin, matrix.call_args.kwargs["trusted_workflow_sha"])
 
+    def test_collect_cli_forwards_paired_original_child_route(self):
+        path = ".github/workflows/sdk-core-binary-validation.yml"
+        job = "product-validation / sdk-core-binary-wave / sdk-core-binary-common"
+        with patch.object(workflow, "collect") as collect:
+            self.assertEqual(0, workflow.main(["collect", "--family", "core-binary",
+                "--input-root", str(self.repository), "--destination", str(self.repository / "collected"),
+                "--wave", "11", "--trusted-workflow-sha", "c" * 40,
+                "--github-output", str(self.repository / "output"),
+                "--sdk-worker-workflow-path", path, "--sdk-worker-job-name", job]))
+        self.assertEqual(path, collect.call_args.kwargs["sdk_worker_workflow_path"])
+        self.assertEqual(job, collect.call_args.kwargs["sdk_worker_job_name"])
+
     def test_collection_preserves_original_roots_and_uses_exact_sdk_partition(self):
         original = self.repository / "original"
         for name in ("product-resume-inputs", "product-resume-state", "runtime-state"):
@@ -175,6 +187,8 @@ class SdkWorkflowTest(unittest.TestCase):
                 result = workflow.collect(original, destination, self.repository / f"collect-output-{failure}",
                     wave=1, trusted_workflow_sha="c" * 40, repository_root=self.repository, environ={}, token="fixture")
             self.assertTrue(collect.call_args.kwargs["sdk_javascript_only"])
+            self.assertIsNone(collect.call_args.kwargs["sdk_worker_workflow_path"])
+            self.assertIsNone(collect.call_args.kwargs["sdk_worker_job_name"])
             self.assertEqual("c" * 40, advanced.call_args.kwargs[
                 "sdk_original_workflow_sha"])
             if not failure:

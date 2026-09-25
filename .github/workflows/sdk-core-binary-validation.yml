@@ -224,6 +224,8 @@ jobs:
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           wave: '11'
           tree: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+          sdk-worker-workflow-path: .github/workflows/sdk-core-binary-validation.yml
+          sdk-worker-job-name: product-validation / sdk-core-binary-wave / sdk-core-binary-common
 
   sdk-core-binary-result:
     needs: [sdk-core-binary-plan, sdk-core-binary, sdk-collect-11]

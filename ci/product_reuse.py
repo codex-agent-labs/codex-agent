@@ -339,6 +339,16 @@ def _observe_contract_producer_runs(
         trusted_workflows_by_phase=trusted_workflows_by_phase, token=token)
 
 
+def _require_ci_workflow_reference(run, workflow, sha):
+    references = require_array(run.get("referenced_workflows"), "Contract original workflow references")
+    selected = [value for value in references if isinstance(value, dict)
+                and isinstance(value.get("path"), str)
+                and value["path"].split("@", 1)[0] == workflow.split("@", 1)[0]]
+    if (len(selected) != 1 or selected[0].get("path") != workflow
+            or selected[0].get("sha") != sha):
+        raise ValueError("Contract original CI attempt lacks the caller-pinned workflow")
+
+
 def _observe_ci_producer_jobs(
     producers, *, jobs_by_phase, token, trusted_workflow_sha=None,
     trusted_workflows_by_phase=None, allow_protected_dispatch=False,
@@ -393,15 +403,9 @@ def _observe_ci_producer_jobs(
                        for field in ("repository", "head_repository"))
                 or producer["event"] == "pull_request" and not run_matches_pr(run, producer["pullRequest"])):
             raise ValueError("Contract original CI attempt does not match its producer")
-        references = require_array(run.get("referenced_workflows"), "Contract original workflow references")
         for phase in original["phases"]:
             workflow, sha = workflows[phase]
-            selected = [value for value in references if isinstance(value, dict)
-                        and isinstance(value.get("path"), str)
-                        and value["path"].split("@", 1)[0] == workflow.split("@", 1)[0]]
-            if (len(selected) != 1 or selected[0].get("path") != workflow
-                    or selected[0].get("sha") != sha):
-                raise ValueError("Contract original CI attempt lacks the caller-pinned workflow")
+            _require_ci_workflow_reference(run, workflow, sha)
         commit = _observe_tested_commit(
             run, api="https://api.github.com", repository=repository, token=token,
             expected_commit=producer["commit"], expected_tree=producer["tree"],
@@ -4236,6 +4240,7 @@ def collect_runtime_workers(
     sdk_ios_binary_only: bool = False,
     sdk_family: str | None = None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
+    sdk_worker_workflow_path: str | None = None, sdk_worker_job_name: str | None = None,
 ) -> dict[str, Any]:
     """Collect elected Runtime or JavaScript SDK rows without erasing originals.
 
@@ -4249,6 +4254,14 @@ def collect_runtime_workers(
         _sdk_family_worker_instance(None, sdk_family)
     if sdk_original_workflow_sha is not None and sdk_original_workflow_sha != trusted_workflow_sha:
         raise ValueError("SDK original workflow pin differs from worker collection pin")
+    if (sdk_worker_workflow_path is None) != (sdk_worker_job_name is None):
+        raise ValueError("SDK collection child workflow path and job must be pinned together")
+    if sdk_worker_workflow_path is not None and (
+            sdk_family not in {"core-binary", "core-package"}
+            or type(sdk_worker_workflow_path) is not str
+            or re.fullmatch(r"\.github/workflows/[a-z0-9-]+\.yml", sdk_worker_workflow_path) is None
+            or type(sdk_worker_job_name) is not str or not sdk_worker_job_name):
+        raise ValueError("SDK collection requires one valid caller-pinned Core child route")
     product = "sdk" if sdk_javascript_only or sdk_ios_binary_only or sdk_family is not None else "runtime"
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     discovery_root, state_root, destination = _product_materialization_paths(root, discovery_root, state_root, destination)
@@ -4266,17 +4279,23 @@ def collect_runtime_workers(
                     _sdk_javascript_worker_instance(instance) if sdk_javascript_only else
                     (instance == PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
                      if runtime_aggregate_only else _runtime_worker_instance(instance)))]
+    if sdk_worker_workflow_path is not None and len(selected) > 1:
+        raise ValueError("SDK collection child route requires one selected worker")
     observed, artifacts, jobs = [], [], []
     if selected:
         observed = _observe_ci_producer_jobs(
             {"resume": producer}, jobs_by_phase={"resume": "product-validation / product-resume"},
             trusted_workflow_sha=trusted_workflow_sha, token=token)
         jobs = observed[0]["jobs"]
+        if sdk_worker_workflow_path is not None:
+            _require_ci_workflow_reference(observed[0]["run"],
+                f"codex-agent-labs/codex-agent/{sdk_worker_workflow_path}@{trusted_workflow_sha}",
+                trusted_workflow_sha)
         artifacts = paginated_items(
             f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{producer['runId']}/artifacts",
             "artifacts", token)
     for instance, _ready in selected:
-        name = _worker_job_name(product, instance)
+        name = sdk_worker_job_name or _worker_job_name(product, instance)
         if any(job.get("name") == name and job.get("status") != "completed" for job in jobs):
             raise ValueError("An elected Runtime worker is still running; collect after all siblings finish")
         if sdk_family == "ios-validation":
@@ -4290,7 +4309,7 @@ def collect_runtime_workers(
         rows = []
         for instance, ready in selected:
             name = f"{instance.component}-{instance.phase}-{instance.target}"
-            job_name = _worker_job_name(product, instance)
+            job_name = sdk_worker_job_name or _worker_job_name(product, instance)
             artifact_name = (f"codex-agent-{product}-worker-{name}-{ready['buildKey'].removeprefix('sha256:')}-"
                              f"{producer['tree']}-attempt-{producer['runAttempt']}")
             row = {**_identity_record(instance), "buildKey": ready["buildKey"],

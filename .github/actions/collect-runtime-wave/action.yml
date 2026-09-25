@@ -10,6 +10,12 @@ inputs:
   sdk-family:
     default: ''
     description: Optional exact SDK family projection selected by ci.sdk_workflow.
+  sdk-worker-workflow-path:
+    default: ''
+    description: Caller-pinned original Core worker child workflow path, paired with its job.
+  sdk-worker-job-name:
+    default: ''
+    description: Caller-pinned original Core worker child job, paired with its workflow path.
   sdk-validation-tooling:
     default: ''
     description: Caller-provisioned tooling policy path, not retained-state authority.
@@ -92,6 +98,8 @@ runs:
         STATE_WAVE: ${{ inputs.state-wave }}
         PRODUCT: ${{ inputs.product }}
         SDK_FAMILY: ${{ inputs.sdk-family }}
+        SDK_WORKER_WORKFLOW_PATH: ${{ inputs.sdk-worker-workflow-path }}
+        SDK_WORKER_JOB_NAME: ${{ inputs.sdk-worker-job-name }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
@@ -118,6 +126,9 @@ runs:
         fi
         if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
           state+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
+        fi
+        if [ -n "${SDK_WORKER_WORKFLOW_PATH:-}" ] || [ -n "${SDK_WORKER_JOB_NAME:-}" ]; then
+          state+=(--sdk-worker-workflow-path "$SDK_WORKER_WORKFLOW_PATH" --sdk-worker-job-name "$SDK_WORKER_JOB_NAME")
         fi
         if [ -n "${SDK_FACADE_METADATA_POLICY:-}" ]; then
           test "$PRODUCT" = sdk
