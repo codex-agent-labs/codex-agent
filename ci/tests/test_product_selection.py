@@ -1151,6 +1151,7 @@ class ProductSelectionTest(unittest.TestCase):
         for path in (
             "ci/products/runtime_flags.py",
             "codex-agent-runtime-desktop/native/c-api/binary-flags.json",
+            "runtime/build-logic/src/main/kotlin/RuntimeBinaryFlags.kt",
         ):
             with self.subTest(path=path):
                 result = classify_paths([path])
@@ -1158,13 +1159,21 @@ class ProductSelectionTest(unittest.TestCase):
                     instance = PhaseInstanceId("runtime", target, "binary", target)
                     self.assertIn(instance, result.instances)
                     inventory = phase_inventory_paths(set(paths) | {path}, instance)
-                    if path.endswith("runtime_flags.py"):
+                    if path.endswith(("runtime_flags.py", "RuntimeBinaryFlags.kt")):
                         self.assertIn(path, inventory)
                     else:
                         self.assertNotIn(path, inventory)
                 self.assertFalse(component(result, "runtime", "jvm"))
                 self.assertFalse(component(result, "runtime", "node-js"))
                 self.assertFalse(any(instance.product == "sdk" for instance in result.instances))
+                for adapter in ("jvm", "node-js", "node-wasm"):
+                    self.assertNotIn(
+                        path,
+                        phase_inventory_paths(
+                            set(paths) | {path},
+                            PhaseInstanceId("runtime", adapter, "binary", adapter),
+                        ),
+                    )
 
     def test_mixed_runtime_flags_file_broadens_only_to_its_concrete_runtime_owner(self) -> None:
         result = classify_paths([

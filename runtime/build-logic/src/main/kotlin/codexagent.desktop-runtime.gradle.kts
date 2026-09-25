@@ -102,115 +102,7 @@ private val runtimeBinaryFlags = readRuntimeBinaryFlags(
         parameters.flagsFile.set(runtimeBinaryFlagsFile)
     }.get(),
 ).also { verifyRuntimeBinaryFlagsAgainstAbi(it, runtimeAbiContract) }
-private val requestedRuntimeTarget = providers.gradleProperty("codexAgent.target").get()
-private val requestedRuntimePhase = providers.gradleProperty("codexAgent.phase").orNull
-if (requestedRuntimeTarget in runtimeBinaryFlags) {
-    when (requestedRuntimePhase) {
-        "package" -> require(importedRuntimeBinaryStage.isPresent) {
-            "Native Runtime package phase requires codexAgent.runtimeBinaryStage"
-        }
-        "validation" -> require(importedRuntimePackageStage.isPresent) {
-            "Native Runtime $requestedRuntimePhase phase requires codexAgent.runtimePackageStage"
-        }
-    }
-}
-if (requestedRuntimeTarget in runtimeBinaryFlags) {
-    require(gradle.startParameter.excludedTaskNames.isEmpty()) {
-        "Native Runtime binary producer verification rejects excluded tasks"
-    }
-}
-if (requestedRuntimeTarget in runtimeBinaryFlags && (requestedRuntimePhase == null || requestedRuntimePhase == "binary")) {
-    verifyRuntimeBinaryFlagsAgainstPlan(
-        runtimeBinaryFlags,
-        requestedRuntimeTarget,
-        providers.gradleProperty("codexAgent.runtimeBinaryFlagsDigest").get(),
-    )
-}
-val verifyRuntimeProducerToolchain = if (
-    requestedRuntimeTarget in runtimeBinaryFlags &&
-    (requestedRuntimePhase == null || requestedRuntimePhase == "binary")
-) {
-    val runnerOs = when {
-        System.getProperty("os.name") == "Mac OS X" -> "macOS"
-        System.getProperty("os.name") == "Linux" -> "Linux"
-        System.getProperty("os.name").startsWith("Windows") -> "Windows"
-        else -> error("Unsupported Runtime producer operating system: ${System.getProperty("os.name")}")
-    }
-    val runnerArch = when (System.getProperty("os.arch")) {
-        "aarch64", "arm64" -> "ARM64"
-        "amd64", "x86_64" -> "X64"
-        else -> error("Unsupported Runtime producer architecture: ${System.getProperty("os.arch")}")
-    }
-    val supervisorOnly = requestedRuntimePhase == null &&
-        gradle.startParameter.taskNames.size == 1 &&
-        gradle.startParameter.taskNames.single().substringAfterLast(':') ==
-        "compileDesktopProcessSupervisor"
-    val producerRole = when {
-        requestedRuntimeTarget == "linux-arm64" && supervisorOnly -> "supervisor-builder"
-        requestedRuntimeTarget == "linux-arm64" -> "cross-builder"
-        else -> "builder"
-    }
-    tasks.register<Exec>("verifyRuntimeProducerToolchain") {
-        group = "verification"
-        description = "Observes and verifies the actual Runtime binary producer before compilation."
-        val output = layout.buildDirectory.file(
-            "toolchain-verification/$requestedRuntimeTarget-$producerRole.json",
-        )
-        inputs.file(providers.gradleProperty("codexAgent.runtimeBinaryPlan").map(::File))
-            .withPathSensitivity(PathSensitivity.NONE)
-        inputs.file(verifiedContractManifestFile).withPathSensitivity(PathSensitivity.NONE)
-        inputs.property("repositoryRevision", providers.gradleProperty("codexAgent.repositoryRevision"))
-        inputs.property("runtimeVersion", runtimeProductVersion)
-        inputs.property("runtimeBinaryFlagsDigest", providers.gradleProperty("codexAgent.runtimeBinaryFlagsDigest"))
-        inputs.property("runnerOs", runnerOs)
-        inputs.property("runnerArch", runnerArch)
-        inputs.property("producerRole", producerRole)
-        outputs.file(output)
-        outputs.upToDateWhen { false }
-        workingDir(repositoryRootFile)
-        environment(environment.toMutableMap().apply {
-            remove("PYTHONHOME")
-            remove("PYTHONINSPECT")
-            remove("PYTHONSTARTUP")
-            put("PYTHONPATH", repositoryRootFile.absolutePath)
-            put("PYTHONDONTWRITEBYTECODE", "1")
-            put("PYTHONNOUSERSITE", "1")
-            put("PYTHONSAFEPATH", "1")
-            put("LC_ALL", "C")
-            put("LANG", "C")
-            put("RUNNER_OS", runnerOs)
-            put("RUNNER_ARCH", runnerArch)
-        })
-        val command = mutableListOf(
-            "python3", "-m", "ci.products.toolchain", "verify-producer",
-            "--repository-root", repositoryRootFile.absolutePath,
-            "--repository-revision", providers.gradleProperty("codexAgent.repositoryRevision").get(),
-            "--profile-id", requestedRuntimeTarget,
-            "--producer-role", producerRole,
-            "--target", requestedRuntimeTarget,
-            "--gradle-user-home", gradle.gradleUserHomeDir.absolutePath,
-            "--binary-plan", providers.gradleProperty("codexAgent.runtimeBinaryPlan").get(),
-            "--verified-contract-manifest", verifiedContractManifestFile.get().asFile.absolutePath,
-            "--expected-runtime-version", runtimeProductVersion.get(),
-            "--expected-flags-digest", providers.gradleProperty("codexAgent.runtimeBinaryFlagsDigest").get(),
-            "--output", output.get().asFile.absolutePath,
-        )
-        providers.gradleProperty("codexAgent.desktopSupervisorCompiler").orNull?.let {
-            command += listOf("--supervisor-compiler", it)
-        }
-        commandLine(command)
-    }
-} else if (requestedRuntimeTarget in runtimeBinaryFlags) {
-    tasks.register("verifyRuntimeProducerToolchain") {
-        group = "verification"
-        description = "Rejects Runtime product compilation during an artifact-only phase."
-        doLast {
-            error("Native Runtime product compilation requires the binary phase, not an explicit artifact-only phase")
-        }
-    }
-} else {
-    null
-}
+val verifyRuntimeProducerToolchain = registerRuntimeProducerToolchainObserver(runtimeBinaryFlags)
 generateRuntimeAbiSource.configure {
     verifyRuntimeProducerToolchain?.let { dependsOn(it) }
 }
@@ -350,11 +242,7 @@ extensions.configure<KotlinMultiplatformExtension> {
         getByName("nativeTest").dependsOn(getByName("desktopTest"))
     }
     desktopTargets.forEach { target ->
-        target.compilations.configureEach {
-            compileTaskProvider.configure {
-                verifyRuntimeProducerToolchain?.let { dependsOn(it) }
-            }
-        }
+        target.verifyRuntimeProducerBeforeCompilation(verifyRuntimeProducerToolchain)
         target.binaries.sharedLib {
             val binaryFlags = runtimeBinaryFlagsForKotlinTarget(target.name)
             val exportPolicyFile = layout.file(providers.provider {

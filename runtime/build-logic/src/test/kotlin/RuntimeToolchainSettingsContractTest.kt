@@ -8,11 +8,13 @@ import org.gradle.testkit.runner.GradleRunner
 class RuntimeToolchainSettingsContractTest {
     private val settings = File("../settings.gradle.kts").readText()
     private val plugin = File("src/main/kotlin/codexagent.desktop-runtime.gradle.kts").readText()
+    private val nativeBinaryFlags = File("src/main/kotlin/RuntimeBinaryFlags.kt").readText()
+    private val observer = nativeBinaryFlags.substringAfter("fun Project.registerRuntimeProducerToolchainObserver(")
+        .substringBefore("fun KotlinNativeTarget.verifyRuntimeProducerBeforeCompilation(")
 
     @Test
     fun `native binary observes its actual producer before every compiler path`() {
-        val observer = plugin.substringAfter("val verifyRuntimeProducerToolchain =")
-            .substringBefore("private val cAbiTargetSpecs =")
+        assertTrue("registerRuntimeProducerToolchainObserver(runtimeBinaryFlags)" in plugin)
         listOf(
             "requestedRuntimeTarget in runtimeBinaryFlags",
             "requestedRuntimePhase == null || requestedRuntimePhase == \"binary\"",
@@ -37,8 +39,7 @@ class RuntimeToolchainSettingsContractTest {
         ).forEach { contract -> assertTrue(contract in observer, contract) }
         assertFalse("System.getenv(\"RUNNER_OS\")" in observer)
         assertFalse("System.getenv(\"RUNNER_ARCH\")" in observer)
-        val binaryAdmission = plugin.substringAfter("private val requestedRuntimePhase =")
-            .substringBefore("val verifyRuntimeProducerToolchain =")
+        val binaryAdmission = observer.substringBefore("return if (requestedRuntimeTarget in runtimeBinaryFlags")
         listOf(
             "gradle.startParameter.excludedTaskNames.isEmpty()",
             "Native Runtime binary producer verification rejects excluded tasks",
@@ -50,9 +51,10 @@ class RuntimeToolchainSettingsContractTest {
             .substringBefore("val desktopPackageTasks =")
         val nativeTargets = plugin.substringAfter("desktopTargets.forEach { target ->")
             .substringBefore("sourceSets.getByName(\"commonMain\")")
+        assertTrue("target.verifyRuntimeProducerBeforeCompilation(verifyRuntimeProducerToolchain)" in nativeTargets)
         assertTrue(
-            "target.compilations.configureEach {\n            compileTaskProvider.configure {\n" +
-                "                verifyRuntimeProducerToolchain?.let { dependsOn(it) }" in nativeTargets,
+            "compilations.configureEach {\n        compileTaskProvider.configure {\n" +
+                "            verification?.let { dependsOn(it) }" in nativeBinaryFlags,
             "Every native compilation must verify its producer before the compiler starts",
         )
         assertTrue("verifyRuntimeProducerToolchain?.let { dependsOn(it) }" in abiGenerator)
@@ -64,8 +66,8 @@ class RuntimeToolchainSettingsContractTest {
         assertTrue(
             nativeTargets.lineSequence().count {
                 "verifyRuntimeProducerToolchain?.let { dependsOn(it) }" in it
-            } == 4,
-            "Native Kotlin compilation, link and both C interop compiler paths must depend on producer verification",
+            } == 3,
+            "Native link and both C interop compiler paths must depend on producer verification",
         )
         assertTrue("sourceSets.getByName(\"nativeMain\").kotlin.srcDir(generateRuntimeAbiSource)" in plugin)
 
@@ -86,8 +88,6 @@ class RuntimeToolchainSettingsContractTest {
 
     @Test
     fun `Linux ARM supervisor role is confined to the explicit supervisor-only invocation`() {
-        val observer = plugin.substringAfter("val verifyRuntimeProducerToolchain =")
-            .substringBefore("private val cAbiTargetSpecs =")
         listOf(
             "requestedRuntimePhase == null",
             "gradle.startParameter.taskNames.size == 1",
@@ -101,9 +101,9 @@ class RuntimeToolchainSettingsContractTest {
 
     @Test
     fun `every native phase rejects task exclusions before its compiler guard can be removed`() {
-        val guard = plugin.substringBefore("    verifyRuntimeBinaryFlagsAgainstPlan(")
+        val guard = observer.substringBefore("        verifyRuntimeBinaryFlagsAgainstPlan(")
             .substringAfterLast("if (requestedRuntimeTarget in runtimeBinaryFlags) {")
-            .substringBefore("\n}")
+            .substringBefore("\n    }")
         assertTrue("gradle.startParameter.excludedTaskNames.isEmpty()" in guard)
         assertFalse("requestedRuntimePhase" in guard)
 
@@ -139,8 +139,8 @@ class RuntimeToolchainSettingsContractTest {
 
     @Test
     fun `artifact-only compiler guard rejects direct production without evaluating toolchain inputs`() {
-        val rejection = plugin.substringAfter("} else if (requestedRuntimeTarget in runtimeBinaryFlags) {")
-            .substringBefore("} else {\n    null\n}")
+        val rejection = observer.substringAfter("} else if (requestedRuntimeTarget in runtimeBinaryFlags) {")
+            .substringBefore("} else {\n        null\n    }")
         assertTrue("tasks.register(\"verifyRuntimeProducerToolchain\")" in rejection)
         listOf("providers.", "System.", "Exec", "commandLine", "runtimeBinaryPlan").forEach {
             assertFalse(it in rejection, "Artifact-only rejection must not evaluate $it")
@@ -185,8 +185,6 @@ class RuntimeToolchainSettingsContractTest {
             "ci.products.runtime_identity",
             "--verified-contract-manifest",
         ).forEach { contract -> assertTrue(contract in settings, contract) }
-        val observer = plugin.substringAfter("val verifyRuntimeProducerToolchain =")
-            .substringBefore("private val cAbiTargetSpecs =")
         assertTrue("verifiedContractManifestFile" in observer)
         assertTrue("toolchain-verification/" in observer)
 
@@ -205,19 +203,16 @@ class RuntimeToolchainSettingsContractTest {
             .substringBefore(
                 "    if (values.getValue(\"codexAgent.target\") in nativeRuntimeTargets &&",
             )
-        val pluginGuard = plugin.substringAfter("private val requestedRuntimePhase =")
-            .substringBefore(
-                "if (requestedRuntimeTarget in runtimeBinaryFlags && " +
-                    "(requestedRuntimePhase == null || requestedRuntimePhase == \"binary\"))",
-            )
+        val pluginGuard = observer.substringAfter("val requestedRuntimePhase =")
+            .substringBefore("        verifyRuntimeBinaryFlagsAgainstPlan(")
         listOf(
-            "\"package\" -> require(importedRuntimeBinaryStage.isPresent)",
-            "\"validation\" -> require(importedRuntimePackageStage.isPresent)",
+            "\"package\" -> require(providers.gradleProperty(\"codexAgent.runtimeBinaryStage\").isPresent)",
+            "\"validation\" -> require(providers.gradleProperty(\"codexAgent.runtimePackageStage\").isPresent)",
         ).forEach { contract -> assertTrue(contract in pluginGuard, contract) }
-        assertFalse("\"metadata\" -> require(importedRuntimePackageStage.isPresent)" in pluginGuard)
+        assertFalse("\"metadata\" -> require(providers.gradleProperty(\"codexAgent.runtimePackageStage\").isPresent)" in pluginGuard)
         assertFalse("\"validation\", \"metadata\"" in pluginGuard)
         assertTrue(
-            plugin.indexOf("private val requestedRuntimePhase =") <
+            plugin.indexOf("registerRuntimeProducerToolchainObserver(runtimeBinaryFlags)") <
                 plugin.indexOf("extensions.configure<KotlinMultiplatformExtension>"),
         )
 

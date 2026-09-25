@@ -67,6 +67,9 @@ class RuntimeBinaryFlagsTest {
         val plugin = repository.resolve(
             "runtime/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts",
         ).readText()
+        val nativeFlags = repository.resolve(
+            "runtime/build-logic/src/main/kotlin/RuntimeBinaryFlags.kt",
+        ).readText()
         listOf("-std=c11", "-D_POSIX_C_SOURCE=200809L", "\"/O2\"", "\"/W4\"", "\"/WX\"").forEach {
             assertTrue(it !in supervisor, "Supervisor task hard-codes Runtime binary flag: $it")
         }
@@ -74,7 +77,8 @@ class RuntimeBinaryFlagsTest {
         assertTrue("supervisorCompilerArguments" in plugin)
         assertTrue("codexAgentRuntimeBinaryFlagsDigest" in plugin)
         assertTrue("codexAgent.runtimeBinaryFlagsDigest" in plugin)
-        assertTrue("verifyRuntimeBinaryFlagsAgainstPlan(" in plugin)
+        assertTrue("registerRuntimeProducerToolchainObserver(runtimeBinaryFlags)" in plugin)
+        assertTrue("verifyRuntimeBinaryFlagsAgainstPlan(" in nativeFlags)
         assertTrue("inputs.file(runtimeBinaryFlagsFile)" !in plugin)
         val settings = repository.resolve("runtime/settings.gradle.kts").readText()
         assertTrue("must be supplied only as an explicit -P project property" in settings)
