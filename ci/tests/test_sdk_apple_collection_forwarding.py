@@ -72,6 +72,7 @@ class AppleCollectionForwardingTest(unittest.TestCase):
                 destination / "handoff/runtime-state", output, repository_root=f.root, environ={},
                 failed_instances=(workflow.PhaseInstanceId("sdk", "sdk-ios", "validation", "ios-simulator-arm64"),)
                     if failed else (), sdk_family="ios-validation", **policy,
+                sdk_original_workflow_sha=fixtures.PIN,
                 sdk_apple_evidence_roots=tuple(destination / "collection" / row["sdkAppleValidationEvidenceDirectory"]
                                              for row in successes))
             self.assertNotIn("sdk_evidence_roots", advanced.call_args.kwargs)
@@ -81,7 +82,8 @@ class AppleCollectionForwardingTest(unittest.TestCase):
             else:
                 matrix.assert_called_once_with(destination / "handoff/product-resume-inputs/plan/impact-plan.json",
                     destination / "handoff/product-resume-state", destination / "handoff/runtime-state", output,
-                    repository_root=f.root, environ={}, family="ios-validation", **policy)
+                    repository_root=f.root, environ={}, trusted_workflow_sha=fixtures.PIN,
+                    family="ios-validation", **policy)
             self.assertEqual(before, regular_file_inventory(f.inputs))
             for name in ("product-resume-inputs", "product-resume-state"):
                 self.assertEqual(regular_file_inventory(f.inputs / name),
@@ -125,7 +127,7 @@ class AppleCollectionForwardingTest(unittest.TestCase):
                                     "--artifact-sha256", "sha256:" + "a" * 64, "--sdk-state-wave", "9"])
         self.assertEqual(9, capture.call_args.kwargs["sdk_state_wave"])
         with patch.object(workflow, "collect") as collect, redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            workflow._workflow_main(["collect", *common, "--input-root", "/work/input", "--wave", "11"])
+            workflow._workflow_main(["collect", *common, "--input-root", "/work/input", "--wave", "19"])
         collect.assert_not_called()
 
 
