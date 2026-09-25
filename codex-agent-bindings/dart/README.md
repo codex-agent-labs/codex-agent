@@ -71,14 +71,18 @@ library. It never falls back to a process or bare system-library name.
 
 The release package must place the native library under
 `lib/src/native/<classifier>/` for `macos-arm64`, `macos-x64`,
-`linux-arm64`, `linux-x64`, and `windows-x64`. For local development,
-pass `libraryPath` to `CodexHost.create` or set `CODEX_AGENT_LIBRARY`. The Dart
-loader uses exactly that precedence followed by the packaged directory. It
-requires ABI `1.13+` and Runtime identity schema 1. Before an embedded library
-is loaded, its SHA-256, target, and component identity must match the packaged
+`linux-arm64`, `linux-x64`, and `windows-x64`. The Dart loader selects an
+explicit `libraryPath`, then `CODEX_AGENT_LIBRARY`, then the packaged library.
+An explicit path needs its adjacent release-authenticated `<library>.evidence/`
+directory; a path alone is rejected even for local development. External
+override verification currently fails closed on Windows because its SSHSIG
+verifier is unavailable. The loader requires ABI `1.13+` and Runtime identity
+schema 1. Before an embedded library is loaded, its SHA-256, target, and
+component identity must match the packaged
 `sdk-compatibility.json`. An explicit override may have different bytes and a
-different component ID, but must prove the declared Contract, target, ABI, and
-Runtime compatibility range through `codex_agent_runtime_identity`.
+different component ID, but must have root-delegated release evidence binding
+its exact bytes and must prove the declared Contract, target, ABI, and Runtime
+compatibility range through `codex_agent_runtime_identity`.
 
 Operations return `Future` and accept explicit `CodexCancellation`. State has a
 separate current-value `Future` plus current-value-first broadcast changes.
@@ -88,7 +92,7 @@ Conversation with `closeConversation()` before `dispose()`; close the Host with
 `CodexHost.close()` before releasing final Agent/service/catalog tokens.
 
 The external consumer can smoke-test an explicitly supplied matching-host C
-SDK without a prepared runtime bundle:
+SDK on macOS or Linux when its adjacent release evidence is present:
 
 ```sh
 cd consumer
