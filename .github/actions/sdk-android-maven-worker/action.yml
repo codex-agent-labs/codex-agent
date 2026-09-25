@@ -127,6 +127,12 @@ inputs:
   binary-original-context:
     default: ''
     description: Package-only independently selected original binary invocation context JSON.
+  binary-original-workflow-path:
+    default: ''
+    description: Package-only independently pinned original binary caller workflow path.
+  binary-original-job-name:
+    default: ''
+    description: Package-only independently pinned original binary worker job name.
   sdk-validation-tooling:
     default: ''
     description: Optional caller-authenticated SDK tooling policy, never read from state.
@@ -215,6 +221,8 @@ runs:
         BINARY_ARTIFACT_SHA256: ${{ inputs.binary-artifact-sha256 }}
         BINARY_CONTRACT_EVIDENCE: ${{ inputs.binary-contract-evidence }}
         BINARY_ORIGINAL_CONTEXT: ${{ inputs.binary-original-context }}
+        BINARY_ORIGINAL_WORKFLOW_PATH: ${{ inputs.binary-original-workflow-path }}
+        BINARY_ORIGINAL_JOB_NAME: ${{ inputs.binary-original-job-name }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
@@ -233,9 +241,13 @@ runs:
         phase = os.environ['PHASE']
         if phase not in ('binary', 'package'):
             raise ValueError('Android Maven worker requires binary or package')
-        pins = {}
+        pins = {
+            'BINARY_ORIGINAL_WORKFLOW_PATH': os.environ['BINARY_ORIGINAL_WORKFLOW_PATH'],
+            'BINARY_ORIGINAL_JOB_NAME': os.environ['BINARY_ORIGINAL_JOB_NAME'],
+        }
         package = ('SDK_INPUTS_ID', 'SDK_INPUTS_SHA256', 'BINARY_ARTIFACT_ID',
-                   'BINARY_ARTIFACT_SHA256', 'BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT')
+                   'BINARY_ARTIFACT_SHA256', 'BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT',
+                   'BINARY_ORIGINAL_WORKFLOW_PATH', 'BINARY_ORIGINAL_JOB_NAME')
         if ((phase == 'binary' and any(os.environ[name] for name in package)) or
                 (phase == 'package' and not all(os.environ[name] for name in package))):
             raise ValueError('Android Maven package requires all original inputs; binary accepts none')
@@ -465,6 +477,8 @@ runs:
         BINARY_ARTIFACT_SHA256: ${{ inputs.binary-artifact-sha256 }}
         BINARY_CONTRACT_EVIDENCE: ${{ inputs.binary-contract-evidence }}
         BINARY_ORIGINAL_CONTEXT: ${{ inputs.binary-original-context }}
+        BINARY_ORIGINAL_WORKFLOW_PATH: ${{ inputs.binary-original-workflow-path }}
+        BINARY_ORIGINAL_JOB_NAME: ${{ inputs.binary-original-job-name }}
         KEYRING: ${{ github.workspace }}/gradle/release/product-signing-keys.json
         KEYS_DIRECTORY: ${{ github.workspace }}/gradle/release/keys
         GITHUB_TOKEN: ${{ github.token }}
@@ -502,6 +516,8 @@ runs:
             --binary-artifact-sha256 "$BINARY_ARTIFACT_SHA256" \
             --binary-contract-evidence "$BINARY_CONTRACT_EVIDENCE" \
             --binary-original-context "$BINARY_ORIGINAL_CONTEXT" \
+            --binary-original-workflow-path "$BINARY_ORIGINAL_WORKFLOW_PATH" \
+            --binary-original-job-name "$BINARY_ORIGINAL_JOB_NAME" \
             --keyring "$KEYRING" --keys-directory "$KEYS_DIRECTORY")
         fi
         if [ -n "$APPLE_POLICY" ]; then args+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
@@ -536,6 +552,8 @@ runs:
         BINARY_ARTIFACT_SHA256: ${{ inputs.binary-artifact-sha256 }}
         BINARY_CONTRACT_EVIDENCE: ${{ inputs.binary-contract-evidence }}
         BINARY_ORIGINAL_CONTEXT: ${{ inputs.binary-original-context }}
+        BINARY_ORIGINAL_WORKFLOW_PATH: ${{ inputs.binary-original-workflow-path }}
+        BINARY_ORIGINAL_JOB_NAME: ${{ inputs.binary-original-job-name }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
@@ -577,7 +595,11 @@ runs:
                 state == archive or state in archive.parents or not archive.is_file()):
             raise ValueError('Android archive must be a separate caller-provisioned regular file')
         archive_digest = sha256_file(archive, reject_symlink_parents=True)
-        pins = {'ANDROID_ARCHIVE': archive_digest}
+        pins = {
+            'ANDROID_ARCHIVE': archive_digest,
+            'BINARY_ORIGINAL_WORKFLOW_PATH': os.environ['BINARY_ORIGINAL_WORKFLOW_PATH'],
+            'BINARY_ORIGINAL_JOB_NAME': os.environ['BINARY_ORIGINAL_JOB_NAME'],
+        }
         for name in ('CORE14_METADATA_RECEIPT', 'CORE14_REPLAY_POLICY', 'CORE14_ORIGINAL_CONTEXT'):
             pins[name] = sha256_bytes(read_regular_file_bytes(Path(os.environ[name]),
                 reject_symlink_parents=True))
@@ -606,7 +628,7 @@ runs:
                 raise ValueError('Android archive differs from the immutable candidate Git pin')
         package = {name: os.environ[name] for name in ('SDK_INPUTS_ID', 'SDK_INPUTS_SHA256',
             'BINARY_ARTIFACT_ID', 'BINARY_ARTIFACT_SHA256', 'BINARY_CONTRACT_EVIDENCE',
-            'BINARY_ORIGINAL_CONTEXT')}
+            'BINARY_ORIGINAL_CONTEXT', 'BINARY_ORIGINAL_WORKFLOW_PATH', 'BINARY_ORIGINAL_JOB_NAME')}
         if phase == 'binary' and any(package.values()):
             raise ValueError('Android binary cannot receive package-only evidence')
         if phase == 'package':
@@ -692,6 +714,8 @@ runs:
         BINARY_ARTIFACT_SHA256: ${{ inputs.binary-artifact-sha256 }}
         BINARY_CONTRACT_EVIDENCE: ${{ inputs.binary-contract-evidence }}
         BINARY_ORIGINAL_CONTEXT: ${{ inputs.binary-original-context }}
+        BINARY_ORIGINAL_WORKFLOW_PATH: ${{ inputs.binary-original-workflow-path }}
+        BINARY_ORIGINAL_JOB_NAME: ${{ inputs.binary-original-job-name }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
@@ -708,7 +732,11 @@ runs:
             regular_file_inventory, sha256_bytes, sha256_file)
         from ci.products.signing_isolation import require_no_signing_secret
         require_no_signing_secret(os.environ)
-        pins = {'ANDROID_ARCHIVE': sha256_file(Path(os.environ['ANDROID_ARCHIVE']), reject_symlink_parents=True)}
+        pins = {
+            'ANDROID_ARCHIVE': sha256_file(Path(os.environ['ANDROID_ARCHIVE']), reject_symlink_parents=True),
+            'BINARY_ORIGINAL_WORKFLOW_PATH': os.environ['BINARY_ORIGINAL_WORKFLOW_PATH'],
+            'BINARY_ORIGINAL_JOB_NAME': os.environ['BINARY_ORIGINAL_JOB_NAME'],
+        }
         for name in ('CORE14_METADATA_RECEIPT', 'CORE14_REPLAY_POLICY', 'CORE14_ORIGINAL_CONTEXT'):
             pins[name] = sha256_bytes(read_regular_file_bytes(Path(os.environ[name]),
                 reject_symlink_parents=True))
@@ -767,6 +795,8 @@ runs:
             --binary-artifact-sha256 "$BINARY_ARTIFACT_SHA256" \
             --binary-contract-evidence "$BINARY_CONTRACT_EVIDENCE" \
             --binary-original-context "$BINARY_ORIGINAL_CONTEXT" \
+            --binary-original-workflow-path "$BINARY_ORIGINAL_WORKFLOW_PATH" \
+            --binary-original-job-name "$BINARY_ORIGINAL_JOB_NAME" \
             --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
             --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys")
         fi

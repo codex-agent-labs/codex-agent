@@ -507,6 +507,10 @@ class AndroidCore14CallerTest(unittest.TestCase):
                 self.assertEqual(kwargs["binary_artifact_id"], 72)
                 self.assertEqual(kwargs["binary_contract_evidence"], {"original": "contract"})
                 self.assertEqual(kwargs["binary_original_context"], {"original": "binary"})
+                self.assertEqual(kwargs["binary_original_workflow_path"],
+                    ".github/workflows/sdk-android-binary-validation.yml")
+                self.assertEqual(kwargs["binary_original_job_name"],
+                    "product-validation / sdk-android-binary-result / sdk-android-binary-android")
                 return "package executed"
 
             with (patch.object(caller, "held_same_campaign_core_metadata_policy", held),
@@ -533,6 +537,8 @@ class AndroidCore14CallerTest(unittest.TestCase):
                     binary_artifact_id=72, binary_artifact_sha256="sha256:" + "1" * 64,
                     binary_contract_evidence={"original": "contract"},
                     binary_original_context={"original": "binary"},
+                    binary_original_workflow_path=".github/workflows/sdk-android-binary-validation.yml",
+                    binary_original_job_name="product-validation / sdk-android-binary-result / sdk-android-binary-android",
                     keyring=root / "keyring", keys_directory=root / "keys")
                 self.assertEqual(caller.with_core14(**args)["phase"], "package")
                 self.assertFalse(active)
@@ -541,6 +547,8 @@ class AndroidCore14CallerTest(unittest.TestCase):
                 self.assertFalse(active)
                 with self.assertRaisesRegex(ValueError, "independent S858 and binary inputs"):
                     caller.with_core14(**{**args, "binary_artifact_sha256": None})
+                with self.assertRaisesRegex(ValueError, "independent S858 and binary inputs"):
+                    caller.with_core14(**{**args, "binary_original_job_name": None})
 
 
 if __name__ == "__main__":

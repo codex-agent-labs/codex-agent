@@ -44,6 +44,11 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
             self.assertIn('--state-wave "$STATE_WAVE" ${wave[@]+"${wave[@]}"}', self.script(marker))
             self.assertNotRegex(self.script(marker), r"--sdk-state-wave (13|14|15)(?:\s|$)")
         self.assertIn("ci.sdk_android_core14_caller preflight", self.script("id: core14_admitted"))
+        for marker in ("id: core14_admitted", "id: execute"):
+            self.assertIn('--binary-original-workflow-path "$BINARY_ORIGINAL_WORKFLOW_PATH"',
+                          self.script(marker))
+            self.assertIn('--binary-original-job-name "$BINARY_ORIGINAL_JOB_NAME"',
+                          self.script(marker))
         self.assertLess(action.index("- id: selected"), action.index("- id: identity"))
         self.assertLess(action.index("- id: identity"), action.index("uses: ./.github/actions/setup-kmp"))
         self.assertLess(action.index("- id: identity"), action.index("uses: android-actions/setup-android@"))
@@ -62,6 +67,10 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
         self.assertIn("require_no_signing_secret(os.environ)", self.script("id: policy"))
         self.assertIn("sha256_bytes(canonical_json_bytes(pins))", self.script(
             "id: execute"))
+        for marker in ("id: policy", "id: identity", "id: execute"):
+            script = self.script(marker)
+            for name in ("BINARY_ORIGINAL_WORKFLOW_PATH", "BINARY_ORIGINAL_JOB_NAME"):
+                self.assertIn(f"'{name}': os.environ['{name}']", script)
 
     def test_binary_original_context_and_upload_outputs_require_success(self):
         self.assertLess(self.action.index("- id: identity"), self.action.index("- id: context"))
@@ -130,7 +139,12 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
             for path in (core_receipt, core_policy, core_context):
                 path.write_bytes(canonical_json_bytes({}))
             actual_digest = sha256_bytes(archive.read_bytes())
+            workflow_path = ".github/workflows/sdk-android-binary-validation.yml" if phase == "package" else ""
+            worker_job = ("product-validation / sdk-android-binary-result / sdk-android-binary-android"
+                          if phase == "package" else "")
             pins = {"ANDROID_ARCHIVE": actual_digest,
+                "BINARY_ORIGINAL_WORKFLOW_PATH": workflow_path,
+                "BINARY_ORIGINAL_JOB_NAME": worker_job,
                 "CORE14_METADATA_RECEIPT": sha256_bytes(core_receipt.read_bytes()),
                 "CORE14_REPLAY_POLICY": sha256_bytes(core_policy.read_bytes()),
                 "CORE14_ORIGINAL_CONTEXT": sha256_bytes(core_context.read_bytes())}
@@ -185,6 +199,8 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
                 "BINARY_ARTIFACT_ID": "72", "BINARY_ARTIFACT_SHA256": KEY,
                 "BINARY_CONTRACT_EVIDENCE": str(contract) if phase == "package" else "",
                 "BINARY_ORIGINAL_CONTEXT": str(context) if phase == "package" else "",
+                "BINARY_ORIGINAL_WORKFLOW_PATH": workflow_path,
+                "BINARY_ORIGINAL_JOB_NAME": worker_job,
                 "SDK_VALIDATION_TOOLING": "", "SDK_APPLE_VALIDATION_POLICY": "",
                 "SDK_FACADE_METADATA_POLICY": "", "SDK_ANDROID_METADATA_POLICY": "",
                 "TRUSTED_WORKFLOW_SHA": "c" * 40}
@@ -221,7 +237,8 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
                     "CORE14_REUSED_CONTEXT_KEYS_DIRECTORY")},
                 "SDK_INPUTS_ID": "", "SDK_INPUTS_SHA256": "", "BINARY_ARTIFACT_ID": "",
                 "BINARY_ARTIFACT_SHA256": "", "BINARY_CONTRACT_EVIDENCE": "",
-                "BINARY_ORIGINAL_CONTEXT": "", "SDK_VALIDATION_TOOLING": "",
+                "BINARY_ORIGINAL_CONTEXT": "", "BINARY_ORIGINAL_WORKFLOW_PATH": "",
+                "BINARY_ORIGINAL_JOB_NAME": "", "SDK_VALIDATION_TOOLING": "",
                 "SDK_APPLE_VALIDATION_POLICY": "", "SDK_FACADE_METADATA_POLICY": "",
                 "SDK_ANDROID_METADATA_POLICY": "", "GITHUB_OUTPUT": str(output)}
             for name in ("core-receipt.json", "core-policy.json", "core-context.json"):
@@ -329,13 +346,15 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
                     self.assertIn("--expected-metadata-artifact-id", args)
                     self.assertIn("--expected-metadata-artifact-sha256", args)
                     for flag in ("--sdk-inputs-artifact-id", "--binary-artifact-id",
-                                 "--binary-contract-evidence", "--binary-original-context"):
+                                 "--binary-contract-evidence", "--binary-original-context",
+                                 "--binary-original-workflow-path", "--binary-original-job-name"):
                         self.assertNotIn(flag, args)
                 else:
                     self.assertEqual("package", args[args.index("--phase") + 1])
                     self.assertIn("--selected-state-root", args)
                     for flag in ("--sdk-inputs-artifact-id", "--binary-artifact-id",
                                  "--binary-contract-evidence", "--binary-original-context",
+                                 "--binary-original-workflow-path", "--binary-original-job-name",
                                  "--trusted-workflow-sha", "--keyring", "--keys-directory"):
                         self.assertIn(flag, args)
 

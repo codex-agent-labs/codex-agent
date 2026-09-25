@@ -45,6 +45,7 @@ def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
         sdk_inputs_artifact_id=None, sdk_inputs_artifact_sha256=None,
         binary_artifact_id=None, binary_artifact_sha256=None,
         binary_contract_evidence=None, binary_original_context=None,
+        binary_original_workflow_path=None, binary_original_job_name=None,
         keyring=None, keys_directory=None, reused_catalog=None, reused_catalog_root=None,
         reused_catalog_source=None, reused_receipt_sha256=None,
         reused_context_manifest=None, reused_context_signature=None,
@@ -72,7 +73,8 @@ def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
         raise ValueError("Android execution requires the exact elected build key")
     package_inputs = (sdk_inputs_artifact_id, sdk_inputs_artifact_sha256,
         binary_artifact_id, binary_artifact_sha256, binary_contract_evidence,
-        binary_original_context, keyring, keys_directory)
+        binary_original_context, binary_original_workflow_path, binary_original_job_name,
+        keyring, keys_directory)
     if (phase == "binary" and any(value is not None for value in package_inputs)) or (
             phase == "package" and not election and any(value is None for value in package_inputs)) or (
             phase == "package" and election and any(value is not None for value in package_inputs)):
@@ -206,6 +208,8 @@ def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
                 repository_root=root, environ=environment, token=token,
                 binary_artifact_id=binary_artifact_id,
                 binary_artifact_sha256=binary_artifact_sha256,
+                binary_original_workflow_path=binary_original_workflow_path,
+                binary_original_job_name=binary_original_job_name,
                 android_runtime_archive=archive, sdk_validation_tooling=tooling,
                 sdk_apple_validation_policy=sdk_apple_validation_policy,
                 sdk_facade_metadata_admission=admission)
@@ -242,6 +246,8 @@ def main(argv=None):
         parser.add_argument("--" + name, type=int)
     for name in ("sdk-inputs-artifact-sha256", "binary-artifact-sha256"):
         parser.add_argument("--" + name)
+    parser.add_argument("--binary-original-workflow-path")
+    parser.add_argument("--binary-original-job-name")
     for name in ("reused-catalog", "reused-catalog-root", "reused-receipt-sha256",
                  "reused-public-key", "reused-keyring", "reused-keys-directory",
                  "reused-context-manifest", "reused-context-signature", "reused-context-keyring",
