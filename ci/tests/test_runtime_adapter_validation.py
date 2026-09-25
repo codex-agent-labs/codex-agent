@@ -137,6 +137,13 @@ class RuntimeAdapterValidationTest(unittest.TestCase):
                     self.assertNotEqual(original, value)
                     self.reject_bytes(inputs, "junit", value)
 
+    def test_junit_cases_must_belong_directly_to_the_suite(self):
+        inputs = self.fixture.inputs("jvm", "linuxX64")
+        original = inputs["junit"].read_bytes()
+        nested = original.replace(b"  <testcase", b"  <system-out>\n  <testcase", 1).replace(
+            b"</testsuite>", b"  </system-out>\n</testsuite>")
+        self.reject_bytes(inputs, "junit", nested)
+
     def test_missing_and_symbolic_original_inputs_fail(self):
         inputs = self.fixture.inputs("node-js", "linuxX64")
         for field in ("report", "execution", "junit", "distribution_manifest", "classifier", "runner"):

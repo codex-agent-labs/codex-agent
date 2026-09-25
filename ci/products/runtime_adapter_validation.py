@@ -122,6 +122,7 @@ def _verify_adapter_report_format(value: dict[str, Any], junit: Path, component:
     suite = ET.fromstring(read_regular_file_bytes(junit))
     if (suite.tag != "testsuite" or any(suite.get(key) != expected for key, expected in
             (("tests", "4"), ("skipped", "0"), ("failures", "0"), ("errors", "0")))
+            or len(suite.findall("testcase")) != len(DESKTOP_RUNTIME_TEST_METHODS)
             or any(list(suite.iter(tag)) for tag in ("skipped", "failure", "error"))
             or {case.get("name") for case in suite.iter("testcase")} != set(DESKTOP_RUNTIME_TEST_METHODS)):
         raise ValueError("Adapter JUnit exact suite result mismatch")
