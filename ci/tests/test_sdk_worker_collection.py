@@ -280,6 +280,39 @@ class SdkWorkerCollectionTest(unittest.TestCase):
         self.assertEqual("success", result["rows"][0]["result"])
         self.assertEqual(child_job, result["rows"][0]["jobName"])
 
+    def test_android_package_child_binds_original_workflow_and_job(self):
+        instance, ready, _, _, files = self.shard("package", component="sdk-android", target="android")
+        child_path = ".github/workflows/sdk-android-package-validation.yml"
+        child_job = "product-validation / sdk-android-package-result / sdk-android-package-android"
+        names = self.names
+        with patch.object(self, "names", side_effect=lambda row, key: (child_job, names(row, key)[1])), \
+                patch.object(adapter, "_verified_product_state", return_value=self.state({instance: ready})), \
+                self.official_api({instance: ready}, {instance: archive(files)}) as (query, _, _):
+            original_query = query.side_effect
+
+            def child_run(url, token):
+                result = original_query(url, token)
+                if url.endswith(f"/attempts/{self.producer['runAttempt']}"):
+                    return {**result, "referenced_workflows": [*result["referenced_workflows"], {
+                        "path": f"{self.producer['repository']}/{child_path}@{PIN}", "sha": PIN}]}
+                return result
+
+            query.side_effect = child_run
+            result = adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
+                self.repository / "build/android-package-child", trusted_workflow_sha=PIN,
+                repository_root=self.repository, environ=self.environment, token="synthetic-token",
+                sdk_family="android-package", sdk_worker_workflow_path=child_path,
+                sdk_worker_job_name=child_job)
+            query.side_effect = original_query
+            with self.assertRaisesRegex(ValueError, "caller-pinned workflow"):
+                adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
+                    self.repository / "build/android-package-unpinned", trusted_workflow_sha=PIN,
+                    repository_root=self.repository, environ=self.environment, token="synthetic-token",
+                    sdk_family="android-package", sdk_worker_workflow_path=child_path,
+                    sdk_worker_job_name=child_job)
+        self.assertEqual("success", result["rows"][0]["result"])
+        self.assertEqual(child_job, result["rows"][0]["jobName"])
+
     def test_each_js_phase_preserves_exact_original_shard_and_whole_worker_upload(self):
         for phase in ("package", "validation"):
             with self.subTest(phase=phase):

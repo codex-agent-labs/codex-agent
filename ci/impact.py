@@ -136,6 +136,7 @@ FULL_VALIDATION_PATHS = {
     ".github/workflows/sdk-core-validation.yml",
     ".github/workflows/sdk-core-metadata-validation.yml",
     ".github/workflows/sdk-android-binary-validation.yml",
+    ".github/workflows/sdk-android-package-validation.yml",
     ".github/workflows/android-runtime-evidence.yml",
     ".github/workflows/apple-runtime-evidence.yml",
     ".github/workflows/desktop-runtime-evidence.yml",
