@@ -333,14 +333,18 @@ def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha2
 
 
 def capture_transport(plan, destination, github_output_path, *, artifact_id,
-        artifact_sha256, trusted_workflow_sha, sdk_state_wave, repository_root,
+        artifact_sha256, trusted_workflow_sha, sdk_state_wave=None, state_wave=0, repository_root,
         environ, token):
-    """Authenticate only the original SDK state upload before policy election.
+    """Authenticate only the current original state upload before policy election.
 
     The caller must separately pin its elected receipt/object identities, build
     current policy, and replay the state. Transport capture alone grants no
     metadata or phase authority and deliberately emits no worker matrix.
     """
+    if (type(state_wave) is not int or state_wave not in range(6)
+            or (sdk_state_wave is not None and (type(sdk_state_wave) is not int
+                or sdk_state_wave not in range(1, 19) or state_wave != 0))):
+        raise ValueError("SDK transport requires one exact current state wave")
     root = Path(repository_root).resolve(strict=True)
     plan, _, destination = product_reuse._product_materialization_paths(root, plan, plan, destination)
     output = Path(github_output_path).absolute()
@@ -354,13 +358,14 @@ def capture_transport(plan, destination, github_output_path, *, artifact_id,
             raise ValueError("SDK transport output must be a singly linked regular runner file")
         product_reuse.capture_runtime_resume_upload(plan, destination, artifact_id=artifact_id,
             artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
-            sdk_state_wave=sdk_state_wave, state_wave=0, repository_root=root,
+            sdk_state_wave=sdk_state_wave, state_wave=state_wave, repository_root=root,
             environ=environ, token=token)
         original = destination / "original"
         paths = {"input_root": original,
             "plan_path": original / "product-resume-inputs/plan/impact-plan.json",
             "discovery_root": original / "product-resume-state",
-            "state_root": original / "runtime-state"}
+            "state_root": original / ("runtime-state" if state_wave or sdk_state_wave is not None
+                                      else "product-resume-state")}
         for name, path in paths.items():
             if "\n" in str(path) or "\r" in str(path):
                 raise ValueError("SDK transport output path contains a line break")
@@ -666,7 +671,8 @@ def _capture_transport_main(argv):
     for name in ("trusted-workflow-sha", "artifact-sha256"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--artifact-id", type=int, required=True)
-    parser.add_argument("--sdk-state-wave", type=int, choices=range(1, 19), required=True)
+    parser.add_argument("--state-wave", type=int, choices=range(6), default=0)
+    parser.add_argument("--sdk-state-wave", type=int, choices=range(1, 19))
     arguments = vars(parser.parse_args(argv))
     arguments["github_output_path"] = arguments.pop("github_output")
     try:

@@ -37,6 +37,37 @@ class SdkTransportCaptureTest(unittest.TestCase):
             self.assertIn("state_root=" + str(paths["state_root"]), raw)
             self.assertNotIn("sdk_matrix", raw)
 
+    def test_forwarded_runtime_or_initial_state_uses_its_exact_transport_root(self):
+        for wave, expected_root in ((0, "product-resume-state"), (5, "runtime-state")):
+            with self.subTest(wave=wave), tempfile.TemporaryDirectory() as checkout, \
+                    tempfile.TemporaryDirectory() as outputs:
+                root = Path(checkout).resolve()
+                plan, destination = root / "plan.json", root / "build/captured"
+                output = Path(outputs).resolve() / "github-output"
+                plan.write_text("original plan")
+                output.touch()
+                with patch.object(product_reuse, "capture_runtime_resume_upload") as capture, \
+                        patch.object(sdk_workflow, "matrix", side_effect=AssertionError("premature election")):
+                    paths = sdk_workflow.capture_transport(plan, destination, output, artifact_id=71,
+                        artifact_sha256="sha256:" + "a" * 64, trusted_workflow_sha="b" * 40,
+                        state_wave=wave, repository_root=root, environ={}, token="synthetic")
+                self.assertEqual(wave, capture.call_args.kwargs["state_wave"])
+                self.assertIsNone(capture.call_args.kwargs["sdk_state_wave"])
+                self.assertEqual(destination / "original" / expected_root, paths["state_root"])
+
+    def test_mixed_runtime_and_sdk_waves_reject_before_capture(self):
+        with tempfile.TemporaryDirectory() as checkout, tempfile.TemporaryDirectory() as outputs:
+            root = Path(checkout).resolve()
+            output = Path(outputs).resolve() / "github-output"
+            output.touch()
+            with patch.object(product_reuse, "capture_runtime_resume_upload") as capture, \
+                    self.assertRaisesRegex(ValueError, "one exact current state wave"):
+                sdk_workflow.capture_transport(root / "plan", root / "build/captured", output,
+                    artifact_id=71, artifact_sha256="sha256:" + "a" * 64,
+                    trusted_workflow_sha="b" * 40, state_wave=5, sdk_state_wave=12,
+                    repository_root=root, environ={}, token="synthetic")
+            capture.assert_not_called()
+
     def test_output_cannot_mutate_captured_state_or_source(self):
         with tempfile.TemporaryDirectory() as checkout, tempfile.TemporaryDirectory() as outputs:
             root = Path(checkout).resolve()
@@ -61,7 +92,7 @@ class SdkTransportCaptureTest(unittest.TestCase):
             "--artifact-id", "71", "--artifact-sha256", "sha256:" + "a" * 64,
             "--trusted-workflow-sha", "b" * 40, "--sdk-state-wave", "17"]
         for extra in (("--sdk-android-metadata-policy", "untrusted.json"),
-                      ("--sdk-state-wave", "19")):
+                      ("--sdk-state-wave", "19"), ("--state-wave", "6")):
             with self.subTest(extra=extra), patch.object(sdk_workflow, "capture_transport") as capture, \
                     self.assertRaises(SystemExit):
                 sdk_workflow.main([*arguments, *extra])
