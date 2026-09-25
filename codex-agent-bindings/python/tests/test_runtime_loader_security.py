@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -34,7 +35,7 @@ from codex_agent._ffi import (  # noqa: E402
     current_classifier,
     resolve_library_path,
 )
-from codex_agent._runtime_evidence import _json  # noqa: E402
+from codex_agent._runtime_evidence import _json, _read  # noqa: E402
 from runtime_signed_fixture import authorize  # noqa: E402
 
 
@@ -371,6 +372,27 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
         for raw in (b'{"schemaVersion":1.0}\n', b'{"nested":{"value":1e0}}\n'):
             with self.subTest(raw=raw), self.assertRaisesRegex(OSError, "floating-point"):
                 _json(raw, "Runtime evidence")
+
+    def test_evidence_reader_rechecks_swapped_file_size_on_open_descriptor(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            path = Path(temporary) / "evidence.json"
+            replacement = Path(temporary) / "larger.json"
+            path.write_bytes(b"ok")
+            replacement.write_bytes(b"x" * 32)
+            from codex_agent._ffi import _validate_absolute_regular_path
+
+            def swap(checked: Path, description: str) -> Path:
+                result = _validate_absolute_regular_path(checked, description)
+                os.replace(replacement, path)
+                return result
+
+            with patch("codex_agent._runtime_evidence._validate_absolute_regular_path", side_effect=swap):
+                with self.assertRaisesRegex(OSError, "size limit"):
+                    _read(path, 8)
+            small_metadata = os.stat_result((stat.S_IFREG, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+            with patch("codex_agent._runtime_evidence.os.fstat", return_value=small_metadata):
+                with self.assertRaisesRegex(OSError, "size limit"):
+                    _read(path, 8)
 
     def test_signed_external_runtime_loads_and_tampering_fails(self) -> None:
         if _native_loader_directory is None:

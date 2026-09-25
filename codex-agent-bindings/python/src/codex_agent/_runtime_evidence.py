@@ -7,6 +7,7 @@ import ctypes
 import hashlib
 import os
 import re
+import stat
 import struct
 import subprocess
 import tempfile
@@ -24,9 +25,17 @@ _KEY_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
 
 def _read(path: Path, limit: int = 1024 * 1024) -> bytes:
     _validate_absolute_regular_path(path, "Runtime evidence")
-    if path.stat().st_size > limit:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(path, flags), "rb") as source:
+        metadata = os.fstat(source.fileno())
+        if not stat.S_ISREG(metadata.st_mode):
+            raise OSError("Runtime evidence is not a regular file")
+        if metadata.st_size > limit:
+            raise OSError("Runtime evidence exceeds its size limit")
+        raw = source.read(limit + 1)
+    if len(raw) > limit:
         raise OSError("Runtime evidence exceeds its size limit")
-    return path.read_bytes()
+    return raw
 
 
 def _json(raw: bytes, label: str) -> dict[str, Any]:

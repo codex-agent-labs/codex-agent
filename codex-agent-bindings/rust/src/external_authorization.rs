@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,7 +35,26 @@ fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
         }
         current = entry.parent().filter(|parent| parent != &entry);
     }
-    let bytes = fs::read(path).map_err(|error| format!("read external evidence: {error}"))?;
+    let file = fs::File::open(path).map_err(|error| format!("open external evidence: {error}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("inspect opened external evidence: {error}"))?;
+    if !metadata.is_file() || metadata.len() > limit {
+        return Err("opened external evidence is nonregular or oversized".into());
+    }
+    read_bounded(file, limit)
+}
+
+fn read_bounded(reader: impl Read, limit: u64) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(
+            limit
+                .checked_add(1)
+                .ok_or("external evidence size limit overflows")?,
+        )
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read external evidence: {error}"))?;
     if bytes.len() as u64 > limit {
         return Err("external evidence file exceeds its size limit".into());
     }
@@ -618,7 +637,21 @@ pub(crate) fn identity_matches(expected: &Value, bytes: &[u8]) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
-    use super::canonical_json;
+    use super::{canonical_json, read_bounded};
+
+    #[test]
+    fn evidence_reader_caps_a_growing_source_before_allocating_more_than_limit() {
+        let mut source = std::io::Cursor::new(vec![b'x'; 1024]);
+        assert!(
+            read_bounded(&mut source, 16)
+                .unwrap_err()
+                .contains("exceeds its size limit")
+        );
+        assert_eq!(source.position(), 17);
+
+        let mut exact = std::io::Cursor::new(vec![b'x'; 16]);
+        assert_eq!(read_bounded(&mut exact, 16).unwrap(), vec![b'x'; 16]);
+    }
 
     #[test]
     fn evidence_json_rejects_duplicate_keys_and_floats() {
