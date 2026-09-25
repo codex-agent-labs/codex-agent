@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import os
 from pathlib import Path
 import shutil
@@ -35,7 +38,7 @@ class ContractPhase10SidecarCallerTest(unittest.TestCase):
         self.addCleanup(home.cleanup)
         self.home = Path(home.name)
 
-    def invoke(self, fingerprint: str) -> dict:
+    def invoke(self, fingerprint: str, **workflow_policy) -> dict:
         fixture = self.fixture
         with mock.patch("reuse.api_request", side_effect=fixture.api):
             return caller.produce_authenticated_contract_maven_sidecars(
@@ -48,7 +51,37 @@ class ContractPhase10SidecarCallerTest(unittest.TestCase):
                 pgp_public_key=self.key,
                 expected_pgp_key_sha256=sha256_bytes(self.key.read_bytes()),
                 signing_home=self.home, signing_fingerprint=fingerprint, passphrase="",
+                **workflow_policy,
             )
+
+    def test_split_child_policy_reaches_signer_only_for_exact_path_and_job(self) -> None:
+        self.key.write_bytes(b"independently pinned fixture PGP key\n")
+        path = ".github/workflows/contract-validation.yml"
+        job = "contract-validation / contract-attestation"
+        self.fixture.run["referenced_workflows"] = [{
+            "path": f"{self.fixture.producer['repository']}/{path}@{self.fixture.workflow_sha}",
+            "sha": self.fixture.workflow_sha,
+        }]
+        self.fixture.job["name"] = job
+        policy = {"trusted_workflow_path": path, "trusted_job_name": job}
+        for changes in (
+            {"trusted_workflow_path": ".github/workflows/wrong.yml"},
+            {"trusted_job_name": "contract-validation / wrong"},
+            {"trusted_workflow_path": None},
+            {"trusted_job_name": None},
+        ):
+            with self.subTest(changes=changes), \
+                    mock.patch.object(caller, "produce_contract_phase10_maven_sidecars") as signer, \
+                    self.assertRaises(ValueError):
+                self.invoke("A" * 40, **{**policy, **changes})
+            signer.assert_not_called()
+            self.assertFalse(self.destination.exists())
+        with mock.patch.object(caller, "produce_contract_phase10_maven_sidecars",
+                               side_effect=RuntimeError("admitted before signing")) as signer, \
+                self.assertRaisesRegex(RuntimeError, "admitted before signing"):
+            self.invoke("A" * 40, **policy)
+        signer.assert_called_once()
+        self.assertFalse(self.destination.exists())
 
     def test_wrong_official_upload_cannot_reach_pgp_signer(self) -> None:
         self.key.write_bytes(b"independently pinned fixture PGP key\n")
@@ -166,6 +199,38 @@ class ContractPhase10SidecarCallerTest(unittest.TestCase):
         )
         self.assertEqual(0, checked.returncode, checked.stderr)
         self.assertIn("--expected-pgp-key-sha256", checked.stdout)
+        self.assertIn("--trusted-workflow-path", checked.stdout)
+        self.assertIn("--trusted-job-name", checked.stdout)
+
+    def test_cli_forwards_paired_child_policy(self) -> None:
+        event = self.fixture.root / "push-event.json"
+        event.write_text(json.dumps(self.fixture.event), encoding="utf-8")
+        arguments = [
+            "--repository-root", str(self.fixture.trusted),
+            "--candidate-root", str(self.fixture.candidate),
+            "--destination", str(self.destination),
+            "--trusted-source-sha", self.fixture.source_sha,
+            "--trusted-workflow-sha", self.fixture.workflow_sha,
+            "--trusted-workflow-path", ".github/workflows/contract-validation.yml",
+            "--trusted-job-name", "contract-validation / contract-attestation",
+            "--trusted-promotion-workflow-sha", self.fixture.promotion_sha,
+            "--final-commit", self.fixture.final,
+            "--pgp-public-key", str(self.key),
+            "--expected-pgp-key-sha256", "sha256:" + "a" * 64,
+            "--signing-home", str(self.home),
+            "--signing-fingerprint", "A" * 40,
+        ]
+        with mock.patch.dict(os.environ, {"GITHUB_EVENT_PATH": str(event),
+                                         "GITHUB_TOKEN": "synthetic-token"}), \
+                mock.patch.object(caller, "produce_authenticated_contract_maven_sidecars",
+                                  return_value={}) as produce, \
+                mock.patch.object(sys, "stdin", io.StringIO("synthetic passphrase")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(0, caller.main(arguments))
+        self.assertEqual(".github/workflows/contract-validation.yml",
+                         produce.call_args.kwargs["trusted_workflow_path"])
+        self.assertEqual("contract-validation / contract-attestation",
+                         produce.call_args.kwargs["trusted_job_name"])
 
 
 if __name__ == "__main__":

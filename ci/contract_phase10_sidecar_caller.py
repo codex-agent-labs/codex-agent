@@ -39,6 +39,7 @@ def produce_authenticated_contract_maven_sidecars(
     event_payload: dict, environment: dict, token: str,
     pgp_public_key: Path, expected_pgp_key_sha256: str,
     signing_home: Path, signing_fingerprint: str, passphrase: str,
+    trusted_workflow_path: str | None = None, trusted_job_name: str | None = None,
 ) -> dict:
     """Capture the signed official original before private-key use."""
     repository_root, candidate_root, destination, pgp_public_key, signing_home = map(
@@ -64,6 +65,8 @@ def produce_authenticated_contract_maven_sidecars(
             repository_root, candidate_root, original,
             trusted_source_sha=trusted_source_sha,
             trusted_workflow_sha=trusted_workflow_sha,
+            trusted_workflow_path=trusted_workflow_path,
+            trusted_job_name=trusted_job_name,
             trusted_promotion_workflow_sha=trusted_promotion_workflow_sha,
             final_commit=final_commit, event_payload=event_payload,
             environment=environment, token=token,
@@ -137,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
                  "trusted-workflow-sha", "trusted-promotion-workflow-sha", "final-commit",
                  "pgp-public-key", "expected-pgp-key-sha256", "signing-home", "signing-fingerprint"):
         parser.add_argument(f"--{name}", required=True)
+    parser.add_argument("--trusted-workflow-path")
+    parser.add_argument("--trusted-job-name")
     args = parser.parse_args(argv)
     event_path = os.environ.get("GITHUB_EVENT_PATH")
     if not event_path:
@@ -153,6 +158,8 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.repository_root), Path(args.candidate_root), Path(args.destination),
         trusted_source_sha=args.trusted_source_sha,
         trusted_workflow_sha=args.trusted_workflow_sha,
+        trusted_workflow_path=args.trusted_workflow_path,
+        trusted_job_name=args.trusted_job_name,
         trusted_promotion_workflow_sha=args.trusted_promotion_workflow_sha,
         final_commit=args.final_commit, event_payload=event,
         environment=os.environ, token=os.environ.get("GITHUB_TOKEN"),

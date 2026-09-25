@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 from pathlib import Path
 import shutil
@@ -16,7 +18,7 @@ from ci.tests.test_contract_bundle import VERSION
 from ci.tests import test_contract_release_capture as release_fixture
 from products.contract_phase10_maven import verify_contract_phase10_maven
 from products.inventory import (
-    load_canonical_json, publish_regular_tree as actual_publish_regular_tree,
+    canonical_json_bytes, load_canonical_json, publish_regular_tree as actual_publish_regular_tree,
     regular_file_inventory, sha256_bytes,
     write_canonical_json as actual_write_canonical_json,
 )
@@ -140,6 +142,112 @@ class ContractPhase10MavenCallerTest(unittest.TestCase):
         )
         self.assertEqual(0, checked.returncode, checked.stderr)
         self.assertIn("--expected-pgp-key-sha256", checked.stdout)
+
+
+@unittest.skipUnless(shutil.which("ssh-keygen"), "OpenSSH signing tool unavailable")
+class ContractPhase10MavenChildPolicyTest(unittest.TestCase):
+    def setUp(self) -> None:
+        fixture = release_fixture.ContractReleaseCaptureTest(
+            "test_complete_original_ci_pipeline_signs_exact_payload_and_preserves_external_originals",
+        )
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        self.fixture = fixture
+        self.destination = fixture.root / "phase10-maven-child-policy"
+        self.key = fixture.root / "synthetic-pgp-public.asc"
+        self.key.write_bytes(b"independently pinned fixture PGP key\n")
+        self.home = fixture.root / "synthetic-pgp-home"
+        self.home.mkdir()
+
+    def invoke(self, **workflow_policy):
+        fixture = self.fixture
+        with mock.patch("reuse.api_request", side_effect=fixture.api()):
+            return caller.produce_contract_phase10_maven_handoff(
+                fixture.repository_root, self.destination,
+                trusted_source_sha=fixture.source_sha, trusted_workflow_sha=fixture.pin,
+                artifact_id=fixture.upload_artifact["id"],
+                artifact_sha256=fixture.upload_artifact["digest"],
+                transport_producer=fixture.producer, contract_version=VERSION,
+                event_payload=fixture.event, environment=fixture.environment,
+                token="not-a-real-token", pgp_public_key=self.key,
+                expected_pgp_key_sha256=sha256_bytes(self.key.read_bytes()),
+                signing_home=self.home, signing_fingerprint="A" * 40,
+                passphrase="", **workflow_policy,
+            )
+
+    def test_exact_child_path_and_both_jobs_are_required_before_pgp_signing(self) -> None:
+        path = ".github/workflows/contract-validation.yml"
+        binary_job = "product-validation / contract-validation / product-contracts"
+        continuation_job = "product-validation / contract-validation / contract-continuation"
+        self.fixture.run["referenced_workflows"] = [{
+            "path": f"{self.fixture.producer['repository']}/{path}@{self.fixture.pin}",
+            "sha": self.fixture.pin,
+        }]
+        self.fixture.jobs[0]["name"] = binary_job
+        self.fixture.jobs[1]["name"] = continuation_job
+        policy = {
+            "trusted_contract_workflow_path": path,
+            "trusted_contract_binary_job": binary_job,
+            "trusted_contract_continuation_job": continuation_job,
+        }
+        for changes in (
+            {"trusted_contract_workflow_path": ".github/workflows/wrong.yml"},
+            {"trusted_contract_binary_job": "product-validation / wrong"},
+            {"trusted_contract_continuation_job": "product-validation / wrong"},
+            {"trusted_contract_workflow_path": None},
+            {"trusted_contract_binary_job": None},
+            {"trusted_contract_continuation_job": None},
+        ):
+            with self.subTest(changes=changes), \
+                    mock.patch.object(caller, "produce_contract_phase10_maven_sidecars") as signer, \
+                    self.assertRaises(ValueError):
+                self.invoke(**{**policy, **changes})
+            signer.assert_not_called()
+            self.assertFalse(self.destination.exists())
+        with mock.patch.object(caller, "produce_contract_phase10_maven_sidecars",
+                               side_effect=RuntimeError("admitted before signing")) as signer, \
+                self.assertRaisesRegex(RuntimeError, "admitted before signing"):
+            self.invoke(**policy)
+        signer.assert_called_once()
+        self.assertFalse(self.destination.exists())
+
+    def test_cli_forwards_child_path_and_job_pins(self) -> None:
+        fixture = self.fixture
+        event_path = fixture.root / "event.json"
+        event_path.write_bytes(canonical_json_bytes(fixture.event))
+        arguments = [
+            "--repository-root", str(fixture.repository_root),
+            "--destination", str(self.destination),
+            "--trusted-source-sha", fixture.source_sha,
+            "--trusted-workflow-sha", fixture.pin,
+            "--trusted-contract-workflow-path", ".github/workflows/contract-validation.yml",
+            "--trusted-contract-binary-job", "product-validation / contract-validation / product-contracts",
+            "--trusted-contract-continuation-job", "product-validation / contract-validation / contract-continuation",
+            "--artifact-id", str(fixture.upload_artifact["id"]),
+            "--artifact-sha256", fixture.upload_artifact["digest"],
+            "--validation-tree", fixture.producer["tree"],
+            "--contract-version", VERSION,
+            "--pgp-public-key", str(self.key),
+            "--expected-pgp-key-sha256", sha256_bytes(self.key.read_bytes()),
+            "--signing-home", str(self.home),
+            "--signing-fingerprint", "A" * 40,
+        ]
+        cli_environment = {name: fixture.environment.values[name] for name in (
+            "GITHUB_REPOSITORY", "GITHUB_SHA", "GITHUB_EVENT_NAME",
+            "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
+        )}
+        with mock.patch.dict(os.environ, {**cli_environment, "GITHUB_EVENT_PATH": str(event_path)}), \
+                mock.patch.object(caller, "produce_contract_phase10_maven_handoff",
+                                  return_value={}) as produce, \
+                mock.patch.object(sys, "stdin", io.StringIO("synthetic passphrase")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(0, caller.main(arguments))
+        self.assertEqual(".github/workflows/contract-validation.yml",
+                         produce.call_args.kwargs["trusted_contract_workflow_path"])
+        self.assertEqual("product-validation / contract-validation / product-contracts",
+                         produce.call_args.kwargs["trusted_contract_binary_job"])
+        self.assertEqual("product-validation / contract-validation / contract-continuation",
+                         produce.call_args.kwargs["trusted_contract_continuation_job"])
 
 
 if __name__ == "__main__":

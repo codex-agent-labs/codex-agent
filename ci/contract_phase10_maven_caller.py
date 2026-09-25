@@ -40,6 +40,9 @@ def produce_contract_phase10_maven_handoff(
     pgp_public_key: Path, expected_pgp_key_sha256: str, signing_home: Path,
     signing_fingerprint: str, passphrase: str, token: str | None = None,
     release_handoffs: tuple[Path, ...] = (),
+    trusted_contract_workflow_path: str | None = None,
+    trusted_contract_binary_job: str | None = None,
+    trusted_contract_continuation_job: str | None = None,
 ) -> dict[str, Any]:
     """Authenticate the original first; emit separate immutable release and PGP trees."""
     repository_root, destination, pgp_public_key, signing_home = map(
@@ -68,6 +71,9 @@ def produce_contract_phase10_maven_handoff(
             artifact_sha256=artifact_sha256, transport_producer=transport_producer,
             contract_version=contract_version, event_payload=event_payload,
             environment=environment, token=token, release_handoffs=release_handoffs,
+            trusted_contract_workflow_path=trusted_contract_workflow_path,
+            trusted_contract_binary_job=trusted_contract_binary_job,
+            trusted_contract_continuation_job=trusted_contract_continuation_job,
         )
         original_files = regular_file_inventory(release)
         captured = root / "verified-contract"
@@ -131,6 +137,9 @@ def main(argv: list[str] | None = None) -> int:
                  "validation-tree", "contract-version", "pgp-public-key",
                  "expected-pgp-key-sha256", "signing-home", "signing-fingerprint"):
         parser.add_argument(f"--{name}", required=True)
+    parser.add_argument("--trusted-contract-workflow-path")
+    parser.add_argument("--trusted-contract-binary-job")
+    parser.add_argument("--trusted-contract-continuation-job")
     parser.add_argument("--release-handoff", action="append", default=[])
     args = parser.parse_args(argv)
     event_path = os.environ.get("GITHUB_EVENT_PATH")
@@ -154,6 +163,9 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.repository_root), Path(args.destination),
         trusted_source_sha=args.trusted_source_sha,
         trusted_workflow_sha=args.trusted_workflow_sha,
+        trusted_contract_workflow_path=args.trusted_contract_workflow_path,
+        trusted_contract_binary_job=args.trusted_contract_binary_job,
+        trusted_contract_continuation_job=args.trusted_contract_continuation_job,
         artifact_id=int(args.artifact_id), artifact_sha256=args.artifact_sha256,
         transport_producer=producer, contract_version=args.contract_version,
         event_payload=payload, environment=os.environ,
