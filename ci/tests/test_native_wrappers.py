@@ -1620,6 +1620,13 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
                             self.assertEqual("**/codex_agent/native/sdk-runtime-root.pub",
                                 probes["require_matching_compatibility"].call_args_list[-1].args[1])
                     probes["run"].side_effect = before_python_consumer
+                elif language in {"rust", "cpp"}:
+                    def before_archive_build(*command, **_kwargs):
+                        if command[0] in {"cargo", "cmake"}:
+                            for check in ("require_matching_native", "require_matching_compatibility",
+                                          "reject_raw_c_abi_proofs"):
+                                self.assertTrue(probes[check].called, f"{check} must precede {command[0]}")
+                    probes["run"].side_effect = before_archive_build
                 stack.enter_context(patch.dict("os.environ", {"CC": "cc", "CXX": "c++"}))
                 output = root / "output"
                 self.assertIsNone(consume_language(

@@ -1444,13 +1444,6 @@ def _consume(
                 cargo_toml.read_text(encoding="utf-8").replace('path = ".."', f'path = "{rust_package.as_posix()}"'),
                 encoding="utf-8",
             )
-            cargo_env = consumer_env | {"CARGO_TARGET_DIR": str(work / "rust-target")}
-            run("cargo", "fetch", "--manifest-path", cargo_toml, "--locked",
-                *(["--offline"] if offline else []), cwd=work, env=cargo_env)
-            run("cargo", "metadata", "--manifest-path", cargo_toml, "--locked", "--offline", "--no-deps",
-                cwd=work, env=cargo_env)
-            run("cargo", "build", "--manifest-path", cargo_toml, "--release", "--locked", "--offline",
-                "--bins", cwd=work, env=cargo_env)
             rust_library = require_matching_native(
                 rust_package,
                 f"native/{PACKAGE_CLASSIFIERS[classifier]}/{native_name}",
@@ -1461,6 +1454,13 @@ def _consume(
                 rust_package, "native/sdk-compatibility.json", sdk_compatibility, "Rust",
             )
             reject_raw_c_abi_proofs(rust_package, "Rust")
+            cargo_env = consumer_env | {"CARGO_TARGET_DIR": str(work / "rust-target")}
+            run("cargo", "fetch", "--manifest-path", cargo_toml, "--locked",
+                *(["--offline"] if offline else []), cwd=work, env=cargo_env)
+            run("cargo", "metadata", "--manifest-path", cargo_toml, "--locked", "--offline", "--no-deps",
+                cwd=work, env=cargo_env)
+            run("cargo", "build", "--manifest-path", cargo_toml, "--release", "--locked", "--offline",
+                "--bins", cwd=work, env=cargo_env)
             rust_command = (
                 "cargo", "run", "--manifest-path", cargo_toml, "--release", "--locked", "--offline",
                 "--bin", "codex-agent-rust-host-smoke", "--",
@@ -1491,13 +1491,6 @@ def _consume(
             cpp_root = work / "cpp-package"
             safe_extract_zip(selected["cpp"], cpp_root)
             cpp_prefix = next(path for path in cpp_root.iterdir() if path.is_dir())
-            cpp_build = work / "cpp-consumer-build"
-            run("cmake", "-S", repository / "codex-agent-bindings/cpp/consumer", "-B", cpp_build,
-                f"-DCMAKE_PREFIX_PATH={cpp_prefix}", "-DCMAKE_BUILD_TYPE=Release", cwd=work)
-            run("cmake", "--build", cpp_build, "--config", "Release", "--target", "codex_agent_host_smoke",
-                cwd=work)
-            run("cmake", "--build", cpp_build, "--config", "Release", "--target",
-                "codex_agent_lifecycle_example", cwd=work)
             cpp_library = require_matching_native(
                 cpp_prefix, HOSTS[classifier][4], sdk_library, "C++",
             )
@@ -1505,6 +1498,13 @@ def _consume(
                 cpp_prefix, "share/CodexAgent/native/sdk-compatibility.json", sdk_compatibility, "C++",
             )
             reject_raw_c_abi_proofs(cpp_prefix, "C++")
+            cpp_build = work / "cpp-consumer-build"
+            run("cmake", "-S", repository / "codex-agent-bindings/cpp/consumer", "-B", cpp_build,
+                f"-DCMAKE_PREFIX_PATH={cpp_prefix}", "-DCMAKE_BUILD_TYPE=Release", cwd=work)
+            run("cmake", "--build", cpp_build, "--config", "Release", "--target", "codex_agent_host_smoke",
+                cwd=work)
+            run("cmake", "--build", cpp_build, "--config", "Release", "--target",
+                "codex_agent_lifecycle_example", cwd=work)
             if package_negative_evidence is not None:
                 run(
                     sys.executable, repository / "codex-agent-bindings/cpp/tools/verify_imported_package.py",
