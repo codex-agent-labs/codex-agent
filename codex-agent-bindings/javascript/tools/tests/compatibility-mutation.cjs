@@ -95,3 +95,34 @@ test('actual installed consumer binds declarations and entry points to npm archi
     assert.throws(() => run([...entries, `elsewhere/${name}`], name, bytes, bytes), /exactly one path/);
   }
 });
+
+test('actual installed consumer binds Runtime dist inventory and bytes to npm archive', () => {
+  const verifyRuntime = exactBlock('function verifyInstalledRuntimeMembers(', 'function hasModifier(node, kind)');
+  const names = ['codex-agent-codex-agent-runtime-desktop.js', 'codex-agent-codex-agent-runtime-desktop.js.map'];
+  const entries = names.map((name) => `package/dist/${name}`);
+  const contents = Object.fromEntries(names.map((name) => [name, Buffer.from(name)]));
+  const check = (archiveEntries = entries, installed = contents, archive = contents, symlink = '') =>
+    vm.runInNewContext(`${verifyRuntime}\nverifyInstalledRuntimeMembers(archiveEntries);`, {
+      assert, Buffer, path, packageRoot: '/installed', tarballFile: '/selected.tgz', archiveEntries,
+      fs: {
+        lstatSync: (file) => ({
+          isDirectory: () => file === '/installed/dist',
+          isFile: () => file !== '/installed/dist',
+          isSymbolicLink: () => file.endsWith(symlink) && symlink !== '',
+        }),
+        readdirSync: () => Object.keys(installed),
+        readFileSync: (file) => installed[path.basename(file)],
+      },
+      execFileSync: (command, args) => {
+        assert.equal(command, 'tar');
+        assert.deepEqual(Array.from(args.slice(0, 2)), ['-xOzf', '/selected.tgz']);
+        return archive[path.posix.basename(args[2])];
+      },
+    });
+  check();
+  assert.throws(() => check(entries, { ...contents, [names[0]]: Buffer.from('changed') }), /differs from the selected npm archive/);
+  assert.throws(() => check(entries, { ...contents, extra: Buffer.from('extra') }), /inventory must equal/);
+  assert.throws(() => check(entries, contents, contents, names[0]), /not a regular file/);
+  assert.throws(() => check([...entries, 'package/dist/nested/other.js']), /direct dist members/);
+  assert.throws(() => check([...entries, 'package/dist/..\\index.mjs']), /must not contain backslashes/);
+});

@@ -94,6 +94,30 @@ function verifyInstalledPackageMember(archiveEntries, name) {
   );
 }
 
+function verifyInstalledRuntimeMembers(archiveEntries) {
+  const entries = archiveEntries.filter((entry) => entry.startsWith('package/dist/') && !entry.endsWith('/'));
+  const names = entries.map((entry) => path.posix.basename(entry));
+  assert.ok(names.some((name) => name.endsWith('.js')) && names.some((name) => name.endsWith('.js.map')),
+    'The selected npm archive must contain Runtime JavaScript and source maps');
+  assert.ok(names.every((name) => !name.includes('\\')),
+    'The selected npm Runtime member names must not contain backslashes');
+  assert.deepEqual(entries, names.map((name) => `package/dist/${name}`),
+    'The selected npm Runtime files must be direct dist members');
+  const directory = path.join(packageRoot, 'dist');
+  const stat = fs.lstatSync(directory);
+  assert.ok(stat.isDirectory() && !stat.isSymbolicLink(), 'Installed Runtime dist must be a real directory');
+  assert.deepEqual(fs.readdirSync(directory).sort(), names.sort(),
+    'Installed Runtime dist inventory must equal the selected npm archive');
+  for (const name of names) {
+    const file = path.join(directory, name);
+    const member = fs.lstatSync(file);
+    assert.ok(member.isFile() && !member.isSymbolicLink(), `Installed Runtime member is not a regular file: ${name}`);
+    assert.deepEqual(fs.readFileSync(file),
+      execFileSync('tar', ['-xOzf', tarballFile, `package/dist/${name}`]),
+      `Installed Runtime member differs from the selected npm archive: ${name}`);
+  }
+}
+
 function hasModifier(node, kind) {
   return node.modifiers?.some((modifier) => modifier.kind === kind) === true;
 }
@@ -719,6 +743,7 @@ test('typescript compiler discovers the exact installed public API', () => {
   for (const name of ['index.d.ts', 'index.cjs', 'index.mjs']) {
     verifyInstalledPackageMember(archiveEntries, name);
   }
+  verifyInstalledRuntimeMembers(archiveEntries);
   assert.equal(
     fs.existsSync(path.join(packageRoot, 'sdk-compatibility.json')),
     false,
