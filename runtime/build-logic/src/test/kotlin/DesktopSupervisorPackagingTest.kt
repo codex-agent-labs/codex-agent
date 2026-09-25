@@ -149,6 +149,33 @@ class DesktopSupervisorPackagingTest {
                 }
             assertTrue(packaged.readBytes().contentEquals(imported.readBytes()))
 
+            val extraDirectory = root.resolve("extra-directory.zip")
+            ZipFile(packaged).use { source ->
+                ZipOutputStream(extraDirectory.outputStream()).use { output ->
+                    source.entries().asSequence().forEach { entry ->
+                        output.putNextEntry(ZipEntry(entry.name))
+                        source.getInputStream(entry).use { it.copyTo(output) }
+                        output.closeEntry()
+                    }
+                    output.putNextEntry(ZipEntry("unexpected/"))
+                    output.closeEntry()
+                }
+            }
+            val rejected = root.resolve("rejected.zip")
+            val extraDirectoryTask = ProjectBuilder.builder().withProjectDir(root).build().tasks
+                .register("rejectExtraDirectory", PackageDesktopCodexRuntimeTask::class.java).get().apply {
+                    offlineMode.set(true)
+                    libraryVersion.set("0.2.0"); appServerVersion.set("0.145.0")
+                    target.set("macosArm64"); classifier.set("app-server-macos-arm64")
+                    binarySha256.set(runtime.sha256()); executableName.set(runtime.name)
+                    supervisorExecutableName.set(supervisor.name); supervisorExecutable.set(supervisor)
+                    prebuiltPackage.set(extraDirectory); licenseFile.set(license); noticeFile.set(notice)
+                    outputFile.set(rejected)
+                }
+            val directoryError = assertFailsWith<IllegalStateException> { extraDirectoryTask.packageRuntime() }
+            assertTrue("must not contain directories" in directoryError.message.orEmpty())
+            assertFalse(rejected.exists())
+
             val original = packaged.readBytes()
             val expectedArchiveSha256 = upstream.sha256()
             upstream.writeText("tampered archive")

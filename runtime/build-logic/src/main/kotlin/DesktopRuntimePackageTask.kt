@@ -169,7 +169,8 @@ abstract class PackageDesktopCodexRuntimeTask @Inject constructor(
     }.toString().encodeToByteArray()
 
     private fun verifyPackage(packageFile: File, expectedSupervisor: File?) = ZipFile(packageFile).use { archive ->
-        val members = archive.entries().asSequence().filterNot(ZipEntry::isDirectory).toList()
+        val members = archive.entries().asSequence().toList()
+        check(members.none(ZipEntry::isDirectory)) { "Desktop runtime ZIP must not contain directories" }
         val expectedPayload = setOf(executableName.get(), supervisorExecutableName.get(), LICENSE_NAME, NOTICE_NAME)
         val expected = expectedPayload + RUNTIME_MANIFEST_NAME
         check(members.map(ZipEntry::getName).toSet() == expected && members.size == expected.size) {
