@@ -331,14 +331,27 @@ def _observe_contract_producer_runs(
 
 
 def _observe_ci_producer_jobs(
-    producers, *, jobs_by_phase, trusted_workflow_sha, token, allow_protected_dispatch=False,
+    producers, *, jobs_by_phase, token, trusted_workflow_sha=None,
+    trusted_workflows_by_phase=None, allow_protected_dispatch=False,
 ) -> list[dict[str, Any]]:
-    # Both callers choose fixed job names; transported data cannot select a job.
+    # Callers choose fixed jobs and workflow references; transported data selects neither.
     require_exact_keys(producers, set(jobs_by_phase), "Contract phase producers")
-    if not isinstance(trusted_workflow_sha, str) or re.fullmatch(r"[0-9a-f]{40}", trusted_workflow_sha) is None:
-        raise ValueError("Contract producer admission requires a caller-pinned workflow SHA")
+    if (trusted_workflow_sha is None) == (trusted_workflows_by_phase is None):
+        raise ValueError("Contract producer admission requires exactly one caller-owned workflow policy")
     repository = "codex-agent-labs/codex-agent"
-    workflow = f"{repository}/.github/workflows/product-validation.yml@{trusted_workflow_sha}"
+    if trusted_workflows_by_phase is None:
+        trusted_workflows_by_phase = {phase: {
+            "path": ".github/workflows/product-validation.yml", "sha": trusted_workflow_sha,
+        } for phase in jobs_by_phase}
+    require_exact_keys(trusted_workflows_by_phase, set(jobs_by_phase), "Contract trusted workflow phases")
+    workflows = {}
+    for phase, policy in trusted_workflows_by_phase.items():
+        require_exact_keys(policy, {"path", "sha"}, f"Contract {phase} trusted workflow")
+        path, sha = policy["path"], policy["sha"]
+        if (not isinstance(path, str) or re.fullmatch(r"\.github/workflows/[a-z0-9-]+\.yml", path) is None
+                or not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None):
+            raise ValueError("Contract producer admission requires exact caller-pinned workflow paths and SHAs")
+        workflows[phase] = f"{repository}/{path}@{sha}", sha
     attempts: dict[tuple[int, int], dict[str, Any]] = {}
     for phase in jobs_by_phase:
         producer = validate_producer(producers[phase], f"Contract {phase} producer")
@@ -369,12 +382,14 @@ def _observe_ci_producer_jobs(
                 or producer["event"] == "pull_request" and not run_matches_pr(run, producer["pullRequest"])):
             raise ValueError("Contract original CI attempt does not match its producer")
         references = require_array(run.get("referenced_workflows"), "Contract original workflow references")
-        selected = [value for value in references if isinstance(value, dict)
-                    and isinstance(value.get("path"), str)
-                    and value["path"].split("@", 1)[0] == workflow.split("@", 1)[0]]
-        if (len(selected) != 1 or selected[0].get("path") != workflow
-                or selected[0].get("sha") != trusted_workflow_sha):
-            raise ValueError("Contract original CI attempt lacks the caller-pinned workflow")
+        for phase in original["phases"]:
+            workflow, sha = workflows[phase]
+            selected = [value for value in references if isinstance(value, dict)
+                        and isinstance(value.get("path"), str)
+                        and value["path"].split("@", 1)[0] == workflow.split("@", 1)[0]]
+            if (len(selected) != 1 or selected[0].get("path") != workflow
+                    or selected[0].get("sha") != sha):
+                raise ValueError("Contract original CI attempt lacks the caller-pinned workflow")
         commit = _observe_tested_commit(
             run, api="https://api.github.com", repository=repository, token=token,
             expected_commit=producer["commit"], expected_tree=producer["tree"],

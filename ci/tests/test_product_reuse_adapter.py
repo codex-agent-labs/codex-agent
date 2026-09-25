@@ -157,6 +157,45 @@ class ContractProducerRunTest(unittest.TestCase):
         self.assertEqual(4, query.call_count)
         self.assertEqual(before, self.producers)
 
+    def test_caller_pins_each_child_workflow_for_mixed_original_phases(self):
+        new_pin = "d" * 40
+        new_path = ".github/workflows/contract-validation.yml"
+        new_job = "contract-validation / contract-continuation"
+        references = [*self.run["referenced_workflows"], {
+            "path": f"{self.producer['repository']}/{new_path}@{new_pin}", "sha": new_pin,
+        }]
+        run = {**self.run, "referenced_workflows": references}
+        jobs = [self.jobs[0], {**self.jobs[1], "name": new_job}]
+        policy = {
+            "binary": {"path": ".github/workflows/product-validation.yml", "sha": self.pin},
+            "package": {"path": new_path, "sha": new_pin},
+        }
+        arguments = dict(producers={phase: self.producer for phase in policy},
+                         jobs_by_phase={"binary": self.jobs[0]["name"], "package": new_job},
+                         trusted_workflows_by_phase=policy, token="unused")
+        with mock.patch.object(product_reuse, "api_json", side_effect=[run, self.commit]), \
+                mock.patch.object(product_reuse, "paginated_items", return_value=jobs):
+            self.assertEqual([{"run": run, "testedCommit": self.commit, "jobs": jobs}],
+                             product_reuse._observe_ci_producer_jobs(**arguments))
+        for changed in (
+            {**run, "referenced_workflows": references[:1]},
+            {**run, "referenced_workflows": [*references, references[1]]},
+            {**run, "referenced_workflows": [references[0], {**references[1], "sha": self.pin}]},
+        ):
+            with self.subTest(references=changed["referenced_workflows"]), \
+                    mock.patch.object(product_reuse, "api_json", return_value=changed), \
+                    mock.patch.object(product_reuse, "paginated_items") as listing, \
+                    self.assertRaises(ValueError):
+                product_reuse._observe_ci_producer_jobs(**arguments)
+            listing.assert_not_called()
+        with mock.patch.object(product_reuse, "api_json") as query:
+            for invalid in ({"binary": policy["binary"]},
+                            {**policy, "package": {"path": "../untrusted.yml", "sha": new_pin}},
+                            {**policy, "package": {"path": new_path, "sha": "main"}}):
+                with self.subTest(policy=invalid), self.assertRaises(ValueError):
+                    product_reuse._observe_ci_producer_jobs(**{**arguments, "trusted_workflows_by_phase": invalid})
+            query.assert_not_called()
+
     def test_dispatch_opt_in_requires_fixed_authorization_job_and_exact_tested_commit(self):
         producer = {**self.producer, "event": "workflow_dispatch", "pullRequest": None}
         run = {**self.run, "event": "workflow_dispatch", "head_sha": COMMIT, "pull_requests": []}
