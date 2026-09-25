@@ -495,6 +495,16 @@ internal static class RuntimeLoaderSecurity
             Reject<InvalidDataException>(() => NativeLibraryLoader.RejectUnverifiedExternalForTests(
                 library, compatibility, Target));
             File.WriteAllBytes(signature, original);
+            var originalClaim = File.ReadAllBytes(claim);
+            var incompatibleRelease = JsonNode.Parse(originalClaim)!.AsObject();
+            incompatibleRelease["runtimeVersion"] = "0.9.0";
+            File.WriteAllBytes(claim, Canonical(incompatibleRelease));
+            File.Delete(signature);
+            Sign(claim, releaseKey, "codex-agent-product-v1", signature);
+            Reject<InvalidDataException>(() => NativeLibraryLoader.RejectUnverifiedExternalForTests(
+                library, compatibility, Target));
+            File.WriteAllBytes(claim, originalClaim);
+            File.WriteAllBytes(signature, original);
             CodexNativeLibrary.Configure(library);
             VerifyNative();
         }

@@ -404,6 +404,19 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
                     NativeLibrary.load(library)
                 dynamic_loader.assert_not_called()
 
+    def test_signed_external_release_outside_sdk_range_fails_before_loading(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            directory = Path(temporary)
+            runtime_identity = identity(current_classifier())
+            library = compile_library(directory, "future_release", canonical(runtime_identity, False), 0x010D0000)
+            pinned_root = authorize(library, runtime_identity, "0.9.0")
+            with patch("codex_agent._ffi._read_sdk_runtime_root", return_value=pinned_root), \
+                    patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility), \
+                    patch("codex_agent._ffi.ctypes.CDLL") as dynamic_loader:
+                with self.assertRaisesRegex(OSError, "incompatible"):
+                    NativeLibrary.load(library)
+                dynamic_loader.assert_not_called()
+
     def test_delegated_release_key_rotation_keeps_sdk_root_unchanged(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
             directory = Path(temporary)

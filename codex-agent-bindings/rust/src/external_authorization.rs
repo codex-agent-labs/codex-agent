@@ -626,4 +626,34 @@ mod tests {
         assert!(canonical_json(b"{\"a\":1.0}\n").is_err());
         assert!(canonical_json(b"{\"a\":1}\n").is_ok());
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn evidence_reader_rejects_symlinked_sidecar_and_parent() {
+        use super::read_file;
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "codex-agent-rust-evidence-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let real = root.join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("release-keyring.json"), b"evidence").unwrap();
+        symlink(real.join("release-keyring.json"), root.join("sidecar.json")).unwrap();
+        symlink(&real, root.join("sidecars")).unwrap();
+
+        for path in [
+            root.join("sidecar.json"),
+            root.join("sidecars/release-keyring.json"),
+        ] {
+            assert!(read_file(&path, 1024).unwrap_err().contains("symlink"));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
