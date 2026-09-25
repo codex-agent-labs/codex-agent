@@ -4257,11 +4257,14 @@ def collect_runtime_workers(
     if (sdk_worker_workflow_path is None) != (sdk_worker_job_name is None):
         raise ValueError("SDK collection child workflow path and job must be pinned together")
     if sdk_worker_workflow_path is not None and (
-            sdk_family not in {"core-binary", "core-package"}
+            sdk_family not in {"core-binary", "core-package", "core-validation"}
             or type(sdk_worker_workflow_path) is not str
             or re.fullmatch(r"\.github/workflows/[a-z0-9-]+\.yml", sdk_worker_workflow_path) is None
             or type(sdk_worker_job_name) is not str or not sdk_worker_job_name):
         raise ValueError("SDK collection requires one valid caller-pinned Core child route")
+    if sdk_family == "core-validation" and sdk_worker_job_name is not None and re.fullmatch(
+            r"product-validation / [a-z0-9-]+ / sdk-core-validation-\{target\}", sdk_worker_job_name) is None:
+        raise ValueError("Core validation child route requires one exact target job template")
     product = "sdk" if sdk_javascript_only or sdk_ios_binary_only or sdk_family is not None else "runtime"
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     discovery_root, state_root, destination = _product_materialization_paths(root, discovery_root, state_root, destination)
@@ -4279,8 +4282,10 @@ def collect_runtime_workers(
                     _sdk_javascript_worker_instance(instance) if sdk_javascript_only else
                     (instance == PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
                      if runtime_aggregate_only else _runtime_worker_instance(instance)))]
-    if sdk_worker_workflow_path is not None and len(selected) > 1:
-        raise ValueError("SDK collection child route requires one selected worker")
+    if sdk_worker_workflow_path is not None:
+        if sdk_family != "core-validation" and (len(selected) > 1 or "{" in sdk_worker_job_name
+                                                or "}" in sdk_worker_job_name):
+            raise ValueError("SDK collection child route requires one exact worker")
     observed, artifacts, jobs = [], [], []
     if selected:
         observed = _observe_ci_producer_jobs(
@@ -4295,7 +4300,8 @@ def collect_runtime_workers(
             f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{producer['runId']}/artifacts",
             "artifacts", token)
     for instance, _ready in selected:
-        name = sdk_worker_job_name or _worker_job_name(product, instance)
+        name = (sdk_worker_job_name.replace("{target}", instance.target) if sdk_family == "core-validation"
+                and sdk_worker_job_name is not None else sdk_worker_job_name or _worker_job_name(product, instance))
         if any(job.get("name") == name and job.get("status") != "completed" for job in jobs):
             raise ValueError("An elected Runtime worker is still running; collect after all siblings finish")
         if sdk_family == "ios-validation":
@@ -4309,7 +4315,8 @@ def collect_runtime_workers(
         rows = []
         for instance, ready in selected:
             name = f"{instance.component}-{instance.phase}-{instance.target}"
-            job_name = sdk_worker_job_name or _worker_job_name(product, instance)
+            job_name = (sdk_worker_job_name.replace("{target}", instance.target) if sdk_family == "core-validation"
+                        and sdk_worker_job_name is not None else sdk_worker_job_name or _worker_job_name(product, instance))
             artifact_name = (f"codex-agent-{product}-worker-{name}-{ready['buildKey'].removeprefix('sha256:')}-"
                              f"{producer['tree']}-attempt-{producer['runAttempt']}")
             row = {**_identity_record(instance), "buildKey": ready["buildKey"],

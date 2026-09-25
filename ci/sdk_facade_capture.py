@@ -31,6 +31,7 @@ from sdk_phase import route
 
 
 _LIMIT = 16 * 1024 * 1024
+_VALIDATION_WORKFLOW_PATH = ".github/workflows/sdk-core-validation.yml"
 
 
 def _read(path):
@@ -114,7 +115,8 @@ def _capture_route(receipt, family=None):
     if family is not None and family != selected:
         raise ValueError("Selected SDK original receipt differs from the fixed capture route")
     producer = receipt["producer"]
-    job = f"product-validation / {component}-{phase}-{target}"
+    job = (f"product-validation / sdk-core-validation-wave / sdk-core-validation-{target}"
+           if selected == "facade-validation" else f"product-validation / {component}-{phase}-{target}")
     name = (f"codex-agent-sdk-worker-{component}-{phase}-{target}-"
             f"{receipt['buildKey'].removeprefix('sha256:')}-{producer['tree']}-attempt-{producer['runAttempt']}")
     return PhaseInstanceId(*identity), runner, directories, job, name, selected
@@ -162,7 +164,7 @@ def _capture_sdk_upload(
     if (trusted_workflow_path is None) != (trusted_job_name is None):
         raise ValueError("Core original workflow path and job must be pinned together")
     if trusted_workflow_path is not None and family != "maven":
-        raise ValueError("Core child workflow route is supported only for Maven originals")
+        raise ValueError("Only Maven originals accept a caller-selected child route")
     require_integer(artifact_id, "Core worker artifact ID", 1)
     require_sha256(artifact_sha256, "Core worker artifact digest")
     if type(token) is not str or not token:
@@ -204,9 +206,11 @@ def _capture_sdk_upload(
                 raise ValueError("Core capture original receipt or caller plan changed")
 
         unchanged()
+        workflow_path = (_VALIDATION_WORKFLOW_PATH if family == "facade-validation"
+                         else trusted_workflow_path)
         workflow_policy = ({"trusted_workflow_sha": trusted_workflow_sha}
-            if trusted_workflow_path is None else {"trusted_workflows_by_phase": {family: {
-                "path": trusted_workflow_path, "sha": trusted_workflow_sha}}})
+            if workflow_path is None else {"trusted_workflows_by_phase": {family: {
+                "path": workflow_path, "sha": trusted_workflow_sha}}})
         observed = products._observe_ci_producer_jobs({family: producer},
             jobs_by_phase={family: job}, token=token, **workflow_policy)
         jobs = [value for value in observed[0]["jobs"] if value.get("name") == job]

@@ -35,6 +35,10 @@ class CoreUploadLocatorTest(unittest.TestCase):
             context={"producer": self.f.producer}, version="0.8.0", version_identity="0.8.0")
         _, _, _, job, name, _ = _capture_route(self.receipt)
         self.f.jobs[0]["name"] = job
+        self.f.run["referenced_workflows"][0]["path"] = (
+            f"codex-agent-labs/codex-agent/.github/workflows/sdk-core-validation.yml@{self.f.pin}"
+            if phase == "validation" and component == "sdk-core" else
+            f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{self.f.pin}")
         self.f.artifact["name"] = name
         self.listing = [deepcopy(self.f.artifact)]
 
@@ -136,11 +140,12 @@ class CoreUploadLocatorTest(unittest.TestCase):
 
     def test_official_job_run_detail_and_window_must_match(self):
         baseline = deepcopy((self.f.run, self.f.jobs, self.f.artifact))
-        for change in ("job", "failed", "pin", "attempt", "run", "head", "window", "detail", "url"):
+        for change in ("job", "failed", "pin", "workflow", "attempt", "run", "head", "window", "detail", "url"):
             self.f.run, self.f.jobs, self.f.artifact = deepcopy(baseline)
             if change == "job": self.f.jobs[0]["name"] += "-wrong"
             elif change == "failed": self.f.jobs[0]["conclusion"] = "failure"
             elif change == "pin": self.f.run["referenced_workflows"][0]["sha"] = "d" * 40
+            elif change == "workflow": self.f.run["referenced_workflows"][0]["path"] = "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@" + self.f.pin
             elif change == "attempt": self.f.run["run_attempt"] = 1
             elif change == "run": self.f.artifact["workflow_run"]["id"] = 999
             elif change == "head": self.f.artifact["workflow_run"]["head_sha"] = "e" * 40

@@ -175,6 +175,52 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                         repository_root=self.repository, environ=self.environment, token="synthetic-token",
                         **({"sdk_family": "core-binary"} | route))
 
+    def test_core_validation_child_binds_each_target_job(self):
+        child_path = ".github/workflows/sdk-core-validation.yml"
+        job_template = "product-validation / sdk-core-validation-wave / sdk-core-validation-{target}"
+        shards = [self.shard("validation", component="sdk-core", target=target)
+                  for target in ("jvm", "linux-x64")]
+        ready = {instance: plan for instance, plan, _, _, _ in shards}
+        uploads = {instance: archive(files) for instance, _, _, _, files in shards}
+        names = self.names
+
+        def child_names(instance, key):
+            return job_template.replace("{target}", instance.target), names(instance, key)[1]
+
+        with patch.object(self, "names", side_effect=child_names), \
+                patch.object(adapter, "_verified_product_state", return_value=self.state(ready)), \
+                self.official_api(ready, uploads) as (query, _, _):
+            original_query = query.side_effect
+
+            def child_run(url, token):
+                result = original_query(url, token)
+                if url.endswith(f"/attempts/{self.producer['runAttempt']}"):
+                    return {**result, "referenced_workflows": [*result["referenced_workflows"], {
+                        "path": f"{self.producer['repository']}/{child_path}@{PIN}", "sha": PIN}]}
+                return result
+
+            query.side_effect = child_run
+            result = adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
+                self.repository / "build/validation-child", trusted_workflow_sha=PIN,
+                repository_root=self.repository, environ=self.environment, token="synthetic-token",
+                sdk_family="core-validation", sdk_worker_workflow_path=child_path,
+                sdk_worker_job_name=job_template)
+        self.assertEqual(2, len(result["rows"]))
+        self.assertEqual({"success"}, {row["result"] for row in result["rows"]})
+        self.assertEqual({job_template.replace("{target}", target) for target in ("jvm", "linux-x64")},
+                         {row["jobName"] for row in result["rows"]})
+
+    def test_core_validation_child_rejects_non_target_template_before_replay(self):
+        for job in ("product-validation / sdk-core-validation-wave / sdk-core-validation-jvm",
+                    "product-validation / sdk-core-validation-wave / sdk-core-validation-{target}-{target}"):
+            with self.subTest(job=job), patch.object(adapter, "_verified_product_state", side_effect=AssertionError):
+                with self.assertRaisesRegex(ValueError, "target job template"):
+                    adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
+                        self.repository / "build/invalid-validation-child", trusted_workflow_sha=PIN,
+                        repository_root=self.repository, environ=self.environment, token="synthetic-token",
+                        sdk_family="core-validation", sdk_worker_workflow_path=".github/workflows/sdk-core-validation.yml",
+                        sdk_worker_job_name=job)
+
     def test_each_js_phase_preserves_exact_original_shard_and_whole_worker_upload(self):
         for phase in ("package", "validation"):
             with self.subTest(phase=phase):

@@ -106,7 +106,8 @@ class NativeStateSelectionTest(unittest.TestCase):
                     state_wave="0", sdk_state_wave=str(wave)) if required else current),
                     routing.select_native_state(selected, stage=family))
             parent = ("sdk-core-binary-wave" if family == "core-binary" else
-                      "sdk-core-package-wave" if family == "core-package" else f"sdk-{family}-result")
+                      "sdk-core-package-wave" if family == "core-package" else
+                      "sdk-core-validation-wave" if family == "core-validation" else f"sdk-{family}-result")
         stale = needs_for("core-package", required=True, state=locator("11", "0"))
         stale["sdk-core-binary-result"] = stale.pop("sdk-core-binary-wave")
         with self.assertRaises(ValueError):

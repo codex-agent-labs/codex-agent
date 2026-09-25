@@ -230,11 +230,11 @@ class FacadeWorkflowTest(unittest.TestCase):
         self.materialize.assert_not_called()
         self.finalize.assert_not_called()
 
-    def test_unsupported_native_policy_rejects_before_materialization_or_producer(self):
+    def test_other_native_target_cannot_relabel_selected_request(self):
         archive = self.root / "independent-native.tar.gz"
         archive.write_bytes(b"caller archive cannot establish unsupported host policy")
         for target in ("macos-x64", "linux-arm64", "linux-x64", "windows-x64"):
-            with self.subTest(target=target), self.assertRaisesRegex(ValueError, "no supported pinned"):
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, "differs from its selected repository or target"):
                 self.call(target=target, native_compiler_archive=archive)
         self.materialize.assert_not_called()
         self.finalize.assert_not_called()

@@ -22,7 +22,7 @@ class CoreMetadataWorkflowTest(unittest.TestCase):
             "sdk-core-metadata-result"))
         for block in (plan, worker, collect, result):
             self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", block)
-            self.assertIn("needs.sdk-core-validation-result.result == 'success'", block)
+            self.assertIn("needs.sdk-core-validation-wave.result == 'success'", block)
         self.assertIn("sdk-family: core-metadata", plan)
         self.assertIn("sdk-family: core-metadata", collect)
         self.assertIn("wave: '14'", collect)

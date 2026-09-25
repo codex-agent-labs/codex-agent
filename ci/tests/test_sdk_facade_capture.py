@@ -57,8 +57,11 @@ class FacadeCaptureTest(unittest.TestCase):
                 **{directory + "/retained.bin": b"opaque retained proof" for directory in self.required_directories}})
             self.records[target] = (shard / "phase-receipt.json", descriptor["receiptBytes"], selected, files)
         self.receipt_path, self.receipt_bytes, self.receipt, self.files = deepcopy(self.records[target])
-        self.jobs[0].update(name=f"product-validation / {self.component}-{self.phase}-{target}", runner_id=19,
+        self.jobs[0].update(name=facade._capture_route(self.receipt)[3], runner_id=19,
                             labels=[facade._capture_route(self.receipt)[1]])
+        if self.component == "sdk-core" and self.phase == "validation":
+            self.run["referenced_workflows"][0]["path"] = (
+                f"codex-agent-labs/codex-agent/{facade._VALIDATION_WORKFLOW_PATH}@{self.pin}")
         self.artifact["name"] = (f"codex-agent-sdk-worker-{self.component}-{self.phase}-{target}-"
             f"{self.receipt['buildKey'].removeprefix('sha256:')}-{self.producer['tree']}-attempt-{self.producer['runAttempt']}")
         self.archive()
@@ -100,21 +103,26 @@ class FacadeCaptureTest(unittest.TestCase):
         if self.component != "sdk-core":
             self.skipTest("Android worker jobs are not wired yet")
         workflow_name = (f"sdk-core-{self.phase}-validation.yml" if self.phase in ("binary", "package")
+                         else "sdk-core-validation.yml" if self.phase == "validation"
                          else "product-validation.yml")
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows" / workflow_name).read_text()
         target = "${{ matrix.target }}" if self.phase == "validation" else "common"
         self.assertIn(f"    name: sdk-core-{self.phase}-{target}\n", workflow)
-        self.assertEqual(f"product-validation / sdk-core-{self.phase}-{self.targets[0]}",
+        job = (f"product-validation / sdk-core-validation-wave / sdk-core-validation-{self.targets[0]}"
+               if self.phase == "validation" else f"product-validation / sdk-core-{self.phase}-{self.targets[0]}")
+        self.assertEqual(job,
                          facade._capture_route(self.receipt)[3])
 
     def test_fixed_job_attempt_source_pin_runner_and_window_are_mandatory(self):
         baseline = deepcopy((self.run, self.jobs, self.artifact, self.commit))
-        for case in ("job", "failed", "attempt", "pin", "tree", "runner", "missing-runner", "runner-id", "boolean-id", "window", "artifact"):
+        for case in ("job", "failed", "attempt", "pin", "workflow", "tree", "runner", "missing-runner", "runner-id", "boolean-id", "window", "artifact"):
             self.run, self.jobs, self.artifact, self.commit = deepcopy(baseline)
             if case == "job": self.jobs[0]["name"] += "-other"
             elif case == "failed": self.jobs[0]["conclusion"] = "failure"
             elif case == "attempt": self.run["run_attempt"] += 1
             elif case == "pin": self.run["referenced_workflows"][0]["sha"] = "d" * 40
+            elif case == "workflow": self.run["referenced_workflows"][0]["path"] = (
+                "codex-agent-labs/codex-agent/.github/workflows/unrelated.yml@" + self.pin)
             elif case == "tree": self.commit["tree"]["sha"] = "f" * 40
             elif case == "runner": self.jobs[0]["labels"] = ["unrelated-runner"]
             elif case == "missing-runner": self.jobs[0].pop("labels")
