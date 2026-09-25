@@ -195,7 +195,8 @@ if(NOT DEFINED CODEX_AGENT_CPP_INSTALL_PACKAGE OR CODEX_AGENT_CPP_INSTALL_PACKAG
     add_test(NAME codex_agent_cpp_installed_package_tamper COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/test_installed_package_tamper.py"
         "${CMAKE_COMMAND}" "${CMAKE_BINARY_DIR}" "$<CONFIG>" "${CMAKE_INSTALL_LIBDIR}"
-        "${CODEX_AGENT_C_SDK_LIBRARY_RELATIVE}")
+        "${CODEX_AGENT_C_SDK_LIBRARY_RELATIVE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../../gradle/release/keys/sdk-runtime-root.pub")
 endif()
 
 if(NOT CodexAgent_C_SDK_LIBRARY)
