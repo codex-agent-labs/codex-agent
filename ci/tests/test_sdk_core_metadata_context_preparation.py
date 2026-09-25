@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from ci import sdk_core_metadata_context_preparation as preparation
+from ci.sdk_core_metadata_history import verify_signed_original_core_context
 from ci.tests import test_sdk_facade_metadata_original as original_fixture
 from ci.products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
     sha256_bytes, write_canonical_json)
@@ -148,6 +149,39 @@ class OriginalCoreContextPreparationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reader exit rejected"):
             preparation.prepare_original_core_context(**self.arguments())
         self.assertFalse(self.destination.exists())
+
+    def test_fabricated_validation_pin_never_publishes_or_becomes_signed_authority(self):
+        path, policy = self.caller_policy()
+        target = next(iter(policy["validations"]))
+        policy["validations"][target]["artifactSha256"] = "sha256:" + "f" * 64
+        write_canonical_json(path, policy)
+        # The fixture's hosted observer raises AssertionError for a mismatched
+        # independently pinned upload; the production observer raises ValueError.
+        with self.assertRaises((AssertionError, ValueError)):
+            preparation.prepare_from_caller_policy(**self.caller_arguments(path))
+        self.assertFalse(self.destination.exists())
+
+        # Even a plausible, correctly shaped unsigned record cannot authorize
+        # historical paths without the protected detached signature.
+        manifest = self.external / "fabricated-context.json"
+        args = self.arguments()
+        write_canonical_json(manifest, {"schemaVersion": 1,
+            "kind": "sdk-core-metadata-original-context",
+            "buildKey": args["expected_build_key"],
+            "receiptSha256": args["expected_receipt_sha256"],
+            "artifactId": args["artifact_id"],
+            "artifactSha256": args["artifact_sha256"],
+            "producer": self.fixture.receipt["producer"],
+            "originalContext": self.fixture.context, "signing": self.signing})
+        signature = self.external / "fabricated-context.sig"
+        signature.write_bytes(b"fabricated\n")
+        with self.assertRaises(ValueError):
+            verify_signed_original_core_context(manifest, signature, self.fixture.receipt_path,
+                expected_build_key=args["expected_build_key"],
+                expected_receipt_sha256=args["expected_receipt_sha256"],
+                expected_artifact_id=args["artifact_id"],
+                expected_artifact_sha256=args["artifact_sha256"],
+                keyring_path=self.keyring, keys_directory=self.keys)
 
     def test_missing_active_key_and_output_overlap_reject_before_observation(self):
         write_canonical_json(self.keyring, {"schemaVersion": 1,
