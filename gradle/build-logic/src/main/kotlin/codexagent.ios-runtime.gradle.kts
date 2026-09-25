@@ -21,6 +21,7 @@ private val expectedSwiftTestIdentifiers = listOf(
     "CodexAgentObservationTests/testCodexOperationErrorsExposeStructuredFailure()",
     "CodexAgentObservationTests/testObjectiveCConsumerExposesStructuredFailure()",
     "CodexAuthorizationBrowserTests/testGenericBrowserOpensTypedExternalURLAndCancelsPresentation()",
+    "CodexAuthorizationBrowserTests/testFailedBrowserSessionIsCancelled()",
 )
 private val pinnedSqliteArchiveSha256 = "b1f111c8c41e7c61a49cd34e44c7619462967221a6443b0ec299e0ac30cfb9b1"
 private val sqliteArchiveBytes = 5_295_554L

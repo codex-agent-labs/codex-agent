@@ -223,7 +223,7 @@ class AppleDistributionTasksTest {
     }
 
     @Test
-    fun `Swift and Objective-C consumers have four separately identified XCTest methods`() {
+    fun `Swift and Objective-C consumers have five separately identified XCTest methods`() {
         val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
             .first { it.resolve("build.gradle.kts").isFile && it.resolve("codex-agent-runtime-ios").isDirectory }
         val apple = repository.resolve("codex-agent-runtime-ios/apple")
@@ -262,6 +262,7 @@ class AppleDistributionTasksTest {
             "CodexAgentObservationTests/testCodexOperationErrorsExposeStructuredFailure()",
             "CodexAgentObservationTests/testObjectiveCConsumerExposesStructuredFailure()",
             "CodexAuthorizationBrowserTests/testGenericBrowserOpensTypedExternalURLAndCancelsPresentation()",
+            "CodexAuthorizationBrowserTests/testFailedBrowserSessionIsCancelled()",
         )
         expectedIdentifiers.forEach { identifier -> assertTrue("\"$identifier\"" in registration) }
         assertTrue("\"build-for-testing\"" in simulatorTask)
@@ -277,7 +278,7 @@ class AppleDistributionTasksTest {
         }
         assertTrue("func testObjectiveCConsumerExposesStructuredFailure() async" in swiftConsumer)
         assertTrue("CDXRunObjectiveCConsumer" in swiftConsumer)
-        assertEquals(4, swiftTestCount)
+        assertEquals(5, swiftTestCount)
     }
 
     @Test
