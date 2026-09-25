@@ -99,17 +99,25 @@ def canonical(value: dict[str, object], final_lf: bool = True) -> bytes:
     return result + (b"\n" if final_lf else b"")
 
 
-def install_synthetic_wheel(directory: Path, root_public: bytes) -> Path:
+def install_synthetic_wheel(directory: Path, root_public: bytes, embedded_library: Path | None = None) -> Path:
     package_data = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["setuptools"]["package-data"]["codex_agent"]
     if "native/sdk-compatibility.json" not in package_data or "native/sdk-runtime-root.pub" not in package_data:
         raise AssertionError("Python wheel manifest omits an SDK trust resource")
+    if embedded_library is not None and "native/*/*" not in package_data:
+        raise AssertionError("Python wheel manifest omits embedded Runtime libraries")
     source = ROOT / "src/codex_agent"
     entries = {
         file.relative_to(ROOT / "src").as_posix(): file.read_bytes()
         for file in source.rglob("*")
         if file.is_file() and (file.suffix in {".py", ".pyi"} or file.name == "py.typed")
     }
-    entries["codex_agent/native/sdk-compatibility.json"] = canonical(compatibility())
+    declaration = compatibility()
+    if embedded_library is not None:
+        target = current_classifier()
+        variant = next(item for item in declaration["runtime"]["embeddedVariants"] if item["target"] == target)
+        variant["runtimeLibrarySha256"] = "sha256:" + hashlib.sha256(embedded_library.read_bytes()).hexdigest()
+        entries[f"codex_agent/native/{target}/{_library_name(target)}"] = embedded_library.read_bytes()
+    entries["codex_agent/native/sdk-compatibility.json"] = canonical(declaration)
     entries["codex_agent/native/sdk-runtime-root.pub"] = root_public
     metadata = "codex_agent-0.8.0.dist-info"
     entries[f"{metadata}/METADATA"] = b"Metadata-Version: 2.1\nName: codex-agent\nVersion: 0.8.0\n"
@@ -519,6 +527,46 @@ with patch.object(_ffi.NativeLibrary, '_declare_all', return_value=None):
             resource.write_bytes((Path(str(library) + ".evidence") / "keys/release.pub").read_bytes())
             run("tampered")
             resource.unlink()
+            run("missing")
+
+    def test_installed_wheel_embedded_runtime_rejects_tampering_and_missing_file(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            directory = Path(temporary)
+            target = current_classifier()
+            library = compile_library(directory, "wheel_embedded", canonical(identity(target), False), 0x010D0000)
+            installed = install_synthetic_wheel(directory, b"unused embedded root", library)
+            packaged = installed / "codex_agent/native" / target / _library_name(target)
+
+            child = """
+import os
+import sys
+from unittest.mock import patch
+os.environ.pop('CODEX_AGENT_LIBRARY', None)
+sys.path.insert(0, sys.argv[1])
+from codex_agent import _ffi
+mode = sys.argv[2]
+with patch.object(_ffi.NativeLibrary, '_declare_all', return_value=None):
+    if mode == 'valid':
+        assert _ffi.NativeLibrary.load().library.codex_agent_abi_version() == 0x010D0000
+    else:
+        with patch.object(_ffi.ctypes, 'CDLL', side_effect=AssertionError('dynamic load reached')) as dynamic_load:
+            try:
+                _ffi.NativeLibrary.load()
+            except (OSError, FileNotFoundError):
+                dynamic_load.assert_not_called()
+            else:
+                raise AssertionError('invalid embedded Runtime was accepted')
+"""
+
+            def run(mode: str) -> None:
+                result = subprocess.run([sys.executable, "-I", "-B", "-c", child, str(installed), mode],
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+                self.assertEqual(result.returncode, 0, result.stdout.decode(errors="replace"))
+
+            run("valid")
+            packaged.write_bytes(b"tampered embedded Runtime")
+            run("tampered")
+            packaged.unlink()
             run("missing")
 
     @patch("codex_agent._ffi._require_external_runtime_evidence", side_effect=lambda path, *_: (path, None))
