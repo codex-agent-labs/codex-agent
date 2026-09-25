@@ -135,16 +135,15 @@ class AndroidCampaignTest(unittest.TestCase):
 
 
 class AndroidWorkflowBoundaryTest(unittest.TestCase):
-    def test_elected_binary_plan_fails_until_original_worker_is_wired(self):
+    def test_reused_core14_cannot_elect_binary_worker_without_independent_originals(self):
         workflow = (Path(__file__).resolve().parents[2] /
-                    ".github/workflows/product-validation.yml").read_text()
-        job = re.search(r"(?ms)^  sdk-android-binary-plan:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)",
+                    ".github/workflows/sdk-android-binary-validation.yml").read_text()
+        job = re.search(r"(?ms)^  sdk-android-binary:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)",
                         workflow)
         self.assertIsNotNone(job)
-        self.assertRegex(job[0], r"(?s)- id: capture\n.*?sdk-family: android-binary.*?"
-                         r"- name: Reject elected Android binary until original Core authority is wired\n"
-                         r"\s+if: steps\.capture\.outputs\.sdk-workers-required == 'true'\n"
-                         r"\s+run: \|\n.*?exit 1")
+        self.assertIn("fromJSON(inputs.metadataWave).outputs.sdk_state_wave == '14'", job[0])
+        self.assertIn("fromJSON(inputs.metadataWave).outputs.metadata_artifact_id != ''", job[0])
+        self.assertIn("fromJSON(inputs.metadataWave).outputs.metadata_original_context != ''", job[0])
 
 
 if __name__ == "__main__":

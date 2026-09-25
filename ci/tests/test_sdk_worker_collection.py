@@ -250,7 +250,7 @@ class SdkWorkerCollectionTest(unittest.TestCase):
     def test_android_binary_child_binds_original_workflow_and_job(self):
         instance, ready, _, _, files = self.shard("binary", component="sdk-android", target="android")
         child_path = ".github/workflows/sdk-android-binary-validation.yml"
-        child_job = "product-validation / sdk-android-binary-wave / sdk-android-binary-android"
+        child_job = "product-validation / sdk-android-binary-result / sdk-android-binary-android"
         names = self.names
         with patch.object(self, "names", side_effect=lambda row, key: (child_job, names(row, key)[1])), \
                 patch.object(adapter, "_verified_product_state", return_value=self.state({instance: ready})), \

@@ -114,6 +114,9 @@ class ProductSelectionTest(unittest.TestCase):
                 instance for instance in sdk if instance.component == "sdk-core"
                 and instance.phase == "metadata"
             },
+            ".github/workflows/sdk-android-binary-validation.yml": {
+                instance for instance in sdk if instance.component == "sdk-android"
+            },
             ".github/workflows/sdk-validation.yml": sdk,
             ".github/workflows/sdk-binding-parity.yml": sdk,
             ".github/workflows/sdk-consumer-validation.yml": sdk,
