@@ -33,16 +33,28 @@ inputs:
     description: Caller-provisioned Codex ARM64 archive, checked against the original Git pin.
   core13-artifact-id:
     default: ''
-    description: Independently pinned SDK wave 13 state upload ID.
+    description: Current campaign's independently pinned predecessor state upload ID, not a historical wave-13 upload.
   core13-artifact-sha256:
     default: ''
-    description: Exact SDK wave 13 state upload digest.
+    description: Exact current predecessor state upload digest.
+  core13-state-wave:
+    default: ''
+    description: Exact current predecessor Runtime state wave; zero through five.
+  core13-sdk-state-wave:
+    default: ''
+    description: Exact current predecessor SDK state wave, blank or one through thirteen.
   core14-artifact-id:
     default: ''
-    description: Package only; independently pinned SDK wave 14 state upload ID.
+    description: Package only; current campaign's independently pinned Core metadata predecessor state upload ID.
   core14-artifact-sha256:
     default: ''
-    description: Package only; exact SDK wave 14 state upload digest.
+    description: Package only; exact current Core metadata predecessor state upload digest.
+  core14-state-wave:
+    default: ''
+    description: Package only; exact current Core metadata predecessor Runtime state wave.
+  core14-sdk-state-wave:
+    default: ''
+    description: Package only; exact current Core metadata predecessor SDK state wave.
   core14-build-key:
     default: ''
     description: Exact elected Core metadata build key.
@@ -64,6 +76,39 @@ inputs:
   core14-original-context:
     default: ''
     description: Original Core metadata invocation context.
+  core14-reused-catalog:
+    default: ''
+    description: Independent signed catalog locator for reused Core metadata.
+  core14-reused-catalog-root:
+    default: ''
+    description: Retained catalog carrier root, never a trust source.
+  core14-reused-catalog-source:
+    default: ''
+    description: Same-PR, stable, or promoted-main source of reused Core metadata.
+  core14-reused-receipt-sha256:
+    default: ''
+    description: Caller-owned map pinning metadata and all eleven original validation receipt digests.
+  core14-reused-public-key:
+    default: ''
+    description: Independent same-PR catalog verification key.
+  core14-reused-keyring:
+    default: ''
+    description: Independent release catalog verification keyring.
+  core14-reused-keys-directory:
+    default: ''
+    description: Independent release catalog public-key directory.
+  core14-reused-context-manifest:
+    default: ''
+    description: Protected release-signed original Core invocation context outside the carrier.
+  core14-reused-context-signature:
+    default: ''
+    description: Detached signature over the exact protected context manifest.
+  core14-reused-context-keyring:
+    default: ''
+    description: Independent keyring for the protected context signature.
+  core14-reused-context-keys-directory:
+    default: ''
+    description: Independent release public-key directory for the protected context signature.
   sdk-inputs-id:
     default: ''
     description: Package-only exact authenticated SDK inputs upload ID.
@@ -138,8 +183,14 @@ runs:
         ANDROID_ARCHIVE: ${{ inputs.android-runtime-archive }}
         CORE13_ARTIFACT_ID: ${{ inputs.core13-artifact-id }}
         CORE13_ARTIFACT_SHA256: ${{ inputs.core13-artifact-sha256 }}
+        CORE13_STATE_WAVE: ${{ inputs.core13-state-wave }}
+        CORE13_SDK_STATE_WAVE: ${{ inputs.core13-sdk-state-wave }}
         CORE14_ARTIFACT_ID: ${{ inputs.core14-artifact-id }}
         CORE14_ARTIFACT_SHA256: ${{ inputs.core14-artifact-sha256 }}
+        CORE14_STATE_WAVE: ${{ inputs.core14-state-wave }}
+        CORE14_SDK_STATE_WAVE: ${{ inputs.core14-sdk-state-wave }}
+        SELECTED_STATE_WAVE: ${{ inputs.state-wave }}
+        SELECTED_SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
         CORE14_BUILD_KEY: ${{ inputs.core14-build-key }}
         CORE14_METADATA_RECEIPT: ${{ inputs.core14-metadata-receipt }}
         CORE14_METADATA_RECEIPT_SHA256: ${{ inputs.core14-metadata-receipt-sha256 }}
@@ -147,6 +198,17 @@ runs:
         CORE14_METADATA_ARTIFACT_SHA256: ${{ inputs.core14-metadata-artifact-sha256 }}
         CORE14_REPLAY_POLICY: ${{ inputs.core14-replay-policy }}
         CORE14_ORIGINAL_CONTEXT: ${{ inputs.core14-original-context }}
+        CORE14_REUSED_CATALOG: ${{ inputs.core14-reused-catalog }}
+        CORE14_REUSED_CATALOG_ROOT: ${{ inputs.core14-reused-catalog-root }}
+        CORE14_REUSED_CATALOG_SOURCE: ${{ inputs.core14-reused-catalog-source }}
+        CORE14_REUSED_RECEIPT_SHA256: ${{ inputs.core14-reused-receipt-sha256 }}
+        CORE14_REUSED_PUBLIC_KEY: ${{ inputs.core14-reused-public-key }}
+        CORE14_REUSED_KEYRING: ${{ inputs.core14-reused-keyring }}
+        CORE14_REUSED_KEYS_DIRECTORY: ${{ inputs.core14-reused-keys-directory }}
+        CORE14_REUSED_CONTEXT_MANIFEST: ${{ inputs.core14-reused-context-manifest }}
+        CORE14_REUSED_CONTEXT_SIGNATURE: ${{ inputs.core14-reused-context-signature }}
+        CORE14_REUSED_CONTEXT_KEYRING: ${{ inputs.core14-reused-context-keyring }}
+        CORE14_REUSED_CONTEXT_KEYS_DIRECTORY: ${{ inputs.core14-reused-context-keys-directory }}
         SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
         SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
         BINARY_ARTIFACT_ID: ${{ inputs.binary-artifact-id }}
@@ -162,7 +224,8 @@ runs:
         import os, re
         from pathlib import Path
         from ci.products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
-            read_regular_file_bytes, require_exact_keys, require_sha256, sha256_bytes, sha256_file)
+            read_regular_file_bytes, regular_file_inventory, require_exact_keys,
+            require_sha256, sha256_bytes, sha256_file)
         from ci.products.sdk_facade_inputs import _EVIDENCE_FIELDS
         from ci.products.signing_isolation import require_no_signing_secret
         from ci.sdk_maven_original import _context
@@ -178,34 +241,94 @@ runs:
             raise ValueError('Android Maven package requires all original inputs; binary accepts none')
         core = ('CORE13_ARTIFACT_ID', 'CORE13_ARTIFACT_SHA256', 'CORE14_BUILD_KEY',
                 'CORE14_METADATA_RECEIPT', 'CORE14_METADATA_RECEIPT_SHA256',
-                'CORE14_METADATA_ARTIFACT_ID', 'CORE14_METADATA_ARTIFACT_SHA256',
                 'CORE14_REPLAY_POLICY', 'CORE14_ORIGINAL_CONTEXT')
         if not all(os.environ[name] for name in core):
-            raise ValueError('Android Maven phase requires complete Core wave 13/14 caller authority')
+            raise ValueError('Android Maven phase requires complete current Core caller authority')
         if os.environ['SDK_FACADE_METADATA_POLICY'] or os.environ['SDK_ANDROID_METADATA_POLICY']:
             raise ValueError('Android Maven phase must replay Core wave 14 in-process, not import a descriptor')
         if not re.fullmatch(r'[1-9][0-9]*', os.environ['CORE13_ARTIFACT_ID']):
-            raise ValueError('Core wave 13 upload ID must be positive decimal')
-        if not re.fullmatch(r'[1-9][0-9]*', os.environ['CORE14_METADATA_ARTIFACT_ID']):
-            raise ValueError('Core metadata upload ID must be positive decimal')
-        require_sha256(os.environ['CORE14_METADATA_ARTIFACT_SHA256'], 'CORE14_METADATA_ARTIFACT_SHA256')
+            raise ValueError('Current Core predecessor upload ID must be positive decimal')
+        def wave(state, sdk, maximum, label):
+            if state not in {str(value) for value in range(6)} or (
+                    sdk and (state != '0' or not re.fullmatch(r'[1-9][0-9]*', sdk)
+                             or int(sdk) > maximum)):
+                raise ValueError(label + ' requires an exact current state-wave tuple')
+        wave(os.environ['CORE13_STATE_WAVE'], os.environ['CORE13_SDK_STATE_WAVE'], 13,
+             'Core predecessor')
+        selected_maximum = 14 if phase == 'binary' else 15
+        wave(os.environ['SELECTED_STATE_WAVE'], os.environ['SELECTED_SDK_STATE_WAVE'],
+             selected_maximum, 'Android selected state')
         if ((phase == 'package' and not all(os.environ[name] for name in
-                ('CORE14_ARTIFACT_ID', 'CORE14_ARTIFACT_SHA256'))) or
-                (phase == 'binary' and (os.environ['CORE14_ARTIFACT_ID'] or
-                                        os.environ['CORE14_ARTIFACT_SHA256']))):
-            raise ValueError('Android package requires independent Core wave 14 upload; binary uses current upload')
+                ('CORE14_ARTIFACT_ID', 'CORE14_ARTIFACT_SHA256', 'CORE14_STATE_WAVE'))) or
+                (phase == 'binary' and any(os.environ[name] for name in
+                    ('CORE14_ARTIFACT_ID', 'CORE14_ARTIFACT_SHA256',
+                     'CORE14_STATE_WAVE', 'CORE14_SDK_STATE_WAVE')))):
+            raise ValueError('Android package requires current Core predecessor locator; binary uses selected state')
         if phase == 'package' and not re.fullmatch(r'[1-9][0-9]*', os.environ['CORE14_ARTIFACT_ID']):
-            raise ValueError('Core wave 14 upload ID must be positive decimal')
+            raise ValueError('Current Core metadata predecessor upload ID must be positive decimal')
         if phase == 'package':
             require_sha256(os.environ['CORE14_ARTIFACT_SHA256'], 'CORE14_ARTIFACT_SHA256')
+            wave(os.environ['CORE14_STATE_WAVE'], os.environ['CORE14_SDK_STATE_WAVE'], 14,
+                 'Core metadata predecessor')
         require_sha256(os.environ['CORE13_ARTIFACT_SHA256'], 'CORE13_ARTIFACT_SHA256')
         for name in ('CORE14_BUILD_KEY', 'CORE14_METADATA_RECEIPT_SHA256'):
             require_sha256(os.environ[name], name)
+        reused = tuple(name for name in os.environ if name.startswith('CORE14_REUSED_'))
+        if os.environ['CORE14_REUSED_CATALOG']:
+            required = tuple(name for name in reused if name not in
+                ('CORE14_REUSED_PUBLIC_KEY', 'CORE14_REUSED_KEYRING', 'CORE14_REUSED_KEYS_DIRECTORY'))
+            if (not all(os.environ[name] for name in required) or
+                    os.environ['CORE14_METADATA_ARTIFACT_ID'] or
+                    os.environ['CORE14_METADATA_ARTIFACT_SHA256']):
+                raise ValueError('Reused Core requires signed context, catalog and twelve independent receipt pins')
+            source = os.environ['CORE14_REUSED_CATALOG_SOURCE']
+            if not ((source == 'same-pr' and os.environ['CORE14_REUSED_PUBLIC_KEY']
+                     and not os.environ['CORE14_REUSED_KEYRING']
+                     and not os.environ['CORE14_REUSED_KEYS_DIRECTORY']) or
+                    (source in ('stable', 'promoted-main') and
+                     not os.environ['CORE14_REUSED_PUBLIC_KEY'] and
+                     os.environ['CORE14_REUSED_KEYRING'] and
+                     os.environ['CORE14_REUSED_KEYS_DIRECTORY'])):
+                raise ValueError('Reused Core catalog lacks source-specific external trust')
+        else:
+            if (any(os.environ[name] for name in reused) or
+                    not os.environ['CORE14_METADATA_ARTIFACT_ID'] or
+                    not os.environ['CORE14_METADATA_ARTIFACT_SHA256']):
+                raise ValueError('Fresh Core requires original worker upload and no reused controls')
+            if not re.fullmatch(r'[1-9][0-9]*', os.environ['CORE14_METADATA_ARTIFACT_ID']):
+                raise ValueError('Fresh Core metadata upload ID must be positive decimal')
+            require_sha256(os.environ['CORE14_METADATA_ARTIFACT_SHA256'],
+                'CORE14_METADATA_ARTIFACT_SHA256')
+            after_sdk = (os.environ['SELECTED_SDK_STATE_WAVE'] if phase == 'binary' else
+                         os.environ['CORE14_SDK_STATE_WAVE'])
+            if after_sdk != '14':
+                raise ValueError('Fresh Core worker requires its exact current wave 14')
         for name in ('CORE14_METADATA_RECEIPT', 'CORE14_REPLAY_POLICY', 'CORE14_ORIGINAL_CONTEXT'):
             path = Path(os.environ[name])
             if not path.is_absolute() or path.resolve(strict=True) != path:
                 raise ValueError('Core caller control must be absolute and non-symbolic: ' + name)
             pins[name] = sha256_bytes(read_regular_file_bytes(path, reject_symlink_parents=True))
+        if os.environ['CORE14_REUSED_CATALOG']:
+            controls = ('CORE14_REUSED_CATALOG', 'CORE14_REUSED_RECEIPT_SHA256',
+                'CORE14_REUSED_CONTEXT_MANIFEST', 'CORE14_REUSED_CONTEXT_SIGNATURE')
+            trust = ('CORE14_REUSED_PUBLIC_KEY', 'CORE14_REUSED_KEYRING',
+                'CORE14_REUSED_CONTEXT_KEYRING')
+            for name in (*controls, *trust):
+                if not os.environ[name]:
+                    continue
+                path = Path(os.environ[name])
+                if not path.is_absolute() or path.resolve(strict=True) != path:
+                    raise ValueError('Reused Core caller input must be absolute and non-symbolic: ' + name)
+                pins[name] = sha256_file(path, reject_symlink_parents=True)
+            for name in ('CORE14_REUSED_CATALOG_ROOT', 'CORE14_REUSED_KEYS_DIRECTORY',
+                         'CORE14_REUSED_CONTEXT_KEYS_DIRECTORY'):
+                if not os.environ[name]:
+                    continue
+                path = Path(os.environ[name])
+                if not path.is_absolute() or path.resolve(strict=True) != path or not path.is_dir():
+                    raise ValueError('Reused Core caller directory must be absolute and non-symbolic: ' + name)
+                if name != 'CORE14_REUSED_CATALOG_ROOT':
+                    pins[name] = sha256_bytes(canonical_json_bytes(regular_file_inventory(path)))
         if pins['CORE14_METADATA_RECEIPT'] != os.environ['CORE14_METADATA_RECEIPT_SHA256']:
             raise ValueError('Core metadata receipt differs from the caller pin')
         if phase == 'package':
@@ -240,21 +363,25 @@ runs:
         artifact-ids: ${{ inputs.plan-id }}
         path: build/sdk-android-core14-plan
         merge-multiple: true
-    - id: core13
-      name: Capture exact original Core validation state transport
+    - id: before
+      name: Capture current Core predecessor state transport
       shell: bash
       env:
         ARTIFACT_ID: ${{ inputs.core13-artifact-id }}
         ARTIFACT_SHA256: ${{ inputs.core13-artifact-sha256 }}
+        STATE_WAVE: ${{ inputs.core13-state-wave }}
+        SDK_STATE_WAVE: ${{ inputs.core13-sdk-state-wave }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
+        wave=()
+        if [ -n "$SDK_STATE_WAVE" ]; then wave=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
         python3 -B -m ci.sdk_workflow capture-transport \
           --plan build/sdk-android-core14-plan/impact-plan.json \
           --destination build/sdk-android-core13-transport \
           --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
-          --sdk-state-wave 13 --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --state-wave "$STATE_WAVE" ${wave[@]+"${wave[@]}"} --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
           --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT"
     - id: core14
       name: Capture exact original Core metadata state transport
@@ -262,19 +389,22 @@ runs:
       env:
         ARTIFACT_ID: ${{ inputs.phase == 'package' && inputs.core14-artifact-id || inputs.artifact-id }}
         ARTIFACT_SHA256: ${{ inputs.phase == 'package' && inputs.core14-artifact-sha256 || inputs.artifact-sha256 }}
+        STATE_WAVE: ${{ inputs.phase == 'package' && inputs.core14-state-wave || inputs.state-wave }}
+        SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
+        CORE14_SDK_STATE_WAVE: ${{ inputs.core14-sdk-state-wave }}
+        PHASE: ${{ inputs.phase }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
-        if [ '${{ inputs.phase }}' = binary ] && [ '${{ inputs.sdk-state-wave }}' != 14 ]; then
-          echo 'Android binary requires exact Core metadata wave 14' >&2
-          exit 1
-        fi
+        if [ "$PHASE" = package ]; then SDK_STATE_WAVE="$CORE14_SDK_STATE_WAVE"; fi
+        wave=()
+        if [ -n "$SDK_STATE_WAVE" ]; then wave=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
         python3 -B -m ci.sdk_workflow capture-transport \
           --plan build/sdk-android-core14-plan/impact-plan.json \
           --destination build/sdk-android-core14-transport \
           --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
-          --sdk-state-wave 14 --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --state-wave "$STATE_WAVE" ${wave[@]+"${wave[@]}"} --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
           --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT"
     - id: selected
       if: inputs.phase == 'package'
@@ -283,19 +413,19 @@ runs:
       env:
         ARTIFACT_ID: ${{ inputs.artifact-id }}
         ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
+        STATE_WAVE: ${{ inputs.state-wave }}
+        SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
-        if [ '${{ inputs.sdk-state-wave }}' != 15 ]; then
-          echo 'Android package requires exact binary wave 15' >&2
-          exit 1
-        fi
+        wave=()
+        if [ -n "$SDK_STATE_WAVE" ]; then wave=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
         python3 -B -m ci.sdk_workflow capture-transport \
           --plan build/sdk-android-core14-plan/impact-plan.json \
           --destination build/sdk-android-binary-transport \
           --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
-          --sdk-state-wave 15 --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --state-wave "$STATE_WAVE" ${wave[@]+"${wave[@]}"} --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
           --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT"
     - id: core14_admitted
       name: Re-observe Core metadata originals and elect Android before setup
@@ -303,7 +433,7 @@ runs:
       env:
         PLAN: ${{ steps.core14.outputs.plan_path }}
         DISCOVERY: ${{ steps.core14.outputs.discovery_root }}
-        BEFORE_STATE: ${{ steps.core13.outputs.state_root }}
+        BEFORE_STATE: ${{ steps.before.outputs.state_root }}
         AFTER_STATE: ${{ steps.core14.outputs.state_root }}
         SELECTED_STATE: ${{ inputs.phase == 'package' && steps.selected.outputs.state_root || '' }}
         PHASE: ${{ inputs.phase }}
@@ -315,6 +445,17 @@ runs:
         METADATA_ARTIFACT_SHA256: ${{ inputs.core14-metadata-artifact-sha256 }}
         REPLAY_POLICY: ${{ inputs.core14-replay-policy }}
         ORIGINAL_CONTEXT: ${{ inputs.core14-original-context }}
+        REUSED_CATALOG: ${{ inputs.core14-reused-catalog }}
+        REUSED_CATALOG_ROOT: ${{ inputs.core14-reused-catalog-root }}
+        REUSED_CATALOG_SOURCE: ${{ inputs.core14-reused-catalog-source }}
+        REUSED_RECEIPTS: ${{ inputs.core14-reused-receipt-sha256 }}
+        REUSED_PUBLIC_KEY: ${{ inputs.core14-reused-public-key }}
+        REUSED_KEYRING: ${{ inputs.core14-reused-keyring }}
+        REUSED_KEYS_DIRECTORY: ${{ inputs.core14-reused-keys-directory }}
+        REUSED_CONTEXT_MANIFEST: ${{ inputs.core14-reused-context-manifest }}
+        REUSED_CONTEXT_SIGNATURE: ${{ inputs.core14-reused-context-signature }}
+        REUSED_CONTEXT_KEYRING: ${{ inputs.core14-reused-context-keyring }}
+        REUSED_CONTEXT_KEYS_DIRECTORY: ${{ inputs.core14-reused-context-keys-directory }}
         WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         ANDROID_ARCHIVE: ${{ inputs.android-runtime-archive }}
         APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
@@ -334,11 +475,25 @@ runs:
           --metadata-receipt "$METADATA_RECEIPT" \
           --expected-build-key "$BUILD_KEY" --expected-metadata-build-key "$METADATA_KEY" \
           --expected-metadata-receipt-sha256 "$METADATA_RECEIPT_SHA256" \
-          --expected-metadata-artifact-id "$METADATA_ARTIFACT_ID" \
-          --expected-metadata-artifact-sha256 "$METADATA_ARTIFACT_SHA256" \
           --replay-policy "$REPLAY_POLICY" --original-context "$ORIGINAL_CONTEXT" \
           --trusted-workflow-sha "$WORKFLOW_SHA" --repository-root "$GITHUB_WORKSPACE" \
           --android-runtime-archive "$ANDROID_ARCHIVE" --github-output "$GITHUB_OUTPUT")
+        if [ -n "$REUSED_CATALOG" ]; then
+          args+=(--reused-catalog "$REUSED_CATALOG" --reused-catalog-root "$REUSED_CATALOG_ROOT" \
+            --reused-catalog-source "$REUSED_CATALOG_SOURCE" --reused-receipt-sha256 "$REUSED_RECEIPTS" \
+            --reused-context-manifest "$REUSED_CONTEXT_MANIFEST" \
+            --reused-context-signature "$REUSED_CONTEXT_SIGNATURE" \
+            --reused-context-keyring "$REUSED_CONTEXT_KEYRING" \
+            --reused-context-keys-directory "$REUSED_CONTEXT_KEYS_DIRECTORY")
+          if [ -n "$REUSED_PUBLIC_KEY" ]; then
+            args+=(--reused-public-key "$REUSED_PUBLIC_KEY")
+          else
+            args+=(--reused-keyring "$REUSED_KEYRING" --reused-keys-directory "$REUSED_KEYS_DIRECTORY")
+          fi
+        else
+          args+=(--expected-metadata-artifact-id "$METADATA_ARTIFACT_ID" \
+            --expected-metadata-artifact-sha256 "$METADATA_ARTIFACT_SHA256")
+        fi
         if [ "$PHASE" = package ]; then
           args+=(--phase package --selected-state-root "$SELECTED_STATE" \
             --sdk-inputs-artifact-id "$SDK_INPUTS_ID" \
@@ -366,6 +521,15 @@ runs:
         CORE14_METADATA_RECEIPT: ${{ inputs.core14-metadata-receipt }}
         CORE14_REPLAY_POLICY: ${{ inputs.core14-replay-policy }}
         CORE14_ORIGINAL_CONTEXT: ${{ inputs.core14-original-context }}
+        CORE14_REUSED_CATALOG: ${{ inputs.core14-reused-catalog }}
+        CORE14_REUSED_RECEIPT_SHA256: ${{ inputs.core14-reused-receipt-sha256 }}
+        CORE14_REUSED_PUBLIC_KEY: ${{ inputs.core14-reused-public-key }}
+        CORE14_REUSED_KEYRING: ${{ inputs.core14-reused-keyring }}
+        CORE14_REUSED_KEYS_DIRECTORY: ${{ inputs.core14-reused-keys-directory }}
+        CORE14_REUSED_CONTEXT_MANIFEST: ${{ inputs.core14-reused-context-manifest }}
+        CORE14_REUSED_CONTEXT_SIGNATURE: ${{ inputs.core14-reused-context-signature }}
+        CORE14_REUSED_CONTEXT_KEYRING: ${{ inputs.core14-reused-context-keyring }}
+        CORE14_REUSED_CONTEXT_KEYS_DIRECTORY: ${{ inputs.core14-reused-context-keys-directory }}
         SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
         SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
         BINARY_ARTIFACT_ID: ${{ inputs.binary-artifact-id }}
@@ -384,7 +548,7 @@ runs:
         sys.path.insert(0, str(Path.cwd() / 'ci'))
         from native_wrappers import host_classifier
         from products.inventory import (canonical_json_bytes, git_regular_blob_bytes,
-            load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys,
+            load_canonical_json_bytes, read_regular_file_bytes, regular_file_inventory, require_exact_keys,
             require_sha256, sha256_bytes, sha256_file)
         from products.signing_isolation import require_no_signing_secret
         from products.sdk_facade_inputs import _EVIDENCE_FIELDS
@@ -417,6 +581,16 @@ runs:
         for name in ('CORE14_METADATA_RECEIPT', 'CORE14_REPLAY_POLICY', 'CORE14_ORIGINAL_CONTEXT'):
             pins[name] = sha256_bytes(read_regular_file_bytes(Path(os.environ[name]),
                 reject_symlink_parents=True))
+        for name in ('CORE14_REUSED_CATALOG', 'CORE14_REUSED_RECEIPT_SHA256',
+                     'CORE14_REUSED_PUBLIC_KEY', 'CORE14_REUSED_KEYRING',
+                     'CORE14_REUSED_CONTEXT_MANIFEST', 'CORE14_REUSED_CONTEXT_SIGNATURE',
+                     'CORE14_REUSED_CONTEXT_KEYRING'):
+            if os.environ[name]:
+                pins[name] = sha256_file(Path(os.environ[name]), reject_symlink_parents=True)
+        for name in ('CORE14_REUSED_KEYS_DIRECTORY', 'CORE14_REUSED_CONTEXT_KEYS_DIRECTORY'):
+            if os.environ[name]:
+                pins[name] = sha256_bytes(canonical_json_bytes(
+                    regular_file_inventory(Path(os.environ[name]))))
         for name in ('BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT', 'SDK_VALIDATION_TOOLING',
                      'SDK_APPLE_VALIDATION_POLICY', 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY'):
             if os.environ[name]:
@@ -488,7 +662,7 @@ runs:
         PLAN: ${{ steps.core14.outputs.plan_path }}
         DISCOVERY: ${{ steps.core14.outputs.discovery_root }}
         STATE: ${{ inputs.phase == 'package' && steps.selected.outputs.state_root || steps.core14.outputs.state_root }}
-        BEFORE_STATE: ${{ steps.core13.outputs.state_root }}
+        BEFORE_STATE: ${{ steps.before.outputs.state_root }}
         CORE14_STATE: ${{ steps.core14.outputs.state_root }}
         PHASE: ${{ inputs.phase }}
         BUILD_KEY: ${{ inputs.build-key }}
@@ -500,6 +674,17 @@ runs:
         CORE14_METADATA_ARTIFACT_SHA256: ${{ inputs.core14-metadata-artifact-sha256 }}
         CORE14_REPLAY_POLICY: ${{ inputs.core14-replay-policy }}
         CORE14_ORIGINAL_CONTEXT: ${{ inputs.core14-original-context }}
+        CORE14_REUSED_CATALOG: ${{ inputs.core14-reused-catalog }}
+        CORE14_REUSED_CATALOG_ROOT: ${{ inputs.core14-reused-catalog-root }}
+        CORE14_REUSED_CATALOG_SOURCE: ${{ inputs.core14-reused-catalog-source }}
+        CORE14_REUSED_RECEIPT_SHA256: ${{ inputs.core14-reused-receipt-sha256 }}
+        CORE14_REUSED_PUBLIC_KEY: ${{ inputs.core14-reused-public-key }}
+        CORE14_REUSED_KEYRING: ${{ inputs.core14-reused-keyring }}
+        CORE14_REUSED_KEYS_DIRECTORY: ${{ inputs.core14-reused-keys-directory }}
+        CORE14_REUSED_CONTEXT_MANIFEST: ${{ inputs.core14-reused-context-manifest }}
+        CORE14_REUSED_CONTEXT_SIGNATURE: ${{ inputs.core14-reused-context-signature }}
+        CORE14_REUSED_CONTEXT_KEYRING: ${{ inputs.core14-reused-context-keyring }}
+        CORE14_REUSED_CONTEXT_KEYS_DIRECTORY: ${{ inputs.core14-reused-context-keys-directory }}
         ARCHIVE_SHA256: ${{ steps.identity.outputs.archive_sha256 }}
         SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
         SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
@@ -519,13 +704,24 @@ runs:
         python3 -B - <<'PY'
         import os
         from pathlib import Path
-        from ci.products.inventory import canonical_json_bytes, read_regular_file_bytes, sha256_bytes, sha256_file
+        from ci.products.inventory import (canonical_json_bytes, read_regular_file_bytes,
+            regular_file_inventory, sha256_bytes, sha256_file)
         from ci.products.signing_isolation import require_no_signing_secret
         require_no_signing_secret(os.environ)
         pins = {'ANDROID_ARCHIVE': sha256_file(Path(os.environ['ANDROID_ARCHIVE']), reject_symlink_parents=True)}
         for name in ('CORE14_METADATA_RECEIPT', 'CORE14_REPLAY_POLICY', 'CORE14_ORIGINAL_CONTEXT'):
             pins[name] = sha256_bytes(read_regular_file_bytes(Path(os.environ[name]),
                 reject_symlink_parents=True))
+        for name in ('CORE14_REUSED_CATALOG', 'CORE14_REUSED_RECEIPT_SHA256',
+                     'CORE14_REUSED_PUBLIC_KEY', 'CORE14_REUSED_KEYRING',
+                     'CORE14_REUSED_CONTEXT_MANIFEST', 'CORE14_REUSED_CONTEXT_SIGNATURE',
+                     'CORE14_REUSED_CONTEXT_KEYRING'):
+            if os.environ[name]:
+                pins[name] = sha256_file(Path(os.environ[name]), reject_symlink_parents=True)
+        for name in ('CORE14_REUSED_KEYS_DIRECTORY', 'CORE14_REUSED_CONTEXT_KEYS_DIRECTORY'):
+            if os.environ[name]:
+                pins[name] = sha256_bytes(canonical_json_bytes(
+                    regular_file_inventory(Path(os.environ[name]))))
         for name in ('BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT', 'SDK_VALIDATION_TOOLING',
                      'SDK_APPLE_VALIDATION_POLICY', 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY'):
             if os.environ[name]:
@@ -540,12 +736,29 @@ runs:
           --metadata-receipt "$CORE14_METADATA_RECEIPT" \
           --expected-build-key "$BUILD_KEY" --expected-metadata-build-key "$CORE14_BUILD_KEY" \
           --expected-metadata-receipt-sha256 "$CORE14_METADATA_RECEIPT_SHA256" \
-          --expected-metadata-artifact-id "$CORE14_METADATA_ARTIFACT_ID" \
-          --expected-metadata-artifact-sha256 "$CORE14_METADATA_ARTIFACT_SHA256" \
           --replay-policy "$CORE14_REPLAY_POLICY" --original-context "$CORE14_ORIGINAL_CONTEXT" \
           --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --repository-root "$GITHUB_WORKSPACE" \
           --android-runtime-archive "$ANDROID_ARCHIVE" \
           --destination "$GITHUB_WORKSPACE/build/sdk-android-maven-worker")
+        if [ -n "$CORE14_REUSED_CATALOG" ]; then
+          core+=(--reused-catalog "$CORE14_REUSED_CATALOG" \
+            --reused-catalog-root "$CORE14_REUSED_CATALOG_ROOT" \
+            --reused-catalog-source "$CORE14_REUSED_CATALOG_SOURCE" \
+            --reused-receipt-sha256 "$CORE14_REUSED_RECEIPT_SHA256" \
+            --reused-context-manifest "$CORE14_REUSED_CONTEXT_MANIFEST" \
+            --reused-context-signature "$CORE14_REUSED_CONTEXT_SIGNATURE" \
+            --reused-context-keyring "$CORE14_REUSED_CONTEXT_KEYRING" \
+            --reused-context-keys-directory "$CORE14_REUSED_CONTEXT_KEYS_DIRECTORY")
+          if [ -n "$CORE14_REUSED_PUBLIC_KEY" ]; then
+            core+=(--reused-public-key "$CORE14_REUSED_PUBLIC_KEY")
+          else
+            core+=(--reused-keyring "$CORE14_REUSED_KEYRING" \
+              --reused-keys-directory "$CORE14_REUSED_KEYS_DIRECTORY")
+          fi
+        else
+          core+=(--expected-metadata-artifact-id "$CORE14_METADATA_ARTIFACT_ID" \
+            --expected-metadata-artifact-sha256 "$CORE14_METADATA_ARTIFACT_SHA256")
+        fi
         if [ "$PHASE" = package ]; then
           core+=(--phase package --selected-state-root "$STATE" \
             --sdk-inputs-artifact-id "$SDK_INPUTS_ID" \

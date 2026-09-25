@@ -11,7 +11,8 @@ import textwrap
 import unittest
 from unittest.mock import patch
 
-from ci.products.inventory import canonical_json_bytes, sha256_bytes
+from ci.products.inventory import (canonical_json_bytes, regular_file_inventory,
+    sha256_bytes, sha256_file)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,21 +35,22 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
 
     def test_current_state_is_captured_before_any_platform_setup(self):
         action = self.action
-        self.assertLess(action.index("- id: policy"), action.index("- id: core13"))
-        for earlier, later in (("- id: core13", "- id: core14"),
+        self.assertLess(action.index("- id: policy"), action.index("- id: before"))
+        for earlier, later in (("- id: before", "- id: core14"),
                                ("- id: core14", "- id: core14_admitted"),
                                ("- id: core14_admitted", "uses: ./.github/actions/setup-kmp")):
             self.assertLess(action.index(earlier), action.index(later))
-        self.assertIn("--sdk-state-wave 13", self.script("id: core13"))
-        self.assertIn("--sdk-state-wave 14", self.script("id: core14"))
-        self.assertIn("--sdk-state-wave 15", self.script("id: selected"))
+        for marker in ("id: before", "id: core14", "id: selected"):
+            self.assertIn('--state-wave "$STATE_WAVE" ${wave[@]+"${wave[@]}"}', self.script(marker))
+            self.assertNotRegex(self.script(marker), r"--sdk-state-wave (13|14|15)(?:\s|$)")
         self.assertIn("ci.sdk_android_core14_caller preflight", self.script("id: core14_admitted"))
         self.assertLess(action.index("- id: selected"), action.index("- id: identity"))
         self.assertLess(action.index("- id: identity"), action.index("uses: ./.github/actions/setup-kmp"))
         self.assertLess(action.index("- id: identity"), action.index("uses: android-actions/setup-android@"))
         for field in ("plan-id", "artifact-id", "artifact-sha256", "trusted-workflow-sha",
-                      "core13-artifact-id", "core14-artifact-id", "core14-metadata-receipt",
-                      "core14-metadata-artifact-id", "core14-metadata-artifact-sha256"):
+                      "core13-artifact-id", "core13-state-wave", "core13-sdk-state-wave",
+                      "core14-artifact-id", "core14-state-wave", "core14-sdk-state-wave",
+                      "core14-metadata-receipt", "core14-reused-context-signature"):
             self.assertIn(f"inputs.{field}", action)
         identity = self.script("id: identity")
         for check in ("host_classifier() != 'linux-x64'", "len(rows) != 1",
@@ -106,7 +108,7 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "canonical original path"):
                     exec(compile(source, "android-context", "exec"), {})
 
-    def run_execution(self, phase, *, bad_digest=False):
+    def run_execution(self, phase, *, bad_digest=False, reused=False):
         with tempfile.TemporaryDirectory(prefix="android-maven-action-", dir=ROOT / "build") as temporary:
             root = Path(temporary)
             binary = root / "bin"
@@ -135,6 +137,25 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
             if phase == "package":
                 pins.update(BINARY_CONTRACT_EVIDENCE=sha256_bytes(contract.read_bytes()),
                             BINARY_ORIGINAL_CONTEXT=sha256_bytes(context.read_bytes()))
+            reused_inputs = {}
+            if reused:
+                carrier = root / "carrier"
+                carrier.mkdir()
+                reused_inputs = {"CORE14_REUSED_CATALOG_ROOT": str(carrier),
+                    "CORE14_REUSED_CATALOG_SOURCE": "same-pr"}
+                for name in ("CORE14_REUSED_CATALOG", "CORE14_REUSED_RECEIPT_SHA256",
+                             "CORE14_REUSED_PUBLIC_KEY", "CORE14_REUSED_CONTEXT_MANIFEST",
+                             "CORE14_REUSED_CONTEXT_SIGNATURE", "CORE14_REUSED_CONTEXT_KEYRING"):
+                    path = root / (name.lower() + ".json")
+                    path.write_bytes(canonical_json_bytes({"fixture": name}))
+                    reused_inputs[name] = str(path)
+                    pins[name] = sha256_file(path)
+                keys = root / "context-keys"
+                keys.mkdir()
+                (keys / "release.pub").write_bytes(b"fixture release key")
+                reused_inputs["CORE14_REUSED_CONTEXT_KEYS_DIRECTORY"] = str(keys)
+                pins["CORE14_REUSED_CONTEXT_KEYS_DIRECTORY"] = sha256_bytes(
+                    canonical_json_bytes(regular_file_inventory(keys)))
             environment = {"PATH": str(binary) + os.pathsep + os.environ["PATH"],
                 "RECORDED_ARGS": str(record), "REAL_PYTHON": sys.executable,
                 "PYTHONPATH": str(ROOT),
@@ -146,10 +167,18 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
                 "CORE14_BUILD_KEY": KEY,
                 "CORE14_METADATA_RECEIPT": str(core_receipt),
                 "CORE14_METADATA_RECEIPT_SHA256": sha256_bytes(core_receipt.read_bytes()),
-                "CORE14_METADATA_ARTIFACT_ID": "73",
-                "CORE14_METADATA_ARTIFACT_SHA256": KEY,
+                "CORE14_METADATA_ARTIFACT_ID": "" if reused else "73",
+                "CORE14_METADATA_ARTIFACT_SHA256": "" if reused else KEY,
                 "CORE14_REPLAY_POLICY": str(core_policy),
                 "CORE14_ORIGINAL_CONTEXT": str(core_context),
+                **{name: "" for name in (
+                    "CORE14_REUSED_CATALOG", "CORE14_REUSED_CATALOG_ROOT",
+                    "CORE14_REUSED_CATALOG_SOURCE", "CORE14_REUSED_RECEIPT_SHA256",
+                    "CORE14_REUSED_PUBLIC_KEY", "CORE14_REUSED_KEYRING",
+                    "CORE14_REUSED_KEYS_DIRECTORY", "CORE14_REUSED_CONTEXT_MANIFEST",
+                    "CORE14_REUSED_CONTEXT_SIGNATURE", "CORE14_REUSED_CONTEXT_KEYRING",
+                    "CORE14_REUSED_CONTEXT_KEYS_DIRECTORY")},
+                **reused_inputs,
                 "ARCHIVE_SHA256": actual_digest if not bad_digest else KEY,
                 "POLICY_SHA256": sha256_bytes(canonical_json_bytes(pins)),
                 "SDK_INPUTS_ID": "71", "SDK_INPUTS_SHA256": KEY,
@@ -172,7 +201,10 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
             archive.write_bytes(b"original archive")
             environment = {**os.environ, "PHASE": "binary", "ANDROID_ARCHIVE": str(archive),
                 "CORE13_ARTIFACT_ID": "71", "CORE13_ARTIFACT_SHA256": KEY,
+                "CORE13_STATE_WAVE": "0", "CORE13_SDK_STATE_WAVE": "13",
                 "CORE14_ARTIFACT_ID": "", "CORE14_ARTIFACT_SHA256": "",
+                "CORE14_STATE_WAVE": "", "CORE14_SDK_STATE_WAVE": "",
+                "SELECTED_STATE_WAVE": "0", "SELECTED_SDK_STATE_WAVE": "14",
                 "CORE14_BUILD_KEY": KEY,
                 "CORE14_METADATA_RECEIPT": str(root / "core-receipt.json"),
                 "CORE14_METADATA_RECEIPT_SHA256": sha256_bytes(canonical_json_bytes({})),
@@ -180,6 +212,13 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
                 "CORE14_METADATA_ARTIFACT_SHA256": KEY,
                 "CORE14_REPLAY_POLICY": str(root / "core-policy.json"),
                 "CORE14_ORIGINAL_CONTEXT": str(root / "core-context.json"),
+                **{name: "" for name in (
+                    "CORE14_REUSED_CATALOG", "CORE14_REUSED_CATALOG_ROOT",
+                    "CORE14_REUSED_CATALOG_SOURCE", "CORE14_REUSED_RECEIPT_SHA256",
+                    "CORE14_REUSED_PUBLIC_KEY", "CORE14_REUSED_KEYRING",
+                    "CORE14_REUSED_KEYS_DIRECTORY", "CORE14_REUSED_CONTEXT_MANIFEST",
+                    "CORE14_REUSED_CONTEXT_SIGNATURE", "CORE14_REUSED_CONTEXT_KEYRING",
+                    "CORE14_REUSED_CONTEXT_KEYS_DIRECTORY")},
                 "SDK_INPUTS_ID": "", "SDK_INPUTS_SHA256": "", "BINARY_ARTIFACT_ID": "",
                 "BINARY_ARTIFACT_SHA256": "", "BINARY_CONTRACT_EVIDENCE": "",
                 "BINARY_ORIGINAL_CONTEXT": "", "SDK_VALIDATION_TOOLING": "",
@@ -197,7 +236,7 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
                 env={**environment, "CORE14_METADATA_RECEIPT": ""},
                 capture_output=True, text=True, check=False)
             self.assertNotEqual(0, absent_core.returncode)
-            self.assertIn("Core wave 13/14 caller authority", absent_core.stderr)
+            self.assertIn("current Core caller authority", absent_core.stderr)
             missing = subprocess.run(command, cwd=ROOT,
                 env={**environment, "PHASE": "package"}, capture_output=True, text=True, check=False)
             self.assertNotEqual(0, missing.returncode)
@@ -206,6 +245,74 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
                 env={**environment, "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": ""},
                 capture_output=True, text=True, check=False)
             self.assertNotEqual(0, secret.returncode)
+            unsigned_reuse = subprocess.run(command, cwd=ROOT,
+                env={**environment, "CORE14_REUSED_CATALOG": str(root / "unsigned-catalog.json"),
+                    "CORE14_METADATA_ARTIFACT_ID": "", "CORE14_METADATA_ARTIFACT_SHA256": ""},
+                capture_output=True, text=True, check=False)
+            self.assertNotEqual(0, unsigned_reuse.returncode)
+            self.assertIn("signed context, catalog and twelve independent receipt pins",
+                unsigned_reuse.stderr)
+            carrier, keys = root / "carrier", root / "context-keys"
+            carrier.mkdir()
+            keys.mkdir()
+            (keys / "release.pub").write_bytes(b"release key fixture")
+            reused = {**environment, "CORE13_SDK_STATE_WAVE": "11",
+                "SELECTED_SDK_STATE_WAVE": "12", "CORE14_METADATA_ARTIFACT_ID": "",
+                "CORE14_METADATA_ARTIFACT_SHA256": "",
+                "CORE14_REUSED_CATALOG_ROOT": str(carrier),
+                "CORE14_REUSED_CATALOG_SOURCE": "same-pr",
+                "CORE14_REUSED_CONTEXT_KEYS_DIRECTORY": str(keys)}
+            for name in ("CORE14_REUSED_CATALOG", "CORE14_REUSED_RECEIPT_SHA256",
+                         "CORE14_REUSED_PUBLIC_KEY", "CORE14_REUSED_CONTEXT_MANIFEST",
+                         "CORE14_REUSED_CONTEXT_SIGNATURE", "CORE14_REUSED_CONTEXT_KEYRING"):
+                path = root / (name.lower() + ".json")
+                path.write_bytes(canonical_json_bytes({"fixture": name}))
+                reused[name] = str(path)
+            accepted = subprocess.run(command, cwd=ROOT, env=reused,
+                capture_output=True, text=True, check=False)
+            self.assertEqual(0, accepted.returncode, accepted.stderr)
+            missing_signature = subprocess.run(command, cwd=ROOT,
+                env={**reused, "CORE14_REUSED_CONTEXT_SIGNATURE": ""},
+                capture_output=True, text=True, check=False)
+            self.assertNotEqual(0, missing_signature.returncode)
+            self.assertIn("signed context, catalog and twelve independent receipt pins",
+                missing_signature.stderr)
+
+    def test_transport_capture_uses_exact_forwarded_current_wave(self):
+        with tempfile.TemporaryDirectory(prefix="android-maven-capture-", dir=ROOT / "build") as temporary:
+            root = Path(temporary)
+            binary = root / "bin"
+            binary.mkdir()
+            recorder = binary / "python3"
+            recorder.write_text("#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$RECORDED_ARGS\"\n")
+            recorder.chmod(0o700)
+            record = root / "args"
+            common = {**os.environ, "PATH": str(binary) + os.pathsep + os.environ["PATH"],
+                "RECORDED_ARGS": str(record), "ARTIFACT_ID": "71",
+                "ARTIFACT_SHA256": KEY, "TRUSTED_WORKFLOW_SHA": "c" * 40,
+                "GITHUB_WORKSPACE": str(root), "GITHUB_OUTPUT": str(root / "output")}
+            for marker in ("id: before", "id: core14", "id: selected"):
+                for state, sdk in (("0", "12"), ("5", "")):
+                    with self.subTest(marker=marker, wave=(state, sdk)):
+                        environment = {**common, "STATE_WAVE": state, "SDK_STATE_WAVE": sdk,
+                            "CORE14_SDK_STATE_WAVE": sdk, "PHASE": "binary"}
+                        result = subprocess.run([self.shell, "--noprofile", "--norc", "-c",
+                            self.script(marker)], cwd=root, env=environment,
+                            capture_output=True, text=True, check=False)
+                        self.assertEqual(0, result.returncode, result.stderr)
+                        args = record.read_bytes().decode().split("\0")[:-1]
+                        self.assertEqual(state, args[args.index("--state-wave") + 1])
+                        if sdk:
+                            self.assertEqual(sdk, args[args.index("--sdk-state-wave") + 1])
+                        else:
+                            self.assertNotIn("--sdk-state-wave", args)
+            result = subprocess.run([self.shell, "--noprofile", "--norc", "-c",
+                self.script("id: core14")], cwd=root,
+                env={**common, "STATE_WAVE": "5", "SDK_STATE_WAVE": "15",
+                     "CORE14_SDK_STATE_WAVE": "", "PHASE": "package"},
+                capture_output=True, text=True, check=False)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertNotIn("--sdk-state-wave", record.read_bytes().decode().split("\0"))
 
     def test_binary_and_package_pass_only_their_fixed_original_inputs(self):
         for phase in ("binary", "package"):
@@ -236,6 +343,20 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
         result, args = self.run_execution("package", bad_digest=True)
         self.assertNotEqual(0, result.returncode)
         self.assertIsNone(args)
+
+    def test_reused_core_passes_signed_controls_without_fresh_worker_upload(self):
+        for phase in ("binary", "package"):
+            with self.subTest(phase=phase):
+                result, args = self.run_execution(phase, reused=True)
+                self.assertEqual(0, result.returncode, result.stderr)
+                for flag in ("--reused-catalog", "--reused-catalog-root",
+                             "--reused-catalog-source", "--reused-receipt-sha256",
+                             "--reused-public-key", "--reused-context-manifest",
+                             "--reused-context-signature", "--reused-context-keyring",
+                             "--reused-context-keys-directory"):
+                    self.assertIn(flag, args)
+                self.assertNotIn("--expected-metadata-artifact-id", args)
+                self.assertNotIn("--expected-metadata-artifact-sha256", args)
 
 
 if __name__ == "__main__":
