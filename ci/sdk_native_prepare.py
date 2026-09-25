@@ -14,13 +14,13 @@ import time
 from typing import Any
 
 from products.inventory import (
-    canonical_json_bytes, read_regular_file_bytes, require_exact_keys,
+    canonical_json_bytes, git_regular_blob_bytes, read_regular_file_bytes, require_exact_keys,
     require_integer, require_semver, require_sha256, require_string, write_canonical_json,
 )
 from products.receipt import compute_build_key, validate_producer
 from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PHASE_INSTANCE_IDS, PhaseInstanceId
 from products.restore import PHASE_PLAN_KEYS
-from products.sdk_native import verify_staged_native_sdk_inputs
+from products.sdk_native import SDK_ROOT_PATH, verify_staged_native_sdk_inputs
 from products.sdk_native_metadata import _inventory
 from products.sdk_package import _require_capability_output_separate
 from products.sdk_validation_inputs import _request_inventory
@@ -144,7 +144,10 @@ def execute(
         if not _inventory(sources / language):
             raise ValueError("Native SDK prepared language source must not be empty")
     try:
-        index = verify_staged_native_sdk_inputs(sdks, request, runtime)
+        index = verify_staged_native_sdk_inputs(
+            sdks, request, runtime,
+            git_regular_blob_bytes(root, producer["commit"], SDK_ROOT_PATH, max_bytes=4096),
+        )
         if (index["sdkVersion"] != sdk_version or index["producerCommit"] != producer["commit"]
                 or index["producerTree"] != tree):
             raise ValueError("Prepared native SDK staging differs from its elected version or producer")

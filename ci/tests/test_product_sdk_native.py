@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -19,11 +20,38 @@ from ci.tests.product_chain_support import write_receipt
 from ci.tests.test_product_native_chain import build_chain
 from ci.tests.test_product_sdk_inputs import _request
 
+SDK_ROOT = Path(__file__).resolve().parents[2] / "gradle/release/keys/sdk-runtime-root.pub"
+
+
+def csharp_resource_fixture(root: Path, compatibility: bytes, root_key: bytes) -> bytes:
+    """Build only the CLR resource envelope needed by synthetic package tests."""
+    project = root / "csharp-resource-fixture"
+    project.mkdir()
+    (project / "Fixture.csproj").write_text("""<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework><AssemblyName>CodexAgent</AssemblyName></PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="sdk-runtime-root.pub" LogicalName="CodexAgent.sdk-runtime-root.pub" />
+    <EmbeddedResource Include="sdk-compatibility.json" LogicalName="CodexAgent.sdk-compatibility.json" />
+  </ItemGroup>
+</Project>
+""")
+    (project / "Fixture.cs").write_text("public class SyntheticResourceFixture {}\n")
+    (project / "sdk-runtime-root.pub").write_bytes(root_key)
+    (project / "sdk-compatibility.json").write_bytes(compatibility)
+    source = project / "empty-nuget-source"
+    source.mkdir()
+    subprocess.run(["dotnet", "restore", str(project / "Fixture.csproj"),
+                    "--source", str(source), "-p:NuGetAudit=false"], check=True, capture_output=True)
+    subprocess.run(["dotnet", "build", str(project / "Fixture.csproj"),
+                    "--no-restore"], check=True, capture_output=True)
+    return (project / "bin/Debug/net8.0/CodexAgent.dll").read_bytes()
+
 
 def staged_sdks(chain: dict, output: Path) -> Path:
     output.mkdir()
     compatibility = chain["compatibility"].read_bytes()
     (output / "sdk-compatibility.json").write_bytes(compatibility)
+    (output / "sdk-runtime-root.pub").write_bytes(SDK_ROOT.read_bytes())
     records = []
     for target, spec in sorted(TARGET_SPECS.items()):
         classifier = spec.classifier.removeprefix("c-abi-")
@@ -59,7 +87,8 @@ class NativeSdkInputsTest(unittest.TestCase):
         cls.sdks = staged_sdks(cls.chain, cls.root / "sdks")
 
     def verify(self, sdks, runtime=None):
-        return verify_staged_native_sdk_inputs(sdks, self.request, runtime or self.chain["variants"]["stages"])
+        return verify_staged_native_sdk_inputs(sdks, self.request, runtime or self.chain["variants"]["stages"],
+                                                SDK_ROOT.read_bytes())
 
     def test_exact_original_inputs_survive_different_staging_producer(self):
         before = regular_file_inventory(self.sdks)
@@ -139,7 +168,8 @@ class NativeSdkInputsTest(unittest.TestCase):
                 receipt.write_bytes(raw)
 
     def test_index_rebinding_cannot_authenticate_tampered_staging(self):
-        for case in ("header", "legal", "import", "library", "evidence", "archive", "missing", "extra", "symlink"):
+        for case in ("header", "legal", "import", "library", "evidence", "archive", "root",
+                     "valid-wrong-root", "missing", "extra", "symlink"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary).resolve()
                 staged = root / "sdks"
@@ -165,6 +195,11 @@ class NativeSdkInputsTest(unittest.TestCase):
                     linux["evidenceSha256"] = sha256_bytes(path.read_bytes()).removeprefix("sha256:")
                 elif case == "archive":
                     linux["archiveSha256"] = "1" * 64
+                elif case == "root":
+                    (staged / "sdk-runtime-root.pub").write_bytes(b"wrong root\n")
+                elif case == "valid-wrong-root":
+                    (staged / "sdk-runtime-root.pub").write_bytes(
+                        self.chain["context"]["public_key"].read_bytes())
                 elif case == "missing":
                     (staged / "linux-x64/LICENSE.txt").unlink()
                 elif case == "extra":
@@ -201,6 +236,11 @@ class NativeSdkInputsTest(unittest.TestCase):
             self.assertEqual(self.verify(self.sdks)["sdkVersion"], "0.2.9")
 
     def package(self, root, *, tamper=False, evidence=None, kind="package"):
+        if not hasattr(self, "csharp_dll"):
+            if not shutil.which("dotnet"):
+                self.skipTest(".NET SDK unavailable for the C# resource-inspection fixture")
+            self.csharp_dll = csharp_resource_fixture(
+                self.root, self.chain["compatibility"].read_bytes(), SDK_ROOT.read_bytes())
         stage = root / "stage"
         package = stage / "outputs/csharp"
         package.mkdir(parents=True)
@@ -208,6 +248,8 @@ class NativeSdkInputsTest(unittest.TestCase):
         with zipfile.ZipFile(package / "CodexAgent.0.2.9.nupkg", "w") as archive:
             archive.writestr("CodexAgent.nuspec", "<package><metadata><id>CodexAgent</id><version>0.2.9</version></metadata></package>")
             archive.writestr("META-INF/codex-agent/sdk-compatibility.json", compatibility)
+            archive.writestr("META-INF/codex-agent/sdk-runtime-root.pub", SDK_ROOT.read_bytes())
+            archive.writestr("lib/net8.0/CodexAgent.dll", self.csharp_dll)
             for classifier, destination in PACKAGE_CLASSIFIERS.items():
                 path = self.sdks / classifier / HOSTS[classifier][4]
                 archive.writestr(f"runtimes/{destination}/native/{path.name}",
@@ -233,7 +275,7 @@ class NativeSdkInputsTest(unittest.TestCase):
             stage, receipt = self.package(root)
             before = regular_file_inventory(root)
             result, raw = verify_native_sdk_package_phase(
-                stage, receipt, self.request, self.chain["variants"]["stages"], self.sdks,
+                stage, receipt, self.request, self.chain["variants"]["stages"], self.sdks, SDK_ROOT.read_bytes(),
             )
             self.assertEqual(raw, receipt.read_bytes())
             self.assertEqual(result["productVersion"], "0.2.9")
@@ -246,7 +288,7 @@ class NativeSdkInputsTest(unittest.TestCase):
                 before = regular_file_inventory(root)
                 with self.assertRaises(ValueError):
                     verify_native_sdk_package_phase(
-                        stage, receipt, self.request, self.chain["variants"]["stages"], self.sdks,
+                        stage, receipt, self.request, self.chain["variants"]["stages"], self.sdks, SDK_ROOT.read_bytes(),
                     )
                 self.assertEqual(before, regular_file_inventory(root))
 

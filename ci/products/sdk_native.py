@@ -10,7 +10,8 @@ from .c_abi import (
     c_abi_archive_file_name, portable_verify_c_abi_package_evidence,
 )
 from .inventory import (
-    load_canonical_json_bytes, load_json_bytes, read_regular_file_bytes, regular_file_inventory,
+    load_canonical_json_bytes, load_json_bytes, public_key_fingerprint,
+    read_regular_file_bytes, regular_file_inventory,
     require_exact_keys, require_integer, require_semver, sha256_bytes,
     snapshot_regular_tree,
 )
@@ -20,6 +21,7 @@ from .registry import NATIVE_BINDINGS
 
 
 INDEX_NAME = "codex-agent-native-wrapper-sdks.json"
+SDK_ROOT_PATH = "gradle/release/keys/sdk-runtime-root.pub"
 _LIMIT = 16 * 1024 * 1024
 _POLICIES = {"mach-o": "macos.exports", "elf": "linux.map", "pe": "windows.def"}
 
@@ -83,6 +85,7 @@ def _stage_native_capability_inputs(
 
 def verify_staged_native_sdk_inputs(
     staged_sdks: Path, compatibility_request: Path, runtime_stage_root: Path,
+    sdk_root_public_key: bytes,
 ) -> dict[str, Any]:
     """Verify all five staged targets without compiling or trusting their index.
 
@@ -96,6 +99,8 @@ def verify_staged_native_sdk_inputs(
     runtime_source = Path(runtime_stage_root)
     request = Path(compatibility_request)
     request_bytes = read_regular_file_bytes(request, max_bytes=_LIMIT, reject_symlink_parents=True)
+    root_key_bytes = sdk_root_public_key
+    public_key_fingerprint(root_key_bytes)
     before = regular_file_inventory(source)
     runtime_before = regular_file_inventory(runtime_source)
     with tempfile.TemporaryDirectory(prefix="native-sdk-inputs-") as temporary:
@@ -114,6 +119,7 @@ def verify_staged_native_sdk_inputs(
             output=expected / "sdk-compatibility.json",
         )
         compatibility_bytes = (expected / "sdk-compatibility.json").read_bytes()
+        (expected / "sdk-runtime-root.pub").write_bytes(root_key_bytes)
         index_bytes = read_regular_file_bytes(staged / INDEX_NAME, max_bytes=_LIMIT)
         index = require_exact_keys(load_json_bytes(index_bytes), {
             "schemaVersion", "libraryVersion", "runtimeProductVersion", "sdkVersion",
@@ -170,7 +176,7 @@ def verify_staged_native_sdk_inputs(
 
 def verify_native_sdk_package_phase(
     stage_root: Path, receipt_path: Path, compatibility_request: Path,
-    runtime_stage_root: Path, staged_sdks: Path,
+    runtime_stage_root: Path, staged_sdks: Path, sdk_root_public_key: bytes,
 ) -> tuple[dict[str, Any], bytes]:
     """Bind final native package semantics to authenticated content and a receipt.
 
@@ -207,7 +213,9 @@ def verify_native_sdk_package_phase(
             for record in receipt["outputs"] if record not in evidence
         )):
             raise ValueError("Native SDK package output kinds or paths are invalid")
-        index = verify_staged_native_sdk_inputs(sdks, compatibility_request, runtime_stage_root)
+        index = verify_staged_native_sdk_inputs(
+            sdks, compatibility_request, runtime_stage_root, sdk_root_public_key,
+        )
         if index["sdkVersion"] != receipt["productVersion"]:
             raise ValueError("Native SDK authenticated version differs from package receipt")
         if (stage / evidence_path).read_bytes() != (sdks / "sdk-compatibility.json").read_bytes():

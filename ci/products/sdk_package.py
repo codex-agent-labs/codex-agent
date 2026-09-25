@@ -403,7 +403,7 @@ def verify_sdk_package_inputs(
             )
             upstream[node_identity] = node
         elif native:
-            from .sdk_native import verify_native_sdk_package_phase
+            from .sdk_native import SDK_ROOT_PATH, verify_native_sdk_package_phase
             if validation_inputs_output is not None:
                 runtime_original, sdks_original = Path(runtime_stage_root), Path(staged_sdks)
                 runtime_inventory, sdks_inventory = regular_file_inventory(runtime_original), regular_file_inventory(sdks_original)
@@ -415,6 +415,7 @@ def verify_sdk_package_inputs(
                     raise ValueError("Native capability inputs changed during snapshot")
             verified, verified_bytes = verify_native_sdk_package_phase(
                 stage, captured_receipt, handoff / REQUEST_NAME, runtime_stage_root, staged_sdks,
+                git_regular_blob_bytes(repository, receipt["producer"]["commit"], SDK_ROOT_PATH, max_bytes=4096),
             )
         else:
             from .sdk_maven import verify_packaged_sdk_maven_phase, verify_sdk_maven_binary_predecessor

@@ -108,7 +108,8 @@ class SdkNativePrepareWorkflowTest(unittest.TestCase):
         self.assertEqual(PhaseInstanceId("sdk", "python", "package", "desktop"), identity)
         self.assertEqual(self.destination / "inputs", destination)
         self.assertEqual({"expected_build_key": self.arguments["expected_build_key"],
-            "repository_root": self.root, "environ": self.arguments["environ"]}, arguments)
+            "repository_root": self.root, "environ": self.arguments["environ"],
+            "sdk_original_workflow_sha": self.arguments["trusted_workflow_sha"]}, arguments)
         for original_identity, value in {**self.original_paths, CONTRACT: self.contract}.items():
             directory = destination / self.name(original_identity)
             snapshot_regular_tree(value["stage"], directory / "stage")

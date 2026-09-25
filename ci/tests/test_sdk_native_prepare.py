@@ -61,8 +61,9 @@ class SdkNativePrepareTest(unittest.TestCase):
         self.after_process()
         return subprocess.CompletedProcess(command, self.return_code)
 
-    def gate(self, staged, request, runtime):
+    def gate(self, staged, request, runtime, sdk_root_public_key):
         self.assertEqual((self.staged, self.request, self.runtime), (staged, request, runtime))
+        self.assertEqual(b"synthetic pinned root\n", sdk_root_public_key)
         if self.gate_error:
             raise ValueError("synthetic staged SDK semantic rejection")
         self.after_gate()
@@ -80,6 +81,8 @@ class SdkNativePrepareTest(unittest.TestCase):
             self.checkout = stack.enter_context(patch.object(product_reuse, "_runtime_worker_checkout"))
             stack.enter_context(patch.object(worker, "_request_inventory", side_effect=lambda _: {
                 self.request_input: sha256_bytes(self.request_input.read_bytes())}))
+            stack.enter_context(patch.object(worker, "git_regular_blob_bytes",
+                                            return_value=b"synthetic pinned root\n"))
             self.verifier = stack.enter_context(patch.object(worker, "verify_staged_native_sdk_inputs",
                                                             side_effect=self.gate))
             stack.enter_context(patch.object(worker.subprocess, "run", side_effect=self.process))

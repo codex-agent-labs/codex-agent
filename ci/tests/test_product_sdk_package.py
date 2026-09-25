@@ -319,6 +319,9 @@ def identity(receipt):
     return PhaseInstanceId(*(receipt[key] for key in ("product", "component", "phase", "target")))
 
 
+requires_dotnet = unittest.skipUnless(shutil.which("dotnet"), ".NET SDK unavailable")
+
+
 @unittest.skipUnless(shutil.which("ssh-keygen"), "OpenSSH signing tool unavailable")
 class SdkPackagePlanTest(unittest.TestCase):
     @classmethod
@@ -345,6 +348,11 @@ class SdkPackagePlanTest(unittest.TestCase):
             output = cls.repository / path
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(contents)
+        pinned_root = (Path(__file__).resolve().parents[2] /
+                       "gradle/release/keys/sdk-runtime-root.pub").read_bytes()
+        root_input = cls.repository / "gradle/release/keys/sdk-runtime-root.pub"
+        root_input.parent.mkdir(parents=True, exist_ok=True)
+        root_input.write_bytes(pinned_root)
         run_git(cls.repository, "add", ".")
         run_git(cls.repository, "-c", "user.name=SDK fixture", "-c", "user.email=fixture@invalid",
                 "-c", "commit.gpgsign=false", "commit", "-qm", "synthetic input fixture")
@@ -363,6 +371,9 @@ class SdkPackagePlanTest(unittest.TestCase):
         cls.sdks = native_fixture.staged_sdks(cls.chain, cls.root / "sdks")
         helper = native_fixture.NativeSdkInputsTest()
         helper.chain, helper.sdks = cls.chain, cls.sdks
+        helper.csharp_dll = (native_fixture.csharp_resource_fixture(
+            cls.root, cls.chain["compatibility"].read_bytes(), pinned_root)
+            if shutil.which("dotnet") else b"synthetic non-CLR plan fixture\n")
         cls.native_stage, cls.native_receipt = helper.package(cls.root / "native")
         cls.bind(cls.native_receipt, cls.upstream, cls.evidence)
 
@@ -467,6 +478,7 @@ class SdkPackagePlanTest(unittest.TestCase):
         self.bind(receipt, {**self.upstream, identity(package): package}, self.evidence)
         return receipt
 
+    @requires_dotnet
     def test_native_validation_original_plan_is_bound_without_granting_behavior_acceptance(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -506,6 +518,7 @@ class SdkPackagePlanTest(unittest.TestCase):
                         package_main(self.native_cli_arguments() + ["--validation-receipt", str(validation)])
             validation.write_bytes(original)
 
+    @requires_dotnet
     def test_validation_import_captures_original_stage_receipt_and_git_claims(self):
         # Only the raw capture seam is exercised: this fixture deliberately lacks
         # full bootstrap/behavior proof and cannot satisfy the Kotlin admission CLI.
@@ -585,6 +598,7 @@ class SdkPackagePlanTest(unittest.TestCase):
                 "--runtime-stages", str(self.chain["variants"]["stages"]), "--staged-sdks", str(self.sdks),
                 "--component", "csharp"]
 
+    @requires_dotnet
     def test_native_cli_uses_complete_original_plan_without_rewriting_receipt(self):
         original = self.native_receipt.read_bytes()
         self.assertEqual(0, package_main(self.native_cli_arguments()))
@@ -629,6 +643,7 @@ class SdkPackagePlanTest(unittest.TestCase):
                 self.assertFalse((root / "rejected.json").exists())
         self.assertEqual(original, self.native_receipt.read_bytes())
 
+    @requires_dotnet
     def test_native_capability_request_retains_full_signed_synthetic_closure(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary).resolve() / "capability-inputs"
@@ -638,6 +653,7 @@ class SdkPackagePlanTest(unittest.TestCase):
             # Byte/receipt closure only; synthetic claims do not establish Kotlin/host parity.
             self.assertEqual(original, self.native_receipt.read_bytes())
 
+    @requires_dotnet
     def test_native_capability_pre_pin_and_late_copy_mutations_do_not_publish(self):
         from ci.products.sdk_native import _stage_native_capability_inputs
         from ci.products.sdk_inputs import INVENTORY_NAME, stage_sdk_inputs as actual_stage_sdk_inputs
@@ -685,6 +701,7 @@ class SdkPackagePlanTest(unittest.TestCase):
                 package_main(self.native_cli_arguments() + ["--validation-inputs-output", str(original / "new-handoff")])
             self.assertEqual(before, regular_file_inventory(original))
 
+    @requires_dotnet
     def test_native_capability_handoff_uses_captured_request_during_source_swap(self):
         from ci.products.sdk_inputs import stage_sdk_inputs
         original = self.request.read_bytes()
@@ -704,6 +721,7 @@ class SdkPackagePlanTest(unittest.TestCase):
             self.assertEqual(original, self.request.read_bytes())
             self.assertTrue((output / "bootstrap/bootstrap-content.json").is_file())
 
+    @requires_dotnet
     def test_native_cli_rejects_wrong_family_missing_inputs_and_changed_receipt(self):
         arguments = self.native_cli_arguments()
         with self.assertRaisesRegex(ValueError, "requested component"):
@@ -719,6 +737,7 @@ class SdkPackagePlanTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "commit/tree"):
                 package_main(arguments)
 
+    @requires_dotnet
     def test_native_complete_original_plan_and_dirty_working_copy(self):
         original = self.native_receipt.read_bytes()
         source = self.repository / "codex-agent-bindings/csharp/fixture.cs"
@@ -731,6 +750,21 @@ class SdkPackagePlanTest(unittest.TestCase):
             self.assertEqual(self.native_receipt.read_bytes(), original)
         finally:
             source.write_bytes(contents)
+
+    @requires_dotnet
+    def test_original_package_uses_its_git_root_after_checkout_key_rotation(self):
+        root = self.repository / "gradle/release/keys/sdk-runtime-root.pub"
+        original = root.read_bytes()
+        newer = self.chain["context"]["public_key"].read_bytes()
+        self.assertNotEqual(original, newer)
+        root.write_bytes(newer)
+        try:
+            package, receipt = self.verify_native()
+            self.assertEqual("package", package["phase"])
+            self.assertEqual(self.native_receipt.read_bytes(), receipt)
+            self.assertEqual(newer, root.read_bytes())
+        finally:
+            root.write_bytes(original)
 
     def test_maven_binary_retains_older_contract_envelope_for_identical_content(self):
         self.assertEqual(self.chain["contract"]["payload"].read_bytes(), self.older["contract"]["payload"].read_bytes())
@@ -823,6 +857,7 @@ class SdkPackagePlanTest(unittest.TestCase):
                     runtime_package_stage=self.node_stage, runtime_package_receipt=path,
                 )
 
+    @requires_dotnet
     def test_public_path_rejects_missing_upstream_and_wrong_family_inputs(self):
         value = load_canonical_json_bytes(self.native_receipt.read_bytes())
         value["inputs"]["upstreamArtifacts"].pop()
