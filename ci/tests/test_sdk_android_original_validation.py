@@ -70,6 +70,9 @@ class OriginalAndroidValidationTest(unittest.TestCase):
         self.events.append("capture")
         self.assertEqual(self.f.plan, plan)
         self.assertEqual(self.raw, Path(kwargs["validation_receipt_path"]).read_bytes())
+        if hasattr(self, "expected_route"):
+            self.assertEqual(self.expected_route, (
+                kwargs["trusted_workflow_path"], kwargs["trusted_job_name"]))
         destination.mkdir()
         shutil.copytree(self.f.original, destination / "original")
         (destination / "transport.zip").write_bytes(b"opaque official ZIP fixture")
@@ -112,7 +115,7 @@ class OriginalAndroidValidationTest(unittest.TestCase):
             self.f.plan, self.f.validation_receipt,
             validation_capture=retained, **arguments)
 
-    def enter_reader(self, *, retained=None, replay=None, transport=None):
+    def enter_reader(self, *, retained=None, replay=None, transport=None, **changes):
         self.compare_original = metadata._compare_original_inputs
         stack = self.enterContext
         stack(patch.object(original, "_request_inventory",
@@ -128,7 +131,7 @@ class OriginalAndroidValidationTest(unittest.TestCase):
         stack(patch.object(original, "_replan", side_effect=self.replan))
         stack(patch.object(original.validation_phase, "produce_sdk_android_validation_phase",
                            side_effect=self.replay if replay is None else replay))
-        return self.context(retained=retained)
+        return self.context(retained=retained, **changes)
 
     def test_official_capture_full_replay_and_context_lifetime(self):
         with self.enter_reader() as value:
@@ -139,6 +142,18 @@ class OriginalAndroidValidationTest(unittest.TestCase):
                              regular_file_inventory(value["stage"]))
             stage = value["stage"]
         self.assertFalse(stage.exists())
+
+    def test_official_child_route_is_forwarded_as_a_pair(self):
+        self.expected_route = (
+            ".github/workflows/sdk-android-validation.yml",
+            "product-validation / sdk-android-validation-result / sdk-android-validation-android",
+        )
+        with self.enter_reader(trusted_workflow_path=self.expected_route[0],
+                               trusted_job_name=self.expected_route[1]):
+            pass
+        with self.assertRaisesRegex(ValueError, "pinned together"), self.enter_reader(
+                trusted_workflow_path=self.expected_route[0]):
+            pass
 
     def test_retained_carrier_is_checked_but_never_selects_policy(self):
         retained = self.f.root / "retained-validation"

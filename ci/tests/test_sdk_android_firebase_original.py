@@ -92,6 +92,9 @@ class OriginalAndroidFirebaseValidationTest(unittest.TestCase):
         self.assertEqual(self.receipt, receipt)
         self.assertEqual(901, kwargs["artifact_id"])
         self.assertNotIn("trusted_android_workflow_sha", kwargs)
+        if hasattr(self, "expected_route"):
+            self.assertEqual(self.expected_route, (
+                kwargs["trusted_workflow_path"], kwargs["trusted_job_name"]))
         try:
             yield {"receipt": {"producer": deepcopy(self.producer)},
                    "original": self.original, "stage": self.root}
@@ -135,6 +138,18 @@ class OriginalAndroidFirebaseValidationTest(unittest.TestCase):
         self.assertEqual(self.producer, value["receipt"]["producer"])
         self.assertEqual(["reader-enter", "official-final", "official-protected",
                           "caller-use", "reader-exit"], self.events)
+
+    def test_nested_validation_route_requires_a_paired_caller_pin(self):
+        self.expected_route = (
+            ".github/workflows/sdk-android-validation.yml",
+            "product-validation / sdk-android-validation-result / sdk-android-validation-android",
+        )
+        self.call(trusted_workflow_path=self.expected_route[0],
+                  trusted_job_name=self.expected_route[1])
+        self.events.clear()
+        with self.assertRaisesRegex(ValueError, "pinned together"):
+            self.call(trusted_workflow_path=self.expected_route[0])
+        self.assertNotIn("reader-enter", self.events)
 
     def test_wrong_run_pin_or_official_nested_bytes_reject(self):
         for changes in ({"expected_original_run_attempt": 7},

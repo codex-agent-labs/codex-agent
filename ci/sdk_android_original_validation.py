@@ -51,7 +51,8 @@ def verified_original_android_validation(
         trusted_source_commit, trusted_source_tree, tooling_evidence,
         tooling_public_key, java_executable, apkanalyzer_executable,
         policy_revision, required_trust_domain, repository_root, environ, token,
-        tooling_keyring=None, tooling_keys_directory=None):
+        tooling_keyring=None, tooling_keys_directory=None,
+        trusted_workflow_path=None, trusted_job_name=None):
     """Hold one official upload inside the complete original replay lifetime."""
     with _verified_android_validation(
             plan, validation_receipt_path, validation_capture=None,
@@ -71,7 +72,9 @@ def verified_original_android_validation(
             required_trust_domain=required_trust_domain,
             repository_root=repository_root, environ=environ, token=token,
             tooling_keyring=tooling_keyring,
-            tooling_keys_directory=tooling_keys_directory) as value:
+            tooling_keys_directory=tooling_keys_directory,
+            trusted_workflow_path=trusted_workflow_path,
+            trusted_job_name=trusted_job_name) as value:
         yield value
 
 
@@ -116,11 +119,15 @@ def _verified_android_validation(
         policy_revision, required_trust_domain, repository_root, environ,
         tooling_keyring=None, tooling_keys_directory=None,
         artifact_id=None, artifact_sha256=None, trusted_workflow_sha=None,
-        token=None):
+        token=None, trusted_workflow_path=None, trusted_job_name=None):
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
     if (tooling_keyring is None) != (tooling_keys_directory is None):
         raise ValueError("Android original tooling keyring and directory must be paired")
+    if (trusted_workflow_path is None) != (trusted_job_name is None):
+        raise ValueError("Android original workflow path and job must be pinned together")
+    if validation_capture is not None and trusted_workflow_path is not None:
+        raise ValueError("Retained Android validation cannot select an official child route")
     root = Path(repository_root).resolve(strict=True)
     plan, receipt_path = Path(plan).absolute(), Path(validation_receipt_path).absolute()
     trees = {
@@ -201,6 +208,8 @@ def _verified_android_validation(
                     plan, capture, validation_receipt_path=selected_receipt,
                     artifact_id=artifact_id, artifact_sha256=artifact_sha256,
                     trusted_workflow_sha=trusted_workflow_sha,
+                    trusted_workflow_path=trusted_workflow_path,
+                    trusted_job_name=trusted_job_name,
                     repository_root=root, environ=environment, token=token)
             else:
                 snapshot_regular_tree(validation_capture, capture, allow_empty=True)

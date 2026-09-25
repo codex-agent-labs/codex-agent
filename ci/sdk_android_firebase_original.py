@@ -82,7 +82,8 @@ def verified_original_android_firebase_validation(
         tooling_evidence, tooling_public_key, java_executable,
         apkanalyzer_executable, policy_revision, required_trust_domain,
         repository_root, environ, token, tooling_keyring=None,
-        tooling_keys_directory=None):
+        tooling_keys_directory=None, trusted_workflow_path=None,
+        trusted_job_name=None):
     """Hold official nested captures and the complete existing semantic replay.
 
     The caller independently selects every workflow/source pin and the original
@@ -90,6 +91,8 @@ def verified_original_android_firebase_validation(
     are supported; protected workflow-dispatch approval remains fail-closed.
     """
     require_no_signing_secret(environ)
+    if (trusted_workflow_path is None) != (trusted_job_name is None):
+        raise ValueError("Original Android validation workflow path and job must be pinned together")
     pins = (trusted_workflow_sha, trusted_android_workflow_sha,
             trusted_source_commit, trusted_source_tree)
     if any(type(value) is not str or _OID.fullmatch(value) is None for value in pins):
@@ -103,6 +106,8 @@ def verified_original_android_firebase_validation(
         "trustedAndroidWorkflowSha": trusted_android_workflow_sha,
         "trustedSourceCommit": trusted_source_commit,
         "trustedSourceTree": trusted_source_tree,
+        "trustedWorkflowPath": trusted_workflow_path,
+        "trustedJobName": trusted_job_name,
         "runId": run_id, "runAttempt": attempt,
     })
     root = Path(repository_root).resolve(strict=True)
@@ -125,6 +130,8 @@ def verified_original_android_firebase_validation(
         repository_root=root, environ=environ, token=token,
         tooling_keyring=tooling_keyring,
         tooling_keys_directory=tooling_keys_directory,
+        trusted_workflow_path=trusted_workflow_path,
+        trusted_job_name=trusted_job_name,
     )
     with verified_original_android_validation(
             plan, validation_receipt_path, **reader_arguments) as held:
@@ -178,6 +185,8 @@ def verified_original_android_firebase_validation(
                         "trustedAndroidWorkflowSha": trusted_android_workflow_sha,
                         "trustedSourceCommit": trusted_source_commit,
                         "trustedSourceTree": trusted_source_tree,
+                        "trustedWorkflowPath": trusted_workflow_path,
+                        "trustedJobName": trusted_job_name,
                         "runId": run_id, "runAttempt": attempt,
                     }) != authority
                         or regular_file_inventory(retained_final, allow_empty=True) != retained_before["final"]

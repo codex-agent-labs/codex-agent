@@ -226,6 +226,24 @@ class AndroidValidationCaptureTest(FacadeCaptureTest):
     targets = ("android",)
     required_directories = ("inputs", "originals", "stage")
 
+    def test_paired_caller_pinned_child_route(self):
+        if self.phase != "validation":
+            self.skipTest("Android metadata has no child route yet")
+        path = ".github/workflows/sdk-android-validation.yml"
+        job = "product-validation / sdk-android-validation-result / sdk-android-validation-android"
+        self.run["referenced_workflows"][0]["path"] = (
+            f"codex-agent-labs/codex-agent/{path}@{self.pin}")
+        self.jobs[0]["name"] = job
+        self.call(trusted_workflow_path=path, trusted_job_name=job)
+        shutil.rmtree(self.output)
+        with self.assertRaisesRegex(ValueError, "caller-pinned workflow"):
+            self.call(trusted_workflow_path=".github/workflows/product-validation.yml",
+                trusted_job_name=job)
+        with self.assertRaisesRegex(ValueError, "pinned together"):
+            self.call(trusted_workflow_path=path)
+        with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
+            self.call(trusted_workflow_path=path, trusted_job_name=job + "-wrong")
+
 
 class AndroidMetadataCaptureTest(AndroidValidationCaptureTest):
     phase = "metadata"

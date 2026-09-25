@@ -62,11 +62,13 @@ def capture_sdk_facade_metadata_upload(
 def capture_sdk_android_validation_upload(
     plan_path, destination, *, validation_receipt_path, artifact_id, artifact_sha256,
     trusted_workflow_sha, repository_root=None, environ=None, token,
+    trusted_workflow_path=None, trusted_job_name=None,
 ):
     """Capture the exact Android validation upload; Firebase replay stays mandatory."""
     return _capture_sdk_upload(plan_path, destination, family="android-validation",
         receipt_path=validation_receipt_path, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
-        trusted_workflow_sha=trusted_workflow_sha, repository_root=repository_root, environ=environ, token=token)
+        trusted_workflow_sha=trusted_workflow_sha, repository_root=repository_root, environ=environ, token=token,
+        trusted_workflow_path=trusted_workflow_path, trusted_job_name=trusted_job_name)
 
 
 def capture_sdk_android_metadata_upload(
@@ -165,8 +167,8 @@ def _capture_sdk_upload(
     require_no_signing_secret(environment)
     if (trusted_workflow_path is None) != (trusted_job_name is None):
         raise ValueError("Core original workflow path and job must be pinned together")
-    if trusted_workflow_path is not None and family != "maven":
-        raise ValueError("Only Maven originals accept a caller-selected child route")
+    if trusted_workflow_path is not None and family not in {"maven", "android-validation"}:
+        raise ValueError("Only Maven and Android validation originals accept a caller-selected child route")
     require_integer(artifact_id, "Core worker artifact ID", 1)
     require_sha256(artifact_sha256, "Core worker artifact digest")
     if type(token) is not str or not token:
