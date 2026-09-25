@@ -52,6 +52,7 @@ class AndroidValidationWorkerActionTest(unittest.TestCase):
             "APKANALYZER_EXECUTABLE": str(root / "apkanalyzer"),
             "SDK_APPLE_VALIDATION_POLICY": "", "SDK_FACADE_METADATA_POLICY": "",
             "SDK_ANDROID_METADATA_POLICY": "", "GITHUB_OUTPUT": str(root / "output")}
+        values["SDK_STATE_WAVE"] = "16"
         return values
 
     def test_policy_pins_original_inputs_before_capture_and_rejects_mutation(self):
@@ -60,6 +61,7 @@ class AndroidValidationWorkerActionTest(unittest.TestCase):
         self.assertLess(self.action.index("- id: identity"), self.action.index("uses: ./.github/actions/setup-kmp"))
         self.assertLess(self.action.index("- id: identity"), self.action.index("uses: android-actions/setup-android@"))
         self.assertIn("sdk-family: android-validation", self.action)
+        self.assertIn("SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}", self.action)
         self.assertIn("cache-read-only: 'true'", self.action)
         self.assertIn("product-worker: 'true'", self.action)
         from ci.products import sdk_android_validation_phase as phase
@@ -71,6 +73,10 @@ class AndroidValidationWorkerActionTest(unittest.TestCase):
                     patch.object(inputs, "_request_inventory", return_value={}), \
                     patch.dict(os.environ, values, clear=True):
                 exec(compile(self.script("policy"), "android-policy", "exec"), {})
+                os.environ["SDK_STATE_WAVE"] = "15"
+                with self.assertRaisesRegex(ValueError, "exact preceding SDK wave 16"):
+                    exec(compile(self.script("policy"), "android-policy", "exec"), {})
+                os.environ["SDK_STATE_WAVE"] = "16"
             pin = (root / "output").read_text().splitlines()[0].split("=", 1)[1]
             plan = root / "plan"
             plan.write_bytes(canonical_json_bytes({"validationTree": TREE}))

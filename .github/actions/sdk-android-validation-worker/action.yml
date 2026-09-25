@@ -14,8 +14,8 @@ inputs:
     default: '0'
     description: Current Runtime state wave.
   sdk-state-wave:
-    default: ''
-    description: Current SDK state wave.
+    required: true
+    description: Exact preceding Android package SDK state wave 16.
   trusted-workflow-sha:
     required: true
     description: Reviewed product workflow revision for state and final capture.
@@ -119,6 +119,7 @@ runs:
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
         SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
       run: |
         python3 -B - <<'PY'
         import os
@@ -134,6 +135,8 @@ runs:
         from ci.products.sdk_validation_inputs import _request_inventory
         from ci.products.signing_isolation import require_no_signing_secret
         require_no_signing_secret(os.environ)
+        if os.environ['SDK_STATE_WAVE'] != '16':
+            raise ValueError('Android validation requires exact preceding SDK wave 16')
         def path(name, directory=False):
             value = Path(os.environ[name])
             if not value.is_absolute() or value.resolve(strict=True) != value or (not value.is_dir() if directory else not value.is_file()):
