@@ -459,7 +459,7 @@ class RunLaneContractTest(unittest.TestCase):
 
     def test_native_wrapper_package_installs_rust_quality_components(self) -> None:
         workflow = (
-            CI_ROOT.parent / ".github/workflows/desktop-runtime-evidence.yml"
+            CI_ROOT.parent / ".github/workflows/sdk-validation.yml"
         ).read_text(encoding="utf-8")
         package = workflow.split("\n  native-wrapper-language:", 1)[1].split(
             "\n  native-wrapper-package-validation:", 1
@@ -496,7 +496,7 @@ class RunLaneContractTest(unittest.TestCase):
 
     def test_native_wrapper_dart_behavior_runs_declared_sdk_floor(self) -> None:
         root = CI_ROOT.parent
-        workflow = (root / ".github/workflows/desktop-runtime-evidence.yml").read_text(
+        workflow = (root / ".github/workflows/sdk-validation.yml").read_text(
             encoding="utf-8"
         )
         language = workflow.split("\n  native-wrapper-language:", 1)[1].split(
@@ -523,7 +523,7 @@ class RunLaneContractTest(unittest.TestCase):
 
     def test_native_wrapper_package_emits_csharp_aggregate_evidence(self) -> None:
         workflow = (
-            CI_ROOT.parent / ".github/workflows/desktop-runtime-evidence.yml"
+            CI_ROOT.parent / ".github/workflows/sdk-validation.yml"
         ).read_text(encoding="utf-8")
         package = workflow.split("\n  native-wrapper-language:", 1)[1].split(
             "\n  native-wrapper-package-validation:", 1
@@ -557,7 +557,7 @@ class RunLaneContractTest(unittest.TestCase):
 
     def test_native_wrapper_validation_stages_once_fans_out_and_collects(self) -> None:
         workflow = (
-            CI_ROOT.parent / ".github/workflows/desktop-runtime-evidence.yml"
+            CI_ROOT.parent / ".github/workflows/sdk-validation.yml"
         ).read_text(encoding="utf-8")
         stage = workflow.split("\n  native-wrapper-sdk-stage:", 1)[1].split(
             "\n  native-wrapper-language:", 1
@@ -643,7 +643,7 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertIn("retention-days: 1", package)
         self.assertIn('--sdk-version-file "$PWD/gradle/release/versions/sdk.txt"', consumers)
 
-        self.assertIn("if: always() && inputs.nativeWrappers", assembly)
+        self.assertIn("if: always()", assembly)
         self.assertIn(
             "needs: [native-wrapper-sdk-stage, native-wrapper-language, native-wrapper-package-validation]",
             assembly,
@@ -686,6 +686,30 @@ class RunLaneContractTest(unittest.TestCase):
         )
         self.assertIn("retention-days: 90", assembly)
         self.assertIn("needs: native-wrapper-release-assembly", consumers)
+
+    def test_native_wrapper_workflow_is_sdk_owned_and_authorized_before_invocation(self) -> None:
+        workflows = CI_ROOT.parent / ".github/workflows"
+        desktop = (workflows / "desktop-runtime-evidence.yml").read_text(encoding="utf-8")
+        parent = (workflows / "product-validation.yml").read_text(encoding="utf-8")
+        sdk = (workflows / "sdk-validation.yml").read_text(encoding="utf-8")
+        caller = parent.split("\n  sdk-native-wrappers:", 1)[1].split("\n  apple:", 1)[0]
+        gate = parent.split("\n  merge-gate:", 1)[1]
+
+        self.assertNotIn("native-wrapper-", desktop)
+        self.assertNotIn("nativeWrappers", desktop)
+        self.assertIn("needs: [workflow-lint, plan, desktop]", caller)
+        for condition in (
+            "needs.plan.outputs.event_authorized == 'true'",
+            "needs.plan.outputs.remote_build_authorized == 'true'",
+            "needs.plan.outputs.validation_reused != 'true'",
+            "needs.plan.outputs.native_wrappers == 'true'",
+            "needs.desktop.result == 'success'",
+        ):
+            self.assertIn(condition, caller)
+        self.assertIn("uses: ./.github/workflows/sdk-validation.yml", caller)
+        self.assertIn("sdk-native-wrappers", gate.split("\n    needs:", 1)[1].split("\n    runs-on:", 1)[0])
+        self.assertIn('test "$NATIVE_WRAPPERS_RESULT" = success || exit 1', gate)
+        self.assertIn("native-wrapper-release-assembly:", sdk)
 
     def test_action_and_lane_driver_bind_every_execution_to_the_candidate_tree(self) -> None:
         action = (CI_ROOT.parent / ".github/actions/run-ci-lane/action.yml").read_text(encoding="utf-8")

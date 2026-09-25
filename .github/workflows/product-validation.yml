@@ -1932,7 +1932,20 @@ jobs:
       linuxArm64Build: ${{ fromJSON(needs.plan.outputs.lane_desktop_linux_arm64_build) }}
       linuxArm64Test: ${{ fromJSON(needs.plan.outputs.lane_desktop_linux_arm64_test) }}
       linuxArm64Metadata: ${{ fromJSON(needs.plan.outputs.lane_desktop_linux_arm64_metadata) }}
-      nativeWrappers: ${{ fromJSON(needs.plan.outputs.native_wrappers) }}
+
+  sdk-native-wrappers:
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.plan.outputs.validation_reused != 'true' &&
+      needs.plan.outputs.native_wrappers == 'true' &&
+      needs.desktop.result == 'success'
+    needs: [workflow-lint, plan, desktop]
+    uses: ./.github/workflows/sdk-validation.yml
+    with:
+      planArtifact: ${{ needs.plan.outputs.plan_artifact }}
+      validationCommit: ${{ needs.plan.outputs.validation_commit }}
+      validationTree: ${{ needs.plan.outputs.validation_tree }}
 
   apple:
     if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.any_apple == 'true'
@@ -5316,7 +5329,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, contract-validation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-plan, sdk-completion]
+    needs: [workflow-lint, plan, product, contract-validation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-plan, sdk-completion]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -5352,6 +5365,8 @@ jobs:
           SDK_INPUTS_ARTIFACT_DIGEST: ${{ needs.sdk-inputs.outputs.artifact_digest }}
           RUNTIME_WAVE_FAILED: ${{ needs.runtime-collect-1.outputs.wave_failed }} ${{ needs.runtime-collect-2.outputs.wave_failed }} ${{ needs.runtime-collect-3.outputs.wave_failed }} ${{ needs.runtime-collect-4.outputs.wave_failed }} ${{ needs.runtime-collect-5.outputs.wave_failed }}
           PRODUCT_FULL_REUSE: ${{ needs.sdk-completion.outputs.full_reuse }}
+          NATIVE_WRAPPERS_REQUIRED: ${{ needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.native_wrappers == 'true' }}
+          NATIVE_WRAPPERS_RESULT: ${{ needs.sdk-native-wrappers.result }}
         run: |
           if [ "$EVENT_AUTHORIZED" != true ]; then
             echo 'The workflow-owned event gate did not authorize remote product CI.' >&2
@@ -5367,6 +5382,9 @@ jobs:
           fi
           if grep -Eq 'failure|cancelled' <<<"$RESULTS"; then
             exit 1
+          fi
+          if [ "$NATIVE_WRAPPERS_REQUIRED" = true ]; then
+            test "$NATIVE_WRAPPERS_RESULT" = success || exit 1
           fi
           if [ "$CONTRACT_BINARY_REQUIRED" = true ]; then
             test "$CONTRACT_BINARY_RESULT" = success || exit 1
