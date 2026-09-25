@@ -150,6 +150,10 @@ class SdkApplePackageExecutionTest(unittest.TestCase):
                         value = load_canonical_json_bytes(original)
                         value["producer"]["runId"] += 1
                         path.write_bytes(canonical_json_bytes(value))
+                    elif path == self.compatibility:
+                        path.write_bytes(canonical_json_bytes({
+                            **load_canonical_json_bytes(original), "note": "changed",
+                        }))
                     else:
                         path.write_bytes(original + b" ")
                     with self.assertRaisesRegex(ValueError, "differs from caller inputs"):
@@ -206,6 +210,11 @@ class SdkApplePackageExecutionTest(unittest.TestCase):
             with self.subTest(message=message):
                 with self.assertRaisesRegex(ValueError, message):
                     self.invoke(**changes)
+
+    def test_rejects_compatibility_for_another_sdk_package_version(self):
+        self.compatibility.write_bytes(b'{"schemaVersion":1,"sdkVersion":"0.9.0"}\n')
+        with self.assertRaisesRegex(ValueError, "compatibility version differs from package"):
+            self.invoke()
 
     def test_rejects_missing_extra_unsafe_and_empty_capture_members(self):
         for mutation, message in (

@@ -103,6 +103,9 @@ def build_apple_package_execution_context(
     compatibility_bytes = read_regular_file_bytes(compatibility, reject_symlink_parents=True)
     if not compatibility_bytes:
         raise ValueError("Apple package execution SDK compatibility is empty")
+    declaration = load_canonical_json_bytes(compatibility_bytes)
+    if type(declaration) is not dict or declaration.get("sdkVersion") != receipts["package"]["productVersion"]:
+        raise ValueError("Apple package execution SDK compatibility version differs from package")
     _require_capture_layout(capture)
     capture_before = regular_file_inventory(capture, allow_empty=True)
     binding = next((record for record in capture_before if record["relativePath"] == "input-binding.json"), None)
