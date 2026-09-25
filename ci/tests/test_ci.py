@@ -1470,11 +1470,20 @@ class ImpactPlanTest(GitFixture):
             self.assertIn(f"\n  {job}:\n", apple)
 
         workflow = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text(encoding="utf-8")
+        sdk_consumers = (CI_ROOT.parent / ".github/workflows/sdk-consumer-validation.yml").read_text(
+            encoding="utf-8"
+        )
+        caller = workflow.split("\n  consumers:", 1)[1].split("\n  sdk-ios-binary-plan:", 1)[0]
         for consumer in ("consumer-desktop", "consumer-node-js", "consumer-node-wasm"):
-            self.assertEqual(2, workflow.count(f"matrix.lane == '{consumer}'"))
+            self.assertEqual(2, sdk_consumers.count(f"matrix.lane == '{consumer}'"))
+        self.assertIn("uses: ./.github/workflows/sdk-consumer-validation.yml", caller)
+        self.assertIn("needs.plan.outputs.event_authorized == 'true'", caller)
+        self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", caller)
+        self.assertIn("needs.plan.outputs.consumer_matrix != '[]'", caller)
+        self.assertIn("fail-fast: false", sdk_consumers)
         gate = workflow[workflow.index("\n  merge-gate:"):]
         self.assertIn(
-            "needs: [workflow-lint, plan, product, contract-validation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-plan, sdk-completion]",
+            "needs: [workflow-lint, plan, product, contract-validation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-plan, sdk-completion, sdk-parity]",
             gate,
         )
         self.assertIn("pattern: codex-agent-ci-*", gate)
