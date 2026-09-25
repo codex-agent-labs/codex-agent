@@ -417,7 +417,15 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
         with patch("codex_agent._ffi._read_sdk_runtime_root", return_value=root_public), \
                 patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility), \
                 patch.object(NativeLibrary, "_declare_all", return_value=None):
-            loaded = NativeLibrary.load(library)
+            original_read_bytes = Path.read_bytes
+
+            def reject_native_read_bytes(path: Path) -> bytes:
+                if path.suffix in {".dll", ".dylib", ".so"}:
+                    raise AssertionError("native library must be hashed without read_bytes")
+                return original_read_bytes(path)
+
+            with patch.object(Path, "read_bytes", reject_native_read_bytes):
+                loaded = NativeLibrary.load(library)
             self.assertEqual(int(loaded.library.codex_agent_abi_version()), 0x010D0000)
             original = authorization.read_bytes()
             authorization.write_bytes(original + b"x")

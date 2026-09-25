@@ -209,6 +209,8 @@ def verify_external_runtime(snapshot: Path, evidence: Path, pinned_root: bytes,
             or abi[0] > 255 or abi[1] > 255 or abi[2] > 65535):
         raise OSError("Runtime authorization is incompatible with this SDK")
     _validate_absolute_regular_path(snapshot, "Runtime library snapshot")
-    if "sha256:" + hashlib.sha256(snapshot.read_bytes()).hexdigest() != claim["runtimeLibrarySha256"]:
+    with snapshot.open("rb") as source:
+        snapshot_digest = hashlib.file_digest(source, "sha256").hexdigest()
+    if "sha256:" + snapshot_digest != claim["runtimeLibrarySha256"]:
         raise OSError("Runtime library differs from its signed authorization")
     return claim
