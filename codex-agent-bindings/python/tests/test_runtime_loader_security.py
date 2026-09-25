@@ -404,6 +404,34 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
                     NativeLibrary.load(library)
                 dynamic_loader.assert_not_called()
 
+    def test_delegated_release_key_rotation_keeps_sdk_root_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            directory = Path(temporary)
+            runtime_identity = identity(current_classifier())
+            first = compile_library(directory, "first_release", canonical(runtime_identity, False), 0x010D0000)
+            pinned_root = authorize(first, runtime_identity, "0.8.4")
+            second = compile_library(directory, "rotated_release", canonical(runtime_identity, False), 0x010D0000)
+            self.assertEqual(
+                authorize(second, runtime_identity, "0.8.5",
+                          root_private=directory / "root-key", release_key_id="rotated"),
+                pinned_root,
+            )
+            first_evidence = Path(str(first) + ".evidence")
+            second_evidence = Path(str(second) + ".evidence")
+            self.assertNotEqual(
+                (first_evidence / "release-keyring.json").read_bytes(),
+                (second_evidence / "release-keyring.json").read_bytes(),
+            )
+            with patch("codex_agent._ffi._read_sdk_runtime_root", return_value=pinned_root), \
+                    patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility), \
+                    patch.object(NativeLibrary, "_declare_all", return_value=None):
+                for library in (first, second):
+                    with self.subTest(library=library.name):
+                        self.assertEqual(
+                            int(NativeLibrary.load(library).library.codex_agent_abi_version()),
+                            0x010D0000,
+                        )
+
     def test_installed_wheel_uses_its_pinned_root_for_external_overrides(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
             directory = Path(temporary)
