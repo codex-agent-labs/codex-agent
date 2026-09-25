@@ -39,21 +39,20 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
                 text=True,
                 capture_output=True,
             )
-            value = None
+            values = None
             if output.exists():
-                line = output.read_text(encoding="utf-8").strip()
-                self.assertTrue(line.startswith("product_matrix="), line)
-                value = json.loads(line.removeprefix("product_matrix="))
-            return result, value
+                lines = [line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines()]
+                self.assertEqual({"product_matrix", "contract_matrix"}, {key for key, _ in lines})
+                values = {key: json.loads(value) for key, value in lines}
+            return result, values
 
     def test_tooling_miss_adds_only_a_disabled_contracts_row(self):
         original = [{"lane": "android", "build": True, "test": False, "metadata": True}]
         result, selected = self.select(original, miss="true")
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual([
-            {"lane": "contracts", "build": False, "test": False, "metadata": False},
-            *original,
-        ], selected)
+        self.assertEqual(original, selected["product_matrix"])
+        self.assertEqual({"include": [{"lane": "contracts", "build": False,
+                                       "test": False, "metadata": False}]}, selected["contract_matrix"])
 
     def test_hit_and_empty_miss_preserve_the_original_matrix(self):
         original = [{"lane": "node-js", "build": False, "test": True, "metadata": False}]
@@ -61,7 +60,8 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
             with self.subTest(miss=miss):
                 result, selected = self.select(original, miss=miss)
                 self.assertEqual(0, result.returncode, result.stderr)
-                self.assertEqual(original, selected)
+                self.assertEqual(original, selected["product_matrix"])
+                self.assertEqual({"include": []}, selected["contract_matrix"])
 
     def test_existing_contracts_row_is_not_replaced_or_duplicated(self):
         original = [
@@ -70,7 +70,8 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
         ]
         result, selected = self.select(original, miss="true")
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(original, selected)
+        self.assertEqual(original[1:], selected["product_matrix"])
+        self.assertEqual({"include": original[:1]}, selected["contract_matrix"])
 
     def test_unauthorized_or_reused_validation_suppresses_product_work(self):
         original = [{"lane": "contracts", "build": True, "test": True, "metadata": True}]
@@ -80,7 +81,8 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
                     original, miss="true", authorized=authorized, reused=reused,
                 )
                 self.assertEqual(0, result.returncode, result.stderr)
-                self.assertEqual([], selected)
+                self.assertEqual([], selected["product_matrix"])
+                self.assertEqual({"include": []}, selected["contract_matrix"])
 
     def test_invalid_tooling_miss_is_rejected_without_output(self):
         for miss in ("TRUE", "0", " true"):
@@ -90,14 +92,24 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
                 self.assertIsNone(selected)
                 self.assertIn("Invalid tooling miss state", result.stderr)
 
+    def test_duplicate_contract_rows_fail_before_work_is_selected(self):
+        row = {"lane": "contracts", "build": True, "test": True, "metadata": True}
+        result, selected = self.select([row, row])
+        self.assertNotEqual(0, result.returncode)
+        self.assertIsNone(selected)
+        self.assertIn("Contract product lane is duplicated", result.stderr)
+
     def test_workflow_uses_selected_matrix_and_forces_only_missing_tooling_contracts(self):
         self.assertIn("product_matrix: ${{ steps.product-selection.outputs.product_matrix }}", self.source)
+        self.assertIn("contract_matrix: ${{ steps.product-selection.outputs.contract_matrix }}", self.source)
         self.assertIn("ORIGINAL_PRODUCT_MATRIX: ${{ steps.impact.outputs.product_matrix }}", self.selection)
-        product = self.source.split("\n  product:\n", 1)[1].split("\n  contract-continuation:\n", 1)[0]
-        condition = "${{ matrix.lane == 'contracts' && needs.plan.outputs.tooling_miss == 'true' }}"
-        self.assertEqual(2, product.count(condition))
-        self.assertIn(f"force-build: {condition}", product)
-        self.assertIn(f"reuse-disabled: {condition}", product)
+        product = self.source.split("\n  product:\n", 1)[1].split("\n  contract-binary:\n", 1)[0]
+        contract = self.source.split("\n  contract-binary:\n", 1)[1].split("\n  tooling-attestation:\n", 1)[0]
+        self.assertNotIn("matrix.lane == 'contracts'", product)
+        self.assertIn("name: product-contracts", contract)
+        self.assertIn("force-build: ${{ needs.plan.outputs.tooling_miss == 'true' }}", contract)
+        self.assertIn("reuse-disabled: ${{ needs.plan.outputs.tooling_miss == 'true' }}", contract)
+        self.assertIn("needs: [workflow-lint, plan, contract-binary]", self.source)
 
 
 if __name__ == "__main__":
