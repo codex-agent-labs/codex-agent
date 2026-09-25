@@ -174,6 +174,34 @@ class ContractEqualTreeOriginalTest(unittest.TestCase):
         self.assertEqual(self.signing["keyId"] + ".pub",
                          next((self.destination / "contract-record/policy/keys").iterdir()).name)
 
+    def test_caller_pins_new_child_path_and_job_without_changing_upload_schema(self) -> None:
+        path = ".github/workflows/contract-validation.yml"
+        job = "contract-validation / contract-attestation"
+        self.run["referenced_workflows"] = [{
+            "path": f"{locator.REPOSITORY}/{path}@{self.workflow_sha}",
+            "sha": self.workflow_sha,
+        }]
+        self.job["name"] = job
+        policy = {"trusted_workflow_path": path, "trusted_job_name": job}
+        for changes in (
+            {"trusted_workflow_path": ".github/workflows/wrong.yml"},
+            {"trusted_job_name": "contract-validation / wrong"},
+            {"trusted_workflow_path": None},
+            {"trusted_job_name": None},
+            {"trusted_workflow_path": "../wrong.yml"},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.invoke(**{**policy, **changes})
+            self.assertFalse(self.destination.exists())
+        selected = self.invoke(**policy)
+        self.assertEqual(self.artifact, selected["artifact"])
+        retained = json.loads((self.destination / "original-evidence/upload/caller.json").read_bytes())
+        self.assertEqual(self.workflow_sha, retained["trustedWorkflowSha"])
+        self.assertNotIn("trustedWorkflowPath", retained)
+        observations = json.loads((self.destination / "observations.json").read_bytes())
+        self.assertEqual(self.run, observations["originalAttempt"][0]["run"])
+        self.assertEqual(self.job, observations["originalAttempt"][0]["jobs"][0])
+
     def test_wrong_tree_job_window_policy_and_caller_fail_without_output(self) -> None:
         old_tree = self.tree
         self.tree = "a" * 40
@@ -261,9 +289,18 @@ class ContractEqualTreeOriginalTest(unittest.TestCase):
             capture.assert_called_once_with(
                 self.trusted, self.candidate, self.destination,
                 trusted_source_sha=self.source_sha, trusted_workflow_sha=self.workflow_sha,
+                trusted_workflow_path=None, trusted_job_name=None,
                 trusted_promotion_workflow_sha=self.promotion_sha, final_commit=self.final,
                 event_payload=self.event, environment=os.environ, token="synthetic-token",
             )
+            capture.reset_mock()
+            locator.main([*arguments, "--trusted-workflow-path",
+                          ".github/workflows/contract-validation.yml",
+                          "--trusted-job-name", "contract-validation / contract-attestation"])
+            self.assertEqual(".github/workflows/contract-validation.yml",
+                             capture.call_args.kwargs["trusted_workflow_path"])
+            self.assertEqual("contract-validation / contract-attestation",
+                             capture.call_args.kwargs["trusted_job_name"])
             event.write_bytes(canonical_json_bytes([]))
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 locator.main(arguments)

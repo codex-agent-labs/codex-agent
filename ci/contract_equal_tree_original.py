@@ -41,6 +41,7 @@ def capture_equal_tree_contract_original(
     trusted_source_sha: str, trusted_workflow_sha: str,
     trusted_promotion_workflow_sha: str, final_commit: str,
     event_payload: dict, environment: dict, token: str,
+    trusted_workflow_path: str | None = None, trusted_job_name: str | None = None,
 ) -> dict:
     """Retain original bytes only after protected equal-tree upload admission.
 
@@ -50,6 +51,14 @@ def capture_equal_tree_contract_original(
     for value in (trusted_source_sha, trusted_workflow_sha,
                   trusted_promotion_workflow_sha, final_commit):
         promote.require_oid(value, "Contract promotion caller pin")
+    if (trusted_workflow_path is None) != (trusted_job_name is None):
+        raise ValueError("Contract original workflow path and job must be pinned together")
+    job = JOB if trusted_job_name is None else trusted_job_name
+    workflow_policy = ({"trusted_workflow_sha": trusted_workflow_sha}
+                       if trusted_workflow_path is None else
+                       {"trusted_workflows_by_phase": {"attestation": {
+                           "path": trusted_workflow_path, "sha": trusted_workflow_sha,
+                       }}})
     trusted, trusted_tree = _checkout(repository_root, trusted_source_sha)
     candidate, final_tree = _checkout(candidate_root, final_commit)
     if trusted == candidate or trusted in candidate.parents or candidate in trusted.parents:
@@ -108,8 +117,8 @@ def capture_equal_tree_contract_original(
                     "runId": promote.positive_int(selected.get("id"), "validated run"),
                     "runAttempt": promote.positive_int(selected.get("run_attempt"), "validated attempt")}
         observed = transport._observe_ci_producer_jobs(
-            {"attestation": producer}, jobs_by_phase={"attestation": JOB},
-            trusted_workflow_sha=trusted_workflow_sha, token=token,
+            {"attestation": producer}, jobs_by_phase={"attestation": job},
+            token=token, **workflow_policy,
         )
         run = observed[0]["run"]
         if run.get("status") != "completed" or run.get("conclusion") != "success" or \
@@ -123,7 +132,7 @@ def capture_equal_tree_contract_original(
             listed[name]["id"], require_sha256(listed[name].get("digest"), "Contract upload digest"),
             name, producer, run, token,
         )
-        transport._require_artifact_job_window(observed[0], JOB, artifact)
+        transport._require_artifact_job_window(observed[0], job, artifact)
 
         prepared = root / "prepared"
         evidence = prepared / "original-evidence"
@@ -210,6 +219,8 @@ def main(argv: list[str] | None = None) -> None:
     for name in ("trusted-source-sha", "trusted-workflow-sha",
                  "trusted-promotion-workflow-sha", "final-commit"):
         parser.add_argument(f"--{name}", required=True)
+    parser.add_argument("--trusted-workflow-path")
+    parser.add_argument("--trusted-job-name")
     args = parser.parse_args(argv)
     event_path = os.environ.get("GITHUB_EVENT_PATH")
     if not event_path:
@@ -225,6 +236,8 @@ def main(argv: list[str] | None = None) -> None:
         args.repository_root, args.candidate_root, args.destination,
         trusted_source_sha=args.trusted_source_sha,
         trusted_workflow_sha=args.trusted_workflow_sha,
+        trusted_workflow_path=args.trusted_workflow_path,
+        trusted_job_name=args.trusted_job_name,
         trusted_promotion_workflow_sha=args.trusted_promotion_workflow_sha,
         final_commit=args.final_commit, event_payload=event,
         environment=os.environ, token=os.environ.get("GITHUB_TOKEN"),
