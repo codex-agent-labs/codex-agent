@@ -27,6 +27,24 @@ set(_codex_agent_verified_files
     "${CodexAgent_SDK_RUNTIME_ROOT}|@CODEX_AGENT_SDK_RUNTIME_ROOT_SHA256@"
     "${CodexAgent_CPP_LOADER_SOURCE}|@CODEX_AGENT_CPP_LOADER_SOURCE_SHA256@"
 )
+set(_codex_agent_expected_headers "@CODEX_AGENT_CPP_HEADER_HASHES@")
+set(_codex_agent_expected_header_names)
+foreach(_codex_agent_header IN LISTS _codex_agent_expected_headers)
+    string(REPLACE "|" ";" _codex_agent_header_parts "${_codex_agent_header}")
+    list(GET _codex_agent_header_parts 0 _codex_agent_header_name)
+    list(GET _codex_agent_header_parts 1 _codex_agent_header_sha256)
+    list(APPEND _codex_agent_expected_header_names "${_codex_agent_header_name}")
+    list(APPEND _codex_agent_verified_files
+        "${CodexAgent_C_SDK_INCLUDE_DIR}/${_codex_agent_header_name}|${_codex_agent_header_sha256}")
+endforeach()
+file(GLOB_RECURSE _codex_agent_installed_headers RELATIVE "${CodexAgent_C_SDK_INCLUDE_DIR}"
+    "${CodexAgent_C_SDK_INCLUDE_DIR}/codex_agent/*")
+list(SORT _codex_agent_installed_headers)
+if(NOT _codex_agent_installed_headers STREQUAL _codex_agent_expected_header_names)
+    set(CodexAgent_FOUND FALSE)
+    set(CodexAgent_NOT_FOUND_MESSAGE "CodexAgent installed C++ wrapper header inventory differs from its package")
+    return()
+endif()
 if(CodexAgent_NATIVE_CLASSIFIER MATCHES "^linux-")
     list(APPEND _codex_agent_verified_files
         "${PACKAGE_PREFIX_DIR}/lib/libcodex_agent.so.1|@CODEX_AGENT_C_SDK_SONAME_SHA256@")

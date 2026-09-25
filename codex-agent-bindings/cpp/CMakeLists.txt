@@ -225,6 +225,13 @@ if(CODEX_AGENT_CPP_INSTALL_PACKAGE)
 
     file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/src/native_loader.cpp" CODEX_AGENT_CPP_LOADER_SOURCE_SHA256)
     file(SHA256 "${CodexAgent_SDK_RUNTIME_ROOT}" CODEX_AGENT_SDK_RUNTIME_ROOT_SHA256)
+    file(GLOB_RECURSE _codex_agent_wrapper_headers RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/codex_agent/*")
+    list(SORT _codex_agent_wrapper_headers)
+    foreach(_codex_agent_header IN LISTS _codex_agent_wrapper_headers)
+        file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/include/${_codex_agent_header}" _codex_agent_header_sha256)
+        list(APPEND CODEX_AGENT_CPP_HEADER_HASHES "${_codex_agent_header}|${_codex_agent_header_sha256}")
+    endforeach()
     configure_package_config_file(
         cmake/CodexAgentConfig.cmake.in
         "${CMAKE_CURRENT_BINARY_DIR}/CodexAgentConfig.cmake"
