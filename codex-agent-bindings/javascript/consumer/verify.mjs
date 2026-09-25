@@ -23,7 +23,7 @@ function exactFile(file, label) {
   return file;
 }
 
-function systemTar() {
+export function systemTar() {
   const executable = process.platform === 'win32'
     ? path.join(process.env.SystemRoot ?? '', 'System32', 'tar.exe')
     : process.platform === 'darwin' ? '/usr/bin/bsdtar' : '/usr/bin/tar';

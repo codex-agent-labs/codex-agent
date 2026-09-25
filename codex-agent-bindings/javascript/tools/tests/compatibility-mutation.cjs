@@ -8,6 +8,13 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../../consumer/smoke.mjs'), 'utf8');
+const trustedTar = '/trusted/system-tar';
+
+test('executed consumer uses the preflight system tar, not a PATH-resolved command', () => {
+  assert.match(source, /import \{ systemTar \} from '\.\/verify\.mjs';/);
+  assert.match(source, /const tar = systemTar\(\);/);
+  assert.doesNotMatch(source, /execFileSync\(['"]tar['"],/);
+});
 
 function exactBlock(start, end) {
   const first = source.indexOf(start);
@@ -77,13 +84,13 @@ test('actual installed consumer binds declarations and entry points to npm archi
   const entries = names.map((name) => `package/${name}`);
   const run = (archiveEntries, changedName, installedBytes, archiveBytes) =>
     vm.runInNewContext(`const archiveEntries = ${JSON.stringify(archiveEntries)};\n${readRegularFile}\n${verifyMember}\nverifyInstalledPackageMember(archiveEntries, changedName);`, {
-      assert, Buffer, path, changedName, packageRoot: '/installed', tarballFile: '/selected.tgz',
+      assert, Buffer, path, changedName, packageRoot: '/installed', tarballFile: '/selected.tgz', tar: trustedTar,
       fs: { lstatSync: () => ({ isFile: () => true, isSymbolicLink: () => false }), readFileSync: (file) => {
         assert.equal(file, `/installed/${changedName}`);
         return installedBytes;
       } },
       execFileSync: (command, args, options) => {
-        assert.equal(command, 'tar');
+        assert.equal(command, trustedTar);
         assert.deepEqual(Array.from(args), ['-xOzf', '/selected.tgz', `package/${changedName}`]);
         assert.equal(options.maxBuffer, 64 * 1024 * 1024);
         return archiveBytes;
@@ -117,7 +124,7 @@ test('actual installed consumer binds Runtime dist inventory and bytes to npm ar
   const contents = Object.fromEntries(names.map((name) => [name, Buffer.from(name)]));
   const check = (archiveEntries = entries, installed = contents, archive = contents, symlink = '') =>
     vm.runInNewContext(`${verifyRuntime}\nverifyInstalledRuntimeMembers(archiveEntries);`, {
-      assert, Buffer, path, packageRoot: '/installed', tarballFile: '/selected.tgz', archiveEntries,
+      assert, Buffer, path, packageRoot: '/installed', tarballFile: '/selected.tgz', archiveEntries, tar: trustedTar,
       fs: {
         lstatSync: (file) => ({
           isDirectory: () => file === '/installed/dist',
@@ -128,7 +135,7 @@ test('actual installed consumer binds Runtime dist inventory and bytes to npm ar
         readFileSync: (file) => installed[path.basename(file)],
       },
       execFileSync: (command, args, options) => {
-        assert.equal(command, 'tar');
+        assert.equal(command, trustedTar);
         assert.deepEqual(Array.from(args.slice(0, 2)), ['-xOzf', '/selected.tgz']);
         assert.equal(options.maxBuffer, 64 * 1024 * 1024);
         return archive[path.posix.basename(args[2])];
