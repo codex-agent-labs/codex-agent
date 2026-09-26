@@ -3020,6 +3020,35 @@ mod loader_security_tests {
         .expect("root-signed external fixture should load");
         assert_eq!(native.abi_version(), CODEX_AGENT_ABI_VERSION);
 
+        let original_claim: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&claim_path).unwrap()).unwrap();
+        let mut unsupported_release = original_claim.clone();
+        unsupported_release["runtimeVersion"] = json!("0.9.0");
+        canonical_json(&claim_path, &unsupported_release);
+        sign(
+            &claim_path,
+            &signer_private,
+            "codex-agent-product-v1",
+            &evidence.join("runtime-library-authorization.sig"),
+        );
+        let error =
+            CodexNativeLibrary::load_external_with(&library, &root_public, Some(&fixture), |_| {
+                panic!("unsupported signed Runtime reached dynamic loader")
+            })
+            .err()
+            .expect("unsupported signed Runtime release must be rejected");
+        assert!(
+            error.to_string().contains("incompatible with this SDK"),
+            "{error}"
+        );
+        canonical_json(&claim_path, &original_claim);
+        sign(
+            &claim_path,
+            &signer_private,
+            "codex-agent-product-v1",
+            &evidence.join("runtime-library-authorization.sig"),
+        );
+
         let mut altered_claim: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&claim_path).unwrap()).unwrap();
         altered_claim["runtimeIdentity"]["componentId"] = serde_json::Value::String(

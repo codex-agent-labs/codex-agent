@@ -65,6 +65,63 @@ class PackageEmbeddedRuntimeTest(unittest.TestCase):
             self.assertNotEqual(0, absent.returncode)
             self.assertIn("Missing win-x64 Codex Agent C SDK library", absent.stdout + absent.stderr)
 
+    def test_installed_fixture_rejects_tampered_default_and_unattested_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary).resolve()
+            source = work / "src/CodexAgent"
+            shutil.copytree(PROJECT.parent, source, ignore=shutil.ignore_patterns("bin", "obj"))
+            native = work / "native"
+            native.mkdir()
+            shutil.copyfile(ROOT / "codex-agent-bindings/csharp/native/sdk-compatibility.json",
+                            native / "sdk-compatibility.json")
+            shutil.copyfile(PINNED_ROOT, native / "sdk-runtime-root.pub")
+            for member in MEMBERS:
+                library = native / member
+                library.parent.mkdir(parents=True, exist_ok=True)
+                library.write_bytes(b"tampered Runtime fixture")
+            feed = work / "feed"
+            feed.mkdir()
+            cache = Path(os.environ.get("NUGET_PACKAGES", Path.home() / ".nuget/packages"))
+            for directory in (cache / "microsoft.netcore.app.ref", cache / "microsoft.aspnetcore.app.ref",
+                              *cache.glob("microsoft.netcore.app.host.*")):
+                for package in directory.glob("*/*.nupkg"):
+                    shutil.copyfile(package, feed / package.name)
+            environment = {**os.environ, "DOTNET_CLI_HOME": str(work / "dotnet-home"),
+                           "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
+                           "NUGET_PACKAGES": str(work / "packages")}
+            environment.pop("CODEX_AGENT_LIBRARY", None)
+            (work / "dotnet-home").mkdir()
+
+            def run(*args: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(["dotnet", *args], cwd=work, env=environment,
+                                      capture_output=True, text=True, check=False)
+
+            project = str(source / "CodexAgent.csproj")
+            restored = run("restore", project, "--source", str(feed), "-p:NuGetAudit=false")
+            self.assertEqual(0, restored.returncode, restored.stdout + restored.stderr)
+            packed = run("pack", project, "--configuration", "Release", "--no-restore", "--output", str(feed))
+            self.assertEqual(0, packed.returncode, packed.stdout + packed.stderr)
+            self.assertTrue((feed / "CodexAgent.0.8.0.nupkg").is_file())
+            consumer = work / "consumer"
+            shutil.copytree(CONSUMER, consumer, ignore=shutil.ignore_patterns("bin", "obj"))
+            consumer_project = str(consumer / "CodexAgent.Consumer.csproj")
+            restored = run("restore", consumer_project, "--source", str(feed), "-p:NuGetAudit=false")
+            self.assertEqual(0, restored.returncode, restored.stdout + restored.stderr)
+            self.assertTrue((work / "packages/codexagent/0.8.0/codexagent.0.8.0.nupkg").is_file())
+            compiled = run("build", consumer_project, "--configuration", "Release", "--no-restore")
+            self.assertEqual(0, compiled.returncode, compiled.stdout + compiled.stderr)
+
+            def consumer_result(*args: str) -> str:
+                result = run("run", "--project", consumer_project, "--configuration", "Release",
+                             "--no-build", "--no-restore", "--", *args)
+                self.assertNotEqual(0, result.returncode, "fixture Runtime unexpectedly loaded")
+                return result.stdout + result.stderr
+
+            self.assertIn("Runtime library digest mismatch", consumer_result())
+            external = work / "unattested-runtime"
+            external.write_bytes(b"not a native library")
+            self.assertIn("Runtime evidence", consumer_result(str(external)))
+
     @unittest.skipUnless(os.environ.get("CODEX_AGENT_CSHARP_NUPKG"), "staged C# package not supplied")
     def test_installed_package_pins_root_and_rejects_unattested_override(self) -> None:
         package = Path(os.environ["CODEX_AGENT_CSHARP_NUPKG"]).resolve(strict=True)
