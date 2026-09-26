@@ -761,8 +761,35 @@ void _removeOwnedSnapshot(Directory directory) {
   directory.deleteSync(recursive: true);
 }
 
-String _fileSha256(File file) =>
-    'sha256:${crypto.sha256.convert(file.readAsBytesSync())}';
+String _fileSha256(File file) {
+  final opened = file.openSync(mode: FileMode.read);
+  try {
+    final length = opened.lengthSync();
+    if (length <= 0 || length > 512 * 1024 * 1024) {
+      throw const CodexException('Codex Agent Runtime size is invalid');
+    }
+    final digests = <crypto.Digest>[];
+    final sink = crypto.sha256.startChunkedConversion(
+      ChunkedConversionSink<crypto.Digest>.withCallback(digests.addAll),
+    );
+    var remaining = length;
+    while (remaining > 0) {
+      final bytes = opened.readSync(remaining < 65536 ? remaining : 65536);
+      if (bytes.isEmpty) {
+        throw const CodexException('Codex Agent Runtime read was incomplete');
+      }
+      sink.add(bytes);
+      remaining -= bytes.length;
+    }
+    sink.close();
+    if (opened.lengthSync() != length || digests.length != 1) {
+      throw const CodexException('Codex Agent Runtime changed while hashing');
+    }
+    return 'sha256:${digests.single}';
+  } finally {
+    opened.closeSync();
+  }
+}
 
 void requireAbsoluteRegularFile(File file, String label) {
   if (file.path.isEmpty || !file.isAbsolute || _hasDotSegment(file.path)) {

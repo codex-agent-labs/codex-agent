@@ -125,6 +125,17 @@ void main() {
     external.removeAfterLoad();
   });
 
+  test('Runtime hash rejects an oversized sparse file before reading it', () {
+    final library = File('${temporary.path}/oversized-runtime');
+    final opened = library.openSync(mode: FileMode.write);
+    try {
+      opened.truncateSync(512 * 1024 * 1024 + 1);
+    } finally {
+      opened.closeSync();
+    }
+    expect(() => runtimeFileSha256(library), throwsA(isA<CodexException>()));
+  });
+
   test('identity rejects schema target Contract ABI range and component drift',
       () {
     final compatibility = _writeCompatibility(temporary, declaration);
