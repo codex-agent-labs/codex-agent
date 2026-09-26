@@ -1,6 +1,7 @@
 package io.github.codex_agent_labs.codexagent.appserver.runtime
 
 import java.io.File
+import java.util.UUID
 import okio.FileSystem
 import okio.Path
 import okio.Path.Companion.toPath
@@ -60,7 +61,7 @@ internal fun prepareRuntimeCertificateBundle(certificateSources: List<Path>, cod
         .filter(Path::isRegularFile)
         .sortedBy(Path::name)
     check(certificates.isNotEmpty()) { "System certificates are unavailable" }
-    return (codexHome / "system-ca.pem").also { destination ->
+    return (codexHome / "system-ca-${UUID.randomUUID()}.pem").also { destination ->
         val temporary = File.createTempFile("system-ca-", ".tmp", File(codexHome.toString()))
             .absolutePath.toPath()
         try {

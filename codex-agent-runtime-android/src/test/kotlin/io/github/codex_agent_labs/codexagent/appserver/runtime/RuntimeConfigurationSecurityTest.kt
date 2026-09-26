@@ -10,6 +10,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
+import kotlin.test.assertTrue
 
 class RuntimeConfigurationSecurityTest {
     @Test
@@ -76,7 +78,7 @@ class RuntimeConfigurationSecurityTest {
     }
 
     @Test
-    fun certificateBundleReplacesStaleSymlinkWithoutWritingItsTarget() {
+    fun certificateBundleDoesNotReuseStaleSharedSymlink() {
         val directory =
             FileSystem.SYSTEM_TEMPORARY_DIRECTORY / "codex-runtime-certificate-${Random.nextLong()}"
         val codexHome = directory / "codex"
@@ -90,10 +92,15 @@ class RuntimeConfigurationSecurityTest {
                 java.nio.file.Path.of(sentinel.toString()),
             )
 
-            assertEquals(bundle, prepareRuntimeCertificateBundle(listOf(certificate), codexHome))
-            assertEquals("certificate\n", bundle.read())
+            val first = prepareRuntimeCertificateBundle(listOf(certificate), codexHome)
+            val second = prepareRuntimeCertificateBundle(listOf(certificate), codexHome)
+            assertNotEquals(first, second)
+            assertEquals("certificate\n", first.read())
+            assertEquals("certificate\n", second.read())
             assertEquals("leave untouched", sentinel.read())
-            assertFalse(Files.isSymbolicLink(java.nio.file.Path.of(bundle.toString())))
+            assertTrue(Files.isSymbolicLink(java.nio.file.Path.of(bundle.toString())))
+            FileSystem.SYSTEM.delete(first)
+            assertEquals("certificate\n", second.read())
         } finally {
             FileSystem.SYSTEM.deleteRecursively(directory, mustExist = false)
         }
