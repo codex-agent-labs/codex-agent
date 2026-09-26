@@ -629,6 +629,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
                 "ci/products/sdk_campaign_semantics.py",
                 "ci/products/sdk_campaign_index.py", "ci/sdk_campaign_observation.py",
                 "ci/sdk_campaign_catalog_producer.py", "ci/sdk_campaign_catalog_caller.py",
+                "ci/sdk_campaign_partial_catalog_caller.py",
                 "ci/sdk_campaign_reused_original.py",
                 "ci/sdk_campaign_original_locator.py", "ci/sdk_campaign_original_worker.py",
                 "ci/sdk_policy_snapshot.py"}:
