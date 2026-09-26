@@ -47,6 +47,25 @@ class AndroidValidationPolicyTests(unittest.TestCase):
             verified.assert_not_called()
         self.assertFalse(self.destination.exists())
 
+    def test_destination_must_be_fresh_normalized_and_separate(self):
+        outside = self.root.parent / "runner-temp"
+        outside.mkdir()
+        (outside / "source").mkdir()
+        (outside / "linked").symlink_to(outside / "source", target_is_directory=True)
+        cases = (self.root, self.root.parent, self.discovery,
+                 self.discovery / "child", self.root / "build",
+                 outside / "linked" / "policy", outside / "source",
+                 outside / "source" / ".." / "policy")
+        with patch.object(policy.product_reuse, "_verified_product_state") as verified:
+            for destination in cases:
+                with self.subTest(destination=destination), self.assertRaisesRegex(
+                        ValueError, "fresh, separate destination"):
+                    policy.prepare(**self.args(destination=destination))
+            with self.assertRaisesRegex(ValueError, "fresh, separate destination"):
+                policy.prepare(**self.args(destination=outside / "source/policy",
+                    sdk_validation_tooling={"evidence": str(outside / "source")}))
+            verified.assert_not_called()
+
     def test_reused_package_binary_or_contract_fails_before_sdk_upload(self):
         for missing in (policy._PACKAGE, policy._BINARY, policy._CONTRACT):
             with self.subTest(missing=missing):
@@ -97,6 +116,7 @@ class AndroidValidationPolicyTests(unittest.TestCase):
             self.assertIs(state, verified)
             self.assertEqual(policy._VALIDATION, instance)
             self.assertEqual(_KEY, expected_key)
+            self.assertIn(root, destination.parents)
             for product, component, phase, target in (
                     ("sdk", "sdk-android", "binary", "android"),
                     ("sdk", "sdk-android", "package", "android"),
@@ -146,19 +166,30 @@ class AndroidValidationPolicyTests(unittest.TestCase):
                 policy.prepare(**self.args())
             self.assertFalse(self.destination.exists())
             selected = True
-            result = policy.prepare(**self.args())
-        self.assertEqual(self.destination / "predecessors/sdk-sdk-android-package-android/stage",
-                         Path(result["packageStage"]))
-        self.assertEqual(self.destination / "predecessors/sdk-sdk-android-binary-android/phase-receipt.json",
-                         Path(result["binaryReceipt"]))
-        self.assertEqual(self.destination / "sdk-inputs" / policy.REQUEST_NAME,
-                         Path(result["compatibilityRequest"]))
-        evidence = policy.load_canonical_json_bytes(
-            policy.read_regular_file_bytes(Path(result["binaryContractEvidence"])))
-        self.assertEqual("release", evidence["expectedTrustDomain"])
-        for phase in ("binary", "package", "validation", "metadata"):
-            self.assertEqual((closure / (phase + ".json")).read_bytes(),
-                (self.destination / "contract-input/execution-closure/receipts" / (phase + ".json")).read_bytes())
+            for destination in (self.destination, self.root.parent / "runner-temp/policy"):
+                with self.subTest(destination=destination):
+                    result = policy.prepare(**self.args(destination=destination))
+                    self.assertEqual(destination / "predecessors/sdk-sdk-android-package-android/stage",
+                                     Path(result["packageStage"]))
+                    self.assertEqual(destination / "predecessors/sdk-sdk-android-binary-android/phase-receipt.json",
+                                     Path(result["binaryReceipt"]))
+                    self.assertEqual(destination / "sdk-inputs" / policy.REQUEST_NAME,
+                                     Path(result["compatibilityRequest"]))
+                    evidence = policy.load_canonical_json_bytes(
+                        policy.read_regular_file_bytes(Path(result["binaryContractEvidence"])))
+                    self.assertEqual("release", evidence["expectedTrustDomain"])
+                    for phase in ("binary", "package", "validation", "metadata"):
+                        self.assertEqual((closure / (phase + ".json")).read_bytes(),
+                            (destination / "contract-input/execution-closure/receipts" / (phase + ".json")).read_bytes())
+            tampered = self.root.parent / "runner-temp/tampered-policy"
+            original_publish = policy.publish_regular_tree
+            def mutate_before_publish(source, destination, **kwargs):
+                (source / "late-mutation.bin").write_bytes(b"late mutation")
+                return original_publish(source, destination, **kwargs)
+            with patch.object(policy, "publish_regular_tree", side_effect=mutate_before_publish):
+                with self.assertRaisesRegex(ValueError, "pinned inventory"):
+                    policy.prepare(**self.args(destination=tampered))
+            self.assertFalse(tampered.exists())
 
 
 if __name__ == "__main__":

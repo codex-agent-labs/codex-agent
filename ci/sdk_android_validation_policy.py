@@ -51,10 +51,17 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
                                                (plan, discovery, state, destination))
     product_reuse._product_materialization_paths(root, discovery, state,
                                                  root / "build/android-validation-policy-unused")
-    if (destination == root or root not in destination.parents or
-            destination.resolve(strict=False) != destination or
-            destination.exists() or destination.is_symlink()):
-        raise ValueError("Android validation policy needs a fresh checkout-owned destination")
+    tooling_sources = tuple(Path(sdk_validation_tooling[name]).absolute() for name in
+        ("evidence", "publicKey", "javaExecutable", "keyring", "keysDirectory")
+        if type(sdk_validation_tooling.get(name)) is str)
+    sources = (plan, discovery, state, Path(keyring).absolute(),
+               Path(keys_directory).absolute(), *tooling_sources)
+    if (destination.resolve(strict=False) != destination or destination.exists()
+            or destination.is_symlink() or destination == root
+            or destination in root.parents
+            or any(destination == source or destination in source.parents
+                   or source in destination.parents for source in sources)):
+        raise ValueError("Android validation policy needs a fresh, separate destination")
     policies = sdk_workflow._caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
@@ -81,7 +88,7 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
             raise ValueError("Android validation original election changed")
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="sdk-android-validation-policy-", dir=destination.parent) as scratch:
+    with tempfile.TemporaryDirectory(prefix="sdk-android-validation-policy-", dir=root) as scratch:
         prepared = Path(scratch).resolve(strict=True) / "policy"
         prepared.mkdir()
         trust = product_reuse._release_trust(root, verified.plan["validationCommit"], prepared)
@@ -155,7 +162,7 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
         write_canonical_json(prepared / "binary-contract-evidence.json", contract_evidence)
         unchanged()
         candidate = regular_file_inventory(prepared)
-        publish_regular_tree(prepared, destination)
+        publish_regular_tree(prepared, destination, expected_inventory=candidate)
         if regular_file_inventory(destination) != candidate:
             raise ValueError("Android validation caller policy differs from its private candidate")
     unchanged()

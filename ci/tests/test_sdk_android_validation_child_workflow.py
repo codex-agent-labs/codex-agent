@@ -1,8 +1,13 @@
 """Wave 17 never creates a fresh worker without caller-owned protected source pins."""
 
+import json
+import os
 from pathlib import Path
 import re
+import tempfile
+import textwrap
 import unittest
+from unittest.mock import patch
 
 
 WORKFLOW = (Path(__file__).resolve().parents[2] /
@@ -41,12 +46,34 @@ class AndroidValidationChildWorkflowTest(unittest.TestCase):
             self.assertIn(text, collector)
         self.assertLess(worker.index("id: authority"), worker.index("android-actions/setup-android"))
         self.assertLess(worker.index("id: authority"), worker.index("sdk-android-validation-worker"))
+        self.assertNotIn("VALIDATION_COMMIT", worker.split("      - id: authority\n", 1)[1].split("      - name:", 1)[0])
         authority = worker.split("- id: authority", 1)[1].split("- name: Select installed caller Java", 1)[0]
         self.assertIn("python3 -I -B -", authority)
         self.assertNotIn("from ci.", authority)
         self.assertIn("ci.sdk_android_validation_policy", worker)
         self.assertIn("sdk-worker-workflow-path: .github/workflows/sdk-android-validation.yml", collector)
         self.assertIn("sdk-worker-job-name: product-validation / sdk-android-validation-result / sdk-android-validation-android", collector)
+
+    def test_worker_decodes_only_exact_canonical_authority(self):
+        worker = job(WORKFLOW.read_text(), "sdk-android-validation")
+        script = worker.split("          python3 -I -B - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+        value = {"schemaVersion": 1, "trustedAndroidWorkflowSha": "c" * 40,
+                 "trustedSourceCommit": "a" * 40, "trustedSourceTree": "b" * 40}
+        raw = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "output"
+            for payload, valid in ((raw, True), (raw.removesuffix(b"\n"), False),
+                                   (raw.replace(b'"schemaVersion":1', b'"schemaVersion":1,"schemaVersion":1'), False)):
+                with self.subTest(payload=payload):
+                    output.unlink(missing_ok=True)
+                    with patch.dict(os.environ, {"AUTHORITY": payload.decode(), "GITHUB_OUTPUT": str(output)}, clear=True):
+                        if valid:
+                            exec(compile(textwrap.dedent(script), "android-worker-authority", "exec"), {})
+                            self.assertIn("trustedSourceCommit=" + "a" * 40, output.read_text())
+                        else:
+                            with self.assertRaises(ValueError):
+                                exec(compile(textwrap.dedent(script), "android-worker-authority", "exec"), {})
+                            self.assertFalse(output.exists())
 
     def test_reuse_only_and_missing_authority_fail_closed(self):
         source = WORKFLOW.read_text()
