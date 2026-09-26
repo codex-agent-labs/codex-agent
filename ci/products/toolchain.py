@@ -680,8 +680,9 @@ def observe_producer(
             / "caches/modules-2/files-2.1/org.jetbrains.kotlin/kotlin-gradle-plugin"
             / kotlin_version
         )
-        kgp_matches = sorted(
+        kgp_matches = sorted(path for path in
             kgp_root.rglob(f"kotlin-gradle-plugin-{kotlin_version}-*.jar")
+            if not path.name.endswith(("-sources.jar", "-javadoc.jar"))
         ) if kgp_root.is_dir() else []
         if len(kgp_matches) != 1:
             raise ValueError("Kotlin plugin cache must contain exactly one resolved implementation jar")

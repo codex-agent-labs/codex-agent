@@ -335,11 +335,15 @@ class ProductToolchainTest(unittest.TestCase):
         gradle_home = self.root / "gradle-home"
         konan_home = self.root / "konan-home"
         kgp = gradle_home / "caches/modules-2/files-2.1/org.jetbrains.kotlin/kotlin-gradle-plugin/2.3.10/x/kotlin-gradle-plugin-2.3.10-gradle813.jar"
+        sources = kgp.with_name("kotlin-gradle-plugin-2.3.10-gradle813-sources.jar")
+        common_sources = kgp.with_name("kotlin-gradle-plugin-2.3.10-sources.jar")
+        javadoc = kgp.with_name("kotlin-gradle-plugin-2.3.10-gradle813-javadoc.jar")
         archive = gradle_home / "caches/modules-2/files-2.1/org.jetbrains.kotlin/kotlin-native-prebuilt/2.3.10/x/kotlin-native-prebuilt-2.3.10-linux-x86_64.tar.gz"
         compiler = konan_home / "kotlin-native-prebuilt-linux-x86_64-2.3.10"
         cc, ld, java = self.root / "tools/cc", self.root / "tools/ld", self.root / "tools/java"
         for path, contents in (
-            (kgp, b"kgp"), (archive, b"native"), (cc, b"cc"), (ld, b"ld"), (java, b"java"),
+            (kgp, b"kgp"), (sources, b"sources"), (common_sources, b"common sources"), (javadoc, b"javadoc"),
+            (archive, b"native"), (cc, b"cc"), (ld, b"ld"), (java, b"java"),
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(contents)
