@@ -72,18 +72,51 @@ def locate_runtime_phase10_upload(plan_path, candidate_root, *, trusted_workflow
     return {"artifact_id": artifact_id, "artifact_sha256": digest}
 
 
+def capture_observed_runtime_phase10_upload(
+        plan_path, candidate_root, destination, *, trusted_workflow_sha,
+        expected_build_key, expected_metadata_receipt_sha256, environ=None, token):
+    """Capture the exact located upload; product/release admission stays separate."""
+    selected = locate_runtime_phase10_upload(
+        plan_path, candidate_root, trusted_workflow_sha=trusted_workflow_sha,
+        environ=environ, token=token,
+    )
+    return products.capture_runtime_aggregate_release_upload(
+        plan_path, destination, **selected, trusted_workflow_sha=trusted_workflow_sha,
+        expected_build_key=expected_build_key,
+        expected_metadata_receipt_sha256=expected_metadata_receipt_sha256,
+        repository_root=candidate_root, environ=environ, token=token,
+    )
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--candidate-root", type=Path, required=True)
     parser.add_argument("--trusted-workflow-sha", required=True)
+    parser.add_argument("--destination", type=Path)
+    parser.add_argument("--expected-build-key")
+    parser.add_argument("--expected-metadata-receipt-sha256")
     parser.add_argument("--github-output", type=Path)
     args = parser.parse_args(argv)
     try:
-        value = locate_runtime_phase10_upload(
-            args.plan, args.candidate_root, trusted_workflow_sha=args.trusted_workflow_sha,
-            environ=os.environ, token=os.environ["GITHUB_TOKEN"],
-        )
+        capture = (args.destination, args.expected_build_key, args.expected_metadata_receipt_sha256)
+        if any(value is not None for value in capture) and not all(value is not None for value in capture):
+            raise ValueError("Runtime Phase-10 capture requires destination, build key, and metadata receipt")
+        if args.destination is None:
+            value = locate_runtime_phase10_upload(
+                args.plan, args.candidate_root, trusted_workflow_sha=args.trusted_workflow_sha,
+                environ=os.environ, token=os.environ["GITHUB_TOKEN"],
+            )
+        else:
+            captured = capture_observed_runtime_phase10_upload(
+                args.plan, args.candidate_root, args.destination,
+                trusted_workflow_sha=args.trusted_workflow_sha,
+                expected_build_key=args.expected_build_key,
+                expected_metadata_receipt_sha256=args.expected_metadata_receipt_sha256,
+                environ=os.environ, token=os.environ["GITHUB_TOKEN"],
+            )
+            value = {"artifact_id": captured["artifact"]["id"],
+                     "artifact_sha256": captured["artifact"]["digest"]}
         if args.github_output is not None:
             github_output(args.github_output, value)
         else:

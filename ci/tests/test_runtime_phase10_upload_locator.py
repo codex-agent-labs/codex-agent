@@ -41,6 +41,23 @@ class RuntimePhase10UploadLocatorTest(unittest.TestCase):
         self.assertEqual({"artifact_id": 701, "artifact_sha256": self.f.artifact["digest"]}, self.call())
         self.assertFalse(self.f.output.exists())
 
+    def test_official_selection_captures_exact_original_bytes(self):
+        with patch.object(locator.products, "_validate_plan", return_value=self.f.plan), \
+                patch("reuse.api_request", side_effect=self.api), \
+                patch.object(locator.products, "download_artifact_to_file",
+                    side_effect=lambda artifact, token, destination, **kwargs:
+                        destination.write_bytes(self.f.raw)):
+            transport = locator.capture_observed_runtime_phase10_upload(
+                self.f.plan_path, self.f.root, self.f.output,
+                trusted_workflow_sha=self.f.pin, expected_build_key=self.f.key,
+                expected_metadata_receipt_sha256=self.f.digest,
+                environ=self.environment, token="synthetic-token",
+            )
+        self.assertEqual(701, transport["artifact"]["id"])
+        self.assertEqual(self.f.raw, (self.f.output / "transport.zip").read_bytes())
+        self.assertEqual(self.f.files["caller.json"],
+                         (self.f.output / "original/caller.json").read_bytes())
+
     def test_wrong_or_ambiguous_upload_and_observation_reject(self):
         original = deepcopy((self.f.run, self.f.jobs, self.f.artifact))
         for mutation in ("missing", "duplicate", "expired", "wrong-attempt", "bad-digest",
@@ -86,6 +103,28 @@ class RuntimePhase10UploadLocatorTest(unittest.TestCase):
                 self.assertRaises(SystemExit) as error:
             locator.main(["--plan", str(self.f.plan_path), "--candidate-root", str(self.f.root)])
         self.assertEqual(2, error.exception.code)
+
+    def test_cli_capture_requires_complete_independent_pins(self):
+        base = ["--plan", str(self.f.plan_path), "--candidate-root", str(self.f.root),
+                "--trusted-workflow-sha", self.f.pin, "--destination", str(self.f.output)]
+        with patch.dict(locator.os.environ, {"GITHUB_TOKEN": "synthetic-token",
+                                          **self.environment}, clear=True), \
+                self.assertRaises(SystemExit) as error:
+            locator.main(base)
+        self.assertEqual(2, error.exception.code)
+        self.assertFalse(self.f.output.exists())
+        with patch.dict(locator.os.environ, {"GITHUB_TOKEN": "synthetic-token",
+                                          **self.environment}, clear=True), \
+                patch.object(locator.products, "_validate_plan", return_value=self.f.plan), \
+                patch("reuse.api_request", side_effect=self.api), \
+                patch.object(locator.products, "download_artifact_to_file",
+                    side_effect=lambda artifact, token, destination, **kwargs:
+                        destination.write_bytes(self.f.raw)):
+            self.assertEqual(0, locator.main(base + [
+                "--expected-build-key", self.f.key,
+                "--expected-metadata-receipt-sha256", self.f.digest,
+            ]))
+        self.assertEqual(self.f.raw, (self.f.output / "transport.zip").read_bytes())
 
 
 if __name__ == "__main__":
