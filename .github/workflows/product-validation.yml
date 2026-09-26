@@ -4645,7 +4645,7 @@ jobs:
 
   sdk-partial-catalog:
     name: sdk-partial-catalog
-    needs: [plan, contract-validation, sdk-completion, sdk-collect-3, sdk-collect-1, sdk-collect-2, sdk-collect-4, sdk-collect-5, sdk-collect-6, sdk-collect-7, sdk-collect-8, sdk-collect-9, sdk-collect-10]
+    needs: [plan, contract-validation, sdk-completion, sdk-collect-3, sdk-collect-1, sdk-collect-2, sdk-collect-4, sdk-collect-5, sdk-collect-6, sdk-collect-7, sdk-collect-8, sdk-collect-9, sdk-collect-10, sdk-core-binary-wave, sdk-core-package-wave, sdk-core-validation-wave, sdk-core-metadata-wave, sdk-android-binary-result, sdk-android-package-result]
     if: >-
       always() && github.event_name == 'pull_request' &&
       needs.plan.outputs.event_authorized == 'true' &&
@@ -4660,7 +4660,13 @@ jobs:
        needs.sdk-collect-7.outputs.wave_failed == 'true' ||
        needs.sdk-collect-8.outputs.wave_failed == 'true' ||
        needs.sdk-collect-9.outputs.wave_failed == 'true' ||
-       needs.sdk-collect-10.outputs.wave_failed == 'true')
+       needs.sdk-collect-10.outputs.wave_failed == 'true' ||
+       needs.sdk-core-binary-wave.result == 'failure' ||
+       needs.sdk-core-package-wave.result == 'failure' ||
+       needs.sdk-core-validation-wave.result == 'failure' ||
+       needs.sdk-core-metadata-wave.result == 'failure' ||
+       needs.sdk-android-binary-result.result == 'failure' ||
+       needs.sdk-android-package-result.result == 'failure')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4668,16 +4674,47 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.plan.outputs.plan_id }}
+          path: ${{ runner.temp }}/sdk-partial-plan
+          merge-multiple: true
       - id: parent
         env:
           RESULTS: ${{ toJSON(needs) }}
+          PLAN: ${{ runner.temp }}/sdk-partial-plan/impact-plan.json
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
           import json, os
           from pathlib import Path
           from ci.sdk_partial_state import select_failed_sdk_wave_state
+          from ci.sdk_nested_partial_state import select_failed_nested_sdk_wave
+          from ci.sdk_nested_wave_locator import locate_current_failed_nested_sdk_wave
+          from ci import product_reuse as products
           from ci.reuse import github_output
-          state = select_failed_sdk_wave_state(json.loads(os.environ['RESULTS']))
+          needs = json.loads(os.environ['RESULTS'])
+          top = any(needs[f'sdk-collect-{wave}']['outputs'].get('wave_failed') == 'true'
+                    for wave in (3, 1, 2, 4, 5, 6, 7, 8, 9, 10))
+          nested = any(needs[name]['result'] == 'failure' for name in (
+              'sdk-core-binary-wave', 'sdk-core-package-wave', 'sdk-core-validation-wave',
+              'sdk-core-metadata-wave', 'sdk-android-binary-result', 'sdk-android-package-result'))
+          if top == nested:
+              raise ValueError('Partial SDK state requires one failed top-level or nested wave')
+          if top:
+              state = select_failed_sdk_wave_state(needs)
+          else:
+              wave = select_failed_nested_sdk_wave(needs)['wave']
+              root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+              plan = products._validate_plan(Path(os.environ['PLAN']), root)
+              producer = products._consumer(plan, os.environ)['producer']
+              selected = locate_current_failed_nested_sdk_wave(producer, wave=wave,
+                  trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
+                  token=os.environ['GITHUB_TOKEN'], environ=os.environ)
+              state = {'artifact_id': str(selected['artifact_id']),
+                       'artifact_digest': selected['artifact_sha256'],
+                       'state_wave': '0', 'sdk_state_wave': str(wave)}
           github_output(Path(os.environ['GITHUB_OUTPUT']), state)
           PY
       - name: Select installed caller Java for SDK tooling
@@ -4699,12 +4736,6 @@ jobs:
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / product-contracts
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: needs.plan.outputs.tooling_required == 'true'
-        with:
-          artifact-ids: ${{ needs.plan.outputs.plan_id }}
-          path: ${{ runner.temp }}/sdk-partial-plan
-          merge-multiple: true
       - id: apple-policy
         if: needs.plan.outputs.tooling_required == 'true'
         uses: ./.github/actions/prepare-sdk-apple-policy
