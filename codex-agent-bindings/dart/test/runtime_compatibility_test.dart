@@ -517,6 +517,22 @@ void main() {
       );
     }
     claim.writeAsStringSync(originalClaim);
+    final incompatibleRelease =
+        jsonDecode(originalClaim) as Map<String, Object?>;
+    incompatibleRelease['runtimeVersion'] = '0.9.0';
+    claim.writeAsStringSync(_canonicalJson(incompatibleRelease));
+    _sign(claim, signer.privateKey, 'codex-agent-product-v1');
+    expect(
+      () => verify(),
+      throwsA(isA<CodexException>().having(
+        (error) => error.message,
+        'message',
+        contains('external Runtime release is incompatible'),
+      )),
+    );
+    claim.writeAsStringSync(originalClaim);
+    _sign(claim, signer.privateKey, 'codex-agent-product-v1');
+    expect(verify()['runtimeLibrarySha256'], runtimeFileSha256(library));
     expect(
       () => verify(signer.public),
       throwsA(isA<CodexException>()),

@@ -517,13 +517,26 @@ internal static class RuntimeLoaderSecurity
                 library, compatibility, Target));
             File.WriteAllBytes(signature, original);
             var originalClaim = File.ReadAllBytes(claim);
-            var incompatibleRelease = JsonNode.Parse(originalClaim)!.AsObject();
-            incompatibleRelease["runtimeVersion"] = "0.9.0";
-            File.WriteAllBytes(claim, Canonical(incompatibleRelease));
-            File.Delete(signature);
-            Sign(claim, releaseKey, "codex-agent-product-v1", signature);
-            Reject<InvalidDataException>(() => NativeLibraryLoader.RejectUnverifiedExternalForTests(
-                library, compatibility, Target));
+            foreach (var mutation in new Action<JsonObject>[]
+            {
+                value => value["runtimeVersion"] = "0.9.0",
+                value => value["runtimeIdentity"]!["target"] = Target == "windows-x64" ? "linux-arm64" : "windows-x64",
+            })
+            {
+                var incompatibleClaim = JsonNode.Parse(originalClaim)!.AsObject();
+                mutation(incompatibleClaim);
+                File.WriteAllBytes(claim, Canonical(incompatibleClaim));
+                File.Delete(signature);
+                Sign(claim, releaseKey, "codex-agent-product-v1", signature);
+                try
+                {
+                    NativeLibraryLoader.RejectUnverifiedExternalForTests(library, compatibility, Target);
+                    throw new InvalidOperationException("Incompatible signed Runtime authorization was accepted.");
+                }
+                catch (InvalidDataException error) when (error.Message == "Runtime authorization is incompatible with this SDK.")
+                {
+                }
+            }
             File.WriteAllBytes(claim, originalClaim);
             File.WriteAllBytes(signature, original);
             var keyringPath = Path.Combine(evidence, "release-keyring.json");

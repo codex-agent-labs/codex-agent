@@ -3049,6 +3049,32 @@ mod loader_security_tests {
             &evidence.join("runtime-library-authorization.sig"),
         );
 
+        let mut wrong_contract = original_claim.clone();
+        wrong_contract["runtimeIdentity"]["contractDigest"] = json!(
+            "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        );
+        canonical_json(&claim_path, &wrong_contract);
+        sign(
+            &claim_path,
+            &signer_private,
+            "codex-agent-product-v1",
+            &evidence.join("runtime-library-authorization.sig"),
+        );
+        let error =
+            CodexNativeLibrary::load_external_with(&library, &root_public, Some(&fixture), |_| {
+                panic!("wrong-Contract signed Runtime reached dynamic loader")
+            })
+            .err()
+            .expect("wrong-Contract signed Runtime must be rejected");
+        assert!(error.to_string().contains("incompatible with this SDK"), "{error}");
+        canonical_json(&claim_path, &original_claim);
+        sign(
+            &claim_path,
+            &signer_private,
+            "codex-agent-product-v1",
+            &evidence.join("runtime-library-authorization.sig"),
+        );
+
         let mut altered_claim: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&claim_path).unwrap()).unwrap();
         altered_claim["runtimeIdentity"]["componentId"] = serde_json::Value::String(
