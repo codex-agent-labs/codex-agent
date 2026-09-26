@@ -87,6 +87,69 @@ class SdkCampaignCatalogProducerTest(TestCase):
                     trusted_workflow_sha="reviewed-sha", token="observation-token", environ={})
             self.assertEqual(59, discover_fresh.call_count)
 
+    def test_failed_catalog_producer_is_frozen_from_independent_selection(self):
+        producer = {"repository": "codex-agent-labs/codex-agent",
+            "workflowPath": ".github/workflows/ci.yml", "commit": "a" * 40,
+            "tree": "b" * 40, "event": "pull_request", "runId": 71,
+            "runAttempt": 2, "pullRequest": 31}
+        selected = self.instances[0]
+        fresh = {instance: {"producer": {}, "expected_build_key": _DIGEST,
+            "expected_product_version": "0.8.0",
+            "trusted_workflow_path": ".github/workflows/product-validation.yml",
+            "trusted_job_name": "product-validation / sdk-worker"}
+            for instance in self.instances if instance != selected}
+        reused = {selected: {"expected_build_key": _DIGEST,
+            "expected_product_version": "0.8.0", "pull_request": 31,
+            "repository": producer["repository"], "catalog_artifact_name": "partial",
+            "catalog_public_key": Path("independent.pub"),
+            "expected_public_key_sha256": _DIGEST,
+            "trusted_worker_workflow_path": ".github/workflows/product-validation.yml",
+            "trusted_worker_job_name": "product-validation / sdk-worker",
+            "trusted_catalog_workflow_path": ".github/workflows/product-validation.yml",
+            "trusted_catalog_job_name": "product-validation / sdk-catalog",
+            "failed_catalog_producer": producer}}
+        found = {"receipt_sha256": _DIGEST, "original_artifact_id": 101,
+            "original_artifact_sha256": _DIGEST, "catalog_artifact_id": 201,
+            "catalog_artifact_sha256": _DIGEST, "catalog_public_key": Path("independent.pub"),
+            "catalog_public_key_sha256": _DIGEST, "pull_request": 31,
+            "worker_workflow_path": ".github/workflows/product-validation.yml",
+            "worker_job_name": "product-validation / sdk-worker",
+            "catalog_workflow_path": ".github/workflows/product-validation.yml",
+            "catalog_job_name": "product-validation / sdk-catalog"}
+        with patch.object(catalog, "discover_fresh_sdk_original_pin", return_value={
+                "receipt_sha256": _DIGEST, "artifact_id": 1, "artifact_sha256": _DIGEST,
+                "workflow_path": ".github/workflows/product-validation.yml",
+                "job_name": "product-validation / sdk-worker"}), \
+             patch.object(catalog, "discover_reused_sdk_original_pins",
+                 return_value={selected: found}) as discover:
+            pins = catalog.discover_sdk_campaign_original_pins(fresh, reused,
+                trusted_workflow_sha="reviewed-sha", token="observation-token", environ={})
+        self.assertEqual(producer, discover.call_args.kwargs["failed_catalog_producer"])
+        producer["tree"] = "0" * 40
+        self.assertEqual("b" * 40, catalog.load_canonical_json_bytes(
+            pins[selected].failed_catalog_producer_bytes)["tree"])
+
+        self.observations[selected] = ObservedSdkOriginal(b"receipt", canonical_json_bytes({
+            "state": "reused", "source": "same-pr",
+        }), Path("unused-object"), Path("unused-stage"))
+        self.pins[selected] = pins[selected]
+        @contextmanager
+        def holder(*_args, **kwargs):
+            self.assertEqual("b" * 40, kwargs["failed_catalog_producer"]["tree"])
+            yield {}, Path("unused-upload")
+        @contextmanager
+        def fresh_holder(*_args, **_kwargs):
+            yield {}, Path("unused-upload")
+        with patch.object(catalog, "held_fresh_sdk_worker_upload", side_effect=fresh_holder), \
+             patch.object(catalog, "held_reused_sdk_original", side_effect=holder):
+            with self.held():
+                pass
+        self.pins[selected] = catalog.ReusedSdkOriginalPin(
+            **{**found, "failed_catalog_producer_bytes": b'{"event":"pull_request"}\n'})
+        with self.assertRaises(ValueError):
+            with self.held():
+                pass
+
     def test_candidate_keeps_state_observation_through_selected_replay(self):
         producer = {"repository": "codex-agent-labs/codex-agent",
             "workflowPath": ".github/workflows/ci.yml", "commit": "a" * 40,

@@ -24,7 +24,8 @@ from ci.sdk_campaign_reused_original import (
 )
 from products.index import IndexEntrySource
 from products.inventory import (
-    load_canonical_json_bytes, require_exact_keys, require_integer, require_sha256,
+    canonical_json_bytes, load_canonical_json_bytes, require_exact_keys,
+    require_integer, require_sha256,
 )
 from products.registry import PhaseInstanceId
 from products.receipt import validate_phase_receipt, validate_producer
@@ -56,6 +57,7 @@ class ReusedSdkOriginalPin:
     worker_job_name: str
     catalog_workflow_path: str
     catalog_job_name: str
+    failed_catalog_producer_bytes: bytes | None = None
 
 
 _FRESH_SELECTION_KEYS = {
@@ -95,7 +97,9 @@ def discover_sdk_campaign_original_pins(fresh, reused, *, trusted_workflow_sha,
     for instance, request in reused.items():
         if not isinstance(instance, PhaseInstanceId):
             raise ValueError("Reused SDK selection has invalid phase identity")
-        require_exact_keys(request, _REUSED_SELECTION_KEYS, "Reused SDK original selection")
+        require_exact_keys(request, _REUSED_SELECTION_KEYS |
+            ({"failed_catalog_producer"} if "failed_catalog_producer" in request else set()),
+            "Reused SDK original selection")
     pins = {instance: FreshSdkOriginalPin(**discover_fresh_sdk_original_pin(
         instance, **fresh[instance], trusted_workflow_sha=trusted_workflow_sha,
         token=token, environ=environ)) for instance in sorted(fresh)}
@@ -106,15 +110,23 @@ def discover_sdk_campaign_original_pins(fresh, reused, *, trusted_workflow_sha,
     groups = {}
     for instance in sorted(reused):
         request = reused[instance]
-        common = tuple(request[field] for field in shared_fields)
+        failed = request.get("failed_catalog_producer")
+        failed_bytes = (None if failed is None else
+            canonical_json_bytes(validate_producer(failed)))
+        common = tuple(request[field] for field in shared_fields) + (failed_bytes,)
         groups.setdefault(common, {})[instance] = {field: request[field] for field in worker_fields}
     for common, selections in groups.items():
         found = discover_reused_sdk_original_pins(selections,
-            **dict(zip(shared_fields, common)), trusted_workflow_sha=trusted_workflow_sha,
+            **dict(zip(shared_fields, common[:-1])),
+            failed_catalog_producer=(None if common[-1] is None else
+                validate_producer(load_canonical_json_bytes(common[-1]))),
+            trusted_workflow_sha=trusted_workflow_sha,
             token=token, environ=environ)
         if set(found) != set(selections):
             raise ValueError("Reused SDK catalog discovery returned incomplete phases")
-        pins.update({instance: ReusedSdkOriginalPin(**found[instance]) for instance in selections})
+        pins.update({instance: ReusedSdkOriginalPin(**{
+            **found[instance], "failed_catalog_producer_bytes": common[-1],
+        }) for instance in selections})
     require_no_signing_secret(environ)
     return MappingProxyType(pins)
 
@@ -166,11 +178,19 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
                     pin.worker_workflow_path, pin.worker_job_name,
                     pin.catalog_workflow_path, pin.catalog_job_name)):
                 raise ValueError("Reused SDK worker and catalog workflow paths and jobs must be pinned")
+            if pin.failed_catalog_producer_bytes is not None:
+                if type(pin.failed_catalog_producer_bytes) is not bytes:
+                    raise ValueError("Failed SDK catalog producer must be immutable canonical bytes")
+                failed = validate_producer(load_canonical_json_bytes(pin.failed_catalog_producer_bytes))
+                if canonical_json_bytes(failed) != pin.failed_catalog_producer_bytes or \
+                        failed["event"] != "pull_request" or failed["pullRequest"] != pin.pull_request:
+                    raise ValueError("Failed SDK catalog producer differs from pinned PR")
         else:
             raise ValueError("SDK original upload has no authenticated retained/same-PR route")
 
     catalog_fields = ("catalog_artifact_id", "catalog_artifact_sha256", "catalog_public_key",
-        "catalog_public_key_sha256", "pull_request", "catalog_workflow_path", "catalog_job_name")
+        "catalog_public_key_sha256", "pull_request", "catalog_workflow_path", "catalog_job_name",
+        "failed_catalog_producer_bytes")
     groups = Counter(tuple(getattr(pin, field) for field in catalog_fields)
         for pin in pins.values() if type(pin) is ReusedSdkOriginalPin)
     held, catalogs = {}, {}
@@ -200,6 +220,8 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
                             trusted_workflow_sha=trusted_workflow_sha,
                             trusted_workflow_path=pin.catalog_workflow_path,
                             trusted_job_name=pin.catalog_job_name,
+                            failed_catalog_producer=(None if pin.failed_catalog_producer_bytes is None else
+                                validate_producer(load_canonical_json_bytes(pin.failed_catalog_producer_bytes))),
                             token=token, environ=environ))
                     shared = catalogs[group]
                 holder = _held_reused_sdk_original if shared is not None else held_reused_sdk_original
@@ -219,6 +241,8 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
                     trusted_worker_job_name=pin.worker_job_name,
                     trusted_catalog_workflow_path=pin.catalog_workflow_path,
                     trusted_catalog_job_name=pin.catalog_job_name,
+                    failed_catalog_producer=(None if pin.failed_catalog_producer_bytes is None else
+                        validate_producer(load_canonical_json_bytes(pin.failed_catalog_producer_bytes))),
                     **shared_arg))
             held[instance] = evidence
         require_no_signing_secret(environ)
