@@ -118,15 +118,16 @@ class CoreMetadataBootstrapTest(unittest.TestCase):
             selected, _ = bootstrap._native_archives(self.root, "b" * 40, archives)
         self.assertEqual(archives, selected)
         self.assertEqual({f"kotlin-native-prebuilt-2.3.10-{suffix}.tar.gz" for suffix in
-            ("macos-aarch64", "macos-x86_64", "linux-aarch64", "linux-x86_64")} |
+            ("macos-aarch64", "macos-x86_64", "linux-x86_64")} |
             {"kotlin-native-prebuilt-2.3.10-windows-x86_64.zip"}, set(names))
+        self.assertEqual(2, names.count("kotlin-native-prebuilt-2.3.10-linux-x86_64.tar.gz"))
 
         # A legacy Windows TAR pin must not authorize the published Windows ZIP.
         digest = "f" * 64
         legacy = ("<verification-metadata>" + "".join(
             f'<artifact name="kotlin-native-prebuilt-2.3.10-{suffix}.tar.gz">'
             f'<sha256 value="{digest}"/></artifact>' for suffix in
-            ("macos-aarch64", "macos-x86_64", "linux-aarch64", "linux-x86_64", "windows-x86_64")) +
+            ("macos-aarch64", "macos-x86_64", "linux-x86_64", "windows-x86_64")) +
             "</verification-metadata>").encode()
         sources = iter((b"[versions]\nkotlin = '2.3.10'\n", legacy))
         with (patch.object(bootstrap, "git_regular_blob_bytes", side_effect=lambda *_args, **_kw: next(sources)),
