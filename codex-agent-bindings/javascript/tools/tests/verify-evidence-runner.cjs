@@ -61,7 +61,8 @@ test('retains exact compiler and behavior bytes from the installed consumer comm
     }
     return { ...raw[commands.length - 1], error: undefined, signal: null, status: 0 };
   };
-  runValidation({ cwd: root, executable: '/fixture/node', spawn, stdout, stderr, preflight: () => {} });
+  runValidation({ cwd: root, executable: '/fixture/node', spawn, stdout, stderr,
+    preflight: (_cwd, _archive, run) => run() });
   assert.deepEqual(commands, [
     ['/fixture/node', typeScript, '--noEmit'],
     ['/fixture/node', '--test', '--test-reporter=junit',
@@ -105,7 +106,8 @@ test('failure forwards exact diagnostics and publishes no success evidence', asy
       };
     };
     assert.throws(
-      () => runValidation({ cwd: root, executable: '/fixture/node', spawn, stdout, stderr, preflight: () => {} }),
+      () => runValidation({ cwd: root, executable: '/fixture/node', spawn, stdout, stderr,
+        preflight: (_cwd, _archive, run) => run() }),
       /validation command failed/,
     );
     assert.equal(calls, failure);
@@ -144,7 +146,7 @@ test('installed compiler and required semantic outputs fail closed without fallb
       return { error: undefined, signal: null, status: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
     };
     assert.throws(
-      () => runValidation({ cwd: root, spawn, preflight: () => {} }),
+      () => runValidation({ cwd: root, spawn, preflight: (_cwd, _archive, run) => run() }),
       mutation.startsWith('compiler-') ? /Installed TypeScript compiler/ : /missing, empty, or not a regular file/,
     );
     assert.equal(calls, mutation.startsWith('compiler-') ? 0 : 2);
@@ -193,7 +195,8 @@ test('selected npm archive is checked before any compiler or SDK test process', 
   let spawned = 0;
   const spawn = () => { spawned += 1; assert.fail('SDK or compiler must not execute before archive verification'); };
   fs.writeFileSync(path.join(installed, 'index.cjs'), 'module.exports = { tampered: true };\n');
-  assert.throws(() => runValidation({ cwd: root, spawn, preflight: (cwd) => verifySelectedPackage(cwd, archive) }),
+  assert.throws(() => runValidation({ cwd: root, spawn,
+    preflight: (cwd, _archive, run) => verifySelectedPackage(cwd, archive, run) }),
     /differs from the selected archive/);
   assert.equal(spawned, 0);
   assert.equal(fs.existsSync(path.join(root, 'packed-consumer-execution.json')), false);
@@ -223,4 +226,45 @@ test('selected npm archive rejects a symlink member even when installed bytes ma
   const archive = path.join(root, 'selected.tgz');
   execFileSync(systemTar(), ['-czf', archive, '-C', path.join(root, 'source'), 'package']);
   assert.throws(() => verifySelectedPackage(root, archive), /unsafe member type/);
+});
+
+test('consumer execution holds the verified npm snapshot after the selected archive changes', async (context) => {
+  const { runValidation, verifySelectedPackage, systemTar } = await import(runnerUrl);
+  const { root } = fixture();
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = path.join(root, 'source/package');
+  const installed = path.join(root, 'node_modules/@codex-agent-labs/codex-agent');
+  for (const directory of [source, installed]) fs.mkdirSync(path.join(directory, 'dist'), { recursive: true });
+  for (const [name, bytes] of Object.entries({
+    'package.json': '{}\n', 'index.cjs': 'module.exports = {};\n',
+    'index.mjs': 'export default {};\n', 'dist/runtime.js': 'export {};\n',
+  })) {
+    for (const directory of [source, installed]) fs.writeFileSync(path.join(directory, name), bytes);
+  }
+  const archive = path.join(root, 'selected.tgz');
+  execFileSync(systemTar(), ['-czf', archive, '-C', path.join(root, 'source'), 'package']);
+  let calls = 0;
+  let heldArchive;
+  const spawn = (_command, _args, options) => {
+    calls += 1;
+    if (calls === 1) {
+      assert.equal(options.env, undefined);
+      fs.writeFileSync(archive, 'replaced after verification');
+    } else {
+      heldArchive = options.env.CODEX_AGENT_NPM_TARBALL;
+      assert.notEqual(heldArchive, archive);
+      assert.equal(path.basename(heldArchive), path.basename(archive));
+      assert.deepEqual(execFileSync(systemTar(), ['-tzf', heldArchive], { encoding: 'utf8' })
+        .split('\n').filter(Boolean).sort(),
+      ['package/', 'package/dist/', 'package/dist/runtime.js', 'package/index.cjs',
+        'package/index.mjs', 'package/package.json'].sort());
+      fs.writeFileSync(path.join(root, 'public-api.json'), '{}\n');
+      fs.writeFileSync(path.join(root, 'packed-tests.xml'), '<testsuites/>\n');
+    }
+    return { status: 0, signal: null, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+  };
+  runValidation({ cwd: root, spawn,
+    preflight: (cwd, _archive, run) => verifySelectedPackage(cwd, archive, run) });
+  assert.equal(calls, 2);
+  assert.equal(fs.existsSync(heldArchive), false, 'The private snapshot must be removed after execution');
 });

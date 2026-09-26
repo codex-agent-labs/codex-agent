@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -31,9 +32,20 @@ export function systemTar() {
   return exactFile(executable, 'System tar');
 }
 
-export function verifySelectedPackage(cwd, archive = process.env.CODEX_AGENT_NPM_TARBALL) {
+export function verifySelectedPackage(cwd, archive = process.env.CODEX_AGENT_NPM_TARBALL, useVerified = () => {}) {
   if (!archive) throw new Error('The selected npm archive must be supplied before SDK execution');
   exactFile(archive, 'Selected npm archive');
+  const snapshotDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-agent-npm-'));
+  const snapshot = path.join(snapshotDirectory, path.basename(archive));
+  try {
+    fs.copyFileSync(archive, snapshot, fs.constants.COPYFILE_EXCL);
+    return verifySnapshot(cwd, snapshot, useVerified);
+  } finally {
+    fs.rmSync(snapshotDirectory, { recursive: true, force: true });
+  }
+}
+
+function verifySnapshot(cwd, archive, useVerified) {
   const tar = systemTar();
   const packageRoot = path.join(cwd, 'node_modules', '@codex-agent-labs', 'codex-agent');
   const entries = execFileSync(tar, ['-tzf', archive], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
@@ -86,6 +98,7 @@ export function verifySelectedPackage(cwd, archive = process.env.CODEX_AGENT_NPM
       throw new Error(`Installed npm member differs from the selected archive: ${name}`);
     }
   }
+  return useVerified(archive);
 }
 
 function installedTypeScriptCompiler(cwd) {
@@ -100,13 +113,15 @@ function installedTypeScriptCompiler(cwd) {
   return exactFile(path.join(current, 'tsc'), 'Installed TypeScript compiler');
 }
 
-function run(command, cwd, spawn, stdout, stderr) {
-  const result = spawn(command[0], command.slice(1), {
+function run(command, cwd, spawn, stdout, stderr, archive) {
+  const options = {
     cwd,
     encoding: null,
     maxBuffer: 64 * 1024 * 1024,
     shell: false,
-  });
+  };
+  if (archive) options.env = { ...process.env, CODEX_AGENT_NPM_TARBALL: archive };
+  const result = spawn(command[0], command.slice(1), options);
   const capturedStdout = Buffer.from(result.stdout ?? []);
   const capturedStderr = Buffer.from(result.stderr ?? []);
   if (capturedStdout.length !== 0) stdout.write(capturedStdout);
@@ -145,21 +160,22 @@ export function runValidation({
   cwd = path.resolve(cwd);
   removeOutputs(cwd);
   try {
-    preflight(cwd);
-    const typeScript = installedTypeScriptCompiler(cwd);
-    const compiler = run([executable, typeScript, '--noEmit'], cwd, spawn, stdout, stderr);
-    const tests = run([
-      executable,
-      '--test',
-      '--test-reporter=junit',
-      '--test-reporter-destination=packed-tests.xml',
-      'smoke.cjs',
-      'smoke.mjs',
-    ], cwd, spawn, stdout, stderr);
-    exactFile(path.join(cwd, 'public-api.json'), 'Packed public API evidence');
-    exactFile(path.join(cwd, 'packed-tests.xml'), 'Packed consumer JUnit evidence');
-    publish(cwd, 'typescript-execution.json', compiler);
-    publish(cwd, 'packed-consumer-execution.json', tests);
+    preflight(cwd, process.env.CODEX_AGENT_NPM_TARBALL, (archive) => {
+      const typeScript = installedTypeScriptCompiler(cwd);
+      const compiler = run([executable, typeScript, '--noEmit'], cwd, spawn, stdout, stderr);
+      const tests = run([
+        executable,
+        '--test',
+        '--test-reporter=junit',
+        '--test-reporter-destination=packed-tests.xml',
+        'smoke.cjs',
+        'smoke.mjs',
+      ], cwd, spawn, stdout, stderr, archive);
+      exactFile(path.join(cwd, 'public-api.json'), 'Packed public API evidence');
+      exactFile(path.join(cwd, 'packed-tests.xml'), 'Packed consumer JUnit evidence');
+      publish(cwd, 'typescript-execution.json', compiler);
+      publish(cwd, 'packed-consumer-execution.json', tests);
+    });
   } catch (error) {
     removeOutputs(cwd);
     throw error;
