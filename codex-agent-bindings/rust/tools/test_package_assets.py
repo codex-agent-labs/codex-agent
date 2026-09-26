@@ -122,12 +122,17 @@ class PackageAssetsTest(unittest.TestCase):
             )
             (consumer / "src/main.rs").write_text(
                 'fn main() {\n'
-                '  let embedded = codex_agent::CodexNativeLibrary::load_default()\n'
-                '    .err().expect("fixture embedded Runtime must reject");\n'
-                '  assert!(embedded.to_string().contains("embedded Runtime library digest differs"), "{embedded}");\n'
+                '  let error = codex_agent::CodexNativeLibrary::load_default()\n'
+                '    .err().expect("untrusted Runtime must reject");\n'
+                '  let expected = if std::env::var_os("CODEX_AGENT_LIBRARY").is_some() {\n'
+                '    "trusted release evidence"\n'
+                '  } else {\n'
+                '    "embedded Runtime library digest differs"\n'
+                '  };\n'
+                '  assert!(error.to_string().contains(expected), "{error}");\n'
                 '  let path = std::env::args().nth(1).expect("library path");\n'
-                '  let error = codex_agent::CodexNativeLibrary::load(path).err().expect("must reject");\n'
-                '  assert!(error.to_string().contains("trusted release evidence"), "{error}");\n'
+                '  let direct = codex_agent::CodexNativeLibrary::load(path).err().expect("must reject");\n'
+                '  assert!(direct.to_string().contains("trusted release evidence"), "{direct}");\n'
                 '}\n'
             )
             library = work / "unauthenticated.dylib"
@@ -141,12 +146,15 @@ class PackageAssetsTest(unittest.TestCase):
                 for name in ("cache", "index"):
                     (cargo_home / "registry" / name).symlink_to(original_registry / name, target_is_directory=True)
                 environment["CARGO_HOME"] = str(cargo_home)
-            result = subprocess.run(
-                [cargo, "run", "--offline", "--quiet", "--", str(library)],
-                cwd=consumer, env=environment,
-                capture_output=True, text=True,
-            )
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for override in (False, True):
+                if override:
+                    environment["CODEX_AGENT_LIBRARY"] = str(library)
+                result = subprocess.run(
+                    [cargo, "run", "--offline", "--quiet", "--", str(library)],
+                    cwd=consumer, env=environment,
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

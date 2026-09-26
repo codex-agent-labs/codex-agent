@@ -38,6 +38,18 @@ def main() -> None:
         mismatched = verify(public, wrong_compatibility)
         if mismatched.returncode != 1 or "SDK compatibility differs" not in mismatched.stderr:
             raise AssertionError("mismatched embedded compatibility was not rejected")
+        oversized = Path(temporary) / "oversized-compatibility.json"
+        with oversized.open("wb") as stream:
+            stream.truncate(65537)
+        rejected = verify(public, oversized)
+        if rejected.returncode != 1 or "Expected SDK compatibility has invalid size" not in rejected.stderr:
+            raise AssertionError("oversized expected compatibility was not rejected")
+        oversized_root = Path(temporary) / "oversized-root.pub"
+        with oversized_root.open("wb") as stream:
+            stream.truncate(4097)
+        rejected = verify(oversized_root, compatibility)
+        if rejected.returncode != 1 or "Expected SDK root has invalid size" not in rejected.stderr:
+            raise AssertionError("oversized expected root was not rejected")
 
     print("PEReader SDK-root and compatibility resource self-check passed")
 

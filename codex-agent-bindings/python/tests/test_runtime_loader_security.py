@@ -538,19 +538,30 @@ with patch.object(_ffi.NativeLibrary, '_declare_all', return_value=None):
         with patch.object(_ffi.ctypes, 'CDLL', side_effect=AssertionError('dynamic load reached')) as dynamic_load:
             try:
                 _ffi.NativeLibrary.load(path)
-            except OSError:
+            except OSError as error:
+                if mode == 'incompatible':
+                    assert 'authorization is incompatible' in str(error), str(error)
                 dynamic_load.assert_not_called()
             else:
                 raise AssertionError('untrusted installed root was accepted')
 """
 
-            def run(mode: str) -> None:
-                result = subprocess.run([sys.executable, "-I", "-B", "-c", child, str(installed), mode, str(library)],
+            def run(mode: str, candidate: Path = library) -> None:
+                result = subprocess.run([sys.executable, "-I", "-B", "-c", child, str(installed), mode, str(candidate)],
                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
                 self.assertEqual(result.returncode, 0, result.stdout.decode(errors="replace"))
 
             run("explicit")
             run("environment")
+            incompatible_directory = directory / "incompatible"
+            incompatible_directory.mkdir()
+            incompatible_identity = identity(target)
+            incompatible_identity["contractDigest"] = digest("9")
+            incompatible = compile_library(incompatible_directory, "wrong_contract",
+                                           canonical(incompatible_identity, False), 0x010D0000)
+            self.assertEqual(authorize(incompatible, incompatible_identity, "0.8.5",
+                                       root_private=directory / "root-key"), root_public)
+            run("incompatible", incompatible)
             resource.write_bytes((Path(str(library) + ".evidence") / "keys/release.pub").read_bytes())
             run("tampered")
             resource.unlink()

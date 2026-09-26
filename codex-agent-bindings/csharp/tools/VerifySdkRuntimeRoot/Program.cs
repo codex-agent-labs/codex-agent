@@ -4,6 +4,28 @@ using System.Reflection.PortableExecutable;
 const int maxRootBytes = 4096;
 const int maxCompatibilityBytes = 65536;
 
+static byte[] ReadBounded(string path, int maximum, string label)
+{
+    using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+        4096, FileOptions.SequentialScan);
+    if (!stream.CanSeek)
+        throw new InvalidDataException($"Expected {label} has invalid size.");
+    var length = stream.Length;
+    if (length is <= 0 || length > maximum)
+        throw new InvalidDataException($"Expected {label} has invalid size.");
+    var bytes = new byte[(int)length];
+    var copied = 0;
+    while (copied < bytes.Length)
+    {
+        var count = stream.Read(bytes.AsSpan(copied));
+        if (count == 0) throw new InvalidDataException($"Expected {label} changed while reading.");
+        copied += count;
+    }
+    if (stream.ReadByte() != -1 || stream.Length != length)
+        throw new InvalidDataException($"Expected {label} changed while reading.");
+    return bytes;
+}
+
 if (args.Length != 3)
 {
     Console.Error.WriteLine("Usage: VerifySdkRuntimeRoot <package-dll> <expected-root-pub> <expected-compatibility-json>");
@@ -12,12 +34,8 @@ if (args.Length != 3)
 
 try
 {
-    var expectedRoot = File.ReadAllBytes(args[1]);
-    var expectedCompatibility = File.ReadAllBytes(args[2]);
-    if (expectedRoot.Length is 0 or > maxRootBytes)
-        throw new InvalidDataException("Expected SDK root has invalid size.");
-    if (expectedCompatibility.Length is 0 or > maxCompatibilityBytes)
-        throw new InvalidDataException("Expected SDK compatibility has invalid size.");
+    var expectedRoot = ReadBounded(args[1], maxRootBytes, "SDK root");
+    var expectedCompatibility = ReadBounded(args[2], maxCompatibilityBytes, "SDK compatibility");
 
     using var stream = File.OpenRead(args[0]);
     using var pe = new PEReader(stream);
