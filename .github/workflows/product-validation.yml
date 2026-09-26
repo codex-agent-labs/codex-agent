@@ -4654,6 +4654,13 @@ jobs:
       needs.sdk-completion.outputs.complete == 'true' &&
       needs.sdk-completion.outputs.phase_count == '61'
     runs-on: ubuntu-24.04
+    outputs:
+      artifact_name: ${{ steps.identity.outputs.name }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: sha256:${{ steps.upload.outputs.artifact-digest }}
+      index_sha256: ${{ steps.catalog.outputs.indexSha256 }}
+      public_key_sha256: ${{ steps.catalog.outputs.publicKeySha256 }}
+      object_bytes: ${{ steps.catalog.outputs.objectBytes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4704,6 +4711,7 @@ jobs:
           sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
       - name: Assemble completed SDK same-PR cache catalog
+        id: catalog
         env:
           PLAN: ${{ steps.capture.outputs.plan-path }}
           DISCOVERY_ROOT: ${{ steps.capture.outputs.discovery-root }}
@@ -4726,10 +4734,23 @@ jobs:
             --sdk-original-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
             --repository-root "$GITHUB_WORKSPACE" \
             --destination build/ci/sdk-catalog \
+            --github-output "$GITHUB_OUTPUT" \
             ${tooling[@]+"${tooling[@]}"}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - id: identity
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          TREE: ${{ needs.plan.outputs.validation_tree }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$PR" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$TREE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 1
+          echo "name=codex-agent-product-catalog-v1-pull-request-$PR-$TREE-attempt-$ATTEMPT" >> "$GITHUB_OUTPUT"
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: codex-agent-product-catalog-v1-pull-request-${{ github.event.pull_request.number }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
+          name: ${{ steps.identity.outputs.name }}
           path: build/ci/sdk-catalog
           if-no-files-found: error
           overwrite: false
@@ -4782,6 +4803,10 @@ jobs:
           SDK_COMPLETE: ${{ needs.sdk-completion.outputs.complete }}
           SDK_CATALOG_REQUIRED: ${{ github.event_name == 'pull_request' && needs.sdk-completion.outputs.phase_count == '61' }}
           SDK_CATALOG_RESULT: ${{ needs.sdk-catalog.result }}
+          SDK_CATALOG_NAME: ${{ needs.sdk-catalog.outputs.artifact_name }}
+          SDK_CATALOG_ID: ${{ needs.sdk-catalog.outputs.artifact_id }}
+          SDK_CATALOG_DIGEST: ${{ needs.sdk-catalog.outputs.artifact_digest }}
+          SDK_CATALOG_KEY_SHA256: ${{ needs.sdk-catalog.outputs.public_key_sha256 }}
           PRODUCT_RESUME_ARTIFACT_ID: ${{ needs.product-resume.outputs.artifact_id }}
           PRODUCT_RESUME_ARTIFACT_DIGEST: ${{ needs.product-resume.outputs.artifact_digest }}
           AGGREGATE_STATE: ${{ needs.runtime-continuation.outputs.aggregate_state }}
@@ -4839,6 +4864,10 @@ jobs:
           fi
           if [ "$SDK_CATALOG_REQUIRED" = true ]; then
             test "$SDK_CATALOG_RESULT" = success || exit 1
+            [[ "$SDK_CATALOG_NAME" =~ ^codex-agent-product-catalog-v1-pull-request-[1-9][0-9]*-[0-9a-f]{40}-attempt-[1-9][0-9]*$ ]] || exit 1
+            [[ "$SDK_CATALOG_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+            [[ "$SDK_CATALOG_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+            [[ "$SDK_CATALOG_KEY_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           fi
           if [ -n "$AGGREGATE_STATE" ] && [ "$AGGREGATE_STATE" != not-selected ]; then
             test "$AGGREGATE_PAYLOAD_COMPLETE" = true || exit 1

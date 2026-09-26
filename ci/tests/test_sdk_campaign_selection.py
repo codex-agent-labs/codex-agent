@@ -2,6 +2,7 @@
 
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -156,6 +157,7 @@ class SdkCampaignSelectionTest(unittest.TestCase):
             with patch.object(catalog_caller.products, "_verified_product_state", return_value=state) as replay:
                 stdout = StringIO()
                 repository = Path(__file__).resolve().parents[2]
+                github_output = Path(temporary).resolve() / "github-output"
                 with redirect_stdout(stdout):
                     self.assertEqual(catalog_caller_main([
                         "--plan", str(self.root / "plan.json"),
@@ -163,9 +165,14 @@ class SdkCampaignSelectionTest(unittest.TestCase):
                         "--state-root", str(repository / "build/catalog-fixture-state"),
                         "--repository-root", str(repository),
                         "--destination", str(Path(temporary).resolve() / "from-cli"),
+                        "--github-output", str(github_output),
                         "--sdk-original-workflow-sha", "a" * 40,
                     ]), 0)
                 self.assertIn('"phaseCount":61', stdout.getvalue())
+                self.assertEqual(json.loads(stdout.getvalue()), {
+                    key: int(value) if key in {"phaseCount", "objectBytes"} else value
+                    for key, value in (row.split("=", 1)
+                        for row in github_output.read_text().splitlines())})
                 replay.assert_called_once()
                 with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
                     catalog_caller_main([
@@ -174,6 +181,17 @@ class SdkCampaignSelectionTest(unittest.TestCase):
                         "--state-root", str(repository / "build/catalog-fixture-state"),
                         "--repository-root", str(repository),
                         "--destination", str(repository / "build/catalog-fixture-state/catalog"),
+                        "--sdk-original-workflow-sha", "a" * 40,
+                    ])
+                replay.assert_called_once()
+                with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+                    catalog_caller_main([
+                        "--plan", str(self.root / "plan.json"),
+                        "--discovery-root", str(repository / "build/catalog-fixture-discovery"),
+                        "--state-root", str(repository / "build/catalog-fixture-state"),
+                        "--repository-root", str(repository),
+                        "--destination", str(Path(temporary).resolve() / "separate"),
+                        "--github-output", str(repository / "build/catalog-fixture-state/output"),
                         "--sdk-original-workflow-sha", "a" * 40,
                     ])
                 replay.assert_called_once()

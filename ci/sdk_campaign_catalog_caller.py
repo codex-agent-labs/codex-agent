@@ -17,6 +17,7 @@ from products.sdk_campaign_dev_catalog import stage_sdk_same_pr_catalog
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from products.sdk_package import _require_capability_output_separate
 from products.signing_isolation import require_no_signing_secret
+from reuse import github_output
 
 
 def stage_completed_sdk_catalog(state, destination: Path) -> dict:
@@ -72,6 +73,7 @@ def main(argv=None) -> int:
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
         parser.add_argument("--" + name, type=Path)
     parser.add_argument("--sdk-original-workflow-sha", required=True)
+    parser.add_argument("--github-output", type=Path)
     add_metadata_admission_arguments(parser)
     args = parser.parse_args(argv)
     try:
@@ -81,6 +83,9 @@ def main(argv=None) -> int:
         if any(path == root or root not in path.parents for path in paths):
             raise ValueError("SDK catalog state roots must remain inside the repository")
         _require_capability_output_separate(args.destination, [args.plan, *paths])
+        if args.github_output is not None:
+            _require_capability_output_separate(args.github_output,
+                [args.plan, *paths, args.destination])
         with metadata_admission_options(args) as admissions:
             tooling = None if args.sdk_validation_tooling is None else products._canonical_control(
                 args.sdk_validation_tooling, "Caller SDK tooling policy")
@@ -91,6 +96,7 @@ def main(argv=None) -> int:
                 sdk_apple_validation_policy=apple, **admissions)
             result = stage_completed_sdk_catalog(state, args.destination)
         require_no_signing_secret(os.environ)
+        github_output(args.github_output, result)
         print(canonical_json_bytes(result).decode().strip())
     except (OSError, ValueError) as error:
         parser.error(str(error))

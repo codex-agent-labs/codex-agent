@@ -292,10 +292,18 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                     "PRODUCT_RESUME_RESULT": "success", "SDK_COMPLETION_RESULT": "success",
                     "SDK_COMPLETE": "true", "SDK_CATALOG_REQUIRED": "true",
                     "SDK_CATALOG_RESULT": catalog_result, "AGGREGATE_STATE": "not-selected",
+                    "SDK_CATALOG_NAME": "codex-agent-product-catalog-v1-pull-request-31-" + "a" * 40 + "-attempt-2",
+                    "SDK_CATALOG_ID": "501", "SDK_CATALOG_DIGEST": "sha256:" + "b" * 64,
+                    "SDK_CATALOG_KEY_SHA256": "sha256:" + "c" * 64,
                     "SDK_INPUTS_REQUIRED": "false", "CONTRACT_COMPLETE": "false"}
                 process = subprocess.run(["bash", "-c", script], env=env, cwd=ROOT,
                                          capture_output=True, text=True)
                 self.assertEqual(succeeds, process.returncode == 0, process.stderr)
+                if catalog_result == "success":
+                    env["SDK_CATALOG_KEY_SHA256"] = "not-a-digest"
+                    bad = subprocess.run(["bash", "-c", script], env=env, cwd=ROOT,
+                                         capture_output=True, text=True)
+                    self.assertNotEqual(0, bad.returncode)
 
     def test_catalog_job_uses_completed_state_and_no_product_build(self):
         job = self.job("sdk-catalog")
@@ -305,10 +313,14 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertIn("artifact-sha256: ${{ needs.sdk-completion.outputs.artifact_digest }}", job)
         self.assertIn("python3 -B -m ci.sdk_campaign_catalog_caller", job)
         self.assertIn("--destination build/ci/sdk-catalog", job)
-        self.assertIn("name: codex-agent-product-catalog-v1-pull-request-", job)
+        self.assertIn("artifact_name: ${{ steps.identity.outputs.name }}", job)
+        self.assertIn("artifact_id: ${{ steps.upload.outputs.artifact-id }}", job)
+        self.assertIn("artifact_digest: sha256:${{ steps.upload.outputs.artifact-digest }}", job)
+        self.assertIn("public_key_sha256: ${{ steps.catalog.outputs.publicKeySha256 }}", job)
+        self.assertIn("name: ${{ steps.identity.outputs.name }}", job)
         self.assertNotIn("gradlew", job)
         script = textwrap.dedent(job.split("      - name: Assemble completed SDK same-PR cache catalog\n", 1)[1]
-            .split("        run: |\n", 1)[1].split("\n      - uses:", 1)[0])
+            .split("        run: |\n", 1)[1].split("\n      - id: identity", 1)[0])
         with tempfile.TemporaryDirectory(prefix="sdk-catalog-shell-") as temporary:
             root = Path(temporary)
             executable = root / "python3"
@@ -323,7 +335,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                 "STATE_ROOT": "/captured state", "SDK_VALIDATION_TOOLING": "/tooling policy.json",
                 "SDK_APPLE_VALIDATION_POLICY": "/apple policy.json", "TRUSTED_WORKFLOW_SHA": "c" * 40,
                 "GITHUB_WORKSPACE": "/candidate repository", "GITHUB_TOKEN": "not-an-argument",
-                "ARGV_CAPTURE": str(arguments)}
+                "GITHUB_OUTPUT": str(root / "github-output"), "ARGV_CAPTURE": str(arguments)}
             process = subprocess.run(["bash", "-c", script], env=env, cwd=ROOT,
                                      capture_output=True, text=True)
             self.assertEqual(0, process.returncode, process.stderr)
@@ -331,9 +343,23 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                 "--discovery-root", env["DISCOVERY_ROOT"], "--state-root", env["STATE_ROOT"],
                 "--sdk-original-workflow-sha", env["TRUSTED_WORKFLOW_SHA"],
                 "--repository-root", env["GITHUB_WORKSPACE"], "--destination", "build/ci/sdk-catalog",
+                "--github-output", env["GITHUB_OUTPUT"],
                 "--sdk-validation-tooling", env["SDK_VALIDATION_TOOLING"],
                 "--sdk-apple-validation-policy", env["SDK_APPLE_VALIDATION_POLICY"]],
                 json.loads(arguments.read_text()))
+            identity = textwrap.dedent(job.split("      - id: identity\n", 1)[1]
+                .split("        run: |\n", 1)[1].split("\n      - id: upload", 1)[0])
+            name_output = root / "name-output"
+            env.update({"PR": "31", "TREE": "a" * 40, "ATTEMPT": "2", "GITHUB_OUTPUT": str(name_output)})
+            process = subprocess.run(["bash", "-c", identity], env=env, cwd=ROOT,
+                                     capture_output=True, text=True)
+            self.assertEqual(0, process.returncode, process.stderr)
+            self.assertEqual("name=codex-agent-product-catalog-v1-pull-request-31-"
+                + "a" * 40 + "-attempt-2\n", name_output.read_text())
+            env["TREE"] = "not-a-tree"
+            process = subprocess.run(["bash", "-c", identity], env=env, cwd=ROOT,
+                                     capture_output=True, text=True)
+            self.assertNotEqual(0, process.returncode)
 
 
 if __name__ == "__main__":
