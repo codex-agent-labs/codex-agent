@@ -133,7 +133,9 @@ class SdkCampaignObservationTest(TestCase):
         with patch.object(observed.product_reuse, "api_json",
                           side_effect=[fixture.run, fixture.commit, fixture.artifact]), \
              patch.object(observed.product_reuse, "paginated_items", return_value=[fixture.job]), \
-             patch.object(observed.product_reuse, "download_artifact", return_value=fixture.raw), \
+             patch.object(observed.product_reuse, "download_artifact_to_file",
+                          side_effect=lambda _artifact, _token, destination, **_:
+                              Path(destination).write_bytes(fixture.raw)), \
              patch.object(observed.product_reuse, "_verified_product_state", side_effect=verified), \
              observed.held_sdk_campaign_observation(fixture.plan_path,
                  artifact_id=101, artifact_sha256=fixture.artifact["digest"],
@@ -165,7 +167,9 @@ class SdkCampaignObservationTest(TestCase):
         with patch.object(observed.product_reuse, "api_json",
                           side_effect=[fixture.run, fixture.commit, artifact]), \
              patch.object(observed.product_reuse, "paginated_items", return_value=[job]), \
-             patch.object(observed.product_reuse, "download_artifact", return_value=raw), \
+             patch.object(observed.product_reuse, "download_artifact_to_file",
+                          side_effect=lambda _artifact, _token, destination, **_:
+                              Path(destination).write_bytes(raw)), \
              patch.object(observed.product_reuse, "_verified_product_state", side_effect=verified), \
              observed.held_sdk_campaign_observation(fixture.plan_path,
                  artifact_id=101, artifact_sha256=artifact["digest"],
