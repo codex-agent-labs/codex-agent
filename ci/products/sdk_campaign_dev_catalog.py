@@ -10,7 +10,7 @@ from .inventory import publish_regular_tree, regular_file_inventory, sha256_byte
 from .receipt import validate_producer
 from .registry import PhaseInstanceId
 from .restore import _snapshot_archive, object_relative_path, verify_object
-from .sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES, verify_sdk_campaign_selection
+from .sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES, verify_sdk_campaign_objects
 from .sdk_package import _require_capability_output_separate
 from .signatures import generate_development_key
 
@@ -19,7 +19,6 @@ def stage_sdk_same_pr_catalog(
     sources: Mapping[PhaseInstanceId, IndexEntrySource],
     envelopes: Mapping[PhaseInstanceId, dict],
     archives: Mapping[PhaseInstanceId, Path],
-    stages: Mapping[PhaseInstanceId, Path],
     *,
     producer: dict,
     destination: Path,
@@ -35,9 +34,7 @@ def stage_sdk_same_pr_catalog(
     selected_sources = dict(sources)
     selected_envelopes = deepcopy(dict(envelopes))
     selected_archives = {instance: Path(path) for instance, path in archives.items()}
-    selected_stages = {instance: Path(path) for instance, path in stages.items()}
-    receipts = verify_sdk_campaign_selection(
-        selected_sources, selected_envelopes, selected_archives, selected_stages)
+    receipts = verify_sdk_campaign_objects(selected_sources, selected_envelopes, selected_archives)
     if any(receipt["trustDomain"] != "development"
            or receipt["producer"]["repository"] != current["repository"]
            or receipt["producer"]["event"] != "pull_request"
@@ -45,8 +42,7 @@ def stage_sdk_same_pr_catalog(
            for receipt in receipts.values()):
         raise ValueError("Same-PR SDK catalog contains another trust or producer context")
     destination = Path(destination).absolute()
-    _require_capability_output_separate(destination,
-        [*selected_archives.values(), *selected_stages.values()])
+    _require_capability_output_separate(destination, list(selected_archives.values()))
     if destination.exists() or destination.is_symlink():
         raise ValueError("Same-PR SDK catalog destination must not exist")
     context = {"kind": "pull-request", "pullRequest": current["pullRequest"],
@@ -86,9 +82,8 @@ def stage_sdk_same_pr_catalog(
             _verify_index_receipt(entry, {**original, "receiptSha256": entry["receiptSha256"]})
         if (dict(sources) != selected_sources or dict(envelopes) != selected_envelopes
                 or {instance: Path(path) for instance, path in archives.items()} != selected_archives
-                or {instance: Path(path) for instance, path in stages.items()} != selected_stages
-                or verify_sdk_campaign_selection(
-                    selected_sources, selected_envelopes, selected_archives, selected_stages) != receipts):
+                or verify_sdk_campaign_objects(
+                    selected_sources, selected_envelopes, selected_archives) != receipts):
             raise ValueError("Same-PR SDK original selection changed before publication")
         inventory = regular_file_inventory(catalog)
         publish_regular_tree(catalog, destination, expected_inventory=inventory)

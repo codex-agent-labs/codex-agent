@@ -1,11 +1,20 @@
 """Structural SDK campaign selection fixtures, not hosted release evidence."""
 
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 import ci.products.sdk_campaign_dev_catalog as dev_catalog
+from ci.sdk_campaign_catalog_caller import (
+    SDK_CAMPAIGN_INSTANCES as CALLER_SDK_INSTANCES,
+    main as catalog_caller_main,
+    stage_completed_sdk_catalog,
+)
+import ci.sdk_campaign_catalog_caller as catalog_caller
 from ci.products.index import IndexEntrySource
 from ci.products.index import SignedProductIndex, verify_signed_product_index
 from ci.products.receipt import write_output_manifest
@@ -13,7 +22,8 @@ from ci.products.restore import finalize_phase_object, object_relative_path
 from ci.products.inventory import sha256_bytes
 from ci.products.sdk_campaign_dev_catalog import stage_sdk_same_pr_catalog
 from ci.products.sdk_campaign_selection import (
-    SDK_CAMPAIGN_INSTANCES, held_sdk_campaign_selection, verify_sdk_campaign_selection,
+    SDK_CAMPAIGN_INSTANCES, held_sdk_campaign_selection, verify_sdk_campaign_objects,
+    verify_sdk_campaign_selection,
 )
 from ci.tests.product_chain_support import write_receipt
 
@@ -59,6 +69,8 @@ class SdkCampaignSelectionTest(unittest.TestCase):
     def test_complete_exact_selection(self):
         selected = verify_sdk_campaign_selection(
             self.sources, self.envelopes, self.archives, self.stages)
+        self.assertEqual(verify_sdk_campaign_objects(
+            self.sources, self.envelopes, self.archives), selected)
         self.assertEqual(set(selected), SDK_CAMPAIGN_INSTANCES)
         self.assertEqual({receipt["productVersion"] for receipt in selected.values()}, {"0.8.0"})
 
@@ -67,7 +79,7 @@ class SdkCampaignSelectionTest(unittest.TestCase):
             destination = Path(temporary).resolve() / "catalog"
             producer = next(iter(self.envelopes.values()))["receipt"]["producer"]
             index = stage_sdk_same_pr_catalog(self.sources, self.envelopes,
-                self.archives, self.stages, producer=producer, destination=destination)
+                self.archives, producer=producer, destination=destination)
             signed, _ = verify_signed_product_index(SignedProductIndex(
                 destination / "product-index.json", destination / "product-index.sig"),
                 destination / "public-key.pub")
@@ -88,7 +100,7 @@ class SdkCampaignSelectionTest(unittest.TestCase):
             first = min(SDK_CAMPAIGN_INSTANCES)
             with self.assertRaisesRegex(ValueError, "all 61 phases"):
                 stage_sdk_same_pr_catalog({key: value for key, value in self.sources.items()
-                    if key != first}, self.envelopes, self.archives, self.stages,
+                    if key != first}, self.envelopes, self.archives,
                     producer=producer, destination=destination)
             self.assertFalse(destination.exists())
 
@@ -107,8 +119,57 @@ class SdkCampaignSelectionTest(unittest.TestCase):
             with patch.object(dev_catalog, "write_signed_product_index", side_effect=mutate_selection):
                 with self.assertRaisesRegex(ValueError, "selection changed"):
                     stage_sdk_same_pr_catalog(sources, self.envelopes, self.archives,
-                        self.stages, producer=producer, destination=destination)
+                        producer=producer, destination=destination)
             self.assertFalse(destination.exists())
+
+    def test_completed_state_caller_keeps_original_receipts(self):
+        producer = next(iter(self.envelopes.values()))["receipt"]["producer"]
+        caller_id = type(next(iter(CALLER_SDK_INSTANCES)))
+        converted = {instance: caller_id(instance.product, instance.component, instance.phase, instance.target)
+            for instance in SDK_CAMPAIGN_INSTANCES}
+        records = {converted[instance]: {"state": "retained", "buildKey": envelope["receipt"]["buildKey"],
+            "receiptSha256": envelope["receiptSha256"], "objectSha256": envelope["objectSha256"]}
+            for instance, envelope in self.envelopes.items()}
+        archives = {converted[instance]: archive for instance, archive in self.archives.items()}
+        state = SimpleNamespace(prior_by_instance=records, sources=archives,
+            expected_fixed={"versions": {"sdk": "0.8.0"}}, producer=producer)
+        with tempfile.TemporaryDirectory(prefix="sdk-campaign-caller-") as temporary:
+            destination = Path(temporary).resolve() / "catalog"
+            result = stage_completed_sdk_catalog(state, destination)
+            self.assertEqual(result["phaseCount"], len(SDK_CAMPAIGN_INSTANCES))
+            self.assertTrue((destination / "product-index.sig").is_file())
+            incomplete = dict(records)
+            incomplete[min(CALLER_SDK_INSTANCES)] = {
+                **incomplete[min(CALLER_SDK_INSTANCES)], "state": "build"}
+            with self.assertRaisesRegex(ValueError, "unresolved phase"):
+                stage_completed_sdk_catalog(SimpleNamespace(prior_by_instance=incomplete,
+                    sources=archives, expected_fixed=state.expected_fixed, producer=producer),
+                    Path(temporary).resolve() / "rejected")
+
+            with patch.object(catalog_caller.products, "_verified_product_state", return_value=state) as replay:
+                stdout = StringIO()
+                repository = Path(__file__).resolve().parents[2]
+                with redirect_stdout(stdout):
+                    self.assertEqual(catalog_caller_main([
+                        "--plan", str(self.root / "plan.json"),
+                        "--discovery-root", str(repository / "build/catalog-fixture-discovery"),
+                        "--state-root", str(repository / "build/catalog-fixture-state"),
+                        "--repository-root", str(repository),
+                        "--destination", str(Path(temporary).resolve() / "from-cli"),
+                        "--sdk-original-workflow-sha", "a" * 40,
+                    ]), 0)
+                self.assertIn('"phaseCount":61', stdout.getvalue())
+                replay.assert_called_once()
+                with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+                    catalog_caller_main([
+                        "--plan", str(self.root / "plan.json"),
+                        "--discovery-root", str(repository / "build/catalog-fixture-discovery"),
+                        "--state-root", str(repository / "build/catalog-fixture-state"),
+                        "--repository-root", str(repository),
+                        "--destination", str(repository / "build/catalog-fixture-state/catalog"),
+                        "--sdk-original-workflow-sha", "a" * 40,
+                    ])
+                replay.assert_called_once()
 
     def test_partial_or_cross_paired_selection_fails(self):
         first, second = sorted(SDK_CAMPAIGN_INSTANCES)[:2]

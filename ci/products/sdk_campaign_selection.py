@@ -20,19 +20,16 @@ SDK_CAMPAIGN_INSTANCES = frozenset(
 )
 
 
-def verify_sdk_campaign_selection(
+def verify_sdk_campaign_objects(
     sources: Mapping[PhaseInstanceId, IndexEntrySource],
     envelopes: Mapping[PhaseInstanceId, dict],
     archives: Mapping[PhaseInstanceId, Path],
-    stages: Mapping[PhaseInstanceId, Path],
 ) -> dict[PhaseInstanceId, dict]:
-    """Bind all 61 selected SDK receipts, objects and stages without granting trust.
+    """Bind all 61 original SDK receipts and objects for content-only reuse.
 
-    The protected caller must still authenticate retrieval/producer provenance and
-    run every component's full semantic verifier before minting release admission.
+    This is not stage, semantic, transport, producer, or release admission.
     """
-    for name, values in (("sources", sources), ("envelopes", envelopes),
-                         ("archives", archives), ("stages", stages)):
+    for name, values in (("sources", sources), ("envelopes", envelopes), ("archives", archives)):
         if not isinstance(values, Mapping) or set(values) != SDK_CAMPAIGN_INSTANCES:
             raise ValueError(f"SDK campaign {name} must contain every exact SDK phase instance")
     selected = {}
@@ -47,20 +44,34 @@ def verify_sdk_campaign_selection(
             raise ValueError("SDK campaign source differs from the original selected receipt")
         versions.add(receipt["productVersion"])
         archive = Path(archives[instance])
-        stage = Path(stages[instance])
-        before = regular_file_inventory(stage)
         verified = verify_object(archive, build_key=receipt["buildKey"],
             receipt_sha256=sha256_bytes(source.receipt_bytes),
             object_sha256=envelope["objectSha256"])
         if verified["receiptBytes"] != source.receipt_bytes:
             raise ValueError("SDK campaign object differs from the original selected receipt")
+        selected[instance] = receipt
+    if len(versions) != 1:
+        raise ValueError("SDK campaign phases must use one exact SDK version")
+    return selected
+
+
+def verify_sdk_campaign_selection(
+    sources: Mapping[PhaseInstanceId, IndexEntrySource],
+    envelopes: Mapping[PhaseInstanceId, dict],
+    archives: Mapping[PhaseInstanceId, Path],
+    stages: Mapping[PhaseInstanceId, Path],
+) -> dict[PhaseInstanceId, dict]:
+    """Bind all 61 selected receipts, objects and stages without release trust."""
+    selected = verify_sdk_campaign_objects(sources, envelopes, archives)
+    if not isinstance(stages, Mapping) or set(stages) != SDK_CAMPAIGN_INSTANCES:
+        raise ValueError("SDK campaign stages must contain every exact SDK phase instance")
+    for instance, receipt in selected.items():
+        stage = Path(stages[instance])
+        before = regular_file_inventory(stage)
         manifest = verify_output_manifest_identity(stage, instance.product,
             instance.component, instance.phase, instance.target, receipt["productVersion"])
         if manifest["outputs"] != receipt["outputs"] or regular_file_inventory(stage) != before:
             raise ValueError("SDK campaign stage differs from the selected object and receipt")
-        selected[instance] = receipt
-    if len(versions) != 1:
-        raise ValueError("SDK campaign phases must use one exact SDK version")
     return selected
 
 
