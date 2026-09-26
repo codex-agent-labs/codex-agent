@@ -100,6 +100,9 @@ class InstalledDartPackageSecurityTest(unittest.TestCase):
                 return result.stdout
 
             self.assertIn("embedded Codex Agent Runtime digest mismatch", probe("--default"))
+            for member in LIBRARIES:
+                (native / member).unlink()
+            self.assertIn("is absent; pass libraryPath", probe("--default"))
             self.assertIn("release-keyring.json is absent", probe(str(library)))
             root.unlink()
             self.assertIn("SDK root is absent", probe(str(library)))
