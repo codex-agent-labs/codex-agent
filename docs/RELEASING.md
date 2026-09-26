@@ -56,11 +56,13 @@ follows:
 - Protect `main` with required pull requests, merge queue, the merge-commit
   method rather than squash/rebase, a maximum merge-group size of one PR, and
   required check `CI / merge-gate`. Allow enough status-check time for full
-  Apple validation, and protect `candidate/v*-rc.*` tags.
-- Protect `merge-validation`, `release-candidate`, and `release-publication`.
-  Keep Firebase OIDC configuration in `merge-validation`; keep signing and
-  Maven Central credentials only in the candidate/publication environments,
-  with required reviewers.
+  Apple validation, and protect `candidate/contract/v*-rc.*`,
+  `candidate/runtime/v*-rc.*`, and `candidate/sdk/v*-rc.*` tags.
+- Protect `merge-validation`, `product-attestation`, `release-candidate`, and
+  `release-publication`. Keep Firebase OIDC configuration in
+  `merge-validation`; keep product signing credentials in
+  `product-attestation` and Maven Central credentials in the protected
+  publication environment, with required reviewers.
 - Set `CI_MERGE_QUEUE_ENABLED=true` when the merge-queue rules and trusted
   workflow are configured.
 
@@ -93,12 +95,12 @@ reusable Gradle configuration-cache entries; it is not publication authority.
 3. Firebase Test Lab evidence runs before merge against the exact Android APKs
    and AAR through the trusted workflow pinned to `main`; a candidate never
    repeats it and no connected physical phone is required.
-4. Main promotion forwards equal-tree receipts and the exact bytes uploaded by
-   the producing jobs, including all native-wrapper packages. Candidate
-   assembly verifies each wrapper filename and SHA-256 against its schema-4 M11
-   receipt, signs the unsigned Maven primaries, generates mandated sidecars,
-   and assembles the Central bundle, aggregate SBOM, and schema-16 release
-   manifest without compiling, linking, or running platform tests.
+4. Phase 10 signs and inventories the verified release primaries, including
+   Maven sidecars, without rebuilding product bytes. Main promotion forwards
+   equal-tree receipts and those exact bytes, including native-wrapper
+   packages. Candidate assembly verifies each wrapper filename and SHA-256
+   against its schema-4 M11 receipt and forwards the Phase-10 signatures,
+   sidecars, and inventories without regenerating them or running product tests.
 
 ## Contract handoff in Phases 10 and 11
 

@@ -429,8 +429,9 @@ reevaluates the changed base and runs the newly affected lanes.
 A push to `main` only promotes equal-tree validation receipts, their exact
 GitHub-hosted artifacts, and selected cache seeds; it never compiles or tests.
 A protected product-specific candidate tag is planned to consume those
-promoted bytes and perform verification, external signing, sidecar generation,
-and release assembly only; the product workflow cutover is not complete.
+promoted bytes and their Phase-10 signatures and publication sidecars for
+verification and release assembly only; the product workflow cutover is not
+complete.
 The planned tags are `candidate/contract/v0.8.0-rc.N`,
 `candidate/runtime/v0.8.0-rc.N`, and `candidate/sdk/v0.8.0-rc.N`.
 For the Contract product, `codex-agent-contract-<version>.zip` is a
