@@ -19,7 +19,9 @@ if __package__:
 
 import product_reuse
 from ci.sdk_campaign_observation import ObservedSdkOriginal
-from ci.sdk_campaign_original_locator import fresh_sdk_worker_route, original_workflow_route
+from ci.sdk_campaign_original_locator import (
+    fresh_sdk_worker_route, materialize_failed_sdk_partial_catalog, original_workflow_route,
+)
 from products.index import SignedProductIndex, _verify_index_receipt, verify_signed_product_index
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
@@ -154,7 +156,8 @@ def verify_completed_sdk_catalog_originals(snapshot, observations, artifact_path
 @contextmanager
 def held_reused_sdk_catalog(*, repository, pull_request, artifact_id,
         artifact_sha256, public_key, public_key_sha256, trusted_workflow_sha,
-        token, environ, trusted_workflow_path=None, trusted_job_name=None):
+        token, environ, trusted_workflow_path=None, trusted_job_name=None,
+        failed_catalog_producer=None):
     """Hold one authenticated same-PR catalog for multiple original phases.
 
     None for public_key uses the embedded key only against an independent digest.
@@ -181,8 +184,8 @@ def held_reused_sdk_catalog(*, repository, pull_request, artifact_id,
             or artifact.get("expired") is not False
             or artifact.get("archive_download_url") != f"{url}/zip"
             or not isinstance(artifact.get("name"), str)
-            or not artifact["name"].startswith(
-                f"{product_reuse._CATALOG_PREFIX}pull-request-{pull_request}-")
+            or (failed_catalog_producer is None and not artifact["name"].startswith(
+                f"{product_reuse._CATALOG_PREFIX}pull-request-{pull_request}-"))
             or not isinstance(artifact.get("workflow_run"), dict)):
         raise ValueError("Reused SDK catalog differs from official artifact identity")
     size = require_integer(artifact.get("size_in_bytes"), "Reused SDK catalog size", 1)
@@ -190,8 +193,20 @@ def held_reused_sdk_catalog(*, repository, pull_request, artifact_id,
         raise ValueError("Reused SDK catalog exceeds transport limit")
     with tempfile.TemporaryDirectory(prefix="sdk-reused-original-") as temporary:
         root = Path(temporary).resolve()
-        catalog = product_reuse._materialize_catalog("same-pr", artifact, token,
-            root, repository, pull_request, None, api=api)
+        if failed_catalog_producer is None:
+            catalog = product_reuse._materialize_catalog("same-pr", artifact, token,
+                root, repository, pull_request, None, api=api)
+            failed_observation = None
+        else:
+            if key_input is None:
+                raise ValueError("Partial SDK catalog requires an independent public key")
+            catalog, failed_observation = materialize_failed_sdk_partial_catalog(artifact, root,
+                producer=failed_catalog_producer, repository=repository,
+                pull_request=pull_request, public_key=key_input,
+                public_key_sha256=public_key_sha256,
+                trusted_workflow_sha=trusted_workflow_sha,
+                trusted_workflow_path=trusted_workflow_path,
+                trusted_job_name=trusted_job_name, token=token)
         archive = root / "catalogs" / "same-pr" / str(artifact_id) / "transport.zip"
         extracted = archive.parent / "contents"
         if archive.stat().st_size != size or sha256_file(archive) != artifact_sha256:
@@ -211,9 +226,10 @@ def held_reused_sdk_catalog(*, repository, pull_request, artifact_id,
         catalog_job, catalog_policy = original_workflow_route("catalog",
             "product-validation / sdk-catalog", trusted_workflow_sha,
             trusted_workflow_path, trusted_job_name)
-        observation = product_reuse._observe_ci_producer_jobs(
-            {"catalog": index["producer"]}, jobs_by_phase={"catalog": catalog_job},
-            token=token, **catalog_policy)
+        observation = ([failed_observation] if failed_observation is not None else
+            product_reuse._observe_ci_producer_jobs(
+                {"catalog": index["producer"]}, jobs_by_phase={"catalog": catalog_job},
+                token=token, **catalog_policy))
         if (len(observation) != 1
                 or observation[0]["run"]["id"] != index["producer"]["runId"]
                 or observation[0]["run"]["run_attempt"] != index["producer"]["runAttempt"]):
@@ -259,7 +275,7 @@ def _held_reused_sdk_original(instance, original, current_transport_bytes, *,
         trusted_workflow_sha, token, environ=None,
         trusted_worker_workflow_path=None, trusted_worker_job_name=None,
         trusted_catalog_workflow_path=None, trusted_catalog_job_name=None,
-        _shared_catalog=None):
+        failed_catalog_producer=None, _shared_catalog=None):
     """Hold exact original bytes under independently pinned same-PR catalog trust.
 
     The public key and artifact ID/digest are selected outside the replay and
@@ -360,7 +376,8 @@ def _held_reused_sdk_original(instance, original, current_transport_bytes, *,
             public_key=key_input, public_key_sha256=expected_public_key_sha256,
             trusted_workflow_sha=trusted_workflow_sha, token=token, environ=environment,
             trusted_workflow_path=trusted_catalog_workflow_path,
-            trusted_job_name=trusted_catalog_job_name))
+            trusted_job_name=trusted_catalog_job_name,
+            failed_catalog_producer=failed_catalog_producer))
     with catalog_context as held_catalog:
         if type(held_catalog) is not _HeldCatalog or not held_catalog.active:
             raise ValueError("Reused SDK catalog is not an active authenticated hold")

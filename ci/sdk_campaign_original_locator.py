@@ -16,7 +16,7 @@ import product_reuse as products
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
     require_exact_keys, require_integer, require_relative_path, require_semver,
-    require_sha256, sha256_bytes,
+    require_sha256, regular_file_inventory, sha256_bytes,
     sha256_file, verified_zip_contents,
 )
 from products.index import SignedProductIndex, _verify_index_receipt, verify_signed_product_index
@@ -58,6 +58,82 @@ def original_workflow_route(phase, default_job, sha, path=None, job=None):
     if type(job) is not str or not job:
         raise ValueError("SDK original workflow job must be caller-pinned text")
     return job, {"trusted_workflows_by_phase": {phase: {"path": path, "sha": sha}}}
+
+
+def failed_sdk_partial_catalog_name(producer):
+    """Keep failed-run cache artifacts outside the completed-catalog namespace."""
+    producer = validate_producer(producer)
+    if producer["event"] != "pull_request":
+        raise ValueError("Partial SDK catalog requires a pull-request producer")
+    return (f"codex-agent-sdk-partial-catalog-v1-pull-request-{producer['pullRequest']}-"
+            f"{producer['tree']}-attempt-{producer['runAttempt']}")
+
+
+def materialize_failed_sdk_partial_catalog(artifact, destination, *, producer,
+        repository, pull_request, public_key, public_key_sha256,
+        trusted_workflow_sha, trusted_workflow_path, trusted_job_name, token):
+    """Admit only a signed partial cache from a failed run's successful catalog job."""
+    producer = validate_producer(producer)
+    name = failed_sdk_partial_catalog_name(producer)
+    if (producer["repository"] != repository or producer["pullRequest"] != pull_request
+            or not trusted_workflow_path or not trusted_job_name):
+        raise ValueError("Partial SDK catalog differs from independent producer or route")
+    artifact_id = require_integer(artifact.get("id"), "Partial SDK catalog artifact ID", 1)
+    url = f"https://api.github.com/repos/{repository}/actions/artifacts/{artifact_id}"
+    if (artifact.get("name") != name or artifact.get("expired") is not False
+            or artifact.get("archive_download_url") != url + "/zip"
+            or not isinstance(artifact.get("workflow_run"), dict)
+            or artifact["workflow_run"].get("id") != producer["runId"]):
+        raise ValueError("Partial SDK catalog differs from its exact failed attempt")
+    digest = require_sha256(artifact.get("digest"), "Partial SDK catalog artifact digest")
+    size = require_integer(artifact.get("size_in_bytes"), "Partial SDK catalog size", 1)
+    if size > products._CATALOG_LIMIT:
+        raise ValueError("Partial SDK catalog exceeds transport limit")
+    key = read_regular_file_bytes(public_key, max_bytes=64 * 1024, reject_symlink_parents=True)
+    if sha256_bytes(key) != require_sha256(public_key_sha256, "Partial SDK catalog key digest"):
+        raise ValueError("Partial SDK catalog key differs from independent digest")
+    catalog_root = destination / "catalogs/same-pr" / str(artifact_id)
+    catalog_root.mkdir(parents=True)
+    archive = catalog_root / "transport.zip"
+    products.download_artifact_to_file(artifact, token, archive, max_bytes=products._CATALOG_LIMIT)
+    if archive.stat().st_size != size or sha256_file(archive) != digest:
+        raise ValueError("Partial SDK catalog differs from official artifact bytes")
+    zipped, _, _ = verified_zip_contents(archive, retained_paths=(),
+        allow_empty_members=True, **products._CATALOG_ZIP_LIMITS)
+    extracted = catalog_root / "contents"
+    products.safe_extract(archive, extracted)
+    if regular_file_inventory(extracted) != zipped:
+        raise ValueError("Partial SDK catalog extraction differs from official upload")
+    if read_regular_file_bytes(extracted / "public-key.pub", max_bytes=64 * 1024,
+            reject_symlink_parents=True) != key:
+        raise ValueError("Partial SDK catalog embedded key differs from independent policy")
+    index, _ = verify_signed_product_index(SignedProductIndex(
+        extracted / "product-index.json", extracted / "product-index.sig"), Path(public_key))
+    instances = [PhaseInstanceId(*(entry[field] for field in
+        ("product", "component", "phase", "target"))) for entry in index["entries"]]
+    if (index["producer"] != producer or index["repository"] != repository
+            or index["trustDomain"] != "development"
+            or not instances or len(instances) >= len(SDK_CAMPAIGN_INSTANCES)
+            or len(set(instances)) != len(instances)
+            or not set(instances) <= SDK_CAMPAIGN_INSTANCES):
+        raise ValueError("Partial SDK catalog is not an exact incomplete SDK selection")
+    job, policy = original_workflow_route("catalog", trusted_job_name,
+        trusted_workflow_sha, trusted_workflow_path, trusted_job_name)
+    observed = products._observe_ci_producer_jobs({"catalog": producer},
+        jobs_by_phase={"catalog": job}, token=token, **policy)
+    if (len(observed) != 1 or observed[0]["run"].get("status") != "completed"
+            or observed[0]["run"].get("conclusion") != "failure"
+            or artifact["workflow_run"].get("head_sha") != observed[0]["run"].get("head_sha")):
+        raise ValueError("Partial SDK catalog lacks its failed run and successful original job")
+    products._require_artifact_job_window(observed[0], job, artifact)
+    catalog = products._read_catalog_directory("same-pr", extracted, destination, None,
+        repository=repository, pull_request=pull_request, provenance_root=catalog_root,
+        artifact=artifact, token=token, workflow_run={
+            "run": observed[0]["run"], "testedCommit": observed[0]["testedCommit"]},
+        api="https://api.github.com")
+    if catalog.index != index:
+        raise ValueError("Partial SDK catalog changed during verification")
+    return catalog, observed[0]
 
 
 def discover_fresh_sdk_original_pin(instance, *, producer, expected_build_key,
@@ -121,11 +197,12 @@ def discover_reused_sdk_original_pins(selections, *, pull_request, repository,
         catalog_artifact_name, catalog_public_key,
         expected_public_key_sha256, trusted_workflow_sha,
         trusted_catalog_workflow_path, trusted_catalog_job_name,
-        token, environ=None):
+        token, environ=None, failed_catalog_producer=None):
     """Select same-PR originals from one held authenticated catalog snapshot.
 
     Every phase key/version/worker route and the shared catalog/key/PR policy
     come from the caller, never from the current campaign's replay state.
+    Failed-run partial catalogs require a separate caller-pinned producer.
     """
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
@@ -151,9 +228,11 @@ def discover_reused_sdk_original_pins(selections, *, pull_request, repository,
     if repository.count("/") != 1:
         raise ValueError("Independent repository must be an owner/repository pair")
     prefix = f"{products._CATALOG_PREFIX}pull-request-{pull_request}-"
-    if (type(catalog_artifact_name) is not str
-            or not catalog_artifact_name.startswith(prefix)
-            or not catalog_artifact_name[len(prefix):]):
+    failed = (None if failed_catalog_producer is None else
+              validate_producer(failed_catalog_producer))
+    if (type(catalog_artifact_name) is not str or
+            (catalog_artifact_name != failed_sdk_partial_catalog_name(failed) if failed else
+             not catalog_artifact_name.startswith(prefix) or not catalog_artifact_name[len(prefix):])):
         raise ValueError("Reused SDK catalog requires a caller-pinned same-PR artifact name")
     catalog_job, catalog_policy = original_workflow_route("catalog", trusted_catalog_job_name,
         trusted_workflow_sha, trusted_catalog_workflow_path, trusted_catalog_job_name)
@@ -170,6 +249,8 @@ def discover_reused_sdk_original_pins(selections, *, pull_request, repository,
                   and row.get("expired") is False]
     if not candidates:
         raise ValueError("Reused SDK has no exact same-PR catalog")
+    if failed is not None and len(candidates) != 1:
+        raise ValueError("Partial SDK catalog official listing is ambiguous")
     candidates.sort(key=lambda row: require_integer(row.get("id"), "Catalog artifact ID", 1),
                     reverse=True)
     if len(candidates) > 1 and candidates[0]["id"] == candidates[1]["id"]:
@@ -186,8 +267,16 @@ def discover_reused_sdk_original_pins(selections, *, pull_request, repository,
     catalog_sha = require_sha256(detail["digest"], "Official SDK catalog digest")
     with tempfile.TemporaryDirectory(prefix="sdk-reused-pin-") as temporary:
         root = Path(temporary).resolve()
-        catalog = products._materialize_catalog("same-pr", detail, token, root,
-            repository, pull_request, None, api=api)
+        if failed is None:
+            catalog = products._materialize_catalog("same-pr", detail, token, root,
+                repository, pull_request, None, api=api)
+        else:
+            catalog, _ = materialize_failed_sdk_partial_catalog(detail, root,
+                producer=failed, repository=repository, pull_request=pull_request,
+                public_key=catalog_public_key, public_key_sha256=expected_public_key_sha256,
+                trusted_workflow_sha=trusted_workflow_sha,
+                trusted_workflow_path=trusted_catalog_workflow_path,
+                trusted_job_name=trusted_catalog_job_name, token=token)
         extracted = root / "catalogs" / "same-pr" / str(artifact_id) / "contents"
         if read_regular_file_bytes(extracted / "public-key.pub", max_bytes=64 * 1024,
                 reject_symlink_parents=True) != pinned_key:
@@ -196,10 +285,11 @@ def discover_reused_sdk_original_pins(selections, *, pull_request, repository,
             extracted / "product-index.json", extracted / "product-index.sig"), Path(catalog_public_key))
         if index != catalog.index:
             raise ValueError("Reused SDK catalog changed during signed verification")
-        observed_catalog = products._observe_ci_producer_jobs(
-            {"catalog": index["producer"]}, jobs_by_phase={"catalog": catalog_job},
-            token=token, **catalog_policy)
-        products._require_artifact_job_window(observed_catalog[0], catalog_job, detail)
+        if failed is None:
+            observed_catalog = products._observe_ci_producer_jobs(
+                {"catalog": index["producer"]}, jobs_by_phase={"catalog": catalog_job},
+                token=token, **catalog_policy)
+            products._require_artifact_job_window(observed_catalog[0], catalog_job, detail)
         pins = {}
         for position, instance in enumerate(sorted(selections)):
             selection = selections[instance]

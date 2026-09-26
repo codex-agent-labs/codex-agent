@@ -98,7 +98,7 @@ class ReusedSdkOriginalTest(unittest.TestCase):
         observed = {"run": self.run, "testedCommit": self.tested}
         def producer_jobs(producers, *, jobs_by_phase, **kwargs):
             self.observed_routes.append((jobs_by_phase, kwargs))
-            if jobs_by_phase == {"catalog": "product-validation / sdk-catalog"}:
+            if "catalog" in jobs_by_phase:
                 return [{**observed, "jobs": [self.catalog_job]}]
             self.assertEqual({"worker": self.fixture.producer}, producers)
             return [{**observed, "jobs": [self.worker_job]}]
@@ -302,6 +302,70 @@ class ReusedSdkOriginalTest(unittest.TestCase):
         self.assertEqual(903, pins[second]["original_artifact_id"])
         listing.assert_called_once()
         self.assertEqual(1, sum(call.args[0]["id"] == 902 for call in downloads.call_args_list))
+
+    def test_failed_run_partial_catalog_preserves_successful_original_worker(self):
+        producer = self.fixture.producer
+        name = locator.failed_sdk_partial_catalog_name(producer)
+        self.catalog_artifact["name"] = name
+        self.run = {**self.run, "status": "completed", "conclusion": "failure"}
+        worker_job, _ = fresh_sdk_worker_route(self.instance, self.descriptor["receipt"])
+        selection = {self.instance: {
+            "expected_build_key": self.ready["buildKey"],
+            "expected_product_version": "0.3.0",
+            "trusted_worker_workflow_path": ".github/workflows/product-validation.yml",
+            "trusted_worker_job_name": worker_job,
+        }}
+        with self.official(), \
+             patch.object(locator, "_locate", return_value={
+                 "artifact_id": 901, "artifact_sha256": sha256_bytes(self.worker_raw)}), \
+             patch.object(reused.product_reuse, "_same_pr_run",
+                 side_effect=AssertionError("failed-run path must not claim whole-run success")):
+            with patch.object(reused.product_reuse, "paginated_items",
+                    return_value=[self.catalog_artifact]):
+                pins = locator.discover_reused_sdk_original_pins(selection,
+                    pull_request=31, repository=producer["repository"],
+                    catalog_artifact_name=name, catalog_public_key=self.key,
+                    expected_public_key_sha256=sha256_bytes(self.key.read_bytes()),
+                    trusted_workflow_sha=fixture_module.PIN,
+                    trusted_catalog_workflow_path=".github/workflows/product-validation.yml",
+                    trusted_catalog_job_name=self.catalog_job["name"],
+                    token="synthetic-token", environ={},
+                    failed_catalog_producer=producer)
+            self.assertEqual(901, pins[self.instance]["original_artifact_id"])
+            with self.held(failed_catalog_producer=producer,
+                    trusted_catalog_workflow_path=".github/workflows/product-validation.yml",
+                    trusted_catalog_job_name=self.catalog_job["name"],
+                    trusted_worker_workflow_path=".github/workflows/product-validation.yml",
+                    trusted_worker_job_name=worker_job) as (evidence, object_path):
+                self.assertEqual(self.original_object.read_bytes(), object_path.read_bytes())
+                self.assertEqual("failure", evidence["catalogProducer"][0]["run"]["conclusion"])
+
+    def test_failed_run_partial_catalog_rejects_wrong_job_and_upload_window(self):
+        producer = self.fixture.producer
+        self.catalog_artifact["name"] = locator.failed_sdk_partial_catalog_name(producer)
+        self.run = {**self.run, "status": "completed", "conclusion": "failure"}
+        with self.official(), self.assertRaisesRegex(ValueError, "outside its original job-attempt window"):
+            original = self.catalog_job
+            self.catalog_job = {**original, "completed_at": "2026-01-01T00:01:00Z"}
+            try:
+                with self.held(failed_catalog_producer=producer,
+                        trusted_catalog_workflow_path=".github/workflows/product-validation.yml",
+                        trusted_catalog_job_name=original["name"]):
+                    pass
+            finally:
+                self.catalog_job = original
+        with self.official(), self.assertRaisesRegex(ValueError, "missing or ambiguous"):
+            with self.held(failed_catalog_producer=producer,
+                    trusted_catalog_workflow_path=".github/workflows/product-validation.yml",
+                    trusted_catalog_job_name="product-validation / impostor"):
+                pass
+        with self.official(), patch.object(reused.product_reuse, "_observe_ci_producer_jobs",
+                side_effect=ValueError("original producer job did not succeed")), \
+                self.assertRaisesRegex(ValueError, "job did not succeed"):
+            with self.held(failed_catalog_producer=producer,
+                    trusted_catalog_workflow_path=".github/workflows/product-validation.yml",
+                    trusted_catalog_job_name=self.catalog_job["name"]):
+                pass
 
     def test_independent_worker_and_catalog_workflow_pairs(self):
         path = ".github/workflows/product-validation.yml"
