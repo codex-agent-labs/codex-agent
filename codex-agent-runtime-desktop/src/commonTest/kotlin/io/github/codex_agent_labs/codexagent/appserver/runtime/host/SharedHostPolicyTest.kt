@@ -35,6 +35,7 @@ class SharedHostPolicyTest {
         )).also { bytes ->
             signatureOffsets(bytes, LOCAL_SIGNATURE).forEach { offset ->
                 writeU16(bytes, offset + 8, RUNTIME_ZIP_DEFLATED)
+                writeU32(bytes, offset + 22, 300L * 1024 * 1024)
             }
             signatureOffsets(bytes, CENTRAL_SIGNATURE).forEach { offset ->
                 writeU16(bytes, offset + 10, RUNTIME_ZIP_DEFLATED)
@@ -61,6 +62,16 @@ class SharedHostPolicyTest {
             "Runtime ZIP local entry does not match its central entry",
             assertFailsWith<IllegalArgumentException> { inspectRuntimeZip(mismatchedFlags) }.message,
         )
+
+        listOf(14, 18, 22).forEach { fieldOffset ->
+            val mismatchedLocalHeader = testStoredZip(linkedMapOf("one" to byteArrayOf(1))).also { bytes ->
+                writeU32(bytes, signatureOffsets(bytes, LOCAL_SIGNATURE).single() + fieldOffset, 0)
+            }
+            assertEquals(
+                "Runtime ZIP local entry does not match its central entry",
+                assertFailsWith<IllegalArgumentException> { inspectRuntimeZip(mismatchedLocalHeader) }.message,
+            )
+        }
     }
 
     @Test

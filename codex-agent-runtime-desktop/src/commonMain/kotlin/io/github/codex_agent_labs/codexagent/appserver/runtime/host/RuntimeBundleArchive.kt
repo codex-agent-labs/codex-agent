@@ -102,6 +102,7 @@ internal fun inspectRuntimeZip(bytes: ByteArray): List<RuntimeZipMember> {
             require(bytes.u32(cursor) == CENTRAL_SIGNATURE) { "Runtime ZIP central entry is invalid" }
             val flags = bytes.u16(cursor + 8)
             val compression = bytes.u16(cursor + 10)
+            val crc = bytes.u32(cursor + 16)
             val compressedSize = bytes.u32(cursor + 20)
             val size = bytes.u32(cursor + 24)
             val nameSize = bytes.u16(cursor + 28)
@@ -127,7 +128,9 @@ internal fun inspectRuntimeZip(bytes: ByteArray): List<RuntimeZipMember> {
             require((externalAttributes ushr 16).toInt() and FILE_TYPE_MASK != SYMLINK_TYPE) {
                 "Runtime ZIP symbolic links are forbidden"
             }
-            val dataOffset = validateLocalEntry(bytes, localOffset, name, flags, compression, centralOffset)
+            val dataOffset = validateLocalEntry(
+                bytes, localOffset, name, flags, compression, crc, compressedSize, size, centralOffset,
+            )
             val compressedSizeInt = compressedSize.checkedInt("compressed member size")
             require(dataOffset + compressedSizeInt <= centralOffset) { "Runtime ZIP member data is invalid" }
             add(RuntimeZipMember(name, size, compression, compressedSizeInt, dataOffset))
@@ -147,6 +150,9 @@ private fun validateLocalEntry(
     expectedName: String,
     expectedFlags: Int,
     expectedCompression: Int,
+    expectedCrc: Long,
+    expectedCompressedSize: Long,
+    expectedSize: Long,
     centralOffset: Int,
 ): Int {
     require(offset >= 0 && offset + LOCAL_HEADER_BYTES <= centralOffset && bytes.u32(offset) == LOCAL_SIGNATURE) {
@@ -158,6 +164,13 @@ private fun validateLocalEntry(
     val extraSize = bytes.u16(offset + 28)
     require(flags == expectedFlags && compression == expectedCompression) {
         "Runtime ZIP local entry does not match its central entry"
+    }
+    if (flags and DATA_DESCRIPTOR_FLAG == 0) {
+        require(bytes.u32(offset + 14) == expectedCrc &&
+            bytes.u32(offset + 18) == expectedCompressedSize &&
+            bytes.u32(offset + 22) == expectedSize) {
+            "Runtime ZIP local entry does not match its central entry"
+        }
     }
     val end = offset + LOCAL_HEADER_BYTES + nameSize + extraSize
     require(end <= centralOffset && bytes.ascii(offset + LOCAL_HEADER_BYTES, nameSize) == expectedName) {
@@ -203,6 +216,7 @@ private const val EOCD_SIGNATURE = 0x06054b50L
 private const val CENTRAL_SIGNATURE = 0x02014b50L
 private const val LOCAL_SIGNATURE = 0x04034b50L
 private const val ENCRYPTED_FLAG = 1
+private const val DATA_DESCRIPTOR_FLAG = 8
 internal const val RUNTIME_ZIP_STORED = 0
 internal const val RUNTIME_ZIP_DEFLATED = 8
 private const val STORED = RUNTIME_ZIP_STORED
