@@ -71,6 +71,22 @@ class RuntimeOriginalCiTest(unittest.TestCase):
             self.assertEqual(originals[phase],
                 (self.output / "phases" / phase / "original/shard/phase-receipt.json").read_bytes())
 
+    def test_failed_validation_keeps_only_authenticated_successful_prefix(self):
+        failed_run = {**self.run, "status": "completed", "conclusion": "failure"}
+        receipts = {phase: self.receipts[phase] for phase in ("binary", "package")}
+        with mock.patch("reuse.api_request", side_effect=self.api(run=failed_run)):
+            result = adapter.capture_runtime_original_ci_phases(receipts, self.output,
+                target=TARGET, trusted_workflow_sha=self.pin, token="not-a-real-token")
+        self.assertEqual({"binary", "package"}, set(result["artifacts"]))
+        self.assertFalse((self.output / "phases/validation").exists())
+        for phase, source in receipts.items():
+            self.assertEqual(source.read_bytes(),
+                (self.output / "phases" / phase / "original/shard/phase-receipt.json").read_bytes())
+        with self.assertRaisesRegex(ValueError, "successful prefix"):
+            adapter.capture_runtime_original_ci_phases({"binary": self.receipts["binary"],
+                "validation": self.receipts["validation"]}, self.root / "invalid-prefix",
+                target=TARGET, trusted_workflow_sha=self.pin, token="not-a-real-token")
+
     def test_late_original_shard_mutation_cannot_publish(self):
         def mutate_before_copy(source, destination, **kwargs):
             (Path(source) / "phases/binary/original/shard/phase-receipt.json").write_bytes(

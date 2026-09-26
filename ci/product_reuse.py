@@ -749,7 +749,10 @@ def capture_runtime_original_ci_phases(
     if bool(release_handoffs) != (keyring is not None and keys_directory is not None) or \
             (keyring is None) != (keys_directory is None):
         raise ValueError("Retained Runtime handoffs require caller-owned keyring and keys only")
-    phases = ("binary", "package", "validation", "metadata")
+    all_phases = ("binary", "package", "validation", "metadata")
+    phases = tuple(phase for phase in all_phases if phase in phase_receipts)
+    if not phases or phases != all_phases[:len(phases)] or release_handoffs and phases != all_phases:
+        raise ValueError("Original Runtime phases must be a nonempty successful prefix; release requires all four")
     require_exact_keys(phase_receipts, set(phases), "Original Runtime phase receipts")
     if target not in NATIVE_TARGETS:
         raise ValueError("Original Runtime capture requires a native target")
