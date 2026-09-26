@@ -38,6 +38,11 @@ export function verifySelectedPackage(cwd, archive = process.env.CODEX_AGENT_NPM
   const packageRoot = path.join(cwd, 'node_modules', '@codex-agent-labs', 'codex-agent');
   const entries = execFileSync(tar, ['-tzf', archive], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
     .trimEnd().split('\n');
+  const types = execFileSync(tar, ['-tvzf', archive], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    .trimEnd().split('\n');
+  if (types.length !== entries.length || types.some((line) => !['-', 'd'].includes(line[0]))) {
+    throw new Error('Selected npm archive has an unsafe member type');
+  }
   const expected = [];
   for (const entry of entries) {
     const parts = entry.split('/');

@@ -614,6 +614,17 @@ with patch.object(_ffi.NativeLibrary, '_declare_all', return_value=None):
             self.assertEqual(authorize(incompatible, incompatible_identity, "0.8.5",
                                        root_private=directory / "root-key"), root_public)
             run("incompatible", incompatible)
+            for name, change, encoded_abi in (
+                ("wrong_target", {"target": "windows-x64" if target != "windows-x64" else "linux-x64"}, 0x010D0000),
+                ("old_abi", {"cAbiVersion": "1.12.0"}, 0x010C0000),
+            ):
+                incompatible_identity = identity(target)
+                incompatible_identity.update(change)
+                incompatible = compile_library(directory, name, canonical(incompatible_identity, False), encoded_abi)
+                self.assertEqual(authorize(incompatible, incompatible_identity, "0.8.5",
+                                           root_private=directory / "root-key",
+                                           release_key_id=name.replace("_", "-")), root_public)
+                run("incompatible", incompatible)
             resource.write_bytes((Path(str(library) + ".evidence") / "keys/release.pub").read_bytes())
             run("tampered")
             resource.unlink()

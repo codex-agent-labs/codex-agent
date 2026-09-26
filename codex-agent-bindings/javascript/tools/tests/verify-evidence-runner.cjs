@@ -205,3 +205,22 @@ test('selected npm archive is checked before any compiler or SDK test process', 
   fs.symlinkSync(path.join(source, 'index.mjs'), path.join(installed, 'index.mjs'));
   assert.throws(() => verifySelectedPackage(root, archive), /not a regular file/);
 });
+
+test('selected npm archive rejects a symlink member even when installed bytes match', async (context) => {
+  const { verifySelectedPackage, systemTar } = await import(runnerUrl);
+  const { root } = fixture();
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = path.join(root, 'source/package');
+  const installed = path.join(root, 'node_modules/@codex-agent-labs/codex-agent');
+  for (const directory of [source, installed]) fs.mkdirSync(path.join(directory, 'dist'), { recursive: true });
+  for (const [name, bytes] of Object.entries({
+    'package.json': '{}\n', 'index.cjs': '', 'dist/runtime.js': 'runtime\n',
+  })) {
+    for (const directory of [source, installed]) fs.writeFileSync(path.join(directory, name), bytes);
+  }
+  fs.symlinkSync('index.cjs', path.join(source, 'index.mjs'));
+  fs.writeFileSync(path.join(installed, 'index.mjs'), '');
+  const archive = path.join(root, 'selected.tgz');
+  execFileSync(systemTar(), ['-czf', archive, '-C', path.join(root, 'source'), 'package']);
+  assert.throws(() => verifySelectedPackage(root, archive), /unsafe member type/);
+});

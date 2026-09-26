@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import hashlib
+import os
 import platform
 import shutil
 import subprocess
@@ -88,6 +89,24 @@ class PackageRootRequirementTest(unittest.TestCase):
             unexpected = configure("consumer-unexpected")
             self.assertNotEqual(0, unexpected.returncode)
             self.assertIn("wrapper header inventory differs", unexpected.stdout + unexpected.stderr)
+            extra.unlink()
+            if os.name != "nt":
+                outside = root / "outside-header.hpp"
+                outside.write_bytes(original_header)
+                header.unlink()
+                header.symlink_to(outside)
+                symlinked = configure("consumer-symlinked-member")
+                self.assertNotEqual(0, symlinked.returncode)
+                self.assertIn("symbolic path", symlinked.stdout + symlinked.stderr)
+                header.unlink()
+                header.write_bytes(original_header)
+                native = installed / "share/CodexAgent/native"
+                relocated = root / "outside-native"
+                native.rename(relocated)
+                native.symlink_to(relocated, target_is_directory=True)
+                symlinked_parent = configure("consumer-symlinked-parent")
+                self.assertNotEqual(0, symlinked_parent.returncode)
+                self.assertIn("symbolic path", symlinked_parent.stdout + symlinked_parent.stderr)
 
 
 if __name__ == "__main__":
