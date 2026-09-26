@@ -118,7 +118,10 @@ class SdkIosPackageUploadTest(unittest.TestCase):
             **changes,
         }
         with patch.object(capture, "_validate_plan", return_value=self.plan), \
-                patch("reuse.api_request", side_effect=self.api):
+                patch("reuse.api_request", side_effect=self.api), \
+                patch.object(capture, "download_artifact_to_file",
+                    side_effect=lambda artifact, token, destination, **kwargs:
+                        Path(destination).write_bytes(self.raw)):
             return getattr(capture, f"capture_sdk_ios_{self.phase}_upload")(
                 self.plan_path, self.output, **arguments,
             )

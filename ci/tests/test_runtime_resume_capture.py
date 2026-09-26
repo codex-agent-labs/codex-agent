@@ -37,9 +37,9 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
             self.artifact if artifact is None else artifact,
         ]) as query, mock.patch.object(product_reuse, "paginated_items", return_value=(
             [self.job] if jobs is None else jobs
-        )) as listing, mock.patch.object(product_reuse, "download_artifact", return_value=(
-            self.raw if raw is None else raw
-        )) as download:
+        )) as listing, mock.patch.object(product_reuse, "download_artifact_to_file",
+            side_effect=lambda artifact, token, destination, **kwargs:
+                Path(destination).write_bytes(self.raw if raw is None else raw)) as download:
             result = product_reuse.capture_runtime_resume_upload(
                 self.plan_path, destination, artifact_id=101, artifact_sha256=self.artifact["digest"],
                 trusted_workflow_sha=self.pin, repository_root=self.root,
@@ -76,7 +76,8 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
         listing.assert_called_once_with(
             "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/91/attempts/3/jobs",
             "jobs", "not-a-real-token")
-        download.assert_called_once_with(self.artifact, "not-a-real-token")
+        self.assertEqual((self.artifact, "not-a-real-token"), download.call_args.args[:2])
+        self.assertEqual(product_reuse._CATALOG_LIMIT, download.call_args.kwargs["max_bytes"])
         # The fixture state is not valid JSON; capture therefore proves no phase replay.
         self.assertNotIn("fullReuse", result)
 

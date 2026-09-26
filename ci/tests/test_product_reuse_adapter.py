@@ -529,7 +529,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
         with zipfile.ZipFile(catalog, "w") as archive:
             archive.writestr("object.zip", b"object-bytes")
         with mock.patch.dict(limits, {"max_entry_bytes": 1}), \
-                mock.patch.object(product_reuse, "download_artifact", return_value=catalog.read_bytes()), \
+                mock.patch.object(product_reuse, "download_artifact_to_file",
+                    side_effect=lambda artifact, token, destination, **kwargs: Path(destination).write_bytes(catalog.read_bytes())), \
                 mock.patch.object(product_reuse, "safe_extract") as extract:
             with self.assertRaises(ValueError):
                 product_reuse._materialize_catalog(
@@ -541,7 +542,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
         # and inner object/product validation still decide their admission.
         with zipfile.ZipFile(catalog, "w") as archive:
             archive.writestr("runtime-aggregate-release-evidence/handoffs/original/empty.log", b"")
-        with mock.patch.object(product_reuse, "download_artifact", return_value=catalog.read_bytes()), \
+        with mock.patch.object(product_reuse, "download_artifact_to_file",
+                side_effect=lambda artifact, token, destination, **kwargs: Path(destination).write_bytes(catalog.read_bytes())), \
                 mock.patch.object(product_reuse, "safe_extract", side_effect=RuntimeError("outer transport accepted")) as extract:
             with self.assertRaisesRegex(RuntimeError, "outer transport accepted"):
                 product_reuse._materialize_catalog("same-pr", {"id": 2}, "unused", self.root / "empty-log",
@@ -1011,7 +1013,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
             "archive_download_url": "https://example.invalid/archive",
             "digest": sha256_bytes(catalog.read_bytes()),
         }
-        with mock.patch.object(product_reuse, "download_artifact", return_value=catalog.read_bytes()), \
+        with mock.patch.object(product_reuse, "download_artifact_to_file",
+                side_effect=lambda artifact, token, destination, **kwargs: Path(destination).write_bytes(catalog.read_bytes())), \
                 mock.patch.object(product_reuse, "validate_product_index", return_value=index):
             with self.assertRaisesRegex(ValueError, "file set"):
                 product_reuse._materialize_catalog(
@@ -1054,7 +1057,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
             archive.writestr("product-index.sig", b"signature")
             archive.writestr("public-key.pub", b"key")
         original = copy.deepcopy(workflow_run)
-        with mock.patch.object(product_reuse, "download_artifact", return_value=catalog.read_bytes()), \
+        with mock.patch.object(product_reuse, "download_artifact_to_file",
+                side_effect=lambda artifact, token, destination, **kwargs: Path(destination).write_bytes(catalog.read_bytes())), \
                 mock.patch.object(product_reuse, "validate_product_index", return_value=base):
             materialized = product_reuse._materialize_catalog(
                 "same-pr", {"id": 7}, "token", self.root / "materialized-merge",
@@ -1082,7 +1086,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
                     "digest": sha256_bytes(catalog.read_bytes()),
                 }
                 with mock.patch.object(
-                    product_reuse, "download_artifact", return_value=catalog.read_bytes(),
+                    product_reuse, "download_artifact_to_file",
+                    side_effect=lambda artifact, token, destination, **kwargs: Path(destination).write_bytes(catalog.read_bytes()),
                 ), mock.patch.object(product_reuse, "validate_product_index", return_value=index):
                     with self.assertRaisesRegex(ValueError, "different workflow provenance"):
                         product_reuse._materialize_catalog(
@@ -1326,7 +1331,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
                        "GITHUB_REPOSITORY": producer["repository"]}
         destination = repository / "build/discovered"
         with mock.patch.object(product_reuse, "paginated_items", return_value=[artifact]), \
-                mock.patch.object(product_reuse, "download_artifact", return_value=archive.read_bytes()), \
+                mock.patch.object(product_reuse, "download_artifact_to_file",
+                    side_effect=lambda artifact, token, destination, **kwargs: Path(destination).write_bytes(archive.read_bytes())), \
                 mock.patch.object(product_reuse, "api_json", side_effect=[run, tested]) as queried:
             catalogs = product_reuse._discover_catalogs(impact, destination, None, environment, VERSIONS)
         self.assertEqual([
@@ -1365,7 +1371,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
             ({**run, "head_repository": {"full_name": "attacker/repo", "fork": True}}, tested),
         )):
             with self.subTest(case=number), \
-                    mock.patch.object(product_reuse, "download_artifact", return_value=archive.read_bytes()), \
+                    mock.patch.object(product_reuse, "download_artifact_to_file",
+                        side_effect=lambda artifact, token, destination, **kwargs: Path(destination).write_bytes(archive.read_bytes())), \
                     mock.patch.object(product_reuse, "api_json", side_effect=[observed_run, observed_commit]), \
                     self.assertRaises(ValueError):
                 product_reuse._materialize_catalog(
@@ -3777,7 +3784,8 @@ class ContractCatalogExecutionClosureTest(unittest.TestCase):
             "pull_requests": [{"number": 31, "base": {"sha": "c" * 40}, "head": {"sha": "f" * 40}}],
         }
         tested = {"sha": COMMIT, "tree": {"sha": TREE}, "parents": [{"sha": "c" * 40}, {"sha": "f" * 40}]}
-        with mock.patch.object(product_reuse, "download_artifact", return_value=buffer.getvalue()), \
+        with mock.patch.object(product_reuse, "download_artifact_to_file",
+                side_effect=lambda artifact, token, destination, **kwargs: Path(destination).write_bytes(buffer.getvalue())), \
                 mock.patch.object(product_reuse, "api_json", side_effect=[run, tested]):
             return product_reuse._materialize_catalog(
                 "same-pr", artifact, "not-a-real-token", self.destination / name,

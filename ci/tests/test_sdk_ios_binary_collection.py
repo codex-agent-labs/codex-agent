@@ -124,7 +124,7 @@ class SdkIosBinaryCollectionTest(unittest.TestCase):
         other = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
         with patch.object(adapter, "_verified_product_state", return_value=self.state({other: {}})), \
                 patch.object(adapter, "api_json") as query, patch.object(adapter, "paginated_items") as listing, \
-                patch.object(adapter, "download_artifact") as download:
+                patch.object(adapter, "download_artifact_to_file") as download:
             result = adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
                 self.repository / "build/no-ios", trusted_workflow_sha=PIN, repository_root=self.repository,
                 environ=self.environment, token="synthetic-token", sdk_ios_binary_only=True)

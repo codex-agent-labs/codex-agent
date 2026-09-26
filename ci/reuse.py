@@ -69,7 +69,7 @@ def paginated_items(url: str, key: str, token: str) -> list[object]:
         page += 1
 
 
-def download_artifact(artifact: dict[str, object], token: str) -> bytes:
+def _artifact_transport_identity(artifact: dict[str, object]) -> tuple[str, str]:
     url = artifact.get("archive_download_url")
     digest = artifact.get("digest")
     if not isinstance(url, str) or not isinstance(digest, str):
@@ -79,10 +79,53 @@ def download_artifact(artifact: dict[str, object], token: str) -> bytes:
         character not in "0123456789abcdef" for character in expected
     ):
         raise ValueError("GitHub artifact transport digest is malformed")
+    return url, expected
+
+
+def download_artifact(artifact: dict[str, object], token: str) -> bytes:
+    url, expected = _artifact_transport_identity(artifact)
     archive = api_request(url, token)
     if hashlib.sha256(archive).hexdigest() != expected:
         raise ValueError("GitHub artifact transport digest mismatch")
     return archive
+
+
+def download_artifact_to_file(
+    artifact: dict[str, object], token: str, destination: Path, *, max_bytes: int,
+) -> None:
+    """Stream an exact GitHub transport into a new file with bounded memory."""
+    url, expected = _artifact_transport_identity(artifact)
+    size = artifact.get("size_in_bytes")
+    if (type(size) is not int or type(max_bytes) is not int
+            or size <= 0 or max_bytes <= 0 or size > max_bytes):
+        raise ValueError("GitHub artifact transport size is outside the fixed bound")
+    request = urllib.request.Request(url, headers={
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    })
+    destination = Path(destination)
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        opener = urllib.request.build_opener(OriginBoundRedirectHandler())
+        with os.fdopen(descriptor, "wb", closefd=False) as output, opener.open(request, timeout=60) as response:
+            digest = hashlib.sha256()
+            total = 0
+            while chunk := response.read(1024 * 1024):
+                total += len(chunk)
+                if total > size:
+                    raise ValueError("GitHub artifact transport exceeds its declared size")
+                output.write(chunk)
+                digest.update(chunk)
+            if total != size or digest.hexdigest() != expected:
+                raise ValueError("GitHub artifact transport digest or size mismatch")
+            output.flush()
+            os.fsync(descriptor)
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(descriptor)
 
 
 def github_output(path: Path | None, values: dict[str, object]) -> None:

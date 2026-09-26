@@ -54,7 +54,10 @@ class SdkInputsUploadTest(unittest.TestCase):
 
     def call(self, **changes):
         with patch.object(capture, "_validate_plan", return_value=self.plan) as validate, \
-                patch("reuse.api_request", side_effect=self.api):
+                patch("reuse.api_request", side_effect=self.api), \
+                patch.object(capture, "download_artifact_to_file",
+                    side_effect=lambda artifact, token, destination, **kwargs:
+                        Path(destination).write_bytes(self.raw)):
             result = capture.capture_sdk_inputs_upload(self.plan_path, self.output, **{
                 "artifact_id": 701, "artifact_sha256": self.artifact["digest"],
                 "trusted_workflow_sha": self.pin, "expected_source": self.expected_source,

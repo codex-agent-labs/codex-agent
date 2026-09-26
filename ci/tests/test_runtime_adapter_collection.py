@@ -5,6 +5,7 @@ shard/continuation verifiers. No compiler or actual hosted execution is claimed.
 """
 
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 import shutil
 import unittest
@@ -99,7 +100,9 @@ class RuntimeAdapterCollectionTest(unittest.TestCase):
 
         with mock.patch.object(adapter, "api_json", side_effect=api) as query, \
                 mock.patch.object(adapter, "paginated_items", side_effect=listing) as listed, \
-                mock.patch.object(adapter, "download_artifact", side_effect=lambda item, token: downloads[item["id"]]) as downloaded:
+                mock.patch.object(adapter, "download_artifact_to_file",
+                    side_effect=lambda item, token, destination, **kwargs:
+                        Path(destination).write_bytes(downloads[item["id"]])) as downloaded:
             yield query, listed, downloaded
 
     def collect(self, resumed, destination):
@@ -190,7 +193,7 @@ class RuntimeAdapterCollectionTest(unittest.TestCase):
         with mock.patch.object(adapter, "_verified_product_state", return_value=state), \
                 mock.patch.object(adapter, "api_json") as query, \
                 mock.patch.object(adapter, "paginated_items") as listed, \
-                mock.patch.object(adapter, "download_artifact") as downloaded:
+                mock.patch.object(adapter, "download_artifact_to_file") as downloaded:
             result = self.collect(self.discovery, self.scratch / "empty-collection")
         self.assertEqual([], result["rows"])
         self.assertEqual([], result["observed"])

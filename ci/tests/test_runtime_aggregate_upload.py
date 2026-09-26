@@ -98,7 +98,10 @@ class RuntimeAggregateUploadTest(unittest.TestCase):
 
     def call(self, **changes):
         with patch.object(capture, "_validate_plan", return_value=self.plan), \
-                patch("reuse.api_request", side_effect=self.api):
+                patch("reuse.api_request", side_effect=self.api), \
+                patch.object(capture, "download_artifact_to_file",
+                    side_effect=lambda artifact, token, destination, **kwargs:
+                        Path(destination).write_bytes(self.raw)):
             return capture.capture_runtime_aggregate_release_upload(self.plan_path, self.output, **{
                 "artifact_id": 701, "artifact_sha256": self.artifact["digest"], "trusted_workflow_sha": self.pin,
                 "expected_build_key": self.key, "expected_metadata_receipt_sha256": self.digest,

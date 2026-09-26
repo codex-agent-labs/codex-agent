@@ -21,7 +21,7 @@ from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admis
 
 from impact import validate_legacy_lane_projection, validate_remote_build_authorization
 from receipt import safe_extract
-from reuse import api_json, download_artifact, github_output, paginated_items, run_matches_pr
+from reuse import api_json, download_artifact, download_artifact_to_file, github_output, paginated_items, run_matches_pr
 from products.aggregate import RUNTIME_EVIDENCE_TARGETS, RUNTIME_TARGETS, validate_product_index
 from products.contract_attestation import (
     validate_contract_attestation, verify_contract_attestation, verify_contract_execution_closure,
@@ -141,7 +141,8 @@ _KEYS_ROOT = "gradle/release/keys"
 _PROFILE_ROOT = "gradle/release/toolchains/runtime"
 _OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _CATALOG_PREFIX = "codex-agent-product-catalog-v1-"
-_CATALOG_LIMIT = 4 * 1024 * 1024 * 1024
+_INLINE_UPLOAD_LIMIT = 4 * 1024 * 1024 * 1024
+_CATALOG_LIMIT = 16 * 1024 * 1024 * 1024
 _CATALOG_ZIP_LIMITS = {
     # Actions uploads are external transport, not canonical product payloads.
     "require_sorted": False,
@@ -149,8 +150,15 @@ _CATALOG_ZIP_LIMITS = {
     "max_central_directory_bytes": 32 * 1024 * 1024,
     "max_members": 8192,
     "max_entry_bytes": OBJECT_ZIP_LIMITS["max_archive_bytes"],
-    "max_total_bytes": 4 * 1024 * 1024 * 1024,
+    "max_total_bytes": _CATALOG_LIMIT,
     "max_compression_ratio": 200,
+}
+_APPLE_UPLOAD_LIMIT = 8 * 1024 * 1024 * 1024
+_APPLE_UPLOAD_ZIP_LIMITS = {
+    **_CATALOG_ZIP_LIMITS,
+    "max_archive_bytes": _APPLE_UPLOAD_LIMIT,
+    "max_entry_bytes": _APPLE_UPLOAD_LIMIT,
+    "max_total_bytes": _APPLE_UPLOAD_LIMIT,
 }
 
 
@@ -445,7 +453,8 @@ def _require_artifact_job_window(observation, job_name, artifact):
 def _download_contract_ci_upload(
     artifact_id: int, artifact_sha256: str, expected_name: str,
     producer: Mapping[str, Any], observed_run: Mapping[str, Any], token: str,
-) -> tuple[dict[str, Any], bytes]:
+    *, destination: Path | None = None,
+) -> tuple[dict[str, Any], bytes | Path]:
     require_integer(artifact_id, "Contract upload artifact ID", 1)
     require_sha256(artifact_sha256, "Contract upload artifact digest")
     repository = "codex-agent-labs/codex-agent"
@@ -462,8 +471,13 @@ def _download_contract_ci_upload(
             or transport.get("head_sha") != observed_run["head_sha"]):
         raise ValueError("Contract uploaded artifact differs from the caller-bound transport identity")
     size = require_integer(artifact.get("size_in_bytes"), "Contract upload transport bytes", 1)
-    if size > _CATALOG_LIMIT:
+    if size > (_CATALOG_LIMIT if destination is not None else _INLINE_UPLOAD_LIMIT):
         raise ValueError("Contract uploaded artifact exceeds the transport limit")
+    if destination is not None:
+        download_artifact_to_file(artifact, token, destination, max_bytes=_CATALOG_LIMIT)
+        if destination.stat().st_size != size or sha256_file(destination) != artifact_sha256:
+            raise ValueError("Contract uploaded artifact bytes differ from the caller-bound identity")
+        return artifact, destination
     raw = download_artifact(artifact, token)
     if len(raw) != size or sha256_bytes(raw) != artifact_sha256:
         raise ValueError("Contract uploaded artifact bytes differ from the caller-bound identity")
@@ -1020,7 +1034,7 @@ def _materialize_catalog(
     root = destination / "catalogs" / source / str(artifact_id)
     root.mkdir(parents=True)
     archive = root / "transport.zip"
-    archive.write_bytes(download_artifact(dict(artifact), token))
+    download_artifact_to_file(dict(artifact), token, archive, max_bytes=_CATALOG_LIMIT)
     verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
     extracted = root / "contents"
     safe_extract(archive, extracted)
@@ -4337,18 +4351,18 @@ def collect_runtime_workers(
                 if len(candidates) != 1:
                     raise ValueError("Runtime worker upload is missing or ambiguous")
                 candidate = candidates[0]
-                artifact, raw = _download_contract_ci_upload(
-                    candidate.get("id"), candidate.get("digest"), artifact_name, producer, observed[0]["run"], token)
+                retained = prepared / "rows" / name
+                retained.mkdir(parents=True)
+                archive = retained / "transport.zip"
+                artifact, _ = _download_contract_ci_upload(
+                    candidate.get("id"), candidate.get("digest"), artifact_name, producer,
+                    observed[0]["run"], token, destination=archive)
                 timestamps = [datetime.fromisoformat(require_string(value, "Runtime worker timestamp").replace("Z", "+00:00"))
                               for value in (job.get("started_at"), artifact.get("created_at"), job.get("completed_at"))]
                 if (any(value.utcoffset() != timedelta(0) for value in timestamps)
                         or not timestamps[0] <= timestamps[1] <= timestamps[2]):
                     raise ValueError("Runtime upload is outside its original job-attempt window")
                 row["artifact"] = artifact
-                retained = prepared / "rows" / name
-                retained.mkdir(parents=True)
-                archive = retained / "transport.zip"
-                archive.write_bytes(raw)
                 verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
                 original = retained / "original"
                 safe_extract(archive, original)
@@ -5012,13 +5026,12 @@ def capture_runtime_resume_upload(
         observed = _observe_ci_producer_jobs(
             {"resume": producer}, jobs_by_phase={"resume": job_name},
             trusted_workflow_sha=trusted_workflow_sha, token=token)
-        artifact, raw = _download_contract_ci_upload(
+        archive = private / "transport.zip"
+        artifact, _ = _download_contract_ci_upload(
             artifact_id, artifact_sha256, artifact_name,
-            producer, observed[0]["run"], token)
+            producer, observed[0]["run"], token, destination=archive)
         if sdk_state_wave is not None:
             _require_artifact_job_window(observed[0], job_name, artifact)
-        archive = private / "transport.zip"
-        archive.write_bytes(raw)
         zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
                                              **_CATALOG_ZIP_LIMITS)
         prepared = private / "captured"
@@ -5096,10 +5109,10 @@ def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact
         observed = _observe_ci_producer_jobs({"aggregate": producer}, jobs_by_phase={"aggregate": job},
             trusted_workflow_sha=trusted_workflow_sha, token=token)
         name = f"codex-agent-runtime-aggregate-release-handoff-{producer['tree']}-attempt-{producer['runAttempt']}"
-        artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
-        _require_artifact_job_window(observed[0], job, artifact)
         archive = prepared / "transport.zip"
-        archive.write_bytes(raw)
+        artifact, _ = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer,
+            observed[0]["run"], token, destination=archive)
+        _require_artifact_job_window(observed[0], job, artifact)
         zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
         original = prepared / "original"
         safe_extract(archive, original)
@@ -5118,7 +5131,7 @@ def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact
         expected_files = sorted([
             {"relativePath": "plan/impact-plan.json", "bytes": len(original_plan),
              "sha256": sha256_bytes(original_plan)},
-            {"relativePath": "transport.zip", "bytes": len(raw), "sha256": artifact_sha256},
+            {"relativePath": "transport.zip", "bytes": archive.stat().st_size, "sha256": artifact_sha256},
             {"relativePath": "capture-transport.json", "bytes": len(transport_bytes),
              "sha256": sha256_bytes(transport_bytes)},
             *({**record, "relativePath": f"original/{record['relativePath']}"} for record in zipped),
@@ -5134,7 +5147,7 @@ def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact
     return transport
 
 
-def _verify_retained_sdk_upload_archive(capture, artifact, *, extra_roots=()):
+def _verify_retained_sdk_upload_archive(capture, artifact, *, extra_roots=(), apple=False):
     """Check preserved upload bytes; stored transport metadata is not authority."""
     capture = Path(capture)
     regular_file_inventory(capture, allow_empty=True)
@@ -5149,7 +5162,8 @@ def _verify_retained_sdk_upload_archive(capture, artifact, *, extra_roots=()):
     archive = capture / "transport.zip"
     if sha256_file(archive) != digest:
         raise ValueError("Retained SDK upload archive differs from its original digest")
-    zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+    zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
+        **(_APPLE_UPLOAD_ZIP_LIMITS if apple else _CATALOG_ZIP_LIMITS))
     if regular_file_inventory(capture / "original", allow_empty=True) != zipped:
         raise ValueError("Retained SDK upload content differs from its original archive")
 
@@ -5173,7 +5187,7 @@ def verify_retained_sdk_ios_upload(capture, receipt_bytes):
     if (transport["captureProducer"] != producer
             or transport[f"{phase}ReceiptSha256"] != sha256_bytes(receipt_bytes)):
         raise ValueError("Retained Apple transport differs from the exact original receipt")
-    _verify_retained_sdk_upload_archive(capture, transport["artifact"])
+    _verify_retained_sdk_upload_archive(capture, transport["artifact"], apple=True)
     name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-{target}-{receipt['buildKey'].removeprefix('sha256:')}-"
             f"{producer['tree']}-attempt-{producer['runAttempt']}")
     if transport["artifact"].get("name") != name:
@@ -5239,10 +5253,10 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
         observed = _observe_ci_producer_jobs({"sdk-inputs": producer}, jobs_by_phase={"sdk-inputs": job},
             trusted_workflow_sha=trusted_workflow_sha, token=token)
         name = f"codex-agent-sdk-inputs-{producer['tree']}-attempt-{producer['runAttempt']}"
-        artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
-        _require_artifact_job_window(observed[0], job, artifact)
         archive = prepared / "transport.zip"
-        archive.write_bytes(raw)
+        artifact, _ = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer,
+            observed[0]["run"], token, destination=archive)
+        _require_artifact_job_window(observed[0], job, artifact)
         zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
         original = prepared / "original"
         safe_extract(archive, original)
@@ -5271,7 +5285,7 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
         expected_files = [
             {"relativePath": "plan/impact-plan.json", "bytes": len(plan_bytes),
              "sha256": sha256_bytes(plan_bytes)},
-            {"relativePath": "transport.zip", "bytes": len(raw), "sha256": artifact_sha256},
+            {"relativePath": "transport.zip", "bytes": archive.stat().st_size, "sha256": artifact_sha256},
             {"relativePath": "capture-transport.json", "bytes": len(transport_bytes),
              "sha256": sha256_bytes(transport_bytes)},
             *({**record, "relativePath": f"original/{record['relativePath']}"} for record in zipped),
@@ -5393,11 +5407,12 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
             jobs_by_phase={f"ios-{phase}": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
         name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-{target}-{build_key.removeprefix('sha256:')}-"
                 f"{producer['tree']}-attempt-{producer['runAttempt']}")
-        artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
-        _require_artifact_job_window(observed[0], job, artifact)
         archive = prepared / "transport.zip"
-        archive.write_bytes(raw)
-        zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+        artifact, _ = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer,
+            observed[0]["run"], token, destination=archive)
+        _require_artifact_job_window(observed[0], job, artifact)
+        zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
+            **_APPLE_UPLOAD_ZIP_LIMITS)
         original = prepared / "original"
         safe_extract(archive, original)
         verified = verify_phase_shard(original / "shard", instance)
@@ -5414,7 +5429,7 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
         expected_files = sorted([
             {"relativePath": "plan/impact-plan.json", "bytes": len(plan_bytes),
              "sha256": sha256_bytes(plan_bytes)},
-            {"relativePath": "transport.zip", "bytes": len(raw), "sha256": artifact_sha256},
+            {"relativePath": "transport.zip", "bytes": archive.stat().st_size, "sha256": artifact_sha256},
             {"relativePath": "capture-transport.json", "bytes": len(transport_bytes),
              "sha256": sha256_bytes(transport_bytes)},
             *({**record, "relativePath": f"original/{record['relativePath']}"} for record in zipped),

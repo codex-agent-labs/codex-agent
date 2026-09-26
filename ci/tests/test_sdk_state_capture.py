@@ -1,6 +1,7 @@
 """SDK state transport with mocked HTTP, not product replay or hosted evidence."""
 
 from copy import deepcopy
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -29,7 +30,9 @@ class SdkStateCaptureTest(unittest.TestCase):
         source = self.source
         with patch.object(product_reuse, "api_json", side_effect=[source.run, source.commit, self.artifact]), \
                 patch.object(product_reuse, "paginated_items", return_value=[self.job]), \
-                patch.object(product_reuse, "download_artifact", return_value=self.raw):
+                patch.object(product_reuse, "download_artifact_to_file",
+                    side_effect=lambda artifact, token, destination, **kwargs:
+                        Path(destination).write_bytes(self.raw)):
             return product_reuse.capture_runtime_resume_upload(source.plan_path, self.destination,
                 artifact_id=101, artifact_sha256=sha256_bytes(self.raw), trusted_workflow_sha=source.pin,
                 repository_root=self.root, environ=source.environment, token="synthetic-token",

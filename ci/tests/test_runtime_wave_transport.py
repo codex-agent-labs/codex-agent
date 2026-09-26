@@ -43,7 +43,8 @@ class RuntimeWaveTransportTest(unittest.TestCase):
         ]) as query, mock.patch.object(
             product_reuse, "paginated_items", return_value=[job],
         ) as listing, mock.patch.object(
-            product_reuse, "download_artifact", return_value=raw,
+            product_reuse, "download_artifact_to_file",
+            side_effect=lambda item, token, path, **kwargs: Path(path).write_bytes(raw),
         ) as download:
             result = product_reuse.capture_runtime_resume_upload(
                 self.plan_path, destination, artifact_id=101,
@@ -82,7 +83,8 @@ class RuntimeWaveTransportTest(unittest.TestCase):
                 "actions/runs/91/attempts/3/jobs",
                 "jobs", "not-a-real-token",
             )
-            download.assert_called_once_with(artifact, "not-a-real-token")
+            self.assertEqual((artifact, "not-a-real-token"), download.call_args.args[:2])
+            self.assertEqual(product_reuse._CATALOG_LIMIT, download.call_args.kwargs["max_bytes"])
         self.assertEqual(original_plan, self.plan_path.read_bytes())
 
     def test_wave_range_names_attempt_and_exact_root_set_fail_closed(self):
