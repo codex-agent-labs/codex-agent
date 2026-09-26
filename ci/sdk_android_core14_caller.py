@@ -108,7 +108,8 @@ def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
             if path is not None)
         if any(path == carrier or carrier in path.parents for path in trust):
             raise ValueError("Reused Core caller trust must be independent of its carrier")
-        raw = read_regular_file_bytes(metadata_receipt, reject_symlink_parents=True)
+        raw = read_regular_file_bytes(metadata_receipt, max_bytes=16 * 1024 * 1024,
+            reject_symlink_parents=True)
         receipt = validate_phase_receipt(load_canonical_json_bytes(raw))
         if (sha256_bytes(raw) != expected_metadata_receipt_sha256 or
                 tuple(receipt[name] for name in ("product", "component", "phase", "target")) !=

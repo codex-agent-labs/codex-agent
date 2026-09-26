@@ -126,6 +126,13 @@ class AndroidCore14CallerTest(unittest.TestCase):
             self.assertEqual(android_key, caller.with_core14(**arguments)["buildKey"])
             self.assertEqual(metadata_transport["id"], signed_context.call_args.kwargs["expected_artifact_id"])
             self.assertEqual(1, len(admissions))
+            oversized = fixture.root / "oversized-receipt.json"
+            with oversized.open("wb") as output:
+                output.truncate(16 * 1024 * 1024 + 1)
+            with patch.object(caller, "locate_original_facade_upload",
+                    side_effect=AssertionError("unbounded receipt reached original lookup")), \
+                    self.assertRaisesRegex(ValueError, "File is too large"):
+                caller.with_core14(**{**arguments, "metadata_receipt": oversized})
             with self.assertRaisesRegex(ValueError, "protected signed context"):
                 caller.with_core14(**{**arguments, "original_context": {"foreign": "context"}})
             with patch.object(caller, "locate_original_facade_upload", return_value={
