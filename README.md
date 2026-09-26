@@ -360,22 +360,26 @@ report. The current focused gates are:
   :codex-agent-sdk:verifyCppBindingParity \
   :codex-agent-sdk:verifyDartBindingParity
 ./gradlew verifySdkBindingParity \
-  -PcodexAgent.sdkBindingEvidenceDirectory=<exact-m11-evidence-directory> \
-  -PcodexAgent.sdkCanonicalApiReport=<exact-contract-canonical-api.json> \
-  -PcodexAgent.sdkCanonicalCoverageReceipt=<exact-contract-canonical-coverage.json>
+  -PcodexAgent.sdkBindingEvidenceDirectory="$M11_EVIDENCE_DIR" \
+  -PcodexAgent.sdkCanonicalApiReport="$CONTRACT_API_REPORT" \
+  -PcodexAgent.sdkCanonicalCoverageReceipt="$CONTRACT_COVERAGE_RECEIPT"
 ./gradlew verifySdk \
-  -PcodexAgent.sdkBindingEvidenceDirectory=<exact-m11-evidence-directory> \
-  -PcodexAgent.sdkCanonicalApiReport=<exact-contract-canonical-api.json> \
-  -PcodexAgent.sdkCanonicalCoverageReceipt=<exact-contract-canonical-coverage.json>
+  -PcodexAgent.sdkBindingEvidenceDirectory="$M11_EVIDENCE_DIR" \
+  -PcodexAgent.sdkCanonicalApiReport="$CONTRACT_API_REPORT" \
+  -PcodexAgent.sdkCanonicalCoverageReceipt="$CONTRACT_COVERAGE_RECEIPT"
 ./gradlew verifyRepository \
-  -PcodexAgent.repositoryContractEvidenceDirectory=<contract-evidence-directory> \
-  -PcodexAgent.repositoryRuntimeEvidenceDirectory=<runtime-evidence-directory> \
-  -PcodexAgent.repositorySdkEvidenceDirectory=<sdk-evidence-directory> \
-  -PcodexAgent.repositoryTrustDomain=<development-or-release>
+  -PcodexAgent.repositoryContractEvidenceDirectory="$CONTRACT_EVIDENCE_DIR" \
+  -PcodexAgent.repositoryRuntimeEvidenceDirectory="$RUNTIME_EVIDENCE_DIR" \
+  -PcodexAgent.repositorySdkEvidenceDirectory="$SDK_EVIDENCE_DIR" \
+  -PcodexAgent.repositoryTrustDomain="$PRODUCT_TRUST_DOMAIN"
 # macOS only
 ./gradlew verifyIosRuntime
 ```
 
+Set the three SDK variables to the exact M11 evidence directory and Contract
+API/coverage files before running either SDK gate. Set the four
+`verifyRepository` variables to existing imported evidence directories and
+their `development` or `release` trust domain before running it.
 `verifyContract` produces only canonical Contract and Kotlin evidence.
 `verifySdkBindingParity` verifies only the exact imported eleven-language
 receipt set against separately supplied Contract API and coverage evidence;

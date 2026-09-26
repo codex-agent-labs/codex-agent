@@ -176,8 +176,16 @@ rustup toolchain install 1.95.0 --profile minimal \
 ./gradlew :codex-agent-runtime-ios:verifyCodexAgentSwiftSimulatorCompilation
 # Freeze the source tree here; do not edit it during either remaining gate.
 ./gradlew verifyIosRuntime
-./gradlew verifyRepository
+./gradlew verifyRepository \
+  -PcodexAgent.repositoryContractEvidenceDirectory="$CONTRACT_EVIDENCE_DIR" \
+  -PcodexAgent.repositoryRuntimeEvidenceDirectory="$RUNTIME_EVIDENCE_DIR" \
+  -PcodexAgent.repositorySdkEvidenceDirectory="$SDK_EVIDENCE_DIR" \
+  -PcodexAgent.repositoryTrustDomain="$PRODUCT_TRUST_DOMAIN"
 ```
+
+`verifyRepository` also requires separately imported Contract, Runtime, and
+SDK evidence; set the four variables to those directories and their
+`development` or `release` trust domain before running it.
 
 The preflight requires 40 GiB free by default. Override that only for a
 deliberately smaller check with

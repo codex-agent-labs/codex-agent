@@ -168,10 +168,17 @@ actionlint
 export DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer
 ./gradlew :codex-agent-runtime-ios:preflightIosRuntime
 ./gradlew verifyIosRuntime
-./gradlew verifyRepository
+./gradlew verifyRepository \
+  -PcodexAgent.repositoryContractEvidenceDirectory="$CONTRACT_EVIDENCE_DIR" \
+  -PcodexAgent.repositoryRuntimeEvidenceDirectory="$RUNTIME_EVIDENCE_DIR" \
+  -PcodexAgent.repositorySdkEvidenceDirectory="$SDK_EVIDENCE_DIR" \
+  -PcodexAgent.repositoryTrustDomain="$PRODUCT_TRUST_DOMAIN"
 ```
 
 None of these commands requires a connected Android phone.
+For `verifyRepository`, set the four variables to existing imported Contract,
+Runtime, and SDK evidence directories and their `development` or `release`
+trust domain; the earlier commands do not create that full evidence set.
 Follow the [iOS development verification order](RUNTIME_IOS.md#verification)
 before starting the expensive Apple gate; it includes the scoped clean,
 simulator-only Swift typecheck, source freeze, disk budget, and exact-evidence
