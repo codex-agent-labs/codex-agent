@@ -1828,6 +1828,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/products/sdk_campaign_dev_catalog.py",
             "ci/sdk_campaign_reused_original.py",
             "ci/sdk_nested_wave_locator.py",
+            "ci/sdk_nested_partial_state.py",
             "ci/sdk_nested_wave_replay.py",
             "ci/sdk_partial_state.py",
             "ci/sdk_core_metadata_protected_handoff.py",
