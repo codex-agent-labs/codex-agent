@@ -45,6 +45,48 @@ class _HeldCatalog:
         self.active = True
 
 
+def verify_completed_sdk_catalog_pin(snapshot, *, producer, artifact_name,
+        artifact_id, artifact_sha256, index_sha256, public_key_sha256):
+    """Bind independently selected job outputs to one held official catalog.
+
+    This is transport/content verification, never SDK release admission.
+    """
+    if type(snapshot) is not _HeldCatalog or not snapshot.active:
+        raise ValueError("Completed SDK catalog requires an active authenticated hold")
+    current = validate_producer(producer)
+    if current["event"] != "pull_request":
+        raise ValueError("Completed SDK catalog requires a pull-request producer")
+    expected_name = (f"{product_reuse._CATALOG_PREFIX}pull-request-"
+                     f"{current['pullRequest']}-{current['tree']}-attempt-{current['runAttempt']}")
+    for label, value in (("artifact", artifact_sha256), ("index", index_sha256),
+                         ("public key", public_key_sha256)):
+        require_sha256(value, f"Completed SDK catalog {label} digest")
+    require_integer(artifact_id, "Completed SDK catalog artifact ID", 1)
+    selected = snapshot.values
+    artifact, index = selected["artifact"], selected["index"]
+    if (artifact_name != expected_name or artifact.get("name") != expected_name
+            or artifact_id != selected["artifactId"]
+            or artifact_sha256 != selected["artifactSha256"]
+            or index_sha256 != selected["indexSha256"]
+            or public_key_sha256 != selected["keySha256"]
+            or selected["repository"] != current["repository"]
+            or selected["pullRequest"] != current["pullRequest"]
+            or artifact["workflow_run"].get("id") != current["runId"]
+            or index["producer"] != current
+            or index["repository"] != current["repository"]
+            or index["trustDomain"] != "development"
+            or index["context"] != {"kind": "pull-request", **{
+                field: current[field] for field in
+                ("pullRequest", "commit", "tree", "runId", "runAttempt")}}):
+        raise ValueError("Completed SDK catalog differs from independent job identity")
+    entries = index["entries"]
+    instances = [PhaseInstanceId(*(entry[field] for field in
+        ("product", "component", "phase", "target"))) for entry in entries]
+    if len(instances) != len(SDK_CAMPAIGN_INSTANCES) or set(instances) != SDK_CAMPAIGN_INSTANCES:
+        raise ValueError("Completed SDK catalog lacks the exact 61 phases")
+    return index_sha256
+
+
 @contextmanager
 def held_reused_sdk_catalog(*, repository, pull_request, artifact_id,
         artifact_sha256, public_key, public_key_sha256, trusted_workflow_sha,

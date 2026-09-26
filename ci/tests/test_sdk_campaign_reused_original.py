@@ -14,7 +14,8 @@ from ci.sdk_campaign_original_locator import fresh_sdk_worker_route
 from ci.tests import test_sdk_worker_collection as fixture_module
 from ci.tests.test_product_resume_capture import archive
 from products.index import IndexEntrySource, build_product_index
-from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes
+from products.inventory import canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory, sha256_bytes
+from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from products.signatures import generate_development_key, sign_manifest
 
 
@@ -122,6 +123,40 @@ class ReusedSdkOriginalTest(unittest.TestCase):
                 self.assertEqual(self.original_object.read_bytes(), object_path.read_bytes())
                 self.assertEqual(self.descriptor["receiptSha256"], evidence["originalReceiptSha256"])
         self.assertEqual(before, regular_file_inventory(self.original_object.parent))
+
+    def test_completed_catalog_outputs_bind_exact_current_attempt_and_all_phases(self):
+        # The official holder is exercised above; this tests its separate pin policy.
+        producer = self.fixture.producer
+        name = (f"codex-agent-product-catalog-v1-pull-request-{producer['pullRequest']}-"
+                f"{producer['tree']}-attempt-{producer['runAttempt']}")
+        manifest = self.key.parent.parent / "product-index.json"
+        index = load_canonical_json_bytes(manifest.read_bytes())
+        template = index["entries"][0]
+        index["entries"] = [{**template, "product": instance.product,
+            "component": instance.component, "phase": instance.phase, "target": instance.target}
+            for instance in sorted(SDK_CAMPAIGN_INSTANCES)]
+        pins = {"producer": producer, "artifact_name": name, "artifact_id": 902,
+            "artifact_sha256": sha256_bytes(self.raw),
+            "index_sha256": sha256_bytes(manifest.read_bytes()),
+            "public_key_sha256": sha256_bytes(self.key.read_bytes())}
+        values = {"artifact": {**self.catalog_artifact, "name": name}, "index": index,
+            "artifactId": 902, "artifactSha256": pins["artifact_sha256"],
+            "indexSha256": pins["index_sha256"], "keySha256": pins["public_key_sha256"],
+            "repository": producer["repository"], "pullRequest": producer["pullRequest"]}
+        held = reused._HeldCatalog(values, reused._CATALOG_SEAL)
+        self.assertEqual(pins["index_sha256"], reused.verify_completed_sdk_catalog_pin(held, **pins))
+        for changed in ({"artifact_id": 903}, {"artifact_name": name + "-stale"},
+                        {"index_sha256": "sha256:" + "0" * 64},
+                        {"public_key_sha256": "sha256:" + "0" * 64},
+                        {"producer": {**producer, "tree": "0" * 40}}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                reused.verify_completed_sdk_catalog_pin(held, **{**pins, **changed})
+        index["entries"].pop()
+        with self.assertRaisesRegex(ValueError, "exact 61"):
+            reused.verify_completed_sdk_catalog_pin(held, **pins)
+        held.active = False
+        with self.assertRaisesRegex(ValueError, "active authenticated hold"):
+            reused.verify_completed_sdk_catalog_pin(held, **pins)
 
     def test_shared_catalog_cannot_bypass_each_original_worker_pin(self):
         selection = dict(expected_receipt_sha256=self.descriptor["receiptSha256"],
