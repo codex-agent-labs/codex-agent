@@ -586,6 +586,13 @@ with patch.object(_ffi.NativeLibrary, '_declare_all', return_value=None):
     if mode in {'explicit', 'environment'}:
         loaded = _ffi.NativeLibrary.load(path if mode == 'explicit' else None)
         assert loaded.library.codex_agent_abi_version() == 0x010D0000
+    elif mode == 'missing_identity':
+        try:
+            _ffi.NativeLibrary.load(path)
+        except AttributeError as error:
+            assert 'codex_agent_runtime_identity' in str(error), str(error)
+        else:
+            raise AssertionError('signed Runtime without identity was accepted')
     else:
         with patch.object(_ffi.ctypes, 'CDLL', side_effect=AssertionError('dynamic load reached')) as dynamic_load:
             try:
@@ -605,6 +612,11 @@ with patch.object(_ffi.NativeLibrary, '_declare_all', return_value=None):
 
             run("explicit")
             run("environment")
+            no_identity = compile_library(directory, "missing_identity", None, 0x010D0000)
+            self.assertEqual(authorize(no_identity, runtime_identity, "0.8.5",
+                                       root_private=directory / "root-key",
+                                       release_key_id="missing-identity"), root_public)
+            run("missing_identity", no_identity)
             incompatible_directory = directory / "incompatible"
             incompatible_directory.mkdir()
             incompatible_identity = identity(target)
