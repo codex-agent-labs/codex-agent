@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from ci.tests import test_runtime_resume_capture as fixture
 from ci.tests.test_runtime_resume_capture import archive, product_reuse
+from ci.sdk_nested_wave_locator import _COLLECTORS
 from ci.products.inventory import load_canonical_json, sha256_bytes
 
 
@@ -72,9 +73,31 @@ class SdkStateCaptureTest(unittest.TestCase):
     def test_additional_family_waves_require_their_exact_observed_collectors(self):
         for wave in range(4, 19):
             self.job["name"] = f"product-validation / sdk-collect-{wave}"
+            if wave in _COLLECTORS:
+                workflow, parent = _COLLECTORS[wave]
+                self.job["name"] = f"product-validation / {parent} / sdk-collect-{wave}"
+                self.source.run["referenced_workflows"].append({
+                    "path": f"{self.source.producer['repository']}/.github/workflows/{workflow}.yml@{self.source.pin}",
+                    "sha": self.source.pin,
+                })
             self.artifact["name"] = f"codex-agent-sdk-wave-{wave}-state-{self.source.producer['tree']}-attempt-3"
             self.destination = self.root / f"build/sdk-capture-{wave}"
             self.assertEqual(wave, self.capture(sdk_state_wave=wave)["sdkStateWave"])
+
+    def test_nested_wave_rejects_top_level_job_or_missing_child_workflow(self):
+        wave = 11
+        workflow, parent = _COLLECTORS[wave]
+        self.job["name"] = f"product-validation / {parent} / sdk-collect-{wave}"
+        self.artifact["name"] = f"codex-agent-sdk-wave-{wave}-state-{self.source.producer['tree']}-attempt-3"
+        with self.assertRaisesRegex(ValueError, "caller-pinned workflow"):
+            self.capture(sdk_state_wave=wave)
+        self.source.run["referenced_workflows"].append({
+            "path": f"{self.source.producer['repository']}/.github/workflows/{workflow}.yml@{self.source.pin}",
+            "sha": self.source.pin,
+        })
+        self.job["name"] = f"product-validation / sdk-collect-{wave}"
+        with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
+            self.capture(sdk_state_wave=wave)
 
 
 if __name__ == "__main__":

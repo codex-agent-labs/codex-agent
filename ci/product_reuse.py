@@ -5249,9 +5249,18 @@ def capture_runtime_resume_upload(
             job_name = f"product-validation / sdk-collect-{sdk_state_wave}"
             artifact_name = (f"codex-agent-sdk-wave-{sdk_state_wave}-state-{producer['tree']}-"
                              f"attempt-{producer['runAttempt']}")
+        workflow_policy = {"trusted_workflow_sha": trusted_workflow_sha}
+        if sdk_state_wave is not None and sdk_state_wave >= 11:
+            from ci.sdk_nested_wave_locator import _COLLECTORS
+            workflow_name, parent_job = _COLLECTORS[sdk_state_wave]
+            job_name = f"product-validation / {parent_job} / sdk-collect-{sdk_state_wave}"
+            workflow_policy = {"trusted_workflows_by_phase": {"resume": {
+                "path": f".github/workflows/{workflow_name}.yml",
+                "sha": trusted_workflow_sha,
+            }}}
         observed = _observe_ci_producer_jobs(
             {"resume": producer}, jobs_by_phase={"resume": job_name},
-            trusted_workflow_sha=trusted_workflow_sha, token=token)
+            token=token, **workflow_policy)
         archive = private / "transport.zip"
         artifact, _ = _download_contract_ci_upload(
             artifact_id, artifact_sha256, artifact_name,
