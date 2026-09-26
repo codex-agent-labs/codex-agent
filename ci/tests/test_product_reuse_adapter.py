@@ -159,6 +159,7 @@ class ContractProducerRunTest(unittest.TestCase):
         self.assertEqual(4, query.call_count)
         self.assertEqual(before, self.producers)
 
+
     def test_caller_pins_each_child_workflow_for_mixed_original_phases(self):
         new_pin = "d" * 40
         new_path = ".github/workflows/contract-validation.yml"
@@ -291,6 +292,52 @@ class ContractProducerRunTest(unittest.TestCase):
         with mock.patch.object(product_reuse, "api_json", side_effect=[run, self.commit]), \
                 mock.patch.object(product_reuse, "paginated_items", return_value=jobs):
             self.assertEqual([{"run": run, "testedCommit": self.commit, "jobs": jobs}], self.verify())
+
+
+class PriorFailedPrAttemptTest(unittest.TestCase):
+    def setUp(self):
+        self.plan = impact_plan(changed=["codex-agent-runtime-desktop/src/nativeMain/kotlin/Changed.kt"])
+        self.producer = {"runId": 100, "runAttempt": 1}
+        self.run = {
+            "id": 90, "run_attempt": 2, "event": "pull_request",
+            "path": ".github/workflows/ci.yml", "status": "completed", "conclusion": "failure",
+            "pull_requests": [{"number": 31}],
+            "repository": {"full_name": "codex-agent-labs/codex-agent", "fork": False},
+            "head_repository": {"full_name": "codex-agent-labs/codex-agent", "fork": False},
+        }
+
+    def test_selects_one_latest_failed_run_and_verifies_exact_attempt(self):
+        older = {**self.run, "id": 80, "run_attempt": 1}
+        with mock.patch.object(product_reuse, "paginated_items", return_value=[older, self.run]) as listing, \
+                mock.patch.object(product_reuse, "api_json", return_value=self.run) as exact:
+            self.assertEqual(self.run, product_reuse._prior_failed_pr_attempt(
+                self.plan, self.producer, "token"))
+        listing.assert_called_once()
+        exact.assert_called_once_with(
+            "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/90/attempts/2", "token")
+
+    def test_rerun_checks_only_immediately_preceding_attempt(self):
+        self.producer = {"runId": 90, "runAttempt": 3}
+        with mock.patch.object(product_reuse, "paginated_items") as listing, \
+                mock.patch.object(product_reuse, "api_json", return_value=self.run) as exact:
+            self.assertEqual(self.run, product_reuse._prior_failed_pr_attempt(
+                self.plan, self.producer, "token"))
+        listing.assert_not_called()
+        exact.assert_called_once()
+
+    def test_skips_nonfailed_or_other_pr_and_fails_closed_on_mismatched_exact_attempt(self):
+        with mock.patch.object(product_reuse, "paginated_items", return_value=[
+            {**self.run, "conclusion": "success"},
+            {**self.run, "pull_requests": [{"number": 32}]},
+        ]), mock.patch.object(product_reuse, "api_json") as exact:
+            self.assertIsNone(product_reuse._prior_failed_pr_attempt(self.plan, self.producer, "token"))
+        exact.assert_not_called()
+        with mock.patch.object(product_reuse, "paginated_items", return_value=[self.run]), \
+                mock.patch.object(product_reuse, "api_json", return_value={**self.run, "head_repository": {
+                    "full_name": "attacker/repo", "fork": True,
+                }}):
+            with self.assertRaisesRegex(ValueError, "differs from its official workflow listing"):
+                product_reuse._prior_failed_pr_attempt(self.plan, self.producer, "token")
 
 
 class ContractCiArtifactCaptureTest(unittest.TestCase):

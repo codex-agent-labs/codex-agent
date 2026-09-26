@@ -314,6 +314,59 @@ def _same_pr_run(
     return {"run": run, "testedCommit": tested_commit}
 
 
+def _prior_failed_pr_attempt(
+    plan: Mapping[str, Any], producer: Mapping[str, Any], token: str,
+    *, api: str = "https://api.github.com",
+) -> dict[str, Any] | None:
+    """Select one prior failed PR attempt; its phase uploads still need admission."""
+    if plan["event"] != "pull_request" or plan["pullRequest"] is None:
+        return None
+    repository = plan["repository"]
+    if repository != "codex-agent-labs/codex-agent":
+        raise ValueError("Prior PR recovery requires the canonical repository")
+    current_run = require_integer(producer["runId"], "Current product run ID", 1)
+    current_attempt = require_integer(producer["runAttempt"], "Current product run attempt", 1)
+    prefix = f"{api}/repos/{repository}/actions/runs"
+
+    def eligible(run: Mapping[str, Any], run_id: int, attempt: int) -> bool:
+        return (
+            require_integer(run.get("id"), "Prior product run ID", 1) == run_id
+            and require_integer(run.get("run_attempt"), "Prior product run attempt", 1) == attempt
+            and run.get("event") == "pull_request"
+            and run.get("path") == ".github/workflows/ci.yml"
+            and run.get("status") == "completed"
+            and run.get("conclusion") == "failure"
+            and run_matches_pr(run, plan["pullRequest"])
+            and all(isinstance(run.get(field), dict)
+                    and run[field].get("full_name") == repository
+                    and run[field].get("fork") is False
+                    for field in ("repository", "head_repository"))
+        )
+
+    if current_attempt > 1:
+        previous = api_json(f"{prefix}/{current_run}/attempts/{current_attempt - 1}", token)
+        if previous.get("conclusion") != "failure":
+            return None
+        if not eligible(previous, current_run, current_attempt - 1):
+            raise ValueError("Prior failed PR attempt differs from the current run")
+        return previous
+
+    runs = paginated_items(
+        f"{api}/repos/{repository}/actions/workflows/ci.yml/runs?event=pull_request&status=completed",
+        "workflow_runs", token)
+    candidates = [run for run in runs if isinstance(run, dict)
+                  and type(run.get("id")) is int and 0 < run["id"] < current_run
+                  and run.get("conclusion") == "failure" and run_matches_pr(run, plan["pullRequest"])]
+    if not candidates:
+        return None
+    selected = max(candidates, key=lambda run: run["id"])
+    attempt = require_integer(selected.get("run_attempt"), "Prior product run attempt", 1)
+    original = api_json(f"{prefix}/{selected['id']}/attempts/{attempt}", token)
+    if not eligible(original, selected["id"], attempt):
+        raise ValueError("Prior failed PR attempt differs from its official workflow listing")
+    return original
+
+
 def verify_contract_producer_runs(
     producers: Mapping[str, Any], *, token: str, trusted_workflow_sha: str | None = None,
     trusted_workflows_by_phase: Mapping[str, Any] | None = None,
