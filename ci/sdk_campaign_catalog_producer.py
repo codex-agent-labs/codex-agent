@@ -27,8 +27,8 @@ class FreshSdkOriginalPin:
     receipt_sha256: str
     artifact_id: int
     artifact_sha256: str
-    workflow_path: str | None = None
-    job_name: str | None = None
+    workflow_path: str
+    job_name: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,10 +41,10 @@ class ReusedSdkOriginalPin:
     catalog_public_key: Path
     catalog_public_key_sha256: str
     pull_request: int
-    worker_workflow_path: str | None = None
-    worker_job_name: str | None = None
-    catalog_workflow_path: str | None = None
-    catalog_job_name: str | None = None
+    worker_workflow_path: str
+    worker_job_name: str
+    catalog_workflow_path: str
+    catalog_job_name: str
 
 
 @contextmanager
@@ -74,8 +74,8 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
             require_sha256(pin.receipt_sha256, "Fresh SDK receipt pin")
             require_sha256(pin.artifact_sha256, "Fresh SDK artifact pin")
             require_integer(pin.artifact_id, "Fresh SDK artifact ID", 1)
-            if (pin.workflow_path is None) != (pin.job_name is None):
-                raise ValueError("Fresh SDK workflow path and job must be pinned together")
+            if any(type(value) is not str or not value for value in (pin.workflow_path, pin.job_name)):
+                raise ValueError("Fresh SDK workflow path and job must both be pinned")
         elif replay.get("state") == "reused" and replay.get("source") == "same-pr":
             if type(pin) is not ReusedSdkOriginalPin:
                 raise ValueError("Reused SDK original requires a same-PR catalog pin")
@@ -90,9 +90,10 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
                 require_integer(value, label, 1)
             if not isinstance(pin.catalog_public_key, Path):
                 raise ValueError("Reused SDK catalog key requires an independent path")
-            if ((pin.worker_workflow_path is None) != (pin.worker_job_name is None)
-                    or (pin.catalog_workflow_path is None) != (pin.catalog_job_name is None)):
-                raise ValueError("Reused SDK workflow paths and jobs must be pinned together")
+            if any(type(value) is not str or not value for value in (
+                    pin.worker_workflow_path, pin.worker_job_name,
+                    pin.catalog_workflow_path, pin.catalog_job_name)):
+                raise ValueError("Reused SDK worker and catalog workflow paths and jobs must be pinned")
         else:
             raise ValueError("SDK original upload has no authenticated retained/same-PR route")
 

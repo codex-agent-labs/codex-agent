@@ -24,7 +24,9 @@ class SdkCampaignCatalogProducerTest(TestCase):
             for instance in self.instances
         }
         self.pins = {
-            instance: catalog.FreshSdkOriginalPin(_DIGEST, position + 1, _DIGEST)
+            instance: catalog.FreshSdkOriginalPin(
+                _DIGEST, position + 1, _DIGEST,
+                ".github/workflows/sdk-validation.yml", "product-validation / sdk-worker")
             for position, instance in enumerate(self.instances)
         }
 
@@ -82,7 +84,9 @@ class SdkCampaignCatalogProducerTest(TestCase):
             "state": "reused", "source": "same-pr",
         }), Path("unused-object"), Path("unused-stage"))
         self.pins[instance] = catalog.ReusedSdkOriginalPin(
-            _DIGEST, 101, _DIGEST, 201, _DIGEST, Path("independent.pub"), _DIGEST, 31)
+            _DIGEST, 101, _DIGEST, 201, _DIGEST, Path("independent.pub"), _DIGEST, 31,
+            ".github/workflows/sdk-validation.yml", "product-validation / sdk-worker",
+            ".github/workflows/product-validation.yml", "product-validation / sdk-catalog")
 
         @contextmanager
         def holder(*_args, **_kwargs):
@@ -116,12 +120,25 @@ class SdkCampaignCatalogProducerTest(TestCase):
             self.assertEqual("product-validation / sdk-validation / sdk-worker",
                              selected.kwargs["trusted_job_name"])
         self.pins[instance] = catalog.FreshSdkOriginalPin(
-            _DIGEST, 1, _DIGEST, ".github/workflows/sdk-validation.yml")
+            _DIGEST, 1, _DIGEST, ".github/workflows/sdk-validation.yml", "")
         with patch.object(catalog, "held_fresh_sdk_worker_upload") as fresh, \
-             self.assertRaisesRegex(ValueError, "pinned together"):
+             self.assertRaisesRegex(ValueError, "must both be pinned"):
             with self.held():
                 pass
         fresh.assert_not_called()
+
+        self.pins[instance] = catalog.ReusedSdkOriginalPin(
+            _DIGEST, 101, _DIGEST, 201, _DIGEST, Path("independent.pub"), _DIGEST, 31,
+            ".github/workflows/sdk-validation.yml", "product-validation / sdk-worker",
+            ".github/workflows/product-validation.yml", "")
+        self.observations[instance] = ObservedSdkOriginal(b"receipt", canonical_json_bytes({
+            "state": "reused", "source": "same-pr",
+        }), Path("unused-object"), Path("unused-stage"))
+        with patch.object(catalog, "held_reused_sdk_original") as reused, \
+             self.assertRaisesRegex(ValueError, "must be pinned"):
+            with self.held():
+                pass
+        reused.assert_not_called()
 
     def test_semantic_replay_holds_all_uploads_and_preserves_original_receipts(self):
         active = set()
