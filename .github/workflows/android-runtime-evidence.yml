@@ -15,6 +15,13 @@ on:
       planArtifact:
         required: true
         type: string
+    outputs:
+      trusted_source_commit:
+        description: Exact protected main commit used for Firebase execution.
+        value: ${{ jobs.firebase-arm64-runtime.outputs.trusted_source_commit }}
+      trusted_source_tree:
+        description: Exact protected main tree used for Firebase execution.
+        value: ${{ jobs.firebase-arm64-runtime.outputs.trusted_source_tree }}
 
 permissions:
   actions: read
