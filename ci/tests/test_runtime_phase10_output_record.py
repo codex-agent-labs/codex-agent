@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from ci import runtime_phase10_output_record as gate
+from ci import runtime_phase10_record_signer as signer
 from ci.products.inventory import (
     canonical_json_bytes, public_key_fingerprint, regular_file_inventory,
     sha256_bytes, write_canonical_json,
@@ -53,9 +54,21 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
         self.tree = subprocess.check_output(
             ["git", "rev-parse", "HEAD^{tree}"], cwd=self.repository, text=True,
         ).strip()
-        # The reviewed signer-code revision need not be the candidate's
-        # producer revision; the official capture binds the latter to its plan.
-        self.candidate_commit, self.candidate_tree = "f" * 40, "d" * 40
+        # The signer source and landed validation checkout are independent.
+        self.validation = self.root / "validation"
+        self.validation.mkdir()
+        (self.validation / "candidate.txt").write_text("candidate\n")
+        subprocess.run(["git", "init", "-q"], cwd=self.validation, check=True)
+        subprocess.run(["git", "add", "."], cwd=self.validation, check=True)
+        subprocess.run(["git", "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "commit", "-qm", "candidate"],
+                       cwd=self.validation, check=True)
+        self.candidate_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.validation, text=True,
+        ).strip()
+        self.candidate_tree = subprocess.check_output(
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=self.validation, text=True,
+        ).strip()
         self.output = self.root / "phase10-runtime"
         self.output.mkdir()
         (self.output / "caller.json").write_bytes(b"selected\n")
@@ -112,6 +125,7 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
 
     def verify(self, *, deep=True, **overrides):
         args = dict(
+            validation_repository=self.validation,
             trusted_source_commit=self.commit, trusted_workflow_sha="e" * 40,
             expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
             token="local-test-token", environ={},
@@ -119,6 +133,7 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
         args.update(overrides)
 
         def captured(_, __, destination, **kwargs):
+            self.assertEqual(self.validation, Path(__))
             self.assertEqual(self.pins["expected_build_key"], kwargs["expected_build_key"])
             (destination / "original").mkdir(parents=True)
             shutil.copy2(self.output / "caller.json", destination / "original/caller.json")
@@ -185,7 +200,7 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
         self.record["officialUpload"] = deepcopy(self.upload)
         self.record["phase11Pins"]["expected_validation_tree"] = "0" * 40
         self.sign()
-        with self.assertRaisesRegex(ValueError, "official upload"):
+        with self.assertRaisesRegex(ValueError, "validation checkout"):
             self.verify()
 
     def test_real_deep_verifier_rejects_signed_but_incomplete_runtime(self):
@@ -203,6 +218,7 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
             gate.verify_signed_runtime_phase10_output_record(
                 self.record_path, self.signature, self.repository, self.output,
                 self.sidecars, self.pgp, self.plan,
+                validation_repository=self.validation,
                 trusted_source_commit=self.commit, trusted_workflow_sha="e" * 40,
                 expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
                 token="local-test-token", environ={},
@@ -222,6 +238,159 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
             return original(record, signature, public, signing)
         with patch.object(gate, "verify_manifest_signature", side_effect=checked):
             self.verify()
+
+    def test_prepare_binds_official_upload_without_signing_or_mutating_runtime(self):
+        destination = self.root / "prepared"
+        output_before = regular_file_inventory(self.output, allow_empty=True)
+        sidecars_before = regular_file_inventory(self.sidecars)
+
+        def captured(_, __, capture, **kwargs):
+            self.assertEqual(self.validation, Path(__))
+            self.assertEqual(self.pins["expected_build_key"], kwargs["expected_build_key"])
+            (capture / "original").mkdir(parents=True)
+            shutil.copy2(self.output / "caller.json", capture / "original/caller.json")
+            return deepcopy(self.upload)
+
+        with patch.object(gate, "capture_observed_runtime_phase10_upload",
+                          side_effect=captured), \
+             patch.object(gate, "forward_verified_runtime_phase10_bytes") as deep:
+            result = gate.prepare_runtime_phase10_output_record(
+                self.plan, self.repository, self.output, self.sidecars, self.pgp,
+                destination, phase11_pins=self.pins,
+                validation_repository=self.validation,
+                trusted_source_commit=self.commit, trusted_workflow_sha="e" * 40,
+                expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
+                token="local-test-token", environ={},
+            )
+        self.assertEqual(self.record, result["record"])
+        self.assertEqual(canonical_json_bytes(self.record),
+                         (destination / "record.json").read_bytes())
+        self.assertEqual(result["recordSha256"], sha256_bytes((destination / "record.json").read_bytes()))
+        self.assertEqual(output_before, regular_file_inventory(self.output, allow_empty=True))
+        self.assertEqual(sidecars_before, regular_file_inventory(self.sidecars))
+        self.assertEqual(1, deep.call_count)
+        self.assertNotEqual(self.output, deep.call_args.args[0])
+        self.assertNotEqual(self.sidecars, deep.call_args.args[1])
+        self.assertEqual(self.validation, deep.call_args.kwargs["landed_repository"])
+        self.assertFalse((destination / "record.sig").exists())
+
+    def test_prepare_rejects_unpinned_or_changed_input_before_publication(self):
+        kwargs = dict(phase11_pins=self.pins, trusted_source_commit=self.commit,
+                      validation_repository=self.validation,
+                      trusted_workflow_sha="e" * 40,
+                      expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
+                      token="local-test-token", environ={})
+        destination = self.root / "prepared"
+        with self.assertRaisesRegex(ValueError, "independent pins"):
+            gate.prepare_runtime_phase10_output_record(
+                self.plan, self.repository, self.output, self.sidecars, self.pgp,
+                destination, **{**kwargs, "trusted_workflow_sha": "0" * 40},
+            )
+        (self.sidecars / "signature.asc").write_bytes(b"changed\n")
+        with self.assertRaisesRegex(ValueError, "inventory"):
+            gate.prepare_runtime_phase10_output_record(
+                self.plan, self.repository, self.output, self.sidecars, self.pgp,
+                destination, **kwargs,
+            )
+        self.assertFalse(destination.exists())
+
+    def test_prepare_rejects_signing_secret_before_capture(self):
+        with patch.dict(os.environ, {"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": "forbidden"}), \
+             patch.object(gate, "capture_observed_runtime_phase10_upload") as capture, \
+             self.assertRaisesRegex(ValueError, "signing-secret"):
+            gate.prepare_runtime_phase10_output_record(
+                self.plan, self.repository, self.output, self.sidecars, self.pgp,
+                self.root / "prepared", phase11_pins=self.pins,
+                validation_repository=self.validation,
+                trusted_source_commit=self.commit, trusted_workflow_sha="e" * 40,
+                expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
+                token="local-test-token", environ={},
+            )
+        capture.assert_not_called()
+
+    def test_isolated_signer_requires_source_policy_and_pinned_record(self):
+        self.signature.unlink()
+        digest = sha256_bytes(self.record_path.read_bytes())
+        secret = {"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": self.private.read_text()}
+        with self.assertRaisesRegex(ValueError, "independent preparation"):
+            signer.sign_prepared_runtime_phase10_record(
+                self.record_path, self.repository, trusted_source_commit=self.commit,
+                expected_record_sha256="sha256:" + "0" * 64, environ=secret,
+            )
+        self.assertFalse(self.signature.exists())
+        result = signer.sign_prepared_runtime_phase10_record(
+            self.record_path, self.repository, trusted_source_commit=self.commit,
+            expected_record_sha256=digest, environ=secret,
+        )
+        self.assertEqual(digest, result["recordSha256"])
+        self.assertEqual(result["signatureSha256"], sha256_bytes(self.signature.read_bytes()))
+        self.assertEqual(self.record, self.verify())
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            signer.sign_prepared_runtime_phase10_record(
+                self.record_path, self.repository, trusted_source_commit=self.commit,
+                expected_record_sha256=digest, environ=secret,
+            )
+
+    def test_publisher_forwards_exact_verified_pair(self):
+        original_record = self.record_path.read_bytes()
+        original_signature = self.signature.read_bytes()
+        destination = self.root / "published-record"
+
+        def captured(_, candidate, capture, **kwargs):
+            self.assertEqual(self.validation, Path(candidate))
+            (capture / "original").mkdir(parents=True)
+            shutil.copy2(self.output / "caller.json", capture / "original/caller.json")
+            return deepcopy(self.upload)
+
+        with patch.object(gate, "capture_observed_runtime_phase10_upload", side_effect=captured), \
+             patch.object(gate, "forward_verified_runtime_phase10_bytes") as deep:
+            result = gate.publish_verified_runtime_phase10_output_record(
+                self.record_path, self.signature, self.repository, self.validation,
+                self.output, self.sidecars, self.pgp, self.plan, destination,
+                expected_record_sha256=sha256_bytes(original_record),
+                expected_signature_sha256=sha256_bytes(original_signature),
+                trusted_source_commit=self.commit, trusted_workflow_sha="e" * 40,
+                expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
+                token="local-test-token", environ={},
+            )
+        self.assertEqual(original_record, (destination / "record.json").read_bytes())
+        self.assertEqual(original_signature, (destination / "record.sig").read_bytes())
+        self.assertEqual(regular_file_inventory(destination), result["publishedFiles"])
+        self.assertEqual(1, deep.call_count)
+
+    def test_publisher_rejects_wrong_independent_pair_digest(self):
+        with patch.object(gate, "capture_observed_runtime_phase10_upload") as capture, \
+             self.assertRaisesRegex(ValueError, "independent Phase-10 pins"):
+            gate.publish_verified_runtime_phase10_output_record(
+                self.record_path, self.signature, self.repository, self.validation,
+                self.output, self.sidecars, self.pgp, self.plan,
+                self.root / "published-record",
+                expected_record_sha256="sha256:" + "0" * 64,
+                expected_signature_sha256=sha256_bytes(self.signature.read_bytes()),
+                trusted_source_commit=self.commit, trusted_workflow_sha="e" * 40,
+                expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
+                token="local-test-token", environ={},
+            )
+        capture.assert_not_called()
+
+    def test_prepare_cli_rejects_unpinned_phase11_file_before_capture(self):
+        pins_path = self.root / "phase11-pins.json"
+        pins_path.write_bytes(canonical_json_bytes(self.pins))
+        argv = [
+            "prepare", "--plan", str(self.plan), "--repository-root", str(self.repository),
+            "--validation-repository", str(self.validation),
+            "--protected-output", str(self.output), "--maven-sidecars", str(self.sidecars),
+            "--pgp-public-key", str(self.pgp), "--destination", str(self.root / "prepared"),
+            "--phase11-pins", str(pins_path), "--expected-phase11-pins-sha256",
+            "sha256:" + "0" * 64, "--trusted-source-commit", self.commit,
+            "--trusted-workflow-sha", "e" * 40, "--expected-pgp-key-sha256",
+            self.pins["expected_pgp_key_sha256"],
+        ]
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "local-test-token"}), \
+             patch.object(gate, "prepare_runtime_phase10_output_record") as prepare, \
+             self.assertRaisesRegex(ValueError, "independent digest"):
+            gate.main(argv)
+        prepare.assert_not_called()
 
 
 if __name__ == "__main__":

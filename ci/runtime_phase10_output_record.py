@@ -6,22 +6,25 @@ until the protected workflow retains its exact signed bytes.
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
+import json
 import os
 import re
 import sys
 import tempfile
+from collections.abc import Mapping
 
 if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ci import product_reuse
 from ci.runtime_phase10_upload_locator import capture_observed_runtime_phase10_upload
-from ci.runtime_phase11_bytes import forward_verified_runtime_phase10_bytes
+from ci.runtime_phase11_bytes import _landed_tree, forward_verified_runtime_phase10_bytes
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
     regular_file_inventory, require_exact_keys, require_integer, require_sha256,
-    sha256_bytes, snapshot_regular_tree,
+    publish_regular_tree, sha256_bytes, snapshot_regular_tree, write_canonical_json,
 )
 from ci.products.signatures import (
     load_keyring, require_active_release_key, verify_manifest_signature,
@@ -39,10 +42,126 @@ _PINS = {
 }
 
 
+def prepare_runtime_phase10_output_record(
+    plan_path: Path, repository_root: Path, protected_output: Path,
+    maven_sidecars: Path, pgp_public_key: Path, destination: Path, *,
+    phase11_pins: Mapping, validation_repository: Path, trusted_source_commit: str,
+    trusted_workflow_sha: str, expected_pgp_key_sha256: str,
+    token: str, environ=None,
+) -> dict:
+    """Prepare unsigned external evidence; the protected signer runs separately."""
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    require_no_signing_secret(os.environ)
+    repository_root = Path(repository_root)
+    pins = require_exact_keys(dict(phase11_pins), _PINS, "Runtime Phase-10 output pins")
+    if type(trusted_source_commit) is not str or re.fullmatch(
+        r"[0-9a-f]{40}|[0-9a-f]{64}", trusted_source_commit,
+    ) is None:
+        raise ValueError("Runtime Phase-10 trusted source must be a full Git object ID")
+    if pins["expected_source_commit"] != trusted_source_commit or \
+            pins["expected_source_tree"] != product_reuse._git_value(
+                repository_root, "rev-parse", f"{trusted_source_commit}^{{tree}}",
+            ) or pins["expected_workflow_sha"] != trusted_workflow_sha or \
+            pins["expected_pgp_key_sha256"] != require_sha256(
+                expected_pgp_key_sha256, "independent Runtime PGP key digest",
+            ):
+        raise ValueError("Runtime Phase-10 preparation differs from independent pins")
+    if _landed_tree(Path(validation_repository)) != pins["expected_validation_tree"]:
+        raise ValueError("Runtime Phase-10 validation checkout differs from independent tree")
+    destination = Path(destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Runtime Phase-10 prepared record destination already exists")
+    for source in (protected_output, maven_sidecars, pgp_public_key):
+        source_root = Path(source).resolve(strict=True)
+        target_root = destination.resolve(strict=False)
+        if target_root == source_root or target_root in source_root.parents or \
+                source_root in target_root.parents:
+            raise ValueError("Runtime Phase-10 prepared record overlaps finalized input")
+    protected_files = regular_file_inventory(protected_output, allow_empty=True)
+    sidecar_files = regular_file_inventory(maven_sidecars)
+    if pins["expected_protected_inventory_sha256"] != sha256_bytes(
+        canonical_json_bytes(protected_files),
+    ) or pins["expected_sidecar_inventory_sha256"] != sha256_bytes(
+        canonical_json_bytes(sidecar_files),
+    ):
+        raise ValueError("Runtime Phase-10 prepared inventory differs from independent pins")
+    with tempfile.TemporaryDirectory(prefix="rt-phase10-prepare-") as temporary:
+        root = Path(temporary).resolve()
+        trust = product_reuse._release_trust(repository_root, trusted_source_commit,
+                                             root / "source-policy")
+        if trust is None:
+            raise ValueError("No active source-pinned Runtime release keyring")
+        policy = load_keyring(trust.keyring, trust.keys)
+        active, _ = require_active_release_key(policy, trust.keys)
+        signing = {name: policy[name] for name in ("algorithm", "namespace", "trustDomain")}
+        signing.update(active)
+        keyring_bytes = read_regular_file_bytes(
+            trust.keyring, max_bytes=64 * 1024, reject_symlink_parents=True,
+        )
+        if pins["expected_keyring_sha256"] != sha256_bytes(keyring_bytes) or \
+                pins["expected_keys_inventory_sha256"] != sha256_bytes(
+                    canonical_json_bytes(regular_file_inventory(trust.keys)),
+                ):
+            raise ValueError("Runtime Phase-10 preparation differs from trusted Git keys")
+        pgp_bytes = read_regular_file_bytes(
+            Path(pgp_public_key), max_bytes=1024 * 1024, reject_symlink_parents=True,
+        )
+        if sha256_bytes(pgp_bytes) != pins["expected_pgp_key_sha256"]:
+            raise ValueError("Runtime Phase-10 PGP key differs from independent pin")
+        captured_sidecars = root / "maven-sidecars"
+        snapshot_regular_tree(maven_sidecars, captured_sidecars)
+        if regular_file_inventory(captured_sidecars) != sidecar_files:
+            raise ValueError("Runtime Phase-10 sidecars changed during capture")
+        capture = root / "official-upload"
+        observation = capture_observed_runtime_phase10_upload(
+            plan_path, validation_repository, capture,
+            trusted_workflow_sha=trusted_workflow_sha,
+            expected_build_key=pins["expected_build_key"],
+            expected_metadata_receipt_sha256=pins["expected_metadata_receipt_sha256"],
+            token=token, environ=environment,
+        )
+        if pins["expected_validation_tree"] != observation["captureProducer"]["tree"] or \
+                regular_file_inventory(capture / "original", allow_empty=True) != protected_files:
+            raise ValueError("Runtime Phase-10 preparation differs from official upload")
+        pinned_pgp = root / "pgp-public-key.asc"
+        pinned_pgp.write_bytes(pgp_bytes)
+        require_no_signing_secret(environment)
+        require_no_signing_secret(os.environ)
+        forward_verified_runtime_phase10_bytes(
+            capture / "original", captured_sidecars, root / "verified",
+            landed_repository=validation_repository, keyring=trust.keyring,
+            keys_directory=trust.keys, pgp_public_key=pinned_pgp, **pins,
+        )
+        record = {
+            "schemaVersion": 1, "product": "runtime", "signing": signing,
+            "trustedSourceCommit": trusted_source_commit,
+            "officialUpload": observation, "phase11Pins": pins,
+            "protectedFiles": protected_files, "sidecarFiles": sidecar_files,
+        }
+        prepared = root / "record"
+        prepared.mkdir()
+        write_canonical_json(prepared / "record.json", record)
+        expected_files = regular_file_inventory(prepared)
+        if regular_file_inventory(protected_output, allow_empty=True) != protected_files or \
+                regular_file_inventory(maven_sidecars) != sidecar_files or \
+                read_regular_file_bytes(Path(pgp_public_key), max_bytes=1024 * 1024,
+                                        reject_symlink_parents=True) != pgp_bytes or \
+                canonical_json_bytes(dict(phase11_pins)) != canonical_json_bytes(pins):
+            raise ValueError("Runtime Phase-10 preparation inputs changed")
+        if _landed_tree(Path(validation_repository)) != pins["expected_validation_tree"]:
+            raise ValueError("Runtime Phase-10 validation checkout changed during preparation")
+        require_no_signing_secret(environment)
+        require_no_signing_secret(os.environ)
+        publish_regular_tree(prepared, destination, expected_inventory=expected_files)
+    return {"recordSha256": sha256_bytes(canonical_json_bytes(record)), "record": record}
+
+
 def verify_signed_runtime_phase10_output_record(
     record_path: Path, signature_path: Path, repository_root: Path,
     protected_output: Path, maven_sidecars: Path, pgp_public_key: Path,
-    plan_path: Path, *, trusted_source_commit: str, trusted_workflow_sha: str,
+    plan_path: Path, *, validation_repository: Path, trusted_source_commit: str,
+    trusted_workflow_sha: str,
     expected_pgp_key_sha256: str, token: str, environ=None,
 ) -> dict:
     """Authenticate an exact Phase-10 Runtime set, without signing or admission."""
@@ -80,6 +199,8 @@ def verify_signed_runtime_phase10_output_record(
         repository_root, "rev-parse", f"{trusted_source_commit}^{{tree}}",
     ):
         raise ValueError("Runtime Phase-10 source tree differs from trusted Git")
+    if _landed_tree(Path(validation_repository)) != pins["expected_validation_tree"]:
+        raise ValueError("Runtime Phase-10 validation checkout differs from independent tree")
     if type(record["protectedFiles"]) is not list or not record["protectedFiles"] or \
             type(record["sidecarFiles"]) is not list or not record["sidecarFiles"]:
         raise ValueError("Runtime Phase-10 output inventories are empty")
@@ -131,7 +252,7 @@ def verify_signed_runtime_phase10_output_record(
         # provenance; the signed record binds that observation to these bytes.
         capture = root / "official-upload"
         observation = capture_observed_runtime_phase10_upload(
-            plan_path, repository_root, capture,
+            plan_path, validation_repository, capture,
             trusted_workflow_sha=trusted_workflow_sha,
             expected_build_key=pins["expected_build_key"],
             expected_metadata_receipt_sha256=pins["expected_metadata_receipt_sha256"],
@@ -148,7 +269,7 @@ def verify_signed_runtime_phase10_output_record(
         require_no_signing_secret(os.environ)
         forward_verified_runtime_phase10_bytes(
             capture / "original", pinned_sidecars, root / "verified",
-            landed_repository=repository_root, keyring=trust.keyring,
+            landed_repository=validation_repository, keyring=trust.keyring,
             keys_directory=trust.keys, pgp_public_key=pinned_pgp, **pins,
         )
         if regular_file_inventory(protected_output, allow_empty=True) != record["protectedFiles"] or \
@@ -160,6 +281,138 @@ def verify_signed_runtime_phase10_output_record(
                 read_regular_file_bytes(Path(signature_path), max_bytes=64 * 1024,
                                         reject_symlink_parents=True) != signature_bytes:
             raise ValueError("Runtime Phase-10 output or signed record changed during verification")
+        if _landed_tree(Path(validation_repository)) != pins["expected_validation_tree"]:
+            raise ValueError("Runtime Phase-10 validation checkout changed during verification")
         require_no_signing_secret(os.environ if environ is None else environ)
         require_no_signing_secret(os.environ)
     return record
+
+
+def publish_verified_runtime_phase10_output_record(
+    record_path: Path, signature_path: Path, repository_root: Path,
+    validation_repository: Path, protected_output: Path, maven_sidecars: Path,
+    pgp_public_key: Path, plan_path: Path, destination: Path, *,
+    expected_record_sha256: str, expected_signature_sha256: str,
+    trusted_source_commit: str, trusted_workflow_sha: str,
+    expected_pgp_key_sha256: str, token: str, environ=None,
+) -> dict:
+    """Verify against official/deep inputs and publish the exact signed pair."""
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    require_no_signing_secret(os.environ)
+    expected_record_sha256 = require_sha256(expected_record_sha256, "Runtime record pin")
+    expected_signature_sha256 = require_sha256(expected_signature_sha256, "Runtime signature pin")
+    destination = Path(destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Runtime signed-record destination already exists")
+    target = destination.resolve(strict=False)
+    for source in (record_path, signature_path, protected_output, maven_sidecars,
+                   pgp_public_key):
+        root = Path(source).resolve(strict=True)
+        if target == root or target in root.parents or root in target.parents:
+            raise ValueError("Runtime signed-record destination overlaps an input")
+    record_bytes = read_regular_file_bytes(
+        Path(record_path), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
+    )
+    signature_bytes = read_regular_file_bytes(
+        Path(signature_path), max_bytes=64 * 1024, reject_symlink_parents=True,
+    )
+    if sha256_bytes(record_bytes) != expected_record_sha256 or \
+            sha256_bytes(signature_bytes) != expected_signature_sha256:
+        raise ValueError("Runtime signed record differs from independent Phase-10 pins")
+    with tempfile.TemporaryDirectory(prefix="rt-phase10-publish-") as temporary:
+        prepared = Path(temporary).resolve() / "signed-record"
+        prepared.mkdir()
+        (prepared / "record.json").write_bytes(record_bytes)
+        (prepared / "record.sig").write_bytes(signature_bytes)
+        inventory = regular_file_inventory(prepared)
+        record = verify_signed_runtime_phase10_output_record(
+            prepared / "record.json", prepared / "record.sig", repository_root,
+            protected_output, maven_sidecars, pgp_public_key, plan_path,
+            validation_repository=validation_repository,
+            trusted_source_commit=trusted_source_commit,
+            trusted_workflow_sha=trusted_workflow_sha,
+            expected_pgp_key_sha256=expected_pgp_key_sha256,
+            token=token, environ=environment,
+        )
+        if (read_regular_file_bytes(Path(record_path), max_bytes=16 * 1024 * 1024,
+                                    reject_symlink_parents=True) != record_bytes
+                or read_regular_file_bytes(Path(signature_path), max_bytes=64 * 1024,
+                                           reject_symlink_parents=True) != signature_bytes
+                or regular_file_inventory(protected_output, allow_empty=True) !=
+                record["protectedFiles"]
+                or regular_file_inventory(maven_sidecars) != record["sidecarFiles"]
+                or regular_file_inventory(prepared) != inventory):
+            raise ValueError("Runtime signed-record input changed before publication")
+        require_no_signing_secret(environment)
+        require_no_signing_secret(os.environ)
+        publish_regular_tree(prepared, destination, expected_inventory=inventory)
+    if (regular_file_inventory(destination) != inventory
+            or regular_file_inventory(protected_output, allow_empty=True) !=
+            record["protectedFiles"]
+            or regular_file_inventory(maven_sidecars) != record["sidecarFiles"]
+            or read_regular_file_bytes(Path(record_path), max_bytes=16 * 1024 * 1024,
+                                       reject_symlink_parents=True) != record_bytes
+            or read_regular_file_bytes(Path(signature_path), max_bytes=64 * 1024,
+                                       reject_symlink_parents=True) != signature_bytes):
+        raise ValueError("Published Runtime signed record differs from verified bytes")
+    return {"recordSha256": expected_record_sha256,
+            "signatureSha256": expected_signature_sha256,
+            "publishedFiles": inventory}
+
+
+def main(argv=None) -> int:
+    require_no_signing_secret(os.environ)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    commands = parser.add_subparsers(dest="command", required=True)
+    for command in ("prepare", "verify-publish"):
+        selected = commands.add_parser(command, allow_abbrev=False)
+        for name in ("plan", "repository-root", "validation-repository", "protected-output",
+                     "maven-sidecars", "pgp-public-key", "destination"):
+            selected.add_argument(f"--{name}", type=Path, required=True)
+        for name in ("trusted-source-commit", "trusted-workflow-sha",
+                     "expected-pgp-key-sha256"):
+            selected.add_argument(f"--{name}", required=True)
+        if command == "prepare":
+            selected.add_argument("--phase11-pins", type=Path, required=True)
+            selected.add_argument("--expected-phase11-pins-sha256", required=True)
+        else:
+            selected.add_argument("--record", type=Path, required=True)
+            selected.add_argument("--signature", type=Path, required=True)
+            selected.add_argument("--expected-record-sha256", required=True)
+            selected.add_argument("--expected-signature-sha256", required=True)
+    args = parser.parse_args(argv)
+    common = dict(
+        trusted_source_commit=args.trusted_source_commit,
+        trusted_workflow_sha=args.trusted_workflow_sha,
+        expected_pgp_key_sha256=args.expected_pgp_key_sha256,
+        token=os.environ["GITHUB_TOKEN"], environ=os.environ,
+    )
+    if args.command == "prepare":
+        pins_bytes = read_regular_file_bytes(
+            args.phase11_pins, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
+        )
+        if sha256_bytes(pins_bytes) != require_sha256(
+            args.expected_phase11_pins_sha256, "independent Runtime Phase-11 pins digest",
+        ):
+            raise ValueError("Runtime Phase-11 pins file differs from independent digest")
+        result = prepare_runtime_phase10_output_record(
+            args.plan, args.repository_root, args.protected_output,
+            args.maven_sidecars, args.pgp_public_key, args.destination,
+            phase11_pins=load_canonical_json_bytes(pins_bytes),
+            validation_repository=args.validation_repository, **common,
+        )
+    else:
+        result = publish_verified_runtime_phase10_output_record(
+            args.record, args.signature, args.repository_root,
+            args.validation_repository, args.protected_output, args.maven_sidecars,
+            args.pgp_public_key, args.plan, args.destination,
+            expected_record_sha256=args.expected_record_sha256,
+            expected_signature_sha256=args.expected_signature_sha256, **common,
+        )
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
