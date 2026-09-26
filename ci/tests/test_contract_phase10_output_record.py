@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from ci import contract_phase10_output_record as gate
+from ci import contract_phase10_record_signer as signer
 from ci.products.inventory import (
     canonical_json_bytes, public_key_fingerprint, regular_file_inventory,
     sha256_bytes, write_canonical_json,
@@ -126,7 +127,7 @@ class ContractPhase10OutputRecordTest(unittest.TestCase):
     def test_signed_record_binds_official_upload_and_exact_bytes(self):
         self.assertEqual(self.record, self.verify())
         (self.output / "extra").write_bytes(b"extra")
-        with self.assertRaisesRegex(ValueError, "uploaded bytes"):
+        with self.assertRaisesRegex(ValueError, "changed during record capture"):
             self.verify()
 
     def test_independent_source_workflow_and_pgp_pins(self):
@@ -170,12 +171,174 @@ class ContractPhase10OutputRecordTest(unittest.TestCase):
                     artifact_id=27, artifact_sha256=self.upload["artifactSha256"],
                     token="local-test-token", environ={},
                 )
-
     def test_unsigned_or_extra_record_field_fails_closed(self):
         self.record["unexpected"] = True
         self.sign()
         with self.assertRaisesRegex(ValueError, "fields are invalid"):
             self.verify()
+
+    def test_three_stage_preparation_signing_and_publication(self):
+        prepared = self.root / "prepared"
+        with (patch.object(gate, "observe_contract_phase10_upload", return_value=self.upload),
+              patch.object(gate, "forward_verified_contract_phase10_bytes")):
+            selected = gate.prepare_contract_phase10_output_record(
+                self.plan, self.repository, self.output, prepared,
+                phase11_pins=self.pins, trusted_source_commit=self.commit,
+                trusted_workflow_sha="b" * 40,
+                trusted_workflow_path=self.upload["trustedWorkflowPath"],
+                trusted_job_name=self.upload["trustedJobName"],
+                expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
+                artifact_id=27, artifact_sha256=self.upload["artifactSha256"],
+                token="local-test-token", environ={},
+            )
+        self.assertEqual(self.record, selected["record"])
+        self.assertEqual(sha256_bytes((prepared / "record.json").read_bytes()),
+                         selected["recordSha256"])
+        with self.assertRaisesRegex(ValueError, "independent preparation"):
+            signer.sign_prepared_contract_phase10_record(
+                prepared / "record.json", self.repository,
+                trusted_source_commit=self.commit,
+                expected_record_sha256="sha256:" + "0" * 64,
+                environ={signer._SECRET: self.private.read_text()},
+            )
+        self.assertFalse((prepared / "record.sig").exists())
+        signed = signer.sign_prepared_contract_phase10_record(
+            prepared / "record.json", self.repository,
+            trusted_source_commit=self.commit,
+            expected_record_sha256=selected["recordSha256"],
+            environ={signer._SECRET: self.private.read_text()},
+        )
+        self.assertEqual(sha256_bytes((prepared / "record.sig").read_bytes()),
+                         signed["signatureSha256"])
+        published = self.root / "published"
+        with (patch.object(gate, "observe_contract_phase10_upload", return_value=self.upload),
+              patch.object(gate, "forward_verified_contract_phase10_bytes")):
+            result = gate.publish_verified_contract_phase10_output_record(
+                prepared / "record.json", prepared / "record.sig",
+                self.repository, self.output, self.plan, published,
+                expected_record_sha256=selected["recordSha256"],
+                expected_signature_sha256=signed["signatureSha256"],
+                trusted_source_commit=self.commit,
+                trusted_workflow_sha="b" * 40,
+                trusted_workflow_path=self.upload["trustedWorkflowPath"],
+                trusted_job_name=self.upload["trustedJobName"],
+                expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
+                artifact_id=27, artifact_sha256=self.upload["artifactSha256"],
+                token="local-test-token", environ={},
+            )
+        self.assertEqual(selected["recordSha256"], result["recordSha256"])
+        self.assertEqual({"record.json", "record.sig"},
+                         {row["relativePath"] for row in result["publishedFiles"]})
+        self.assertEqual((prepared / "record.json").read_bytes(),
+                         (published / "record.json").read_bytes())
+
+    def test_no_secret_is_available_to_preparer_or_final_verifier(self):
+        with patch.dict("os.environ", {signer._SECRET: "not-a-key"}):
+            with self.assertRaisesRegex(ValueError, "signing-secret context"):
+                gate.prepare_contract_phase10_output_record(
+                    self.plan, self.repository, self.output, self.root / "not-prepared",
+                    phase11_pins=self.pins, trusted_source_commit=self.commit,
+                    trusted_workflow_sha="b" * 40,
+                    trusted_workflow_path=self.upload["trustedWorkflowPath"],
+                    trusted_job_name=self.upload["trustedJobName"],
+                    expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
+                    artifact_id=27, artifact_sha256=self.upload["artifactSha256"],
+                    token="local-test-token", environ={},
+                )
+            with self.assertRaisesRegex(ValueError, "signing-secret context"):
+                gate.publish_verified_contract_phase10_output_record(
+                    self.record_path, self.signature, self.repository, self.output,
+                    self.plan, self.root / "not-published",
+                    expected_record_sha256=sha256_bytes(self.record_path.read_bytes()),
+                    expected_signature_sha256=sha256_bytes(self.signature.read_bytes()),
+                    trusted_source_commit=self.commit,
+                    trusted_workflow_sha="b" * 40,
+                    trusted_workflow_path=self.upload["trustedWorkflowPath"],
+                    trusted_job_name=self.upload["trustedJobName"],
+                    expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
+                    artifact_id=27, artifact_sha256=self.upload["artifactSha256"],
+                    token="local-test-token", environ={},
+                )
+
+    def test_protected_signer_rejects_prepared_record_swap_before_signature_publish(self):
+        prepared = self.root / "racy-prepared"
+        prepared.mkdir()
+        record = prepared / "record.json"
+        record.write_bytes(self.record_path.read_bytes())
+        pinned = sha256_bytes(record.read_bytes())
+        real_sign = signer.sign_manifest
+
+        def swap_after_snapshot(snapshot, private, metadata):
+            signature = real_sign(snapshot, private, metadata)
+            record.write_bytes(b"substituted after the verified snapshot\n")
+            return signature
+
+        with patch.object(signer, "sign_manifest", side_effect=swap_after_snapshot):
+            with self.assertRaisesRegex(ValueError, "changed during protected signing"):
+                signer.sign_prepared_contract_phase10_record(
+                    record, self.repository, trusted_source_commit=self.commit,
+                    expected_record_sha256=pinned,
+                    environ={signer._SECRET: self.private.read_text()},
+                )
+        self.assertFalse((prepared / "record.sig").exists())
+
+    def test_final_publication_uses_verified_private_pair_and_rejects_source_swap(self):
+        destination = self.root / "racy-published"
+        original_record = self.record_path.read_bytes()
+        original_signature = self.signature.read_bytes()
+
+        def swap_after_verification(record_path, signature_path, *_args, **_kwargs):
+            self.assertNotEqual(self.record_path, record_path)
+            self.assertNotEqual(self.signature, signature_path)
+            self.assertEqual(original_record, record_path.read_bytes())
+            self.assertEqual(original_signature, signature_path.read_bytes())
+            self.record_path.write_bytes(b"substituted after private verification\n")
+            return self.record
+
+        with patch.object(gate, "verify_signed_contract_phase10_output_record",
+                          side_effect=swap_after_verification):
+            with self.assertRaisesRegex(ValueError, "input changed before publication"):
+                gate.publish_verified_contract_phase10_output_record(
+                    self.record_path, self.signature, self.repository, self.output,
+                    self.plan, destination,
+                    expected_record_sha256=sha256_bytes(original_record),
+                    expected_signature_sha256=sha256_bytes(original_signature),
+                    trusted_source_commit=self.commit,
+                    trusted_workflow_sha="b" * 40,
+                    trusted_workflow_path=self.upload["trustedWorkflowPath"],
+                    trusted_job_name=self.upload["trustedJobName"],
+                    expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
+                    artifact_id=27, artifact_sha256=self.upload["artifactSha256"],
+                    token="local-test-token", environ={},
+                )
+        self.assertFalse(destination.exists())
+
+    def test_record_signature_verification_uses_one_private_byte_pair(self):
+        alternate = self.root / "alternate.json"
+        changed = deepcopy(self.record)
+        changed["officialUpload"]["artifactId"] = 28
+        write_canonical_json(alternate, changed)
+        alternate_signature = sign_manifest(alternate, self.private, self.signing)
+        original_record = self.record_path.read_bytes()
+        original_signature = self.signature.read_bytes()
+        real_verify = gate.verify_manifest_signature
+
+        def swap_live_pair_during_verification(record, signature, public, metadata):
+            self.assertNotEqual(self.record_path, record)
+            self.assertNotEqual(self.signature, signature)
+            self.assertEqual(original_record, record.read_bytes())
+            self.assertEqual(original_signature, signature.read_bytes())
+            self.record_path.write_bytes(alternate.read_bytes())
+            self.signature.write_bytes(alternate_signature.read_bytes())
+            try:
+                real_verify(record, signature, public, metadata)
+            finally:
+                self.record_path.write_bytes(original_record)
+                self.signature.write_bytes(original_signature)
+
+        with patch.object(gate, "verify_manifest_signature",
+                          side_effect=swap_live_pair_during_verification):
+            self.assertEqual(self.record, self.verify())
 
 
 if __name__ == "__main__":
