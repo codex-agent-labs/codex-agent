@@ -13,6 +13,8 @@ _PRODUCER = {"repository": "codex-agent-labs/codex-agent",
     "runAttempt": 2, "pullRequest": 31}
 _SHA = "c" * 40
 _PIN = {"artifact_id": 901, "artifact_sha256": "sha256:" + "d" * 64}
+_CURRENT = {"GITHUB_REPOSITORY": _PRODUCER["repository"],
+    "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"}
 
 
 class NestedSdkWaveLocatorTest(TestCase):
@@ -69,4 +71,57 @@ class NestedSdkWaveLocatorTest(TestCase):
             locator.locate_failed_nested_sdk_wave(_PRODUCER, wave=11,
                 trusted_workflow_sha=_SHA, token="test-token",
                 environ={"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": "secret"})
+        observe.assert_not_called()
+
+    def test_current_run_accepts_in_progress_only_after_successful_child_observation(self):
+        for wave in range(11, 17):
+            with self.subTest(wave=wave), \
+                    patch.object(locator.products, "_observe_ci_producer_jobs",
+                        return_value=[{"run": {"status": "in_progress"}}]) as observe, \
+                    patch.object(locator, "_locate", return_value=_PIN) as find:
+                self.assertEqual(_PIN, locator.locate_current_failed_nested_sdk_wave(
+                    _PRODUCER, wave=wave, trusted_workflow_sha=_SHA,
+                    token="test-token", environ=_CURRENT))
+                workflow, parent = locator._COLLECTORS[wave]
+                job = f"product-validation / {parent} / sdk-collect-{wave}"
+                policy = {"collector": {"path": f".github/workflows/{workflow}.yml",
+                    "sha": _SHA}}
+                observe.assert_called_once_with({"collector": _PRODUCER},
+                    jobs_by_phase={"collector": job}, trusted_workflows_by_phase=policy,
+                    token="test-token")
+                find.assert_called_once_with(_PRODUCER, phase="collector", job=job,
+                    name=f"codex-agent-sdk-wave-{wave}-state-{'b' * 40}-attempt-2",
+                    token="test-token", trusted_workflows_by_phase=policy)
+
+    def test_current_run_rejects_wrong_context_or_run_status_before_lookup(self):
+        for env, status, conclusion in (
+            ({**_CURRENT, "GITHUB_RUN_ID": "8"}, "in_progress", None),
+            (_CURRENT, "queued", None),
+            (_CURRENT, "in_progress", "failure"),
+            (_CURRENT, "completed", "success"),
+        ):
+            with self.subTest(env=env, status=status), \
+                    patch.object(locator.products, "_observe_ci_producer_jobs",
+                        return_value=[{"run": {"status": status,
+                            "conclusion": conclusion}}]) as observe, \
+                    patch.object(locator, "_locate") as find, \
+                    self.assertRaises(ValueError):
+                locator.locate_current_failed_nested_sdk_wave(_PRODUCER, wave=11,
+                    trusted_workflow_sha=_SHA, token="test-token", environ=env)
+                find.assert_not_called()
+            if env != _CURRENT:
+                observe.assert_not_called()
+
+    def test_current_locator_keeps_completed_failed_route_separate(self):
+        with patch.object(locator.products, "_observe_ci_producer_jobs",
+                return_value=[{"run": {"status": "completed",
+                    "conclusion": "failure"}}]), \
+                patch.object(locator, "_locate", return_value=_PIN):
+            self.assertEqual(_PIN, locator.locate_current_failed_nested_sdk_wave(
+                _PRODUCER, wave=16, trusted_workflow_sha=_SHA,
+                token="test-token", environ=_CURRENT))
+        with patch.object(locator.products, "_observe_ci_producer_jobs") as observe, \
+                self.assertRaisesRegex(ValueError, "Unknown current"):
+            locator.locate_current_failed_nested_sdk_wave(_PRODUCER, wave=17,
+                trusted_workflow_sha=_SHA, token="test-token", environ=_CURRENT)
         observe.assert_not_called()
