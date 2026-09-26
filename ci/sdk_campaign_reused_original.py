@@ -88,21 +88,51 @@ def verify_completed_sdk_catalog_pin(snapshot, *, producer, artifact_name,
 
 
 @contextmanager
+def held_completed_sdk_catalog(*, producer, artifact_name, artifact_id,
+        artifact_sha256, index_sha256, public_key_sha256, trusted_workflow_sha,
+        trusted_workflow_path, trusted_job_name, token, environ):
+    """Hold the official completed catalog under exact independently supplied pins."""
+    current = validate_producer(producer)
+    if current["event"] != "pull_request":
+        raise ValueError("Completed SDK catalog requires a pull-request producer")
+    if artifact_name != (f"{product_reuse._CATALOG_PREFIX}pull-request-"
+                         f"{current['pullRequest']}-{current['tree']}-attempt-{current['runAttempt']}"):
+        raise ValueError("Completed SDK catalog name differs from current attempt")
+    if not trusted_workflow_path or not trusted_job_name:
+        raise ValueError("Completed SDK catalog requires a pinned workflow route")
+    with held_reused_sdk_catalog(repository=current["repository"],
+            pull_request=current["pullRequest"], artifact_id=artifact_id,
+            artifact_sha256=artifact_sha256, public_key=None,
+            public_key_sha256=public_key_sha256,
+            trusted_workflow_sha=trusted_workflow_sha,
+            trusted_workflow_path=trusted_workflow_path,
+            trusted_job_name=trusted_job_name, token=token, environ=environ) as snapshot:
+        verify_completed_sdk_catalog_pin(snapshot, producer=current,
+            artifact_name=artifact_name, artifact_id=artifact_id,
+            artifact_sha256=artifact_sha256, index_sha256=index_sha256,
+            public_key_sha256=public_key_sha256)
+        yield snapshot
+
+
+@contextmanager
 def held_reused_sdk_catalog(*, repository, pull_request, artifact_id,
         artifact_sha256, public_key, public_key_sha256, trusted_workflow_sha,
         token, environ, trusted_workflow_path=None, trusted_job_name=None):
-    """Hold one authenticated same-PR catalog for multiple original phases."""
+    """Hold one authenticated same-PR catalog for multiple original phases.
+
+    None for public_key uses the embedded key only against an independent digest.
+    """
     require_no_signing_secret(environ)
     require_no_signing_secret(os.environ)
     require_sha256(artifact_sha256, "Caller-selected catalog artifact")
     require_sha256(public_key_sha256, "Independent catalog public key")
     require_integer(artifact_id, "Caller-selected catalog artifact ID", 1)
     require_integer(pull_request, "Caller-selected pull request", 1)
-    key_input = Path(public_key)
-    pinned_key = read_regular_file_bytes(key_input, max_bytes=64 * 1024,
-        reject_symlink_parents=True)
-    key_path = key_input.resolve(strict=True)
-    if sha256_bytes(pinned_key) != public_key_sha256:
+    key_input = None if public_key is None else Path(public_key)
+    pinned_key = (None if key_input is None else read_regular_file_bytes(
+        key_input, max_bytes=64 * 1024, reject_symlink_parents=True))
+    key_path = None if key_input is None else key_input.resolve(strict=True)
+    if pinned_key is not None and sha256_bytes(pinned_key) != public_key_sha256:
         raise ValueError("Reused SDK catalog key differs from independent digest")
     api = "https://api.github.com"
     url = f"{api}/repos/{repository}/actions/artifacts/{artifact_id}"
@@ -131,6 +161,10 @@ def held_reused_sdk_catalog(*, repository, pull_request, artifact_id,
             raise ValueError("Reused SDK catalog differs from official artifact bytes")
         key = read_regular_file_bytes(extracted / "public-key.pub", max_bytes=64 * 1024,
             reject_symlink_parents=True)
+        if pinned_key is None:
+            pinned_key, key_path = key, (extracted / "public-key.pub").resolve(strict=True)
+        if sha256_bytes(key) != public_key_sha256:
+            raise ValueError("Reused SDK catalog key differs from independent digest")
         if key != pinned_key:
             raise ValueError("Reused SDK catalog key differs from independent policy")
         index, index_bytes = verify_signed_product_index(SignedProductIndex(
@@ -163,9 +197,10 @@ def held_reused_sdk_catalog(*, repository, pull_request, artifact_id,
             require_no_signing_secret(environ)
             require_no_signing_secret(os.environ)
             if (regular_file_inventory(root, allow_empty=True) != before
-                    or key_input.resolve(strict=True) != key_path
-                    or read_regular_file_bytes(key_input, max_bytes=64 * 1024,
-                        reject_symlink_parents=True) != pinned_key):
+                    or key_input is not None and (
+                        key_input.resolve(strict=True) != key_path
+                        or read_regular_file_bytes(key_input, max_bytes=64 * 1024,
+                            reject_symlink_parents=True) != pinned_key)):
                 raise ValueError("Reused SDK catalog changed while held")
 
 

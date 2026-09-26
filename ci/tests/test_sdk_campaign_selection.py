@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import ci.products.sdk_campaign_dev_catalog as dev_catalog
+from ci import sdk_campaign_reused_original as reused_catalog
 from ci.sdk_campaign_catalog_caller import (
     SDK_CAMPAIGN_INSTANCES as CALLER_SDK_INSTANCES,
     main as catalog_caller_main,
@@ -27,6 +28,7 @@ from ci.products.sdk_campaign_selection import (
     verify_sdk_campaign_selection,
 )
 from ci.tests.product_chain_support import write_receipt
+from ci.tests.test_product_resume_capture import archive
 
 
 class SdkCampaignSelectionTest(unittest.TestCase):
@@ -93,6 +95,65 @@ class SdkCampaignSelectionTest(unittest.TestCase):
                     sha256_bytes(self.sources[first].receipt_bytes))).read_bytes(),
                 self.archives[first].read_bytes(),
             )
+
+    def test_completed_pin_checks_real_signed_exact_61_catalog(self):
+        producer = next(iter(self.envelopes.values()))["receipt"]["producer"]
+        name = (f"codex-agent-product-catalog-v1-pull-request-{producer['pullRequest']}-"
+                f"{producer['tree']}-attempt-{producer['runAttempt']}")
+        with tempfile.TemporaryDirectory(prefix="sdk-completed-catalog-") as temporary:
+            destination = Path(temporary).resolve() / "catalog"
+            stage_sdk_same_pr_catalog(self.sources, self.envelopes, self.archives,
+                producer=producer, destination=destination)
+            raw = archive({row["relativePath"]: (destination / row["relativePath"]).read_bytes()
+                for row in dev_catalog.regular_file_inventory(destination)})
+            digest = sha256_bytes(raw)
+            index_sha = sha256_bytes((destination / "product-index.json").read_bytes())
+            key_sha = sha256_bytes((destination / "public-key.pub").read_bytes())
+            api = f"https://api.github.com/repos/{producer['repository']}/actions/artifacts/901"
+            artifact = {"id": 901, "name": name, "digest": digest,
+                "expired": False, "size_in_bytes": len(raw),
+                "archive_download_url": api + "/zip",
+                "created_at": "2026-01-01T00:05:00Z",
+                "workflow_run": {"id": producer["runId"], "head_sha": producer["commit"]}}
+            run = {"id": producer["runId"], "run_attempt": producer["runAttempt"],
+                "path": producer["workflowPath"], "head_sha": producer["commit"]}
+            observed = {"run": run, "testedCommit": {"sha": producer["commit"],
+                "tree": {"sha": producer["tree"]}}}
+            job = {"name": "product-validation / sdk-catalog",
+                "started_at": "2026-01-01T00:00:00Z", "completed_at": "2026-01-01T00:10:00Z"}
+            def download(_artifact, _token, path, **_kwargs):
+                Path(path).write_bytes(raw)
+            with patch.object(reused_catalog.product_reuse, "api_json", return_value=artifact), \
+                 patch.object(reused_catalog.product_reuse, "download_artifact_to_file", side_effect=download), \
+                 patch.object(reused_catalog.product_reuse, "_same_pr_run", return_value=observed), \
+                 patch.object(reused_catalog.product_reuse, "_observe_ci_producer_jobs",
+                     return_value=[{**observed, "jobs": [job]}]):
+                with reused_catalog.held_completed_sdk_catalog(
+                        producer=producer, artifact_name=name,
+                        artifact_id=901, artifact_sha256=digest,
+                        index_sha256=index_sha, public_key_sha256=key_sha,
+                        trusted_workflow_sha="a" * 40, token="synthetic-token", environ={},
+                        trusted_workflow_path=".github/workflows/product-validation.yml",
+                        trusted_job_name=job["name"]) as held:
+                    self.assertEqual(index_sha, held.values["indexSha256"])
+                with self.assertRaisesRegex(ValueError, "independent digest"):
+                    with reused_catalog.held_completed_sdk_catalog(
+                            producer=producer, artifact_name=name, artifact_id=901,
+                            artifact_sha256=digest, index_sha256=index_sha,
+                            public_key_sha256="sha256:" + "0" * 64,
+                            trusted_workflow_sha="a" * 40, token="synthetic-token", environ={},
+                            trusted_workflow_path=".github/workflows/product-validation.yml",
+                            trusted_job_name=job["name"]):
+                        pass
+                with self.assertRaisesRegex(ValueError, "current attempt"):
+                    with reused_catalog.held_completed_sdk_catalog(
+                            producer=producer, artifact_name=name + "-stale", artifact_id=901,
+                            artifact_sha256=digest, index_sha256=index_sha,
+                            public_key_sha256=key_sha,
+                            trusted_workflow_sha="a" * 40, token="synthetic-token", environ={},
+                            trusted_workflow_path=".github/workflows/product-validation.yml",
+                            trusted_job_name=job["name"]):
+                        pass
 
     def test_same_pr_catalog_rejects_partial_selection_before_output(self):
         with tempfile.TemporaryDirectory(prefix="sdk-campaign-catalog-") as temporary:
