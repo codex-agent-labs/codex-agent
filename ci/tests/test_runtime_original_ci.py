@@ -16,6 +16,10 @@ TARGET = "linux-x64"
 class RuntimeOriginalCiTest(unittest.TestCase):
     api = fixture.ContractOriginalCiCaptureTest.api
 
+    def download_fixture(self, artifact, token, destination, **_):
+        phase = next(phase for phase, value in self.artifacts.items() if value["id"] == artifact["id"])
+        Path(destination).write_bytes(self.archives[phase])
+
     def setUp(self):
         # Reuse the real original-CI run/attempt/commit/HTTP fixture, not a
         # mocked observer or shard verifier. No native execution is claimed.
@@ -86,6 +90,43 @@ class RuntimeOriginalCiTest(unittest.TestCase):
             adapter.capture_runtime_original_ci_phases({"binary": self.receipts["binary"],
                 "validation": self.receipts["validation"]}, self.root / "invalid-prefix",
                 target=TARGET, trusted_workflow_sha=self.pin, token="not-a-real-token")
+
+    def test_prior_failed_attempt_discovers_and_authenticates_only_successful_prefix(self):
+        failed_run = {**self.run, "status": "completed", "conclusion": "failure"}
+        listed = {phase: self.artifacts[phase] for phase in ("binary", "package")}
+        plan = {"event": "pull_request", "pullRequest": 31,
+                "repository": fixture.REPOSITORY}
+        destination = self.root / "prior-capture"
+        with mock.patch.object(adapter, "_prior_failed_pr_attempt", return_value=failed_run), \
+                mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
+                mock.patch("reuse.api_request", side_effect=self.api(run=failed_run, artifacts=listed)):
+            result = adapter.capture_prior_failed_runtime_prefixes(
+                plan, {"runId": 100, "runAttempt": 1}, (TARGET,), destination,
+                trusted_workflow_sha=self.pin, token="not-a-real-token")
+        self.assertEqual({TARGET}, set(result))
+        self.assertEqual({"binary", "package"}, set(result[TARGET]["artifacts"]))
+        for phase in ("binary", "package"):
+            self.assertEqual(self.receipts[phase].read_bytes(),
+                (destination / TARGET / "phases" / phase / "original/shard/phase-receipt.json").read_bytes())
+        self.assertFalse((destination / TARGET / "phases/validation").exists())
+
+    def test_prior_failed_attempt_rejects_tampered_phase_without_publishing(self):
+        failed_run = {**self.run, "status": "completed", "conclusion": "failure"}
+        malformed = copy.deepcopy(self.artifacts)
+        malformed["binary"]["name"] = malformed["binary"]["name"].replace(
+            self.producer["tree"], "0" * 40)
+        destination = self.root / "prior-capture"
+        plan = {"event": "pull_request", "pullRequest": 31,
+                "repository": fixture.REPOSITORY}
+        with mock.patch.object(adapter, "_prior_failed_pr_attempt", return_value=failed_run), \
+                mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
+                mock.patch("reuse.api_request", side_effect=self.api(run=failed_run, artifacts=malformed,
+                                                            details=malformed)), \
+                self.assertRaisesRegex(ValueError, "selected attempt"):
+            adapter.capture_prior_failed_runtime_prefixes(
+                plan, {"runId": 100, "runAttempt": 1}, (TARGET,), destination,
+                trusted_workflow_sha=self.pin, token="not-a-real-token")
+        self.assertFalse(destination.exists())
 
     def test_late_original_shard_mutation_cannot_publish(self):
         def mutate_before_copy(source, destination, **kwargs):

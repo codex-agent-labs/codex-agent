@@ -87,6 +87,7 @@ from products.runtime_evidence import (
 )
 from products.restore import (
     OBJECT_ZIP_LIMITS,
+    PHASE_RECEIPT_NAME,
     PHASE_SHARD_KEYS,
     PHASE_SHARD_NAME,
     object_relative_path,
@@ -945,6 +946,77 @@ def capture_runtime_original_ci_phases(
             raise ValueError("Original Runtime capture changed before publication")
         publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected_files)
     return evidence
+
+
+def capture_prior_failed_runtime_prefixes(
+    plan: Mapping[str, Any], producer: Mapping[str, Any], targets: tuple[str, ...],
+    destination: Path, *, trusted_workflow_sha: str, token: str,
+) -> dict[str, dict[str, Any]]:
+    """Recover only successful native phase prefixes from one prior failed PR attempt."""
+    if tuple(sorted(set(targets))) != targets or any(target not in NATIVE_TARGETS for target in targets):
+        raise ValueError("Prior Runtime targets must be sorted, unique native targets")
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Prior Runtime capture destination must not exist")
+    if not targets:
+        return {}
+    prior = _prior_failed_pr_attempt(plan, producer, token)
+    if prior is None:
+        return {}
+    run_id = prior["id"]
+    attempt = prior["run_attempt"]
+    artifacts = paginated_items(
+        f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{run_id}/artifacts",
+        "artifacts", token)
+    phases = ("binary", "package", "validation", "metadata")
+    with tempfile.TemporaryDirectory(prefix="runtime-pr-recovery-") as temporary:
+        prepared = Path(temporary).resolve()
+        captured = {}
+        for target in targets:
+            receipts = {}
+            for phase in phases:
+                prefix = f"codex-agent-runtime-worker-{target}-{phase}-{target}-"
+                suffix = f"-attempt-{attempt}"
+                matching = [value for value in artifacts if isinstance(value, dict)
+                            and isinstance(value.get("name"), str)
+                            and value["name"].startswith(prefix) and value["name"].endswith(suffix)]
+                if len(matching) > 1:
+                    raise ValueError("Prior Runtime phase upload is ambiguous")
+                if not matching:
+                    break
+                artifact = matching[0]
+                name = artifact["name"]
+                match = re.fullmatch(re.escape(prefix) + r"([0-9a-f]{64})-([0-9a-f]{40})" + re.escape(suffix), name)
+                if match is None:
+                    raise ValueError("Prior Runtime phase upload name is malformed")
+                if artifact.get("expired") is True:
+                    break
+                if artifact.get("expired") is not False:
+                    raise ValueError("Prior Runtime phase expiration state is malformed")
+                scratch = prepared / "scratch" / target / phase
+                scratch.mkdir(parents=True)
+                archive = scratch / "transport.zip"
+                _download_contract_ci_upload(
+                    artifact.get("id"), artifact.get("digest"), name,
+                    {"runId": run_id}, prior, token, destination=archive)
+                verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+                safe_extract(archive, scratch / "original")
+                shard = scratch / "original/shard"
+                verified = verify_phase_shard(shard, PhaseInstanceId("runtime", target, phase, target))
+                receipt = verified["receipt"]
+                original = receipt["producer"]
+                if (receipt["buildKey"].removeprefix("sha256:") != match[1]
+                        or original["tree"] != match[2]
+                        or original["runId"] != run_id or original["runAttempt"] != attempt
+                        or original["pullRequest"] != plan["pullRequest"]):
+                    raise ValueError("Prior Runtime shard differs from its selected attempt")
+                receipts[phase] = shard / PHASE_RECEIPT_NAME
+            if receipts:
+                captured[target] = capture_runtime_original_ci_phases(
+                    receipts, prepared / "captured" / target, target=target,
+                    trusted_workflow_sha=trusted_workflow_sha, token=token)
+        if captured:
+            publish_regular_tree(prepared / "captured", destination)
+        return captured
 
 
 def _validate_plan(plan_path: Path, root: Path, *, expected_revision: str | None = None) -> dict[str, Any]:
