@@ -68,7 +68,8 @@ otherwise identical embedded default.
 
 Verification flows forward across artifacts: `verifyContract` produces
 Contract evidence, standalone `verifyRuntime` consumes the authenticated
-Contract Bundle, and `verifySdk` consumes declared Contract/Runtime artifacts.
+Contract payload and detached attestation, and `verifySdk` consumes declared
+Contract/Runtime artifacts.
 `verifyRepository` reconciles their independently supplied evidence. A
 wrapper-only change must not compile Runtime source; a no-change reusable
 campaign must not start a product compiler. The protected final campaign and
@@ -82,7 +83,12 @@ standalone Runtime uses `./gradlew -p runtime verifyRuntime` with explicit
 `-PcodexAgent.target`, Contract payload, metadata receipt, detached attestation,
 attestation signature, public key, Contract version, and Runtime version
 properties; `runtime/settings.gradle.kts` rejects missing inputs before
-configuration. The root SDK and repository verification commands, including
+configuration. For a native target's binary phase, it also requires explicit
+`-PcodexAgent.runtimeBinaryPlan`, `-PcodexAgent.runtimeBinaryFlagsDigest`, and
+`-PcodexAgent.repositoryRevision`: the plan must be a verified, exact-source
+input, not a placeholder or a value reconstructed from retained output. Other
+selected phases require their own declared predecessor stages and evidence.
+The root SDK and repository verification commands, including
 their required artifact/evidence properties, are listed in the
 [README](../README.md#capability-boundary). `ciProductPhase` selects an exact
 product, component, phase, and target; it is not a whole-graph build command.
