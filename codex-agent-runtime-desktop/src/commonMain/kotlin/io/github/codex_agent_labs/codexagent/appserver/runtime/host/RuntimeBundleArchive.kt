@@ -127,7 +127,7 @@ internal fun inspectRuntimeZip(bytes: ByteArray): List<RuntimeZipMember> {
             require((externalAttributes ushr 16).toInt() and FILE_TYPE_MASK != SYMLINK_TYPE) {
                 "Runtime ZIP symbolic links are forbidden"
             }
-            val dataOffset = validateLocalEntry(bytes, localOffset, name, compression, centralOffset)
+            val dataOffset = validateLocalEntry(bytes, localOffset, name, flags, compression, centralOffset)
             val compressedSizeInt = compressedSize.checkedInt("compressed member size")
             require(dataOffset + compressedSizeInt <= centralOffset) { "Runtime ZIP member data is invalid" }
             add(RuntimeZipMember(name, size, compression, compressedSizeInt, dataOffset))
@@ -145,6 +145,7 @@ private fun validateLocalEntry(
     bytes: ByteArray,
     offset: Int,
     expectedName: String,
+    expectedFlags: Int,
     expectedCompression: Int,
     centralOffset: Int,
 ): Int {
@@ -155,7 +156,7 @@ private fun validateLocalEntry(
     val compression = bytes.u16(offset + 8)
     val nameSize = bytes.u16(offset + 26)
     val extraSize = bytes.u16(offset + 28)
-    require(flags and ENCRYPTED_FLAG == 0 && compression == expectedCompression) {
+    require(flags == expectedFlags && compression == expectedCompression) {
         "Runtime ZIP local entry does not match its central entry"
     }
     val end = offset + LOCAL_HEADER_BYTES + nameSize + extraSize

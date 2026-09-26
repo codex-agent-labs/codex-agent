@@ -53,6 +53,14 @@ class SharedHostPolicyTest {
             "Runtime ZIP stored entry size is invalid",
             assertFailsWith<IllegalArgumentException> { inspectRuntimeZip(storedSizeMismatch) }.message,
         )
+
+        val mismatchedFlags = testStoredZip(linkedMapOf("one" to byteArrayOf(1))).also { bytes ->
+            writeU16(bytes, signatureOffsets(bytes, LOCAL_SIGNATURE).single() + 6, 0x0008)
+        }
+        assertEquals(
+            "Runtime ZIP local entry does not match its central entry",
+            assertFailsWith<IllegalArgumentException> { inspectRuntimeZip(mismatchedFlags) }.message,
+        )
     }
 
     @Test
