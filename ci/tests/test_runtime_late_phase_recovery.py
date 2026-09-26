@@ -7,7 +7,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from ci.products.inventory import canonical_json_bytes, load_canonical_json, regular_file_inventory
+from ci.products.inventory import canonical_json_bytes, load_canonical_json, regular_file_inventory, write_canonical_json
 from ci.products.receipt import write_output_manifest
 from ci.products.restore import PHASE_PLAN_KEYS
 from ci.products.restore import finalize_phase_object
@@ -145,6 +145,96 @@ class RuntimeLatePhaseRecoveryTest(unittest.TestCase):
                 environ=self.environment)
         self.assertEqual([elected], inspected["readyPlans"])
         self.assertEqual(result, inspected["result"])
+
+    def test_prior_failed_attempt_prefix_replays_under_new_consumer(self):
+        discovery = self.resume()
+        state = discovery
+        old_producer = {**self.producer, "runId": self.producer["runId"] - 1,
+                        "runAttempt": 1}
+        originals = {}
+        for instance, phase in ((BINARY, "binary"), (PACKAGE, "package")):
+            current, _ = self.phase_shard(state, instance, f"current-{phase}")
+            plan = load_canonical_json(state / f"phase-plans/runtime-{TARGET}-{phase}-{TARGET}.json")
+            old = self.scratch / f"old-{phase}-shard"
+            finalize_phase_object(
+                stage_root=self.scratch / f"current-{phase}-stage",
+                phase_plan={key: plan[key] for key in PHASE_PLAN_KEYS},
+                producer=old_producer, product_version="0.2.0",
+                trust_domain="development", destination=old)
+            originals[phase] = old
+            state, _ = self.advance(discovery, None if state == discovery else state,
+                                    [current], f"current-after-{phase}")
+        validation = load_canonical_json(state / f"phase-plans/runtime-{TARGET}-validation-{TARGET}.json")
+
+        def captured(_plan, _producer, targets, destination, **_):
+            self.assertEqual((TARGET,), targets)
+            destination.mkdir()
+            write_canonical_json(destination / "selected-attempt.json", {
+                "runId": old_producer["runId"], "runAttempt": old_producer["runAttempt"],
+                "pullRequest": old_producer["pullRequest"]})
+            for phase, shard in originals.items():
+                shutil.copytree(shard, destination / TARGET / "phases" / phase / "original/shard")
+            return {TARGET: {"syntheticOriginalAdmission": True}}
+
+        resumed = self.scratch / "new-attempt-resume"
+        environment = {**self.environment, "GITHUB_TOKEN": "fixture-only"}
+        with self.control_seams(), mock.patch.object(adapter, "capture_prior_failed_runtime_prefixes",
+                                                     side_effect=captured):
+            adapter.resume_products(
+                self.plan_path, self.discovery, self.state, self.handoff,
+                resumed, self.scratch / "new-attempt-output", repository_root=self.repository,
+                environ=environment, sdk_original_workflow_sha="c" * 40)
+        result = load_canonical_json(resumed / "reuse-wave-result.json")
+        states = {adapter._identity(row): row for row in result["phases"]}
+        self.assertEqual("retained", states[BINARY]["state"])
+        self.assertEqual("retained", states[PACKAGE]["state"])
+        self.assertEqual([VALIDATION], [adapter._identity(row) for row in result["matrices"]["runtime"]])
+        self.assertEqual(validation["buildKey"], result["matrices"]["runtime"][0]["buildKey"])
+        carrier = adapter.verify_carrier(resumed / "reused-carrier", tuple(sorted(
+            adapter._identity(row) for row in result["phases"] if row["state"] in {"retained", "reused"})),
+            adapter._consumer(self.plan, environment))
+        for phase, instance in (("binary", BINARY), ("package", PACKAGE)):
+            record = next(row for row in carrier["objects"] if adapter._identity(row) == instance)
+            stored = adapter.verify_object(
+                resumed / "reused-carrier" / adapter.object_relative_path(
+                    record["buildKey"], record["receiptSha256"]),
+                build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
+                object_sha256=record["objectSha256"])
+            self.assertEqual((originals[phase] / "phase-receipt.json").read_bytes(), stored["receiptBytes"])
+
+        def recheck(_receipts, destination, **_):
+            shutil.copytree(resumed / "prior-failed-runtime" / TARGET, destination)
+            return {}
+
+        with self.control_seams(), mock.patch.object(adapter, "_prior_failed_pr_attempt", return_value={
+            "id": old_producer["runId"] - 1, "run_attempt": old_producer["runAttempt"]}):
+            with self.assertRaisesRegex(ValueError, "official failed attempt"):
+                adapter.inspect_products(
+                    self.plan_path, resumed, repository_root=self.repository,
+                    environ=environment, sdk_original_workflow_sha="c" * 40)
+
+        with self.control_seams(), mock.patch.object(adapter, "capture_runtime_original_ci_phases",
+                                                     side_effect=recheck), mock.patch.object(
+                                                         adapter, "_prior_failed_pr_attempt", return_value={
+                                                             "id": old_producer["runId"],
+                                                             "run_attempt": old_producer["runAttempt"]}):
+            inspected = adapter.inspect_products(
+                self.plan_path, resumed, repository_root=self.repository,
+                environ=environment, sdk_original_workflow_sha="c" * 40)
+        self.assertEqual([validation], inspected["readyPlans"])
+        self.assertEqual(result, inspected["result"])
+
+
+class PriorRuntimeElectionTest(unittest.TestCase):
+    def test_catalog_winner_does_not_use_prior_phase_shard(self):
+        prior = {**adapter._identity_record(BINARY), "buildKey": "prior",
+                 "receiptSha256": "prior-receipt", "objectSha256": "prior-object"}
+        catalog = {**prior, "buildKey": "catalog", "receiptSha256": "catalog-receipt",
+                   "objectSha256": "catalog-object", "state": "reused"}
+        self.assertEqual({}, adapter._elected_prior_runtime_records([prior], (BINARY,), {BINARY: catalog}))
+        retained = {**prior, "state": "retained"}
+        self.assertEqual({BINARY: prior}, adapter._elected_prior_runtime_records(
+            [prior], (BINARY,), {BINARY: retained}))
 
 
 if __name__ == "__main__":

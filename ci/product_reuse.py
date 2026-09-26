@@ -1015,8 +1015,93 @@ def capture_prior_failed_runtime_prefixes(
                     receipts, prepared / "captured" / target, target=target,
                     trusted_workflow_sha=trusted_workflow_sha, token=token)
         if captured:
+            write_canonical_json(prepared / "captured/selected-attempt.json", {
+                "runId": run_id, "runAttempt": attempt, "pullRequest": plan["pullRequest"]})
             publish_regular_tree(prepared / "captured", destination)
         return captured
+
+
+def _prior_failed_runtime_objects(
+    capture_root: Path, artifact_root: Path, *, trusted_workflow_sha: str | None = None,
+    token: str | None = None, plan: Mapping[str, Any] | None = None,
+    consumer_producer: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Read captured originals; optionally re-admit them from their original CI."""
+    if not capture_root.exists() and not capture_root.is_symlink():
+        return []
+    require_regular_directory(capture_root, "Prior failed Runtime captures")
+    selection = require_exact_keys(_canonical_control(
+        capture_root / "selected-attempt.json", "Prior failed Runtime selection"),
+        {"runId", "runAttempt", "pullRequest"}, "Prior failed Runtime selection")
+    run_id = require_integer(selection["runId"], "Prior failed Runtime run ID", 1)
+    attempt = require_integer(selection["runAttempt"], "Prior failed Runtime attempt", 1)
+    if plan is not None and consumer_producer is not None:
+        if not token:
+            raise ValueError("Prior failed Runtime selection recheck requires a token")
+        official = _prior_failed_pr_attempt(plan, consumer_producer, token)
+        if (official is None or official["id"] != run_id
+                or official["run_attempt"] != attempt
+                or selection["pullRequest"] != plan["pullRequest"]):
+            raise ValueError("Prior failed Runtime selection differs from the official failed attempt")
+    targets = sorted(path for path in capture_root.iterdir() if path.name != "selected-attempt.json")
+    if not targets:
+        raise ValueError("Prior failed Runtime capture is empty")
+    records = []
+    with tempfile.TemporaryDirectory(prefix="runtime-pr-recheck-") as temporary:
+        for member in targets:
+            if member.name not in NATIVE_TARGETS:
+                raise ValueError("Prior failed Runtime capture has an unexpected target")
+            require_regular_directory(member, "Prior failed Runtime target")
+            phase_root = member / "phases"
+            require_regular_directory(phase_root, "Prior failed Runtime phases")
+            phases = tuple(phase for phase in ("binary", "package", "validation", "metadata")
+                           if (phase_root / phase).exists() or (phase_root / phase).is_symlink())
+            if not phases or phases != ("binary", "package", "validation", "metadata")[:len(phases)]:
+                raise ValueError("Prior failed Runtime capture lacks a contiguous phase prefix")
+            if {path.name for path in phase_root.iterdir()} != set(phases):
+                raise ValueError("Prior failed Runtime capture has an unexpected phase")
+            receipts = {phase: phase_root / phase / "original/shard" / PHASE_RECEIPT_NAME
+                        for phase in phases}
+            if trusted_workflow_sha is not None:
+                if not token:
+                    raise ValueError("Prior failed Runtime recheck requires a token")
+                replay = Path(temporary) / member.name
+                capture_runtime_original_ci_phases(
+                    receipts, replay, target=member.name,
+                    trusted_workflow_sha=trusted_workflow_sha, token=token)
+                if regular_file_inventory(replay) != regular_file_inventory(member):
+                    raise ValueError("Prior failed Runtime capture differs from original CI")
+            for phase in phases:
+                instance = PhaseInstanceId("runtime", member.name, phase, member.name)
+                shard = phase_root / phase / "original/shard"
+                verified = verify_phase_shard(shard, instance)
+                receipt = verified["receipt"]
+                producer = receipt["producer"]
+                if (receipt["trustDomain"] != "development" or producer["event"] != "pull_request"
+                        or producer["runId"] != run_id or producer["runAttempt"] != attempt
+                        or producer["pullRequest"] != selection["pullRequest"]):
+                    raise ValueError("Prior failed Runtime receipt is not an original PR phase")
+                descriptor = _canonical_control(shard / PHASE_SHARD_NAME, "Prior failed Runtime shard")
+                records.append({
+                    **_identity_record(instance),
+                    "buildKey": descriptor["buildKey"],
+                    "receiptSha256": descriptor["receiptSha256"],
+                    "objectSha256": descriptor["objectSha256"],
+                    "objectPath": (shard / descriptor["objectPath"]).relative_to(artifact_root).as_posix(),
+                })
+    return records
+
+
+def _elected_prior_runtime_records(
+    records: list[dict[str, Any]], selected: tuple[PhaseInstanceId, ...],
+    phases: Mapping[PhaseInstanceId, Mapping[str, Any]],
+) -> dict[PhaseInstanceId, dict[str, Any]]:
+    """Use a captured shard only when the planner retained that exact object."""
+    return {instance: record for record in records
+            if (instance := _identity(record)) in selected
+            and phases[instance]["state"] == "retained"
+            and all(phases[instance][field] == record[field]
+                    for field in ("buildKey", "receiptSha256", "objectSha256"))}
 
 
 def _validate_plan(plan_path: Path, root: Path, *, expected_revision: str | None = None) -> dict[str, Any]:
@@ -2953,6 +3038,14 @@ def _verified_product_state(
     authorities, unavailable = _authorities(root, plan["validationCommit"], closure)
     if authorities is None:
         raise ValueError(unavailable or "Product phase authority is unavailable")
+    prior_capture = discovery_root / "prior-failed-runtime"
+    prior_records = []
+    if prior_capture.exists() or prior_capture.is_symlink():
+        if not sdk_original_workflow_sha:
+            raise ValueError("Prior failed Runtime replay requires caller-pinned workflow authority")
+        prior_records = _prior_failed_runtime_objects(
+            prior_capture, discovery_root, trusted_workflow_sha=sdk_original_workflow_sha,
+            token=environment.get("GITHUB_TOKEN"), plan=plan, consumer_producer=consumer["producer"])
     initial_objects = []
     if request["availableObjects"]:
         supplied_objects = require_array(request["availableObjects"], "Initial availableObjects")
@@ -2962,8 +3055,10 @@ def _verified_product_state(
                 "buildKey", "receiptSha256", "objectSha256", "objectPath"}, "Initial availableObjects member")
             supplied_ids.append(_identity(record))
         contract = PhaseInstanceId("contract", "contract", "metadata", "common")
-        if tuple(supplied_ids) != _dependency_closure((contract,)):
-            raise ValueError("Initial availableObjects must be the exact complete Contract closure")
+        expected_ids = tuple(sorted((*_dependency_closure((contract,)),
+                                     *(_identity(record) for record in prior_records))))
+        if tuple(supplied_ids) != expected_ids:
+            raise ValueError("Initial availableObjects differ from authenticated Contract/Runtime objects")
         with tempfile.TemporaryDirectory(prefix="codex-agent-initial-contract-", dir=root) as temporary:
             verified = Path(temporary).resolve() / "verified"
             evidence = _capture_completed_contract_handoff(
@@ -2978,6 +3073,9 @@ def _verified_product_state(
                 raise ValueError("Initial Contract evidence paths do not identify the authenticated handoff")
         initial_objects, _ = _completed_contract_objects(
             plan, discovery_root / "contract-state", discovery_root, environment)
+        initial_objects = sorted((*initial_objects, *prior_records), key=_identity)
+    elif prior_records:
+        raise ValueError("Prior failed Runtime capture lacks its available object request")
     expected_fixed = {
         "schemaVersion": 1,
         "requestType": "reuse-wave",
@@ -6002,20 +6100,54 @@ def resume_products(
             apple_package_origin=_apple_package_origin(captured_plan, root, sdk_original_workflow_sha, environment),
             build_plan_consumer=retain,
             **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
+        prior_records = []
+        missing_targets = tuple(sorted({phase["target"] for phase in reuse["phases"]
+            if phase["product"] == "runtime" and phase["component"] in NATIVE_TARGETS
+            and phase["state"] in {"build", "waiting"}}))
+        if missing_targets and environment.get("GITHUB_TOKEN") and sdk_original_workflow_sha:
+            captured = capture_prior_failed_runtime_prefixes(
+                plan, _consumer(plan, environment)["producer"], missing_targets,
+                prepared / "prior-failed-runtime", trusted_workflow_sha=sdk_original_workflow_sha,
+                token=environment["GITHUB_TOKEN"])
+            if captured:
+                prior_records = _prior_failed_runtime_objects(prepared / "prior-failed-runtime", prepared)
+                wave["availableObjects"] = sorted((*initial_objects, *prior_records), key=_identity)
+                ready_plans.clear()
+                reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling,
+                    apple_policy=sdk_apple_validation_policy,
+                    apple_package_origin=_apple_package_origin(captured_plan, root, sdk_original_workflow_sha, environment),
+                    build_plan_consumer=retain,
+                    **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
         _, selected, phases = _validate_reuse_result(reuse, requested, require_complete=False,
             sdk_runtime_external=wave.get("sdkRuntimeSource") == "released-default")
         by_id = {_identity(phase): phase for phase in phases}
         originals = {_identity(phase): phase for phase in original_phases}
         if any(by_id.get(instance, {}).get("state") != "retained" for instance in originals):
             raise ValueError("Product resume did not retain every authenticated Contract object")
-        sources = {_identity(record): prepared / record["objectPath"] for record in initial_objects}
+        elected_prior = _elected_prior_runtime_records(prior_records, selected, by_id)
+        sources = {_identity(record): prepared / record["objectPath"]
+                   for record in (*initial_objects, *elected_prior.values())}
         remote_sources = _catalog_object_sources(wave)
         for instance in selected:
             if instance not in sources:
                 phase = by_id[instance]
                 sources[instance] = remote_sources[(phase["source"], phase["transportSource"]["indexSha256"], phase["buildKey"])]
+        carrier_phases = []
+        for instance in selected:
+            if instance in originals:
+                carrier_phases.append(originals[instance])
+            elif instance in elected_prior:
+                shard = prepared / "prior-failed-runtime" / instance.target / "phases" / instance.phase / "original/shard"
+                descriptor = _canonical_control(shard / PHASE_SHARD_NAME, "Prior failed Runtime shard")
+                receipt = verify_phase_shard(shard, instance)["receipt"]
+                carrier_phases.append({**by_id[instance], "state": "reused", "source": "phase-shard",
+                    "transportSource": {"kind": "phase-shard",
+                        "descriptorSha256": sha256_bytes(canonical_json_bytes(descriptor)),
+                        "producer": receipt["producer"]}, "misses": []})
+            else:
+                carrier_phases.append(by_id[instance])
         normalized = {"schemaVersion": 1, "result": "complete", "fullReuse": True,
-                      "phases": [originals.get(instance, by_id[instance]) for instance in selected],
+                      "phases": carrier_phases,
                       "matrices": {"contract": [], "runtime": [], "sdk": []}}
         write_carrier(prepared / ("carrier" if reuse["fullReuse"] else "reused-carrier"),
                       normalized, selected, sources, _consumer(plan, environment))
