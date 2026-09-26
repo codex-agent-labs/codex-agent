@@ -196,6 +196,10 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
 
     def test_capture_uses_only_selected_parent_and_completion_uses_captured_paths(self):
         job = self.job("sdk-completion")
+        outputs = job.split("    outputs:\n", 1)[1].split("    steps:\n", 1)[0]
+        for name in ("artifact_id", "artifact_digest", "state_wave", "sdk_state_wave"):
+            self.assertIn(name + ": ${{ steps.parent.outputs." + name + " }}", outputs)
+            self.assertNotIn(name + ": ${{ steps.capture.outputs." + name + " }}", outputs)
         capture = job.split("      - id: capture\n", 1)[1].split("\n      - ", 1)[0]
         self.assertIn("uses: ./.github/actions/capture-runtime-state", capture)
         self.assertIn("product: sdk", capture)

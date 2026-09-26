@@ -4553,6 +4553,10 @@ jobs:
       complete: ${{ steps.completion.outputs.complete }}
       phase_count: ${{ steps.completion.outputs.phaseCount }}
       full_reuse: ${{ steps.completion.outputs.fullReuse }}
+      artifact_id: ${{ steps.parent.outputs.artifact_id }}
+      artifact_digest: ${{ steps.parent.outputs.artifact_digest }}
+      state_wave: ${{ steps.parent.outputs.state_wave }}
+      sdk_state_wave: ${{ steps.parent.outputs.sdk_state_wave }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
