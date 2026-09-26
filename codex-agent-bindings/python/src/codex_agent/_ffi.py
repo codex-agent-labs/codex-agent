@@ -333,9 +333,18 @@ def _snapshot_embedded_library(path: Path, expected_digest: str) -> Path:
         destination.chmod(stat.S_IRUSR)
         return destination
     except Exception:
-        _SNAPSHOT_DIRECTORIES.remove(directory)
-        directory.cleanup()
+        _release_snapshot(destination)
         raise
+
+
+def _release_snapshot(path: Path) -> None:
+    directory = next((item for item in _SNAPSHOT_DIRECTORIES if item.name == str(path.parent)), None)
+    if directory is not None:
+        try:
+            directory.cleanup()
+        except OSError:
+            return  # Retain ownership for a later cleanup attempt without masking the load failure.
+        _SNAPSHOT_DIRECTORIES.remove(directory)
 
 
 def _validate_runtime_identity(
@@ -435,9 +444,7 @@ def _require_external_runtime_evidence(
         signed = verify_external_runtime(snapshot.resolve(), evidence, pinned_root, compatibility, classifier)
         return snapshot, signed["runtimeIdentity"]
     except Exception:
-        directory = next(item for item in _SNAPSHOT_DIRECTORIES if item.name == str(snapshot.parent))
-        _SNAPSHOT_DIRECTORIES.remove(directory)
-        directory.cleanup()
+        _release_snapshot(snapshot)
         raise
 
 
@@ -461,24 +468,32 @@ class NativeLibrary:
         library_path = resolve_library_path(path)
         embedded = path is None and "CODEX_AGENT_LIBRARY" not in os.environ
         signed_identity = None
-        if embedded:
-            variant = next(item for item in compatibility["runtime"]["embeddedVariants"] if item["target"] == classifier)
-            library_path = _snapshot_embedded_library(library_path, variant["runtimeLibrarySha256"])
-        else:
-            library_path, signed_identity = _require_external_runtime_evidence(library_path, classifier, compatibility)
-        library = ctypes.CDLL(str(library_path))
-        identity = _read_runtime_identity(library)
-        if signed_identity is not None and identity != signed_identity:
-            raise OSError("Loaded Runtime identity differs from its signed authorization")
-        _validate_runtime_identity(identity, compatibility, classifier, embedded)
-        abi = _semver(identity["cAbiVersion"], "Runtime identity ABI")
-        encoded_abi = (abi[0] << 24) | (abi[1] << 16) | abi[2]
-        abi_version = getattr(library, "codex_agent_abi_version")
-        abi_version.argtypes = []
-        abi_version.restype = ctypes.c_uint32
-        if int(abi_version()) != encoded_abi:
-            raise OSError("Runtime identity ABI disagrees with the loaded library")
-        return cls(library)
+        snapshot = None
+        loaded = False
+        try:
+            if embedded:
+                variant = next(item for item in compatibility["runtime"]["embeddedVariants"] if item["target"] == classifier)
+                snapshot = _snapshot_embedded_library(library_path, variant["runtimeLibrarySha256"])
+            else:
+                snapshot, signed_identity = _require_external_runtime_evidence(library_path, classifier, compatibility)
+            library = ctypes.CDLL(str(snapshot))
+            loaded = True
+            identity = _read_runtime_identity(library)
+            if signed_identity is not None and identity != signed_identity:
+                raise OSError("Loaded Runtime identity differs from its signed authorization")
+            _validate_runtime_identity(identity, compatibility, classifier, embedded)
+            abi = _semver(identity["cAbiVersion"], "Runtime identity ABI")
+            encoded_abi = (abi[0] << 24) | (abi[1] << 16) | abi[2]
+            abi_version = getattr(library, "codex_agent_abi_version")
+            abi_version.argtypes = []
+            abi_version.restype = ctypes.c_uint32
+            if int(abi_version()) != encoded_abi:
+                raise OSError("Runtime identity ABI disagrees with the loaded library")
+            return cls(library)
+        except Exception:
+            if snapshot is not None and (not loaded or os.name != "nt"):
+                _release_snapshot(snapshot)
+            raise
 
     def function(self, name: str) -> Any:
         return getattr(self.library, name)

@@ -36,6 +36,7 @@ from codex_agent._ffi import (  # noqa: E402
     resolve_library_path,
 )
 from codex_agent._runtime_evidence import _json, _read  # noqa: E402
+from codex_agent import _ffi  # noqa: E402
 from runtime_signed_fixture import authorize  # noqa: E402
 
 
@@ -236,6 +237,57 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
         with self.assertRaisesRegex(OSError, "size query failed"):
             _read_runtime_identity(library)
         self.assertEqual(function.calls, 1)
+
+    def test_rejected_load_releases_verified_runtime_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            library = Path(temporary) / _library_name(current_classifier())
+            library.write_bytes(b"verified but unloadable Runtime")
+            policy = compatibility()
+            variant = next(item for item in policy["runtime"]["embeddedVariants"]
+                           if item["target"] == current_classifier())
+            variant["runtimeLibrarySha256"] = "sha256:" + hashlib.sha256(library.read_bytes()).hexdigest()
+            retained_before = len(_ffi._SNAPSHOT_DIRECTORIES)
+            loaded_paths: list[Path] = []
+
+            def reject(path: str) -> None:
+                loaded_paths.append(Path(path))
+                raise OSError("dynamic load failed")
+
+            with patch.object(_ffi, "_load_compatibility", return_value=policy), \
+                    patch.object(_ffi, "resolve_library_path", return_value=library), \
+                    patch.object(_ffi.ctypes, "CDLL", side_effect=reject):
+                with self.assertRaisesRegex(OSError, "dynamic load failed"):
+                    NativeLibrary.load()
+
+            self.assertEqual(len(loaded_paths), 1)
+            self.assertFalse(loaded_paths[0].exists())
+            self.assertFalse(loaded_paths[0].parent.exists())
+            self.assertEqual(len(_ffi._SNAPSHOT_DIRECTORIES), retained_before)
+
+    def test_windows_loaded_snapshot_is_retained_and_failed_cleanup_keeps_owner(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            library = Path(temporary) / "codex_agent.dll"
+            library.write_bytes(b"verified Runtime")
+            expected = "sha256:" + hashlib.sha256(library.read_bytes()).hexdigest()
+            snapshot = _snapshot_embedded_library(library, expected)
+            owner = next(item for item in _ffi._SNAPSHOT_DIRECTORIES if item.name == str(snapshot.parent))
+            try:
+                with patch.object(_ffi, "_load_compatibility", return_value=compatibility()), \
+                        patch.object(_ffi, "resolve_library_path", return_value=library), \
+                        patch.object(_ffi, "_snapshot_embedded_library", return_value=snapshot), \
+                        patch.object(_ffi.ctypes, "CDLL", return_value=object()), \
+                        patch.object(_ffi, "_read_runtime_identity", side_effect=OSError("identity rejected")), \
+                        patch.object(_ffi.os, "name", "nt"):
+                    with self.assertRaisesRegex(OSError, "identity rejected"):
+                        NativeLibrary.load()
+                self.assertTrue(snapshot.exists())
+                self.assertIn(owner, _ffi._SNAPSHOT_DIRECTORIES)
+                with patch.object(owner, "cleanup", side_effect=PermissionError("DLL remains loaded")):
+                    _ffi._release_snapshot(snapshot)
+                self.assertIn(owner, _ffi._SNAPSHOT_DIRECTORIES)
+            finally:
+                _ffi._release_snapshot(snapshot)
+            self.assertFalse(snapshot.parent.exists())
 
     def test_identity_incompatibilities_fail_closed(self) -> None:
         changes = {
