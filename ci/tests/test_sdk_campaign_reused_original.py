@@ -39,6 +39,8 @@ class ReusedSdkOriginalTest(unittest.TestCase):
         catalog = fixture.repository / "independent-catalog"
         catalog.mkdir()
         private, self.key, signing = generate_development_key(catalog / "key")
+        self.private = private
+        self.signing = signing
         self.other_key = generate_development_key(catalog / "other-key")[1]
         receipt = descriptor["receipt"]
         output = receipt["outputs"][0]
@@ -158,6 +160,79 @@ class ReusedSdkOriginalTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "independent digest"):
                 locator.discover_reused_sdk_original_pin(self.instance,
                     **{**arguments, "expected_public_key_sha256": "sha256:" + "0" * 64})
+
+    def test_two_reused_phases_fetch_one_signed_catalog(self):
+        second, ready, shard, descriptor, worker_files = self.fixture.shard("validation")
+        context = {"kind": "pull-request", **{field: self.fixture.producer[field]
+            for field in ("pullRequest", "commit", "tree", "runId", "runAttempt")}}
+        index = build_product_index([
+            IndexEntrySource(self.descriptor["receiptBytes"],
+                self.descriptor["receipt"]["outputs"][0]["relativePath"]),
+            IndexEntrySource(descriptor["receiptBytes"],
+                descriptor["receipt"]["outputs"][0]["relativePath"]),
+        ], repository=self.fixture.producer["repository"], context=context,
+            trust_domain="development", signing=self.signing,
+            producer=self.fixture.producer, stable_history=None)
+        catalog = self.key.parent
+        manifest = catalog / "product-index.json"
+        manifest.write_bytes(canonical_json_bytes(index))
+        signature = sign_manifest(manifest, self.private, self.signing)
+        self.raw = archive({"product-index.json": manifest.read_bytes(),
+            "product-index.sig": signature.read_bytes(), "public-key.pub": self.key.read_bytes(),
+            self.descriptor["objectPath"]: self.original_object.read_bytes(),
+            descriptor["objectPath"]: (shard / descriptor["objectPath"]).read_bytes()})
+        catalog_artifact = {**self.catalog_artifact, "digest": sha256_bytes(self.raw),
+            "size_in_bytes": len(self.raw)}
+        second_raw = archive(worker_files)
+        _, second_name = fresh_sdk_worker_route(second, descriptor["receipt"])
+        second_artifact = {**self.worker_artifact, "id": 903, "name": second_name,
+            "digest": sha256_bytes(second_raw), "size_in_bytes": len(second_raw),
+            "archive_download_url": self.worker_artifact["archive_download_url"].replace("901", "903")}
+        worker_job, first_name = fresh_sdk_worker_route(self.instance, self.descriptor["receipt"])
+        second_job, _ = fresh_sdk_worker_route(second, descriptor["receipt"])
+        observed = {"run": self.run, "testedCommit": self.tested}
+        def observe(_producers, *, jobs_by_phase, **_kwargs):
+            job = next(iter(jobs_by_phase.values()))
+            return [{**observed, "jobs": [{**self.catalog_job, "name": job}]}]
+        def detail(url, _token):
+            return second_artifact if url.endswith("/903") else (
+                self.worker_artifact if url.endswith("/901") else catalog_artifact)
+        def download(artifact, _token, destination, **_kwargs):
+            if artifact["id"] == 903:
+                self.assertEqual(1, len(list(Path(destination).parent.parent.glob("original-worker-*"))))
+            Path(destination).write_bytes({901: self.worker_raw, 902: self.raw,
+                                           903: second_raw}[artifact["id"]])
+        def locate(_producer, *, name, **_kwargs):
+            artifact = self.worker_artifact if name == first_name else second_artifact
+            return {"artifact_id": artifact["id"], "artifact_sha256": artifact["digest"]}
+        selections = {
+            self.instance: {"expected_build_key": self.ready["buildKey"],
+                "expected_product_version": "0.3.0",
+                "trusted_worker_workflow_path": ".github/workflows/product-validation.yml",
+                "trusted_worker_job_name": worker_job},
+            second: {"expected_build_key": ready["buildKey"],
+                "expected_product_version": "0.3.0",
+                "trusted_worker_workflow_path": ".github/workflows/product-validation.yml",
+                "trusted_worker_job_name": second_job},
+        }
+        with patch.object(locator.products, "paginated_items", return_value=[catalog_artifact]) as listing, \
+             patch.object(locator.products, "api_json", side_effect=detail), \
+             patch.object(locator.products, "download_artifact_to_file", side_effect=download) as downloads, \
+             patch.object(locator.products, "_observe_ci_producer_jobs", side_effect=observe), \
+             patch.object(locator.products, "_same_pr_run", return_value=observed), \
+             patch.object(locator, "_locate", side_effect=locate):
+            pins = locator.discover_reused_sdk_original_pins(selections,
+                pull_request=31, repository=self.fixture.producer["repository"],
+                catalog_artifact_name=catalog_artifact["name"], catalog_public_key=self.key,
+                expected_public_key_sha256=sha256_bytes(self.key.read_bytes()),
+                trusted_workflow_sha=fixture_module.PIN,
+                trusted_catalog_workflow_path=".github/workflows/product-validation.yml",
+                trusted_catalog_job_name=self.catalog_job["name"],
+                token="synthetic-token", environ={})
+        self.assertEqual({self.instance, second}, set(pins))
+        self.assertEqual(903, pins[second]["original_artifact_id"])
+        listing.assert_called_once()
+        self.assertEqual(1, sum(call.args[0]["id"] == 902 for call in downloads.call_args_list))
 
     def test_independent_worker_and_catalog_workflow_pairs(self):
         path = ".github/workflows/product-validation.yml"

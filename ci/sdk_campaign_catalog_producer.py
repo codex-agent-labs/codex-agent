@@ -8,14 +8,20 @@ release admission nor a signed catalog producer.
 from collections.abc import Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from types import MappingProxyType
 
 from ci.sdk_campaign_observation import ObservedSdkOriginal
+from ci.sdk_campaign_original_locator import (
+    discover_fresh_sdk_original_pin, discover_reused_sdk_original_pins,
+)
 from ci.sdk_campaign_original_worker import held_fresh_sdk_worker_upload
 from ci.sdk_campaign_reused_original import held_reused_sdk_original
 from products.index import IndexEntrySource
-from products.inventory import load_canonical_json_bytes, require_integer, require_sha256
+from products.inventory import (
+    load_canonical_json_bytes, require_exact_keys, require_integer, require_sha256,
+)
 from products.registry import PhaseInstanceId
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES, held_sdk_campaign_selection
 from products.sdk_campaign_semantics import verify_sdk_campaign_semantics
@@ -45,6 +51,62 @@ class ReusedSdkOriginalPin:
     worker_job_name: str
     catalog_workflow_path: str
     catalog_job_name: str
+
+
+_FRESH_SELECTION_KEYS = {
+    "producer", "expected_build_key", "expected_product_version",
+    "trusted_workflow_path", "trusted_job_name",
+}
+_REUSED_SELECTION_KEYS = {
+    "expected_build_key", "expected_product_version", "pull_request", "repository",
+    "catalog_artifact_name", "catalog_public_key", "expected_public_key_sha256",
+    "trusted_worker_workflow_path", "trusted_worker_job_name",
+    "trusted_catalog_workflow_path", "trusted_catalog_job_name",
+}
+
+
+def discover_sdk_campaign_original_pins(fresh, reused, *, trusted_workflow_sha,
+        token, environ):
+    """Resolve caller-selected 61-phase authorities without campaign observations.
+
+    The caller owns each build key/version/producer/catalog/key/workflow route.
+    This is a no-secret transport locator, not SDK release admission.
+    """
+    require_no_signing_secret(environ)
+    require_no_signing_secret(os.environ)
+    if (not isinstance(fresh, Mapping) or not isinstance(reused, Mapping)
+            or set(fresh) & set(reused)
+            or set(fresh) | set(reused) != SDK_CAMPAIGN_INSTANCES):
+        raise ValueError("SDK original pin discovery requires exactly 61 disjoint phase selections")
+    for instance, request in fresh.items():
+        if not isinstance(instance, PhaseInstanceId):
+            raise ValueError("Fresh SDK selection has invalid phase identity")
+        require_exact_keys(request, _FRESH_SELECTION_KEYS, "Fresh SDK original selection")
+    for instance, request in reused.items():
+        if not isinstance(instance, PhaseInstanceId):
+            raise ValueError("Reused SDK selection has invalid phase identity")
+        require_exact_keys(request, _REUSED_SELECTION_KEYS, "Reused SDK original selection")
+    pins = {instance: FreshSdkOriginalPin(**discover_fresh_sdk_original_pin(
+        instance, **fresh[instance], trusted_workflow_sha=trusted_workflow_sha,
+        token=token, environ=environ)) for instance in sorted(fresh)}
+    shared_fields = ("pull_request", "repository", "catalog_artifact_name", "catalog_public_key",
+        "expected_public_key_sha256", "trusted_catalog_workflow_path", "trusted_catalog_job_name")
+    worker_fields = ("expected_build_key", "expected_product_version",
+        "trusted_worker_workflow_path", "trusted_worker_job_name")
+    groups = {}
+    for instance in sorted(reused):
+        request = reused[instance]
+        common = tuple(request[field] for field in shared_fields)
+        groups.setdefault(common, {})[instance] = {field: request[field] for field in worker_fields}
+    for common, selections in groups.items():
+        found = discover_reused_sdk_original_pins(selections,
+            **dict(zip(shared_fields, common)), trusted_workflow_sha=trusted_workflow_sha,
+            token=token, environ=environ)
+        if set(found) != set(selections):
+            raise ValueError("Reused SDK catalog discovery returned incomplete phases")
+        pins.update({instance: ReusedSdkOriginalPin(**found[instance]) for instance in selections})
+    require_no_signing_secret(environ)
+    return MappingProxyType(pins)
 
 
 @contextmanager

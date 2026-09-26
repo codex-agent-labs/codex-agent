@@ -35,6 +35,58 @@ class SdkCampaignCatalogProducerTest(TestCase):
             self.observations, b"current-transport", self.pins,
             trusted_workflow_sha="pinned-workflow", token="observation-token", environ={})
 
+    def test_independent_phase_selection_discovers_all_61_before_replay(self):
+        fresh = {instance: {
+            "producer": {"selected": position}, "expected_build_key": _DIGEST,
+            "expected_product_version": "0.8.0",
+            "trusted_workflow_path": ".github/workflows/product-validation.yml",
+            "trusted_job_name": "product-validation / sdk-worker",
+        } for position, instance in enumerate(self.instances)}
+        reused = {}
+        selected = self.instances[:2]
+        shared_reused = {
+            "expected_build_key": _DIGEST, "expected_product_version": "0.8.0",
+            "pull_request": 31, "repository": "codex-agent-labs/codex-agent",
+            "catalog_artifact_name": "codex-agent-product-catalog-v1-pull-request-31-original",
+            "catalog_public_key": Path("independent.pub"),
+            "expected_public_key_sha256": _DIGEST,
+            "trusted_worker_workflow_path": ".github/workflows/product-validation.yml",
+            "trusted_worker_job_name": "product-validation / sdk-worker",
+            "trusted_catalog_workflow_path": ".github/workflows/product-validation.yml",
+            "trusted_catalog_job_name": "product-validation / sdk-catalog",
+        }
+        for instance in selected:
+            reused[instance] = dict(shared_reused)
+            fresh.pop(instance)
+        reused_pin = catalog.ReusedSdkOriginalPin(
+            _DIGEST, 101, _DIGEST, 201, _DIGEST, Path("independent.pub"), _DIGEST, 31,
+            ".github/workflows/product-validation.yml", "product-validation / sdk-worker",
+            ".github/workflows/product-validation.yml", "product-validation / sdk-catalog")
+        with patch.object(catalog, "discover_fresh_sdk_original_pin", return_value={
+                "receipt_sha256": _DIGEST, "artifact_id": 1, "artifact_sha256": _DIGEST,
+                "workflow_path": ".github/workflows/product-validation.yml",
+                "job_name": "product-validation / sdk-worker"}) as discover_fresh, \
+             patch.object(catalog, "discover_reused_sdk_original_pins", return_value={
+                instance: {field: getattr(reused_pin, field)
+                           for field in reused_pin.__dataclass_fields__}
+                for instance in selected
+             }) as discover_reused:
+            pins = catalog.discover_sdk_campaign_original_pins(fresh, reused,
+                trusted_workflow_sha="reviewed-sha", token="observation-token", environ={})
+            self.assertEqual(61, len(pins))
+            self.assertEqual(59, discover_fresh.call_count)
+            discover_reused.assert_called_once()
+            self.assertEqual(set(selected), set(discover_reused.call_args.args[0]))
+            self.assertEqual(reused[selected[0]]["catalog_artifact_name"],
+                             discover_reused.call_args.kwargs["catalog_artifact_name"])
+            self.assertIsInstance(pins[selected[0]], catalog.ReusedSdkOriginalPin)
+            self.assertIsInstance(pins[self.instances[2]], catalog.FreshSdkOriginalPin)
+            fresh.pop(self.instances[2])
+            with self.assertRaisesRegex(ValueError, "exactly 61 disjoint"):
+                catalog.discover_sdk_campaign_original_pins(fresh, reused,
+                    trusted_workflow_sha="reviewed-sha", token="observation-token", environ={})
+            self.assertEqual(59, discover_fresh.call_count)
+
     def test_all_61_originals_remain_held_through_replay_and_close_on_failure(self):
         active = set()
         closed = []
