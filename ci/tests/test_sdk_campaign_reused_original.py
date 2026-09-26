@@ -105,15 +105,19 @@ class ReusedSdkOriginalTest(unittest.TestCase):
             return self.worker_artifact if url.endswith("/901") else artifact
         def download_artifact(detail, _token):
             return self.worker_raw if detail["id"] == 901 else raw or self.raw
+        def download_artifact_to_file(detail, _token, destination, **_kwargs):
+            Path(destination).write_bytes(download_artifact(detail, _token))
         return patch.multiple(reused.product_reuse,
             api_json=api_json,
             download_artifact=download_artifact,
+            download_artifact_to_file=download_artifact_to_file,
             _observe_ci_producer_jobs=producer_jobs,
             _same_pr_run=lambda *_args, **_kwargs: observed)
 
     def test_exact_signed_catalog_and_original_object(self):
         before = regular_file_inventory(self.original_object.parent)
-        with self.official():
+        with self.official(), patch.object(reused.product_reuse, "download_artifact",
+                side_effect=AssertionError("SDK original transport must stream")):
             with self.held() as (evidence, object_path):
                 self.assertEqual(self.original_object.read_bytes(), object_path.read_bytes())
                 self.assertEqual(self.descriptor["receiptSha256"], evidence["originalReceiptSha256"])

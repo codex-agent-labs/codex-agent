@@ -114,14 +114,13 @@ def held_reused_sdk_original(instance, original, current_transport_bytes, *,
     producer_observation = product_reuse._observe_ci_producer_jobs(
         {"worker": producer}, jobs_by_phase={"worker": original_job},
         token=token, **worker_policy)
-    original_artifact, original_raw = product_reuse._download_contract_ci_upload(
-        original_artifact_id, original_artifact_sha256, original_name,
-        producer, producer_observation[0]["run"], token)
-    product_reuse._require_artifact_job_window(producer_observation[0], original_job, original_artifact)
     with tempfile.TemporaryDirectory(prefix="sdk-reused-worker-") as temporary:
         worker_root = Path(temporary).resolve()
         worker_archive = worker_root / "transport.zip"
-        worker_archive.write_bytes(original_raw)
+        original_artifact, _ = product_reuse._download_contract_ci_upload(
+            original_artifact_id, original_artifact_sha256, original_name,
+            producer, producer_observation[0]["run"], token, destination=worker_archive)
+        product_reuse._require_artifact_job_window(producer_observation[0], original_job, original_artifact)
         zipped, _, _ = verified_zip_contents(worker_archive, retained_paths=(), allow_empty_members=True,
             **product_reuse._CATALOG_ZIP_LIMITS)
         worker = worker_root / "original"
@@ -153,13 +152,13 @@ def held_reused_sdk_original(instance, original, current_transport_bytes, *,
     size = require_integer(artifact.get("size_in_bytes"), "Reused SDK catalog size", 1)
     if size > product_reuse._CATALOG_LIMIT:
         raise ValueError("Reused SDK catalog exceeds transport limit")
-    raw = product_reuse.download_artifact(artifact, token)
-    if len(raw) != size or sha256_bytes(raw) != catalog_artifact_sha256:
-        raise ValueError("Reused SDK catalog differs from official artifact bytes")
     with tempfile.TemporaryDirectory(prefix="sdk-reused-original-") as temporary:
         root = Path(temporary).resolve()
         archive = root / "catalog.zip"
-        archive.write_bytes(raw)
+        product_reuse.download_artifact_to_file(artifact, token, archive,
+            max_bytes=product_reuse._CATALOG_LIMIT)
+        if archive.stat().st_size != size or sha256_file(archive) != catalog_artifact_sha256:
+            raise ValueError("Reused SDK catalog differs from official artifact bytes")
         verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
             **product_reuse._CATALOG_ZIP_LIMITS)
         extracted = root / "catalog"
