@@ -26,6 +26,7 @@ SELECTOR_JOBS = {
     "sdk-ios-validation-result", "sdk-ios-metadata-result", "sdk-core-binary-wave",
     "sdk-core-package-wave", "sdk-core-validation-wave", "sdk-core-metadata-wave",
     "sdk-android-binary-result", "sdk-android-package-result", "sdk-android-validation-result",
+    "sdk-android-metadata-result",
 }
 
 

@@ -293,6 +293,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/runtime_signing_preparation.py",
     "ci/sdk_javascript_validation_locator.py",
     "ci/sdk_native_continuation.py",
+    "ci/sdk_native_prepared_receiver.py",
     "gradle/build-logic/src/main/kotlin/AppleBinaryPackageContent.kt",
     "gradle/build-logic/src/main/kotlin/AppleBinaryPackageReplay.kt",
     "gradle/build-logic/src/main/kotlin/AppleOriginalExecutionVerification.kt",
@@ -717,6 +718,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         return _from_phase("sdk", "sdk-ios", "metadata")
     if path == "ci/products/sdk_apple_validation_content.py":
         return _from_phase("sdk", "sdk-ios", "validation")
+    if path == "ci/sdk_native_prepared_receiver.py":
+        return _bindings(NATIVE_BINDINGS)
     if path in _CONTROL_ONLY_FILES:
         return set(ALL_INSTANCES)
     if _is_prefix(path, ".github/actions/capture-sdk-tooling/"):
@@ -802,6 +805,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         ".github/workflows/sdk-core-metadata-validation.yml": _from_phase("sdk", "sdk-core", "metadata"),
         ".github/workflows/sdk-android-binary-validation.yml": _from_phase("sdk", "sdk-android", "binary"),
         ".github/workflows/sdk-android-package-validation.yml": _from_phase("sdk", "sdk-android", "package"),
+        ".github/workflows/sdk-android-validation.yml": _from_phase("sdk", "sdk-android", "validation"),
+        ".github/workflows/sdk-android-metadata-validation.yml": _from_phase("sdk", "sdk-android", "metadata"),
         ".github/workflows/sdk-validation.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/sdk-binding-parity.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/sdk-consumer-validation.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},

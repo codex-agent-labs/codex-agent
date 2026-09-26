@@ -121,6 +121,14 @@ class ProductSelectionTest(unittest.TestCase):
                 instance for instance in sdk if instance.component == "sdk-android"
                 and instance.phase in {"package", "validation", "metadata"}
             },
+            ".github/workflows/sdk-android-validation.yml": {
+                instance for instance in sdk if instance.component == "sdk-android"
+                and instance.phase in {"validation", "metadata"}
+            },
+            ".github/workflows/sdk-android-metadata-validation.yml": {
+                instance for instance in sdk if instance.component == "sdk-android"
+                and instance.phase == "metadata"
+            },
             ".github/workflows/sdk-validation.yml": sdk,
             ".github/workflows/sdk-binding-parity.yml": sdk,
             ".github/workflows/sdk-consumer-validation.yml": sdk,
@@ -149,6 +157,18 @@ class ProductSelectionTest(unittest.TestCase):
         self.assertEqual(set(PHASE_INSTANCE_IDS), set(result.instances))
         self.assertEqual((), result.inventory_paths)
         self.assertEqual((), result.unknown_paths)
+
+    def test_native_prepared_receiver_selects_only_its_bindings_without_payload_keys(self):
+        path = "ci/sdk_native_prepared_receiver.py"
+        result = classify_paths((path,))
+        expected = {instance for instance in PHASE_INSTANCE_IDS
+                    if instance.product == "sdk" and instance.component in NATIVE_BINDINGS
+                    and instance.phase in {"package", "validation", "metadata"}}
+        self.assertEqual(expected, identities(result))
+        self.assertEqual((), result.unknown_paths)
+        self.assertEqual((), result.inventory_paths)
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((), phase_inventory_paths((path,), instance))
 
     def test_original_transport_and_signing_controls_do_not_change_payload_keys(self) -> None:
         paths = (
