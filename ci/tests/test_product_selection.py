@@ -1827,6 +1827,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/sdk_campaign_catalog_caller.py",
             "ci/products/sdk_campaign_dev_catalog.py",
             "ci/sdk_campaign_reused_original.py",
+            "ci/sdk_partial_state.py",
             "ci/sdk_core_metadata_protected_handoff.py",
         )
         for path in paths:
@@ -1840,6 +1841,18 @@ class ProductSelectionTest(unittest.TestCase):
         self.assertEqual(("ci/truly-unknown-control.py",), phase_inventory_paths(
             ("ci/truly-unknown-control.py",),
             PhaseInstanceId("contract", "contract", "binary", "common")))
+
+    def test_phase10_output_records_select_only_their_product_metadata(self):
+        for path, product, component, target in (
+            ("ci/contract_phase10_output_record.py", "contract", "contract", "common"),
+            ("ci/contract_phase10_record_signer.py", "contract", "contract", "common"),
+            ("ci/runtime_phase10_output_record.py", "runtime", "runtime-aggregate", "aggregate"),
+        ):
+            result = classify_paths((path,))
+            self.assertEqual((), result.unknown_paths)
+            self.assertEqual((), result.inventory_paths)
+            self.assertEqual({PhaseInstanceId(product, component, "metadata", target)},
+                             identities(result))
 
     def test_native_validation_and_metadata_actions_replan_only_their_owners_without_binary_inputs(self):
         for phase, phases in (("validation", {"validation", "metadata"}), ("metadata", {"metadata"})):
