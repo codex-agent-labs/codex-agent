@@ -5,12 +5,17 @@ Official HTTP and product bytes are synthetic; one case uses the real planner.
 
 from pathlib import Path
 from contextlib import ExitStack
+import json
+import os
+import re
 import shutil
+import textwrap
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from ci.tests import test_runtime_resume_capture as resume_fixture
+from ci import product_reuse as packaged_product_reuse
 from ci.products.index import SignedProductIndex, verify_signed_product_index
 from ci.products.inventory import load_canonical_json, regular_file_inventory, sha256_bytes
 from ci.products.receipt import write_output_manifest
@@ -19,6 +24,8 @@ from ci.sdk_campaign_partial_catalog_caller import SDK_CAMPAIGN_INSTANCES, stage
 from ci.sdk_nested_wave_locator import _COLLECTORS
 from ci.tests.product_chain_support import write_receipt
 from ci.tests import test_product_contract_resume as contract_fixture
+from ci.tests.test_sdk_nested_partial_state import children
+from ci.tests.test_sdk_partial_state import jobs
 
 
 product_reuse = resume_fixture.product_reuse
@@ -191,6 +198,40 @@ class NestedSdkPlannerReplayTest(unittest.TestCase):
             "created_at": "2026-09-13T10:01:00Z",
             "archive_download_url": url + "/zip",
             "workflow_run": {"id": 7, "head_sha": run["head_sha"]}}
+        workflow_source = (Path(__file__).resolve().parents[2] /
+            ".github/workflows/product-validation.yml").read_text()
+        partial_job = workflow_source.split("  sdk-partial-catalog:\n", 1)[1].split("\n  sdk-catalog:\n", 1)[0]
+        selector = re.search(r"(?ms)^          python3 - <<'PY'\n(.*?)^          PY$", partial_job)
+        self.assertIsNotNone(selector)
+        needs = jobs(10)
+        needs["sdk-collect-10"]["outputs"]["wave_failed"] = "false"
+        needs.update(children(11))
+        selector_output = self.scratch / "selected-parent"
+        environment = {**self.environment, "RESULTS": json.dumps(needs),
+            "GITHUB_OUTPUT": str(selector_output), "GITHUB_WORKSPACE": str(self.repository),
+            "GITHUB_REPOSITORY": repository, "PLAN": str(self.plan_path),
+            "TRUSTED_WORKFLOW_SHA": pin, "GITHUB_TOKEN": "synthetic-token"}
+        # This Contract fixture has a synthetic impact plan (lanes={}); its
+        # existing plan/selection seam does not replace the saved selector or locator.
+        with patch.dict(os.environ, environment, clear=True), \
+                patch.object(packaged_product_reuse, "_validate_plan", return_value=self.plan), \
+                patch.object(packaged_product_reuse, "api_json") as parent_api, \
+                patch.object(packaged_product_reuse, "paginated_items", return_value=[job]), \
+                patch.object(adapter, "api_json") as child_api, \
+                patch.object(adapter, "paginated_items") as child_pages:
+            parent_api.side_effect = [run, commit]
+            child_api.side_effect = [run, commit, {**artifact, "digest": "sha256:" + "0" * 64}]
+            child_pages.side_effect = [[job], [artifact]]
+            with self.assertRaises(ValueError):
+                exec(compile(textwrap.dedent(selector[1]), "saved-sdk-partial-parent", "exec"), {})
+            self.assertFalse(selector_output.exists())
+            parent_api.side_effect = [run, commit]
+            child_api.side_effect = [run, commit, artifact]
+            child_pages.side_effect = [[job], [artifact]]
+            exec(compile(textwrap.dedent(selector[1]), "saved-sdk-partial-parent", "exec"), {})
+        selected = dict(line.split("=", 1) for line in selector_output.read_text().splitlines())
+        self.assertEqual({"artifact_id": "101", "artifact_digest": artifact["digest"],
+                          "state_wave": "0", "sdk_state_wave": "11"}, selected)
         captured = self.scratch / "nested-upload"
         with self.control_seams(), \
                 patch.object(adapter, "api_json", side_effect=[run, commit, artifact]), \
@@ -199,9 +240,10 @@ class NestedSdkPlannerReplayTest(unittest.TestCase):
                     side_effect=lambda _artifact, _token, destination, **_:
                         Path(destination).write_bytes(raw)):
             transport = adapter.capture_runtime_resume_upload(self.plan_path, captured,
-                artifact_id=101, artifact_sha256=artifact["digest"],
+                artifact_id=int(selected["artifact_id"]), artifact_sha256=selected["artifact_digest"],
                 trusted_workflow_sha=pin, repository_root=self.repository,
-                environ=self.environment, token="synthetic-token", sdk_state_wave=11)
+                environ=self.environment, token="synthetic-token",
+                sdk_state_wave=int(selected["sdk_state_wave"]))
         self.assertEqual("in_progress", transport["observed"][0]["run"]["status"])
         original = captured / "original"
         with self.control_seams():
