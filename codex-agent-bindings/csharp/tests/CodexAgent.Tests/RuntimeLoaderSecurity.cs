@@ -526,6 +526,22 @@ internal static class RuntimeLoaderSecurity
                 library, compatibility, Target));
             File.WriteAllBytes(claim, originalClaim);
             File.WriteAllBytes(signature, original);
+            var keyringPath = Path.Combine(evidence, "release-keyring.json");
+            File.Move(keyringPath, keyringPath + ".held");
+            try
+            {
+                Reject<FileNotFoundException>(() => NativeLibraryLoader.RejectUnverifiedExternalForTests(
+                    library, compatibility, Target));
+            }
+            finally { File.Move(keyringPath + ".held", keyringPath); }
+            var originalLibrary = File.ReadAllBytes(library);
+            File.AppendAllText(library, "tampered Runtime");
+            try
+            {
+                Reject<InvalidDataException>(() => NativeLibraryLoader.RejectUnverifiedExternalForTests(
+                    library, compatibility, Target));
+            }
+            finally { File.WriteAllBytes(library, originalLibrary); }
             CodexNativeLibrary.Configure(library);
             VerifyNative();
         }

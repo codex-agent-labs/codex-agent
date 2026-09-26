@@ -79,7 +79,7 @@ class PackageAssetsTest(unittest.TestCase):
             self.assertIn("native/sdk-runtime-root.pub", members)
             self.assertTrue(set(LIBRARIES) <= members)
 
-    def test_extracted_crate_rejects_unauthenticated_external_library_before_loading(self) -> None:
+    def test_extracted_crate_rejects_tampered_default_and_unauthenticated_override(self) -> None:
         cargo = os.environ.get("CODEX_AGENT_TEST_CARGO") or shutil.which("cargo")
         if cargo is None:
             self.skipTest("local Cargo is unavailable")
@@ -122,6 +122,9 @@ class PackageAssetsTest(unittest.TestCase):
             )
             (consumer / "src/main.rs").write_text(
                 'fn main() {\n'
+                '  let embedded = codex_agent::CodexNativeLibrary::load_default()\n'
+                '    .err().expect("fixture embedded Runtime must reject");\n'
+                '  assert!(embedded.to_string().contains("embedded Runtime library digest differs"), "{embedded}");\n'
                 '  let path = std::env::args().nth(1).expect("library path");\n'
                 '  let error = codex_agent::CodexNativeLibrary::load(path).err().expect("must reject");\n'
                 '  assert!(error.to_string().contains("trusted release evidence"), "{error}");\n'
@@ -130,6 +133,7 @@ class PackageAssetsTest(unittest.TestCase):
             library = work / "unauthenticated.dylib"
             library.write_bytes(b"not a native library")
             environment = os.environ | {"RUSTC": str(Path(cargo).with_name("rustc"))}
+            environment.pop("CODEX_AGENT_LIBRARY", None)
             if os.name != "nt":
                 cargo_home = work / "cargo-home"
                 (cargo_home / "registry").mkdir(parents=True)
