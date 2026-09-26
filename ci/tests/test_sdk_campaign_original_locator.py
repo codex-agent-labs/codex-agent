@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from ci import sdk_campaign_original_locator as locator
 from ci import sdk_campaign_original_worker as worker
+from ci.sdk_campaign_catalog_producer import FreshSdkOriginalPin
 from ci.sdk_campaign_observation import ObservedSdkOriginal
 from ci.tests import test_sdk_worker_collection as fixture_module
 from ci.tests.product_chain_support import write_receipt
@@ -63,6 +64,40 @@ class SdkCampaignOriginalLocatorTest(TestCase):
             expected_receipt_sha256=digest or sha256_bytes(original.receipt_bytes),
             trusted_workflow_sha=fixture_module.PIN, token="synthetic-token",
             environ={} if environ is None else environ)
+
+    def test_fresh_pin_is_derived_from_official_worker_not_observed_state(self):
+        for family in ("javascript", "core", "android"):
+            with self.subTest(family=family):
+                instance, ready, original, raw = self.selected(
+                    core=family == "core",
+                    android_phase="package" if family == "android" else None)
+                job, _ = locator.fresh_sdk_worker_route(instance,
+                    validate_phase_receipt(load_canonical_json_bytes(original.receipt_bytes)))
+                arguments = dict(producer=self.fixture.producer, expected_build_key=ready["buildKey"],
+                    expected_product_version="0.3.0", trusted_workflow_sha=fixture_module.PIN,
+                    trusted_workflow_path=".github/workflows/product-validation.yml",
+                    trusted_job_name=job, token="synthetic-token", environ={})
+                with self.fixture.official_api({instance: ready}, {instance: raw}) as (_, _, download):
+                    pin = locator.discover_fresh_sdk_original_pin(instance, **arguments)
+                    self.assertEqual(sha256_bytes(original.receipt_bytes), pin["receipt_sha256"])
+                    self.assertEqual(sha256_bytes(raw), pin["artifact_sha256"])
+                    self.assertEqual(901, pin["artifact_id"])
+                    self.assertEqual(job, pin["job_name"])
+                    self.assertIsInstance(FreshSdkOriginalPin(**pin), FreshSdkOriginalPin)
+                    download.assert_called_once()
+                    with self.assertRaisesRegex(ValueError, "independent phase identity"):
+                        locator.discover_fresh_sdk_original_pin(
+                            instance, **{**arguments, "expected_product_version": "0.9.0"})
+                with patch.object(locator.products, "api_json") as api, \
+                     self.assertRaisesRegex(ValueError, "independent version, token and workflow route"):
+                    locator.discover_fresh_sdk_original_pin(instance,
+                        **{**arguments, "trusted_job_name": ""})
+                api.assert_not_called()
+                with patch.dict(locator.os.environ, {"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": ""}), \
+                     patch.object(locator.products, "api_json") as api, \
+                     self.assertRaisesRegex(ValueError, "signing-secret"):
+                    locator.discover_fresh_sdk_original_pin(instance, **arguments)
+                api.assert_not_called()
 
     def test_core_and_noncore_official_locator_feed_exact_worker_verifier(self):
         for core in (True, False):

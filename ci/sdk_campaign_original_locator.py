@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import sys
+import tempfile
 
 if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -13,9 +14,9 @@ from sdk_facade_capture import _capture_route
 import product_reuse as products
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, require_exact_keys,
-    require_sha256, sha256_bytes,
+    require_sha256, sha256_bytes, verified_zip_contents,
 )
-from products.receipt import validate_phase_receipt
+from products.receipt import validate_phase_receipt, validate_producer
 from products.registry import PhaseInstanceId
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from products.signing_isolation import require_no_signing_secret
@@ -52,6 +53,63 @@ def original_workflow_route(phase, default_job, sha, path=None, job=None):
     if type(job) is not str or not job:
         raise ValueError("SDK original workflow job must be caller-pinned text")
     return job, {"trusted_workflows_by_phase": {phase: {"path": path, "sha": sha}}}
+
+
+def discover_fresh_sdk_original_pin(instance, *, producer, expected_build_key,
+        expected_product_version, trusted_workflow_sha, trusted_workflow_path,
+        trusted_job_name, token, environ=None):
+    """Derive a fresh receipt pin from its official upload, never campaign state.
+
+    The caller supplies the exact phase, build key, version, current producer and
+    reviewed workflow route independently. This is a non-secret locator only;
+    the 61-original holder still re-downloads and verifies the complete shard.
+    """
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    if not isinstance(instance, PhaseInstanceId) or instance not in SDK_CAMPAIGN_INSTANCES:
+        raise ValueError("Fresh SDK pin discovery requires one registered SDK phase")
+    producer = validate_producer(producer)
+    require_sha256(expected_build_key, "Independent SDK build key")
+    if (type(expected_product_version) is not str or not expected_product_version
+            or type(token) is not str or not token
+            or type(trusted_workflow_path) is not str or not trusted_workflow_path
+            or type(trusted_job_name) is not str or not trusted_job_name):
+        raise ValueError("Fresh SDK pin discovery requires independent version, token and workflow route")
+    _, name = fresh_sdk_worker_route(instance, {
+        **{field: getattr(instance, field) for field in ("product", "component", "phase", "target")},
+        "buildKey": expected_build_key, "producer": producer,
+    })
+    job, policy = original_workflow_route("worker", trusted_job_name,
+        trusted_workflow_sha, trusted_workflow_path, trusted_job_name)
+    pin = _locate(producer, phase="worker", job=job, name=name, token=token,
+                  trusted_workflows_by_phase=policy["trusted_workflows_by_phase"])
+    observed = products._observe_ci_producer_jobs(
+        {"worker": producer}, jobs_by_phase={"worker": job}, token=token, **policy)[0]
+    with tempfile.TemporaryDirectory(prefix="sdk-original-pin-") as temporary:
+        archive = Path(temporary) / "original-upload.zip"
+        artifact, _ = products._download_contract_ci_upload(
+            pin["artifact_id"], pin["artifact_sha256"], name, producer,
+            observed["run"], token, destination=archive)
+        products._require_artifact_job_window(observed, job, artifact)
+        _, retained, _ = verified_zip_contents(
+            archive, retained_paths=("shard/phase-receipt.json",),
+            max_retained_bytes=16 * 1024 * 1024, allow_empty_members=True,
+            **products._CATALOG_ZIP_LIMITS)
+        receipt_bytes = retained.get("shard/phase-receipt.json")
+        if receipt_bytes is None:
+            raise ValueError("Fresh SDK original upload lacks its phase receipt")
+        receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+        if (tuple(receipt[field] for field in ("product", "component", "phase", "target"))
+                != tuple(getattr(instance, field) for field in ("product", "component", "phase", "target"))
+                or receipt["buildKey"] != expected_build_key
+                or receipt["productVersion"] != expected_product_version
+                or receipt["producer"] != producer
+                or receipt["trustDomain"] != "development"):
+            raise ValueError("Fresh SDK original upload differs from independent phase identity")
+    require_no_signing_secret(environment)
+    return {"receipt_sha256": sha256_bytes(receipt_bytes),
+            "artifact_id": pin["artifact_id"], "artifact_sha256": pin["artifact_sha256"],
+            "workflow_path": trusted_workflow_path, "job_name": trusted_job_name}
 
 
 def locate_fresh_sdk_original_upload(instance, original, *, expected_receipt_sha256,
