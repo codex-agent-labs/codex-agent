@@ -19,11 +19,15 @@ def main() -> int:
     root = Path(tempfile.gettempdir()).resolve()
     invalid = root / f"codex-agent-invalid-runtime-{id(arguments)}"
     invalid.write_bytes(b"not a runtime")
+    oversized = root / f"codex-agent-oversized-compatibility-{id(arguments)}"
+    with oversized.open("wb") as stream:
+        stream.truncate(1024 * 1024 + 1)
     commands = (
         [arguments.executable, arguments.library, arguments.compatibility, "success"],
         [arguments.executable, arguments.library, arguments.compatibility, "failure", arguments.bad_library],
         [arguments.executable, arguments.library, arguments.compatibility, "failure", str(invalid)],
         [arguments.executable, arguments.library, arguments.compatibility, "source-aba"],
+        [arguments.executable, arguments.library, str(oversized), "oversized-compatibility"],
     )
     try:
         for command in commands:
@@ -37,6 +41,7 @@ def main() -> int:
                 raise SystemExit(f"loader child leaked snapshots: {leaked}")
     finally:
         invalid.unlink(missing_ok=True)
+        oversized.unlink(missing_ok=True)
     return 0
 
 

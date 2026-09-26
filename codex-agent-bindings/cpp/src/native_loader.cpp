@@ -299,8 +299,10 @@ struct Compatibility {
 Compatibility read_compatibility(const std::filesystem::path& path) {
     std::ifstream stream(path, std::ios::binary);
     if (!stream) throw std::runtime_error("SDK compatibility declaration is unavailable");
-    std::string bytes(std::istreambuf_iterator<char>(stream), {});
-    if (bytes.empty() || bytes.size() > 1024 * 1024 || bytes.back() != '\n') {
+    std::string bytes(1024 * 1024 + 1, '\0');
+    stream.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    bytes.resize(static_cast<std::size_t>(stream.gcount()));
+    if (stream.bad() || bytes.empty() || bytes.size() > 1024 * 1024 || bytes.back() != '\n') {
         throw std::runtime_error("SDK compatibility declaration is invalid");
     }
     bytes.pop_back();

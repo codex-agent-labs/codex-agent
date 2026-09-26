@@ -17,6 +17,13 @@ from ci.native_wrappers import deterministic_tar, safe_extract_tar, stage_dart_r
 ROOT = Path(__file__).resolve().parents[4]
 SOURCE = ROOT / "codex-agent-bindings/dart"
 PUBLIC_ROOT = ROOT / "gradle/release/keys/sdk-runtime-root.pub"
+LIBRARIES = (
+    "macos-arm64/libcodex_agent.dylib",
+    "macos-x64/libcodex_agent.dylib",
+    "linux-arm64/libcodex_agent.so",
+    "linux-x64/libcodex_agent.so",
+    "windows-x64/codex_agent.dll",
+)
 
 
 @unittest.skipUnless(shutil.which("dart"), "Dart is not installed")
@@ -29,6 +36,10 @@ class InstalledDartPackageSecurityTest(unittest.TestCase):
             native = staged / "lib/src/native"
             root = native / "sdk-runtime-root.pub"
             root.write_bytes(PUBLIC_ROOT.read_bytes())
+            for member in LIBRARIES:
+                library = native / member
+                library.parent.mkdir(parents=True, exist_ok=True)
+                library.write_bytes(b"tampered Runtime fixture")
             compatibility = json.loads((native / "sdk-compatibility.json").read_bytes())
             version = compatibility["sdkVersion"]
             archive = work / f"codex-agent-dart-{version}.tar.gz"
@@ -53,7 +64,8 @@ class InstalledDartPackageSecurityTest(unittest.TestCase):
                 "import 'dart:io';\n"
                 "import 'package:codex_agent/src/ffi.dart';\n"
                 "void main(List<String> args) {\n"
-                "  try { NativeApi.load(args.single);\n"
+                "  try { if (args.single == '--default') { NativeApi.loadResolved(); }\n"
+                "    else { NativeApi.load(args.single); }\n"
                 "    stderr.writeln('unexpected native load'); exitCode = 2;\n"
                 "  } catch (error) { stdout.writeln(error); }\n"
                 "}\n"
@@ -66,6 +78,7 @@ class InstalledDartPackageSecurityTest(unittest.TestCase):
             (cache / "hosted/pub.dev").symlink_to(source_cache / "hosted/pub.dev", target_is_directory=True)
             environment = dict(os.environ)
             environment["PUB_CACHE"] = str(cache)
+            environment.pop("CODEX_AGENT_LIBRARY", None)
             installed = subprocess.run(
                 ["dart", "pub", "get", "--offline"], cwd=consumer,
                 env=environment, capture_output=True, text=True, timeout=45,
@@ -76,9 +89,9 @@ class InstalledDartPackageSecurityTest(unittest.TestCase):
                            if item["name"] == "codex_agent")
             self.assertEqual(package, (consumer / ".dart_tool" / binding).resolve())
 
-            def probe() -> str:
+            def probe(path: str) -> str:
                 result = subprocess.run(
-                    ["dart", "run", "bin/probe.dart", str(library)],
+                    ["dart", "run", "bin/probe.dart", path],
                     cwd=consumer, env=environment, capture_output=True,
                     text=True, timeout=45,
                 )
@@ -86,11 +99,12 @@ class InstalledDartPackageSecurityTest(unittest.TestCase):
                 self.assertNotIn("unexpected native load", result.stderr)
                 return result.stdout
 
-            self.assertIn("release-keyring.json is absent", probe())
+            self.assertIn("embedded Codex Agent Runtime digest mismatch", probe("--default"))
+            self.assertIn("release-keyring.json is absent", probe(str(library)))
             root.unlink()
-            self.assertIn("SDK root is absent", probe())
+            self.assertIn("SDK root is absent", probe(str(library)))
             root.write_bytes(b"not an Ed25519 key\n")
-            self.assertIn("public key is not canonical", probe())
+            self.assertIn("public key is not canonical", probe(str(library)))
 
 
 if __name__ == "__main__":

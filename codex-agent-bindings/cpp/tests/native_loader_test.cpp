@@ -254,6 +254,10 @@ int main(int argc, char** argv) {
         loader_test_hook::attempted = false;
         codex_agent::detail::set_native_loader_test_hook(loader_test_hook::record_open);
     }
+    if (mode == "oversized-compatibility") {
+        loader_test_hook::attempted = false;
+        codex_agent::detail::set_native_loader_test_hook(loader_test_hook::record_open);
+    }
     if (mode == "signed-wrong-root" || mode == "signed-bad-signature" ||
         mode == "signed-bad-library" || mode == "signed-identity-mismatch" ||
         mode == "signed-abi-width" || mode == "signed-oversized-evidence") {
@@ -288,6 +292,12 @@ int main(int argc, char** argv) {
             (loader_test_hook::attempted ||
              std::string_view(error.what()).find("trusted release evidence") == std::string_view::npos)) {
             std::cerr << "external override was not rejected before dynamic loading: " << error.what() << '\n';
+            return 1;
+        }
+        if (mode == "oversized-compatibility" &&
+            (loader_test_hook::attempted ||
+             std::string_view(error.what()).find("SDK compatibility declaration is invalid") == std::string_view::npos)) {
+            std::cerr << "oversized compatibility reached dynamic loading: " << error.what() << '\n';
             return 1;
         }
         if (mode == "abi-width-alias" &&
