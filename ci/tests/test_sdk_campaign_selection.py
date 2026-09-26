@@ -3,10 +3,15 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
+import ci.products.sdk_campaign_dev_catalog as dev_catalog
 from ci.products.index import IndexEntrySource
+from ci.products.index import SignedProductIndex, verify_signed_product_index
 from ci.products.receipt import write_output_manifest
-from ci.products.restore import finalize_phase_object
+from ci.products.restore import finalize_phase_object, object_relative_path
+from ci.products.inventory import sha256_bytes
+from ci.products.sdk_campaign_dev_catalog import stage_sdk_same_pr_catalog
 from ci.products.sdk_campaign_selection import (
     SDK_CAMPAIGN_INSTANCES, held_sdk_campaign_selection, verify_sdk_campaign_selection,
 )
@@ -56,6 +61,54 @@ class SdkCampaignSelectionTest(unittest.TestCase):
             self.sources, self.envelopes, self.archives, self.stages)
         self.assertEqual(set(selected), SDK_CAMPAIGN_INSTANCES)
         self.assertEqual({receipt["productVersion"] for receipt in selected.values()}, {"0.8.0"})
+
+    def test_same_pr_catalog_keeps_all_originals_and_development_trust(self):
+        with tempfile.TemporaryDirectory(prefix="sdk-campaign-catalog-") as temporary:
+            destination = Path(temporary).resolve() / "catalog"
+            producer = next(iter(self.envelopes.values()))["receipt"]["producer"]
+            index = stage_sdk_same_pr_catalog(self.sources, self.envelopes,
+                self.archives, self.stages, producer=producer, destination=destination)
+            signed, _ = verify_signed_product_index(SignedProductIndex(
+                destination / "product-index.json", destination / "product-index.sig"),
+                destination / "public-key.pub")
+            self.assertEqual(signed, index)
+            self.assertEqual(len(index["entries"]), len(SDK_CAMPAIGN_INSTANCES))
+            self.assertEqual(index["trustDomain"], "development")
+            first = min(SDK_CAMPAIGN_INSTANCES)
+            self.assertEqual(
+                (destination / object_relative_path(self.envelopes[first]["receipt"]["buildKey"],
+                    sha256_bytes(self.sources[first].receipt_bytes))).read_bytes(),
+                self.archives[first].read_bytes(),
+            )
+
+    def test_same_pr_catalog_rejects_partial_selection_before_output(self):
+        with tempfile.TemporaryDirectory(prefix="sdk-campaign-catalog-") as temporary:
+            destination = Path(temporary).resolve() / "catalog"
+            producer = next(iter(self.envelopes.values()))["receipt"]["producer"]
+            first = min(SDK_CAMPAIGN_INSTANCES)
+            with self.assertRaisesRegex(ValueError, "all 61 phases"):
+                stage_sdk_same_pr_catalog({key: value for key, value in self.sources.items()
+                    if key != first}, self.envelopes, self.archives, self.stages,
+                    producer=producer, destination=destination)
+            self.assertFalse(destination.exists())
+
+    def test_same_pr_catalog_rejects_changed_selected_artifact_path(self):
+        with tempfile.TemporaryDirectory(prefix="sdk-campaign-catalog-") as temporary:
+            destination = Path(temporary).resolve() / "catalog"
+            producer = next(iter(self.envelopes.values()))["receipt"]["producer"]
+            first = min(SDK_CAMPAIGN_INSTANCES)
+            sources = dict(self.sources)
+            original_writer = dev_catalog.write_signed_product_index
+
+            def mutate_selection(*args, **kwargs):
+                sources[first] = IndexEntrySource(sources[first].receipt_bytes, "outputs/other")
+                return original_writer(*args, **kwargs)
+
+            with patch.object(dev_catalog, "write_signed_product_index", side_effect=mutate_selection):
+                with self.assertRaisesRegex(ValueError, "selection changed"):
+                    stage_sdk_same_pr_catalog(sources, self.envelopes, self.archives,
+                        self.stages, producer=producer, destination=destination)
+            self.assertFalse(destination.exists())
 
     def test_partial_or_cross_paired_selection_fails(self):
         first, second = sorted(SDK_CAMPAIGN_INSTANCES)[:2]
