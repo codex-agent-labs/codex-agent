@@ -47,7 +47,23 @@ final class RuntimeCompatibility {
 
   static RuntimeCompatibility read(File file) {
     requireAbsoluteRegularFile(file, 'SDK compatibility declaration');
-    final bytes = file.readAsBytesSync();
+    final opened = file.openSync(mode: FileMode.read);
+    late final List<int> bytes;
+    try {
+      final length = opened.lengthSync();
+      if (length <= 0 || length > 1024 * 1024) {
+        throw const CodexException(
+            'SDK compatibility declaration has invalid size');
+      }
+      bytes = opened.readSync(length);
+      if (bytes.length != length || opened.lengthSync() != length) {
+        throw const CodexException(
+            'SDK compatibility declaration changed while reading');
+      }
+      requireAbsoluteRegularFile(file, 'SDK compatibility declaration');
+    } finally {
+      opened.closeSync();
+    }
     Object? decoded;
     try {
       decoded = jsonDecode(utf8.decode(bytes, allowMalformed: false));

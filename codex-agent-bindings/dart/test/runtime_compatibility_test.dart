@@ -222,6 +222,24 @@ void main() {
     );
   });
 
+  test('oversized SDK compatibility declaration fails before parsing', () {
+    final file = File('${temporary.path}/oversized-sdk-compatibility.json');
+    final opened = file.openSync(mode: FileMode.write);
+    try {
+      opened.truncateSync(1024 * 1024 + 1);
+    } finally {
+      opened.closeSync();
+    }
+    expect(
+      () => RuntimeCompatibility.read(file),
+      throwsA(isA<CodexException>().having(
+        (error) => error.message,
+        'message',
+        contains('has invalid size'),
+      )),
+    );
+  });
+
   test('default release and embedded identities are internally consistent', () {
     void expectRejected(void Function(Map<String, Object?>) mutate) {
       final changed =
