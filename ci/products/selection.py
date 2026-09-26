@@ -610,13 +610,14 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         return set(ALL_INSTANCES)
     if path in {
         "ci/contract_equal_tree_original.py", "ci/contract_phase10_maven_caller.py",
-        "ci/contract_phase10_sidecar_caller.py", "ci/contract_phase11_bytes.py",
+        "ci/contract_phase10_sidecar_caller.py", "ci/contract_phase10_upload_locator.py",
+        "ci/contract_phase11_bytes.py",
         "ci/products/contract_phase10_inventory.py", "ci/products/contract_phase10_maven.py",
     }:
         return _from_phase("contract", "contract", "metadata")
     if path in {"ci/products/runtime_phase10_maven.py", "ci/runtime_phase10_sidecar_caller.py",
                 "ci/products/runtime_library_authorization.py", "ci/runtime_phase10_library_caller.py",
-                "ci/runtime_phase11_bytes.py"}:
+                "ci/runtime_phase10_upload_locator.py", "ci/runtime_phase11_bytes.py"}:
         return _from_phase("runtime", "runtime-aggregate", "metadata")
     if path == "ci/products/sdk_phase10_maven.py":
         return (_from_phase("sdk", "sdk-core", "metadata") |
