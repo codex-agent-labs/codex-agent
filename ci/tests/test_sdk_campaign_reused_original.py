@@ -123,6 +123,36 @@ class ReusedSdkOriginalTest(unittest.TestCase):
                 self.assertEqual(self.descriptor["receiptSha256"], evidence["originalReceiptSha256"])
         self.assertEqual(before, regular_file_inventory(self.original_object.parent))
 
+    def test_shared_catalog_cannot_bypass_each_original_worker_pin(self):
+        selection = dict(expected_receipt_sha256=self.descriptor["receiptSha256"],
+            catalog_artifact_id=902, catalog_artifact_sha256=sha256_bytes(self.raw),
+            original_artifact_id=901, original_artifact_sha256=sha256_bytes(self.worker_raw),
+            catalog_public_key=self.key,
+            expected_public_key_sha256=sha256_bytes(self.key.read_bytes()),
+            pull_request=31, trusted_workflow_sha=fixture_module.PIN,
+            token="synthetic-token", environ={})
+        with self.official():
+            with self.assertRaisesRegex(ValueError, "cannot be supplied by a caller"):
+                with self.held(_shared_catalog={}):
+                    pass
+            with reused.held_reused_sdk_catalog(
+                    repository=self.fixture.producer["repository"], pull_request=31,
+                    artifact_id=902, artifact_sha256=sha256_bytes(self.raw),
+                    public_key=self.key, public_key_sha256=sha256_bytes(self.key.read_bytes()),
+                    trusted_workflow_sha=fixture_module.PIN, token="synthetic-token",
+                    environ={}) as snapshot:
+                with self.assertRaises(ValueError):
+                    with reused._held_reused_sdk_original(
+                            self.instance, self.original, self.transport,
+                            **{**selection, "original_artifact_sha256": "sha256:" + "0" * 64},
+                            _shared_catalog=snapshot):
+                        pass
+            with self.assertRaisesRegex(ValueError, "not an active authenticated hold"):
+                with reused._held_reused_sdk_original(
+                        self.instance, self.original, self.transport,
+                        **selection, _shared_catalog=snapshot):
+                    pass
+
     def test_independent_catalog_and_worker_discovery(self):
         path = ".github/workflows/product-validation.yml"
         arguments = dict(expected_build_key=self.ready["buildKey"],

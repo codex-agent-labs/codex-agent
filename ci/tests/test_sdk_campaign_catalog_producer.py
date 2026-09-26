@@ -153,6 +153,55 @@ class SdkCampaignCatalogProducerTest(TestCase):
             self.assertEqual(101, reused.call_args.kwargs["original_artifact_id"])
             self.assertEqual(201, reused.call_args.kwargs["catalog_artifact_id"])
 
+    def test_reused_phases_share_one_held_catalog_but_each_hold_its_original(self):
+        selected = self.instances[:2]
+        pin = catalog.ReusedSdkOriginalPin(
+            _DIGEST, 101, _DIGEST, 201, _DIGEST, Path("independent.pub"), _DIGEST, 31,
+            ".github/workflows/sdk-validation.yml", "product-validation / sdk-worker",
+            ".github/workflows/product-validation.yml", "product-validation / sdk-catalog")
+        for instance in selected:
+            self.observations[instance] = ObservedSdkOriginal(canonical_json_bytes({
+                "producer": {"repository": "codex-agent-labs/codex-agent"}}), canonical_json_bytes({
+                "state": "reused", "source": "same-pr",
+            }), Path("unused-object"), Path("unused-stage"))
+            self.pins[instance] = pin
+        active, originals = set(), []
+        snapshot = {"held": "catalog"}
+
+        @contextmanager
+        def catalog_holder(**_kwargs):
+            active.add("catalog")
+            try:
+                yield snapshot
+            finally:
+                active.remove("catalog")
+
+        @contextmanager
+        def original_holder(instance, *_args, _shared_catalog=None, **_kwargs):
+            self.assertIs(snapshot, _shared_catalog)
+            self.assertIn("catalog", active)
+            originals.append(instance)
+            active.add(instance)
+            try:
+                yield {"instance": instance}, Path("unused-upload")
+            finally:
+                active.remove(instance)
+
+        @contextmanager
+        def fresh_holder(*_args, **_kwargs):
+            yield {}, Path("unused-upload")
+
+        with patch.object(catalog, "validate_phase_receipt", return_value={
+                "producer": {"repository": "codex-agent-labs/codex-agent"}}), \
+             patch.object(catalog, "held_reused_sdk_catalog", side_effect=catalog_holder) as shared, \
+             patch.object(catalog, "_held_reused_sdk_original", side_effect=original_holder), \
+             patch.object(catalog, "held_fresh_sdk_worker_upload", side_effect=fresh_holder):
+            with self.held():
+                self.assertEqual(set(selected) | {"catalog"}, active)
+                self.assertEqual(list(selected), originals)
+            self.assertEqual(set(), active)
+        shared.assert_called_once()
+
     def test_caller_owned_routes_are_forwarded_and_unpaired_routes_fail_before_observation(self):
         instance = self.instances[0]
         self.pins[instance] = catalog.FreshSdkOriginalPin(

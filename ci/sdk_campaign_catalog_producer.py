@@ -5,6 +5,7 @@ runs the full SDK semantic verifier inside this context. This is neither a
 release admission nor a signed catalog producer.
 """
 
+from collections import Counter
 from collections.abc import Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -17,12 +18,15 @@ from ci.sdk_campaign_original_locator import (
     discover_fresh_sdk_original_pin, discover_reused_sdk_original_pins,
 )
 from ci.sdk_campaign_original_worker import held_fresh_sdk_worker_upload
-from ci.sdk_campaign_reused_original import held_reused_sdk_original
+from ci.sdk_campaign_reused_original import (
+    _held_reused_sdk_original, held_reused_sdk_catalog, held_reused_sdk_original,
+)
 from products.index import IndexEntrySource
 from products.inventory import (
     load_canonical_json_bytes, require_exact_keys, require_integer, require_sha256,
 )
 from products.registry import PhaseInstanceId
+from products.receipt import validate_phase_receipt
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES, held_sdk_campaign_selection
 from products.sdk_campaign_semantics import verify_sdk_campaign_semantics
 from products.signing_isolation import require_no_signing_secret
@@ -159,7 +163,11 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
         else:
             raise ValueError("SDK original upload has no authenticated retained/same-PR route")
 
-    held = {}
+    catalog_fields = ("catalog_artifact_id", "catalog_artifact_sha256", "catalog_public_key",
+        "catalog_public_key_sha256", "pull_request", "catalog_workflow_path", "catalog_job_name")
+    groups = Counter(tuple(getattr(pin, field) for field in catalog_fields)
+        for pin in pins.values() if type(pin) is ReusedSdkOriginalPin)
+    held, catalogs = {}, {}
     with ExitStack() as stack:
         for instance in sorted(SDK_CAMPAIGN_INSTANCES):
             original, pin = observations[instance], pins[instance]
@@ -171,7 +179,26 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
                     trusted_workflow_sha=trusted_workflow_sha, token=token, environ=environ,
                     trusted_workflow_path=pin.workflow_path, trusted_job_name=pin.job_name))
             else:
-                evidence, _ = stack.enter_context(held_reused_sdk_original(
+                group = tuple(getattr(pin, field) for field in catalog_fields)
+                shared = None
+                if groups[group] > 1:
+                    if group not in catalogs:
+                        receipt = validate_phase_receipt(load_canonical_json_bytes(original.receipt_bytes))
+                        catalogs[group] = stack.enter_context(held_reused_sdk_catalog(
+                            repository=receipt["producer"]["repository"],
+                            pull_request=pin.pull_request,
+                            artifact_id=pin.catalog_artifact_id,
+                            artifact_sha256=pin.catalog_artifact_sha256,
+                            public_key=pin.catalog_public_key,
+                            public_key_sha256=pin.catalog_public_key_sha256,
+                            trusted_workflow_sha=trusted_workflow_sha,
+                            trusted_workflow_path=pin.catalog_workflow_path,
+                            trusted_job_name=pin.catalog_job_name,
+                            token=token, environ=environ))
+                    shared = catalogs[group]
+                holder = _held_reused_sdk_original if shared is not None else held_reused_sdk_original
+                shared_arg = {"_shared_catalog": shared} if shared is not None else {}
+                evidence, _ = stack.enter_context(holder(
                     instance, original, current_transport_bytes,
                     expected_receipt_sha256=pin.receipt_sha256,
                     original_artifact_id=pin.original_artifact_id,
@@ -185,7 +212,8 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
                     trusted_worker_workflow_path=pin.worker_workflow_path,
                     trusted_worker_job_name=pin.worker_job_name,
                     trusted_catalog_workflow_path=pin.catalog_workflow_path,
-                    trusted_catalog_job_name=pin.catalog_job_name))
+                    trusted_catalog_job_name=pin.catalog_job_name,
+                    **shared_arg))
             held[instance] = evidence
         require_no_signing_secret(environ)
         try:

@@ -6,11 +6,12 @@ The required sdk-catalog producer job is not wired in the current workflow,
 so official runs cannot pass this route yet.
 """
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import os
 from pathlib import Path
 import sys
 import tempfile
+from types import MappingProxyType
 
 if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -31,14 +32,120 @@ from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from products.signing_isolation import require_no_signing_secret
 
 
+_CATALOG_SEAL = object()
+
+
+class _HeldCatalog:
+    __slots__ = ("values", "active")
+
+    def __init__(self, values, seal):
+        if seal is not _CATALOG_SEAL:
+            raise ValueError("Reused SDK catalog cannot be supplied by a caller")
+        self.values = MappingProxyType(values)
+        self.active = True
+
+
 @contextmanager
-def held_reused_sdk_original(instance, original, current_transport_bytes, *,
+def held_reused_sdk_catalog(*, repository, pull_request, artifact_id,
+        artifact_sha256, public_key, public_key_sha256, trusted_workflow_sha,
+        token, environ, trusted_workflow_path=None, trusted_job_name=None):
+    """Hold one authenticated same-PR catalog for multiple original phases."""
+    require_no_signing_secret(environ)
+    require_no_signing_secret(os.environ)
+    require_sha256(artifact_sha256, "Caller-selected catalog artifact")
+    require_sha256(public_key_sha256, "Independent catalog public key")
+    require_integer(artifact_id, "Caller-selected catalog artifact ID", 1)
+    require_integer(pull_request, "Caller-selected pull request", 1)
+    key_input = Path(public_key)
+    pinned_key = read_regular_file_bytes(key_input, max_bytes=64 * 1024,
+        reject_symlink_parents=True)
+    key_path = key_input.resolve(strict=True)
+    if sha256_bytes(pinned_key) != public_key_sha256:
+        raise ValueError("Reused SDK catalog key differs from independent digest")
+    api = "https://api.github.com"
+    url = f"{api}/repos/{repository}/actions/artifacts/{artifact_id}"
+    artifact = product_reuse.api_json(url, token)
+    if not isinstance(artifact, dict):
+        raise ValueError("Reused SDK catalog artifact detail is malformed")
+    if (artifact.get("id") != artifact_id
+            or artifact.get("digest") != artifact_sha256
+            or artifact.get("expired") is not False
+            or artifact.get("archive_download_url") != f"{url}/zip"
+            or not isinstance(artifact.get("name"), str)
+            or not artifact["name"].startswith(
+                f"{product_reuse._CATALOG_PREFIX}pull-request-{pull_request}-")
+            or not isinstance(artifact.get("workflow_run"), dict)):
+        raise ValueError("Reused SDK catalog differs from official artifact identity")
+    size = require_integer(artifact.get("size_in_bytes"), "Reused SDK catalog size", 1)
+    if size > product_reuse._CATALOG_LIMIT:
+        raise ValueError("Reused SDK catalog exceeds transport limit")
+    with tempfile.TemporaryDirectory(prefix="sdk-reused-original-") as temporary:
+        root = Path(temporary).resolve()
+        catalog = product_reuse._materialize_catalog("same-pr", artifact, token,
+            root, repository, pull_request, None, api=api)
+        archive = root / "catalogs" / "same-pr" / str(artifact_id) / "transport.zip"
+        extracted = archive.parent / "contents"
+        if archive.stat().st_size != size or sha256_file(archive) != artifact_sha256:
+            raise ValueError("Reused SDK catalog differs from official artifact bytes")
+        key = read_regular_file_bytes(extracted / "public-key.pub", max_bytes=64 * 1024,
+            reject_symlink_parents=True)
+        if key != pinned_key:
+            raise ValueError("Reused SDK catalog key differs from independent policy")
+        index, index_bytes = verify_signed_product_index(SignedProductIndex(
+            extracted / "product-index.json", extracted / "product-index.sig"), key_path)
+        if index != catalog.index:
+            raise ValueError("Reused SDK catalog changed during provenance verification")
+        catalog_job, catalog_policy = original_workflow_route("catalog",
+            "product-validation / sdk-catalog", trusted_workflow_sha,
+            trusted_workflow_path, trusted_job_name)
+        observation = product_reuse._observe_ci_producer_jobs(
+            {"catalog": index["producer"]}, jobs_by_phase={"catalog": catalog_job},
+            token=token, **catalog_policy)
+        if (len(observation) != 1
+                or observation[0]["run"]["id"] != index["producer"]["runId"]
+                or observation[0]["run"]["run_attempt"] != index["producer"]["runAttempt"]):
+            raise ValueError("Reused SDK catalog lacks exact producer attempt")
+        product_reuse._require_artifact_job_window(observation[0], catalog_job, artifact)
+        before = regular_file_inventory(root, allow_empty=True)
+        snapshot = _HeldCatalog({"repository": repository, "pullRequest": pull_request,
+            "artifactId": artifact_id, "artifactSha256": artifact_sha256,
+            "keyPath": key_path, "keyBytes": pinned_key,
+            "keySha256": public_key_sha256, "workflowSha": trusted_workflow_sha,
+            "workflowPath": trusted_workflow_path, "jobName": trusted_job_name,
+            "catalog": catalog, "index": index, "indexSha256": sha256_bytes(index_bytes),
+            "artifact": artifact, "producer": observation, "root": root}, _CATALOG_SEAL)
+        try:
+            yield snapshot
+        finally:
+            snapshot.active = False
+            require_no_signing_secret(environ)
+            require_no_signing_secret(os.environ)
+            if (regular_file_inventory(root, allow_empty=True) != before
+                    or key_input.resolve(strict=True) != key_path
+                    or read_regular_file_bytes(key_input, max_bytes=64 * 1024,
+                        reject_symlink_parents=True) != pinned_key):
+                raise ValueError("Reused SDK catalog changed while held")
+
+
+@contextmanager
+def held_reused_sdk_original(instance, original, current_transport_bytes, **selection):
+    """Authenticate one reused phase without accepting caller-supplied catalog state."""
+    if "_shared_catalog" in selection:
+        raise ValueError("Reused SDK catalog cannot be supplied by a caller")
+    with _held_reused_sdk_original(instance, original, current_transport_bytes,
+            **selection) as held:
+        yield held
+
+
+@contextmanager
+def _held_reused_sdk_original(instance, original, current_transport_bytes, *,
         expected_receipt_sha256, catalog_artifact_id, catalog_artifact_sha256,
         original_artifact_id, original_artifact_sha256,
         catalog_public_key, expected_public_key_sha256, pull_request,
         trusted_workflow_sha, token, environ=None,
         trusted_worker_workflow_path=None, trusted_worker_job_name=None,
-        trusted_catalog_workflow_path=None, trusted_catalog_job_name=None):
+        trusted_catalog_workflow_path=None, trusted_catalog_job_name=None,
+        _shared_catalog=None):
     """Hold exact original bytes under independently pinned same-PR catalog trust.
 
     The public key and artifact ID/digest are selected outside the replay and
@@ -133,60 +240,27 @@ def held_reused_sdk_original(instance, original, current_transport_bytes, *,
                 or sha256_file(worker / "shard" / shard["objectPath"])
                     != sha256_file(original.object_path)):
             raise ValueError("Reused SDK original worker upload differs from held object")
-    repository = producer["repository"]
-    api = "https://api.github.com"
-    url = f"{api}/repos/{repository}/actions/artifacts/{catalog_artifact_id}"
-    artifact = product_reuse.api_json(url, token)
-    if not isinstance(artifact, dict):
-        raise ValueError("Reused SDK catalog artifact detail is malformed")
-    run = artifact.get("workflow_run")
-    if (artifact.get("id") != catalog_artifact_id
-            or artifact.get("digest") != catalog_artifact_sha256
-            or artifact.get("expired") is not False
-            or artifact.get("archive_download_url") != f"{url}/zip"
-            or not isinstance(artifact.get("name"), str)
-            or not artifact["name"].startswith(
-                f"{product_reuse._CATALOG_PREFIX}pull-request-{pull_request}-")
-            or not isinstance(run, dict)):
-        raise ValueError("Reused SDK catalog differs from official artifact identity")
-    size = require_integer(artifact.get("size_in_bytes"), "Reused SDK catalog size", 1)
-    if size > product_reuse._CATALOG_LIMIT:
-        raise ValueError("Reused SDK catalog exceeds transport limit")
-    with tempfile.TemporaryDirectory(prefix="sdk-reused-original-") as temporary:
-        root = Path(temporary).resolve()
-        archive = root / "catalog.zip"
-        product_reuse.download_artifact_to_file(artifact, token, archive,
-            max_bytes=product_reuse._CATALOG_LIMIT)
-        if archive.stat().st_size != size or sha256_file(archive) != catalog_artifact_sha256:
-            raise ValueError("Reused SDK catalog differs from official artifact bytes")
-        verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
-            **product_reuse._CATALOG_ZIP_LIMITS)
-        extracted = root / "catalog"
-        product_reuse.safe_extract(archive, extracted)
-        key = read_regular_file_bytes(extracted / "public-key.pub", max_bytes=64 * 1024,
-            reject_symlink_parents=True)
-        if key != pinned_key:
-            raise ValueError("Reused SDK catalog key differs from independent policy")
-        index, index_bytes = verify_signed_product_index(SignedProductIndex(
-            extracted / "product-index.json", extracted / "product-index.sig"), key_path)
-        if sha256_bytes(index_bytes) != transport["indexSha256"]:
+    catalog_context = (nullcontext(_shared_catalog) if _shared_catalog is not None else
+        held_reused_sdk_catalog(repository=producer["repository"], pull_request=pull_request,
+            artifact_id=catalog_artifact_id, artifact_sha256=catalog_artifact_sha256,
+            public_key=key_input, public_key_sha256=expected_public_key_sha256,
+            trusted_workflow_sha=trusted_workflow_sha, token=token, environ=environment,
+            trusted_workflow_path=trusted_catalog_workflow_path,
+            trusted_job_name=trusted_catalog_job_name))
+    with catalog_context as held_catalog:
+        if type(held_catalog) is not _HeldCatalog or not held_catalog.active:
+            raise ValueError("Reused SDK catalog is not an active authenticated hold")
+        snapshot = held_catalog.values
+        if (tuple(snapshot[field] for field in (
+                    "repository", "pullRequest", "artifactId", "artifactSha256", "keyPath",
+                    "keyBytes", "keySha256", "workflowSha", "workflowPath", "jobName"))
+                != (producer["repository"], pull_request, catalog_artifact_id,
+                    catalog_artifact_sha256, key_path, pinned_key, expected_public_key_sha256,
+                    trusted_workflow_sha, trusted_catalog_workflow_path, trusted_catalog_job_name)):
+            raise ValueError("Reused SDK catalog snapshot differs from independent policy")
+        if snapshot["indexSha256"] != transport["indexSha256"]:
             raise ValueError("Reused SDK replay differs from signed catalog")
-        catalog = product_reuse._read_catalog_directory("same-pr", extracted, root, None,
-            repository=repository, pull_request=pull_request, provenance_root=root,
-            artifact=artifact, token=token, api=api)
-        if index != catalog.index:
-            raise ValueError("Reused SDK catalog changed during provenance verification")
-        catalog_job, catalog_policy = original_workflow_route("catalog",
-            "product-validation / sdk-catalog", trusted_workflow_sha,
-            trusted_catalog_workflow_path, trusted_catalog_job_name)
-        catalog_observation = product_reuse._observe_ci_producer_jobs(
-            {"catalog": index["producer"]}, jobs_by_phase={"catalog": catalog_job},
-            token=token, **catalog_policy)
-        if (len(catalog_observation) != 1
-                or catalog_observation[0]["run"]["id"] != index["producer"]["runId"]
-                or catalog_observation[0]["run"]["run_attempt"] != index["producer"]["runAttempt"]):
-            raise ValueError("Reused SDK catalog lacks exact producer attempt")
-        product_reuse._require_artifact_job_window(catalog_observation[0], catalog_job, artifact)
+        index, catalog = snapshot["index"], snapshot["catalog"]
         entries = [entry for entry in index["entries"] if entry["buildKey"] == replay["buildKey"]]
         if len(entries) != 1:
             raise ValueError("Reused SDK original lacks one exact indexed entry")
@@ -202,10 +276,9 @@ def held_reused_sdk_original(instance, original, current_transport_bytes, *,
                 or transport["artifactName"] != entry["artifactName"]
                 or transport["artifactSha256"] != entry["artifactSha256"]):
             raise ValueError("Reused SDK catalog changes its original receipt, object, or artifact")
-        before = regular_file_inventory(root, allow_empty=True)
-        evidence = {"catalogArtifact": artifact, "catalogIndexSha256": transport["indexSha256"],
+        evidence = {"catalogArtifact": snapshot["artifact"], "catalogIndexSha256": transport["indexSha256"],
                     "originalProducer": producer_observation, "originalArtifact": original_artifact,
-                    "catalogProducer": catalog_observation,
+                    "catalogProducer": snapshot["producer"],
                     "originalReceiptSha256": expected_receipt_sha256,
                     "originalObjectSha256": replay["objectSha256"]}
         require_no_signing_secret(environment)
@@ -214,7 +287,7 @@ def held_reused_sdk_original(instance, original, current_transport_bytes, *,
         finally:
             require_no_signing_secret(environment)
             require_no_signing_secret(os.environ)
-            if (regular_file_inventory(root, allow_empty=True) != before
+            if (not held_catalog.active
                     or original.receipt_bytes != receipt_bytes
                     or original.replay_record_canonical != replay_bytes
                     or sha256_file(original.object_path) != replay["objectSha256"]
