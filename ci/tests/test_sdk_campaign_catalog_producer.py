@@ -122,3 +122,71 @@ class SdkCampaignCatalogProducerTest(TestCase):
             with self.held():
                 pass
         fresh.assert_not_called()
+
+    def test_semantic_replay_holds_all_uploads_and_preserves_original_receipts(self):
+        active = set()
+        receipts = {instance: canonical_json_bytes({"fixture": position})
+                    for position, instance in enumerate(self.instances)}
+        for instance in self.instances:
+            self.observations[instance] = ObservedSdkOriginal(receipts[instance], canonical_json_bytes({
+                "receiptSha256": _DIGEST, "objectSha256": _DIGEST,
+            }), Path("unused-object"), Path("unused-stage"))
+        artifacts = {instance: "outputs/fixture.bin" for instance in self.instances}
+
+        @contextmanager
+        def originals(*_args, **_kwargs):
+            active.add("uploads")
+            try:
+                yield {instance: {"original": True} for instance in self.instances}
+            finally:
+                active.remove("uploads")
+
+        @contextmanager
+        def selection(sources, envelopes, archives, stages):
+            self.assertEqual({instance: receipts[instance] for instance in self.instances},
+                             {instance: source.receipt_bytes for instance, source in sources.items()})
+            self.assertEqual(set(archives), set(self.instances))
+            self.assertEqual(set(stages), set(self.instances))
+            active.add("selection")
+            try:
+                yield sources, envelopes, stages, {}
+            finally:
+                active.remove("selection")
+
+        def semantics(**values):
+            self.assertEqual({"uploads", "selection"}, active)
+            self.assertEqual({"fixture": True}, values["maven_controls"])
+            return receipts
+
+        with patch.object(catalog, "held_sdk_campaign_original_uploads", side_effect=originals), \
+             patch.object(catalog, "held_sdk_campaign_selection", side_effect=selection), \
+             patch.object(catalog, "verify_sdk_campaign_semantics", side_effect=semantics) as verify:
+            with catalog.held_sdk_campaign_semantic_replay(self.observations, b"transport", self.pins,
+                    artifacts, {"maven_controls": {"fixture": True}}, trusted_workflow_sha="pin",
+                    token="token", environ={}) as (verified, evidence):
+                self.assertEqual(receipts, verified)
+                self.assertEqual(set(self.instances), set(evidence))
+                self.assertEqual({"uploads", "selection"}, active)
+            self.assertEqual(set(), active)
+            self.assertEqual(1, verify.call_count)
+
+        changed = dict(receipts)
+        changed[self.instances[0]] = b"different original"
+        with patch.object(catalog, "held_sdk_campaign_original_uploads", side_effect=originals), \
+             patch.object(catalog, "held_sdk_campaign_selection", side_effect=selection), \
+             patch.object(catalog, "verify_sdk_campaign_semantics", return_value=changed), \
+             self.assertRaisesRegex(ValueError, "changed an original receipt"):
+            with catalog.held_sdk_campaign_semantic_replay(self.observations, b"transport", self.pins,
+                    artifacts, {"maven_controls": {"fixture": True}}, trusted_workflow_sha="pin",
+                    token="token", environ={}):
+                pass
+        self.assertEqual(set(), active)
+
+    def test_semantic_replay_rejects_missing_artifact_or_changed_receipt(self):
+        missing = {instance: "outputs/fixture.bin" for instance in self.instances[1:]}
+        with patch.object(catalog, "held_sdk_campaign_original_uploads") as originals, \
+             self.assertRaisesRegex(ValueError, "61 caller-selected artifacts"):
+            with catalog.held_sdk_campaign_semantic_replay(self.observations, b"transport", self.pins,
+                    missing, {}, trusted_workflow_sha="pin", token="token", environ={}):
+                pass
+        originals.assert_not_called()

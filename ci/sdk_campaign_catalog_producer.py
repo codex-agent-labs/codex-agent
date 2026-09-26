@@ -14,9 +14,11 @@ from types import MappingProxyType
 from ci.sdk_campaign_observation import ObservedSdkOriginal
 from ci.sdk_campaign_original_worker import held_fresh_sdk_worker_upload
 from ci.sdk_campaign_reused_original import held_reused_sdk_original
+from products.index import IndexEntrySource
 from products.inventory import load_canonical_json_bytes, require_integer, require_sha256
 from products.registry import PhaseInstanceId
-from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
+from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES, held_sdk_campaign_selection
+from products.sdk_campaign_semantics import verify_sdk_campaign_semantics
 from products.signing_isolation import require_no_signing_secret
 
 
@@ -127,3 +129,38 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
             yield MappingProxyType(held)
         finally:
             require_no_signing_secret(environ)
+
+
+@contextmanager
+def held_sdk_campaign_semantic_replay(observations, current_transport_bytes, pins,
+        artifact_paths, semantic_controls, *, trusted_workflow_sha, token, environ):
+    """Run all 61 existing family gates while exact original uploads remain held.
+
+    This non-secret boundary grants neither release admission nor a signed index.
+    Artifact paths and all producer/upload pins are caller-owned inputs.
+    """
+    if (not isinstance(artifact_paths, Mapping) or set(artifact_paths) != SDK_CAMPAIGN_INSTANCES
+            or not isinstance(semantic_controls, Mapping)):
+        raise ValueError("SDK semantic replay requires 61 caller-selected artifacts and controls")
+    with held_sdk_campaign_original_uploads(observations, current_transport_bytes, pins,
+            trusted_workflow_sha=trusted_workflow_sha, token=token, environ=environ) as evidence:
+        sources, envelopes, archives, stages = {}, {}, {}, {}
+        for instance in SDK_CAMPAIGN_INSTANCES:
+            original = observations[instance]
+            replay = load_canonical_json_bytes(original.replay_record_canonical)
+            sources[instance] = IndexEntrySource(original.receipt_bytes, artifact_paths[instance])
+            envelopes[instance] = {
+                "receipt": load_canonical_json_bytes(original.receipt_bytes),
+                "receiptBytes": original.receipt_bytes,
+                "receiptSha256": replay["receiptSha256"],
+                "objectSha256": replay["objectSha256"],
+            }
+            archives[instance], stages[instance] = original.object_path, original.stage_path
+        with held_sdk_campaign_selection(sources, envelopes, archives, stages) as (
+                held_sources, held_envelopes, held_stages, held_receipts):
+            verified = verify_sdk_campaign_semantics(sources=held_sources,
+                envelopes=held_envelopes, stages=held_stages, **semantic_controls)
+            if verified != {instance: sources[instance].receipt_bytes for instance in SDK_CAMPAIGN_INSTANCES}:
+                raise ValueError("SDK semantic replay changed an original receipt")
+            require_no_signing_secret(environ)
+            yield MappingProxyType(verified), evidence
