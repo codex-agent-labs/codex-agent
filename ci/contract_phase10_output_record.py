@@ -46,13 +46,14 @@ _PINS = {
 
 
 def prepare_contract_phase10_output_record(
-    plan_path: Path, repository_root: Path, protected_output: Path,
+    plan_path: Path, repository_root: Path, validation_repository: Path,
+    protected_output: Path,
     destination: Path, *, phase11_pins: Mapping, trusted_source_commit: str,
     trusted_workflow_sha: str, trusted_workflow_path: str,
     trusted_job_name: str, expected_pgp_key_sha256: str,
     artifact_id: int, artifact_sha256: str, token: str, environ=None,
 ) -> dict:
-    """Create an unsigned external record only after exact no-secret checks."""
+    """Create an unsigned record using reviewed source policy and the validation checkout."""
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
     require_no_signing_secret(os.environ)
@@ -104,7 +105,7 @@ def prepare_contract_phase10_output_record(
                 ):
             raise ValueError("Contract Phase-10 preparation differs from trusted Git keys")
         observation = observe_contract_phase10_upload(
-            plan_path, repository_root, captured_output,
+            plan_path, validation_repository, captured_output,
             trusted_workflow_sha=trusted_workflow_sha,
             trusted_workflow_path=trusted_workflow_path,
             trusted_job_name=trusted_job_name,
@@ -117,7 +118,7 @@ def prepare_contract_phase10_output_record(
         require_no_signing_secret(environment)
         require_no_signing_secret(os.environ)
         forward_verified_contract_phase10_bytes(
-            captured_output, root / "verified", landed_repository=repository_root, **pins,
+            captured_output, root / "verified", landed_repository=validation_repository, **pins,
         )
         record = {
             "schemaVersion": 1, "product": "contract", "signing": signing,
@@ -139,13 +140,16 @@ def prepare_contract_phase10_output_record(
 
 def verify_signed_contract_phase10_output_record(
     record_path: Path, signature_path: Path, repository_root: Path,
-    protected_output: Path, plan_path: Path, *, trusted_source_commit: str,
+    validation_repository: Path, protected_output: Path, plan_path: Path, *,
+    trusted_source_commit: str,
     trusted_workflow_sha: str, trusted_workflow_path: str,
     trusted_job_name: str, expected_pgp_key_sha256: str,
     artifact_id: int, artifact_sha256: str, token: str, environ=None,
 ) -> dict:
     """Require an independently pinned signer, official upload, and exact files.
 
+    ``repository_root`` owns reviewed Git/key policy; ``validation_repository``
+    must have the original validated tree, which can differ from that source.
     The record and signature are separate release-only control bytes. The
     returned record is suitable as an S1048 Contract handoff only after the
     protected workflow also retains their exact bytes and digest.
@@ -224,7 +228,7 @@ def verify_signed_contract_phase10_output_record(
         # The locator verifies the official run/job/upload, rather than
         # trusting transport facts copied into this record.
         observation = observe_contract_phase10_upload(
-            plan_path, repository_root, captured_output,
+            plan_path, validation_repository, captured_output,
             trusted_workflow_sha=trusted_workflow_sha,
             trusted_workflow_path=trusted_workflow_path,
             trusted_job_name=trusted_job_name,
@@ -240,7 +244,7 @@ def verify_signed_contract_phase10_output_record(
         require_no_signing_secret(environment)
         require_no_signing_secret(os.environ)
         forward_verified_contract_phase10_bytes(
-            captured_output, root / "verified", landed_repository=repository_root, **pins,
+            captured_output, root / "verified", landed_repository=validation_repository, **pins,
         )
         if (regular_file_inventory(protected_output) != record["outputFiles"]
                 or regular_file_inventory(captured_output) != record["outputFiles"]
@@ -256,7 +260,8 @@ def verify_signed_contract_phase10_output_record(
 
 def publish_verified_contract_phase10_output_record(
     record_path: Path, signature_path: Path, repository_root: Path,
-    protected_output: Path, plan_path: Path, destination: Path, *,
+    validation_repository: Path, protected_output: Path, plan_path: Path,
+    destination: Path, *,
     expected_record_sha256: str, expected_signature_sha256: str,
     trusted_source_commit: str, trusted_workflow_sha: str,
     trusted_workflow_path: str, trusted_job_name: str,
@@ -299,7 +304,7 @@ def publish_verified_contract_phase10_output_record(
         inventory = regular_file_inventory(prepared)
         record = verify_signed_contract_phase10_output_record(
             prepared / "record.json", prepared / "record.sig",
-            repository_root, protected_output, plan_path,
+            repository_root, validation_repository, protected_output, plan_path,
             trusted_source_commit=trusted_source_commit,
             trusted_workflow_sha=trusted_workflow_sha,
             trusted_workflow_path=trusted_workflow_path,
@@ -335,7 +340,8 @@ def main(argv=None) -> int:
     subcommands = parser.add_subparsers(dest="command", required=True)
     for command in ("prepare", "verify-publish"):
         selected = subcommands.add_parser(command, allow_abbrev=False)
-        for name in ("plan", "repository-root", "protected-output", "destination"):
+        for name in ("plan", "repository-root", "validation-repository",
+                     "protected-output", "destination"):
             selected.add_argument(f"--{name}", type=Path, required=True)
         for name in ("trusted-source-commit", "trusted-workflow-sha",
                      "trusted-workflow-path", "trusted-job-name",
@@ -369,13 +375,15 @@ def main(argv=None) -> int:
         ):
             raise ValueError("Contract Phase-11 pins file differs from independent digest")
         result = prepare_contract_phase10_output_record(
-            args.plan, args.repository_root, args.protected_output,
+            args.plan, args.repository_root, args.validation_repository,
+            args.protected_output,
             args.destination, phase11_pins=load_canonical_json_bytes(pins_bytes), **common,
         )
     else:
         result = publish_verified_contract_phase10_output_record(
             args.record, args.signature, args.repository_root,
-            args.protected_output, args.plan, args.destination,
+            args.validation_repository, args.protected_output, args.plan,
+            args.destination,
             expected_record_sha256=args.expected_record_sha256,
             expected_signature_sha256=args.expected_signature_sha256,
             **common,

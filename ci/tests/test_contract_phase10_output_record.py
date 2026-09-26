@@ -113,11 +113,16 @@ class ContractPhase10OutputRecordTest(unittest.TestCase):
         with (patch.object(gate, "observe_contract_phase10_upload", return_value=self.upload) as official,
               patch.object(gate, "forward_verified_contract_phase10_bytes") as deep):
             result = gate.verify_signed_contract_phase10_output_record(
-                self.record_path, self.signature, self.repository, self.output,
+                self.record_path, self.signature, self.repository,
+                getattr(self, "validation_repository", self.repository), self.output,
                 self.plan, **args,
             )
             official.assert_called_once()
+            self.assertEqual(getattr(self, "validation_repository", self.repository),
+                             official.call_args.args[1])
             deep.assert_called_once()
+            self.assertEqual(getattr(self, "validation_repository", self.repository),
+                             deep.call_args.kwargs["landed_repository"])
             self.assertEqual(self.pins, {
                 key: value for key, value in deep.call_args.kwargs.items()
                 if key.startswith("expected_")
@@ -129,6 +134,41 @@ class ContractPhase10OutputRecordTest(unittest.TestCase):
         (self.output / "extra").write_bytes(b"extra")
         with self.assertRaisesRegex(ValueError, "changed during record capture"):
             self.verify()
+
+    def test_reviewed_source_and_validation_checkout_are_distinct(self):
+        self.validation_repository = self.root / "validation-checkout"
+        subprocess.run(["git", "clone", "-q", str(self.repository),
+                        str(self.validation_repository)], check=True)
+        (self.validation_repository / "validation-marker").write_text("PR tree\n")
+        subprocess.run(["git", "add", "validation-marker"],
+                       cwd=self.validation_repository, check=True)
+        subprocess.run(["git", "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "commit", "-qm", "validation"],
+                       cwd=self.validation_repository, check=True)
+        validation_tree = subprocess.check_output(
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=self.validation_repository, text=True,
+        ).strip()
+        self.assertNotEqual(self.tree, validation_tree)
+        self.upload["producer"]["tree"] = validation_tree
+        self.pins["expected_validation_tree"] = validation_tree
+        self.record["officialUpload"] = deepcopy(self.upload)
+        self.sign()
+        self.assertEqual(self.record, self.verify())
+        with (patch.object(gate, "observe_contract_phase10_upload", return_value=self.upload) as official,
+              patch.object(gate, "forward_verified_contract_phase10_bytes") as deep):
+            gate.prepare_contract_phase10_output_record(
+                self.plan, self.repository, self.validation_repository, self.output,
+                self.root / "prepared-with-distinct-checkout", phase11_pins=self.pins,
+                trusted_source_commit=self.commit, trusted_workflow_sha="b" * 40,
+                trusted_workflow_path=self.upload["trustedWorkflowPath"],
+                trusted_job_name=self.upload["trustedJobName"],
+                expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
+                artifact_id=27, artifact_sha256=self.upload["artifactSha256"],
+                token="local-test-token", environ={},
+            )
+        self.assertEqual(self.validation_repository, official.call_args.args[1])
+        self.assertEqual(self.validation_repository,
+                         deep.call_args.kwargs["landed_repository"])
 
     def test_independent_source_workflow_and_pgp_pins(self):
         for override in ({"trusted_source_commit": "0" * 40},
@@ -162,7 +202,8 @@ class ContractPhase10OutputRecordTest(unittest.TestCase):
         with patch.object(gate, "observe_contract_phase10_upload", return_value=self.upload):
             with self.assertRaises((ValueError, OSError)):
                 gate.verify_signed_contract_phase10_output_record(
-                    self.record_path, self.signature, self.repository, self.output,
+                    self.record_path, self.signature, self.repository,
+                    self.repository, self.output,
                     self.plan, trusted_source_commit=self.commit,
                     trusted_workflow_sha="b" * 40,
                     trusted_workflow_path=self.upload["trustedWorkflowPath"],
@@ -182,7 +223,7 @@ class ContractPhase10OutputRecordTest(unittest.TestCase):
         with (patch.object(gate, "observe_contract_phase10_upload", return_value=self.upload),
               patch.object(gate, "forward_verified_contract_phase10_bytes")):
             selected = gate.prepare_contract_phase10_output_record(
-                self.plan, self.repository, self.output, prepared,
+                self.plan, self.repository, self.repository, self.output, prepared,
                 phase11_pins=self.pins, trusted_source_commit=self.commit,
                 trusted_workflow_sha="b" * 40,
                 trusted_workflow_path=self.upload["trustedWorkflowPath"],
@@ -215,7 +256,7 @@ class ContractPhase10OutputRecordTest(unittest.TestCase):
               patch.object(gate, "forward_verified_contract_phase10_bytes")):
             result = gate.publish_verified_contract_phase10_output_record(
                 prepared / "record.json", prepared / "record.sig",
-                self.repository, self.output, self.plan, published,
+                self.repository, self.repository, self.output, self.plan, published,
                 expected_record_sha256=selected["recordSha256"],
                 expected_signature_sha256=signed["signatureSha256"],
                 trusted_source_commit=self.commit,
@@ -236,7 +277,8 @@ class ContractPhase10OutputRecordTest(unittest.TestCase):
         with patch.dict("os.environ", {signer._SECRET: "not-a-key"}):
             with self.assertRaisesRegex(ValueError, "signing-secret context"):
                 gate.prepare_contract_phase10_output_record(
-                    self.plan, self.repository, self.output, self.root / "not-prepared",
+                    self.plan, self.repository, self.repository, self.output,
+                    self.root / "not-prepared",
                     phase11_pins=self.pins, trusted_source_commit=self.commit,
                     trusted_workflow_sha="b" * 40,
                     trusted_workflow_path=self.upload["trustedWorkflowPath"],
@@ -247,7 +289,8 @@ class ContractPhase10OutputRecordTest(unittest.TestCase):
                 )
             with self.assertRaisesRegex(ValueError, "signing-secret context"):
                 gate.publish_verified_contract_phase10_output_record(
-                    self.record_path, self.signature, self.repository, self.output,
+                    self.record_path, self.signature, self.repository,
+                    self.repository, self.output,
                     self.plan, self.root / "not-published",
                     expected_record_sha256=sha256_bytes(self.record_path.read_bytes()),
                     expected_signature_sha256=sha256_bytes(self.signature.read_bytes()),
@@ -299,7 +342,8 @@ class ContractPhase10OutputRecordTest(unittest.TestCase):
                           side_effect=swap_after_verification):
             with self.assertRaisesRegex(ValueError, "input changed before publication"):
                 gate.publish_verified_contract_phase10_output_record(
-                    self.record_path, self.signature, self.repository, self.output,
+                    self.record_path, self.signature, self.repository,
+                    self.repository, self.output,
                     self.plan, destination,
                     expected_record_sha256=sha256_bytes(original_record),
                     expected_signature_sha256=sha256_bytes(original_signature),
