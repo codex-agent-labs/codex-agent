@@ -192,6 +192,13 @@ internal static class RuntimeLoaderSecurity
             Reject<FileNotFoundException>(() => NativeLibraryLoader.RejectUnverifiedExternalForTests(
                 source, Compatibility(), Target));
             var expected = "sha256:" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(source))).ToLowerInvariant();
+            var oversized = Path.Combine(root, "oversized-runtime-library");
+            using (var sparse = File.Create(oversized)) sparse.SetLength(1024L * 1024 * 1024 + 1);
+            var oversizedSnapshots = Path.Combine(root, "oversized-snapshots");
+            Reject<InvalidDataException>(() => NativeLibraryLoader.LoadEmbeddedForTests(
+                oversized, Compatibility(), Target, oversizedSnapshots));
+            if (Directory.EnumerateFileSystemEntries(oversizedSnapshots).Any())
+                throw new InvalidOperationException("oversized Runtime snapshot was not removed");
             var wrongDigest = JsonNode.Parse(Compatibility())!.AsObject();
             wrongDigest["runtime"]!["embeddedVariants"]!.AsArray()
                 .Single(value => value!["target"]!.GetValue<string>() == Target)!["runtimeLibrarySha256"] =

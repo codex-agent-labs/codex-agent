@@ -316,6 +316,33 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, "digest mismatch"):
                 _snapshot_embedded_library(source, expected)
 
+    def test_runtime_snapshot_rejects_oversized_or_growing_source(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            source = Path(directory) / "libcodex_agent.dylib"
+            source.write_bytes(b"abc")
+            expected = "sha256:" + hashlib.sha256(b"abc").hexdigest()
+            metadata = source.stat()
+            original_fstat = os.fstat
+
+            def first_fstat_size(size: int):
+                called = False
+
+                def read(fd: int):
+                    nonlocal called
+                    if not called:
+                        called = True
+                        return os.stat_result((*metadata[:6], size, *metadata[7:]))
+                    return original_fstat(fd)
+
+                return read
+
+            with patch("codex_agent._ffi.os.fstat", side_effect=first_fstat_size(512 * 1024 * 1024 + 1)):
+                with self.assertRaisesRegex(OSError, "size is invalid"):
+                    _snapshot_embedded_library(source, expected)
+            with patch("codex_agent._ffi.os.fstat", side_effect=first_fstat_size(2)):
+                with self.assertRaisesRegex(OSError, "changed while copying"):
+                    _snapshot_embedded_library(source, expected)
+
     def test_tampered_embedded_library_digest_fails_before_dynamic_loading(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT) as directory:
             library = Path(directory) / "libcodex_agent"

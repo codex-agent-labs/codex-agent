@@ -11,6 +11,7 @@ namespace CodexAgent.Interop;
 internal static partial class NativeLibraryLoader
 {
     private const string CompatibilityResource = "CodexAgent.sdk-compatibility.json";
+    private const long MaxRuntimeLibraryBytes = 1024L * 1024 * 1024;
     private static readonly JsonSerializerOptions CanonicalJson = new()
     {
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
@@ -157,8 +158,6 @@ internal static partial class NativeLibraryLoader
         RequireCanonical(identity.RootElement, identityJson, "Runtime identity");
         ValidateIdentity(ParseCompatibility(compatibilityJson), identity.RootElement, target, embedded);
     }
-
-    internal static void VerifyDigestForTests(string path, string expected) => VerifyDigest(path, expected);
 
     internal static string SnapshotForTests(string path, string expected) =>
         SnapshotEmbeddedLibrary(path, expected, null).Path;
@@ -359,13 +358,6 @@ internal static partial class NativeLibraryLoader
             throw new InvalidDataException("Embedded Runtime component mismatch.");
     }
 
-    private static void VerifyDigest(string path, string expected)
-    {
-        using var stream = File.OpenRead(path);
-        var actual = "sha256:" + Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
-        if (actual != expected) throw new InvalidDataException("Embedded Codex Agent Runtime library digest mismatch.");
-    }
-
     private static Snapshot SnapshotEmbeddedLibrary(string path, string expected, string? snapshotRoot)
     {
         path = ValidateAbsoluteRegularPath(path, "embedded Codex Agent Runtime library");
@@ -377,13 +369,30 @@ internal static partial class NativeLibraryLoader
         var snapshot = Path.Combine(directory.FullName, Path.GetFileName(path));
         try
         {
+            using var digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             using (var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.SequentialScan))
             using (var output = new FileStream(snapshot, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.WriteThrough))
             {
-                input.CopyTo(output);
+                var length = input.Length;
+                if (length is <= 0 or > MaxRuntimeLibraryBytes)
+                    throw new InvalidDataException("Runtime library exceeds its size limit.");
+                var buffer = new byte[1024 * 1024];
+                var remaining = length;
+                while (remaining > 0)
+                {
+                    var count = input.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining));
+                    if (count == 0) throw new InvalidDataException("Runtime library changed while copying.");
+                    output.Write(buffer, 0, count);
+                    digest.AppendData(buffer, 0, count);
+                    remaining -= count;
+                }
+                if (input.ReadByte() != -1 || input.Length != length)
+                    throw new InvalidDataException("Runtime library changed while copying.");
                 output.Flush(true);
             }
-            VerifyDigest(snapshot, expected);
+            var actual = "sha256:" + Convert.ToHexString(digest.GetHashAndReset()).ToLowerInvariant();
+            if (actual != expected)
+                throw new InvalidDataException("Embedded Codex Agent Runtime library digest mismatch.");
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(snapshot, UnixFileMode.UserRead);
             return new Snapshot(snapshot, directory);
         }

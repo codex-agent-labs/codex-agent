@@ -520,6 +520,7 @@ pub(crate) fn compatibility() -> Result<&'static Compatibility, String> {
 pub(crate) struct EmbeddedRuntimeSnapshot {
     path: PathBuf,
     expected_digest: String,
+    expected_len: u64,
     file: Option<File>,
 }
 
@@ -562,6 +563,7 @@ impl EmbeddedRuntimeSnapshot {
             self.file.as_ref().expect("live Runtime snapshot"),
             &self.path,
             &self.expected_digest,
+            self.expected_len,
         )
     }
 
@@ -721,7 +723,7 @@ fn private_snapshot(
             .map_err(|error| format!("sync embedded Runtime: {error}"))?;
         drop(output);
         set_read_only(&destination)?;
-        verify_regular_digest(&destination, expected_digest)
+        verify_regular_digest(&destination, expected_digest, bytes.len() as u64)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&destination);
@@ -736,7 +738,7 @@ fn private_snapshot(
             return Err(error);
         }
     };
-    if let Err(error) = verify_file_digest(&file, expected_digest) {
+    if let Err(error) = verify_file_digest(&file, expected_digest, bytes.len() as u64) {
         drop(file);
         let _ = fs::remove_file(&destination);
         let _ = fs::remove_dir(&directory);
@@ -752,6 +754,7 @@ fn private_snapshot(
     Ok(EmbeddedRuntimeSnapshot {
         path: destination,
         expected_digest: expected_digest.to_owned(),
+        expected_len: bytes.len() as u64,
         file: Some(file),
     })
 }
@@ -867,17 +870,18 @@ fn create_safe_directory(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn verify_regular_digest(path: &Path, expected: &str) -> Result<(), String> {
+fn verify_regular_digest(path: &Path, expected: &str, expected_len: u64) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("inspect Runtime snapshot {}: {error}", path.display()))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() != expected_len {
         return Err(format!(
             "Runtime snapshot is not a regular file: {}",
             path.display()
         ));
     }
-    let bytes = fs::read(path)
-        .map_err(|error| format!("read Runtime snapshot {}: {error}", path.display()))?;
+    let file = File::open(path)
+        .map_err(|error| format!("open Runtime snapshot {}: {error}", path.display()))?;
+    let bytes = read_snapshot_bytes(file, expected_len)?;
     if format!("sha256:{}", hex(&sha256(&bytes))) != expected {
         return Err(format!(
             "Runtime snapshot digest mismatch: {}",
@@ -887,23 +891,42 @@ fn verify_regular_digest(path: &Path, expected: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn verify_file_digest(file: &File, expected: &str) -> Result<(), String> {
+fn verify_file_digest(file: &File, expected: &str, expected_len: u64) -> Result<(), String> {
     let mut file = file
         .try_clone()
         .map_err(|error| format!("clone protected Runtime snapshot: {error}"))?;
     file.rewind()
         .map_err(|error| format!("rewind protected Runtime snapshot: {error}"))?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .map_err(|error| format!("read protected Runtime snapshot: {error}"))?;
+    let bytes = read_snapshot_bytes(file, expected_len)?;
     if format!("sha256:{}", hex(&sha256(&bytes))) != expected {
         return Err("protected Runtime snapshot digest mismatch".into());
     }
     Ok(())
 }
 
+fn read_snapshot_bytes(reader: impl Read, expected_len: u64) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(
+            expected_len
+                .checked_add(1)
+                .ok_or("Runtime snapshot size overflows")?,
+        )
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read protected Runtime snapshot: {error}"))?;
+    if bytes.len() as u64 != expected_len {
+        return Err("Runtime snapshot changed size during digest verification".into());
+    }
+    Ok(bytes)
+}
+
 #[cfg(unix)]
-fn verify_path_binding(file: &File, path: &Path, expected: &str) -> Result<(), String> {
+fn verify_path_binding(
+    file: &File,
+    path: &Path,
+    expected: &str,
+    expected_len: u64,
+) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
 
     let held = file
@@ -913,17 +936,24 @@ fn verify_path_binding(file: &File, path: &Path, expected: &str) -> Result<(), S
         .map_err(|error| format!("inspect Runtime snapshot path: {error}"))?;
     if path_metadata.file_type().is_symlink()
         || !path_metadata.is_file()
+        || held.len() != expected_len
+        || path_metadata.len() != expected_len
         || held.dev() != path_metadata.dev()
         || held.ino() != path_metadata.ino()
     {
         return Err("Runtime snapshot path no longer names the verified file".into());
     }
-    verify_file_digest(file, expected)?;
-    verify_regular_digest(path, expected)
+    verify_file_digest(file, expected, expected_len)?;
+    verify_regular_digest(path, expected, expected_len)
 }
 
 #[cfg(windows)]
-fn verify_path_binding(file: &File, path: &Path, expected: &str) -> Result<(), String> {
+fn verify_path_binding(
+    file: &File,
+    path: &Path,
+    expected: &str,
+    expected_len: u64,
+) -> Result<(), String> {
     use std::os::windows::fs::MetadataExt;
 
     let held = file
@@ -933,6 +963,8 @@ fn verify_path_binding(file: &File, path: &Path, expected: &str) -> Result<(), S
         .map_err(|error| format!("inspect Runtime snapshot path: {error}"))?;
     if path_metadata.file_type().is_symlink()
         || !path_metadata.is_file()
+        || held.len() != expected_len
+        || path_metadata.len() != expected_len
         || held.volume_serial_number().is_none()
         || held.volume_serial_number() != path_metadata.volume_serial_number()
         || held.file_index().is_none()
@@ -940,8 +972,8 @@ fn verify_path_binding(file: &File, path: &Path, expected: &str) -> Result<(), S
     {
         return Err("Runtime snapshot path no longer names the verified file".into());
     }
-    verify_file_digest(file, expected)?;
-    verify_regular_digest(path, expected)
+    verify_file_digest(file, expected, expected_len)?;
+    verify_regular_digest(path, expected, expected_len)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -1228,6 +1260,21 @@ mod tests {
             read_external_runtime_bytes(std::io::repeat(b'x'), 7)
                 .unwrap_err()
                 .contains("changed while being snapshotted")
+        );
+    }
+
+    #[test]
+    fn snapshot_digest_read_rejects_growth_after_original_capture() {
+        let mut source = std::io::Cursor::new(vec![b'x'; 1024]);
+        assert!(
+            read_snapshot_bytes(&mut source, 7)
+                .unwrap_err()
+                .contains("changed size")
+        );
+        assert_eq!(source.position(), 8);
+        assert_eq!(
+            read_snapshot_bytes(std::io::Cursor::new(b"trusted"), 7).unwrap(),
+            b"trusted"
         );
     }
 }

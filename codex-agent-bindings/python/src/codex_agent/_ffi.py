@@ -308,13 +308,24 @@ def _snapshot_embedded_library(path: Path, expected_digest: str) -> Path:
     directory = tempfile.TemporaryDirectory(prefix="codex-agent-runtime-")
     _SNAPSHOT_DIRECTORIES.append(directory)
     destination = Path(directory.name) / path.name
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     digest = hashlib.sha256()
     try:
         with os.fdopen(os.open(path, flags), "rb") as source, destination.open("xb") as output:
-            while block := source.read(1024 * 1024):
+            metadata = os.fstat(source.fileno())
+            length = metadata.st_size
+            if not stat.S_ISREG(metadata.st_mode) or not 0 < length <= 512 * 1024 * 1024:
+                raise OSError("Codex Agent Runtime library size is invalid")
+            remaining = length
+            while remaining:
+                block = source.read(min(remaining, 1024 * 1024))
+                if not block:
+                    raise OSError("Codex Agent Runtime library changed while copying")
                 digest.update(block)
                 output.write(block)
+                remaining -= len(block)
+            if source.read(1) or os.fstat(source.fileno()).st_size != length:
+                raise OSError("Codex Agent Runtime library changed while copying")
             output.flush()
             os.fsync(output.fileno())
         if _SHA256_PREFIX + digest.hexdigest() != expected_digest:
