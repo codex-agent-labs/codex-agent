@@ -1827,6 +1827,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/sdk_campaign_catalog_caller.py",
             "ci/products/sdk_campaign_dev_catalog.py",
             "ci/sdk_campaign_reused_original.py",
+            "ci/sdk_nested_wave_locator.py",
             "ci/sdk_partial_state.py",
             "ci/sdk_core_metadata_protected_handoff.py",
         )
@@ -1847,6 +1848,7 @@ class ProductSelectionTest(unittest.TestCase):
             ("ci/contract_phase10_output_record.py", "contract", "contract", "common"),
             ("ci/contract_phase10_record_signer.py", "contract", "contract", "common"),
             ("ci/runtime_phase10_output_record.py", "runtime", "runtime-aggregate", "aggregate"),
+            ("ci/runtime_phase10_record_signer.py", "runtime", "runtime-aggregate", "aggregate"),
         ):
             result = classify_paths((path,))
             self.assertEqual((), result.unknown_paths)

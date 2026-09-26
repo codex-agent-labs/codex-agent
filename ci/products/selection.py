@@ -259,6 +259,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/runtime_phase10_sidecar_caller.py",
     "ci/runtime_phase10_library_caller.py",
     "ci/runtime_phase10_output_record.py",
+    "ci/runtime_phase10_record_signer.py",
     "ci/runtime_phase11_bytes.py",
     "ci/sdk_android_archive_provision.py",
     "ci/sdk_android_core14_caller.py",
@@ -274,6 +275,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_campaign_original_locator.py",
     "ci/sdk_campaign_original_worker.py",
     "ci/sdk_campaign_reused_original.py",
+    "ci/sdk_nested_wave_locator.py",
     "ci/sdk_partial_state.py",
     "ci/sdk_core_context_preparation_locator.py",
     "ci/sdk_core_context_preparation_capture.py",
@@ -624,6 +626,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path in {"ci/products/runtime_phase10_maven.py", "ci/runtime_phase10_sidecar_caller.py",
                 "ci/products/runtime_library_authorization.py", "ci/runtime_phase10_library_caller.py",
                 "ci/runtime_phase10_upload_locator.py", "ci/runtime_phase10_output_record.py",
+                "ci/runtime_phase10_record_signer.py",
                 "ci/runtime_phase11_bytes.py"}:
         return _from_phase("runtime", "runtime-aggregate", "metadata")
     if path == "ci/products/sdk_phase10_maven.py":
@@ -639,6 +642,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
                 "ci/sdk_campaign_partial_catalog_caller.py",
                 "ci/sdk_campaign_reused_original.py",
                 "ci/sdk_campaign_original_locator.py", "ci/sdk_campaign_original_worker.py",
+                "ci/sdk_nested_wave_locator.py",
                 "ci/sdk_partial_state.py",
                 "ci/sdk_policy_snapshot.py"}:
         return {instance for instance in ALL_INSTANCES if instance.product == "sdk"}
