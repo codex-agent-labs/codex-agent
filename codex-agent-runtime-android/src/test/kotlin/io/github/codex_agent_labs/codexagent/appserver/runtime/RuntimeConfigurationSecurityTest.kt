@@ -1,5 +1,6 @@
 package io.github.codex_agent_labs.codexagent.appserver.runtime
 
+import java.nio.file.Files
 import okio.FileSystem
 import okio.Path
 import okio.Path.Companion.toPath
@@ -69,6 +70,30 @@ class RuntimeConfigurationSecurityTest {
                 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
                 binary.sha256(),
             )
+        } finally {
+            FileSystem.SYSTEM.deleteRecursively(directory, mustExist = false)
+        }
+    }
+
+    @Test
+    fun certificateBundleReplacesStaleSymlinkWithoutWritingItsTarget() {
+        val directory =
+            FileSystem.SYSTEM_TEMPORARY_DIRECTORY / "codex-runtime-certificate-${Random.nextLong()}"
+        val codexHome = directory / "codex"
+        FileSystem.SYSTEM.createDirectories(codexHome)
+        try {
+            val certificate = (directory / "source.pem").also { it.write("certificate") }
+            val sentinel = (directory / "sentinel").also { it.write("leave untouched") }
+            val bundle = codexHome / "system-ca.pem"
+            Files.createSymbolicLink(
+                java.nio.file.Path.of(bundle.toString()),
+                java.nio.file.Path.of(sentinel.toString()),
+            )
+
+            assertEquals(bundle, prepareRuntimeCertificateBundle(listOf(certificate), codexHome))
+            assertEquals("certificate\n", bundle.read())
+            assertEquals("leave untouched", sentinel.read())
+            assertFalse(Files.isSymbolicLink(java.nio.file.Path.of(bundle.toString())))
         } finally {
             FileSystem.SYSTEM.deleteRecursively(directory, mustExist = false)
         }

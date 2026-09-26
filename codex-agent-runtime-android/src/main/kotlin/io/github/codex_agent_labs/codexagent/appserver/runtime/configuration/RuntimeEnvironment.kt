@@ -1,7 +1,9 @@
 package io.github.codex_agent_labs.codexagent.appserver.runtime
 
+import java.io.File
 import okio.FileSystem
 import okio.Path
+import okio.Path.Companion.toPath
 import okio.buffer
 
 internal fun buildMinimalRuntimeEnvironment(
@@ -59,13 +61,20 @@ internal fun prepareRuntimeCertificateBundle(certificateSources: List<Path>, cod
         .sortedBy(Path::name)
     check(certificates.isNotEmpty()) { "System certificates are unavailable" }
     return (codexHome / "system-ca.pem").also { destination ->
-        FileSystem.SYSTEM.sink(destination).buffer().use { output ->
-            certificates.forEach { certificate ->
-                FileSystem.SYSTEM.source(certificate).buffer().use { input ->
-                    output.writeAll(input)
+        val temporary = File.createTempFile("system-ca-", ".tmp", File(codexHome.toString()))
+            .absolutePath.toPath()
+        try {
+            FileSystem.SYSTEM.sink(temporary).buffer().use { output ->
+                certificates.forEach { certificate ->
+                    FileSystem.SYSTEM.source(certificate).buffer().use { input ->
+                        output.writeAll(input)
+                    }
+                    output.writeByte('\n'.code)
                 }
-                output.writeByte('\n'.code)
             }
+            FileSystem.SYSTEM.atomicMove(temporary, destination)
+        } finally {
+            FileSystem.SYSTEM.delete(temporary, mustExist = false)
         }
         check(destination.isRegularFile() && (FileSystem.SYSTEM.metadata(destination).size ?: 0) > 0) {
             "Unable to prepare system certificates"
