@@ -305,11 +305,11 @@ class ProductRestoreTest(unittest.TestCase):
 
     def test_real_ios_sizes_fit_but_archive_entry_and_total_limits_remain_enforced(self) -> None:
         limits = product_restore.OBJECT_ZIP_LIMITS
-        self.assertEqual(2 * 1024**3, limits["max_archive_bytes"])
-        self.assertEqual(1024**3, limits["max_entry_bytes"])
-        self.assertEqual(2 * 1024**3, limits["max_total_bytes"])
-        self.assertLess(607_745_834, limits["max_entry_bytes"])
-        self.assertLess(1_215_911_124 + 2 * product_restore.PRODUCT_JSON_LIMIT,
+        self.assertEqual(8 * 1024**3, limits["max_archive_bytes"])
+        self.assertEqual(2 * 1024**3, limits["max_entry_bytes"])
+        self.assertEqual(8 * 1024**3, limits["max_total_bytes"])
+        self.assertLess(1_896_891_296, limits["max_entry_bytes"])
+        self.assertLess(5_009_133_052 + 2 * product_restore.PRODUCT_JSON_LIMIT,
                         limits["max_archive_bytes"])
         stored = self.store()
         for limit in ("max_archive_bytes", "max_entry_bytes", "max_total_bytes"):
