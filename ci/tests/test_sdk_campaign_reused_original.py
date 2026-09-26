@@ -7,6 +7,8 @@ import unittest
 from unittest.mock import patch
 
 from ci import sdk_campaign_reused_original as reused
+from ci import sdk_campaign_original_locator as locator
+from ci.sdk_campaign_catalog_producer import ReusedSdkOriginalPin
 from ci.sdk_campaign_observation import ObservedSdkOriginal
 from ci.sdk_campaign_original_locator import fresh_sdk_worker_route
 from ci.tests import test_sdk_worker_collection as fixture_module
@@ -54,7 +56,7 @@ class ReusedSdkOriginalTest(unittest.TestCase):
         self.raw = archive(files)
         self.catalog_artifact = {
             "id": 902, "digest": sha256_bytes(self.raw), "expired": False,
-            "name": "codex-agent-product-catalog-v1-pull-request-31-sdk-0.3.0",
+            "name": "codex-agent-product-catalog-v1-pull-request-31-original",
             "archive_download_url": "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/902/zip",
             "size_in_bytes": len(self.raw), "created_at": "2026-01-01T00:05:00Z",
             "workflow_run": {"id": fixture.producer["runId"], "head_sha": fixture.producer["commit"]},
@@ -114,6 +116,48 @@ class ReusedSdkOriginalTest(unittest.TestCase):
                 self.assertEqual(self.original_object.read_bytes(), object_path.read_bytes())
                 self.assertEqual(self.descriptor["receiptSha256"], evidence["originalReceiptSha256"])
         self.assertEqual(before, regular_file_inventory(self.original_object.parent))
+
+    def test_independent_catalog_and_worker_discovery(self):
+        path = ".github/workflows/product-validation.yml"
+        arguments = dict(expected_build_key=self.ready["buildKey"],
+            expected_product_version="0.3.0", pull_request=31,
+            repository=self.fixture.producer["repository"],
+            catalog_artifact_name=self.catalog_artifact["name"], catalog_public_key=self.key,
+            expected_public_key_sha256=sha256_bytes(self.key.read_bytes()),
+            trusted_workflow_sha=fixture_module.PIN,
+            trusted_worker_workflow_path=path, trusted_worker_job_name=self.worker_job["name"],
+            trusted_catalog_workflow_path=path, trusted_catalog_job_name=self.catalog_job["name"],
+            token="synthetic-token", environ={})
+        def download_to_file(artifact, _token, destination, **_kwargs):
+            Path(destination).write_bytes(self.worker_raw if artifact["id"] == 901 else self.raw)
+        with self.official(), \
+             patch.object(locator.products, "paginated_items", return_value=[self.catalog_artifact]), \
+             patch.object(locator.products, "download_artifact_to_file", side_effect=download_to_file), \
+             patch.object(locator, "_locate", return_value={
+                 "artifact_id": 901, "artifact_sha256": sha256_bytes(self.worker_raw)}):
+            pin = locator.discover_reused_sdk_original_pin(self.instance, **arguments)
+            self.assertEqual(self.descriptor["receiptSha256"], pin["receipt_sha256"])
+            self.assertEqual(902, pin["catalog_artifact_id"])
+            self.assertEqual(901, pin["original_artifact_id"])
+            self.assertIsInstance(ReusedSdkOriginalPin(**pin), ReusedSdkOriginalPin)
+            with reused.held_reused_sdk_original(self.instance, self.original, self.transport,
+                    expected_receipt_sha256=pin["receipt_sha256"],
+                    catalog_artifact_id=pin["catalog_artifact_id"],
+                    catalog_artifact_sha256=pin["catalog_artifact_sha256"],
+                    original_artifact_id=pin["original_artifact_id"],
+                    original_artifact_sha256=pin["original_artifact_sha256"],
+                    catalog_public_key=pin["catalog_public_key"],
+                    expected_public_key_sha256=pin["catalog_public_key_sha256"],
+                    pull_request=pin["pull_request"], trusted_workflow_sha=fixture_module.PIN,
+                    token="synthetic-token", environ={},
+                    trusted_worker_workflow_path=pin["worker_workflow_path"],
+                    trusted_worker_job_name=pin["worker_job_name"],
+                    trusted_catalog_workflow_path=pin["catalog_workflow_path"],
+                    trusted_catalog_job_name=pin["catalog_job_name"]):
+                pass
+            with self.assertRaisesRegex(ValueError, "independent digest"):
+                locator.discover_reused_sdk_original_pin(self.instance,
+                    **{**arguments, "expected_public_key_sha256": "sha256:" + "0" * 64})
 
     def test_independent_worker_and_catalog_workflow_pairs(self):
         path = ".github/workflows/product-validation.yml"

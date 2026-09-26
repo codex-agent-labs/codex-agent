@@ -13,11 +13,15 @@ from sdk_apple_upload_locator import _locate
 from sdk_facade_capture import _capture_route
 import product_reuse as products
 from products.inventory import (
-    canonical_json_bytes, load_canonical_json_bytes, require_exact_keys,
-    require_sha256, sha256_bytes, verified_zip_contents,
+    canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
+    require_exact_keys, require_integer, require_relative_path, require_semver,
+    require_sha256, sha256_bytes,
+    sha256_file, verified_zip_contents,
 )
+from products.index import SignedProductIndex, _verify_index_receipt, verify_signed_product_index
 from products.receipt import validate_phase_receipt, validate_producer
 from products.registry import PhaseInstanceId
+from products.restore import verify_object, verify_phase_shard
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from products.signing_isolation import require_no_signing_secret
 
@@ -110,6 +114,138 @@ def discover_fresh_sdk_original_pin(instance, *, producer, expected_build_key,
     return {"receipt_sha256": sha256_bytes(receipt_bytes),
             "artifact_id": pin["artifact_id"], "artifact_sha256": pin["artifact_sha256"],
             "workflow_path": trusted_workflow_path, "job_name": trusted_job_name}
+
+
+def discover_reused_sdk_original_pin(instance, *, expected_build_key,
+        expected_product_version, pull_request, repository, catalog_artifact_name,
+        catalog_public_key,
+        expected_public_key_sha256, trusted_workflow_sha,
+        trusted_worker_workflow_path, trusted_worker_job_name,
+        trusted_catalog_workflow_path, trusted_catalog_job_name,
+        token, environ=None):
+    """Select same-PR originals without reading current campaign replay state.
+
+    The key, build key, version, PR, repository, and reviewed routes are caller
+    policy. The signed catalog supplies the original receipt; official worker
+    transport must independently contain that exact receipt and object.
+    """
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    require_no_signing_secret(os.environ)
+    if not isinstance(instance, PhaseInstanceId) or instance not in SDK_CAMPAIGN_INSTANCES:
+        raise ValueError("Reused SDK pin discovery requires one registered phase")
+    require_sha256(expected_build_key, "Independent SDK build key")
+    require_sha256(expected_public_key_sha256, "Independent catalog public key")
+    require_integer(pull_request, "Independent pull request", 1)
+    if type(token) is not str or not token:
+        raise ValueError("Reused SDK pin discovery requires an observation token")
+    require_semver(expected_product_version, "Independent SDK version")
+    require_relative_path(repository, "Independent repository")
+    if repository.count("/") != 1:
+        raise ValueError("Independent repository must be an owner/repository pair")
+    prefix = f"{products._CATALOG_PREFIX}pull-request-{pull_request}-"
+    if (type(catalog_artifact_name) is not str
+            or not catalog_artifact_name.startswith(prefix)
+            or not catalog_artifact_name[len(prefix):]):
+        raise ValueError("Reused SDK catalog requires a caller-pinned same-PR artifact name")
+    worker_job, worker_policy = original_workflow_route("worker", trusted_worker_job_name,
+        trusted_workflow_sha, trusted_worker_workflow_path, trusted_worker_job_name)
+    catalog_job, catalog_policy = original_workflow_route("catalog", trusted_catalog_job_name,
+        trusted_workflow_sha, trusted_catalog_workflow_path, trusted_catalog_job_name)
+    if not all((trusted_worker_workflow_path, trusted_worker_job_name,
+                trusted_catalog_workflow_path, trusted_catalog_job_name)):
+        raise ValueError("Reused SDK pin discovery requires both reviewed workflow routes")
+    pinned_key = read_regular_file_bytes(Path(catalog_public_key), max_bytes=64 * 1024,
+        reject_symlink_parents=True)
+    if sha256_bytes(pinned_key) != expected_public_key_sha256:
+        raise ValueError("Reused SDK catalog key differs from independent digest")
+    api = "https://api.github.com"
+    listed = products.paginated_items(f"{api}/repos/{repository}/actions/artifacts", "artifacts", token)
+    candidates = [row for row in listed if isinstance(row, dict)
+                  and row.get("name") == catalog_artifact_name
+                  and row.get("expired") is False]
+    if not candidates:
+        raise ValueError("Reused SDK has no exact same-PR catalog")
+    candidates.sort(key=lambda row: require_integer(row.get("id"), "Catalog artifact ID", 1),
+                    reverse=True)
+    if len(candidates) > 1 and candidates[0]["id"] == candidates[1]["id"]:
+        raise ValueError("Reused SDK catalog listing has duplicate latest ID")
+    listed_artifact = candidates[0]
+    artifact_id = listed_artifact["id"]
+    detail_url = f"{api}/repos/{repository}/actions/artifacts/{artifact_id}"
+    detail = products.api_json(detail_url, token)
+    if (not isinstance(detail, dict) or detail.get("id") != artifact_id
+            or detail.get("name") != catalog_artifact_name or detail.get("expired") is not False
+            or detail.get("digest") != listed_artifact.get("digest")
+            or detail.get("archive_download_url") != f"{detail_url}/zip"):
+        raise ValueError("Reused SDK catalog detail differs from official listing")
+    catalog_sha = require_sha256(detail["digest"], "Official SDK catalog digest")
+    with tempfile.TemporaryDirectory(prefix="sdk-reused-pin-") as temporary:
+        root = Path(temporary).resolve()
+        catalog = products._materialize_catalog("same-pr", detail, token, root,
+            repository, pull_request, None, api=api)
+        extracted = root / "catalogs" / "same-pr" / str(artifact_id) / "contents"
+        if read_regular_file_bytes(extracted / "public-key.pub", max_bytes=64 * 1024,
+                reject_symlink_parents=True) != pinned_key:
+            raise ValueError("Reused SDK catalog key differs from independent policy")
+        index, index_bytes = verify_signed_product_index(SignedProductIndex(
+            extracted / "product-index.json", extracted / "product-index.sig"), Path(catalog_public_key))
+        if index != catalog.index:
+            raise ValueError("Reused SDK catalog changed during signed verification")
+        observed_catalog = products._observe_ci_producer_jobs(
+            {"catalog": index["producer"]}, jobs_by_phase={"catalog": catalog_job},
+            token=token, **catalog_policy)
+        products._require_artifact_job_window(observed_catalog[0], catalog_job, detail)
+        entries = [entry for entry in index["entries"]
+                   if (entry["product"], entry["component"], entry["phase"], entry["target"])
+                   == (instance.product, instance.component, instance.phase, instance.target)
+                   and entry["buildKey"] == expected_build_key
+                   and entry["productVersion"] == expected_product_version]
+        if len(entries) != 1:
+            raise ValueError("Reused SDK catalog lacks one exact phase entry")
+        entry = entries[0]
+        original_object = catalog.objects.get(expected_build_key)
+        if original_object is None:
+            raise ValueError("Reused SDK catalog lacks original object")
+        selected = verify_object(original_object, build_key=expected_build_key,
+            receipt_sha256=entry["receiptSha256"])
+        _verify_index_receipt(entry, {**selected, "receiptSha256": entry["receiptSha256"]})
+        receipt = validate_phase_receipt(load_canonical_json_bytes(selected["receiptBytes"]))
+        producer = receipt["producer"]
+        if producer["repository"] != repository or producer["pullRequest"] != pull_request:
+            raise ValueError("Reused SDK receipt differs from independent PR/repository")
+        _, worker_name = fresh_sdk_worker_route(instance, receipt)
+        worker_pin = _locate(producer, phase="worker", job=worker_job, name=worker_name,
+            token=token, **worker_policy)
+        observed_worker = products._observe_ci_producer_jobs(
+            {"worker": producer}, jobs_by_phase={"worker": worker_job},
+            token=token, **worker_policy)
+        worker_archive = root / "original-worker.zip"
+        worker_artifact, _ = products._download_contract_ci_upload(
+            worker_pin["artifact_id"], worker_pin["artifact_sha256"], worker_name,
+            producer, observed_worker[0]["run"], token, destination=worker_archive)
+        products._require_artifact_job_window(observed_worker[0], worker_job, worker_artifact)
+        verified_zip_contents(worker_archive, retained_paths=(), allow_empty_members=True,
+            **products._CATALOG_ZIP_LIMITS)
+        worker_root = root / "original-worker"
+        products.safe_extract(worker_archive, worker_root)
+        shard = verify_phase_shard(worker_root / "shard", instance)
+        if (shard["receiptBytes"] != selected["receiptBytes"]
+                or sha256_file(worker_root / "shard" / shard["objectPath"])
+                != sha256_file(original_object)):
+            raise ValueError("Reused SDK worker upload differs from signed catalog original")
+    require_no_signing_secret(environment)
+    return {"receipt_sha256": entry["receiptSha256"],
+            "original_artifact_id": worker_pin["artifact_id"],
+            "original_artifact_sha256": worker_pin["artifact_sha256"],
+            "catalog_artifact_id": artifact_id, "catalog_artifact_sha256": catalog_sha,
+            "catalog_public_key": Path(catalog_public_key),
+            "catalog_public_key_sha256": expected_public_key_sha256,
+            "pull_request": pull_request,
+            "worker_workflow_path": trusted_worker_workflow_path,
+            "worker_job_name": worker_job,
+            "catalog_workflow_path": trusted_catalog_workflow_path,
+            "catalog_job_name": catalog_job}
 
 
 def locate_fresh_sdk_original_upload(instance, original, *, expected_receipt_sha256,
