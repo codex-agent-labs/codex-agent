@@ -87,6 +87,72 @@ class SdkCampaignCatalogProducerTest(TestCase):
                     trusted_workflow_sha="reviewed-sha", token="observation-token", environ={})
             self.assertEqual(59, discover_fresh.call_count)
 
+    def test_candidate_keeps_state_observation_through_selected_replay(self):
+        producer = {"repository": "codex-agent-labs/codex-agent",
+            "workflowPath": ".github/workflows/ci.yml", "commit": "a" * 40,
+            "tree": "b" * 40, "event": "pull_request", "runId": 3,
+            "runAttempt": 1, "pullRequest": 31}
+        selected = {"producer": producer, "artifact_name": "catalog",
+            "artifact_id": 4, "artifact_sha256": _DIGEST,
+            "index_sha256": _DIGEST, "public_key_sha256": _DIGEST,
+            "trusted_workflow_path": ".github/workflows/product-validation.yml",
+            "trusted_job_name": "product-validation / sdk-catalog"}
+        active = set()
+        transport = canonical_json_bytes({"captureProducer": producer})
+
+        @contextmanager
+        def observation(*_args, **_kwargs):
+            active.add("observation")
+            try:
+                yield transport, self.observations
+            finally:
+                active.remove("observation")
+
+        @contextmanager
+        def replay(*_args, **_kwargs):
+            self.assertEqual({"observation"}, active)
+            active.add("replay")
+            try:
+                yield ({"verified": True}, {"workers": True})
+            finally:
+                active.remove("replay")
+
+        arguments = dict(state_artifact_id=5, state_artifact_sha256=_DIGEST,
+            state_wave=0, sdk_state_wave=4, repository_root=Path("repository"),
+            fresh_selections={}, reused_selections={}, artifact_paths={},
+            semantic_controls={}, completed_catalog_pin=selected,
+            trusted_workflow_sha="a" * 40, token="synthetic-token", environ={})
+        with patch.object(catalog, "held_sdk_campaign_observation", side_effect=observation), \
+             patch.object(catalog, "discover_sdk_campaign_original_pins",
+                 return_value=self.pins) as discover, \
+             patch.object(catalog, "held_completed_sdk_campaign_replay",
+                 side_effect=replay) as completed:
+            with catalog.held_sdk_campaign_candidate(Path("plan.json"), **arguments) as result:
+                self.assertEqual(({"verified": True}, {"workers": True}), result)
+                self.assertEqual({"observation", "replay"}, active)
+            self.assertEqual(set(), active)
+            discover.assert_called_once()
+            completed.assert_called_once()
+            self.assertIs(completed.call_args.args[0], self.observations)
+            self.assertEqual(transport, completed.call_args.args[1])
+        wrong = canonical_json_bytes({"captureProducer": {**producer, "tree": "0" * 40}})
+        @contextmanager
+        def wrong_observation(*_args, **_kwargs):
+            yield wrong, self.observations
+        with patch.object(catalog, "held_sdk_campaign_observation", side_effect=wrong_observation), \
+             patch.object(catalog, "discover_sdk_campaign_original_pins") as discover, \
+             self.assertRaisesRegex(ValueError, "independently selected producer"):
+            with catalog.held_sdk_campaign_candidate(Path("plan.json"), **arguments):
+                pass
+        discover.assert_not_called()
+        with patch.dict(catalog.os.environ,
+                {"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": "forbidden"}), \
+             patch.object(catalog, "held_sdk_campaign_observation") as observation, \
+             self.assertRaisesRegex(ValueError, "signing-secret"):
+            with catalog.held_sdk_campaign_candidate(Path("plan.json"), **arguments):
+                pass
+        observation.assert_not_called()
+
     def test_all_61_originals_remain_held_through_replay_and_close_on_failure(self):
         active = set()
         closed = []

@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from types import MappingProxyType
 
-from ci.sdk_campaign_observation import ObservedSdkOriginal
+from ci.sdk_campaign_observation import ObservedSdkOriginal, held_sdk_campaign_observation
 from ci.sdk_campaign_original_locator import (
     discover_fresh_sdk_original_pin, discover_reused_sdk_original_pins,
 )
@@ -27,7 +27,7 @@ from products.inventory import (
     load_canonical_json_bytes, require_exact_keys, require_integer, require_sha256,
 )
 from products.registry import PhaseInstanceId
-from products.receipt import validate_phase_receipt
+from products.receipt import validate_phase_receipt, validate_producer
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES, held_sdk_campaign_selection
 from products.sdk_campaign_semantics import verify_sdk_campaign_semantics
 from products.signing_isolation import require_no_signing_secret
@@ -67,6 +67,11 @@ _REUSED_SELECTION_KEYS = {
     "catalog_artifact_name", "catalog_public_key", "expected_public_key_sha256",
     "trusted_worker_workflow_path", "trusted_worker_job_name",
     "trusted_catalog_workflow_path", "trusted_catalog_job_name",
+}
+_COMPLETED_CATALOG_PIN_KEYS = {
+    "producer", "artifact_name", "artifact_id", "artifact_sha256",
+    "index_sha256", "public_key_sha256", "trusted_workflow_path",
+    "trusted_job_name",
 }
 
 
@@ -267,16 +272,49 @@ def held_completed_sdk_campaign_replay(observations, current_transport_bytes, pi
     The caller must select the catalog and every worker pin independently. This
     no-secret replay does not mint release admission.
     """
-    pin = require_exact_keys(completed_catalog_pin, {
-        "producer", "artifact_name", "artifact_id", "artifact_sha256",
-        "index_sha256", "public_key_sha256", "trusted_workflow_path",
-        "trusted_job_name",
-    }, "Completed SDK catalog pin")
+    pin = require_exact_keys(completed_catalog_pin, _COMPLETED_CATALOG_PIN_KEYS,
+        "Completed SDK catalog pin")
     with held_completed_sdk_catalog(**pin, trusted_workflow_sha=trusted_workflow_sha,
             token=token, environ=environ) as catalog:
         verify_completed_sdk_catalog_originals(catalog, observations, artifact_paths)
         with held_sdk_campaign_semantic_replay(observations, current_transport_bytes,
                 pins, artifact_paths, semantic_controls,
+                trusted_workflow_sha=trusted_workflow_sha,
+                token=token, environ=environ) as verified:
+            yield verified
+
+
+@contextmanager
+def held_sdk_campaign_candidate(plan_path, *, state_artifact_id,
+        state_artifact_sha256, state_wave, sdk_state_wave, repository_root,
+        fresh_selections, reused_selections, artifact_paths, semantic_controls,
+        completed_catalog_pin, trusted_workflow_sha, token, environ,
+        sdk_validation_tooling=None, sdk_apple_validation_policy=None,
+        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    """Replay caller-selected current state and 61 originals without release trust."""
+    require_no_signing_secret(environ)
+    require_no_signing_secret(os.environ)
+    selected_catalog = require_exact_keys(completed_catalog_pin,
+        _COMPLETED_CATALOG_PIN_KEYS, "Completed SDK catalog pin")
+    selected_producer = validate_producer(selected_catalog["producer"])
+    with held_sdk_campaign_observation(plan_path, artifact_id=state_artifact_id,
+            artifact_sha256=state_artifact_sha256,
+            state_wave=state_wave, sdk_state_wave=sdk_state_wave,
+            repository_root=repository_root, environ=environ, token=token,
+            sdk_validation_tooling=sdk_validation_tooling,
+            sdk_apple_validation_policy=sdk_apple_validation_policy,
+            sdk_facade_metadata_admission=sdk_facade_metadata_admission,
+            sdk_android_metadata_admission=sdk_android_metadata_admission,
+            trusted_workflow_sha=trusted_workflow_sha) as (transport, observations):
+        current = load_canonical_json_bytes(transport)
+        if (not isinstance(current, dict) or "captureProducer" not in current
+                or validate_producer(current["captureProducer"]) != selected_producer):
+            raise ValueError("SDK campaign state differs from independently selected producer")
+        pins = discover_sdk_campaign_original_pins(fresh_selections, reused_selections,
+            trusted_workflow_sha=trusted_workflow_sha, token=token, environ=environ)
+        with held_completed_sdk_campaign_replay(observations, transport, pins,
+                artifact_paths, semantic_controls,
+                completed_catalog_pin=selected_catalog,
                 trusted_workflow_sha=trusted_workflow_sha,
                 token=token, environ=environ) as verified:
             yield verified
