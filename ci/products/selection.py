@@ -244,6 +244,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/sdk_campaign_android.py",
     "ci/products/sdk_campaign_apple.py",
     "ci/products/sdk_campaign_index.py",
+    "ci/products/sdk_campaign_dev_catalog.py",
     "ci/products/sdk_campaign_javascript.py",
     "ci/products/sdk_campaign_maven.py",
     "ci/products/sdk_campaign_native.py",
@@ -266,6 +267,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_apple_original_package_selection.py",
     "ci/sdk_campaign_observation.py",
     "ci/sdk_campaign_catalog_producer.py",
+    "ci/sdk_campaign_catalog_caller.py",
     "ci/sdk_campaign_original_locator.py",
     "ci/sdk_campaign_original_worker.py",
     "ci/sdk_campaign_reused_original.py",
@@ -622,9 +624,11 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path == "ci/products/sdk_campaign_maven.py":
         return (_from_phase("sdk", "sdk-core", "binary") |
                 _from_phase("sdk", "sdk-android", "binary"))
-    if path in {"ci/products/sdk_campaign_selection.py", "ci/products/sdk_campaign_semantics.py",
+    if path in {"ci/products/sdk_campaign_selection.py", "ci/products/sdk_campaign_dev_catalog.py",
+                "ci/products/sdk_campaign_semantics.py",
                 "ci/products/sdk_campaign_index.py", "ci/sdk_campaign_observation.py",
-                "ci/sdk_campaign_catalog_producer.py", "ci/sdk_campaign_reused_original.py",
+                "ci/sdk_campaign_catalog_producer.py", "ci/sdk_campaign_catalog_caller.py",
+                "ci/sdk_campaign_reused_original.py",
                 "ci/sdk_campaign_original_locator.py", "ci/sdk_campaign_original_worker.py",
                 "ci/sdk_policy_snapshot.py"}:
         return {instance for instance in ALL_INSTANCES if instance.product == "sdk"}

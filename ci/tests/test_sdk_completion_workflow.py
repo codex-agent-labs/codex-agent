@@ -265,8 +265,10 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         job = self.job("merge-gate")
         needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", job)
         self.assertIn("sdk-completion", [name.strip() for name in needs[1].split(",")])
+        self.assertIn("sdk-catalog", [name.strip() for name in needs[1].split(",")])
         self.assertIn("SDK_COMPLETION_RESULT: ${{ needs.sdk-completion.result }}", job)
         self.assertIn("SDK_COMPLETE: ${{ needs.sdk-completion.outputs.complete }}", job)
+        self.assertIn("SDK_CATALOG_RESULT: ${{ needs.sdk-catalog.result }}", job)
         full_reuse = re.search(r"(?m)^          PRODUCT_FULL_REUSE: (.+)$", job)
         self.assertEqual("${{ needs.sdk-completion.outputs.full_reuse }}", full_reuse[1])
         script = textwrap.dedent(job.split("        run: |\n", 1)[1].split("\n      - ", 1)[0])
@@ -278,10 +280,60 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                 env = {**os.environ, "EVENT_AUTHORIZED": "true", "REMOTE_BUILD_AUTHORIZED": "true",
                     "MERGE_READY": "true", "RESULTS": "success skipped", "TOOLING_MISS": "false",
                     "PRODUCT_RESUME_RESULT": resume, "SDK_COMPLETION_RESULT": result, "SDK_COMPLETE": complete,
+                    "SDK_CATALOG_REQUIRED": "false", "SDK_CATALOG_RESULT": "skipped",
                     "AGGREGATE_STATE": "not-selected", "SDK_INPUTS_REQUIRED": "false", "CONTRACT_COMPLETE": "false"}
                 process = subprocess.run(["bash", "-c", script], env=env, cwd=ROOT,
                                          capture_output=True, text=True)
                 self.assertEqual(succeeds, process.returncode == 0, process.stderr)
+        for catalog_result, succeeds in (("success", True), ("skipped", False), ("failure", False)):
+            with self.subTest(catalog_result=catalog_result):
+                env = {**os.environ, "EVENT_AUTHORIZED": "true", "REMOTE_BUILD_AUTHORIZED": "true",
+                    "MERGE_READY": "true", "RESULTS": "success skipped", "TOOLING_MISS": "false",
+                    "PRODUCT_RESUME_RESULT": "success", "SDK_COMPLETION_RESULT": "success",
+                    "SDK_COMPLETE": "true", "SDK_CATALOG_REQUIRED": "true",
+                    "SDK_CATALOG_RESULT": catalog_result, "AGGREGATE_STATE": "not-selected",
+                    "SDK_INPUTS_REQUIRED": "false", "CONTRACT_COMPLETE": "false"}
+                process = subprocess.run(["bash", "-c", script], env=env, cwd=ROOT,
+                                         capture_output=True, text=True)
+                self.assertEqual(succeeds, process.returncode == 0, process.stderr)
+
+    def test_catalog_job_uses_completed_state_and_no_product_build(self):
+        job = self.job("sdk-catalog")
+        self.assertIn("github.event_name == 'pull_request'", job)
+        self.assertIn("needs.sdk-completion.outputs.phase_count == '61'", job)
+        self.assertIn("artifact-id: ${{ needs.sdk-completion.outputs.artifact_id }}", job)
+        self.assertIn("artifact-sha256: ${{ needs.sdk-completion.outputs.artifact_digest }}", job)
+        self.assertIn("python3 -B -m ci.sdk_campaign_catalog_caller", job)
+        self.assertIn("--destination build/ci/sdk-catalog", job)
+        self.assertIn("name: codex-agent-product-catalog-v1-pull-request-", job)
+        self.assertNotIn("gradlew", job)
+        script = textwrap.dedent(job.split("      - name: Assemble completed SDK same-PR cache catalog\n", 1)[1]
+            .split("        run: |\n", 1)[1].split("\n      - uses:", 1)[0])
+        with tempfile.TemporaryDirectory(prefix="sdk-catalog-shell-") as temporary:
+            root = Path(temporary)
+            executable = root / "python3"
+            executable.write_text(
+                f"#!{sys.executable}\n"
+                "import json, os, pathlib, sys\n"
+                "pathlib.Path(os.environ['ARGV_CAPTURE']).write_text(json.dumps(sys.argv[1:]))\n")
+            executable.chmod(0o755)
+            arguments = root / "arguments.json"
+            env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ.get("PATH", ""),
+                "PLAN": "/captured plan/impact-plan.json", "DISCOVERY_ROOT": "/captured discovery",
+                "STATE_ROOT": "/captured state", "SDK_VALIDATION_TOOLING": "/tooling policy.json",
+                "SDK_APPLE_VALIDATION_POLICY": "/apple policy.json", "TRUSTED_WORKFLOW_SHA": "c" * 40,
+                "GITHUB_WORKSPACE": "/candidate repository", "GITHUB_TOKEN": "not-an-argument",
+                "ARGV_CAPTURE": str(arguments)}
+            process = subprocess.run(["bash", "-c", script], env=env, cwd=ROOT,
+                                     capture_output=True, text=True)
+            self.assertEqual(0, process.returncode, process.stderr)
+            self.assertEqual(["-B", "-m", "ci.sdk_campaign_catalog_caller", "--plan", env["PLAN"],
+                "--discovery-root", env["DISCOVERY_ROOT"], "--state-root", env["STATE_ROOT"],
+                "--sdk-original-workflow-sha", env["TRUSTED_WORKFLOW_SHA"],
+                "--repository-root", env["GITHUB_WORKSPACE"], "--destination", "build/ci/sdk-catalog",
+                "--sdk-validation-tooling", env["SDK_VALIDATION_TOOLING"],
+                "--sdk-apple-validation-policy", env["SDK_APPLE_VALIDATION_POLICY"]],
+                json.loads(arguments.read_text()))
 
 
 if __name__ == "__main__":

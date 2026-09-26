@@ -137,7 +137,14 @@ class SdkCampaignSelectionTest(unittest.TestCase):
             destination = Path(temporary).resolve() / "catalog"
             result = stage_completed_sdk_catalog(state, destination)
             self.assertEqual(result["phaseCount"], len(SDK_CAMPAIGN_INSTANCES))
+            self.assertGreater(result["objectBytes"], 0)
             self.assertTrue((destination / "product-index.sig").is_file())
+            oversized = Path(temporary).resolve() / "oversized"
+            with patch.object(catalog_caller.products, "_CATALOG_LIMIT",
+                    result["objectBytes"] + 32 * 1024 * 1024 - 1):
+                with self.assertRaisesRegex(ValueError, "bounded transport capacity"):
+                    stage_completed_sdk_catalog(state, oversized)
+            self.assertFalse(oversized.exists())
             incomplete = dict(records)
             incomplete[min(CALLER_SDK_INSTANCES)] = {
                 **incomplete[min(CALLER_SDK_INSTANCES)], "state": "build"}

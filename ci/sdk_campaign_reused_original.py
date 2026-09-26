@@ -2,8 +2,8 @@
 
 The current state and original bytes are caller-held inputs. This context
 authenticates retrieval and producer provenance; it grants no release admission.
-The required sdk-catalog producer job is not wired in the current workflow,
-so official runs cannot pass this route yet.
+The sdk-catalog producer is locally wired but has no hosted evidence or
+independently pinned production key/source yet.
 """
 
 from contextlib import contextmanager, nullcontext

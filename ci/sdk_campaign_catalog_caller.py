@@ -49,9 +49,14 @@ def stage_completed_sdk_catalog(state, destination: Path) -> dict:
             "receipt", "receiptBytes", "objectSha256")}
         envelopes[instance]["receiptSha256"] = record["receiptSha256"]
         archives[instance] = archive
+    object_bytes = sum(archive.stat().st_size for archive in archives.values())
+    # The outer transport is stored, with a bounded index/signature/ZIP header allowance.
+    if object_bytes > products._CATALOG_LIMIT - 32 * 1024 * 1024:
+        raise ValueError("SDK catalog original objects exceed bounded transport capacity")
     index = stage_sdk_same_pr_catalog(sources, envelopes, archives,
         producer=state.producer, destination=destination)
     result = {"phaseCount": len(index["entries"]),
+              "objectBytes": object_bytes,
               "indexSha256": sha256_file(Path(destination) / "product-index.json",
                   reject_symlink_parents=True),
               "publicKeySha256": sha256_file(Path(destination) / "public-key.pub",

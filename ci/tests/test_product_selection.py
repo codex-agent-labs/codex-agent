@@ -1824,6 +1824,8 @@ class ProductSelectionTest(unittest.TestCase):
     def test_sdk_campaign_controls_never_enter_contract_binary_inventory(self):
         paths = (
             "ci/sdk_campaign_catalog_producer.py",
+            "ci/sdk_campaign_catalog_caller.py",
+            "ci/products/sdk_campaign_dev_catalog.py",
             "ci/sdk_campaign_reused_original.py",
             "ci/sdk_core_metadata_protected_handoff.py",
         )
