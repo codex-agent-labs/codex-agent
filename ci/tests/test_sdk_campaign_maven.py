@@ -82,7 +82,8 @@ class CampaignMavenTest(unittest.TestCase):
             return verify_campaign_maven_phase(envelope, self.stage, self.capture, **arguments)
 
     def test_selected_core_and_android_originals_return_only_exact_receipt_bytes(self):
-        for component, phase in (("sdk-core", "binary"), ("sdk-android", "package")):
+        for component, phase in (("sdk-core", "binary"), ("sdk-core", "package"),
+                                 ("sdk-android", "binary"), ("sdk-android", "package")):
             with self.subTest(component=component, phase=phase):
                 selected = self.selected(component, phase)
                 self.assertEqual(self.verify(selected), selected["receiptBytes"])
