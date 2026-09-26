@@ -1,6 +1,6 @@
 """Structural SDK campaign selection fixtures, not hosted release evidence."""
 
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from io import StringIO
 import json
 from pathlib import Path
@@ -10,7 +10,9 @@ import unittest
 from unittest.mock import patch
 
 import ci.products.sdk_campaign_dev_catalog as dev_catalog
+from ci import sdk_campaign_catalog_producer as campaign
 from ci import sdk_campaign_reused_original as reused_catalog
+from ci.sdk_campaign_observation import ObservedSdkOriginal
 from ci.sdk_campaign_catalog_caller import (
     SDK_CAMPAIGN_INSTANCES as CALLER_SDK_INSTANCES,
     main as catalog_caller_main,
@@ -109,6 +111,14 @@ class SdkCampaignSelectionTest(unittest.TestCase):
             digest = sha256_bytes(raw)
             index_sha = sha256_bytes((destination / "product-index.json").read_bytes())
             key_sha = sha256_bytes((destination / "public-key.pub").read_bytes())
+            def original_id(instance):
+                return reused_catalog.PhaseInstanceId(instance.product, instance.component,
+                    instance.phase, instance.target)
+            observations = {original_id(instance): ObservedSdkOriginal(
+                source.receipt_bytes, b"unused-replay", self.archives[instance], self.stages[instance])
+                for instance, source in self.sources.items()}
+            artifact_paths = {original_id(instance): source.artifact_path
+                for instance, source in self.sources.items()}
             api = f"https://api.github.com/repos/{producer['repository']}/actions/artifacts/901"
             artifact = {"id": 901, "name": name, "digest": digest,
                 "expired": False, "size_in_bytes": len(raw),
@@ -121,6 +131,11 @@ class SdkCampaignSelectionTest(unittest.TestCase):
                 "tree": {"sha": producer["tree"]}}}
             job = {"name": "product-validation / sdk-catalog",
                 "started_at": "2026-01-01T00:00:00Z", "completed_at": "2026-01-01T00:10:00Z"}
+            completed_pin = {"producer": producer, "artifact_name": name,
+                "artifact_id": 901, "artifact_sha256": digest,
+                "index_sha256": index_sha, "public_key_sha256": key_sha,
+                "trusted_workflow_path": ".github/workflows/product-validation.yml",
+                "trusted_job_name": job["name"]}
             def download(_artifact, _token, path, **_kwargs):
                 Path(path).write_bytes(raw)
             with patch.object(reused_catalog.product_reuse, "api_json", return_value=artifact), \
@@ -136,6 +151,41 @@ class SdkCampaignSelectionTest(unittest.TestCase):
                         trusted_workflow_path=".github/workflows/product-validation.yml",
                         trusted_job_name=job["name"]) as held:
                     self.assertEqual(index_sha, held.values["indexSha256"])
+                    reused_catalog.verify_completed_sdk_catalog_originals(
+                        held, observations, artifact_paths)
+                    wrong_paths = dict(artifact_paths)
+                    wrong_paths[min(reused_catalog.SDK_CAMPAIGN_INSTANCES)] = "outputs/other.bin"
+                    with self.assertRaisesRegex(ValueError, "selected artifact"):
+                        reused_catalog.verify_completed_sdk_catalog_originals(
+                            held, observations, wrong_paths)
+                    first, second = sorted(observations)[:2]
+                    crossed = dict(observations)
+                    crossed[first] = ObservedSdkOriginal(observations[first].receipt_bytes,
+                        b"unused-replay", observations[second].object_path,
+                        observations[first].stage_path)
+                    with self.assertRaises(ValueError):
+                        reused_catalog.verify_completed_sdk_catalog_originals(
+                            held, crossed, artifact_paths)
+                @contextmanager
+                def semantic_replay(*_args, **_kwargs):
+                    yield ({"verified": True}, {"workers": True})
+                with patch.object(campaign, "held_sdk_campaign_semantic_replay",
+                        side_effect=semantic_replay) as replay:
+                    with campaign.held_completed_sdk_campaign_replay(
+                            observations, b"current-transport", {}, artifact_paths, {},
+                            completed_catalog_pin=completed_pin,
+                            trusted_workflow_sha="a" * 40, token="synthetic-token",
+                            environ={}) as result:
+                        self.assertEqual(({"verified": True}, {"workers": True}), result)
+                    replay.assert_called_once()
+                    with self.assertRaisesRegex(ValueError, "selected artifact"):
+                        with campaign.held_completed_sdk_campaign_replay(
+                                observations, b"current-transport", {}, wrong_paths, {},
+                                completed_catalog_pin=completed_pin,
+                                trusted_workflow_sha="a" * 40, token="synthetic-token",
+                                environ={}):
+                            pass
+                    replay.assert_called_once()
                 with self.assertRaisesRegex(ValueError, "independent digest"):
                     with reused_catalog.held_completed_sdk_catalog(
                             producer=producer, artifact_name=name, artifact_id=901,

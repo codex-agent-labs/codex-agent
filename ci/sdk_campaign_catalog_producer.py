@@ -19,7 +19,8 @@ from ci.sdk_campaign_original_locator import (
 )
 from ci.sdk_campaign_original_worker import held_fresh_sdk_worker_upload
 from ci.sdk_campaign_reused_original import (
-    _held_reused_sdk_original, held_reused_sdk_catalog, held_reused_sdk_original,
+    _held_reused_sdk_original, held_completed_sdk_catalog, held_reused_sdk_catalog,
+    held_reused_sdk_original, verify_completed_sdk_catalog_originals,
 )
 from products.index import IndexEntrySource
 from products.inventory import (
@@ -255,3 +256,27 @@ def held_sdk_campaign_semantic_replay(observations, current_transport_bytes, pin
                 raise ValueError("SDK semantic replay changed an original receipt")
             require_no_signing_secret(environ)
             yield MappingProxyType(verified), evidence
+
+
+@contextmanager
+def held_completed_sdk_campaign_replay(observations, current_transport_bytes, pins,
+        artifact_paths, semantic_controls, *, completed_catalog_pin,
+        trusted_workflow_sha, token, environ):
+    """Join the current signed catalog to all original-worker and family gates.
+
+    The caller must select the catalog and every worker pin independently. This
+    no-secret replay does not mint release admission.
+    """
+    pin = require_exact_keys(completed_catalog_pin, {
+        "producer", "artifact_name", "artifact_id", "artifact_sha256",
+        "index_sha256", "public_key_sha256", "trusted_workflow_path",
+        "trusted_job_name",
+    }, "Completed SDK catalog pin")
+    with held_completed_sdk_catalog(**pin, trusted_workflow_sha=trusted_workflow_sha,
+            token=token, environ=environ) as catalog:
+        verify_completed_sdk_catalog_originals(catalog, observations, artifact_paths)
+        with held_sdk_campaign_semantic_replay(observations, current_transport_bytes,
+                pins, artifact_paths, semantic_controls,
+                trusted_workflow_sha=trusted_workflow_sha,
+                token=token, environ=environ) as verified:
+            yield verified

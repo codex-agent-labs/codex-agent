@@ -6,6 +6,7 @@ The sdk-catalog producer is locally wired but has no hosted evidence or
 independently pinned production key/source yet.
 """
 
+from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
 import os
 from pathlib import Path
@@ -112,6 +113,42 @@ def held_completed_sdk_catalog(*, producer, artifact_name, artifact_id,
             artifact_sha256=artifact_sha256, index_sha256=index_sha256,
             public_key_sha256=public_key_sha256)
         yield snapshot
+
+
+def verify_completed_sdk_catalog_originals(snapshot, observations, artifact_paths):
+    """Match all held original object bytes to the completed signed catalog."""
+    if (type(snapshot) is not _HeldCatalog or not snapshot.active
+            or not isinstance(observations, Mapping) or not isinstance(artifact_paths, Mapping)
+            or set(observations) != SDK_CAMPAIGN_INSTANCES
+            or set(artifact_paths) != SDK_CAMPAIGN_INSTANCES):
+        raise ValueError("Completed SDK catalog requires 61 held original selections")
+    listed = snapshot.values["index"]["entries"]
+    entries = {PhaseInstanceId(*(entry[field] for field in
+        ("product", "component", "phase", "target"))): entry
+        for entry in listed}
+    if (len(listed) != len(SDK_CAMPAIGN_INSTANCES)
+            or len(entries) != len(SDK_CAMPAIGN_INSTANCES)
+            or set(entries) != SDK_CAMPAIGN_INSTANCES):
+        raise ValueError("Completed SDK catalog differs from exact phase membership")
+    objects = snapshot.values["catalog"].objects
+    for instance in sorted(SDK_CAMPAIGN_INSTANCES):
+        original, entry = observations[instance], entries[instance]
+        if (not isinstance(original, ObservedSdkOriginal)
+                or artifact_paths[instance] != entry["artifactName"]):
+            raise ValueError("Completed SDK catalog differs from selected artifact")
+        selected = verify_object(original.object_path, build_key=entry["buildKey"],
+            receipt_sha256=entry["receiptSha256"])
+        catalog_path = objects.get(entry["buildKey"])
+        if catalog_path is None:
+            raise ValueError("Completed SDK catalog lacks selected original object")
+        catalog_object = verify_object(catalog_path, build_key=entry["buildKey"],
+            receipt_sha256=entry["receiptSha256"])
+        if (selected["receiptBytes"] != original.receipt_bytes
+                or catalog_object["receiptBytes"] != original.receipt_bytes
+                or sha256_file(original.object_path) != sha256_file(catalog_path)):
+            raise ValueError("Completed SDK catalog changed an original object or receipt")
+        _verify_index_receipt(entry, {**selected,
+            "receiptSha256": sha256_bytes(selected["receiptBytes"])})
 
 
 @contextmanager
