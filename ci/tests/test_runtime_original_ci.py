@@ -62,6 +62,15 @@ class RuntimeOriginalCiTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must not exist"):
             self.capture()
 
+    def test_successful_phase_jobs_remain_authentic_after_overall_run_failure(self):
+        failed_run = {**self.run, "status": "completed", "conclusion": "failure"}
+        originals = {phase: path.read_bytes() for phase, path in self.receipts.items()}
+        result = self.capture(run=failed_run)
+        self.assertEqual("failure", result["observed"][0]["run"]["conclusion"])
+        for phase in fixture.PHASES:
+            self.assertEqual(originals[phase],
+                (self.output / "phases" / phase / "original/shard/phase-receipt.json").read_bytes())
+
     def test_late_original_shard_mutation_cannot_publish(self):
         def mutate_before_copy(source, destination, **kwargs):
             (Path(source) / "phases/binary/original/shard/phase-receipt.json").write_bytes(
