@@ -137,6 +137,20 @@ def main() -> None:
         claim.write_bytes(canonical(altered_claim))
         sign(claim, signer_private, "codex-agent-product-v1", signature)
         run(executable, default, compatibility, "signed-abi-width", library, root_file)
+        for field, value in (
+            ("contractDigest", "sha256:" + "b" * 64),
+            ("target", "wrong-target"),
+            ("runtimeVersion", "0.9.0"),
+        ):
+            altered_claim = json.loads(claim.read_bytes())
+            altered_claim["runtimeIdentity"] = identity.copy()
+            if field == "runtimeVersion":
+                altered_claim[field] = value
+            else:
+                altered_claim["runtimeIdentity"][field] = value
+            claim.write_bytes(canonical(altered_claim))
+            sign(claim, signer_private, "codex-agent-product-v1", signature)
+            run(executable, default, compatibility, "signed-incompatible-claim", library, root_file)
 
 
 if __name__ == "__main__":

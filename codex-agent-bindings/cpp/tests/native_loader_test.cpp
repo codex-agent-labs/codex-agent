@@ -260,7 +260,8 @@ int main(int argc, char** argv) {
     }
     if (mode == "signed-wrong-root" || mode == "signed-bad-signature" ||
         mode == "signed-bad-library" || mode == "signed-identity-mismatch" ||
-        mode == "signed-abi-width" || mode == "signed-oversized-evidence") {
+        mode == "signed-abi-width" || mode == "signed-incompatible-claim" ||
+        mode == "signed-oversized-evidence") {
         if (argc != 6) return 64;
         loader_test_hook::attempted = false;
         codex_agent::detail::set_native_loader_test_hook(loader_test_hook::record_open);
@@ -276,12 +277,14 @@ int main(int argc, char** argv) {
     } catch (const std::exception& error) {
         const auto signed_failure = mode == "signed-wrong-root" || mode == "signed-bad-signature" ||
             mode == "signed-bad-library" || mode == "signed-identity-mismatch" ||
-            mode == "signed-abi-width" || mode == "signed-oversized-evidence";
+            mode == "signed-abi-width" || mode == "signed-incompatible-claim" ||
+            mode == "signed-oversized-evidence";
         const auto expected_message = mode == "signed-wrong-root" ? "SDK root" :
             mode == "signed-bad-signature" ? "signature verification failed" :
             mode == "signed-bad-library" ? "private snapshot differs" :
             mode == "signed-oversized-evidence" ? "oversized" :
-            mode == "signed-abi-width" ? "authorization is incompatible" : "loaded Runtime identity differs";
+            (mode == "signed-abi-width" || mode == "signed-incompatible-claim") ?
+                "authorization is incompatible" : "loaded Runtime identity differs";
         if (signed_failure &&
             (loader_test_hook::attempted != (mode == "signed-identity-mismatch") ||
              std::string_view(error.what()).find(expected_message) == std::string_view::npos)) {
