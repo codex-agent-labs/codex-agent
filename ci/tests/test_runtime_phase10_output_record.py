@@ -139,6 +139,9 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
         def captured(_, __, destination, **kwargs):
             self.assertEqual(self.validation, Path(__))
             self.assertEqual(self.pins["expected_build_key"], kwargs["expected_build_key"])
+            if "original_run_id" in overrides:
+                self.assertEqual(overrides["original_run_id"], kwargs["original_run_id"])
+                self.assertEqual(overrides["original_run_attempt"], kwargs["original_run_attempt"])
             (destination / "original").mkdir(parents=True)
             shutil.copy2(self.output / "caller.json", destination / "original/caller.json")
             return deepcopy(self.upload)
@@ -168,6 +171,12 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
         (self.sidecars / "signature.asc").write_bytes(b"tampered\n")
         with self.assertRaisesRegex(ValueError, "sidecars"):
             self.verify()
+
+    def test_signed_record_verifies_explicit_original_from_later_run(self):
+        self.assertEqual(self.record, self.verify(original_run_id=77,
+                                                   original_run_attempt=2,
+                                                   environ={"GITHUB_RUN_ID": "999",
+                                                            "GITHUB_RUN_ATTEMPT": "9"}))
 
     def admit_original(self, *, overrides=None, archive_files=None, plan=None):
         producer = {
@@ -204,10 +213,20 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
             expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
             token="local-test-token", environ={"GITHUB_RUN_ID": "999"})
         inputs.update(overrides or {})
+        selected_record_producer = inputs.get("expected_record_producer", producer)
+        artifact_detail = {
+            "id": 27, "digest": artifact_sha,
+            "name": inputs["record_artifact_name"],
+            "size_in_bytes": archive.stat().st_size, "expired": False,
+            "created_at": "2026-09-27T12:00:00Z",
+            "workflow_run": {"id": selected_record_producer["runId"],
+                             "head_sha": selected_record_producer["commit"]},
+        }
 
         def official(_, __, destination, **kwargs):
-            self.assertEqual("77", kwargs["environ"]["GITHUB_RUN_ID"])
-            self.assertEqual("2", kwargs["environ"]["GITHUB_RUN_ATTEMPT"])
+            self.assertEqual("999", kwargs["environ"]["GITHUB_RUN_ID"])
+            self.assertEqual(77, kwargs["original_run_id"])
+            self.assertEqual(2, kwargs["original_run_attempt"])
             (destination / "original").mkdir(parents=True)
             shutil.copy2(self.output / "caller.json", destination / "original/caller.json")
             return deepcopy(self.upload)
@@ -216,9 +235,9 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
             self.assertEqual(27, artifact_id)
             self.assertEqual(artifact_sha, digest)
             self.assertEqual(inputs["record_artifact_name"], name)
-            self.assertEqual(producer, pinned_producer)
+            self.assertEqual(selected_record_producer, pinned_producer)
             shutil.copy2(archive, destination)
-            return {"id": 27, "digest": artifact_sha}, destination
+            return artifact_detail, destination
 
         with patch.object(gate.product_reuse, "_validate_plan", return_value=selected), \
              patch.object(gate.product_reuse, "_observe_ci_producer_jobs",
@@ -226,6 +245,11 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
              patch.object(gate.product_reuse, "_download_contract_ci_upload",
                           side_effect=download) as fetched, \
              patch.object(gate.product_reuse, "_require_artifact_job_window") as window, \
+             patch.object(gate.product_reuse, "paginated_items",
+                          return_value=[artifact_detail]), \
+             patch.object(gate, "_observe_protected_record_dispatch",
+                          return_value={"run": {"head_sha": selected_record_producer["commit"]},
+                                        "jobs": []}), \
              patch.object(gate, "capture_observed_runtime_phase10_upload", side_effect=official), \
              patch.object(gate, "forward_verified_runtime_phase10_bytes") as deep:
             result = gate.admit_original_runtime_phase10_output_record(
@@ -242,6 +266,103 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
         self.assertEqual(result["retainedFiles"], regular_file_inventory(self.root / "admitted-record"))
         self.assertEqual(result["recordSha256"], sha256_bytes(result["recordPath"].read_bytes()))
         self.assertEqual(result["signatureSha256"], sha256_bytes(result["signaturePath"].read_bytes()))
+        fetched.assert_called_once()
+        window.assert_called_once()
+        deep.assert_called_once()
+
+    def test_protected_dispatch_observer_requires_exact_successful_child_route(self):
+        producer = {
+            "repository": "codex-agent-labs/codex-agent",
+            "workflowPath": ".github/workflows/ci.yml", "commit": "d" * 40,
+            "tree": "e" * 40, "event": "workflow_dispatch", "runId": 88,
+            "runAttempt": 3, "pullRequest": None,
+        }
+        child = ".github/workflows/runtime-phase10-output-record.yml"
+        job_name = "runtime-phase10-record / runtime-phase10-output-record"
+        child_sha = "f" * 40
+        run = {"id": 88, "run_attempt": 3, "path": ".github/workflows/ci.yml",
+               "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
+               "head_sha": producer["commit"],
+               "repository": {"full_name": producer["repository"], "fork": False},
+               "head_repository": {"full_name": producer["repository"], "fork": False},
+               "referenced_workflows": [{
+                   "path": f"{producer['repository']}/{child}@{child_sha}", "sha": child_sha,
+               }]}
+        jobs = [{"id": 92, "name": job_name, "run_id": 88,
+                 "head_sha": producer["commit"], "status": "completed",
+                 "conclusion": "success"}]
+
+        def observe(current):
+            with patch.object(gate.product_reuse, "api_json", return_value=current), \
+                 patch.object(gate.product_reuse, "paginated_items", return_value=jobs), \
+                 patch.object(gate.product_reuse, "_observe_tested_commit",
+                              return_value={"sha": producer["commit"]}) as commit:
+                result = gate._observe_protected_record_dispatch(
+                    producer, workflow_path=child, workflow_sha=child_sha,
+                    job_name=job_name, token="observer")
+            commit.assert_called_once()
+            return result
+
+        self.assertEqual(run, observe(run)["run"])
+        for mutation in ({"status": "in_progress"}, {"conclusion": "failure"},
+                         {"path": ".github/workflows/other.yml"}):
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                observe({**run, **mutation})
+        with self.assertRaisesRegex(ValueError, "fixed protected route"):
+            gate._observe_protected_record_dispatch(
+                producer, workflow_path=child, workflow_sha=child_sha,
+                job_name="runtime-phase10-record", token="observer")
+
+    def test_dispatch_record_name_binds_distinct_original_and_record_producers(self):
+        original = {
+            "repository": "codex-agent-labs/codex-agent",
+            "workflowPath": ".github/workflows/ci.yml",
+            "commit": self.candidate_commit, "tree": self.candidate_tree,
+            "event": "pull_request", "runId": 77, "runAttempt": 2,
+            "pullRequest": 31,
+        }
+        dispatch = {**original, "commit": "d" * 40, "tree": "e" * 40,
+                    "event": "workflow_dispatch", "runId": 88,
+                    "runAttempt": 3, "pullRequest": None}
+        with patch.object(gate, "_observe_protected_record_dispatch") as observer, \
+             self.assertRaisesRegex(ValueError, "dispatch name"):
+            gate.admit_original_runtime_phase10_output_record(
+                self.plan, self.validation, self.repository, self.output,
+                self.sidecars, self.pgp, self.root / "bad-dispatch-record",
+                expected_producer=original, expected_record_producer=dispatch,
+                trusted_record_workflow_path=gate._RECORD_DISPATCH_WORKFLOW,
+                trusted_record_workflow_sha="f" * 40,
+                trusted_record_job_name=gate._RECORD_DISPATCH_JOB,
+                record_artifact_name="codex-agent-runtime-phase10-output-record-wrong",
+                record_artifact_id=27, record_artifact_sha256="sha256:" + "a" * 64,
+                expected_record_sha256=sha256_bytes(self.record_path.read_bytes()),
+                expected_signature_sha256=sha256_bytes(self.signature.read_bytes()),
+                trusted_source_commit=self.commit,
+                trusted_aggregate_workflow_sha="e" * 40,
+                expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
+                token="observer", environ={},
+            )
+        observer.assert_not_called()
+
+    def test_later_dispatch_record_retains_distinct_product_and_record_provenance(self):
+        dispatch = {
+            "repository": "codex-agent-labs/codex-agent",
+            "workflowPath": ".github/workflows/ci.yml",
+            "commit": "d" * 40, "tree": "e" * 40,
+            "event": "workflow_dispatch", "runId": 88,
+            "runAttempt": 3, "pullRequest": None,
+        }
+        name = (f"codex-agent-runtime-phase10-output-record-{self.candidate_tree}"
+                "-attestation-88-attempt-3")
+        result, fetched, window, deep = self.admit_original(overrides={
+            "expected_record_producer": dispatch,
+            "trusted_record_workflow_path": gate._RECORD_DISPATCH_WORKFLOW,
+            "trusted_record_job_name": gate._RECORD_DISPATCH_JOB,
+            "record_artifact_name": name,
+        })
+        self.assertEqual(dispatch, result["officialRecordUpload"]["producer"])
+        self.assertEqual(77, result["officialRecordUpload"]["originalProductProducer"]["runId"])
+        self.assertEqual(name, result["officialRecordUpload"]["artifact"]["name"])
         fetched.assert_called_once()
         window.assert_called_once()
         deep.assert_called_once()
@@ -320,6 +441,25 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
             self.assertEqual(0, gate.main(args))
         self.assertEqual(producer, admit.call_args.kwargs["expected_producer"])
         self.assertEqual("sha256:" + "a" * 64, json.loads(output.getvalue())["recordSha256"])
+        dispatch = {**producer, "commit": "d" * 40, "tree": "e" * 40,
+                    "event": "workflow_dispatch", "runId": 88,
+                    "runAttempt": 3, "pullRequest": None}
+        dispatch_path = self.root / "record-producer.json"
+        dispatch_path.write_bytes(canonical_json_bytes(dispatch))
+        dispatch_args = args + ["--record-producer", str(dispatch_path),
+                                "--expected-record-producer-sha256", "sha256:" + "0" * 64]
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "local-test-token"}), \
+             patch.object(gate, "admit_original_runtime_phase10_output_record") as admit, \
+             self.assertRaisesRegex(ValueError, "record dispatch producer differs"):
+            gate.main(dispatch_args)
+        admit.assert_not_called()
+        dispatch_args[-1] = sha256_bytes(dispatch_path.read_bytes())
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "local-test-token"}), \
+             patch.object(gate, "admit_original_runtime_phase10_output_record",
+                          return_value={"recordSha256": "sha256:" + "a" * 64}) as admit, \
+             redirect_stdout(StringIO()):
+            self.assertEqual(0, gate.main(dispatch_args))
+        self.assertEqual(dispatch, admit.call_args.kwargs["expected_record_producer"])
 
     def test_independent_source_workflow_pgp_and_keyring_pins(self):
         for override in ({"trusted_source_commit": "0" * 40},
@@ -403,6 +543,8 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
         def captured(_, __, capture, **kwargs):
             self.assertEqual(self.validation, Path(__))
             self.assertEqual(self.pins["expected_build_key"], kwargs["expected_build_key"])
+            self.assertEqual(77, kwargs["original_run_id"])
+            self.assertEqual(2, kwargs["original_run_attempt"])
             (capture / "original").mkdir(parents=True)
             shutil.copy2(self.output / "caller.json", capture / "original/caller.json")
             return deepcopy(self.upload)
@@ -416,7 +558,9 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
                 validation_repository=self.validation,
                 trusted_source_commit=self.commit, trusted_workflow_sha="e" * 40,
                 expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
-                token="local-test-token", environ={},
+                token="local-test-token", original_run_id=77,
+                original_run_attempt=2,
+                environ={"GITHUB_RUN_ID": "999", "GITHUB_RUN_ATTEMPT": "9"},
             )
         self.assertEqual(self.record, result["record"])
         self.assertEqual(canonical_json_bytes(self.record),
@@ -494,6 +638,8 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
 
         def captured(_, candidate, capture, **kwargs):
             self.assertEqual(self.validation, Path(candidate))
+            self.assertEqual(77, kwargs["original_run_id"])
+            self.assertEqual(2, kwargs["original_run_attempt"])
             (capture / "original").mkdir(parents=True)
             shutil.copy2(self.output / "caller.json", capture / "original/caller.json")
             return deepcopy(self.upload)
@@ -507,7 +653,9 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
                 expected_signature_sha256=sha256_bytes(original_signature),
                 trusted_source_commit=self.commit, trusted_workflow_sha="e" * 40,
                 expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
-                token="local-test-token", environ={},
+                token="local-test-token", original_run_id=77,
+                original_run_attempt=2,
+                environ={"GITHUB_RUN_ID": "999", "GITHUB_RUN_ATTEMPT": "9"},
             )
         self.assertEqual(original_record, (destination / "record.json").read_bytes())
         self.assertEqual(original_signature, (destination / "record.sig").read_bytes())
@@ -547,6 +695,34 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
              self.assertRaisesRegex(ValueError, "independent digest"):
             gate.main(argv)
         prepare.assert_not_called()
+
+    def test_prepare_cli_passes_explicit_original_run_without_environment_override(self):
+        pins_path = self.root / "phase11-pins.json"
+        pins_path.write_bytes(canonical_json_bytes(self.pins))
+        argv = [
+            "prepare", "--plan", str(self.plan), "--repository-root", str(self.repository),
+            "--validation-repository", str(self.validation),
+            "--protected-output", str(self.output), "--maven-sidecars", str(self.sidecars),
+            "--pgp-public-key", str(self.pgp), "--destination", str(self.root / "prepared"),
+            "--phase11-pins", str(pins_path), "--expected-phase11-pins-sha256",
+            sha256_bytes(pins_path.read_bytes()), "--trusted-source-commit", self.commit,
+            "--trusted-workflow-sha", "e" * 40, "--expected-pgp-key-sha256",
+            self.pins["expected_pgp_key_sha256"], "--original-run-id", "77",
+            "--original-run-attempt", "2",
+        ]
+        seen = {}
+        def prepared(*args, **kwargs):
+            seen.update(kwargs["environ"])
+            return {"recordSha256": "sha256:" + "a" * 64}
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "local-test-token",
+                                  "GITHUB_RUN_ID": "999", "GITHUB_RUN_ATTEMPT": "9"}), \
+             patch.object(gate, "prepare_runtime_phase10_output_record",
+                          side_effect=prepared) as prepare, \
+             redirect_stdout(StringIO()):
+            self.assertEqual(0, gate.main(argv))
+        self.assertEqual(77, prepare.call_args.kwargs["original_run_id"])
+        self.assertEqual(2, prepare.call_args.kwargs["original_run_attempt"])
+        self.assertEqual("999", seen["GITHUB_RUN_ID"])
 
 
 if __name__ == "__main__":

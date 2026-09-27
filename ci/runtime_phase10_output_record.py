@@ -42,13 +42,69 @@ _PINS = {
     "expected_workflow_sha", "expected_keyring_sha256",
     "expected_keys_inventory_sha256", "expected_pgp_key_sha256",
 }
+_RECORD_DISPATCH_WORKFLOW = ".github/workflows/runtime-phase10-output-record.yml"
+_RECORD_DISPATCH_JOB = "runtime-phase10-record / runtime-phase10-output-record"
+
+
+def _observe_protected_record_dispatch(producer, *, workflow_path, workflow_sha,
+                                       job_name, token):
+    """Observe the fixed custody job without the product-build dispatch gate."""
+    if (producer["repository"] != "codex-agent-labs/codex-agent"
+            or producer["workflowPath"] != ".github/workflows/ci.yml"
+            or producer["event"] != "workflow_dispatch"
+            or producer["pullRequest"] is not None
+            or workflow_path != _RECORD_DISPATCH_WORKFLOW
+            or job_name != _RECORD_DISPATCH_JOB
+            or type(workflow_sha) is not str
+            or re.fullmatch(r"[0-9a-f]{40}", workflow_sha) is None):
+        raise ValueError("Runtime record dispatch differs from its fixed protected route")
+    api = f"https://api.github.com/repos/{producer['repository']}"
+    attempt = f"{api}/actions/runs/{producer['runId']}/attempts/{producer['runAttempt']}"
+    run = product_reuse.api_json(attempt, token)
+    if (type(run) is not dict
+            or require_integer(run.get("id"), "Runtime record dispatch run", 1) != producer["runId"]
+            or require_integer(run.get("run_attempt"), "Runtime record dispatch attempt", 1)
+                != producer["runAttempt"]
+            or run.get("path") != producer["workflowPath"]
+            or run.get("event") != "workflow_dispatch"
+            or run.get("status") != "completed"
+            or run.get("conclusion") != "success"
+            or run.get("head_sha") != producer["commit"]
+            or any(type(run.get(field)) is not dict
+                   or run[field].get("full_name") != producer["repository"]
+                   or run[field].get("fork") is not False
+                   for field in ("repository", "head_repository"))):
+        raise ValueError("Runtime record dispatch differs from pinned official run")
+    product_reuse._require_ci_workflow_reference(
+        run, f"{producer['repository']}/{workflow_path}@{workflow_sha}", workflow_sha,
+    )
+    commit = product_reuse._observe_tested_commit(
+        run, api="https://api.github.com", repository=producer["repository"], token=token,
+        expected_commit=producer["commit"], expected_tree=producer["tree"],
+        pull_request=None, allow_dispatch=True,
+    )
+    jobs = product_reuse.paginated_items(f"{attempt}/jobs", "jobs", token)
+    if any(type(job) is not dict for job in jobs):
+        raise ValueError("Runtime record dispatch jobs are malformed")
+    selected = [job for job in jobs if type(job) is dict and job.get("name") == job_name]
+    if len(selected) != 1:
+        raise ValueError("Runtime record dispatch job is missing or ambiguous")
+    job = selected[0]
+    require_integer(job.get("id"), "Runtime record dispatch job ID", 1)
+    if (require_integer(job.get("run_id"), "Runtime record dispatch job run", 1)
+                != producer["runId"]
+            or job.get("head_sha") != run["head_sha"]
+            or job.get("status") != "completed" or job.get("conclusion") != "success"):
+        raise ValueError("Runtime record dispatch job did not succeed")
+    return {"run": run, "testedCommit": commit, "jobs": jobs}
 
 
 def admit_original_runtime_phase10_output_record(
     plan_path: Path, validation_repository: Path, repository_root: Path,
     protected_output: Path, maven_sidecars: Path, pgp_public_key: Path,
     destination: Path, *,
-    expected_producer: Mapping, trusted_record_workflow_path: str,
+    expected_producer: Mapping, expected_record_producer: Mapping | None = None,
+    trusted_record_workflow_path: str,
     trusted_record_workflow_sha: str, trusted_record_job_name: str,
     record_artifact_name: str, record_artifact_id: int,
     record_artifact_sha256: str, expected_record_sha256: str,
@@ -56,10 +112,10 @@ def admit_original_runtime_phase10_output_record(
     trusted_aggregate_workflow_sha: str, expected_pgp_key_sha256: str,
     token: str, environ=None,
 ) -> dict:
-    """Admit a later-run original only from caller-pinned official record bytes.
+    """Admit a caller-pinned signed record and its distinct original product.
 
-    The original producer, route and artifact pins must come from protected
-    caller authority, never the downloaded record or current run environment.
+    Both producers, the fixed dispatch route, and artifact pins come from
+    protected caller authority, never downloaded bytes or current-run state.
     """
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
@@ -77,6 +133,9 @@ def admit_original_runtime_phase10_output_record(
         if target == original or target in original.parents or original in target.parents:
             raise ValueError("Runtime original record destination overlaps an input")
     producer = product_reuse.validate_producer(dict(expected_producer))
+    record_producer = (producer if expected_record_producer is None else
+                       product_reuse.validate_producer(dict(expected_record_producer)))
+    dispatch_record = expected_record_producer is not None
     if producer["event"] not in {"pull_request", "merge_group"} or \
             type(record_artifact_name) is not str or not record_artifact_name or \
             type(trusted_record_job_name) is not str or not trusted_record_job_name or \
@@ -87,6 +146,13 @@ def admit_original_runtime_phase10_output_record(
                          ("record", expected_record_sha256),
                          ("signature", expected_signature_sha256)):
         require_sha256(value, f"Runtime original {label} digest")
+    if dispatch_record:
+        expected_name = ("codex-agent-runtime-phase10-output-record-"
+                         f"{producer['tree']}-attestation-{record_producer['runId']}"
+                         f"-attempt-{record_producer['runAttempt']}")
+        if (record_artifact_name != expected_name
+                or record_producer["repository"] != producer["repository"]):
+            raise ValueError("Runtime record dispatch name or repository differs from approved original")
     plan_bytes = read_regular_file_bytes(
         Path(plan_path), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
     )
@@ -103,18 +169,31 @@ def admit_original_runtime_phase10_output_record(
             )
         ):
             raise ValueError("Runtime original record producer differs from validated plan")
-        observed = product_reuse._observe_ci_producer_jobs(
+        observed = (_observe_protected_record_dispatch(
+            record_producer, workflow_path=trusted_record_workflow_path,
+            workflow_sha=trusted_record_workflow_sha,
+            job_name=trusted_record_job_name, token=token,
+        ) if dispatch_record else product_reuse._observe_ci_producer_jobs(
             {"record": producer}, jobs_by_phase={"record": trusted_record_job_name},
             trusted_workflows_by_phase={"record": {
                 "path": trusted_record_workflow_path,
                 "sha": trusted_record_workflow_sha,
             }}, token=token,
-        )[0]
+        )[0])
         archive = root / "official-record.zip"
         artifact, _ = product_reuse._download_contract_ci_upload(
             record_artifact_id, record_artifact_sha256, record_artifact_name,
-            producer, observed["run"], token, destination=archive,
+            record_producer, observed["run"], token, destination=archive,
         )
+        if dispatch_record:
+            api = f"https://api.github.com/repos/{record_producer['repository']}/actions"
+            listed = [item for item in product_reuse.paginated_items(
+                f"{api}/runs/{record_producer['runId']}/artifacts", "artifacts", token,
+            ) if type(item) is dict and item.get("id") == record_artifact_id]
+            if len(listed) != 1 or any(artifact.get(field) != listed[0].get(field)
+                    for field in ("id", "name", "digest", "size_in_bytes", "expired",
+                                  "workflow_run", "created_at")):
+                raise ValueError("Runtime record dispatch upload differs from official listing")
         product_reuse._require_artifact_job_window(observed, trusted_record_job_name, artifact)
         inventory, _, _ = verified_zip_contents(
             archive, retained_paths=(), **product_reuse._CATALOG_ZIP_LIMITS,
@@ -131,10 +210,6 @@ def admit_original_runtime_phase10_output_record(
         if sha256_bytes(record_bytes) != expected_record_sha256 or \
                 sha256_bytes(signature_bytes) != expected_signature_sha256:
             raise ValueError("Runtime original signed record differs from independent pins")
-        # The existing locator reads run identity from its environment. Supply
-        # the independently pinned *original* identity, never the consumer run.
-        original_environment = {**environment, "GITHUB_RUN_ID": str(producer["runId"]),
-                                "GITHUB_RUN_ATTEMPT": str(producer["runAttempt"])}
         record = verify_signed_runtime_phase10_output_record(
             record_path, signature_path, repository_root, protected_output,
             maven_sidecars, pgp_public_key, original_plan,
@@ -142,7 +217,9 @@ def admit_original_runtime_phase10_output_record(
             trusted_source_commit=trusted_source_commit,
             trusted_workflow_sha=trusted_aggregate_workflow_sha,
             expected_pgp_key_sha256=expected_pgp_key_sha256,
-            token=token, environ=original_environment,
+            original_run_id=producer["runId"],
+            original_run_attempt=producer["runAttempt"],
+            token=token, environ=environment,
         )
         if (read_regular_file_bytes(Path(plan_path), max_bytes=16 * 1024 * 1024,
                                     reject_symlink_parents=True) != plan_bytes
@@ -153,9 +230,11 @@ def admit_original_runtime_phase10_output_record(
         retained = root / "retained"
         snapshot_regular_tree(extracted, retained / "signed-record")
         transport = {"schemaVersion": 1, "artifact": artifact,
-                     "producer": producer, "observed": observed,
+                     "producer": record_producer, "observed": observed,
                      "recordSha256": expected_record_sha256,
                      "signatureSha256": expected_signature_sha256}
+        if dispatch_record:
+            transport["originalProductProducer"] = producer
         write_canonical_json(retained / "transport.json", transport)
         retained_files = regular_file_inventory(retained)
         if (regular_file_inventory(retained / "signed-record") != inventory
@@ -183,7 +262,7 @@ def prepare_runtime_phase10_output_record(
     maven_sidecars: Path, pgp_public_key: Path, destination: Path, *,
     phase11_pins: Mapping, validation_repository: Path, trusted_source_commit: str,
     trusted_workflow_sha: str, expected_pgp_key_sha256: str,
-    token: str, environ=None,
+    token: str, original_run_id=None, original_run_attempt=None, environ=None,
 ) -> dict:
     """Prepare unsigned external evidence; the protected signer runs separately."""
     environment = os.environ if environ is None else environ
@@ -255,6 +334,8 @@ def prepare_runtime_phase10_output_record(
             trusted_workflow_sha=trusted_workflow_sha,
             expected_build_key=pins["expected_build_key"],
             expected_metadata_receipt_sha256=pins["expected_metadata_receipt_sha256"],
+            original_run_id=original_run_id,
+            original_run_attempt=original_run_attempt,
             token=token, environ=environment,
         )
         if pins["expected_validation_tree"] != observation["captureProducer"]["tree"] or \
@@ -298,7 +379,8 @@ def verify_signed_runtime_phase10_output_record(
     protected_output: Path, maven_sidecars: Path, pgp_public_key: Path,
     plan_path: Path, *, validation_repository: Path, trusted_source_commit: str,
     trusted_workflow_sha: str,
-    expected_pgp_key_sha256: str, token: str, environ=None,
+    expected_pgp_key_sha256: str, token: str,
+    original_run_id=None, original_run_attempt=None, environ=None,
 ) -> dict:
     """Authenticate an exact Phase-10 Runtime set, without signing or admission."""
     require_no_signing_secret(os.environ if environ is None else environ)
@@ -392,6 +474,8 @@ def verify_signed_runtime_phase10_output_record(
             trusted_workflow_sha=trusted_workflow_sha,
             expected_build_key=pins["expected_build_key"],
             expected_metadata_receipt_sha256=pins["expected_metadata_receipt_sha256"],
+            original_run_id=original_run_id,
+            original_run_attempt=original_run_attempt,
             token=token, environ=environ,
         )
         if record["officialUpload"] != observation or \
@@ -430,7 +514,8 @@ def publish_verified_runtime_phase10_output_record(
     pgp_public_key: Path, plan_path: Path, destination: Path, *,
     expected_record_sha256: str, expected_signature_sha256: str,
     trusted_source_commit: str, trusted_workflow_sha: str,
-    expected_pgp_key_sha256: str, token: str, environ=None,
+    expected_pgp_key_sha256: str, token: str,
+    original_run_id=None, original_run_attempt=None, environ=None,
 ) -> dict:
     """Verify against official/deep inputs and publish the exact signed pair."""
     environment = os.environ if environ is None else environ
@@ -469,6 +554,8 @@ def publish_verified_runtime_phase10_output_record(
             trusted_source_commit=trusted_source_commit,
             trusted_workflow_sha=trusted_workflow_sha,
             expected_pgp_key_sha256=expected_pgp_key_sha256,
+            original_run_id=original_run_id,
+            original_run_attempt=original_run_attempt,
             token=token, environ=environment,
         )
         if (read_regular_file_bytes(Path(record_path), max_bytes=16 * 1024 * 1024,
@@ -512,6 +599,8 @@ def main(argv=None) -> int:
                  "trusted-source-commit", "trusted-aggregate-workflow-sha",
                  "expected-pgp-key-sha256"):
         admitted.add_argument(f"--{name}", required=True)
+    admitted.add_argument("--record-producer", type=Path)
+    admitted.add_argument("--expected-record-producer-sha256")
     for command in ("prepare", "verify-publish"):
         selected = commands.add_parser(command, allow_abbrev=False)
         for name in ("plan", "repository-root", "validation-repository", "protected-output",
@@ -520,6 +609,8 @@ def main(argv=None) -> int:
         for name in ("trusted-source-commit", "trusted-workflow-sha",
                      "expected-pgp-key-sha256"):
             selected.add_argument(f"--{name}", required=True)
+        selected.add_argument("--original-run-id", type=int)
+        selected.add_argument("--original-run-attempt", type=int)
         if command == "prepare":
             selected.add_argument("--phase11-pins", type=Path, required=True)
             selected.add_argument("--expected-phase11-pins-sha256", required=True)
@@ -530,6 +621,8 @@ def main(argv=None) -> int:
             selected.add_argument("--expected-signature-sha256", required=True)
     args = parser.parse_args(argv)
     if args.command == "admit-original":
+        if (args.record_producer is None) != (args.expected_record_producer_sha256 is None):
+            raise ValueError("Runtime record dispatch requires both producer file and independent digest")
         producer_bytes = read_regular_file_bytes(
             args.original_producer, max_bytes=64 * 1024, reject_symlink_parents=True,
         )
@@ -537,11 +630,23 @@ def main(argv=None) -> int:
             args.expected_original_producer_sha256, "independent Runtime original producer digest",
         ):
             raise ValueError("Runtime original producer differs from independent digest")
+        record_producer = None
+        if args.record_producer is not None:
+            record_producer_bytes = read_regular_file_bytes(
+                args.record_producer, max_bytes=64 * 1024, reject_symlink_parents=True,
+            )
+            if sha256_bytes(record_producer_bytes) != require_sha256(
+                args.expected_record_producer_sha256,
+                "independent Runtime record dispatch producer digest",
+            ):
+                raise ValueError("Runtime record dispatch producer differs from independent digest")
+            record_producer = load_canonical_json_bytes(record_producer_bytes)
         result = admit_original_runtime_phase10_output_record(
             args.plan, args.validation_repository, args.repository_root,
             args.protected_output, args.maven_sidecars, args.pgp_public_key,
             args.destination,
             expected_producer=load_canonical_json_bytes(producer_bytes),
+            expected_record_producer=record_producer,
             trusted_record_workflow_path=args.trusted_record_workflow_path,
             trusted_record_workflow_sha=args.trusted_record_workflow_sha,
             trusted_record_job_name=args.trusted_record_job_name,
@@ -563,6 +668,8 @@ def main(argv=None) -> int:
         trusted_source_commit=args.trusted_source_commit,
         trusted_workflow_sha=args.trusted_workflow_sha,
         expected_pgp_key_sha256=args.expected_pgp_key_sha256,
+        original_run_id=args.original_run_id,
+        original_run_attempt=args.original_run_attempt,
         token=os.environ["GITHUB_TOKEN"], environ=os.environ,
     )
     if args.command == "prepare":
