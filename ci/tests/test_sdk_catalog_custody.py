@@ -1,16 +1,22 @@
 """Local-only failed-catalog custody; synthetic keys grant no production trust."""
 
 import json
+from contextlib import redirect_stdout
+from io import StringIO
+import os
 from pathlib import Path
 import shutil
 import unittest
 from unittest.mock import patch
 
 from ci.sdk_catalog_custody import (
-    PUBLIC_KEY, RECORD, SIGNATURE, prepare_failed_sdk_catalog_custody,
+    PUBLIC_KEY, RECORD, SIGNATURE, main as custody_main,
+    prepare_failed_sdk_catalog_custody,
     verify_failed_sdk_catalog_custody,
 )
-from ci.sdk_catalog_custody_signer import sign_prepared_failed_sdk_catalog_custody
+from ci.sdk_catalog_custody_signer import (
+    main as signer_main, sign_prepared_failed_sdk_catalog_custody,
+)
 from ci.sdk_campaign_original_locator import failed_sdk_partial_catalog_name
 from ci.sdk_campaign_original_locator import products as sdk_products
 from ci.tests import test_sdk_campaign_reused_original as reused_fixture
@@ -154,6 +160,71 @@ class FailedSdkCatalogCustodyTest(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "pinned inventory"):
             self.sign(prepared)
         self.assertFalse((self.root / "signed").exists())
+
+    def test_cli_prepare_sign_verify_preserves_no_secret_and_no_token_boundary(self):
+        producer = self.root / "producer.json"
+        producer.write_bytes(canonical_json_bytes(self.producer))
+        common = ["--producer", str(producer),
+            "--expected-producer-sha256", sha256_bytes(producer.read_bytes()),
+            "--artifact-id", "902", "--artifact-sha256", self.selection["artifact_sha256"],
+            "--trusted-workflow-sha", self.route["trusted_workflow_sha"],
+            "--trusted-workflow-path", self.route["trusted_workflow_path"],
+            "--trusted-job-name", self.route["trusted_job_name"],
+            "--trusted-source-commit", self.source,
+            "--keyring-path", str(self.policy), "--keys-directory", str(self.keys),
+            "--expected-keyring-sha256", self.keyring_sha,
+            "--expected-keys-inventory-sha256", self.keys_sha]
+        prepared, signed = self.root / "cli-prepared", self.root / "cli-signed"
+        with self.base.official(), patch.dict(os.environ, {"GITHUB_TOKEN": "synthetic-token"}), \
+                redirect_stdout(StringIO()):
+            self.assertEqual(0, custody_main(["prepare", *common,
+                "--destination", str(prepared)]))
+        self.assertEqual({PUBLIC_KEY, RECORD}, {p.name for p in prepared.iterdir()})
+        with patch.object(sdk_products, "api_json", side_effect=AssertionError("signer queried GitHub")), \
+                patch.dict(os.environ, {
+                    "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": self.private.read_text(),
+                }), redirect_stdout(StringIO()):
+            self.assertEqual(0, signer_main([
+                "--prepared-root", str(prepared), "--destination", str(signed),
+                "--expected-record-sha256", sha256_bytes((prepared / RECORD).read_bytes()),
+                "--trusted-source-commit", self.source,
+                "--keyring-path", str(self.policy), "--keys-directory", str(self.keys),
+                "--expected-keyring-sha256", self.keyring_sha,
+                "--expected-keys-inventory-sha256", self.keys_sha]))
+        with redirect_stdout(StringIO()) as output:
+            self.assertEqual(0, custody_main(["verify", *common,
+                "--custody-root", str(signed)]))
+        self.assertEqual(str(signed / PUBLIC_KEY), json.loads(output.getvalue())["publicKey"])
+
+    def test_cli_rejects_unpinned_producer_before_network_and_signer_token_before_signing(self):
+        producer = self.root / "producer.json"
+        producer.write_bytes(canonical_json_bytes(self.producer))
+        common = ["prepare", "--producer", str(producer),
+            "--expected-producer-sha256", "sha256:" + "0" * 64,
+            "--artifact-id", "902", "--artifact-sha256", self.selection["artifact_sha256"],
+            "--trusted-workflow-sha", self.source,
+            "--trusted-workflow-path", self.route["trusted_workflow_path"],
+            "--trusted-job-name", self.route["trusted_job_name"],
+            "--trusted-source-commit", self.source,
+            "--keyring-path", str(self.policy), "--keys-directory", str(self.keys),
+            "--expected-keyring-sha256", self.keyring_sha,
+            "--expected-keys-inventory-sha256", self.keys_sha,
+            "--destination", str(self.root / "rejected")]
+        with patch.object(sdk_products, "api_json", side_effect=AssertionError("must not query")), \
+                self.assertRaisesRegex(ValueError, "producer differs from independent pin"):
+            custody_main(common)
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "unexpected",
+                                  "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": "key"}), \
+                patch("ci.sdk_catalog_custody_signer.sign_prepared_failed_sdk_catalog_custody",
+                      side_effect=AssertionError("must not sign")), \
+                self.assertRaisesRegex(ValueError, "must not receive GitHub tokens"):
+            signer_main(["--prepared-root", str(self.root / "nonexistent"),
+                "--destination", str(self.root / "not-signed"),
+                "--expected-record-sha256", "sha256:" + "0" * 64,
+                "--trusted-source-commit", self.source,
+                "--keyring-path", str(self.policy), "--keys-directory", str(self.keys),
+                "--expected-keyring-sha256", self.keyring_sha,
+                "--expected-keys-inventory-sha256", self.keys_sha])
 
 
 if __name__ == "__main__":

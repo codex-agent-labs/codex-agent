@@ -7,10 +7,16 @@ the separate signer only signs already prepared, caller-pinned bytes.
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
 from pathlib import Path
 import re
+import sys
 import tempfile
+
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
@@ -197,3 +203,59 @@ def verify_failed_sdk_catalog_custody(custody_root, *, producer, artifact_id,
     return {"publicKey": key_path, "publicKeySha256": record["catalog"]["publicKeySha256"],
             "catalogArtifactName": record["catalog"]["artifactName"],
             "catalogIndexSha256": record["catalog"]["indexSha256"]}
+
+
+def main(argv=None) -> int:
+    """Local transport interface; protected source/pins are caller authorities."""
+    from ci.products.signing_isolation import require_no_signing_secret
+
+    require_no_signing_secret(os.environ)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    commands = parser.add_subparsers(dest="command", required=True)
+    for command in ("prepare", "verify"):
+        selected = commands.add_parser(command, allow_abbrev=False)
+        selected.add_argument("--producer", type=Path, required=True)
+        selected.add_argument("--expected-producer-sha256", required=True)
+        selected.add_argument("--artifact-id", type=int, required=True)
+        selected.add_argument("--artifact-sha256", required=True)
+        selected.add_argument("--trusted-workflow-sha", required=True)
+        selected.add_argument("--trusted-workflow-path", required=True)
+        selected.add_argument("--trusted-job-name", required=True)
+        selected.add_argument("--trusted-source-commit", required=True)
+        selected.add_argument("--keyring-path", type=Path, required=True)
+        selected.add_argument("--keys-directory", type=Path, required=True)
+        selected.add_argument("--expected-keyring-sha256", required=True)
+        selected.add_argument("--expected-keys-inventory-sha256", required=True)
+        selected.add_argument("--destination" if command == "prepare" else "--custody-root",
+                              type=Path, required=True)
+    args = parser.parse_args(argv)
+    producer_bytes = read_regular_file_bytes(args.producer, max_bytes=64 * 1024,
+        reject_symlink_parents=True)
+    if sha256_bytes(producer_bytes) != require_sha256(
+            args.expected_producer_sha256, "Independent SDK producer digest"):
+        raise ValueError("SDK custody producer differs from independent pin")
+    producer = validate_producer(load_canonical_json_bytes(producer_bytes))
+    if producer_bytes != canonical_json_bytes(producer):
+        raise ValueError("SDK custody producer must be canonical")
+    common = dict(producer=producer, artifact_id=args.artifact_id,
+        artifact_sha256=args.artifact_sha256,
+        trusted_workflow_sha=args.trusted_workflow_sha,
+        trusted_workflow_path=args.trusted_workflow_path,
+        trusted_job_name=args.trusted_job_name,
+        trusted_source_commit=args.trusted_source_commit,
+        keyring_path=args.keyring_path, keys_directory=args.keys_directory,
+        expected_keyring_sha256=args.expected_keyring_sha256,
+        expected_keys_inventory_sha256=args.expected_keys_inventory_sha256)
+    if args.command == "prepare":
+        result = prepare_failed_sdk_catalog_custody(**common,
+            token=os.environ["GITHUB_TOKEN"], destination=args.destination)
+    else:
+        result = verify_failed_sdk_catalog_custody(args.custody_root, **common)
+        result = {**result, "publicKey": str(result["publicKey"])}
+    require_no_signing_secret(os.environ)
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

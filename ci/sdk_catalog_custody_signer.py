@@ -2,10 +2,19 @@
 
 The protected caller owns private-key custody and reviewed source selection;
 this module performs no GitHub lookup and grants no SDK release admission.
+Its CLI is not protected authority until a reviewed, approved workflow supplies
+the source, record, keyring, and public-key inventory pins independently.
 """
 
+import argparse
+import json
+import os
 from pathlib import Path
+import sys
 import tempfile
+
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
@@ -74,3 +83,41 @@ def sign_prepared_failed_sdk_catalog_custody(prepared_root, destination, *,
             "signatureSha256": sha256_bytes(read_regular_file_bytes(
                 Path(destination) / SIGNATURE, max_bytes=64 * 1024,
                 reject_symlink_parents=True))}
+
+
+def main(argv=None) -> int:
+    """Sign pinned bytes without an official-upload token or network lookup."""
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument("--prepared-root", type=Path, required=True)
+    parser.add_argument("--destination", type=Path, required=True)
+    parser.add_argument("--expected-record-sha256", required=True)
+    parser.add_argument("--trusted-source-commit", required=True)
+    parser.add_argument("--keyring-path", type=Path, required=True)
+    parser.add_argument("--keys-directory", type=Path, required=True)
+    parser.add_argument("--expected-keyring-sha256", required=True)
+    parser.add_argument("--expected-keys-inventory-sha256", required=True)
+    args = parser.parse_args(argv)
+    if any(name in os.environ for name in ("GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_RUNTIME_TOKEN")):
+        raise ValueError("Protected SDK custody signer must not receive GitHub tokens")
+    secret = os.environ.get("CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY")
+    if type(secret) is not str or not secret:
+        raise ValueError("Protected SDK custody signing key is unavailable")
+    with tempfile.TemporaryDirectory(prefix="sdk-custody-key-") as temporary:
+        private_key = Path(temporary) / "release-ed25519"
+        descriptor = os.open(private_key, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(secret.encode("utf-8"))
+        result = sign_prepared_failed_sdk_catalog_custody(
+            args.prepared_root, args.destination,
+            expected_record_sha256=args.expected_record_sha256,
+            trusted_source_commit=args.trusted_source_commit,
+            keyring_path=args.keyring_path, keys_directory=args.keys_directory,
+            expected_keyring_sha256=args.expected_keyring_sha256,
+            expected_keys_inventory_sha256=args.expected_keys_inventory_sha256,
+            private_key=private_key)
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
