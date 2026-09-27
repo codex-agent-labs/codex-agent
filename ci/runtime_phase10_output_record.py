@@ -11,6 +11,7 @@ from pathlib import Path
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 from collections.abc import Mapping
@@ -21,12 +22,15 @@ if __package__:
 from ci import product_reuse
 from ci.receipt import safe_extract
 from ci.runtime_phase10_upload_locator import capture_observed_runtime_phase10_upload
-from ci.runtime_phase10_sidecar_upload import capture_runtime_phase10_maven_sidecar_upload
+from ci.runtime_phase10_sidecar_upload import (
+    _JOB as _SIDECAR_JOB, _WORKFLOW as _SIDECAR_WORKFLOW,
+    capture_runtime_phase10_maven_sidecar_upload,
+)
 from ci.runtime_phase11_bytes import _landed_tree, forward_verified_runtime_phase10_bytes
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
     regular_file_inventory, require_exact_keys, require_integer, require_sha256,
-    publish_regular_tree, sha256_bytes, snapshot_regular_tree, verified_zip_contents,
+    publish_regular_tree, sha256_bytes, sha256_file, snapshot_regular_tree, verified_zip_contents,
     write_canonical_json,
 )
 from ci.products.signatures import (
@@ -114,6 +118,8 @@ def admit_original_runtime_phase10_output_record(
     plan_artifact_id: int | None = None, plan_artifact_sha256: str | None = None,
     sidecar_artifact_id: int | None = None, sidecar_artifact_sha256: str | None = None,
     trusted_sidecar_workflow_sha: str | None = None,
+    sidecar_transport_artifact_id: int | None = None,
+    sidecar_transport_artifact_sha256: str | None = None,
     token: str, environ=None,
 ) -> dict:
     """Admit a caller-pinned signed record and its distinct original product.
@@ -153,7 +159,9 @@ def admit_original_runtime_phase10_output_record(
     if dispatch_record:
         if (plan_artifact_id is None or plan_artifact_sha256 is None
                 or sidecar_artifact_id is None or sidecar_artifact_sha256 is None
-                or trusted_sidecar_workflow_sha is None):
+                or trusted_sidecar_workflow_sha is None
+                or sidecar_transport_artifact_id is None
+                or sidecar_transport_artifact_sha256 is None):
             raise ValueError("Runtime record dispatch requires independent original sidecar pins")
         expected_name = ("codex-agent-runtime-phase10-output-record-"
                          f"{producer['tree']}-attestation-{record_producer['runId']}"
@@ -165,6 +173,10 @@ def admit_original_runtime_phase10_output_record(
         require_sha256(plan_artifact_sha256, "Runtime original plan artifact digest")
         require_integer(sidecar_artifact_id, "Runtime original sidecar artifact ID", 1)
         require_sha256(sidecar_artifact_sha256, "Runtime original sidecar artifact digest")
+        require_integer(sidecar_transport_artifact_id,
+                        "Runtime Phase-10 sidecar transport artifact ID", 1)
+        require_sha256(sidecar_transport_artifact_sha256,
+                       "Runtime Phase-10 sidecar transport artifact digest")
         if (type(trusted_sidecar_workflow_sha) is not str
                 or re.fullmatch(r"[0-9a-f]{40}", trusted_sidecar_workflow_sha) is None):
             raise ValueError("Runtime original sidecar workflow SHA is not pinned")
@@ -210,6 +222,28 @@ def admit_original_runtime_phase10_output_record(
                                   "workflow_run", "created_at")):
                 raise ValueError("Runtime record dispatch upload differs from official listing")
         product_reuse._require_artifact_job_window(observed, trusted_record_job_name, artifact)
+        transport_artifact = None
+        transport_archive = None
+        if dispatch_record:
+            transport_name = ("codex-agent-runtime-phase10-sidecar-transport-"
+                              f"{producer['tree']}-attestation-{record_producer['runId']}"
+                              f"-attempt-{record_producer['runAttempt']}")
+            transport_archive = root / "official-sidecar-transport.zip"
+            transport_artifact, _ = product_reuse._download_contract_ci_upload(
+                sidecar_transport_artifact_id, sidecar_transport_artifact_sha256,
+                transport_name, record_producer, observed["run"], token,
+                destination=transport_archive,
+            )
+            listed = [item for item in product_reuse.paginated_items(
+                f"{api}/runs/{record_producer['runId']}/artifacts", "artifacts", token,
+            ) if type(item) is dict and item.get("id") == sidecar_transport_artifact_id]
+            if len(listed) != 1 or any(transport_artifact.get(field) != listed[0].get(field)
+                    for field in ("id", "name", "digest", "size_in_bytes", "expired",
+                                  "workflow_run", "created_at")):
+                raise ValueError("Runtime sidecar transport differs from official listing")
+            product_reuse._require_artifact_job_window(
+                observed, trusted_record_job_name, transport_artifact,
+            )
         inventory, _, _ = verified_zip_contents(
             archive, retained_paths=(), **product_reuse._CATALOG_ZIP_LIMITS,
         )
@@ -227,6 +261,8 @@ def admit_original_runtime_phase10_output_record(
             raise ValueError("Runtime original signed record differs from independent pins")
         sidecar_capture = None
         sidecar_capture_files = None
+        phase10_sidecar_transport = None
+        phase10_sidecar_transport_files = None
         if dispatch_record:
             sidecar_capture = root / "original-sidecar-capture"
             capture_runtime_phase10_maven_sidecar_upload(
@@ -244,6 +280,53 @@ def admit_original_runtime_phase10_output_record(
                     regular_file_inventory(maven_sidecars):
                 raise ValueError("Runtime sidecars differ from pinned official original upload")
             sidecar_capture_files = regular_file_inventory(sidecar_capture)
+            transport_inventory, _, _ = verified_zip_contents(
+                transport_archive, retained_paths=(), allow_empty_members=True,
+                **product_reuse._CATALOG_ZIP_LIMITS,
+            )
+            phase10_sidecar_transport = root / "phase10-sidecar-transport"
+            safe_extract(transport_archive, phase10_sidecar_transport)
+            if regular_file_inventory(phase10_sidecar_transport) != transport_inventory:
+                raise ValueError("Runtime Phase-10 sidecar transport extraction differs from upload")
+            relative_paths = {item["relativePath"] for item in transport_inventory}
+            original_files = regular_file_inventory(sidecar_capture / "original")
+            if relative_paths != {"capture-transport.json", "plan/impact-plan.json",
+                    "transport.zip", *(f"original/{row['relativePath']}" for row in original_files)}:
+                raise ValueError("Runtime Phase-10 sidecar transport has unexpected files")
+            phase10_transport_bytes = read_regular_file_bytes(
+                phase10_sidecar_transport / "capture-transport.json",
+                max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+            fresh_transport_bytes = read_regular_file_bytes(
+                sidecar_capture / "capture-transport.json",
+                max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+            transported = require_exact_keys(load_canonical_json_bytes(
+                phase10_transport_bytes), {
+                    "artifact", "producer", "observation", "trustedWorkflowPath",
+                    "trustedWorkflowSha", "trustedJobName", "planArtifactId",
+                    "planArtifactSha256", "planSha256", "sidecarFiles",
+                }, "Runtime Phase-10 sidecar transport")
+            original_archive = phase10_sidecar_transport / "transport.zip"
+            fresh_archive = sidecar_capture / "transport.zip"
+            if (phase10_transport_bytes != fresh_transport_bytes
+                    or original_archive.stat().st_size != fresh_archive.stat().st_size
+                    or sha256_file(original_archive) != sidecar_artifact_sha256
+                    or sha256_file(fresh_archive) != sidecar_artifact_sha256
+                    or transported["producer"] != producer
+                    or transported["trustedWorkflowPath"] != _SIDECAR_WORKFLOW
+                    or transported["trustedWorkflowSha"] != trusted_sidecar_workflow_sha
+                    or transported["trustedJobName"] != _SIDECAR_JOB
+                    or transported["planArtifactId"] != plan_artifact_id
+                    or transported["planArtifactSha256"] != plan_artifact_sha256
+                    or transported["planSha256"] != sha256_bytes(plan_bytes)
+                    or transported["sidecarFiles"] != original_files
+                    or type(transported["artifact"]) is not dict
+                    or transported["artifact"].get("id") != sidecar_artifact_id
+                    or transported["artifact"].get("digest") != sidecar_artifact_sha256
+                    or read_regular_file_bytes(phase10_sidecar_transport / "plan/impact-plan.json",
+                            max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes
+                    or regular_file_inventory(phase10_sidecar_transport / "original") != original_files):
+                raise ValueError("Runtime Phase-10 sidecar transport differs from official original")
+            phase10_sidecar_transport_files = regular_file_inventory(phase10_sidecar_transport)
         record = verify_signed_runtime_phase10_output_record(
             record_path, signature_path, repository_root, protected_output,
             (sidecar_capture / "original" if sidecar_capture is not None else maven_sidecars),
@@ -262,7 +345,9 @@ def admit_original_runtime_phase10_output_record(
                 or read_regular_file_bytes(signature_path) != signature_bytes
                 or regular_file_inventory(extracted) != inventory
                 or (sidecar_capture is not None and
-                    regular_file_inventory(sidecar_capture) != sidecar_capture_files)):
+                    regular_file_inventory(sidecar_capture) != sidecar_capture_files)
+                or (phase10_sidecar_transport is not None and
+                    regular_file_inventory(phase10_sidecar_transport) != phase10_sidecar_transport_files)):
             raise ValueError("Runtime original record inputs changed during admission")
         retained = root / "retained"
         snapshot_regular_tree(extracted, retained / "signed-record")
@@ -270,6 +355,15 @@ def admit_original_runtime_phase10_output_record(
             snapshot_regular_tree(sidecar_capture, retained / "original-sidecar-capture")
             if regular_file_inventory(retained / "original-sidecar-capture") != sidecar_capture_files:
                 raise ValueError("Runtime original sidecar capture changed during retention")
+        if phase10_sidecar_transport is not None:
+            retained_transport = retained / "phase10-sidecar-transport"
+            snapshot_regular_tree(phase10_sidecar_transport, retained_transport)
+            if regular_file_inventory(retained_transport) != phase10_sidecar_transport_files:
+                raise ValueError("Runtime Phase-10 sidecar transport changed during retention")
+            shutil.copyfile(transport_archive, retained / "phase10-sidecar-transport-upload.zip")
+            if sha256_file(retained / "phase10-sidecar-transport-upload.zip") != \
+                    sidecar_transport_artifact_sha256:
+                raise ValueError("Runtime Phase-10 sidecar transport archive changed during retention")
         transport = {"schemaVersion": 1, "artifact": artifact,
                      "producer": record_producer, "observed": observed,
                      "recordSha256": expected_record_sha256,
@@ -279,6 +373,7 @@ def admit_original_runtime_phase10_output_record(
             transport["sidecarArtifactId"] = sidecar_artifact_id
             transport["sidecarArtifactSha256"] = sidecar_artifact_sha256
             transport["sidecarWorkflowSha"] = trusted_sidecar_workflow_sha
+            transport["phase10SidecarTransportArtifact"] = transport_artifact
         write_canonical_json(retained / "transport.json", transport)
         retained_files = regular_file_inventory(retained)
         if (regular_file_inventory(retained / "signed-record") != inventory
@@ -286,7 +381,11 @@ def admit_original_runtime_phase10_output_record(
                 or read_regular_file_bytes(record_path) != record_bytes
                 or read_regular_file_bytes(signature_path) != signature_bytes
                 or (sidecar_capture is not None and
-                    regular_file_inventory(sidecar_capture) != sidecar_capture_files)):
+                    regular_file_inventory(sidecar_capture) != sidecar_capture_files)
+                or (phase10_sidecar_transport is not None and
+                    (regular_file_inventory(phase10_sidecar_transport) != phase10_sidecar_transport_files
+                     or sha256_file(transport_archive) !=
+                         sidecar_transport_artifact_sha256))):
             raise ValueError("Runtime original signed record changed before retention")
         require_no_signing_secret(environment)
         require_no_signing_secret(os.environ)
@@ -303,6 +402,9 @@ def admit_original_runtime_phase10_output_record(
                   "officialRecordUpload": transport}
         if sidecar_capture is not None:
             result["sidecarCapturePath"] = destination / "original-sidecar-capture"
+            result["phase10SidecarTransportPath"] = destination / "phase10-sidecar-transport"
+            result["phase10SidecarTransportArchive"] = (
+                destination / "phase10-sidecar-transport-upload.zip")
         return result
 
 
@@ -651,7 +753,8 @@ def main(argv=None) -> int:
     admitted.add_argument("--record-producer", type=Path)
     admitted.add_argument("--expected-record-producer-sha256")
     for name in ("plan-artifact-id", "plan-artifact-sha256", "sidecar-artifact-id",
-                 "sidecar-artifact-sha256", "trusted-sidecar-workflow-sha"):
+                 "sidecar-artifact-sha256", "trusted-sidecar-workflow-sha",
+                 "sidecar-transport-artifact-id", "sidecar-transport-artifact-sha256"):
         admitted.add_argument(f"--{name}")
     for command in ("prepare", "verify-publish"):
         selected = commands.add_parser(command, allow_abbrev=False)
@@ -717,6 +820,9 @@ def main(argv=None) -> int:
                                  else int(args.sidecar_artifact_id)),
             sidecar_artifact_sha256=args.sidecar_artifact_sha256,
             trusted_sidecar_workflow_sha=args.trusted_sidecar_workflow_sha,
+            sidecar_transport_artifact_id=(None if args.sidecar_transport_artifact_id is None
+                                           else int(args.sidecar_transport_artifact_id)),
+            sidecar_transport_artifact_sha256=args.sidecar_transport_artifact_sha256,
             token=os.environ["GITHUB_TOKEN"], environ=os.environ,
         )
         print(json.dumps({key: (str(value) if isinstance(value, Path) else value)

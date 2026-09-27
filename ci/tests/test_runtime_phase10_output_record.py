@@ -79,6 +79,8 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
         self.sidecars = self.root / "phase10-maven"
         self.sidecars.mkdir()
         (self.sidecars / "signature.asc").write_bytes(b"signature\n")
+        self.sidecar_original_archive = b"pinned official sidecar archive\n"
+        self.sidecar_original_sha256 = sha256_bytes(self.sidecar_original_archive)
         self.pgp = self.root / "pgp-public-key.asc"
         self.pgp.write_bytes(b"original PGP public key\n")
         self.plan = self.root / "impact-plan.json"
@@ -179,7 +181,9 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
                                                             "GITHUB_RUN_ATTEMPT": "9"}))
 
     def admit_original(self, *, overrides=None, archive_files=None, plan=None,
-                       sidecar_mutation=False):
+                       sidecar_mutation=False, transport_mutation=False,
+                       transport_listing_mutation=False, transport_window_reject=False,
+                       transport_observation_mutation=False):
         producer = {
             "repository": "codex-agent-labs/codex-agent",
             "workflowPath": ".github/workflows/ci.yml",
@@ -215,6 +219,54 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
             token="local-test-token", environ={"GITHUB_RUN_ID": "999"})
         inputs.update(overrides or {})
         selected_record_producer = inputs.get("expected_record_producer", producer)
+        transport_archive = None
+        transport_detail = None
+        fresh_transport_bytes = None
+        if "expected_record_producer" in inputs:
+            transport_root = self.root / "phase10-sidecar-transport-fixture"
+            (transport_root / "original").mkdir(parents=True, exist_ok=True)
+            (transport_root / "plan").mkdir(exist_ok=True)
+            shutil.copy2(self.sidecars / "signature.asc",
+                         transport_root / "original/signature.asc")
+            shutil.copy2(self.plan, transport_root / "plan/impact-plan.json")
+            (transport_root / "transport.zip").write_bytes(
+                b"changed original archive\n" if transport_mutation
+                else self.sidecar_original_archive)
+            transport_document = {
+                "artifact": {"id": inputs["sidecar_artifact_id"],
+                             "digest": inputs["sidecar_artifact_sha256"]},
+                "producer": producer, "observation": {},
+                "trustedWorkflowPath": gate._SIDECAR_WORKFLOW,
+                "trustedWorkflowSha": inputs["trusted_sidecar_workflow_sha"],
+                "trustedJobName": gate._SIDECAR_JOB,
+                "planArtifactId": inputs["plan_artifact_id"],
+                "planArtifactSha256": inputs["plan_artifact_sha256"],
+                "planSha256": sha256_bytes(self.plan.read_bytes()),
+                "sidecarFiles": regular_file_inventory(self.sidecars),
+            }
+            fresh_transport_bytes = canonical_json_bytes(transport_document)
+            if transport_observation_mutation:
+                transport_document["observation"] = {"changed": True}
+            (transport_root / "capture-transport.json").write_bytes(
+                canonical_json_bytes(transport_document))
+            transport_archive = self.root / "phase10-sidecar-transport.zip"
+            with zipfile.ZipFile(transport_archive, "w", compression=zipfile.ZIP_STORED) as zipped:
+                for path in sorted(transport_root.rglob("*")):
+                    if path.is_file():
+                        zipped.write(path, path.relative_to(transport_root).as_posix())
+            inputs.setdefault("sidecar_transport_artifact_id", 28)
+            inputs.setdefault("sidecar_transport_artifact_sha256",
+                              sha256_bytes(transport_archive.read_bytes()))
+            transport_detail = {
+                "id": 28, "digest": inputs["sidecar_transport_artifact_sha256"],
+                "name": (f"codex-agent-runtime-phase10-sidecar-transport-{producer['tree']}"
+                         f"-attestation-{selected_record_producer['runId']}"
+                         f"-attempt-{selected_record_producer['runAttempt']}"),
+                "size_in_bytes": transport_archive.stat().st_size, "expired": False,
+                "created_at": "2026-09-27T12:00:00Z",
+                "workflow_run": {"id": selected_record_producer["runId"],
+                                 "head_sha": selected_record_producer["commit"]},
+            }
         artifact_detail = {
             "id": 27, "digest": artifact_sha,
             "name": inputs["record_artifact_name"],
@@ -233,6 +285,11 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
             return deepcopy(self.upload)
 
         def download(artifact_id, digest, name, pinned_producer, run, token, *, destination):
+            if artifact_id == 28:
+                self.assertEqual(inputs["sidecar_transport_artifact_sha256"], digest)
+                self.assertEqual(transport_detail["name"], name)
+                shutil.copy2(transport_archive, destination)
+                return transport_detail, destination
             self.assertEqual(27, artifact_id)
             self.assertEqual(artifact_sha, digest)
             self.assertEqual(inputs["record_artifact_name"], name)
@@ -248,17 +305,30 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
             (destination / "original/signature.asc").write_bytes(
                 b"different official sidecar\n" if sidecar_mutation
                 else (self.sidecars / "signature.asc").read_bytes())
-            (destination / "transport.zip").write_bytes(b"pinned official sidecar archive\n")
+            (destination / "transport.zip").write_bytes(self.sidecar_original_archive)
+            (destination / "capture-transport.json").write_bytes(fresh_transport_bytes)
             return {"sidecarFiles": regular_file_inventory(destination / "original")}
+
+        def window(_, __, artifact):
+            if transport_window_reject and artifact["id"] == 28:
+                raise ValueError("upload outside original job window")
+
+        listed_transport = (None if transport_detail is None else {
+            **transport_detail,
+            "size_in_bytes": transport_detail["size_in_bytes"] +
+                (1 if transport_listing_mutation else 0),
+        })
 
         with patch.object(gate.product_reuse, "_validate_plan", return_value=selected), \
              patch.object(gate.product_reuse, "_observe_ci_producer_jobs",
                           return_value=[{"run": {"head_sha": self.candidate_commit}, "jobs": []}]), \
              patch.object(gate.product_reuse, "_download_contract_ci_upload",
                           side_effect=download) as fetched, \
-             patch.object(gate.product_reuse, "_require_artifact_job_window") as window, \
+             patch.object(gate.product_reuse, "_require_artifact_job_window",
+                          side_effect=window) as window_checked, \
              patch.object(gate.product_reuse, "paginated_items",
-                          return_value=[artifact_detail]), \
+                          return_value=[artifact_detail] + (
+                              [] if listed_transport is None else [listed_transport])), \
              patch.object(gate, "capture_runtime_phase10_maven_sidecar_upload",
                           side_effect=sidecar_capture), \
              patch.object(gate, "_observe_protected_record_dispatch",
@@ -269,7 +339,7 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
             result = gate.admit_original_runtime_phase10_output_record(
                 self.plan, self.validation, self.repository, self.output,
                 self.sidecars, self.pgp, self.root / "admitted-record", **inputs)
-        return result, fetched, window, deep
+        return result, fetched, window_checked, deep
 
     def test_later_run_admits_only_official_pinned_signed_original(self):
         result, fetched, window, deep = self.admit_original()
@@ -357,8 +427,10 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
                 plan_artifact_id=16,
                 plan_artifact_sha256="sha256:" + "1" * 64,
                 sidecar_artifact_id=17,
-                sidecar_artifact_sha256="sha256:" + "2" * 64,
+                sidecar_artifact_sha256=self.sidecar_original_sha256,
                 trusted_sidecar_workflow_sha="a" * 40,
+                sidecar_transport_artifact_id=28,
+                sidecar_transport_artifact_sha256="sha256:" + "3" * 64,
                 token="observer", environ={},
             )
         observer.assert_not_called()
@@ -381,7 +453,7 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
             "plan_artifact_id": 16,
             "plan_artifact_sha256": "sha256:" + "1" * 64,
             "sidecar_artifact_id": 17,
-            "sidecar_artifact_sha256": "sha256:" + "2" * 64,
+            "sidecar_artifact_sha256": self.sidecar_original_sha256,
             "trusted_sidecar_workflow_sha": "a" * 40,
         })
         self.assertEqual(dispatch, result["officialRecordUpload"]["producer"])
@@ -391,8 +463,11 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
                          result["sidecarCapturePath"])
         self.assertEqual(b"pinned official sidecar archive\n",
                          (self.root / "admitted-record/original-sidecar-capture/transport.zip").read_bytes())
-        fetched.assert_called_once()
-        window.assert_called_once()
+        self.assertEqual(result["officialRecordUpload"]["phase10SidecarTransportArtifact"]["id"], 28)
+        self.assertEqual(self.root / "admitted-record/phase10-sidecar-transport-upload.zip",
+                         result["phase10SidecarTransportArchive"])
+        self.assertEqual(2, fetched.call_count)
+        self.assertEqual(2, window.call_count)
         deep.assert_called_once()
 
     def test_dispatch_rejects_official_sidecar_byte_mismatch_before_deep_verification(self):
@@ -414,10 +489,65 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
                 "plan_artifact_id": 16,
                 "plan_artifact_sha256": "sha256:" + "1" * 64,
                 "sidecar_artifact_id": 17,
-                "sidecar_artifact_sha256": "sha256:" + "2" * 64,
+                "sidecar_artifact_sha256": self.sidecar_original_sha256,
                 "trusted_sidecar_workflow_sha": "a" * 40,
             }, sidecar_mutation=True)
         self.assertFalse((self.root / "admitted-record").exists())
+
+    def test_dispatch_rejects_changed_archive_or_observation_bytes(self):
+        dispatch = {
+            "repository": "codex-agent-labs/codex-agent",
+            "workflowPath": ".github/workflows/ci.yml",
+            "commit": "d" * 40, "tree": "e" * 40,
+            "event": "workflow_dispatch", "runId": 88,
+            "runAttempt": 3, "pullRequest": None,
+        }
+        selected = {
+                "expected_record_producer": dispatch,
+                "trusted_record_workflow_path": gate._RECORD_DISPATCH_WORKFLOW,
+                "trusted_record_job_name": gate._RECORD_DISPATCH_JOB,
+                "record_artifact_name": (
+                    f"codex-agent-runtime-phase10-output-record-{self.candidate_tree}"
+                    "-attestation-88-attempt-3"),
+                "plan_artifact_id": 16,
+                "plan_artifact_sha256": "sha256:" + "1" * 64,
+                "sidecar_artifact_id": 17,
+                "sidecar_artifact_sha256": self.sidecar_original_sha256,
+                "trusted_sidecar_workflow_sha": "a" * 40,
+            }
+        for mutation in ({"transport_mutation": True},
+                         {"transport_observation_mutation": True}):
+            with self.subTest(mutation=mutation), \
+                 self.assertRaisesRegex(ValueError, "transport differs from official original"):
+                self.admit_original(overrides=selected, **mutation)
+            self.assertFalse((self.root / "admitted-record").exists())
+
+    def test_dispatch_transport_requires_official_listing_and_job_window(self):
+        dispatch = {
+            "repository": "codex-agent-labs/codex-agent",
+            "workflowPath": ".github/workflows/ci.yml",
+            "commit": "d" * 40, "tree": "e" * 40,
+            "event": "workflow_dispatch", "runId": 88,
+            "runAttempt": 3, "pullRequest": None,
+        }
+        selected = {
+            "expected_record_producer": dispatch,
+            "trusted_record_workflow_path": gate._RECORD_DISPATCH_WORKFLOW,
+            "trusted_record_job_name": gate._RECORD_DISPATCH_JOB,
+            "record_artifact_name": (
+                f"codex-agent-runtime-phase10-output-record-{self.candidate_tree}"
+                "-attestation-88-attempt-3"),
+            "plan_artifact_id": 16,
+            "plan_artifact_sha256": "sha256:" + "1" * 64,
+            "sidecar_artifact_id": 17,
+            "sidecar_artifact_sha256": self.sidecar_original_sha256,
+            "trusted_sidecar_workflow_sha": "a" * 40,
+        }
+        for mutation, message in (({"transport_listing_mutation": True}, "official listing"),
+                                  ({"transport_window_reject": True}, "job window")):
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, message):
+                self.admit_original(overrides=selected, **mutation)
+            self.assertFalse((self.root / "admitted-record").exists())
 
     def test_later_run_rejects_signed_pair_changed_after_deep_verification(self):
         original = gate.verify_signed_runtime_phase10_output_record
@@ -498,20 +628,33 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
                     "runAttempt": 3, "pullRequest": None}
         dispatch_path = self.root / "record-producer.json"
         dispatch_path.write_bytes(canonical_json_bytes(dispatch))
-        dispatch_args = args + ["--record-producer", str(dispatch_path),
-                                "--expected-record-producer-sha256", "sha256:" + "0" * 64]
+        dispatch_args = args + [
+            "--record-producer", str(dispatch_path),
+            "--expected-record-producer-sha256", "sha256:" + "0" * 64,
+            "--plan-artifact-id", "16",
+            "--plan-artifact-sha256", "sha256:" + "1" * 64,
+            "--sidecar-artifact-id", "17",
+            "--sidecar-artifact-sha256", self.sidecar_original_sha256,
+            "--trusted-sidecar-workflow-sha", "a" * 40,
+            "--sidecar-transport-artifact-id", "28",
+            "--sidecar-transport-artifact-sha256", "sha256:" + "3" * 64,
+        ]
         with patch.dict(os.environ, {"GITHUB_TOKEN": "local-test-token"}), \
              patch.object(gate, "admit_original_runtime_phase10_output_record") as admit, \
              self.assertRaisesRegex(ValueError, "record dispatch producer differs"):
             gate.main(dispatch_args)
         admit.assert_not_called()
-        dispatch_args[-1] = sha256_bytes(dispatch_path.read_bytes())
+        dispatch_args[dispatch_args.index("--expected-record-producer-sha256") + 1] = \
+            sha256_bytes(dispatch_path.read_bytes())
         with patch.dict(os.environ, {"GITHUB_TOKEN": "local-test-token"}), \
              patch.object(gate, "admit_original_runtime_phase10_output_record",
                           return_value={"recordSha256": "sha256:" + "a" * 64}) as admit, \
              redirect_stdout(StringIO()):
             self.assertEqual(0, gate.main(dispatch_args))
         self.assertEqual(dispatch, admit.call_args.kwargs["expected_record_producer"])
+        self.assertEqual(28, admit.call_args.kwargs["sidecar_transport_artifact_id"])
+        self.assertEqual("sha256:" + "3" * 64,
+                         admit.call_args.kwargs["sidecar_transport_artifact_sha256"])
 
     def test_independent_source_workflow_pgp_and_keyring_pins(self):
         for override in ({"trusted_source_commit": "0" * 40},
