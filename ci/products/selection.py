@@ -277,6 +277,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_campaign_catalog_producer.py",
     "ci/sdk_campaign_catalog_caller.py",
     "ci/sdk_campaign_release_issuer.py",
+    "ci/sdk_phase10_release_index_admission.py",
     "ci/sdk_campaign_authority_upload.py",
     "ci/sdk_campaign_authority_producer.py",
     "ci/sdk_campaign_core_android_election.py",
@@ -652,7 +653,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path == "ci/products/sdk_phase10_maven.py":
         return (_from_phase("sdk", "sdk-core", "metadata") |
                 _from_phase("sdk", "sdk-android", "metadata"))
-    if path == "ci/sdk_campaign_release_issuer.py":
+    if path in {"ci/sdk_campaign_release_issuer.py", "ci/sdk_phase10_release_index_admission.py"}:
         return {instance for instance in ALL_METADATA if instance.product == "sdk"}
     if path == "ci/products/sdk_campaign_maven.py":
         return (_from_phase("sdk", "sdk-core", "binary") |
@@ -865,6 +866,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         ".github/workflows/sdk-android-metadata-validation.yml": _from_phase("sdk", "sdk-android", "metadata"),
         ".github/workflows/sdk-validation.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/sdk-failed-catalog-custody.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
+        ".github/workflows/sdk-phase10-later-authority.yml": set(),
         ".github/workflows/sdk-binding-parity.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/sdk-consumer-validation.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/promote.yml": set(ALL_METADATA),
@@ -910,7 +912,8 @@ def _is_control_only(path: str) -> bool:
     if path in {".github/workflows/contract-phase10-maven.yml",
                 ".github/workflows/contract-phase10-output-record.yml",
                 ".github/workflows/contract-phase10-later-record.yml",
-                ".github/workflows/sdk-failed-catalog-custody.yml"}:
+                ".github/workflows/sdk-failed-catalog-custody.yml",
+                ".github/workflows/sdk-phase10-later-authority.yml"}:
         return True  # Protected evidence carriers do not define product bytes.
     if path in {"ci/sdk_maven_evidence.py", "ci/sdk_metadata_evidence.py", "ci/sdk_metadata_policy.py",
                 "ci/sdk_facade_metadata_policy.py", "ci/sdk_android_metadata_policy.py",

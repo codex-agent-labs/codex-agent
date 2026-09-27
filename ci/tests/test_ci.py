@@ -140,9 +140,10 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertEqual(1, caller.count("\n  merge-gate:\n"))
         gate = caller.split("\n  merge-gate:\n", 1)[1]
         self.assertIn("'SDK custody / complete' ||", gate)
-        self.assertIn("'Contract record / complete' || 'CI / merge-gate'", gate)
+        self.assertIn("'Contract record / complete' ||", gate)
+        self.assertIn("'SDK authority / complete' || 'CI / merge-gate'", gate)
         self.assertIn("if: always()", gate)
-        self.assertIn("needs: [product-validation, sdk-failed-catalog-custody, runtime-phase10-record, contract-phase10-record]", gate)
+        self.assertIn("needs: [product-validation, sdk-failed-catalog-custody, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority]", gate)
         self.assertIn('test "$PRODUCT_VALIDATION_RESULT" = success', gate)
         self.assertIn('test "$SDK_CUSTODY_RESULT" = skipped', gate)
         self.assertNotIn("actions/checkout@", caller)
