@@ -258,7 +258,8 @@ int main(int argc, char** argv) {
         loader_test_hook::attempted = false;
         codex_agent::detail::set_native_loader_test_hook(loader_test_hook::record_open);
     }
-    if (mode == "signed-wrong-root" || mode == "signed-bad-signature" ||
+    if (mode == "signed-wrong-root" || mode == "signed-undelegated-signer" ||
+        mode == "signed-bad-signature" ||
         mode == "signed-bad-library" || mode == "signed-identity-mismatch" ||
         mode == "signed-abi-width" || mode == "signed-incompatible-claim" ||
         mode == "signed-oversized-evidence") {
@@ -275,11 +276,13 @@ int main(int argc, char** argv) {
         }
         return result;
     } catch (const std::exception& error) {
-        const auto signed_failure = mode == "signed-wrong-root" || mode == "signed-bad-signature" ||
+        const auto signed_failure = mode == "signed-wrong-root" ||
+            mode == "signed-undelegated-signer" || mode == "signed-bad-signature" ||
             mode == "signed-bad-library" || mode == "signed-identity-mismatch" ||
             mode == "signed-abi-width" || mode == "signed-incompatible-claim" ||
             mode == "signed-oversized-evidence";
         const auto expected_message = mode == "signed-wrong-root" ? "SDK root" :
+            mode == "signed-undelegated-signer" ? "signer is not delegated" :
             mode == "signed-bad-signature" ? "signature verification failed" :
             mode == "signed-bad-library" ? "private snapshot differs" :
             mode == "signed-oversized-evidence" ? "oversized" :

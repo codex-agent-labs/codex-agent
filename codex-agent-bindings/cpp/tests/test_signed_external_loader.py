@@ -74,7 +74,6 @@ def main() -> None:
         root_private, root_public = key(root, "root")
         signer_private, signer_public = key(root, "signer")
         wrong_private, wrong_public = key(root, "wrong")
-        del wrong_private
         (evidence / "keys/release.pub").write_bytes(signer_public)
         keyring = canonical({"schemaVersion": 1, "namespace": "codex-agent-product-v1",
                              "algorithm": "ssh-ed25519", "trustDomain": "release",
@@ -112,6 +111,16 @@ def main() -> None:
         wrong_file.write_bytes(wrong_public)
         run(executable, default, compatibility, "signed-wrong-root", library, wrong_file)
         run(executable, default, compatibility, "signed-external", library, root_file)
+        claim_bytes = claim.read_bytes()
+        original_signature = signature.read_bytes()
+        undelegated = json.loads(claim_bytes)
+        undelegated["signing"]["keyId"] = "rogue"
+        undelegated["signing"]["fingerprint"] = fingerprint(wrong_public)
+        claim.write_bytes(canonical(undelegated))
+        sign(claim, wrong_private, "codex-agent-product-v1", signature)
+        run(executable, default, compatibility, "signed-undelegated-signer", library, root_file)
+        claim.write_bytes(claim_bytes)
+        signature.write_bytes(original_signature)
         keyring_file = evidence / "release-keyring.json"
         keyring_file.write_bytes(keyring + b" " * (1024 * 1024))
         run(executable, default, compatibility, "signed-oversized-evidence", library, root_file)
