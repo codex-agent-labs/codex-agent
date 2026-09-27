@@ -512,7 +512,9 @@ def held_sdk_campaign_candidate_from_authority(plan_path, *, authority_file,
 def held_sdk_campaign_candidate_from_official_authority(plan_path, repository_root,
         *, authority_artifact_id, authority_artifact_sha256,
         expected_authority_sha256, authority_workflow_sha,
-        authority_workflow_path, authority_job_name, trusted_workflow_sha,
+        authority_workflow_path, authority_job_name,
+        authority_producer, expected_authority_producer_sha256,
+        trusted_workflow_sha,
         election_files, semantic_files, token, environ,
         original_run_id=None, original_run_attempt=None, **candidate_options):
     """Replay from one officially observed authority upload; never sign here."""
@@ -527,6 +529,8 @@ def held_sdk_campaign_candidate_from_official_authority(plan_path, repository_ro
             trusted_workflow_sha=authority_workflow_sha,
             trusted_workflow_path=authority_workflow_path,
             trusted_job_name=authority_job_name, token=token,
+            authority_producer=authority_producer,
+            expected_authority_producer_sha256=expected_authority_producer_sha256,
             environ=environ, original_run_id=original_run_id,
             original_run_attempt=original_run_attempt) as (authority_file, transport):
         with held_sdk_campaign_candidate_from_authority(plan_path,

@@ -11,7 +11,9 @@ import unittest
 from unittest.mock import patch
 
 from ci.products.inventory import (
-    canonical_json_bytes, load_canonical_json_bytes, sha256_bytes, write_canonical_json,
+    canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory,
+    sha256_bytes, sha256_file,
+    write_canonical_json,
 )
 from products.index import SignedProductIndex
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
@@ -19,7 +21,8 @@ from ci.products.signatures import (
     generate_development_key, verify_manifest_signature,
 )
 from ci.sdk_campaign_release_issuer import (
-    main, prepare_sdk_release_index, sign_approved_sdk_release_index,
+    _stage_sdk_replay_evidence, main, prepare_sdk_release_index,
+    sign_approved_sdk_release_index,
     stage_prepared_sdk_release_index, verify_signed_sdk_release_index_against_official_replay,
 )
 from ci.tests.product_chain_support import output, write_receipt
@@ -40,7 +43,9 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
         write_canonical_json(self.keyring, {"schemaVersion": 1,
             "algorithm": "ssh-ed25519", "namespace": "codex-agent-product-v1",
             "trustDomain": "release", "activeKey": {"keyId": "release-test",
-                "fingerprint": development["fingerprint"]}, "retiredKeys": []})
+            "fingerprint": development["fingerprint"]}, "retiredKeys": []})
+        self.keys_inventory_sha256 = sha256_bytes(canonical_json_bytes(
+            regular_file_inventory(self.keys)))
         self.repository = "owner/repository"
         self.producer = {"repository": self.repository,
             "workflowPath": ".github/workflows/product-validation.yml",
@@ -49,6 +54,10 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
         self.context = {"kind": "pull-request", "pullRequest": 31,
             "commit": self.producer["commit"], "tree": self.producer["tree"],
             "runId": 3, "runAttempt": 1}
+        self.authority_producer = {**self.producer, "event": "workflow_dispatch",
+            "runId": 7, "runAttempt": 1, "pullRequest": None}
+        self.authority_producer_file = self.root / "authority-producer.json"
+        write_canonical_json(self.authority_producer_file, self.authority_producer)
         self.path = "outputs/fixture.bin"
         self.receipts = {}
         for position, instance in enumerate(sorted(SDK_CAMPAIGN_INSTANCES)):
@@ -80,6 +89,9 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
         args = dict(authority_file=self.authority, authority_artifact_id=7,
             authority_artifact_sha256=sha256_bytes(b"authority upload"),
             expected_authority_sha256=sha256_bytes(self.authority.read_bytes()),
+            authority_producer=self.authority_producer,
+            expected_authority_producer_sha256=sha256_file(
+                self.authority_producer_file),
             authority_workflow_sha="c" * 40,
             authority_workflow_path=".github/workflows/product-validation.yml",
             authority_job_name="product-validation / sdk-authority-upload",
@@ -89,6 +101,7 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
             state_wave=1, sdk_state_wave=1,
             keys_directory=self.keys,
             expected_keyring_sha256=sha256_bytes(self.keyring.read_bytes()),
+            expected_keys_inventory_sha256=self.keys_inventory_sha256,
             repository=self.repository, context=self.context, producer=self.producer)
         args.update(changes)
         return args
@@ -107,8 +120,12 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
             events.append("released")
 
         with patch("ci.sdk_campaign_catalog_producer.held_sdk_campaign_candidate_from_official_authority",
-                   official):
+                   side_effect=official) as replay:
             prepared = self._prepare()
+        self.assertEqual(3, replay.call_args.kwargs["original_run_id"])
+        self.assertEqual(1, replay.call_args.kwargs["original_run_attempt"])
+        self.assertEqual(self.authority_producer,
+            replay.call_args.kwargs["authority_producer"])
         index = load_canonical_json_bytes(prepared)
         self.assertEqual(["held", "released"], events)
         self.assertEqual("release", index["trustDomain"])
@@ -146,6 +163,45 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "original run"):
                     self._prepare(**changes)
             self.assertEqual(1, held.call_count)
+
+    def test_external_authority_archive_and_six_policy_bytes_are_retained(self):
+        archive = self.root / "official-authority.zip"
+        archive.write_bytes(b"official zipped authority bytes")
+        election, semantic = {}, {}
+        for family in ("core-android", "native", "apple-js"):
+            election[family] = self.root / f"election-{family}.json"
+            election[family].write_bytes(family.encode())
+            semantic[family] = self.root / f"semantic-{family}.json"
+            semantic[family].write_bytes((family + "-semantic").encode())
+        transport = {"artifactSha256": sha256_file(archive),
+            "archivePath": archive, "authorityProducer": self.authority_producer,
+            "originalProducer": self.producer,
+            "observedAttempt": {"run": {"id": 7}},
+            "artifact": {"id": 9}}
+        destination = self.root / "replay-evidence"
+        authority = load_canonical_json_bytes(self.authority.read_bytes())
+        _stage_sdk_replay_evidence(destination, transport, self.authority,
+            sha256_file(self.authority), authority, election, semantic,
+            self.keyring, self.keys, sha256_file(self.keyring),
+            self.keys_inventory_sha256)
+        self.assertEqual(archive.read_bytes(),
+            (destination / "authority-upload.zip").read_bytes())
+        self.assertEqual(self.authority.read_bytes(),
+            (destination / "sdk-campaign-authority.json").read_bytes())
+        self.assertEqual(11, len(regular_file_inventory(destination)))
+        (self.keys / "unreviewed.pub").write_bytes(b"unexpected public key")
+        with self.assertRaisesRegex(ValueError, "independent inventory approval"):
+            _stage_sdk_replay_evidence(self.root / "replay-evidence-extra-key",
+                transport, self.authority, sha256_file(self.authority),
+                authority, election, semantic, self.keyring, self.keys,
+                sha256_file(self.keyring), self.keys_inventory_sha256)
+        (self.keys / "unreviewed.pub").unlink()
+        semantic["native"].write_bytes(b"tampered")
+        with self.assertRaisesRegex(ValueError, "differs from protected authority"):
+            _stage_sdk_replay_evidence(self.root / "replay-evidence-tampered",
+                transport, self.authority, sha256_file(self.authority),
+                authority, election, semantic, self.keyring, self.keys,
+                sha256_file(self.keyring), self.keys_inventory_sha256)
 
     def test_unpinned_inputs_fail_before_observation_and_raw_map_is_not_an_issuer(self):
         with patch("ci.sdk_campaign_catalog_producer.held_sdk_campaign_candidate_from_official_authority") as official:
@@ -200,6 +256,9 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
         values = ["prepare", "--plan", str(self.root / "plan.json"),
             "--repository-root", str(self.root),
             "--authority-file", str(self.authority),
+            "--authority-producer", str(self.authority_producer_file),
+            "--expected-authority-producer-sha256", sha256_file(
+                self.authority_producer_file),
             "--authority-artifact-id", "7",
             "--authority-artifact-sha256", sha256_bytes(b"authority upload"),
             "--authority-workflow-sha", "c" * 40,
@@ -211,6 +270,7 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
             "--state-wave", "1", "--sdk-state-wave", "1",
             "--keyring-path", str(self.keyring),
             "--keys-directory", str(self.keys),
+            "--expected-keys-inventory-sha256", self.keys_inventory_sha256,
             "--destination", str(self.root / "prepared")]
         for family in ("core-android", "native", "apple-js"):
             for kind in ("election", "semantic"):
@@ -235,7 +295,8 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
         replay.assert_not_called()
         prepare_environment = {"GITHUB_TOKEN": "observation-only",
             "CODEX_AGENT_SDK_AUTHORITY_APPROVED_SHA256": sha256_bytes(self.authority.read_bytes()),
-            "CODEX_AGENT_PRODUCT_KEYRING_APPROVED_SHA256": sha256_bytes(self.keyring.read_bytes())}
+            "CODEX_AGENT_PRODUCT_KEYRING_APPROVED_SHA256": sha256_bytes(self.keyring.read_bytes()),
+            "CODEX_AGENT_PRODUCT_KEYS_INVENTORY_APPROVED_SHA256": self.keys_inventory_sha256}
         with patch.dict(os.environ, prepare_environment, clear=True), \
              patch("ci.sdk_campaign_release_issuer.prepare_sdk_release_index",
                    return_value=prepared) as replay, redirect_stdout(StringIO()) as printed:
@@ -297,12 +358,32 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
         args = self._cli_prepare_arguments() + ["--sdk-validation-tooling", str(policy)]
         environment = {"GITHUB_TOKEN": "observation-only",
             "CODEX_AGENT_SDK_AUTHORITY_APPROVED_SHA256": sha256_bytes(self.authority.read_bytes()),
-            "CODEX_AGENT_PRODUCT_KEYRING_APPROVED_SHA256": sha256_bytes(self.keyring.read_bytes())}
+            "CODEX_AGENT_PRODUCT_KEYRING_APPROVED_SHA256": sha256_bytes(self.keyring.read_bytes()),
+            "CODEX_AGENT_PRODUCT_KEYS_INVENTORY_APPROVED_SHA256": self.keys_inventory_sha256}
         with patch.dict(os.environ, environment, clear=True), \
              patch("ci.sdk_campaign_release_issuer.prepare_sdk_release_index") as replay, \
              redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             main(args)
         replay.assert_not_called()
+
+    def test_prepare_cli_late_held_failure_does_not_publish(self):
+        @contextmanager
+        def late_failure(_args):
+            yield {}
+            raise ValueError("held SDK policy changed after replay")
+
+        destination = self.root / "prepared"
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "observation-only"}, clear=True), \
+             patch("ci.sdk_campaign_release_issuer.held_sdk_release_replay_options",
+                   side_effect=late_failure), \
+             patch("ci.sdk_campaign_release_issuer.prepare_sdk_release_index",
+                   return_value=b"prepared bytes") as replay, \
+             patch("ci.sdk_campaign_release_issuer.stage_prepared_sdk_release_index") as stage, \
+             redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            main(self._cli_prepare_arguments())
+        replay.assert_called_once()
+        stage.assert_not_called()
+        self.assertFalse(destination.exists())
 
     def test_signed_index_rechecks_exact_originals_under_full_official_replay(self):
         receipts = self.receipts

@@ -8,6 +8,7 @@ preparation result or the development catalog.
 
 import argparse
 from collections.abc import Mapping
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -26,7 +27,9 @@ from products.index import (
 )
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
-    read_regular_file_bytes, require_exact_keys, require_sha256, sha256_bytes,
+    read_regular_file_bytes, regular_file_inventory, require_exact_keys,
+    require_sha256, sha256_bytes, snapshot_regular_tree,
+    write_canonical_json,
 )
 from products.receipt import validate_phase_receipt, validate_producer
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
@@ -53,6 +56,7 @@ _REQUIRED_CANDIDATE_OPTIONS = frozenset({
 _FAMILIES = ("core-android", "native", "apple-js")
 _APPROVED_AUTHORITY = "CODEX_AGENT_SDK_AUTHORITY_APPROVED_SHA256"
 _APPROVED_KEYRING = "CODEX_AGENT_PRODUCT_KEYRING_APPROVED_SHA256"
+_APPROVED_KEYS_INVENTORY = "CODEX_AGENT_PRODUCT_KEYS_INVENTORY_APPROVED_SHA256"
 _APPROVED_INDEX = "CODEX_AGENT_SDK_INDEX_APPROVED_SHA256"
 _APPROVED_SIGNATURE = "CODEX_AGENT_SDK_SIGNATURE_APPROVED_SHA256"
 _CONTROL_APPROVAL_ENV = {
@@ -64,7 +68,8 @@ _CONTROL_APPROVAL_ENV = {
 }
 
 
-def _release_key(keyring_path, keys_directory, expected_keyring_sha256):
+def _release_key(keyring_path, keys_directory, expected_keyring_sha256,
+                 expected_keys_inventory_sha256=None):
     pinned = require_sha256(expected_keyring_sha256, "Protected SDK keyring digest")
     raw = read_regular_file_bytes(Path(keyring_path), max_bytes=64 * 1024,
         reject_symlink_parents=True)
@@ -72,17 +77,37 @@ def _release_key(keyring_path, keys_directory, expected_keyring_sha256):
         raise ValueError("SDK signing keyring differs from protected pin")
     keyring = load_keyring(Path(keyring_path), Path(keys_directory))
     active, public_key = require_active_release_key(keyring, Path(keys_directory))
+    if expected_keys_inventory_sha256 is not None:
+        _release_key_inventory(keys_directory, keyring,
+            expected_keys_inventory_sha256)
     signing = {name: keyring[name] for name in ("algorithm", "namespace", "trustDomain")}
     signing.update(active)
     return raw, signing, public_key
 
 
+def _release_key_inventory(keys_directory, keyring, expected_sha256):
+    inventory = regular_file_inventory(Path(keys_directory))
+    expected_paths = {f"{record['keyId']}.pub" for record in (
+        keyring["activeKey"], *keyring["retiredKeys"])}
+    if (len(inventory) > 32
+            or {row["relativePath"] for row in inventory} != expected_paths
+            or any(row["bytes"] > 64 * 1024 for row in inventory)
+            or sum(row["bytes"] for row in inventory) > 1024 * 1024
+            or sha256_bytes(canonical_json_bytes(inventory)) != require_sha256(
+                expected_sha256, "Protected SDK public-key inventory digest")):
+        raise ValueError("SDK public keys differ from independent inventory approval")
+    return inventory
+
+
 def prepare_sdk_release_index(plan_path, repository_root, *, authority_file,
         authority_artifact_id, authority_artifact_sha256, expected_authority_sha256,
+        authority_producer, expected_authority_producer_sha256,
         authority_workflow_sha, authority_workflow_path, authority_job_name,
         trusted_workflow_sha, election_files, semantic_files, token, environ,
         keyring_path, keys_directory, expected_keyring_sha256,
-        repository, context, producer, **candidate_options):
+        expected_keys_inventory_sha256=None,
+        repository, context, producer, evidence_destination=None,
+        **candidate_options):
     """Return unsigned canonical bytes only while the full official replay is held.
 
     Protected callers must supply the authority, keyring, workflow and policy
@@ -98,12 +123,16 @@ def prepare_sdk_release_index(plan_path, repository_root, *, authority_file,
             (candidate_options.get("original_run_attempt") is None)):
         raise ValueError("SDK original run ID and attempt must be paired")
     keyring_bytes, signing, _ = _release_key(
-        keyring_path, keys_directory, expected_keyring_sha256)
+        keyring_path, keys_directory, expected_keyring_sha256,
+        expected_keys_inventory_sha256)
     from ci.sdk_campaign_pinned_election import held_pinned_sdk_campaign_authority
     from ci.sdk_campaign_catalog_producer import held_sdk_campaign_candidate_from_official_authority
 
     with held_pinned_sdk_campaign_authority(Path(authority_file),
             expected_authority_sha256) as authority:
+        if candidate_options.get("original_run_id") is None:
+            candidate_options["original_run_id"] = authority["completedCatalogPin"]["producer"]["runId"]
+            candidate_options["original_run_attempt"] = authority["completedCatalogPin"]["producer"]["runAttempt"]
         if candidate_options.get("original_run_id") is not None:
             original = authority["completedCatalogPin"]["producer"]
             if (type(candidate_options["original_run_id"]) is not int
@@ -115,12 +144,14 @@ def prepare_sdk_release_index(plan_path, repository_root, *, authority_file,
                 repository_root, authority_artifact_id=authority_artifact_id,
                 authority_artifact_sha256=authority_artifact_sha256,
                 expected_authority_sha256=expected_authority_sha256,
+                authority_producer=authority_producer,
+                expected_authority_producer_sha256=expected_authority_producer_sha256,
                 authority_workflow_sha=authority_workflow_sha,
                 authority_workflow_path=authority_workflow_path,
                 authority_job_name=authority_job_name,
                 trusted_workflow_sha=trusted_workflow_sha,
                 election_files=election_files, semantic_files=semantic_files,
-                token=token, environ=environ, **candidate_options) as (verified, _transport):
+                token=token, environ=environ, **candidate_options) as (verified, transport):
             receipts, _evidence = verified
             if not isinstance(receipts, Mapping) or set(receipts) != SDK_CAMPAIGN_INSTANCES:
                 raise ValueError("Official SDK replay did not verify all 61 originals")
@@ -151,10 +182,66 @@ def prepare_sdk_release_index(plan_path, repository_root, *, authority_file,
                 context=context, trust_domain="release", signing=signing,
                 producer=current, stable_history=None)
             prepared = canonical_json_bytes(index)
+            if evidence_destination is not None:
+                _stage_sdk_replay_evidence(evidence_destination, transport,
+                    authority_file, expected_authority_sha256, authority,
+                    election_files, semantic_files, keyring_path, keys_directory,
+                    expected_keyring_sha256, expected_keys_inventory_sha256)
         if read_regular_file_bytes(Path(keyring_path), max_bytes=64 * 1024,
                 reject_symlink_parents=True) != keyring_bytes:
             raise ValueError("SDK signing keyring changed during preparation")
     return prepared
+
+
+def _stage_sdk_replay_evidence(destination, transport, authority_file,
+        authority_sha256, authority, election_files, semantic_files,
+        keyring_path, keys_directory, expected_keyring_sha256,
+        expected_keys_inventory_sha256):
+    """Retain exact external authority/policy bytes while held originals are live."""
+    destination = Path(destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("SDK replay evidence destination already exists")
+    if type(transport) is not dict or not isinstance(transport.get("archivePath"), Path):
+        raise ValueError("SDK official authority transport lacks held archive bytes")
+    if expected_keys_inventory_sha256 is None:
+        raise ValueError("SDK replay evidence requires independent public-key inventory pin")
+    keyring_bytes, _, _ = _release_key(keyring_path, keys_directory,
+        expected_keyring_sha256, expected_keys_inventory_sha256)
+    keys_inventory = regular_file_inventory(Path(keys_directory))
+    with tempfile.TemporaryDirectory(prefix="sdk-replay-evidence-") as temporary:
+        staged = Path(temporary).resolve() / "evidence"
+        staged.mkdir()
+        archive = read_regular_file_bytes(transport["archivePath"],
+            max_bytes=2 * 1024 * 1024, reject_symlink_parents=True)
+        if sha256_bytes(archive) != transport["artifactSha256"]:
+            raise ValueError("SDK authority archive changed before evidence capture")
+        (staged / "authority-upload.zip").write_bytes(archive)
+        authority_bytes = read_regular_file_bytes(authority_file,
+            max_bytes=1024 * 1024, reject_symlink_parents=True)
+        if sha256_bytes(authority_bytes) != authority_sha256:
+            raise ValueError("SDK authority file changed before evidence capture")
+        (staged / "sdk-campaign-authority.json").write_bytes(authority_bytes)
+        (staged / "product-signing-keys.json").write_bytes(keyring_bytes)
+        snapshot_regular_tree(Path(keys_directory), staged / "keys")
+        for kind, selected in (("election", election_files),
+                               ("semantic", semantic_files)):
+            if set(selected) != set(_FAMILIES):
+                raise ValueError("SDK replay evidence lacks an exact policy family")
+            for family in _FAMILIES:
+                raw = read_regular_file_bytes(selected[family],
+                    max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+                if sha256_bytes(raw) != authority[kind + "Sha256"][family]:
+                    raise ValueError("SDK replay policy differs from protected authority")
+                (staged / f"{kind}-{family}.json").write_bytes(raw)
+        write_canonical_json(staged / "authority-transport.json", {
+            key: value for key, value in transport.items() if key != "archivePath"})
+        if (regular_file_inventory(Path(keys_directory)) != keys_inventory
+                or regular_file_inventory(staged / "keys") != keys_inventory
+                or read_regular_file_bytes(keyring_path, max_bytes=64 * 1024,
+                    reject_symlink_parents=True) != keyring_bytes):
+            raise ValueError("SDK release public-key bytes changed before evidence capture")
+        publish_regular_tree(staged, destination,
+            expected_inventory=regular_file_inventory(staged))
 
 
 def stage_prepared_sdk_release_index(prepared: bytes, destination: Path):
@@ -225,7 +312,9 @@ def sign_approved_sdk_release_index(prepared_index: Path, *, expected_index_sha2
 def verify_signed_sdk_release_index_against_official_replay(
         signed: SignedProductIndex, plan_path, repository_root, *,
         expected_index_sha256, expected_signature_sha256,
-        keyring_path, keys_directory, expected_keyring_sha256, **replay_options):
+        keyring_path, keys_directory, expected_keyring_sha256,
+        evidence_destination=None, expected_keys_inventory_sha256=None,
+        **replay_options):
     """Recheck signed bytes against the full official all-61 replay without a key.
 
     The three expected digests must come from protected caller approval, not
@@ -239,7 +328,8 @@ def verify_signed_sdk_release_index_against_official_replay(
     index_pin = require_sha256(expected_index_sha256, "Protected SDK index digest")
     signature_pin = require_sha256(expected_signature_sha256, "Protected SDK signature digest")
     keyring_bytes, _, _ = _release_key(
-        keyring_path, keys_directory, expected_keyring_sha256)
+        keyring_path, keys_directory, expected_keyring_sha256,
+        expected_keys_inventory_sha256)
     index_bytes = read_regular_file_bytes(signed.manifest, max_bytes=16 * 1024 * 1024,
         reject_symlink_parents=True)
     signature_bytes = read_regular_file_bytes(signed.signature, max_bytes=1024 * 1024,
@@ -252,7 +342,9 @@ def verify_signed_sdk_release_index_against_official_replay(
         raise ValueError("Signed SDK index changed during signature verification")
     replayed = prepare_sdk_release_index(plan_path, repository_root,
         keyring_path=keyring_path, keys_directory=keys_directory,
-        expected_keyring_sha256=expected_keyring_sha256, **replay_options)
+        expected_keyring_sha256=expected_keyring_sha256,
+        expected_keys_inventory_sha256=expected_keys_inventory_sha256,
+        evidence_destination=evidence_destination, **replay_options)
     if replayed != index_bytes:
         raise ValueError("Signed SDK index differs from full official campaign replay")
     if (read_regular_file_bytes(signed.manifest, max_bytes=16 * 1024 * 1024,
@@ -284,14 +376,27 @@ def _optional_pinned_file(path, digest, label):
     return raw
 
 
-def _prepare_or_verify_cli(args):
+@contextmanager
+def held_sdk_release_replay_options(args):
+    """Hold the existing protected CLI controls through one official replay."""
     require_no_signing_secret(os.environ)
     authority_pin = _approved_environment_digest(_APPROVED_AUTHORITY)
     keyring_pin = _approved_environment_digest(_APPROVED_KEYRING)
-    index_pin = _approved_environment_digest(_APPROVED_INDEX) if args.mode == "verify" else None
-    signature_pin = _approved_environment_digest(_APPROVED_SIGNATURE) if args.mode == "verify" else None
+    keys_inventory_pin = (None if args.expected_keys_inventory_sha256 is None
+        else _approved_environment_digest(_APPROVED_KEYS_INVENTORY))
+    if (keys_inventory_pin is not None and
+            require_sha256(args.expected_keys_inventory_sha256,
+                "Protected SDK public-key inventory digest") != keys_inventory_pin):
+        raise ValueError("SDK public-key inventory differs from protected approval")
     from ci.sdk_campaign_pinned_election import held_pinned_sdk_campaign_authority
     from sdk_metadata_policy import metadata_admission_options
+    authority_producer_bytes = read_regular_file_bytes(args.authority_producer,
+        max_bytes=64 * 1024, reject_symlink_parents=True)
+    authority_producer_pin = require_sha256(
+        args.expected_authority_producer_sha256,
+        "Protected SDK authority producer digest")
+    if sha256_bytes(authority_producer_bytes) != authority_producer_pin:
+        raise ValueError("SDK authority producer differs from independent protected pin")
 
     controlled = {}
     for name, approved_name in _CONTROL_APPROVAL_ENV.items():
@@ -326,6 +431,8 @@ def _prepare_or_verify_cli(args):
         with metadata_admission_options(metadata) as admissions:
             options = dict(
                 authority_file=args.authority_file,
+                authority_producer=load_canonical_json_bytes(authority_producer_bytes),
+                expected_authority_producer_sha256=authority_producer_pin,
                 authority_artifact_id=args.authority_artifact_id,
                 authority_artifact_sha256=args.authority_artifact_sha256,
                 expected_authority_sha256=authority_pin,
@@ -340,6 +447,7 @@ def _prepare_or_verify_cli(args):
                 token=os.environ["GITHUB_TOKEN"], environ=os.environ,
                 keyring_path=args.keyring_path, keys_directory=args.keys_directory,
                 expected_keyring_sha256=keyring_pin,
+                expected_keys_inventory_sha256=keys_inventory_pin,
                 repository=producer["repository"], context=context, producer=producer,
                 state_artifact_id=args.state_artifact_id,
                 state_artifact_sha256=args.state_artifact_sha256,
@@ -352,23 +460,36 @@ def _prepare_or_verify_cli(args):
                 sdk_apple_validation_policy=(None if controlled["sdk_apple_validation_policy"] is None
                     else load_canonical_json_bytes(controlled["sdk_apple_validation_policy"])),
                 **admissions)
-            if args.mode == "verify":
-                _, prepared = verify_signed_sdk_release_index_against_official_replay(
-                    SignedProductIndex(args.signed_index, args.signature),
-                    args.plan, args.repository_root,
-                    expected_index_sha256=index_pin,
-                    expected_signature_sha256=signature_pin, **options)
-            else:
-                prepared = prepare_sdk_release_index(args.plan, args.repository_root,
-                    **options)
-            for name, raw in controlled.items():
-                if raw is not None and read_regular_file_bytes(getattr(args, name),
-                        max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != raw:
-                    raise ValueError(f"{name} changed during SDK release preparation")
+            try:
+                yield options
+            finally:
+                if read_regular_file_bytes(args.authority_producer,
+                        max_bytes=64 * 1024, reject_symlink_parents=True) != authority_producer_bytes:
+                    raise ValueError("SDK authority producer changed during replay")
+                for name, raw in controlled.items():
+                    if raw is not None and read_regular_file_bytes(getattr(args, name),
+                            max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != raw:
+                        raise ValueError(f"{name} changed during SDK release preparation")
+
+
+def _prepare_or_verify_cli(args):
+    require_no_signing_secret(os.environ)
+    index_pin = _approved_environment_digest(_APPROVED_INDEX) if args.mode == "verify" else None
+    signature_pin = _approved_environment_digest(_APPROVED_SIGNATURE) if args.mode == "verify" else None
+    with held_sdk_release_replay_options(args) as options:
+        if args.mode == "verify":
+            _, prepared = verify_signed_sdk_release_index_against_official_replay(
+                SignedProductIndex(args.signed_index, args.signature),
+                args.plan, args.repository_root,
+                expected_index_sha256=index_pin,
+                expected_signature_sha256=signature_pin, **options)
+        else:
+            prepared = prepare_sdk_release_index(args.plan, args.repository_root,
+                **options)
         if args.mode == "verify":
             return {"verifiedIndexSha256": index_pin,
                     "verifiedSignatureSha256": signature_pin}
-        result = stage_prepared_sdk_release_index(prepared, args.destination)
+    result = stage_prepared_sdk_release_index(prepared, args.destination)
     return {"preparedIndex": str(result)}
 
 
@@ -417,35 +538,43 @@ def _sign_cli(args):
             "signature": str(args.destination / "product-index.sig")}
 
 
+def add_sdk_release_replay_arguments(command, *, require_keys_inventory=False):
+    """Register the one shared protected SDK replay surface for no-secret CLIs."""
+    for name in ("plan", "repository-root", "authority-file", "keyring-path",
+                 "keys-directory", "authority-producer"):
+        command.add_argument("--" + name, type=Path, required=True)
+    command.add_argument("--expected-authority-producer-sha256", required=True)
+    command.add_argument("--expected-keys-inventory-sha256",
+        required=require_keys_inventory)
+    for name in ("authority-artifact-id", "state-artifact-id", "state-wave"):
+        command.add_argument("--" + name, type=int, required=True)
+    command.add_argument("--sdk-state-wave", type=int)
+    command.add_argument("--original-run-id", type=int)
+    command.add_argument("--original-run-attempt", type=int)
+    for name in ("authority-artifact-sha256", "authority-workflow-sha",
+                 "authority-workflow-path", "authority-job-name", "trusted-workflow-sha",
+                 "state-artifact-sha256"):
+        command.add_argument("--" + name, required=True)
+    for family in _FAMILIES:
+        for kind in ("election", "semantic"):
+            command.add_argument(f"--{kind}-{family}", type=Path, required=True)
+    for name in ("sdk-validation-tooling", "sdk-apple-validation-policy",
+                 "sdk-facade-metadata-policy", "sdk-android-metadata-policy",
+                 "custody-catalogs"):
+        command.add_argument("--" + name, type=Path)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     modes = parser.add_subparsers(dest="mode", required=True)
     for mode in ("prepare", "verify"):
         command = modes.add_parser(mode, allow_abbrev=False)
-        for name in ("plan", "repository-root", "authority-file", "keyring-path",
-                     "keys-directory"):
-            command.add_argument("--" + name, type=Path, required=True)
+        add_sdk_release_replay_arguments(command)
         if mode == "prepare":
             command.add_argument("--destination", type=Path, required=True)
         else:
             for name in ("signed-index", "signature"):
                 command.add_argument("--" + name, type=Path, required=True)
-        for name in ("authority-artifact-id", "state-artifact-id", "state-wave"):
-            command.add_argument("--" + name, type=int, required=True)
-        command.add_argument("--sdk-state-wave", type=int)
-        command.add_argument("--original-run-id", type=int)
-        command.add_argument("--original-run-attempt", type=int)
-        for name in ("authority-artifact-sha256", "authority-workflow-sha",
-                     "authority-workflow-path", "authority-job-name", "trusted-workflow-sha",
-                     "state-artifact-sha256"):
-            command.add_argument("--" + name, required=True)
-        for family in _FAMILIES:
-            for kind in ("election", "semantic"):
-                command.add_argument(f"--{kind}-{family}", type=Path, required=True)
-        for name in ("sdk-validation-tooling", "sdk-apple-validation-policy",
-                     "sdk-facade-metadata-policy", "sdk-android-metadata-policy",
-                     "custody-catalogs"):
-            command.add_argument("--" + name, type=Path)
     sign = modes.add_parser("sign", allow_abbrev=False)
     for name in ("prepared-index", "destination", "keyring-path", "keys-directory"):
         sign.add_argument("--" + name, type=Path, required=True)

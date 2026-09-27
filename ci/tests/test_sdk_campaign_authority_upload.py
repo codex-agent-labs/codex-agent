@@ -9,7 +9,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from ci import sdk_campaign_authority_upload as locator
 from ci.sdk_campaign_catalog_producer import held_sdk_campaign_candidate_from_official_authority
-from products.inventory import sha256_bytes, sha256_file
+from products.inventory import canonical_json_bytes, sha256_bytes, sha256_file
 
 
 class SdkCampaignAuthorityUploadTest(TestCase):
@@ -27,10 +27,15 @@ class SdkCampaignAuthorityUploadTest(TestCase):
             "workflowPath": ".github/workflows/ci.yml", "commit": "a" * 40,
             "tree": "b" * 40, "event": "pull_request", "runId": 41,
             "runAttempt": 2, "pullRequest": 31}
+        self.dispatch = {**self.producer, "commit": "d" * 40,
+            "tree": "e" * 40, "event": "workflow_dispatch", "runId": 88,
+            "runAttempt": 1, "pullRequest": None}
 
     def hold(self, *, digest=None, authorized=True, archive=None,
-             original_run_id=None, original_run_attempt=None):
+             original_run_id=41, original_run_attempt=2,
+             dispatch=None, dispatch_pin=None):
         calls = []
+        dispatch = self.dispatch if dispatch is None else dispatch
 
         def download(artifact_id, transport_digest, name, producer, _run, _token,
                 *, destination, max_bytes):
@@ -44,7 +49,9 @@ class SdkCampaignAuthorityUploadTest(TestCase):
               patch.object(locator.products, "_consumer",
                 return_value={"producer": self.producer}) as consumer,
               patch.object(locator.products, "_observe_ci_producer_jobs",
-                return_value=[{"run": {"head_sha": "a" * 40}}]) as observed,
+                return_value=[{"run": {"head_sha": "d" * 40,
+                                       "status": "completed", "conclusion": "success"},
+                               "jobs": []}]) as observed,
               patch.object(locator.products, "_download_contract_ci_upload",
                 side_effect=download),
               patch.object(locator.products, "_require_artifact_job_window") as window):
@@ -53,13 +60,17 @@ class SdkCampaignAuthorityUploadTest(TestCase):
                     artifact_sha256=sha256_file(self.archive),
                     expected_authority_sha256=digest or sha256_bytes(self.authority),
                     trusted_workflow_sha="c" * 40,
-                    trusted_workflow_path=".github/workflows/product-validation.yml",
-                    trusted_job_name="product-validation / sdk-authority-upload",
+                    trusted_workflow_path=locator._WORKFLOW,
+                    trusted_job_name=locator._JOB,
+                    authority_producer=dispatch,
+                    expected_authority_producer_sha256=(dispatch_pin or
+                        sha256_bytes(canonical_json_bytes(dispatch))),
                     token="local-test-token", environ={},
                     original_run_id=original_run_id,
                     original_run_attempt=original_run_attempt) as (path, evidence):
                 self.assertEqual(self.authority, path.read_bytes())
-                self.assertEqual(self.producer, evidence["producer"])
+                self.assertEqual(self.producer, evidence["originalProducer"])
+                self.assertEqual(dispatch, evidence["authorityProducer"])
             self.assertEqual(original_run_id, consumer.call_args.kwargs["original_run_id"])
             self.assertEqual(original_run_attempt,
                 consumer.call_args.kwargs["original_run_attempt"])
@@ -69,12 +80,24 @@ class SdkCampaignAuthorityUploadTest(TestCase):
         calls, observed, window = self.hold()
         self.assertEqual(1, len(calls))
         self.assertEqual("codex-agent-sdk-campaign-authority-" + "b" * 40 +
-                         "-attempt-2", calls[0][2])
+                         "-attestation-88-attempt-1", calls[0][2])
+        self.assertEqual(self.dispatch, calls[0][3])
+        self.assertEqual(locator._WORKFLOW,
+            observed.call_args.kwargs["trusted_workflows_by_phase"]["authority"]["path"])
+        self.assertIsNone(observed.call_args.kwargs["dispatch_authorization_job"])
         observed.assert_called_once()
         window.assert_called_once()
 
     def test_later_run_observes_explicit_original_authority_producer(self):
         self.hold(original_run_id=41, original_run_attempt=2)
+
+    def test_dispatch_must_be_distinct_and_independently_pinned(self):
+        with self.assertRaisesRegex(ValueError, "independent producer pin"):
+            self.hold(dispatch_pin=sha256_bytes(b"wrong"))
+        same = {**self.producer, "event": "workflow_dispatch",
+                "pullRequest": None}
+        with self.assertRaisesRegex(ValueError, "distinct original PR"):
+            self.hold(dispatch=same)
 
     def test_wrong_authority_digest_and_extra_member_reject(self):
         with self.assertRaisesRegex(ValueError, "independently pinned bytes"):
@@ -119,8 +142,11 @@ class SdkCampaignAuthorityUploadTest(TestCase):
                     authority_artifact_sha256=sha256_file(self.archive),
                     expected_authority_sha256=sha256_bytes(self.authority),
                     authority_workflow_sha="c" * 40,
-                    authority_workflow_path=".github/workflows/product-validation.yml",
-                    authority_job_name="product-validation / sdk-authority-upload",
+                    authority_workflow_path=locator._WORKFLOW,
+                    authority_job_name=locator._JOB,
+                    authority_producer=self.dispatch,
+                    expected_authority_producer_sha256=sha256_bytes(
+                        canonical_json_bytes(self.dispatch)),
                     trusted_workflow_sha="c" * 40,
                     election_files={}, semantic_files={}, token="local-test-token",
                     environ={}, original_run_id=41,
