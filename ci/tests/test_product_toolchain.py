@@ -27,6 +27,7 @@ from ci.products.toolchain import (
     validate_verification_record,
     verify_capture,
     _konan_dependencies,
+    _tree_digest,
     _supervisor_observation,
     _verification_record,
     verify_toolchain_profile,
@@ -494,6 +495,18 @@ class ProductToolchainTest(unittest.TestCase):
             self.skipTest("Directory symlinks are unavailable on this host")
         with self.assertRaisesRegex(ValueError, "dependency root.*unsafe"):
             _konan_dependencies({}, "linux_x64", "linux_x64", link)
+
+    def test_konan_dependency_tree_rejects_nested_reparse_point(self) -> None:
+        root = self.root / "dependencies"
+        root.mkdir()
+        junction = root / "junction"
+        junction.mkdir()
+        (junction / "nested").write_bytes(b"outside")
+        junction_inode = junction.stat().st_ino
+        with mock.patch("ci.products.toolchain._is_reparse_point",
+                        side_effect=lambda metadata: metadata.st_ino == junction_inode):
+            with self.assertRaisesRegex(ValueError, "unsafe reparse point: junction"):
+                _tree_digest(root, "Kotlin/Native test")
 
     def test_observer_rejects_forged_or_unsupported_host_before_tool_probe(self) -> None:
         for actual_os, actual_arch in (("Darwin", "x86_64"), ("Linux", "aarch64"), ("Linux", "mips")):

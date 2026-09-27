@@ -16,6 +16,7 @@ from typing import Any
 import xml.etree.ElementTree as ElementTree
 
 from .inventory import (
+    _is_reparse_point,
     canonical_json_bytes,
     git_regular_blob_bytes,
     load_canonical_json_bytes,
@@ -360,7 +361,7 @@ def _sha256_file(path: Path, label: str) -> str:
         before = path.lstat()
     except OSError as error:
         raise ValueError(f"{label} is missing or unsafe") from error
-    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+    if stat.S_ISLNK(before.st_mode) or _is_reparse_point(before) or not stat.S_ISREG(before.st_mode):
         raise ValueError(f"{label} is missing or unsafe")
     digest = hashlib.sha256()
     try:
@@ -454,13 +455,14 @@ def _expand_property(properties: Mapping[str, str], key: str, seen: frozenset[st
 
 
 def _tree_digest(path: Path, label: str) -> str:
-    if not path.is_dir() or path.is_symlink():
-        raise ValueError(f"{label} dependency is missing or unsafe")
+    require_regular_directory(path, f"{label} dependency")
     root = path.resolve()
     records: list[dict[str, Any]] = []
-    for candidate in sorted(path.rglob("*"), key=lambda item: item.relative_to(path).as_posix()):
+    for candidate in path.rglob("*"):
         relative = candidate.relative_to(path).as_posix()
         metadata = candidate.lstat()
+        if _is_reparse_point(metadata):
+            raise ValueError(f"{label} contains an unsafe reparse point: {relative}")
         if stat.S_ISDIR(metadata.st_mode):
             continue
         if stat.S_ISLNK(metadata.st_mode):
@@ -479,6 +481,7 @@ def _tree_digest(path: Path, label: str) -> str:
             raise ValueError(f"{label} contains an unsupported entry: {relative}")
     if not records:
         raise ValueError(f"{label} dependency is empty")
+    records.sort(key=lambda record: record["relativePath"])
     return sha256_bytes(canonical_json_bytes(records))
 
 
