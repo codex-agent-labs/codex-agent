@@ -25,6 +25,10 @@ on:
         required: true
         type: string
     outputs:
+      phase10OutputArtifactId:
+        value: ${{ jobs.upload.outputs.artifact_id }}
+      phase10OutputArtifactSha256:
+        value: ${{ jobs.upload.outputs.artifact_sha256 }}
       recordArtifactId:
         value: ${{ jobs.record.outputs.artifact_id }}
       recordArtifactSha256:
