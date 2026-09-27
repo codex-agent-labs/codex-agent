@@ -98,6 +98,39 @@ def materialize_failed_sdk_partial_catalog(artifact, destination, *, producer,
         repository, pull_request, public_key, public_key_sha256,
         trusted_workflow_sha, trusted_workflow_path, trusted_job_name, token):
     """Admit only a signed partial cache from a failed run's successful catalog job."""
+    key = read_regular_file_bytes(public_key, max_bytes=64 * 1024, reject_symlink_parents=True)
+    if sha256_bytes(key) != require_sha256(public_key_sha256, "Partial SDK catalog key digest"):
+        raise ValueError("Partial SDK catalog key differs from independent digest")
+    return _materialize_failed_sdk_partial_catalog(artifact, destination,
+        producer=producer, repository=repository, pull_request=pull_request,
+        trusted_workflow_sha=trusted_workflow_sha,
+        trusted_workflow_path=trusted_workflow_path, trusted_job_name=trusted_job_name,
+        token=token, pinned_key=key, public_key=Path(public_key))
+
+
+def inspect_failed_sdk_partial_catalog_for_custody(artifact, destination, *, producer,
+        repository, pull_request, expected_artifact_sha256,
+        trusted_workflow_sha, trusted_workflow_path, trusted_job_name, token):
+    """Inspect official failed catalog bytes before a protected signer pins its key.
+
+    This is *not* a reusable-catalog trust path. It requires a caller-pinned
+    official upload digest; only an external protected signature can turn the
+    observed key into future-run policy.
+    """
+    require_no_signing_secret(os.environ)
+    if require_sha256(expected_artifact_sha256, "Protected catalog upload digest") != \
+            require_sha256(artifact.get("digest"), "Official catalog upload digest"):
+        raise ValueError("Protected catalog differs from independently selected upload")
+    return _materialize_failed_sdk_partial_catalog(artifact, destination,
+        producer=producer, repository=repository, pull_request=pull_request,
+        trusted_workflow_sha=trusted_workflow_sha,
+        trusted_workflow_path=trusted_workflow_path, trusted_job_name=trusted_job_name,
+        token=token, pinned_key=None, public_key=None)
+
+
+def _materialize_failed_sdk_partial_catalog(artifact, destination, *, producer,
+        repository, pull_request, trusted_workflow_sha, trusted_workflow_path,
+        trusted_job_name, token, pinned_key, public_key):
     producer = validate_producer(producer)
     name = require_failed_sdk_partial_catalog_route(producer, artifact.get("name"),
         trusted_workflow_path, trusted_job_name)
@@ -115,9 +148,6 @@ def materialize_failed_sdk_partial_catalog(artifact, destination, *, producer,
     size = require_integer(artifact.get("size_in_bytes"), "Partial SDK catalog size", 1)
     if size > products._CATALOG_LIMIT:
         raise ValueError("Partial SDK catalog exceeds transport limit")
-    key = read_regular_file_bytes(public_key, max_bytes=64 * 1024, reject_symlink_parents=True)
-    if sha256_bytes(key) != require_sha256(public_key_sha256, "Partial SDK catalog key digest"):
-        raise ValueError("Partial SDK catalog key differs from independent digest")
     catalog_root = destination / "catalogs/same-pr" / str(artifact_id)
     catalog_root.mkdir(parents=True)
     archive = catalog_root / "transport.zip"
@@ -130,9 +160,12 @@ def materialize_failed_sdk_partial_catalog(artifact, destination, *, producer,
     products.safe_extract(archive, extracted)
     if regular_file_inventory(extracted) != zipped:
         raise ValueError("Partial SDK catalog extraction differs from official upload")
-    if read_regular_file_bytes(extracted / "public-key.pub", max_bytes=64 * 1024,
-            reject_symlink_parents=True) != key:
+    observed_key = read_regular_file_bytes(extracted / "public-key.pub", max_bytes=64 * 1024,
+        reject_symlink_parents=True)
+    if pinned_key is not None and observed_key != pinned_key:
         raise ValueError("Partial SDK catalog embedded key differs from independent policy")
+    if public_key is None:
+        public_key = extracted / "public-key.pub"
     index, _ = verify_signed_product_index(SignedProductIndex(
         extracted / "product-index.json", extracted / "product-index.sig"), Path(public_key))
     instances = [PhaseInstanceId(*(entry[field] for field in
