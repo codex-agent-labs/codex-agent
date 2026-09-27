@@ -496,3 +496,32 @@ def held_sdk_campaign_candidate_from_authority(plan_path, *, authority_file,
                 completed_catalog_pin=authority["completedCatalogPin"],
                 **candidate_options) as verified:
             yield verified
+
+
+@contextmanager
+def held_sdk_campaign_candidate_from_official_authority(plan_path, repository_root,
+        *, authority_artifact_id, authority_artifact_sha256,
+        expected_authority_sha256, authority_workflow_sha,
+        authority_workflow_path, authority_job_name, trusted_workflow_sha,
+        election_files, semantic_files, token, environ, **candidate_options):
+    """Replay from one officially observed authority upload; never sign here."""
+    if {"repository_root", "trusted_workflow_sha", "token", "environ"} & set(candidate_options):
+        raise ValueError("Official SDK authority caller cannot replace protected context")
+    from ci.sdk_campaign_authority_upload import held_official_sdk_campaign_authority
+    with held_official_sdk_campaign_authority(plan_path, repository_root,
+            artifact_id=authority_artifact_id,
+            artifact_sha256=authority_artifact_sha256,
+            expected_authority_sha256=expected_authority_sha256,
+            trusted_workflow_sha=authority_workflow_sha,
+            trusted_workflow_path=authority_workflow_path,
+            trusted_job_name=authority_job_name, token=token,
+            environ=environ) as (authority_file, transport):
+        with held_sdk_campaign_candidate_from_authority(plan_path,
+                authority_file=authority_file,
+                expected_authority_sha256=expected_authority_sha256,
+                election_files=election_files, semantic_files=semantic_files,
+                repository_root=repository_root,
+                trusted_workflow_sha=trusted_workflow_sha,
+                token=token, environ=environ,
+                **candidate_options) as verified:
+            yield verified, transport

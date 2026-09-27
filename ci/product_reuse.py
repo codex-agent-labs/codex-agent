@@ -507,7 +507,7 @@ def _require_artifact_job_window(observation, job_name, artifact):
 def _download_contract_ci_upload(
     artifact_id: int, artifact_sha256: str, expected_name: str,
     producer: Mapping[str, Any], observed_run: Mapping[str, Any], token: str,
-    *, destination: Path | None = None,
+    *, destination: Path | None = None, max_bytes: int | None = None,
 ) -> tuple[dict[str, Any], bytes | Path]:
     require_integer(artifact_id, "Contract upload artifact ID", 1)
     require_sha256(artifact_sha256, "Contract upload artifact digest")
@@ -525,10 +525,15 @@ def _download_contract_ci_upload(
             or transport.get("head_sha") != observed_run["head_sha"]):
         raise ValueError("Contract uploaded artifact differs from the caller-bound transport identity")
     size = require_integer(artifact.get("size_in_bytes"), "Contract upload transport bytes", 1)
-    if size > (_CATALOG_LIMIT if destination is not None else _INLINE_UPLOAD_LIMIT):
+    limit = _CATALOG_LIMIT if destination is not None else _INLINE_UPLOAD_LIMIT
+    if max_bytes is not None:
+        if type(max_bytes) is not int or max_bytes < 1:
+            raise ValueError("Contract upload transport limit must be positive")
+        limit = min(limit, max_bytes)
+    if size > limit:
         raise ValueError("Contract uploaded artifact exceeds the transport limit")
     if destination is not None:
-        download_artifact_to_file(artifact, token, destination, max_bytes=_CATALOG_LIMIT)
+        download_artifact_to_file(artifact, token, destination, max_bytes=limit)
         if destination.stat().st_size != size or sha256_file(destination) != artifact_sha256:
             raise ValueError("Contract uploaded artifact bytes differ from the caller-bound identity")
         return artifact, destination
