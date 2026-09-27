@@ -16,9 +16,15 @@ runtime identifiers:
 - `win-x64`
 
 Inside the NuGet package those files are under `runtimes/<rid>/native/`.
-`CodexNativeLibrary.Configure(path)` overrides application-base and packaged
-RID resolution before first use; there is no environment or system fallback.
-The loader requires compatible C ABI `1.13.0`.
+`CodexNativeLibrary.Configure(path)` takes an absolute, regular, symlink-free
+library path and overrides application-base and packaged RID resolution before
+first use. The embedded library is checked against the
+packaged SDK compatibility declaration. An explicit override must also have a
+`<library-path>.evidence/` directory with a root-signed release-key delegation,
+release keyring, and release-signed library authorization. The loader verifies
+that evidence against the SDK's packaged trust root and checks the library
+digest and runtime identity before use; a bare library path fails. There is no
+environment or system fallback. The loader requires C ABI major 1, minor 13 or later.
 
 The current mechanically checked surface contains 556 exact capabilities: 110
 ordinary enum entries, 46 MCP immutable-value capabilities, a complementary

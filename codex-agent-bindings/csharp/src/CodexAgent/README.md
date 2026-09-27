@@ -9,9 +9,15 @@ the release `CodexAgent.<sdkVersion>.nupkg` as a local NuGet source. The package
 Supported runtime identifiers are `osx-arm64`, `osx-x64`, `linux-arm64`,
 `linux-x64`, and `win-x64`.
 Call `CodexNativeLibrary.Configure(path)` once before first use to select an
-explicit verified library. Otherwise resolution checks the application base
-directory and then `runtimes/<rid>/native/`; there is no environment-variable
-or system-loader fallback. The loader requires compatible C ABI `1.13.0`.
+absolute, regular, symlink-free library path. This requires a
+`<library-path>.evidence/` directory with a
+root-signed release-key delegation, release keyring, and release-signed library
+authorization; the loader checks those against the SDK's packaged trust root,
+then verifies the library digest and runtime identity. Otherwise resolution
+checks the application base directory and then `runtimes/<rid>/native/`, with
+the embedded library checked against the packaged compatibility declaration.
+There is no environment-variable or system-loader fallback. The loader requires
+C ABI major 1, minor 13 or later.
 
 ```csharp
 await using var host = CodexHost.Create(new CodexHostOptions(

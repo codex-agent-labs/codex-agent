@@ -31,12 +31,21 @@ asyncio.run(main())
 The same code is compiled and executed as the
 [lifecycle consumer example](https://github.com/codex-agent-labs/codex-agent/blob/main/codex-agent-bindings/python/consumer/lifecycle_example.py).
 
-Set `CODEX_AGENT_LIBRARY` to the exact verified C SDK library, pass
-`library_path=` to `CodexHost`, or install a platform wheel containing the
-library under `codex_agent/native/<classifier>/`. Supported classifiers are
-`macos-arm64`, `macos-x64`, `linux-arm64`, `linux-x64`, and `windows-x64`.
-That is the complete resolution order; there is no executable-adjacent or
-system-loader fallback. The loader requires compatible C ABI `1.13.0` before
+By default, a platform wheel loads its embedded library from
+`codex_agent/native/<classifier>/` and checks its digest and runtime identity
+against the packaged SDK compatibility declaration. To override it, pass an
+absolute, regular, symlink-free path as `library_path=` to `CodexHost` or set
+`CODEX_AGENT_LIBRARY` to such a path; an explicit path
+takes precedence over the environment variable. An override also needs a
+`<library-path>.evidence/` directory containing a root-signed release-key
+delegation, release keyring, and release-signed library authorization. The
+loader verifies that evidence against the SDK's packaged trust root and checks
+the library digest and runtime identity before use; a bare library path fails.
+Supported classifiers are `macos-arm64`, `macos-x64`, `linux-arm64`,
+`linux-x64`, and `windows-x64`. Resolution uses only the explicit path, then
+the environment variable, then the embedded library; there is no
+executable-adjacent or system-loader fallback. The loader requires C ABI
+major 1, minor 13 or later before
 it creates a context.
 
 Canonical closed value sets are exported as typed `IntEnum` classes from
