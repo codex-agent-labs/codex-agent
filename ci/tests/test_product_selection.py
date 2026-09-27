@@ -295,6 +295,23 @@ class ProductSelectionTest(unittest.TestCase):
                 for instance in PHASE_INSTANCE_IDS:
                     self.assertEqual((), phase_inventory_paths([path], instance))
 
+    def test_protected_contract_and_sdk_custody_controls_do_not_change_product_bytes(self):
+        contract_metadata = {PhaseInstanceId("contract", "contract", "metadata", "common")}
+        sdk = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "sdk"}
+        for path, expected in (
+                (".github/workflows/contract-phase10-maven.yml", contract_metadata),
+                (".github/workflows/contract-phase10-output-record.yml", contract_metadata),
+                (".github/workflows/sdk-failed-catalog-custody.yml", sdk),
+                ("ci/sdk_catalog_custody.py", sdk),
+                ("ci/sdk_catalog_custody_locator.py", sdk),
+                ("ci/sdk_catalog_custody_signer.py", sdk)):
+            with self.subTest(path=path):
+                result = classify_paths([path])
+                self.assertEqual(expected, identities(result))
+                self.assertEqual((), result.unknown_paths)
+                for instance in PHASE_INSTANCE_IDS:
+                    self.assertEqual((), phase_inventory_paths([path], instance))
+
     def test_platform_metadata_producers_own_only_their_metadata_phase(self) -> None:
         for path, component, target in (
             ("ci/products/sdk_android_metadata.py", "sdk-android", "android"),

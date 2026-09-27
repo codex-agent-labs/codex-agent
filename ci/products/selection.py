@@ -275,6 +275,9 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_campaign_original_locator.py",
     "ci/sdk_campaign_original_worker.py",
     "ci/sdk_campaign_reused_original.py",
+    "ci/sdk_catalog_custody.py",
+    "ci/sdk_catalog_custody_locator.py",
+    "ci/sdk_catalog_custody_signer.py",
     "ci/sdk_nested_wave_locator.py",
     "ci/sdk_nested_partial_state.py",
     "ci/sdk_nested_wave_replay.py",
@@ -644,6 +647,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
                 "ci/sdk_campaign_partial_catalog_caller.py",
                 "ci/sdk_campaign_reused_original.py",
                 "ci/sdk_campaign_original_locator.py", "ci/sdk_campaign_original_worker.py",
+                "ci/sdk_catalog_custody.py", "ci/sdk_catalog_custody_locator.py",
+                "ci/sdk_catalog_custody_signer.py",
                 "ci/sdk_nested_wave_locator.py", "ci/sdk_nested_partial_state.py",
                 "ci/sdk_nested_wave_replay.py",
                 "ci/sdk_partial_state.py",
@@ -820,6 +825,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         ".github/workflows/runtime-toolchain-capture.yml": _runtime(NATIVE_TARGETS),
         ".github/workflows/product-validation.yml": set(ALL_INSTANCES),
         ".github/workflows/contract-validation.yml": _contract(),
+        ".github/workflows/contract-phase10-maven.yml": _from_phase("contract", "contract", "metadata"),
+        ".github/workflows/contract-phase10-output-record.yml": _from_phase("contract", "contract", "metadata"),
         ".github/workflows/sdk-core-binary-validation.yml": _from_phase("sdk", "sdk-core", "binary"),
         ".github/workflows/sdk-core-package-validation.yml": _from_phase("sdk", "sdk-core", "package"),
         ".github/workflows/sdk-core-validation.yml": _from_phase("sdk", "sdk-core", "validation"),
@@ -829,6 +836,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         ".github/workflows/sdk-android-validation.yml": _from_phase("sdk", "sdk-android", "validation"),
         ".github/workflows/sdk-android-metadata-validation.yml": _from_phase("sdk", "sdk-android", "metadata"),
         ".github/workflows/sdk-validation.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
+        ".github/workflows/sdk-failed-catalog-custody.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/sdk-binding-parity.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/sdk-consumer-validation.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/promote.yml": set(ALL_METADATA),
@@ -871,6 +879,10 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _is_control_only(path: str) -> bool:
+    if path in {".github/workflows/contract-phase10-maven.yml",
+                ".github/workflows/contract-phase10-output-record.yml",
+                ".github/workflows/sdk-failed-catalog-custody.yml"}:
+        return True  # Protected evidence carriers do not define product bytes.
     if path in {"ci/sdk_maven_evidence.py", "ci/sdk_metadata_evidence.py", "ci/sdk_metadata_policy.py",
                 "ci/sdk_facade_metadata_policy.py", "ci/sdk_android_metadata_policy.py",
                 "ci/sdk_facade_metadata_selection.py", "ci/sdk_android_metadata_selection.py",
