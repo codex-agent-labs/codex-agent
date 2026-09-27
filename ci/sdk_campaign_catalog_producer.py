@@ -446,7 +446,7 @@ def held_sdk_campaign_candidate_from_election(plan_path, *, policy_files,
 @contextmanager
 def held_sdk_campaign_candidate_from_policies(plan_path, *, election_files,
         expected_election_sha256, semantic_files, expected_semantic_sha256,
-        **candidate_options):
+        expected_sdk_version=None, **candidate_options):
     """Pin exact original elections and typed semantics before observation."""
     if {"fresh_selections", "reused_selections", "semantic_controls"} & set(candidate_options):
         raise ValueError("Pinned SDK campaign policies cannot be replaced by caller controls")
@@ -456,10 +456,43 @@ def held_sdk_campaign_candidate_from_policies(plan_path, *, election_files,
     with held_pinned_sdk_campaign_election(election_files, expected_election_sha256) as (
             fresh, reused), held_pinned_sdk_campaign_semantics(
             semantic_files, expected_semantic_sha256) as controls:
+        if (expected_sdk_version is not None and
+                {request["expected_product_version"] for request in
+                 (*fresh.values(), *reused.values())} != {expected_sdk_version}):
+            raise ValueError("SDK campaign election differs from pinned SDK version")
         semantics = dict(controls)
         semantics["android_control"] = {**controls["android_control"],
             "token": candidate_options["token"], "environ": candidate_options["environ"]}
         with held_sdk_campaign_candidate(plan_path, fresh_selections=fresh,
                 reused_selections=reused, semantic_controls=semantics,
+                **candidate_options) as verified:
+            yield verified
+
+
+@contextmanager
+def held_sdk_campaign_candidate_from_authority(plan_path, *, authority_file,
+        expected_authority_sha256, election_files, semantic_files,
+        **candidate_options):
+    """Bind the six policy digests, 61 artifact paths and catalog before observation.
+
+    The authority digest must be independently protected. This no-secret
+    replay neither authenticates that external approval nor signs an index.
+    """
+    forbidden = {"expected_election_sha256", "expected_semantic_sha256",
+                 "expected_sdk_version", "artifact_paths", "completed_catalog_pin",
+                 "fresh_selections", "reused_selections", "semantic_controls"}
+    if forbidden & set(candidate_options):
+        raise ValueError("Pinned SDK campaign authority cannot be replaced by caller options")
+    from ci.sdk_campaign_pinned_election import held_pinned_sdk_campaign_authority
+    with held_pinned_sdk_campaign_authority(authority_file,
+            expected_authority_sha256) as authority:
+        with held_sdk_campaign_candidate_from_policies(plan_path,
+                election_files=election_files,
+                expected_election_sha256=authority["electionSha256"],
+                semantic_files=semantic_files,
+                expected_semantic_sha256=authority["semanticSha256"],
+                expected_sdk_version=authority["sdkVersion"],
+                artifact_paths=authority["artifactPaths"],
+                completed_catalog_pin=authority["completedCatalogPin"],
                 **candidate_options) as verified:
             yield verified

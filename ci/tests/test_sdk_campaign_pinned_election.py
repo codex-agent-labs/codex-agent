@@ -9,6 +9,7 @@ from unittest.mock import patch
 from ci.sdk_campaign_catalog_producer import (
     held_sdk_campaign_candidate_from_election,
     held_sdk_campaign_candidate_from_policies,
+    held_sdk_campaign_candidate_from_authority,
 )
 from ci.sdk_campaign_pinned_election import (
     held_pinned_sdk_campaign_election,
@@ -182,3 +183,72 @@ class PinnedSdkElectionTest(TestCase):
                 self.assertEqual("release", controls["javascript_control"]["required_trust_domain"])
                 self.assertEqual("development", controls["native_control"]["required_trust_domain"])
                 self.assertNotIn("token", controls["android_control"])
+
+    def test_independently_pinned_authority_precedes_all_campaign_observation(self):
+        from ci.tests.test_sdk_campaign_core_android_semantic_policy import _policy as core_policy
+        from ci.tests.test_sdk_campaign_native_semantic_policy import _policy as native_policy
+        from ci.tests.test_sdk_campaign_apple_js_semantic_policy import _policy as apple_policy
+
+        with TemporaryDirectory(dir=_ROOT) as temporary:
+            root = Path(temporary)
+            elections, election_digests = _files(root)
+            semantics, semantic_digests = {}, {}
+            for family, source in (("core-android", core_policy),
+                                   ("native", native_policy), ("apple-js", apple_policy)):
+                path = root / f"semantic-{family}.json"
+                raw = canonical_json_bytes(source())
+                path.write_bytes(raw)
+                semantics[family], semantic_digests[family] = path, sha256_bytes(raw)
+            authority = {"schemaVersion": 1, "product": "sdk", "sdkVersion": "0.8.0",
+                "electionSha256": election_digests, "semanticSha256": semantic_digests,
+                "artifactPaths": [{"identity": {field: getattr(instance, field)
+                    for field in ("product", "component", "phase", "target")},
+                    "relativePath": "outputs/package.bin"}
+                    for instance in sorted(SDK_CAMPAIGN_INSTANCES)],
+                "completedCatalogPin": {"producer": dict(_PRODUCER),
+                    "artifact_name": "sdk-catalog", "artifact_id": 7,
+                    "artifact_sha256": "sha256:" + "a" * 64,
+                    "index_sha256": "sha256:" + "b" * 64,
+                    "public_key_sha256": "sha256:" + "c" * 64,
+                    "trusted_workflow_path": ".github/workflows/product-validation.yml",
+                    "trusted_job_name": "product-validation / sdk-catalog"}}
+            path = root / "authority.json"
+            raw = canonical_json_bytes(authority)
+            path.write_bytes(raw)
+            observed = []
+
+            @contextmanager
+            def candidate(_plan, **options):
+                observed.append(options)
+                yield "verified"
+
+            with patch("ci.sdk_campaign_catalog_producer.held_sdk_campaign_candidate", candidate):
+                with self.assertRaisesRegex(ValueError, "independent digest"):
+                    with held_sdk_campaign_candidate_from_authority(Path("plan.json"),
+                            authority_file=path,
+                            expected_authority_sha256="sha256:" + "0" * 64,
+                            election_files=elections, semantic_files=semantics,
+                            token="observation-token", environ={}):
+                        self.fail("unapproved authority observed campaign")
+                self.assertEqual([], observed)
+                with held_sdk_campaign_candidate_from_authority(Path("plan.json"),
+                        authority_file=path, expected_authority_sha256=sha256_bytes(raw),
+                        election_files=elections, semantic_files=semantics,
+                        token="observation-token", environ={}) as result:
+                    self.assertEqual("verified", result)
+                self.assertEqual(1, len(observed))
+                self.assertEqual(SDK_CAMPAIGN_INSTANCES, set(observed[0]["artifact_paths"]))
+                self.assertEqual("0.8.0", next(iter(observed[0]["fresh_selections"].values()))
+                    ["expected_product_version"])
+                observed.clear()
+                authority["sdkVersion"] = "0.8.1"
+                changed = canonical_json_bytes(authority)
+                path.write_bytes(changed)
+                with self.assertRaisesRegex(ValueError, "pinned SDK version"):
+                    with held_sdk_campaign_candidate_from_authority(Path("plan.json"),
+                            authority_file=path,
+                            expected_authority_sha256=sha256_bytes(changed),
+                            election_files=elections, semantic_files=semantics,
+                            token="observation-token", environ={}):
+                        self.fail("wrong-version authority observed campaign")
+                self.assertEqual([], observed)

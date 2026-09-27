@@ -18,6 +18,12 @@ from ci.sdk_campaign_apple_js_semantic_policy import load_apple_js_semantic_poli
 from ci.sdk_campaign_core_android_semantic_policy import load_core_android_semantic_policy
 from ci.sdk_campaign_native_semantic_policy import load_native_semantic_policy
 from products.inventory import read_regular_file_bytes, require_sha256, sha256_bytes
+from products.inventory import (
+    load_canonical_json_bytes, require_exact_keys, require_integer,
+    require_relative_path, require_semver, require_string,
+)
+from products.receipt import validate_producer
+from products.registry import PhaseInstanceId
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from products.signing_isolation import require_no_signing_secret
 
@@ -27,6 +33,77 @@ _LOADERS = {
     "native": load_native_election,
     "apple-js": load_apple_js,
 }
+
+
+@contextmanager
+def held_pinned_sdk_campaign_authority(path: Path, expected_sha256: str):
+    """Hold one externally approved input manifest, never an observed state file."""
+    require_no_signing_secret(os.environ)
+    if (not isinstance(path, Path) or not path.is_absolute()
+            or path.resolve(strict=True) != path):
+        raise ValueError("SDK campaign authority requires a canonical absolute file")
+    expected = require_sha256(expected_sha256, "SDK campaign authority digest")
+    raw = read_regular_file_bytes(path, max_bytes=1024 * 1024,
+        reject_symlink_parents=True)
+    if sha256_bytes(raw) != expected:
+        raise ValueError("SDK campaign authority differs from independent digest")
+    document = require_exact_keys(load_canonical_json_bytes(raw),
+        {"schemaVersion", "product", "sdkVersion", "electionSha256",
+         "semanticSha256", "artifactPaths", "completedCatalogPin"},
+        "SDK campaign authority")
+    if type(document["schemaVersion"]) is not int or document["schemaVersion"] != 1 \
+            or document["product"] != "sdk":
+        raise ValueError("SDK campaign authority has the wrong schema or product")
+    sdk_version = require_semver(document["sdkVersion"], "SDK campaign version")
+    digests = {}
+    for name in ("electionSha256", "semanticSha256"):
+        selected = require_exact_keys(document[name], set(_LOADERS),
+            f"SDK campaign {name}")
+        digests[name] = {family: require_sha256(value, f"{family} {name}")
+                         for family, value in selected.items()}
+    rows = document["artifactPaths"]
+    if type(rows) is not list or len(rows) != len(SDK_CAMPAIGN_INSTANCES):
+        raise ValueError("SDK campaign authority requires exactly 61 artifact paths")
+    artifact_paths, order = {}, []
+    for row in rows:
+        row = require_exact_keys(row, {"identity", "relativePath"},
+            "SDK campaign artifact path")
+        identity = require_exact_keys(row["identity"],
+            {"product", "component", "phase", "target"},
+            "SDK campaign artifact identity")
+        instance = PhaseInstanceId(*(require_string(identity[field], field) for field in
+            ("product", "component", "phase", "target")))
+        if instance not in SDK_CAMPAIGN_INSTANCES or instance in artifact_paths:
+            raise ValueError("SDK campaign authority has an unknown or duplicate artifact")
+        artifact_paths[instance] = require_relative_path(row["relativePath"],
+            "SDK campaign artifact path")
+        order.append(instance)
+    if order != sorted(SDK_CAMPAIGN_INSTANCES):
+        raise ValueError("SDK campaign authority artifact paths must be exact and sorted")
+    from ci.sdk_campaign_catalog_producer import _COMPLETED_CATALOG_PIN_KEYS
+    catalog = dict(require_exact_keys(document["completedCatalogPin"],
+        _COMPLETED_CATALOG_PIN_KEYS, "SDK campaign completed catalog pin"))
+    producer = validate_producer(catalog["producer"])
+    if producer["event"] != "pull_request":
+        raise ValueError("SDK campaign completed catalog must be a PR producer")
+    catalog["producer"] = dict(producer)
+    require_integer(catalog["artifact_id"], "SDK campaign catalog artifact ID", 1)
+    for field in ("artifact_sha256", "index_sha256", "public_key_sha256"):
+        require_sha256(catalog[field], "SDK campaign catalog " + field)
+    for field in ("artifact_name", "trusted_job_name"):
+        require_string(catalog[field], "SDK campaign catalog " + field)
+    require_relative_path(catalog["trusted_workflow_path"],
+        "SDK campaign catalog workflow")
+    authority = {"sdkVersion": sdk_version, **digests,
+                 "artifactPaths": artifact_paths, "completedCatalogPin": catalog}
+    before = deepcopy(authority)
+    try:
+        yield MappingProxyType(authority)
+    finally:
+        require_no_signing_secret(os.environ)
+        if authority != before or read_regular_file_bytes(path, max_bytes=1024 * 1024,
+                reject_symlink_parents=True) != raw:
+            raise ValueError("SDK campaign authority changed during replay")
 
 
 @contextmanager
