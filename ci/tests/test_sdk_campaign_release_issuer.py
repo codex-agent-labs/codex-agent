@@ -1,6 +1,9 @@
 """Local boundary tests; mocked replay is not hosted SDK acceptance."""
 
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from io import StringIO
+import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -15,7 +18,7 @@ from ci.products.signatures import (
     generate_development_key, verify_manifest_signature,
 )
 from ci.sdk_campaign_release_issuer import (
-    prepare_sdk_release_index, sign_approved_sdk_release_index,
+    main, prepare_sdk_release_index, sign_approved_sdk_release_index,
     stage_prepared_sdk_release_index,
 )
 from ci.tests.product_chain_support import output, write_receipt
@@ -168,6 +171,95 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "signing-secret"):
                 stage_prepared_sdk_release_index(b"{}\n", self.root / "prepared")
         self.assertFalse((self.root / "prepared").exists())
+
+    def _cli_prepare_arguments(self):
+        values = ["prepare", "--plan", str(self.root / "plan.json"),
+            "--repository-root", str(self.root),
+            "--authority-file", str(self.authority),
+            "--authority-artifact-id", "7",
+            "--authority-artifact-sha256", sha256_bytes(b"authority upload"),
+            "--authority-workflow-sha", "c" * 40,
+            "--authority-workflow-path", ".github/workflows/product-validation.yml",
+            "--authority-job-name", "product-validation / sdk-authority-upload",
+            "--trusted-workflow-sha", "c" * 40,
+            "--state-artifact-id", "8",
+            "--state-artifact-sha256", sha256_bytes(b"state"),
+            "--state-wave", "1", "--sdk-state-wave", "1",
+            "--keyring-path", str(self.keyring),
+            "--keys-directory", str(self.keys),
+            "--destination", str(self.root / "prepared")]
+        for family in ("core-android", "native", "apple-js"):
+            for kind in ("election", "semantic"):
+                values.extend((f"--{kind}-{family}",
+                    str(self.root / f"{kind}-{family}.json")))
+        return values
+
+    def test_split_cli_requires_external_pins_and_never_passes_token_to_signer(self):
+        @contextmanager
+        def official(*_args, **_kwargs):
+            yield ((self.receipts, object()), object())
+
+        with patch("ci.sdk_campaign_catalog_producer.held_sdk_campaign_candidate_from_official_authority",
+                   official):
+            prepared = self._prepare()
+        arguments = self._cli_prepare_arguments()
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "observation-only"}, clear=True), \
+             patch("ci.sdk_campaign_release_issuer.prepare_sdk_release_index") as replay, \
+             redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            main(arguments)
+        replay.assert_not_called()
+        prepare_environment = {"GITHUB_TOKEN": "observation-only",
+            "CODEX_AGENT_SDK_AUTHORITY_APPROVED_SHA256": sha256_bytes(self.authority.read_bytes()),
+            "CODEX_AGENT_PRODUCT_KEYRING_APPROVED_SHA256": sha256_bytes(self.keyring.read_bytes())}
+        with patch.dict(os.environ, prepare_environment, clear=True), \
+             patch("ci.sdk_campaign_release_issuer.prepare_sdk_release_index",
+                   return_value=prepared) as replay, redirect_stdout(StringIO()) as printed:
+            self.assertEqual(0, main(arguments))
+        replay.assert_called_once()
+        self.assertEqual("observation-only", replay.call_args.kwargs["token"])
+        manifest = self.root / "prepared/product-index.json"
+        self.assertEqual(prepared, manifest.read_bytes())
+        self.assertEqual(str(manifest), json.loads(printed.getvalue())["preparedIndex"])
+
+        sign_arguments = ["sign", "--prepared-index", str(manifest),
+            "--destination", str(self.root / "signed"),
+            "--keyring-path", str(self.keyring), "--keys-directory", str(self.keys)]
+        approved = {"CODEX_AGENT_SDK_INDEX_APPROVED_SHA256": sha256_bytes(prepared),
+            "CODEX_AGENT_PRODUCT_KEYRING_APPROVED_SHA256": sha256_bytes(self.keyring.read_bytes()),
+            "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": self.private_key.read_text()}
+        with patch.dict(os.environ, {**approved, "GH_TOKEN": ""}, clear=True), \
+             redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            main(sign_arguments)
+        self.assertFalse((self.root / "signed").exists())
+        nested = list(sign_arguments)
+        nested[nested.index("--destination") + 1] = str(self.root / "prepared/signed")
+        with patch.dict(os.environ, approved, clear=True), \
+             redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            main(nested)
+        self.assertFalse((self.root / "prepared/signed").exists())
+        with patch.dict(os.environ, {**approved,
+                "CODEX_AGENT_SDK_INDEX_APPROVED_SHA256": sha256_bytes(b"wrong")}, clear=True), \
+             redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            main(sign_arguments)
+        self.assertFalse((self.root / "signed").exists())
+        with patch.dict(os.environ, approved, clear=True), redirect_stdout(StringIO()):
+            self.assertEqual(0, main(sign_arguments))
+        self.assertEqual(prepared, (self.root / "signed/product-index.json").read_bytes())
+        verify_manifest_signature(self.root / "signed/product-index.json",
+            self.root / "signed/product-index.sig", self.keys / "release-test.pub", self.signing)
+
+    def test_prepare_cli_rejects_optional_policy_without_protected_digest(self):
+        policy = self.root / "tooling.json"
+        policy.write_bytes(b"{}\n")
+        args = self._cli_prepare_arguments() + ["--sdk-validation-tooling", str(policy)]
+        environment = {"GITHUB_TOKEN": "observation-only",
+            "CODEX_AGENT_SDK_AUTHORITY_APPROVED_SHA256": sha256_bytes(self.authority.read_bytes()),
+            "CODEX_AGENT_PRODUCT_KEYRING_APPROVED_SHA256": sha256_bytes(self.keyring.read_bytes())}
+        with patch.dict(os.environ, environment, clear=True), \
+             patch("ci.sdk_campaign_release_issuer.prepare_sdk_release_index") as replay, \
+             redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            main(args)
+        replay.assert_not_called()
 
 
 if __name__ == "__main__":

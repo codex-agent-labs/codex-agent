@@ -6,16 +6,24 @@ The expected index digest must come from protected approval, not this module's
 preparation result or the development catalog.
 """
 
+import argparse
 from collections.abc import Mapping
+import json
 import os
 from pathlib import Path
+import sys
 import tempfile
+
+if __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+else:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from products.aggregate import validate_product_index
 from products.index import IndexEntrySource, _mint_release_admission, build_product_index
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
-    read_regular_file_bytes, require_sha256, sha256_bytes,
+    read_regular_file_bytes, require_exact_keys, require_sha256, sha256_bytes,
 )
 from products.receipt import validate_phase_receipt, validate_producer
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
@@ -23,7 +31,7 @@ from products.signatures import (
     load_keyring, public_key_for_metadata, require_active_release_key,
     sign_manifest, verify_manifest_signature,
 )
-from products.signing_isolation import require_no_signing_secret
+from products.signing_isolation import SIGNING_SECRET, require_no_signing_secret
 
 
 _TOKEN_NAMES = frozenset({
@@ -38,6 +46,17 @@ _CANDIDATE_OPTIONS = frozenset({
 _REQUIRED_CANDIDATE_OPTIONS = frozenset({
     "state_artifact_id", "state_artifact_sha256", "state_wave", "sdk_state_wave",
 })
+_FAMILIES = ("core-android", "native", "apple-js")
+_APPROVED_AUTHORITY = "CODEX_AGENT_SDK_AUTHORITY_APPROVED_SHA256"
+_APPROVED_KEYRING = "CODEX_AGENT_PRODUCT_KEYRING_APPROVED_SHA256"
+_APPROVED_INDEX = "CODEX_AGENT_SDK_INDEX_APPROVED_SHA256"
+_CONTROL_APPROVAL_ENV = {
+    "sdk_validation_tooling": "CODEX_AGENT_SDK_VALIDATION_TOOLING_APPROVED_SHA256",
+    "sdk_apple_validation_policy": "CODEX_AGENT_SDK_APPLE_POLICY_APPROVED_SHA256",
+    "sdk_facade_metadata_policy": "CODEX_AGENT_SDK_FACADE_POLICY_APPROVED_SHA256",
+    "sdk_android_metadata_policy": "CODEX_AGENT_SDK_ANDROID_POLICY_APPROVED_SHA256",
+    "custody_catalogs": "CODEX_AGENT_SDK_CUSTODY_APPROVED_SHA256",
+}
 
 
 def _release_key(keyring_path, keys_directory, expected_keyring_sha256):
@@ -186,3 +205,176 @@ def sign_approved_sdk_release_index(prepared_index: Path, *, expected_index_sha2
                 reject_symlink_parents=True) != keyring_bytes):
         raise ValueError("Protected SDK signing input changed after verification")
     return signature
+
+
+def _approved_environment_digest(name):
+    value = os.environ.get(name)
+    if type(value) is not str or not value:
+        raise ValueError(f"Protected SDK caller is missing {name}")
+    return require_sha256(value, name)
+
+
+def _optional_pinned_file(path, digest, label):
+    if (path is None) != (digest is None):
+        raise ValueError(f"{label} requires both its file and independent digest")
+    if path is None:
+        return None
+    raw = read_regular_file_bytes(path, max_bytes=16 * 1024 * 1024,
+        reject_symlink_parents=True)
+    if sha256_bytes(raw) != require_sha256(digest, f"{label} digest"):
+        raise ValueError(f"{label} differs from its independent digest")
+    return raw
+
+
+def _prepare_cli(args):
+    require_no_signing_secret(os.environ)
+    authority_pin = _approved_environment_digest(_APPROVED_AUTHORITY)
+    keyring_pin = _approved_environment_digest(_APPROVED_KEYRING)
+    from ci.sdk_campaign_pinned_election import held_pinned_sdk_campaign_authority
+    from sdk_metadata_policy import metadata_admission_options
+
+    controlled = {}
+    for name, approved_name in _CONTROL_APPROVAL_ENV.items():
+        controlled[name] = _optional_pinned_file(
+            getattr(args, name),
+            _approved_environment_digest(approved_name) if getattr(args, name) is not None else None,
+            name)
+    custody = {}
+    if controlled["custody_catalogs"] is not None:
+        raw_catalogs = load_canonical_json_bytes(controlled["custody_catalogs"])
+        if type(raw_catalogs) is not dict:
+            raise ValueError("SDK custody descriptors must be a canonical object")
+        for ref, row in raw_catalogs.items():
+            row = require_exact_keys(row, {"selection", "destination"},
+                "SDK custody descriptor")
+            if type(row["destination"]) is not str or not Path(row["destination"]).is_absolute():
+                raise ValueError("SDK custody destination must be an absolute path")
+            custody[ref] = {"selection": row["selection"],
+                            "destination": Path(row["destination"])}
+    metadata = {"repository_root": args.repository_root, "plan": args.plan,
+                "expected_policy_bytes": {}}
+    for name in ("sdk_facade_metadata_policy", "sdk_android_metadata_policy"):
+        if controlled[name] is not None:
+            metadata[name] = getattr(args, name)
+            metadata["expected_policy_bytes"][name] = controlled[name]
+
+    with held_pinned_sdk_campaign_authority(args.authority_file, authority_pin) as authority:
+        producer = authority["completedCatalogPin"]["producer"]
+        context = {"kind": "pull-request", "pullRequest": producer["pullRequest"],
+                   **{name: producer[name] for name in (
+                       "commit", "tree", "runId", "runAttempt")}}
+        with metadata_admission_options(metadata) as admissions:
+            prepared = prepare_sdk_release_index(args.plan, args.repository_root,
+                authority_file=args.authority_file,
+                authority_artifact_id=args.authority_artifact_id,
+                authority_artifact_sha256=args.authority_artifact_sha256,
+                expected_authority_sha256=authority_pin,
+                authority_workflow_sha=args.authority_workflow_sha,
+                authority_workflow_path=args.authority_workflow_path,
+                authority_job_name=args.authority_job_name,
+                trusted_workflow_sha=args.trusted_workflow_sha,
+                election_files={family: getattr(args, "election_" + family.replace("-", "_"))
+                                for family in _FAMILIES},
+                semantic_files={family: getattr(args, "semantic_" + family.replace("-", "_"))
+                                for family in _FAMILIES},
+                token=os.environ["GITHUB_TOKEN"], environ=os.environ,
+                keyring_path=args.keyring_path, keys_directory=args.keys_directory,
+                expected_keyring_sha256=keyring_pin,
+                repository=producer["repository"], context=context, producer=producer,
+                state_artifact_id=args.state_artifact_id,
+                state_artifact_sha256=args.state_artifact_sha256,
+                state_wave=args.state_wave, sdk_state_wave=args.sdk_state_wave,
+                custody_catalogs=custody,
+                sdk_validation_tooling=(None if controlled["sdk_validation_tooling"] is None
+                    else load_canonical_json_bytes(controlled["sdk_validation_tooling"])),
+                sdk_apple_validation_policy=(None if controlled["sdk_apple_validation_policy"] is None
+                    else load_canonical_json_bytes(controlled["sdk_apple_validation_policy"])),
+                **admissions)
+            for name, raw in controlled.items():
+                if raw is not None and read_regular_file_bytes(getattr(args, name),
+                        max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != raw:
+                    raise ValueError(f"{name} changed during SDK release preparation")
+        result = stage_prepared_sdk_release_index(prepared, args.destination)
+    return {"preparedIndex": str(result)}
+
+
+def _sign_cli(args):
+    if _TOKEN_NAMES & set(os.environ):
+        raise ValueError("SDK signing process must not have an observation token")
+    approved_index = _approved_environment_digest(_APPROVED_INDEX)
+    approved_keyring = _approved_environment_digest(_APPROVED_KEYRING)
+    destination = Path(args.destination).resolve(strict=False)
+    inputs = (Path(args.prepared_index).resolve(strict=True).parent,
+              Path(args.keyring_path).resolve(strict=True),
+              Path(args.keys_directory).resolve(strict=True))
+    if any(destination == source or destination in source.parents
+           or source in destination.parents for source in inputs):
+        raise ValueError("Signed SDK index destination overlaps an input")
+    raw = read_regular_file_bytes(args.prepared_index, max_bytes=16 * 1024 * 1024,
+        reject_symlink_parents=True)
+    if sha256_bytes(raw) != approved_index:
+        raise ValueError("Prepared SDK index differs from independent protected approval")
+    secret = os.environ.get(SIGNING_SECRET)
+    if type(secret) is not str or not secret:
+        raise ValueError("Protected SDK release signing key is unavailable")
+    with tempfile.TemporaryDirectory(prefix="sdk-release-key-") as temporary:
+        private_key = Path(temporary).resolve() / "release-ed25519"
+        descriptor = os.open(private_key, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(secret.encode("utf-8"))
+        signature = sign_approved_sdk_release_index(args.prepared_index,
+            expected_index_sha256=approved_index, keyring_path=args.keyring_path,
+            keys_directory=args.keys_directory, expected_keyring_sha256=approved_keyring,
+            private_key=private_key, environ=os.environ)
+    if read_regular_file_bytes(args.prepared_index, max_bytes=16 * 1024 * 1024,
+            reject_symlink_parents=True) != raw:
+        raise ValueError("Prepared SDK index changed before signed publication")
+    with tempfile.TemporaryDirectory(prefix="sdk-release-pair-") as temporary:
+        staged = Path(temporary).resolve() / "signed"
+        staged.mkdir()
+        (staged / "product-index.json").write_bytes(raw)
+        (staged / "product-index.sig").write_bytes(signature)
+        publish_regular_tree(staged, args.destination, expected_inventory=[
+            {"relativePath": "product-index.json", "bytes": len(raw), "sha256": approved_index},
+            {"relativePath": "product-index.sig", "bytes": len(signature),
+             "sha256": sha256_bytes(signature)},
+        ])
+    return {"signedIndex": str(args.destination / "product-index.json"),
+            "signature": str(args.destination / "product-index.sig")}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    modes = parser.add_subparsers(dest="mode", required=True)
+    prepare = modes.add_parser("prepare", allow_abbrev=False)
+    for name in ("plan", "repository-root", "authority-file", "keyring-path",
+                 "keys-directory", "destination"):
+        prepare.add_argument("--" + name, type=Path, required=True)
+    for name in ("authority-artifact-id", "state-artifact-id", "state-wave"):
+        prepare.add_argument("--" + name, type=int, required=True)
+    prepare.add_argument("--sdk-state-wave", type=int)
+    for name in ("authority-artifact-sha256", "authority-workflow-sha",
+                 "authority-workflow-path", "authority-job-name", "trusted-workflow-sha",
+                 "state-artifact-sha256"):
+        prepare.add_argument("--" + name, required=True)
+    for family in _FAMILIES:
+        for kind in ("election", "semantic"):
+            prepare.add_argument(f"--{kind}-{family}", type=Path, required=True)
+    for name in ("sdk-validation-tooling", "sdk-apple-validation-policy",
+                 "sdk-facade-metadata-policy", "sdk-android-metadata-policy",
+                 "custody-catalogs"):
+        prepare.add_argument("--" + name, type=Path)
+    sign = modes.add_parser("sign", allow_abbrev=False)
+    for name in ("prepared-index", "destination", "keyring-path", "keys-directory"):
+        sign.add_argument("--" + name, type=Path, required=True)
+    args = parser.parse_args(argv)
+    try:
+        result = _prepare_cli(args) if args.mode == "prepare" else _sign_cli(args)
+    except (OSError, ValueError, KeyError) as error:
+        parser.error(str(error))
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
