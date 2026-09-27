@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import hashlib
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import stat
@@ -629,6 +630,12 @@ def observe_producer(
         raise ValueError("Toolchain observation producer role does not match its profile")
     runner_os = _identity(environment.get("RUNNER_OS", ""), "RUNNER_OS")
     runner_arch = _identity(environment.get("RUNNER_ARCH", ""), "RUNNER_ARCH")
+    actual_os = {"Darwin": "macOS", "Linux": "Linux", "Windows": "Windows"}.get(platform.system())
+    actual_arch = {
+        "aarch64": "ARM64", "arm64": "ARM64", "amd64": "X64", "x86_64": "X64",
+    }.get(platform.machine().lower())
+    if (runner_os, runner_arch) != (actual_os, actual_arch):
+        raise ValueError("Declared runner OS/architecture does not match the actual host")
     if (runner_os, runner_arch) != roles[producer_role]:
         raise ValueError("Actual runner does not match the selected toolchain producer")
     expected_names = PROFILE_TOOL_NAMES[(selected, producer_role)]

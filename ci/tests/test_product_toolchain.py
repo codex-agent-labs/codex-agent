@@ -399,7 +399,9 @@ class ProductToolchainTest(unittest.TestCase):
             raise AssertionError(command)
 
         with mock.patch("ci.products.toolchain._authority", side_effect=lambda _, __, path: authorities[path]), \
-                mock.patch("ci.products.toolchain.run_git", return_value="b" * 40 + "\n"):
+                mock.patch("ci.products.toolchain.run_git", return_value="b" * 40 + "\n"), \
+                mock.patch("ci.products.toolchain.platform.system", return_value="Linux"), \
+                mock.patch("ci.products.toolchain.platform.machine", return_value="x86_64"):
             result = observe_producer(
                 self.root, "a" * 40, "linux-x64", "builder", "linux-x64",
                 gradle_user_home=gradle_home,
@@ -459,6 +461,20 @@ class ProductToolchainTest(unittest.TestCase):
             from ci.products.toolchain import _metadata_checksum
             _metadata_checksum(b"<verification-metadata/>", "kotlin-native-prebuilt.tar.gz")
 
+    def test_observer_rejects_forged_or_unsupported_host_before_tool_probe(self) -> None:
+        for actual_os, actual_arch in (("Darwin", "x86_64"), ("Linux", "aarch64"), ("Linux", "mips")):
+            probe = mock.Mock()
+            with self.subTest(actual_os=actual_os, actual_arch=actual_arch), \
+                    mock.patch("ci.products.toolchain.platform.system", return_value=actual_os), \
+                    mock.patch("ci.products.toolchain.platform.machine", return_value=actual_arch), \
+                    self.assertRaisesRegex(ValueError, "does not match the actual host"):
+                observe_producer(
+                    self.root, "a" * 40, "linux-x64", "builder", "linux-x64",
+                    environment={"RUNNER_OS": "Linux", "RUNNER_ARCH": "X64"},
+                    execute=probe, find_executable=probe,
+                )
+            probe.assert_not_called()
+
     def test_linux_arm64_supervisor_observer_needs_no_kotlin_cache(self) -> None:
         java, cc, ld = self.root / "tools/java", self.root / "tools/cc", self.root / "tools/ld"
         for path in (java, cc, ld):
@@ -492,7 +508,9 @@ class ProductToolchainTest(unittest.TestCase):
 
         with mock.patch(
             "ci.products.toolchain._authority", side_effect=lambda _, __, path: authorities[path]
-        ), mock.patch("ci.products.toolchain.run_git", return_value="b" * 40 + "\n"):
+        ), mock.patch("ci.products.toolchain.run_git", return_value="b" * 40 + "\n"), \
+                mock.patch("ci.products.toolchain.platform.system", return_value="Linux"), \
+                mock.patch("ci.products.toolchain.platform.machine", return_value="aarch64"):
             result = observe_producer(
                 self.root, "a" * 40, "linux-arm64", "supervisor-builder", "linux-arm64",
                 environment={"RUNNER_OS": "Linux", "RUNNER_ARCH": "ARM64"},
