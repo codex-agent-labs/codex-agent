@@ -422,3 +422,22 @@ def held_sdk_campaign_candidate(plan_path, *, state_artifact_id,
                 trusted_workflow_sha=trusted_workflow_sha,
                 token=token, environ=environ) as verified:
             yield verified
+
+
+@contextmanager
+def held_sdk_campaign_candidate_from_election(plan_path, *, policy_files,
+        expected_election_sha256, **candidate_options):
+    """Pin all 61 caller elections before the first state observation.
+
+    The caller must source the three digests independently from protected
+    policy. Original uploads, semantic controls and release trust remain the
+    existing downstream gates; this wrapper grants none of them by itself.
+    """
+    if {"fresh_selections", "reused_selections"} & set(candidate_options):
+        raise ValueError("Pinned SDK election cannot be replaced by caller selections")
+    from ci.sdk_campaign_pinned_election import held_pinned_sdk_campaign_election
+    with held_pinned_sdk_campaign_election(policy_files, expected_election_sha256) as (
+            fresh, reused):
+        with held_sdk_campaign_candidate(plan_path, fresh_selections=fresh,
+                reused_selections=reused, **candidate_options) as verified:
+            yield verified

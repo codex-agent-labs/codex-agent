@@ -1842,6 +1842,10 @@ class ProductSelectionTest(unittest.TestCase):
         paths = (
             "ci/sdk_campaign_catalog_producer.py",
             "ci/sdk_campaign_catalog_caller.py",
+            "ci/sdk_apple_js_campaign_election.py",
+            "ci/sdk_campaign_core_android_election.py",
+            "ci/sdk_campaign_native_policy.py",
+            "ci/sdk_campaign_pinned_election.py",
             "ci/products/sdk_campaign_dev_catalog.py",
             "ci/sdk_campaign_reused_original.py",
             "ci/sdk_nested_wave_locator.py",
