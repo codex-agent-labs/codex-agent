@@ -60,8 +60,8 @@ def verify_signed_original_core_context(manifest_path, signature_path, receipt_p
     signature = read_regular_file_bytes(Path(signature_path), max_bytes=1024 * 1024,
                                         reject_symlink_parents=True)
     with tempfile.TemporaryDirectory(prefix="core-context-verify-") as temporary:
-        snapshot = Path(temporary) / "original-context.json"
-        detached = Path(temporary) / "original-context.sig"
+        snapshot = Path(temporary).resolve() / "original-context.json"
+        detached = snapshot.with_name("original-context.sig")
         snapshot.write_bytes(raw)
         detached.write_bytes(signature)
         verify_manifest_signature(snapshot, detached, public_key, record["signing"])
