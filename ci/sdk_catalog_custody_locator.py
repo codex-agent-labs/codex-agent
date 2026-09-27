@@ -30,6 +30,7 @@ from ci.sdk_catalog_custody import (
 
 
 CUSTODY_WORKFLOW_PATH = ".github/workflows/sdk-failed-catalog-custody.yml"
+CUSTODY_JOB_NAME = "sdk-failed-catalog-custody / sdk-failed-catalog-custody"
 _CUSTODY_ZIP_LIMITS = {
     # Actions transport ZIP entry order is not product-canonical order.
     "require_sorted": False,
@@ -60,8 +61,8 @@ def locate_failed_sdk_catalog_custody(destination, *, catalog_producer,
             or catalog_producer["repository"] != custody_producer["repository"]
             or catalog_producer["runId"] == custody_producer["runId"]):
         raise ValueError("SDK custody requires distinct failed PR and protected dispatch producers")
-    if type(token) is not str or not token or type(custody_job_name) is not str or not custody_job_name:
-        raise ValueError("SDK custody requires an observation token and caller-pinned job")
+    if type(token) is not str or not token or custody_job_name != CUSTODY_JOB_NAME:
+        raise ValueError("SDK custody requires an observation token and its exact protected child job")
     catalog_artifact_id = require_integer(catalog_artifact_id, "Original catalog artifact ID", 1)
     catalog_artifact_sha256 = require_sha256(catalog_artifact_sha256, "Original catalog artifact digest")
     custody_artifact_id = require_integer(custody_artifact_id, "Custody artifact ID", 1)
@@ -78,7 +79,8 @@ def locate_failed_sdk_catalog_custody(destination, *, catalog_producer,
         {"custody": custody_producer}, jobs_by_phase={"custody": custody_job_name},
         trusted_workflows_by_phase={"custody": {
             "path": CUSTODY_WORKFLOW_PATH, "sha": custody_workflow_sha,
-        }}, token=token, allow_protected_dispatch=True)[0]
+        }}, token=token, allow_protected_dispatch=True,
+        dispatch_authorization_job=None)[0]
     run = observed["run"]
     if run.get("status") != "completed" or run.get("conclusion") != "success":
         raise ValueError("SDK custody dispatch did not complete successfully")

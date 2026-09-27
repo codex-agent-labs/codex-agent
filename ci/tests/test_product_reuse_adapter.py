@@ -231,6 +231,35 @@ class ContractProducerRunTest(unittest.TestCase):
                 product_reuse._observe_ci_producer_jobs(**arguments, allow_protected_dispatch=True)
             listing.assert_not_called()
 
+    def test_fixed_protected_child_may_skip_only_the_validation_dispatch_job(self):
+        child = ".github/workflows/sdk-phase10-later-authority.yml"
+        job_name = "sdk-phase10-authority / sdk-phase10-authority"
+        producer = {**self.producer, "event": "workflow_dispatch", "pullRequest": None}
+        run = {**self.run, "event": "workflow_dispatch", "head_sha": COMMIT,
+               "pull_requests": [], "referenced_workflows": [{
+                   "path": f"{producer['repository']}/{child}@{self.pin}", "sha": self.pin,
+               }]}
+        job = {**self.jobs[0], "name": job_name, "head_sha": COMMIT}
+        arguments = dict(producers={"authority": producer},
+            jobs_by_phase={"authority": job_name}, token="unused",
+            trusted_workflows_by_phase={"authority": {"path": child, "sha": self.pin}},
+            allow_protected_dispatch=True, dispatch_authorization_job=None)
+        with mock.patch.object(product_reuse, "api_json", side_effect=[run, self.commit]), \
+                mock.patch.object(product_reuse, "paginated_items", return_value=[job]):
+            self.assertEqual(run, product_reuse._observe_ci_producer_jobs(**arguments)[0]["run"])
+        with mock.patch.object(product_reuse, "api_json") as query:
+            for invalid in ({**arguments, "trusted_workflows_by_phase": None,
+                             "trusted_workflow_sha": self.pin},
+                            {**arguments, "allow_protected_dispatch": False}):
+                with self.assertRaises(ValueError):
+                    product_reuse._observe_ci_producer_jobs(**invalid)
+            query.assert_not_called()
+        with mock.patch.object(product_reuse, "api_json", side_effect=[run, self.commit]), \
+                mock.patch.object(product_reuse, "paginated_items", return_value=[{
+                    **job, "name": "unreviewed-child / sdk-phase10-authority",
+                }]), self.assertRaises(ValueError):
+            product_reuse._observe_ci_producer_jobs(**arguments)
+
     def test_invalid_claims_fail_before_any_api_call(self):
         cases = [{**self.producers, "extra": self.producer},
                  {phase: value for phase, value in self.producers.items() if phase != "binary"}]

@@ -7,7 +7,7 @@ from unittest.mock import patch
 import zipfile
 
 from ci.sdk_catalog_custody_locator import (
-    CUSTODY_WORKFLOW_PATH, locate_failed_sdk_catalog_custody, products,
+    CUSTODY_JOB_NAME, CUSTODY_WORKFLOW_PATH, locate_failed_sdk_catalog_custody, products,
 )
 from ci.tests.test_product_resume_capture import archive
 from ci.tests import test_sdk_catalog_custody as fixture
@@ -26,7 +26,7 @@ class FailedSdkCatalogCustodyLocatorTest(unittest.TestCase):
         self.raw = archive({file.name: file.read_bytes() for file in self.signed.iterdir()})
         self.producer = {**helper.producer, "event": "workflow_dispatch",
             "runId": 903, "runAttempt": 4, "pullRequest": None}
-        self.job = "product-validation / sdk-catalog-custody / sdk-failed-catalog-custody"
+        self.job = CUSTODY_JOB_NAME
         self.name = "codex-agent-sdk-failed-catalog-custody-903-attempt-4"
         self.artifact = {"id": 904, "name": self.name,
             "digest": sha256_bytes(self.raw), "size_in_bytes": len(self.raw),
@@ -81,6 +81,7 @@ class FailedSdkCatalogCustodyLocatorTest(unittest.TestCase):
         self.assertEqual({"custody": {"path": CUSTODY_WORKFLOW_PATH,
             "sha": self.helper.source}}, observed[0][1]["trusted_workflows_by_phase"])
         self.assertTrue(observed[0][1]["allow_protected_dispatch"])
+        self.assertIsNone(observed[0][1]["dispatch_authorization_job"])
 
     def test_official_transport_order_does_not_change_signed_contents(self):
         files = {file.name: file.read_bytes() for file in self.signed.iterdir()}
@@ -98,7 +99,8 @@ class FailedSdkCatalogCustodyLocatorTest(unittest.TestCase):
 
     def test_wrong_producer_job_and_official_digest_stop_before_download(self):
         for changed in ({"custody_producer": {**self.producer, "runId": self.helper.producer["runId"]}},
-                        {"custody_producer": {**self.producer, "event": "workflow_run"}}):
+                        {"custody_producer": {**self.producer, "event": "workflow_run"}},
+                        {"custody_job_name": "product-validation / sdk-catalog-custody / sdk-failed-catalog-custody"}):
             with self.subTest(changed=changed), patch.object(products, "api_json") as api, \
                     self.assertRaises(ValueError):
                 locate_failed_sdk_catalog_custody(**(self.selection | changed))

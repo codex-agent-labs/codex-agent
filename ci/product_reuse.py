@@ -414,6 +414,7 @@ def _require_ci_workflow_reference(run, workflow, sha):
 def _observe_ci_producer_jobs(
     producers, *, jobs_by_phase, token, trusted_workflow_sha=None,
     trusted_workflows_by_phase=None, allow_protected_dispatch=False,
+    dispatch_authorization_job="product-validation / dispatch-authorization",
 ) -> list[dict[str, Any]]:
     # Callers choose fixed jobs and workflow references; transported data selects neither.
     require_exact_keys(producers, set(jobs_by_phase), "Contract phase producers")
@@ -422,6 +423,11 @@ def _observe_ci_producer_jobs(
             raise ValueError(f"Contract {phase} producer job must be caller-pinned text")
     if (trusted_workflow_sha is None) == (trusted_workflows_by_phase is None):
         raise ValueError("Contract producer admission requires exactly one caller-owned workflow policy")
+    if dispatch_authorization_job is None:
+        if not allow_protected_dispatch or trusted_workflows_by_phase is None:
+            raise ValueError("Protected dispatch without the validation authorization job requires exact child workflow pins")
+    elif type(dispatch_authorization_job) is not str or not dispatch_authorization_job:
+        raise ValueError("Dispatch authorization job must be pinned text")
     repository = "codex-agent-labs/codex-agent"
     if trusted_workflows_by_phase is None:
         trusted_workflows_by_phase = {phase: {
@@ -476,8 +482,8 @@ def _observe_ci_producer_jobs(
         if any(not isinstance(job, dict) for job in jobs):
             raise ValueError("Contract original CI jobs are malformed")
         names = {jobs_by_phase[phase] for phase in original["phases"]}
-        if producer["event"] == "workflow_dispatch":
-            names.add("product-validation / dispatch-authorization")
+        if producer["event"] == "workflow_dispatch" and dispatch_authorization_job is not None:
+            names.add(dispatch_authorization_job)
         for name in sorted(names):
             selected_jobs = [job for job in jobs if job.get("name") == name]
             if len(selected_jobs) != 1:
