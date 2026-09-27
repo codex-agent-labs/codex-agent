@@ -256,7 +256,9 @@ def discover_reused_sdk_original_pins(selections, *, pull_request, repository,
         catalog_artifact_name, catalog_public_key,
         expected_public_key_sha256, trusted_workflow_sha,
         trusted_catalog_workflow_path, trusted_catalog_job_name,
-        token, environ=None, failed_catalog_producer=None):
+        token, environ=None, failed_catalog_producer=None,
+        expected_catalog_artifact_id=None, expected_catalog_artifact_sha256=None,
+        expected_catalog_index_sha256=None, catalog_workflow_sha=None):
     """Select same-PR originals from one held authenticated catalog snapshot.
 
     Every phase key/version/worker route and the shared catalog/key/PR policy
@@ -289,6 +291,14 @@ def discover_reused_sdk_original_pins(selections, *, pull_request, repository,
     prefix = f"{products._CATALOG_PREFIX}pull-request-{pull_request}-"
     failed = (None if failed_catalog_producer is None else
               validate_producer(failed_catalog_producer))
+    custody_pins = (expected_catalog_artifact_id, expected_catalog_artifact_sha256,
+        expected_catalog_index_sha256)
+    if any(pin is not None for pin in custody_pins):
+        if failed is None or any(pin is None for pin in custody_pins):
+            raise ValueError("Exact catalog custody pins require one failed-run producer")
+        require_integer(expected_catalog_artifact_id, "Custody catalog artifact ID", 1)
+        require_sha256(expected_catalog_artifact_sha256, "Custody catalog artifact digest")
+        require_sha256(expected_catalog_index_sha256, "Custody catalog index digest")
     if type(catalog_artifact_name) is not str:
         raise ValueError("Reused SDK catalog requires a caller-pinned same-PR artifact name")
     if failed is not None:
@@ -297,7 +307,8 @@ def discover_reused_sdk_original_pins(selections, *, pull_request, repository,
     elif not catalog_artifact_name.startswith(prefix) or not catalog_artifact_name[len(prefix):]:
         raise ValueError("Reused SDK catalog requires a caller-pinned same-PR artifact name")
     catalog_job, catalog_policy = original_workflow_route("catalog", trusted_catalog_job_name,
-        trusted_workflow_sha, trusted_catalog_workflow_path, trusted_catalog_job_name)
+        catalog_workflow_sha or trusted_workflow_sha,
+        trusted_catalog_workflow_path, trusted_catalog_job_name)
     if not all((trusted_catalog_workflow_path, trusted_catalog_job_name)):
         raise ValueError("Reused SDK pin discovery requires reviewed catalog route")
     pinned_key = read_regular_file_bytes(Path(catalog_public_key), max_bytes=64 * 1024,
@@ -319,6 +330,8 @@ def discover_reused_sdk_original_pins(selections, *, pull_request, repository,
         raise ValueError("Reused SDK catalog listing has duplicate latest ID")
     listed_artifact = candidates[0]
     artifact_id = listed_artifact["id"]
+    if expected_catalog_artifact_id is not None and artifact_id != expected_catalog_artifact_id:
+        raise ValueError("Reused SDK catalog ID differs from signed custody")
     detail_url = f"{api}/repos/{repository}/actions/artifacts/{artifact_id}"
     detail = products.api_json(detail_url, token)
     if (not isinstance(detail, dict) or detail.get("id") != artifact_id
@@ -327,6 +340,8 @@ def discover_reused_sdk_original_pins(selections, *, pull_request, repository,
             or detail.get("archive_download_url") != f"{detail_url}/zip"):
         raise ValueError("Reused SDK catalog detail differs from official listing")
     catalog_sha = require_sha256(detail["digest"], "Official SDK catalog digest")
+    if expected_catalog_artifact_sha256 is not None and catalog_sha != expected_catalog_artifact_sha256:
+        raise ValueError("Reused SDK catalog bytes differ from signed custody")
     with tempfile.TemporaryDirectory(prefix="sdk-reused-pin-") as temporary:
         root = Path(temporary).resolve()
         if failed is None:
@@ -336,7 +351,7 @@ def discover_reused_sdk_original_pins(selections, *, pull_request, repository,
             catalog, _ = materialize_failed_sdk_partial_catalog(detail, root,
                 producer=failed, repository=repository, pull_request=pull_request,
                 public_key=catalog_public_key, public_key_sha256=expected_public_key_sha256,
-                trusted_workflow_sha=trusted_workflow_sha,
+                trusted_workflow_sha=catalog_workflow_sha or trusted_workflow_sha,
                 trusted_workflow_path=trusted_catalog_workflow_path,
                 trusted_job_name=trusted_catalog_job_name, token=token)
         extracted = root / "catalogs" / "same-pr" / str(artifact_id) / "contents"
@@ -347,6 +362,9 @@ def discover_reused_sdk_original_pins(selections, *, pull_request, repository,
             extracted / "product-index.json", extracted / "product-index.sig"), Path(catalog_public_key))
         if index != catalog.index:
             raise ValueError("Reused SDK catalog changed during signed verification")
+        if expected_catalog_index_sha256 is not None and \
+                sha256_bytes(index_bytes) != expected_catalog_index_sha256:
+            raise ValueError("Reused SDK catalog index differs from signed custody")
         if failed is None:
             observed_catalog = products._observe_ci_producer_jobs(
                 {"catalog": index["producer"]}, jobs_by_phase={"catalog": catalog_job},
@@ -413,6 +431,43 @@ def discover_reused_sdk_original_pins(selections, *, pull_request, repository,
                 "catalog_job_name": catalog_job}
     require_no_signing_secret(environment)
     return pins
+
+
+def discover_reused_sdk_original_pins_from_custody(selections, *, repository,
+        pull_request, trusted_workflow_sha, custody_selection,
+        custody_destination, token, environ=None):
+    """Select failed-run originals using a distinct protected dispatch's signed key."""
+    from ci.sdk_catalog_custody_locator import locate_failed_sdk_catalog_custody
+
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    require_no_signing_secret(os.environ)
+    custody_selection = require_exact_keys(custody_selection, {
+        "catalog_producer", "catalog_artifact_id", "catalog_artifact_sha256",
+        "catalog_workflow_sha", "catalog_workflow_path", "catalog_job_name",
+        "custody_producer", "custody_artifact_id", "custody_artifact_sha256",
+        "custody_workflow_sha", "custody_job_name", "trusted_source_commit",
+        "keyring_path", "keys_directory", "expected_keyring_sha256",
+        "expected_keys_inventory_sha256",
+    }, "SDK custody selection")
+    failed = validate_producer(custody_selection["catalog_producer"])
+    if failed["repository"] != repository or failed["pullRequest"] != pull_request:
+        raise ValueError("SDK custody producer differs from independently selected PR")
+    custody = locate_failed_sdk_catalog_custody(custody_destination,
+        **custody_selection, token=token, environ=environment)
+    return discover_reused_sdk_original_pins(selections, repository=repository,
+        pull_request=pull_request, catalog_artifact_name=custody["catalogArtifactName"],
+        catalog_public_key=custody["publicKey"],
+        expected_public_key_sha256=custody["publicKeySha256"],
+        trusted_workflow_sha=trusted_workflow_sha,
+        trusted_catalog_workflow_path=custody_selection["catalog_workflow_path"],
+        trusted_catalog_job_name=custody_selection["catalog_job_name"],
+        catalog_workflow_sha=custody_selection["catalog_workflow_sha"],
+        failed_catalog_producer=failed,
+        expected_catalog_artifact_id=custody["catalogArtifactId"],
+        expected_catalog_artifact_sha256=custody["catalogArtifactSha256"],
+        expected_catalog_index_sha256=custody["catalogIndexSha256"],
+        token=token, environ=environment)
 
 
 def discover_reused_sdk_original_pin(instance, *, expected_build_key,

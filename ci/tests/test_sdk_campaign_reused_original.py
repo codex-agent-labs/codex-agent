@@ -452,6 +452,85 @@ class ReusedSdkOriginalTest(unittest.TestCase):
                     trusted_catalog_job_name=self.catalog_job["name"]):
                 pass
 
+    def test_later_custody_dispatch_pins_exact_failed_catalog_before_originals(self):
+        producer = self.fixture.producer
+        name = locator.failed_sdk_partial_catalog_name(producer)
+        self.catalog_artifact["name"] = name
+        self.run = {**self.run, "status": "completed", "conclusion": "failure"}
+        selection = {self.instance: {
+            "expected_build_key": self.ready["buildKey"],
+            "expected_product_version": "0.3.0",
+            "trusted_worker_workflow_path": ".github/workflows/product-validation.yml",
+            "trusted_worker_job_name": self.worker_job["name"],
+        }}
+        custody_selection = {"catalog_producer": producer,
+            "catalog_artifact_id": 902,
+            "catalog_artifact_sha256": sha256_bytes(self.raw),
+            "catalog_workflow_path": ".github/workflows/product-validation.yml",
+            "catalog_workflow_sha": fixture_module.PIN,
+            "catalog_job_name": self.catalog_job["name"],
+            "custody_producer": {**producer, "event": "workflow_dispatch",
+                "runId": 903, "pullRequest": None},
+            "custody_artifact_id": 904,
+            "custody_artifact_sha256": "sha256:" + "a" * 64,
+            "custody_workflow_sha": fixture_module.PIN,
+            "custody_job_name": "product-validation / sdk-catalog-custody",
+            "trusted_source_commit": fixture_module.PIN,
+            "keyring_path": self.fixture.repository / "keyring.json",
+            "keys_directory": self.fixture.repository / "keys",
+            "expected_keyring_sha256": "sha256:" + "b" * 64,
+            "expected_keys_inventory_sha256": "sha256:" + "c" * 64}
+        manifest = self.key.parent.parent / "product-index.json"
+        signed = {"catalogArtifactName": name, "catalogArtifactId": 902,
+            "catalogArtifactSha256": sha256_bytes(self.raw),
+            "catalogIndexSha256": sha256_bytes(manifest.read_bytes()),
+            "publicKey": self.key,
+            "publicKeySha256": sha256_bytes(self.key.read_bytes())}
+        destination = self.fixture.repository / "protected-custody"
+        def discover(*, signed_pins=signed, artifact=None):
+            with self.official(), \
+                 patch.object(locator.products, "paginated_items", return_value=[
+                     self.catalog_artifact if artifact is None else artifact]), \
+                 patch.object(locator.products, "download_artifact_to_file",
+                     side_effect=lambda detail, _token, path, **_kwargs:
+                         Path(path).write_bytes(self.worker_raw if detail["id"] == 901 else self.raw)), \
+                 patch.object(locator, "_locate", return_value={
+                     "artifact_id": 901, "artifact_sha256": sha256_bytes(self.worker_raw)}), \
+                 patch("ci.sdk_catalog_custody_locator.locate_failed_sdk_catalog_custody",
+                     return_value=signed_pins) as custody:
+                result = locator.discover_reused_sdk_original_pins_from_custody(
+                    selection, repository=producer["repository"], pull_request=31,
+                    trusted_workflow_sha=fixture_module.PIN,
+                    custody_selection=custody_selection, custody_destination=destination,
+                    token="synthetic-token", environ={})
+            self.assertEqual(destination, custody.call_args.args[0])
+            return result
+        pins = discover()
+        self.assertEqual(902, pins[self.instance]["catalog_artifact_id"])
+        self.assertEqual(901, pins[self.instance]["original_artifact_id"])
+        for changed, artifact in (({"catalogArtifactId": 903}, None),
+                                  ({"catalogArtifactSha256": "sha256:" + "0" * 64}, None),
+                                  ({"catalogIndexSha256": "sha256:" + "0" * 64}, None),
+                                  ({}, {**self.catalog_artifact, "id": 903})):
+            with self.subTest(changed=changed, artifact=artifact), self.assertRaises(ValueError):
+                discover(signed_pins={**signed, **changed}, artifact=artifact)
+        with patch("ci.sdk_catalog_custody_locator.locate_failed_sdk_catalog_custody") as custody, \
+                self.assertRaisesRegex(ValueError, "independently selected PR"):
+            locator.discover_reused_sdk_original_pins_from_custody(selection,
+                repository="other/repository", pull_request=31,
+                trusted_workflow_sha=fixture_module.PIN,
+                custody_selection=custody_selection, custody_destination=destination,
+                token="synthetic-token", environ={})
+        custody.assert_not_called()
+        with patch("ci.sdk_catalog_custody_locator.locate_failed_sdk_catalog_custody") as custody, \
+                self.assertRaisesRegex(ValueError, "SDK custody selection"):
+            locator.discover_reused_sdk_original_pins_from_custody(selection,
+                repository=producer["repository"], pull_request=31,
+                trusted_workflow_sha=fixture_module.PIN,
+                custody_selection={**custody_selection, "catalog_public_key": self.key},
+                custody_destination=destination, token="synthetic-token", environ={})
+        custody.assert_not_called()
+
     def test_independent_worker_and_catalog_workflow_pairs(self):
         path = ".github/workflows/product-validation.yml"
         with self.official():
