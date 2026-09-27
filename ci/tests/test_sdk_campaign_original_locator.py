@@ -88,6 +88,17 @@ class SdkCampaignOriginalLocatorTest(TestCase):
                     with self.assertRaisesRegex(ValueError, "independent phase identity"):
                         locator.discover_fresh_sdk_original_pin(
                             instance, **{**arguments, "expected_product_version": "0.9.0"})
+                    self.assertEqual(2, download.call_count)
+                    with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
+                        locator.discover_fresh_sdk_original_pin(
+                            instance, **{**arguments, "expected_build_key": "sha256:" + "0" * 64})
+                    with self.assertRaisesRegex(ValueError, "caller-pinned workflow"):
+                        locator.discover_fresh_sdk_original_pin(
+                            instance, **{**arguments, "trusted_workflow_sha": "f" * 40})
+                    with self.assertRaisesRegex(ValueError, "caller-pinned workflow"):
+                        locator.discover_fresh_sdk_original_pin(
+                            instance, **{**arguments, "trusted_workflow_path": ".github/workflows/other.yml"})
+                    self.assertEqual(2, download.call_count)
                 with patch.object(locator.products, "api_json") as api, \
                      self.assertRaisesRegex(ValueError, "independent version, token and workflow route"):
                     locator.discover_fresh_sdk_original_pin(instance,
