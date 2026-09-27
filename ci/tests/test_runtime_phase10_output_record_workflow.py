@@ -1,6 +1,9 @@
 """The Runtime record carrier authenticates a completed run without rebuilding it."""
 
 from pathlib import Path
+import subprocess
+import tempfile
+import textwrap
 import unittest
 
 
@@ -28,6 +31,9 @@ class RuntimePhase10OutputRecordWorkflowTest(unittest.TestCase):
         self.assertIn("CODEX_AGENT_RUNTIME_PHASE10_CONTROL_APPROVED_SHA256", authority)
         self.assertIn('= "$CONTROL_SHA256"', authority)
         self.assertIn('= "$PINS_SHA256"', authority)
+        self.assertIn('object_pairs_hook=no_duplicates', authority)
+        self.assertIn('parse_float=no_float', authority)
+        self.assertIn('if raw != canonical:', authority)
         self.assertIn('test "$(jq -er \'.trustedSourceCommit\' ', authority)
         self.assertIn('test "$(jq -er \'.pgpKeySha256\' ', authority)
         self.assertNotIn("GITHUB_TOKEN:", authority)
@@ -74,6 +80,24 @@ class RuntimePhase10OutputRecordWorkflowTest(unittest.TestCase):
         self.assertNotIn("CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY", verification)
         self.assertIn("path: ${{ runner.temp }}/runtime-sidecar-capture", self.source)
         self.assertIn("path: ${{ runner.temp }}/runtime-verified-record", self.source)
+
+    def test_control_parser_rejects_duplicate_float_and_noncanonical_bytes(self):
+        authority = self.section(
+            "Require independently approved completed-run control before checkout",
+            "Check out protected reviewed verifier and signer",
+        )
+        fragment = authority.split('          python3 - "$RUNNER_TEMP/runtime-control.json" <<\'PY\'\n', 1)[1]
+        script = ('python3 - "$RUNNER_TEMP/runtime-control.json" <<\'PY\'\n'
+                  + textwrap.dedent(fragment.split('          jq -e ', 1)[0]))
+        with tempfile.TemporaryDirectory(prefix="runtime-control-guard-") as temporary:
+            path = Path(temporary) / "runtime-control.json"
+            for raw, success in ((b'{"x":1}\n', True), (b'{"x":1,"x":2}\n', False),
+                                 (b'{"x":1.0}\n', False), (b'{ "x":1 }\n', False)):
+                with self.subTest(raw=raw):
+                    path.write_bytes(raw)
+                    result = subprocess.run(["bash", "-e", "-c", script],
+                        env={"RUNNER_TEMP": temporary}, capture_output=True, text=True)
+                    self.assertEqual(success, result.returncode == 0, result.stderr)
 
 
 if __name__ == "__main__":

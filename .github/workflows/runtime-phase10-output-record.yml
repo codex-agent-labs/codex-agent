@@ -57,6 +57,27 @@ jobs:
           test "sha256:$(sha256sum "$RUNNER_TEMP/runtime-control.json" | cut -d ' ' -f 1)" = "$CONTROL_SHA256"
           test "sha256:$(sha256sum "$RUNNER_TEMP/runtime-phase11-pins.json" | cut -d ' ' -f 1)" = "$PINS_SHA256"
           test "sha256:$(sha256sum "$RUNNER_TEMP/runtime-pgp-public.asc" | cut -d ' ' -f 1)" = "$PGP_KEY_SHA256"
+          python3 - "$RUNNER_TEMP/runtime-control.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          def no_duplicates(pairs):
+              value = {}
+              for key, item in pairs:
+                  if key in value:
+                      raise ValueError("duplicate Runtime control key")
+                  value[key] = item
+              return value
+          def no_float(_):
+              raise ValueError("Runtime control cannot contain a float")
+          raw = Path(sys.argv[1]).read_bytes()
+          value = json.loads(raw, object_pairs_hook=no_duplicates,
+                             parse_float=no_float, parse_constant=no_float)
+          canonical = (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                  ensure_ascii=False, allow_nan=False) + "\n").encode()
+          if raw != canonical:
+              raise ValueError("Runtime control is not canonical JSON")
+          PY
           jq -e 'type == "object" and .schemaVersion == 1 and
             (keys == (["schemaVersion", "originalRunId", "originalRunAttempt", "validationCommit",
               "validationTree", "planArtifactId", "planArtifactSha256", "aggregateArtifactId",
