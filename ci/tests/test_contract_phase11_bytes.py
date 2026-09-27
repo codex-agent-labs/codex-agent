@@ -151,6 +151,35 @@ class ContractPhase11BytesTest(unittest.TestCase):
 
 
 class ContractPhase11LandedTreeTest(unittest.TestCase):
+    def test_candidate_cannot_publish_inside_landed_checkout(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="contract-landed-destination-") as temporary:
+            root = Path(temporary)
+            checkout = root / "repository"
+            trusted_repository(checkout)
+            output = root / "phase10"
+            output.mkdir()
+            (output / "control.json").write_bytes(b"{}\n")
+            tree = candidate._landed_tree(checkout)
+            destination = checkout / "candidate"
+            with self.assertRaisesRegex(ValueError, "overlaps a verified input"):
+                candidate.forward_verified_contract_phase10_bytes(
+                    output, destination, landed_repository=checkout,
+                    expected_inventory_sha256=sha256_bytes(canonical_json_bytes(
+                        regular_file_inventory(output))),
+                    expected_contract_version="0.8.0",
+                    expected_payload_sha256="sha256:" + "a" * 64,
+                    expected_metadata_build_key="sha256:" + "b" * 64,
+                    expected_source_commit="c" * 40,
+                    expected_source_tree="d" * 40,
+                    expected_validation_tree=tree,
+                    expected_workflow_sha="e" * 40,
+                    expected_caller_sha256="sha256:" + "f" * 64,
+                    expected_keyring_sha256="sha256:" + "1" * 64,
+                    expected_keys_inventory_sha256="sha256:" + "2" * 64,
+                    expected_pgp_key_sha256="sha256:" + "3" * 64,
+                )
+            self.assertFalse(destination.exists())
+
     def test_exact_root_and_landed_tree(self) -> None:
         with tempfile.TemporaryDirectory(prefix="contract-landed-tree-") as temporary:
             root = Path(temporary) / "repository"

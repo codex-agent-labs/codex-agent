@@ -87,9 +87,11 @@ def forward_verified_contract_phase10_bytes(
     if destination.exists() or destination.is_symlink():
         raise ValueError("Contract candidate destination already exists")
     source = protected_output.resolve(strict=True)
+    landed_root = Path(landed_repository).resolve(strict=True)
     output = destination.resolve(strict=False)
-    if output == source or output in source.parents or source in output.parents:
-        raise ValueError("Contract candidate destination overlaps Phase-10 output")
+    for input_root in (source, landed_root):
+        if output == input_root or output in input_root.parents or input_root in output.parents:
+            raise ValueError("Contract candidate destination overlaps a verified input")
     if _inventory_digest(source) != expected_inventory_sha256:
         raise ValueError("Contract Phase-10 output differs from independently selected bytes")
 
