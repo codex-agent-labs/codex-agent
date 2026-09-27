@@ -351,10 +351,50 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
                     _validate_compatibility(canonical(value))
 
     def test_missing_packaged_compatibility_declaration_fails_closed(self) -> None:
-        with patch("codex_agent._ffi.files") as resources:
-            resources.return_value.joinpath.return_value.open.side_effect = FileNotFoundError
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory, \
+                patch("codex_agent._ffi.files", return_value=Path(directory)):
             with self.assertRaisesRegex(OSError, "compatibility declaration is missing"):
                 _load_compatibility()
+
+    def test_packaged_policy_and_root_reject_symlinked_resources(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            root = Path(directory)
+            native = root / "native"
+            native.mkdir()
+            outside = root / "outside"
+            outside.write_bytes(b"substituted package resource")
+            for name, load in (("sdk-compatibility.json", _load_compatibility),
+                               ("sdk-runtime-root.pub", _read_sdk_runtime_root)):
+                with self.subTest(name=name):
+                    resource = native / name
+                    try:
+                        resource.symlink_to(outside)
+                    except (OSError, NotImplementedError) as error:
+                        self.skipTest(f"package symlink fixtures unavailable: {error}")
+                    with patch("codex_agent._ffi.files", return_value=root):
+                        with self.assertRaisesRegex(OSError, "symlinks or reparse points"):
+                            load()
+                    resource.unlink()
+            native.rmdir()
+            try:
+                native.symlink_to(root, target_is_directory=True)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"package directory symlink fixtures unavailable: {error}")
+            with patch("codex_agent._ffi.files", return_value=root):
+                with self.assertRaisesRegex(OSError, "symlinks or reparse points"):
+                    _read_sdk_runtime_root()
+
+    def test_packaged_resource_accepts_zip_backed_traversable(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            archive = Path(directory) / "package.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr("native/resource", b"zip-backed resource")
+            with zipfile.ZipFile(archive) as source:
+                resource = zipfile.Path(source, "native/resource")
+                self.assertEqual(
+                    b"zip-backed resource",
+                    _ffi._read_packaged_resource(resource, "test resource", 128),
+                )
 
     def test_packaged_policy_and_root_reads_are_bounded(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT) as directory:

@@ -272,6 +272,8 @@ def _validate_compatibility(data: bytes) -> dict[str, Any]:
 
 
 def _read_packaged_resource(resource: Any, label: str, limit: int) -> bytes:
+    if isinstance(resource, Path):
+        _validate_absolute_regular_path(resource, label)
     with resource.open("rb") as stream:
         data = stream.read(limit + 1)
     if len(data) > limit:
