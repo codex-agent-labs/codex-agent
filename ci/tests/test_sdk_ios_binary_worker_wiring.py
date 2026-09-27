@@ -143,14 +143,16 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
 
     def test_early_binary_election_and_worker_use_only_the_required_sources(self):
         plan = self.job("sdk-ios-binary-plan")
-        self.assertRegex(plan, r"(?m)^    needs: \[plan, product-resume, product-tooling\]$")
+        self.assertRegex(plan, r"(?m)^    needs: \[plan, product-resume, contract-validation\]$")
         self.assertIn("uses: ./.github/actions/capture-sdk-tooling", plan)
+        self.assertIn("artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}", plan)
+        self.assertIn("artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}", plan)
         self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", plan)
         self.assertIn("sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}", plan)
         self.assertNotIn("runtime-continuation", plan)
         self.assertNotIn("runtime-aggregate-continuation", plan)
         binary = self.job("sdk-ios-binary")
-        self.assertIn("needs: [plan, product-resume, sdk-ios-binary-plan, apple, product-tooling]", binary)
+        self.assertIn("needs: [plan, product-resume, sdk-ios-binary-plan, apple, contract-validation]", binary)
         self.assertIn("uses: ./.github/actions/capture-sdk-tooling", binary)
         for name in ("native_tests", "rust_device", "rust_simulator"):
             self.assertIn(f"needs.apple.outputs.{name}_artifact_id", binary)
