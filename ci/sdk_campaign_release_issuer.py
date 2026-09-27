@@ -53,6 +53,7 @@ _FAMILIES = ("core-android", "native", "apple-js")
 _APPROVED_AUTHORITY = "CODEX_AGENT_SDK_AUTHORITY_APPROVED_SHA256"
 _APPROVED_KEYRING = "CODEX_AGENT_PRODUCT_KEYRING_APPROVED_SHA256"
 _APPROVED_INDEX = "CODEX_AGENT_SDK_INDEX_APPROVED_SHA256"
+_APPROVED_SIGNATURE = "CODEX_AGENT_SDK_SIGNATURE_APPROVED_SHA256"
 _CONTROL_APPROVAL_ENV = {
     "sdk_validation_tooling": "CODEX_AGENT_SDK_VALIDATION_TOOLING_APPROVED_SHA256",
     "sdk_apple_validation_policy": "CODEX_AGENT_SDK_APPLE_POLICY_APPROVED_SHA256",
@@ -272,10 +273,12 @@ def _optional_pinned_file(path, digest, label):
     return raw
 
 
-def _prepare_cli(args):
+def _prepare_or_verify_cli(args):
     require_no_signing_secret(os.environ)
     authority_pin = _approved_environment_digest(_APPROVED_AUTHORITY)
     keyring_pin = _approved_environment_digest(_APPROVED_KEYRING)
+    index_pin = _approved_environment_digest(_APPROVED_INDEX) if args.mode == "verify" else None
+    signature_pin = _approved_environment_digest(_APPROVED_SIGNATURE) if args.mode == "verify" else None
     from ci.sdk_campaign_pinned_election import held_pinned_sdk_campaign_authority
     from sdk_metadata_policy import metadata_admission_options
 
@@ -310,7 +313,7 @@ def _prepare_cli(args):
                    **{name: producer[name] for name in (
                        "commit", "tree", "runId", "runAttempt")}}
         with metadata_admission_options(metadata) as admissions:
-            prepared = prepare_sdk_release_index(args.plan, args.repository_root,
+            options = dict(
                 authority_file=args.authority_file,
                 authority_artifact_id=args.authority_artifact_id,
                 authority_artifact_sha256=args.authority_artifact_sha256,
@@ -336,10 +339,22 @@ def _prepare_cli(args):
                 sdk_apple_validation_policy=(None if controlled["sdk_apple_validation_policy"] is None
                     else load_canonical_json_bytes(controlled["sdk_apple_validation_policy"])),
                 **admissions)
+            if args.mode == "verify":
+                _, prepared = verify_signed_sdk_release_index_against_official_replay(
+                    SignedProductIndex(args.signed_index, args.signature),
+                    args.plan, args.repository_root,
+                    expected_index_sha256=index_pin,
+                    expected_signature_sha256=signature_pin, **options)
+            else:
+                prepared = prepare_sdk_release_index(args.plan, args.repository_root,
+                    **options)
             for name, raw in controlled.items():
                 if raw is not None and read_regular_file_bytes(getattr(args, name),
                         max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != raw:
                     raise ValueError(f"{name} changed during SDK release preparation")
+        if args.mode == "verify":
+            return {"verifiedIndexSha256": index_pin,
+                    "verifiedSignatureSha256": signature_pin}
         result = stage_prepared_sdk_release_index(prepared, args.destination)
     return {"preparedIndex": str(result)}
 
@@ -392,30 +407,36 @@ def _sign_cli(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     modes = parser.add_subparsers(dest="mode", required=True)
-    prepare = modes.add_parser("prepare", allow_abbrev=False)
-    for name in ("plan", "repository-root", "authority-file", "keyring-path",
-                 "keys-directory", "destination"):
-        prepare.add_argument("--" + name, type=Path, required=True)
-    for name in ("authority-artifact-id", "state-artifact-id", "state-wave"):
-        prepare.add_argument("--" + name, type=int, required=True)
-    prepare.add_argument("--sdk-state-wave", type=int)
-    for name in ("authority-artifact-sha256", "authority-workflow-sha",
-                 "authority-workflow-path", "authority-job-name", "trusted-workflow-sha",
-                 "state-artifact-sha256"):
-        prepare.add_argument("--" + name, required=True)
-    for family in _FAMILIES:
-        for kind in ("election", "semantic"):
-            prepare.add_argument(f"--{kind}-{family}", type=Path, required=True)
-    for name in ("sdk-validation-tooling", "sdk-apple-validation-policy",
-                 "sdk-facade-metadata-policy", "sdk-android-metadata-policy",
-                 "custody-catalogs"):
-        prepare.add_argument("--" + name, type=Path)
+    for mode in ("prepare", "verify"):
+        command = modes.add_parser(mode, allow_abbrev=False)
+        for name in ("plan", "repository-root", "authority-file", "keyring-path",
+                     "keys-directory"):
+            command.add_argument("--" + name, type=Path, required=True)
+        if mode == "prepare":
+            command.add_argument("--destination", type=Path, required=True)
+        else:
+            for name in ("signed-index", "signature"):
+                command.add_argument("--" + name, type=Path, required=True)
+        for name in ("authority-artifact-id", "state-artifact-id", "state-wave"):
+            command.add_argument("--" + name, type=int, required=True)
+        command.add_argument("--sdk-state-wave", type=int)
+        for name in ("authority-artifact-sha256", "authority-workflow-sha",
+                     "authority-workflow-path", "authority-job-name", "trusted-workflow-sha",
+                     "state-artifact-sha256"):
+            command.add_argument("--" + name, required=True)
+        for family in _FAMILIES:
+            for kind in ("election", "semantic"):
+                command.add_argument(f"--{kind}-{family}", type=Path, required=True)
+        for name in ("sdk-validation-tooling", "sdk-apple-validation-policy",
+                     "sdk-facade-metadata-policy", "sdk-android-metadata-policy",
+                     "custody-catalogs"):
+            command.add_argument("--" + name, type=Path)
     sign = modes.add_parser("sign", allow_abbrev=False)
     for name in ("prepared-index", "destination", "keyring-path", "keys-directory"):
         sign.add_argument("--" + name, type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        result = _prepare_cli(args) if args.mode == "prepare" else _sign_cli(args)
+        result = _sign_cli(args) if args.mode == "sign" else _prepare_or_verify_cli(args)
     except (OSError, ValueError, KeyError) as error:
         parser.error(str(error))
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))

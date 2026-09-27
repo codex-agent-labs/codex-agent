@@ -252,6 +252,22 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
         self.assertEqual(prepared, (self.root / "signed/product-index.json").read_bytes())
         verify_manifest_signature(self.root / "signed/product-index.json",
             self.root / "signed/product-index.sig", self.keys / "release-test.pub", self.signing)
+        verify_arguments = self._cli_prepare_arguments()
+        verify_arguments[0] = "verify"
+        destination_at = verify_arguments.index("--destination")
+        del verify_arguments[destination_at:destination_at + 2]
+        verify_arguments.extend(("--signed-index", str(self.root / "signed/product-index.json"),
+            "--signature", str(self.root / "signed/product-index.sig")))
+        verify_environment = {**prepare_environment,
+            "CODEX_AGENT_SDK_INDEX_APPROVED_SHA256": sha256_bytes(prepared),
+            "CODEX_AGENT_SDK_SIGNATURE_APPROVED_SHA256": sha256_bytes(
+                (self.root / "signed/product-index.sig").read_bytes())}
+        with patch.dict(os.environ, verify_environment, clear=True), \
+             patch("ci.sdk_campaign_catalog_producer.held_sdk_campaign_candidate_from_official_authority",
+                   official), redirect_stdout(StringIO()) as verified:
+            self.assertEqual(0, main(verify_arguments))
+        self.assertEqual(sha256_bytes(prepared),
+            json.loads(verified.getvalue())["verifiedIndexSha256"])
 
     def test_prepare_cli_rejects_optional_policy_without_protected_digest(self):
         policy = self.root / "tooling.json"
