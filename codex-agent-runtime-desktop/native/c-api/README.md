@@ -7,7 +7,7 @@ of the canonical API, not a daemon, transport, or second runtime.
 The public header is [`include/codex_agent.h`](include/codex_agent.h). ABI
 `1.13.0` accepts compatible `1.x` requests from `1.0.0` through the current
 version. Release SDK classifier ZIPs are carried by
-`io.github.codex-agent-labs:codex-agent-runtime-desktop:0.2.0` for
+`io.github.codex-agent-labs:codex-agent-runtime-desktop:0.8.0` for
 `macos-arm64`, `macos-x64`, `linux-arm64`, `linux-x64`, and `windows-x64`.
 
 ## Ownership and callbacks
