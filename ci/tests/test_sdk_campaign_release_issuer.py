@@ -16,6 +16,7 @@ from ci.products.signatures import (
 )
 from ci.sdk_campaign_release_issuer import (
     prepare_sdk_release_index, sign_approved_sdk_release_index,
+    stage_prepared_sdk_release_index,
 )
 from ci.tests.product_chain_support import output, write_receipt
 
@@ -106,8 +107,10 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
         self.assertEqual(61, len(index["entries"]))
         self.assertEqual(self.signing, index["signing"])
 
-        manifest = self.root / "product-index.json"
-        manifest.write_bytes(prepared)
+        staged = self.root / "prepared"
+        custody = stage_prepared_sdk_release_index(prepared, staged)
+        self.assertEqual(staged / "product-index.json", custody)
+        manifest = staged / "product-index.json"
         signature = sign_approved_sdk_release_index(manifest,
             expected_index_sha256=sha256_bytes(prepared), keyring_path=self.keyring,
             keys_directory=self.keys,
@@ -117,6 +120,8 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
         detached.write_bytes(signature)
         verify_manifest_signature(manifest, detached, self.keys / "release-test.pub", self.signing)
         self.assertEqual(prepared, manifest.read_bytes())
+        with self.assertRaises(ValueError):
+            stage_prepared_sdk_release_index(prepared, staged)
 
     def test_unpinned_inputs_fail_before_observation_and_raw_map_is_not_an_issuer(self):
         with patch("ci.sdk_campaign_catalog_producer.held_sdk_campaign_candidate_from_official_authority") as official:
@@ -154,6 +159,15 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "observation token"):
             sign_approved_sdk_release_index(manifest, **{**options,
                 "environ": {"GITHUB_TOKEN": "even-an-empty-variable-is-forbidden"}})
+
+    def test_no_secret_stage_rejects_development_catalog_and_signing_context(self):
+        with self.assertRaises(ValueError):
+            stage_prepared_sdk_release_index(canonical_json_bytes({
+                "trustDomain": "development"}), self.root / "prepared")
+        with patch.dict("os.environ", {"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": ""}):
+            with self.assertRaisesRegex(ValueError, "signing-secret"):
+                stage_prepared_sdk_release_index(b"{}\n", self.root / "prepared")
+        self.assertFalse((self.root / "prepared").exists())
 
 
 if __name__ == "__main__":

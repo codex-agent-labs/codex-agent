@@ -14,8 +14,8 @@ import tempfile
 from products.aggregate import validate_product_index
 from products.index import IndexEntrySource, _mint_release_admission, build_product_index
 from products.inventory import (
-    canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
-    require_sha256, sha256_bytes,
+    canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
+    read_regular_file_bytes, require_sha256, sha256_bytes,
 )
 from products.receipt import validate_phase_receipt, validate_producer
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
@@ -121,6 +121,30 @@ def prepare_sdk_release_index(plan_path, repository_root, *, authority_file,
                 reject_symlink_parents=True) != keyring_bytes:
             raise ValueError("SDK signing keyring changed during preparation")
     return prepared
+
+
+def stage_prepared_sdk_release_index(prepared: bytes, destination: Path):
+    """Retain one exact no-secret candidate for later, independently approved signing.
+
+    This does not return an approval digest or grant admission.
+    """
+    require_no_signing_secret(os.environ)
+    if type(prepared) is not bytes or len(prepared) > 16 * 1024 * 1024:
+        raise ValueError("Prepared SDK index bytes are missing or oversized")
+    index = validate_product_index(load_canonical_json_bytes(prepared))
+    if (canonical_json_bytes(index) != prepared or index["trustDomain"] != "release"
+            or index["context"]["kind"] != "pull-request"
+            or len(index["entries"]) != len(SDK_CAMPAIGN_INSTANCES)):
+        raise ValueError("Prepared SDK index is not the exact release campaign candidate")
+    digest = sha256_bytes(prepared)
+    with tempfile.TemporaryDirectory(prefix="sdk-release-prepare-") as temporary:
+        staged = Path(temporary).resolve() / "index"
+        staged.mkdir()
+        (staged / "product-index.json").write_bytes(prepared)
+        publish_regular_tree(staged, Path(destination), expected_inventory=[{
+            "relativePath": "product-index.json", "bytes": len(prepared), "sha256": digest,
+        }])
+    return Path(destination) / "product-index.json"
 
 
 def sign_approved_sdk_release_index(prepared_index: Path, *, expected_index_sha256,
