@@ -65,7 +65,7 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
 
     def inspect(self, *args, **kwargs):
         self.assertEqual(self.tooling, kwargs.pop("sdk_validation_tooling"))
-        self.assertEqual(self.arguments["trusted_workflow_sha"], kwargs.pop("sdk_original_workflow_sha"))
+        self.assertEqual(self.arguments["trusted_workflow_sha"], kwargs["sdk_original_workflow_sha"])
         return fixture.SdkNativePackageExecutionTest.inspect(self, *args, **kwargs)
 
     @contextmanager
