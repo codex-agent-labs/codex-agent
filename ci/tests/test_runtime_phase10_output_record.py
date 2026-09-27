@@ -178,7 +178,8 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
                                                    environ={"GITHUB_RUN_ID": "999",
                                                             "GITHUB_RUN_ATTEMPT": "9"}))
 
-    def admit_original(self, *, overrides=None, archive_files=None, plan=None):
+    def admit_original(self, *, overrides=None, archive_files=None, plan=None,
+                       sidecar_mutation=False):
         producer = {
             "repository": "codex-agent-labs/codex-agent",
             "workflowPath": ".github/workflows/ci.yml",
@@ -239,6 +240,17 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
             shutil.copy2(archive, destination)
             return artifact_detail, destination
 
+        def sidecar_capture(_, __, destination, **kwargs):
+            self.assertEqual(self.validation, Path(__))
+            self.assertEqual(producer["runId"], kwargs["original_run_id"])
+            self.assertEqual(producer["runAttempt"], kwargs["original_run_attempt"])
+            (destination / "original").mkdir(parents=True)
+            (destination / "original/signature.asc").write_bytes(
+                b"different official sidecar\n" if sidecar_mutation
+                else (self.sidecars / "signature.asc").read_bytes())
+            (destination / "transport.zip").write_bytes(b"pinned official sidecar archive\n")
+            return {"sidecarFiles": regular_file_inventory(destination / "original")}
+
         with patch.object(gate.product_reuse, "_validate_plan", return_value=selected), \
              patch.object(gate.product_reuse, "_observe_ci_producer_jobs",
                           return_value=[{"run": {"head_sha": self.candidate_commit}, "jobs": []}]), \
@@ -247,6 +259,8 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
              patch.object(gate.product_reuse, "_require_artifact_job_window") as window, \
              patch.object(gate.product_reuse, "paginated_items",
                           return_value=[artifact_detail]), \
+             patch.object(gate, "capture_runtime_phase10_maven_sidecar_upload",
+                          side_effect=sidecar_capture), \
              patch.object(gate, "_observe_protected_record_dispatch",
                           return_value={"run": {"head_sha": selected_record_producer["commit"]},
                                         "jobs": []}), \
@@ -340,6 +354,11 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
                 trusted_source_commit=self.commit,
                 trusted_aggregate_workflow_sha="e" * 40,
                 expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
+                plan_artifact_id=16,
+                plan_artifact_sha256="sha256:" + "1" * 64,
+                sidecar_artifact_id=17,
+                sidecar_artifact_sha256="sha256:" + "2" * 64,
+                trusted_sidecar_workflow_sha="a" * 40,
                 token="observer", environ={},
             )
         observer.assert_not_called()
@@ -359,13 +378,46 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
             "trusted_record_workflow_path": gate._RECORD_DISPATCH_WORKFLOW,
             "trusted_record_job_name": gate._RECORD_DISPATCH_JOB,
             "record_artifact_name": name,
+            "plan_artifact_id": 16,
+            "plan_artifact_sha256": "sha256:" + "1" * 64,
+            "sidecar_artifact_id": 17,
+            "sidecar_artifact_sha256": "sha256:" + "2" * 64,
+            "trusted_sidecar_workflow_sha": "a" * 40,
         })
         self.assertEqual(dispatch, result["officialRecordUpload"]["producer"])
         self.assertEqual(77, result["officialRecordUpload"]["originalProductProducer"]["runId"])
         self.assertEqual(name, result["officialRecordUpload"]["artifact"]["name"])
+        self.assertEqual(self.root / "admitted-record/original-sidecar-capture",
+                         result["sidecarCapturePath"])
+        self.assertEqual(b"pinned official sidecar archive\n",
+                         (self.root / "admitted-record/original-sidecar-capture/transport.zip").read_bytes())
         fetched.assert_called_once()
         window.assert_called_once()
         deep.assert_called_once()
+
+    def test_dispatch_rejects_official_sidecar_byte_mismatch_before_deep_verification(self):
+        dispatch = {
+            "repository": "codex-agent-labs/codex-agent",
+            "workflowPath": ".github/workflows/ci.yml",
+            "commit": "d" * 40, "tree": "e" * 40,
+            "event": "workflow_dispatch", "runId": 88,
+            "runAttempt": 3, "pullRequest": None,
+        }
+        with self.assertRaisesRegex(ValueError, "sidecars differ from pinned official"):
+            self.admit_original(overrides={
+                "expected_record_producer": dispatch,
+                "trusted_record_workflow_path": gate._RECORD_DISPATCH_WORKFLOW,
+                "trusted_record_job_name": gate._RECORD_DISPATCH_JOB,
+                "record_artifact_name": (
+                    f"codex-agent-runtime-phase10-output-record-{self.candidate_tree}"
+                    "-attestation-88-attempt-3"),
+                "plan_artifact_id": 16,
+                "plan_artifact_sha256": "sha256:" + "1" * 64,
+                "sidecar_artifact_id": 17,
+                "sidecar_artifact_sha256": "sha256:" + "2" * 64,
+                "trusted_sidecar_workflow_sha": "a" * 40,
+            }, sidecar_mutation=True)
+        self.assertFalse((self.root / "admitted-record").exists())
 
     def test_later_run_rejects_signed_pair_changed_after_deep_verification(self):
         original = gate.verify_signed_runtime_phase10_output_record

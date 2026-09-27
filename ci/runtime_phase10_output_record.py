@@ -21,6 +21,7 @@ if __package__:
 from ci import product_reuse
 from ci.receipt import safe_extract
 from ci.runtime_phase10_upload_locator import capture_observed_runtime_phase10_upload
+from ci.runtime_phase10_sidecar_upload import capture_runtime_phase10_maven_sidecar_upload
 from ci.runtime_phase11_bytes import _landed_tree, forward_verified_runtime_phase10_bytes
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
@@ -110,6 +111,9 @@ def admit_original_runtime_phase10_output_record(
     record_artifact_sha256: str, expected_record_sha256: str,
     expected_signature_sha256: str, trusted_source_commit: str,
     trusted_aggregate_workflow_sha: str, expected_pgp_key_sha256: str,
+    plan_artifact_id: int | None = None, plan_artifact_sha256: str | None = None,
+    sidecar_artifact_id: int | None = None, sidecar_artifact_sha256: str | None = None,
+    trusted_sidecar_workflow_sha: str | None = None,
     token: str, environ=None,
 ) -> dict:
     """Admit a caller-pinned signed record and its distinct original product.
@@ -147,12 +151,23 @@ def admit_original_runtime_phase10_output_record(
                          ("signature", expected_signature_sha256)):
         require_sha256(value, f"Runtime original {label} digest")
     if dispatch_record:
+        if (plan_artifact_id is None or plan_artifact_sha256 is None
+                or sidecar_artifact_id is None or sidecar_artifact_sha256 is None
+                or trusted_sidecar_workflow_sha is None):
+            raise ValueError("Runtime record dispatch requires independent original sidecar pins")
         expected_name = ("codex-agent-runtime-phase10-output-record-"
                          f"{producer['tree']}-attestation-{record_producer['runId']}"
                          f"-attempt-{record_producer['runAttempt']}")
         if (record_artifact_name != expected_name
                 or record_producer["repository"] != producer["repository"]):
             raise ValueError("Runtime record dispatch name or repository differs from approved original")
+        require_integer(plan_artifact_id, "Runtime original plan artifact ID", 1)
+        require_sha256(plan_artifact_sha256, "Runtime original plan artifact digest")
+        require_integer(sidecar_artifact_id, "Runtime original sidecar artifact ID", 1)
+        require_sha256(sidecar_artifact_sha256, "Runtime original sidecar artifact digest")
+        if (type(trusted_sidecar_workflow_sha) is not str
+                or re.fullmatch(r"[0-9a-f]{40}", trusted_sidecar_workflow_sha) is None):
+            raise ValueError("Runtime original sidecar workflow SHA is not pinned")
     plan_bytes = read_regular_file_bytes(
         Path(plan_path), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
     )
@@ -210,9 +225,29 @@ def admit_original_runtime_phase10_output_record(
         if sha256_bytes(record_bytes) != expected_record_sha256 or \
                 sha256_bytes(signature_bytes) != expected_signature_sha256:
             raise ValueError("Runtime original signed record differs from independent pins")
+        sidecar_capture = None
+        sidecar_capture_files = None
+        if dispatch_record:
+            sidecar_capture = root / "original-sidecar-capture"
+            capture_runtime_phase10_maven_sidecar_upload(
+                original_plan, validation_repository, sidecar_capture,
+                plan_artifact_id=plan_artifact_id,
+                plan_artifact_sha256=plan_artifact_sha256,
+                original_run_id=producer["runId"],
+                original_run_attempt=producer["runAttempt"],
+                trusted_workflow_sha=trusted_sidecar_workflow_sha,
+                artifact_id=sidecar_artifact_id,
+                artifact_sha256=sidecar_artifact_sha256,
+                token=token, environ=environment,
+            )
+            if regular_file_inventory(sidecar_capture / "original") != \
+                    regular_file_inventory(maven_sidecars):
+                raise ValueError("Runtime sidecars differ from pinned official original upload")
+            sidecar_capture_files = regular_file_inventory(sidecar_capture)
         record = verify_signed_runtime_phase10_output_record(
             record_path, signature_path, repository_root, protected_output,
-            maven_sidecars, pgp_public_key, original_plan,
+            (sidecar_capture / "original" if sidecar_capture is not None else maven_sidecars),
+            pgp_public_key, original_plan,
             validation_repository=validation_repository,
             trusted_source_commit=trusted_source_commit,
             trusted_workflow_sha=trusted_aggregate_workflow_sha,
@@ -225,22 +260,33 @@ def admit_original_runtime_phase10_output_record(
                                     reject_symlink_parents=True) != plan_bytes
                 or read_regular_file_bytes(record_path) != record_bytes
                 or read_regular_file_bytes(signature_path) != signature_bytes
-                or regular_file_inventory(extracted) != inventory):
+                or regular_file_inventory(extracted) != inventory
+                or (sidecar_capture is not None and
+                    regular_file_inventory(sidecar_capture) != sidecar_capture_files)):
             raise ValueError("Runtime original record inputs changed during admission")
         retained = root / "retained"
         snapshot_regular_tree(extracted, retained / "signed-record")
+        if sidecar_capture is not None:
+            snapshot_regular_tree(sidecar_capture, retained / "original-sidecar-capture")
+            if regular_file_inventory(retained / "original-sidecar-capture") != sidecar_capture_files:
+                raise ValueError("Runtime original sidecar capture changed during retention")
         transport = {"schemaVersion": 1, "artifact": artifact,
                      "producer": record_producer, "observed": observed,
                      "recordSha256": expected_record_sha256,
                      "signatureSha256": expected_signature_sha256}
         if dispatch_record:
             transport["originalProductProducer"] = producer
+            transport["sidecarArtifactId"] = sidecar_artifact_id
+            transport["sidecarArtifactSha256"] = sidecar_artifact_sha256
+            transport["sidecarWorkflowSha"] = trusted_sidecar_workflow_sha
         write_canonical_json(retained / "transport.json", transport)
         retained_files = regular_file_inventory(retained)
         if (regular_file_inventory(retained / "signed-record") != inventory
                 or regular_file_inventory(extracted) != inventory
                 or read_regular_file_bytes(record_path) != record_bytes
-                or read_regular_file_bytes(signature_path) != signature_bytes):
+                or read_regular_file_bytes(signature_path) != signature_bytes
+                or (sidecar_capture is not None and
+                    regular_file_inventory(sidecar_capture) != sidecar_capture_files)):
             raise ValueError("Runtime original signed record changed before retention")
         require_no_signing_secret(environment)
         require_no_signing_secret(os.environ)
@@ -248,13 +294,16 @@ def admit_original_runtime_phase10_output_record(
         if (regular_file_inventory(destination) != retained_files
                 or regular_file_inventory(destination / "signed-record") != inventory):
             raise ValueError("Runtime retained signed record differs from verified bytes")
-        return {"record": record, "recordSha256": expected_record_sha256,
-                "signatureSha256": expected_signature_sha256,
-                "recordPath": destination / "signed-record/record.json",
-                "signaturePath": destination / "signed-record/record.sig",
-                "transportPath": destination / "transport.json",
-                "retainedFiles": retained_files,
-                "officialRecordUpload": transport}
+        result = {"record": record, "recordSha256": expected_record_sha256,
+                  "signatureSha256": expected_signature_sha256,
+                  "recordPath": destination / "signed-record/record.json",
+                  "signaturePath": destination / "signed-record/record.sig",
+                  "transportPath": destination / "transport.json",
+                  "retainedFiles": retained_files,
+                  "officialRecordUpload": transport}
+        if sidecar_capture is not None:
+            result["sidecarCapturePath"] = destination / "original-sidecar-capture"
+        return result
 
 
 def prepare_runtime_phase10_output_record(
@@ -601,6 +650,9 @@ def main(argv=None) -> int:
         admitted.add_argument(f"--{name}", required=True)
     admitted.add_argument("--record-producer", type=Path)
     admitted.add_argument("--expected-record-producer-sha256")
+    for name in ("plan-artifact-id", "plan-artifact-sha256", "sidecar-artifact-id",
+                 "sidecar-artifact-sha256", "trusted-sidecar-workflow-sha"):
+        admitted.add_argument(f"--{name}")
     for command in ("prepare", "verify-publish"):
         selected = commands.add_parser(command, allow_abbrev=False)
         for name in ("plan", "repository-root", "validation-repository", "protected-output",
@@ -658,6 +710,13 @@ def main(argv=None) -> int:
             trusted_source_commit=args.trusted_source_commit,
             trusted_aggregate_workflow_sha=args.trusted_aggregate_workflow_sha,
             expected_pgp_key_sha256=args.expected_pgp_key_sha256,
+            plan_artifact_id=(None if args.plan_artifact_id is None
+                              else int(args.plan_artifact_id)),
+            plan_artifact_sha256=args.plan_artifact_sha256,
+            sidecar_artifact_id=(None if args.sidecar_artifact_id is None
+                                 else int(args.sidecar_artifact_id)),
+            sidecar_artifact_sha256=args.sidecar_artifact_sha256,
+            trusted_sidecar_workflow_sha=args.trusted_sidecar_workflow_sha,
             token=os.environ["GITHUB_TOKEN"], environ=os.environ,
         )
         print(json.dumps({key: (str(value) if isinstance(value, Path) else value)
