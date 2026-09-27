@@ -11,14 +11,15 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from ci.products.inventory import sha256_bytes
+from ci.products.inventory import regular_file_inventory, sha256_bytes
 from ci.products.inventory import publish_regular_tree as actual_publish_regular_tree
 from ci.products.inventory import snapshot_regular_tree as actual_snapshot_regular_tree
 from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
 from ci.products.runtime_phase10_maven import (
-    produce_runtime_phase10_maven_sidecars, verify_runtime_phase10_maven,
+    _publication_inventory, produce_runtime_phase10_maven_sidecars,
+    verify_runtime_phase10_maven,
 )
-from ci.tests.test_product_runtime_aggregate import Fixture
+from ci.tests.test_product_runtime_aggregate import Fixture, VERSION
 
 
 _FINGERPRINT = "A" * 40
@@ -48,8 +49,16 @@ class RuntimePhase10MavenTest(unittest.TestCase):
                     (path.parent / (path.name + suffix)).write_bytes(
                         (hashlib.new(suffix[1:], path.read_bytes()).hexdigest() + "\n").encode(),
                     )
+        self.write_publication_inventory()
         self.key = root / "pgp-key.asc"
         self.key.write_bytes(b"synthetic public key\n")
+
+    def write_publication_inventory(self):
+        (self.sidecars / "publication-inventory.json").write_bytes(_publication_inventory(
+            VERSION, regular_file_inventory(self.payload),
+            [item for item in regular_file_inventory(self.sidecars)
+             if item["relativePath"] != "publication-inventory.json"],
+        ))
 
     @staticmethod
     def fake_gpg(*arguments):
@@ -69,11 +78,21 @@ class RuntimePhase10MavenTest(unittest.TestCase):
         record, calls = self.verify()
         self.assertEqual("runtime", record["product"])
         self.assertEqual(len(self.fixture.maven_inputs) + 1, len(record["payloadFiles"]))
-        self.assertEqual(5 * sum(source["role"] != "checksum" for source in self.fixture.maven_inputs),
+        self.assertEqual(1 + 5 * sum(source["role"] != "checksum" for source in self.fixture.maven_inputs),
                          len(record["sidecarFiles"]))
-        self.assertEqual(len(record["sidecarFiles"]) // 5,
+        self.assertEqual((len(record["sidecarFiles"]) - 1) // 5,
                          sum("--verify" in call.args for call in calls))
         self.assertEqual(_FINGERPRINT, record["pgpPublicKey"]["fingerprint"])
+
+    def test_publication_inventory_is_required_and_binds_final_layout(self):
+        inventory = self.sidecars / "publication-inventory.json"
+        original = inventory.read_bytes()
+        inventory.unlink()
+        with self.assertRaisesRegex(ValueError, "signature inventory"):
+            self.verify()
+        inventory.write_bytes(original.replace(b"maven/", b"maven-x/", 1))
+        with self.assertRaisesRegex(ValueError, "publication inventory"):
+            self.verify()
 
     def test_missing_extra_or_changed_sidecar_fails_before_pgp(self):
         signature = next(self.sidecars.rglob("*.asc"))
@@ -91,6 +110,7 @@ class RuntimePhase10MavenTest(unittest.TestCase):
     def test_signature_checksum_must_match_exact_signature_bytes(self):
         checksum = next(self.sidecars.rglob("*.asc.sha256"))
         checksum.write_bytes(b"0" * 64 + b"\n")
+        self.write_publication_inventory()
         with self.assertRaisesRegex(ValueError, "signature checksum"):
             self.verify()
 
@@ -259,6 +279,11 @@ class RuntimePhase10MavenTest(unittest.TestCase):
             damaged.with_name(damaged.name + suffix).write_bytes(
                 (hashlib.new(suffix[1:], damaged.read_bytes()).hexdigest() + "\n").encode(),
             )
+        (produced / "publication-inventory.json").write_bytes(_publication_inventory(
+            VERSION, regular_file_inventory(self.payload),
+            [item for item in regular_file_inventory(produced)
+             if item["relativePath"] != "publication-inventory.json"],
+        ))
         with self.assertRaisesRegex(ValueError, "PGP verification failed"):
             verify_runtime_phase10_maven(
                 self.payload, self.manifest, produced, self.key, sha256_bytes(exported),

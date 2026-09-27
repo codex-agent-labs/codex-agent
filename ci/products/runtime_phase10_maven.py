@@ -19,10 +19,25 @@ from typing import Any
 from .aggregate import validate_runtime_aggregate
 from .contract_model import CONTRACT_CHECKSUM_SUFFIXES
 from .inventory import (
-    load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
+    canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
     require_sha256, sha256_bytes, snapshot_regular_tree,
 )
 from .runtime_maven import validate_runtime_maven_publications
+
+
+_PUBLICATION_INVENTORY = "publication-inventory.json"
+
+
+def _publication_inventory(runtime_version: str, payload_files: list[dict],
+                           sidecar_files: list[dict]) -> bytes:
+    files = [item for item in payload_files if item["relativePath"].startswith("maven/")]
+    files.extend(sidecar_files)
+    paths = [item["relativePath"] for item in files]
+    if len(paths) != len(set(paths)) or any(not path.startswith("maven/") for path in paths):
+        raise ValueError("Runtime publication layout contains a collision or non-Maven file")
+    return canonical_json_bytes({"schemaVersion": 1, "product": "runtime",
+                                 "runtimeVersion": runtime_version,
+                                 "files": sorted(files, key=lambda item: item["relativePath"])})
 
 
 def _run_gpg(*arguments: str) -> str:
@@ -108,7 +123,7 @@ def produce_runtime_phase10_maven_sidecars(
         snapshot_regular_tree(payload_directory, payload)
         if regular_file_inventory(payload) != source_inventory:
             raise ValueError("Runtime Maven snapshot differs from its initial inputs")
-        _, _, primaries = _validated_payload(payload, payload / aggregate_manifest.name)
+        manifest, _, primaries = _validated_payload(payload, payload / aggregate_manifest.name)
         sidecars.mkdir()
         for path in primaries:
             signature = sidecars / (path + ".asc")
@@ -128,6 +143,10 @@ def produce_runtime_phase10_maven_sidecars(
                 signature.with_name(signature.name + suffix).write_bytes(
                     (hashlib.new(suffix[1:], signed_bytes).hexdigest() + "\n").encode("ascii"),
                 )
+        (sidecars / _PUBLICATION_INVENTORY).write_bytes(_publication_inventory(
+            manifest["runtimeVersion"], regular_file_inventory(payload),
+            regular_file_inventory(sidecars),
+        ))
         result = verify_runtime_phase10_maven(
             payload, payload / aggregate_manifest.name, sidecars,
             pgp_public_key, expected_pgp_key_sha256,
@@ -194,9 +213,20 @@ def verify_runtime_phase10_maven(
         )
         expected_sidecars = {path + ".asc" + suffix for path in primaries
                              for suffix in ("", *CONTRACT_CHECKSUM_SUFFIXES)}
+        expected_sidecars.add(_PUBLICATION_INVENTORY)
         sidecar_inventory = regular_file_inventory(sidecars)
         if {record["relativePath"] for record in sidecar_inventory} != expected_sidecars:
             raise ValueError("Runtime Maven PGP signature inventory is incomplete or unexpected")
+        layout = read_regular_file_bytes(sidecars / _PUBLICATION_INVENTORY,
+                                         max_bytes=16 * 1024 * 1024,
+                                         reject_symlink_parents=True)
+        expected_layout = _publication_inventory(
+            manifest["runtimeVersion"], regular_file_inventory(payload),
+            [item for item in sidecar_inventory
+             if item["relativePath"] != _PUBLICATION_INVENTORY],
+        )
+        if layout != expected_layout:
+            raise ValueError("Runtime Maven publication inventory differs from finalized bytes")
         for path in primaries:
             signature = read_regular_file_bytes(sidecars / (path + ".asc"), reject_symlink_parents=True)
             for suffix in CONTRACT_CHECKSUM_SUFFIXES:
