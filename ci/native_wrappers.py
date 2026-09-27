@@ -38,6 +38,7 @@ HOSTS = {
     "linux-x64": ("Linux", {"x86_64", "amd64"}, "Linux", "X64", "lib/libcodex_agent.so"),
     "windows-x64": ("Windows", {"amd64", "x86_64"}, "Windows", "X64", "bin/codex_agent.dll"),
 }
+_EXECUTABLE_ARCHIVE_FILES = {Path(host[4]).name for host in HOSTS.values()} | {"libcodex_agent.so.1"}
 PYTHON_TAGS = {
     "macos-arm64": "macosx_11_0_arm64",
     "macos-x64": "macosx_10_13_x86_64",
@@ -112,7 +113,7 @@ def deterministic_zip(source: Path, output: Path, prefix: str) -> None:
             relative = PurePosixPath(prefix) / path.relative_to(source).as_posix()
             info = zipfile.ZipInfo(str(relative), (1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = (0o755 if os.access(path, os.X_OK) else 0o644) << 16
+            info.external_attr = (0o755 if path.name in _EXECUTABLE_ARCHIVE_FILES else 0o644) << 16
             archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
 
 
@@ -125,7 +126,7 @@ def deterministic_tar(source: Path, output: Path, prefix: str) -> None:
                 info.mtime = FIXED_TIME
                 info.uid = info.gid = 0
                 info.uname = info.gname = ""
-                info.mode = 0o755 if os.access(path, os.X_OK) else 0o644
+                info.mode = 0o755 if path.name in _EXECUTABLE_ARCHIVE_FILES else 0o644
                 with path.open("rb") as source_file:
                     archive.addfile(info, source_file)
 

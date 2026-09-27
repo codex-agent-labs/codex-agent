@@ -1403,7 +1403,12 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             source = root / "source"
             source.mkdir()
             (source / "nested").mkdir()
-            (source / "nested/payload").write_bytes(b"payload")
+            payload = source / "nested/payload"
+            payload.write_bytes(b"payload")
+            library = source / "libcodex_agent.so"
+            library.write_bytes(b"library")
+            payload.chmod(0o644)
+            library.chmod(0o644)
             digests: list[tuple[str, str]] = []
             for index in range(2):
                 zip_path = root / f"package-{index}.zip"
@@ -1418,7 +1423,16 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 safe_extract_tar(tar_path, root / f"tar-{index}")
                 self.assertEqual(b"payload", (root / f"zip-{index}/package/nested/payload").read_bytes())
                 self.assertEqual(b"payload", (root / f"tar-{index}/package/nested/payload").read_bytes())
+                if index == 0:
+                    payload.chmod(0o755)
+                    library.chmod(0o755)
             self.assertEqual(digests[0], digests[1])
+            with zipfile.ZipFile(root / "package-1.zip") as archive:
+                self.assertEqual(0o644, archive.getinfo("package/nested/payload").external_attr >> 16 & 0o777)
+                self.assertEqual(0o755, archive.getinfo("package/libcodex_agent.so").external_attr >> 16 & 0o777)
+            with tarfile.open(root / "package-1.tar.gz") as archive:
+                self.assertEqual(0o644, archive.getmember("package/nested/payload").mode)
+                self.assertEqual(0o755, archive.getmember("package/libcodex_agent.so").mode)
 
     def test_extractors_reject_cross_platform_escape_and_duplicate_members(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
