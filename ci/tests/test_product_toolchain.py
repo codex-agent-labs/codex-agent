@@ -412,6 +412,28 @@ class ProductToolchainTest(unittest.TestCase):
                     "cc": str(cc), "java": str(java), "ld": str(ld),
                 }.get(name),
             )
+            captured = observe_producer(
+                self.root, "a" * 40, "linux-x64", "builder", "linux-x64",
+                gradle_user_home=self.root / "empty-gradle-home",
+                konan_data_dir=konan_home,
+                kotlin_plugin_jar=kgp,
+                native_archive=archive,
+                environment={"RUNNER_OS": "Linux", "RUNNER_ARCH": "X64"},
+                execute=execute,
+                find_executable=lambda name: {
+                    "cc": str(cc), "java": str(java), "ld": str(ld),
+                }.get(name),
+            )
+            with self.assertRaisesRegex(ValueError, "implementation jar"):
+                observe_producer(
+                    self.root, "a" * 40, "linux-x64", "builder", "linux-x64",
+                    gradle_user_home=self.root / "empty-gradle-home",
+                    kotlin_plugin_jar=sources,
+                    environment={"RUNNER_OS": "Linux", "RUNNER_ARCH": "X64"},
+                    execute=execute,
+                    find_executable=lambda name: {"cc": str(cc), "java": str(java)}.get(name),
+                )
+        self.assertEqual(result, captured)
         validated = validate_producer_observation(result)
         self.assertEqual(PROFILE_TOOL_NAMES[("linux-x64", "builder")], tuple(
             item["name"] for item in validated["toolObservations"]

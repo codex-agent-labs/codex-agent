@@ -1117,7 +1117,7 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
     if path == "ci/native_wrappers.py":
         return _bindings(NATIVE_BINDINGS)
 
-    if path == "ci/products/toolchain.py":
+    if path in {"ci/products/toolchain.py", "ci/products/toolchain_capture_bootstrap.py"}:
         # Production profiles are not tracked per target yet (S605). This one
         # shared authority therefore owns all five native binary lines.
         return _runtime(NATIVE_TARGETS)

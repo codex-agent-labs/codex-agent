@@ -1184,7 +1184,8 @@ class ProductSelectionTest(unittest.TestCase):
                 self.assertTrue(result.reuse_allowed)
 
     def test_shared_toolchain_authority_selects_exact_native_binary_lines(self) -> None:
-        for path in ("ci/products/toolchain.py", ".github/workflows/runtime-toolchain-capture.yml"):
+        for path in ("ci/products/toolchain.py", "ci/products/toolchain_capture_bootstrap.py",
+                     ".github/workflows/runtime-toolchain-capture.yml"):
             with self.subTest(path=path):
                 result = classify_paths([path])
                 for target in NATIVE_TARGETS:

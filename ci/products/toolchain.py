@@ -615,6 +615,8 @@ def observe_producer(
     *,
     gradle_user_home: Path | None = None,
     konan_data_dir: Path | None = None,
+    kotlin_plugin_jar: Path | None = None,
+    native_archive: Path | None = None,
     supervisor_compiler: str | None = None,
     environment: Mapping[str, str] = os.environ,
     execute: Callable[[tuple[str, ...], Path], str] = _command,
@@ -687,13 +689,17 @@ def observe_producer(
             / "caches/modules-2/files-2.1/org.jetbrains.kotlin/kotlin-gradle-plugin"
             / kotlin_version
         )
-        kgp_matches = sorted(path for path in
+        kgp_matches = ([Path(kotlin_plugin_jar)] if kotlin_plugin_jar is not None else sorted(path for path in
             kgp_root.rglob(f"kotlin-gradle-plugin-{kotlin_version}-*.jar")
             if not path.name.endswith(("-sources.jar", "-javadoc.jar"))
-        ) if kgp_root.is_dir() else []
+        ) if kgp_root.is_dir() or kotlin_plugin_jar is not None else [])
         if len(kgp_matches) != 1:
             raise ValueError("Kotlin plugin cache must contain exactly one resolved implementation jar")
         kgp_name = kgp_matches[0].name
+        if not kgp_name.startswith(f"kotlin-gradle-plugin-{kotlin_version}-") or kgp_name.endswith(
+            ("-sources.jar", "-javadoc.jar")
+        ):
+            raise ValueError("Kotlin plugin input is not an implementation jar")
         kgp_sha = _sha256_file(kgp_matches[0], "Kotlin plugin")
         if _metadata_checksum(metadata, kgp_name) != kgp_sha:
             raise ValueError("Kotlin plugin cache does not match Runtime verification metadata")
@@ -712,7 +718,10 @@ def observe_producer(
         extension = "zip" if runner_os == "Windows" else "tar.gz"
         archive_name = f"kotlin-native-prebuilt-{kotlin_version}-{classifier}.{extension}"
         archive_root = gradle_home / "caches/modules-2/files-2.1/org.jetbrains.kotlin/kotlin-native-prebuilt" / kotlin_version
-        archive = _unique_file(archive_root, archive_name, "Kotlin/Native archive")
+        archive = Path(native_archive) if native_archive is not None else _unique_file(
+            archive_root, archive_name, "Kotlin/Native archive")
+        if archive.name != archive_name:
+            raise ValueError("Kotlin/Native archive name does not match the selected host")
         archive_sha = _sha256_file(archive, "Kotlin/Native archive")
         if _metadata_checksum(metadata, archive_name) != archive_sha:
             raise ValueError("Kotlin/Native archive does not match Runtime verification metadata")
@@ -985,6 +994,8 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--konan-data-dir")
         command.add_argument("--supervisor-compiler")
         command.add_argument("--output", required=True)
+    observe.add_argument("--kotlin-plugin-jar")
+    observe.add_argument("--native-archive")
     verify.add_argument("--binary-plan", required=True)
     verify.add_argument("--verified-contract-manifest", required=True)
     verify.add_argument("--expected-runtime-version", required=True)
@@ -1054,6 +1065,8 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.target,
                 gradle_user_home=Path(arguments.gradle_user_home) if arguments.gradle_user_home else None,
                 konan_data_dir=Path(arguments.konan_data_dir) if arguments.konan_data_dir else None,
+                kotlin_plugin_jar=Path(arguments.kotlin_plugin_jar) if getattr(arguments, "kotlin_plugin_jar", None) else None,
+                native_archive=Path(arguments.native_archive) if getattr(arguments, "native_archive", None) else None,
                 supervisor_compiler=arguments.supervisor_compiler,
             )
             value = observation if arguments.command == "observe-producer" else _verification_record(

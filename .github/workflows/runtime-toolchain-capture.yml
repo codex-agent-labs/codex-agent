@@ -1,6 +1,14 @@
 name: Runtime Toolchain Capture
 
 on:
+  workflow_call:
+    inputs:
+      validationCommit:
+        required: true
+        type: string
+      validationTree:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       validationCommit:
@@ -44,7 +52,7 @@ jobs:
             role: builder
             runner: windows-2025
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 45
     env:
       DEVELOPER_DIR: ${{ startsWith(matrix.profile, 'macos-') && '/Applications/Xcode_26.6.app/Contents/Developer' || '' }}
     steps:
@@ -94,6 +102,19 @@ jobs:
         with:
           cache-read-only: "true"
           xcode-fingerprint: ${{ runner.os == 'macOS' && 'auto' || 'none' }}
+      - name: Verify and provision pinned capture tools without a product build
+        shell: bash
+        env:
+          PROFILE: ${{ matrix.profile }}
+          VALIDATION_COMMIT: ${{ inputs.validationCommit }}
+        run: |
+          set -euo pipefail
+          python3 -m ci.products.toolchain_capture_bootstrap \
+            --repository-root . \
+            --repository-revision "$VALIDATION_COMMIT" \
+            --profile-id "$PROFILE" \
+            --output-dir "build/ci/toolchain-inputs/$PROFILE" \
+            --konan-data-dir "$(python3 -c 'from pathlib import Path; print(Path.home() / ".konan")')"
       - name: Observe exact pre-existing producer tools
         shell: bash
         env:
@@ -102,12 +123,16 @@ jobs:
           VALIDATION_COMMIT: ${{ inputs.validationCommit }}
         run: |
           mkdir -p build/ci/toolchain-observation
+          paths="build/ci/toolchain-inputs/$PROFILE/paths.json"
           python3 -m ci.products.toolchain observe-producer \
             --repository-root . \
             --repository-revision "$VALIDATION_COMMIT" \
             --profile-id "$PROFILE" \
             --producer-role "$ROLE" \
             --target "$PROFILE" \
+            --konan-data-dir "$(jq -r .konanDataDir "$paths")" \
+            --kotlin-plugin-jar "$(jq -r .plugin "$paths")" \
+            --native-archive "$(jq -r .archive "$paths")" \
             --output "build/ci/toolchain-observation/$PROFILE-$ROLE.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

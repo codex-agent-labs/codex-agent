@@ -12,7 +12,7 @@ on:
         required: true
         type: choice
         default: validation
-        options: [validation, sdk-catalog-custody, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record]
+        options: [validation, sdk-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record]
       baseCommit:
         description: Exact base commit SHA
         required: false
@@ -88,6 +88,17 @@ jobs:
       trustedJobName: ${{ inputs.trustedJobName }}
     secrets: inherit
 
+  runtime-toolchain-capture:
+    if: github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-toolchain-capture'
+    permissions:
+      actions: read
+      contents: read
+      deployments: read
+    uses: ./.github/workflows/runtime-toolchain-capture.yml
+    with:
+      validationCommit: ${{ inputs.validationCommit }}
+      validationTree: ${{ inputs.validationTree }}
+
   runtime-phase10-record:
     if: github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-phase10-record'
     permissions:
@@ -124,9 +135,9 @@ jobs:
     secrets: inherit
 
   merge-gate:
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody' && 'SDK custody / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-phase10-record' && 'Runtime record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'contract-phase10-record' && 'Contract record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-authority' && 'SDK authority / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-record' && 'SDK record / complete' || 'CI / merge-gate' }}
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody' && 'SDK custody / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-toolchain-capture' && 'Runtime toolchain / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-phase10-record' && 'Runtime record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'contract-phase10-record' && 'Contract record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-authority' && 'SDK authority / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-record' && 'SDK record / complete' || 'CI / merge-gate' }}
     if: always()
-    needs: [product-validation, sdk-failed-catalog-custody, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record]
+    needs: [product-validation, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record]
     runs-on: ubuntu-24.04
     steps:
       - name: Require exactly the selected trusted workflow
@@ -135,6 +146,7 @@ jobs:
           PURPOSE: ${{ inputs.purpose }}
           PRODUCT_VALIDATION_RESULT: ${{ needs.product-validation.result }}
           SDK_CUSTODY_RESULT: ${{ needs.sdk-failed-catalog-custody.result }}
+          TOOLCHAIN_CAPTURE_RESULT: ${{ needs.runtime-toolchain-capture.result }}
           RUNTIME_RECORD_RESULT: ${{ needs.runtime-phase10-record.result }}
           RUNTIME_RECORD_ARTIFACT_ID: ${{ needs.runtime-phase10-record.outputs.recordArtifactId }}
           RUNTIME_RECORD_ARTIFACT_SHA256: ${{ needs.runtime-phase10-record.outputs.recordArtifactSha256 }}
@@ -150,9 +162,20 @@ jobs:
           SDK_RECORD_ARTIFACT_ID: ${{ needs.sdk-phase10-record.outputs.recordArtifactId }}
           SDK_RECORD_ARTIFACT_SHA256: ${{ needs.sdk-phase10-record.outputs.recordArtifactSha256 }}
         run: |
+          if [ "$PURPOSE" != runtime-toolchain-capture ]; then
+            test "$TOOLCHAIN_CAPTURE_RESULT" = skipped
+          fi
           if [ "$EVENT" = workflow_dispatch ] && [ "$PURPOSE" = sdk-catalog-custody ]; then
             test "$PRODUCT_VALIDATION_RESULT" = skipped
             test "$SDK_CUSTODY_RESULT" = success
+            test "$RUNTIME_RECORD_RESULT" = skipped
+            test "$CONTRACT_RECORD_RESULT" = skipped
+            test "$SDK_AUTHORITY_RESULT" = skipped
+            test "$SDK_RECORD_RESULT" = skipped
+          elif [ "$EVENT" = workflow_dispatch ] && [ "$PURPOSE" = runtime-toolchain-capture ]; then
+            test "$PRODUCT_VALIDATION_RESULT" = skipped
+            test "$SDK_CUSTODY_RESULT" = skipped
+            test "$TOOLCHAIN_CAPTURE_RESULT" = success
             test "$RUNTIME_RECORD_RESULT" = skipped
             test "$CONTRACT_RECORD_RESULT" = skipped
             test "$SDK_AUTHORITY_RESULT" = skipped

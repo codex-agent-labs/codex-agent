@@ -144,7 +144,7 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertIn("'SDK authority / complete' ||", gate)
         self.assertIn("'SDK record / complete' || 'CI / merge-gate'", gate)
         self.assertIn("if: always()", gate)
-        self.assertIn("needs: [product-validation, sdk-failed-catalog-custody, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record]", gate)
+        self.assertIn("needs: [product-validation, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record]", gate)
         self.assertIn('test "$PRODUCT_VALIDATION_RESULT" = success', gate)
         self.assertIn('test "$SDK_CUSTODY_RESULT" = skipped', gate)
         self.assertNotIn("actions/checkout@", caller)
