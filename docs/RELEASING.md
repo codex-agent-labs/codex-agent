@@ -164,11 +164,12 @@ build/protected-candidate/<candidate-commit>/payload/
 
 The aggregate verifies the imported evidence, iOS runtime, Swift package,
 privacy declarations, Maven inventories, pre-merge consumer receipts, Central
-bundle, and canonical candidate manifest. Candidate tasks may
-inspect and inventory promoted files, create detached Contract attestations,
-sign the permitted non-Contract inputs, and assemble non-Contract release
-payloads; they may not rebuild or repackage the Contract ZIP, compile, link,
-run Xcode, boot a simulator, or execute a platform test.
+bundle, and canonical candidate manifest. Its current signing steps are a
+migration gap: Phase 10 must finalize detached product attestations, Maven PGP
+signatures, and publication sidecars before any `0.8.0` product candidate runs.
+A product candidate may only verify and forward those exact bytes; it may not
+rebuild or repackage payloads, compile, link, run Xcode, boot a simulator, or
+execute a platform test.
 
 Candidate output is immutable. A rerun reuses an already successful candidate;
 it never silently deletes or replaces one with the same identity.

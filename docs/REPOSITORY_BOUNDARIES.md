@@ -78,25 +78,43 @@ for five matching-host package/consumer receipts or the merge gate.
 
 ## Commands and release status
 
-`./gradlew verifyContract` is the Contract verification entry point. The
-standalone Runtime uses `./gradlew -p runtime verifyRuntime` with explicit
-`-PcodexAgent.target`, Contract payload, metadata receipt, detached attestation,
-attestation signature, public key, Contract version, and Runtime version
-properties; `runtime/settings.gradle.kts` rejects missing inputs before
+These verification entry points exist in the current builds:
+
+```sh
+./gradlew verifyContract
+./gradlew verifySdk \
+  -PcodexAgent.sdkBindingEvidenceDirectory="$M11_EVIDENCE_DIR" \
+  -PcodexAgent.sdkCanonicalApiReport="$CONTRACT_API_REPORT" \
+  -PcodexAgent.sdkCanonicalCoverageReceipt="$CONTRACT_COVERAGE_RECEIPT"
+./gradlew verifyRepository \
+  -PcodexAgent.repositoryContractEvidenceDirectory="$CONTRACT_EVIDENCE_DIR" \
+  -PcodexAgent.repositoryRuntimeEvidenceDirectory="$RUNTIME_EVIDENCE_DIR" \
+  -PcodexAgent.repositorySdkEvidenceDirectory="$SDK_EVIDENCE_DIR" \
+  -PcodexAgent.repositoryTrustDomain="$PRODUCT_TRUST_DOMAIN"
+```
+
+The variables must name existing, independently verified evidence; these
+commands do not create missing Contract, Runtime, SDK, or host receipts. The
+standalone Runtime entry point is `./gradlew -p runtime verifyRuntime` with
+explicit `-PcodexAgent.target`, Contract payload, metadata receipt, detached
+attestation, attestation signature, public key, Contract version, and Runtime
+version properties; `runtime/settings.gradle.kts` rejects missing inputs before
 configuration. For a native target's binary phase, it also requires explicit
 `-PcodexAgent.runtimeBinaryPlan`, `-PcodexAgent.runtimeBinaryFlagsDigest`, and
 `-PcodexAgent.repositoryRevision`: the plan must be a verified, exact-source
 input, not a placeholder or a value reconstructed from retained output. Other
 selected phases require their own declared predecessor stages and evidence.
-The root SDK and repository verification commands, including
-their required artifact/evidence properties, are listed in the
-[README](../README.md#capability-boundary). `ciProductPhase` selects an exact
-product, component, phase, and target; it is not a whole-graph build command.
+The full target-specific Runtime input contract is in
+[`runtime/settings.gradle.kts`](../runtime/settings.gradle.kts); no generic
+target-independent invocation supplies its required predecessor stages.
+`ciProductPhase` selects an exact product, component, phase, and target; it is
+not a whole-graph build command.
 
 The existing combined candidate and publish workflows are a migration baseline,
-not commands for a product-specific `0.8.0` release. The planned separate
-Contract, Runtime, and SDK candidate/publish entries remain subject to the
-local, protected, and five-host acceptance gates in [releasing](RELEASING.md).
+not commands for a product-specific `0.8.0` release. None of the six separate
+Contract, Runtime, or SDK candidate/publish workflows exists yet. They remain
+subject to the local, protected, and five-host acceptance gates in
+[releasing](RELEASING.md).
 No candidate tag or publication is asserted here.
 
 See [releasing](RELEASING.md) for the intended candidate/publication policy and
