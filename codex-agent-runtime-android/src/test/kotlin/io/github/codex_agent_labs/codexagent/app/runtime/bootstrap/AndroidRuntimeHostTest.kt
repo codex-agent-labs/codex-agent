@@ -235,6 +235,44 @@ class AndroidRuntimeHostTest {
     }
 
     @Test
+    fun nonFilePackagedRuntimeIsRejectedBeforeHashingOrLaunch(): Unit = runBlocking {
+        val directory = temporaryDirectory()
+        val executable = directory / "libcodex_app_server.so"
+        FileSystem.SYSTEM.createDirectories(executable)
+        var launched = false
+        val runtime = AndroidCodexRuntime(
+            CodexRuntimeConfiguration(
+                executable = executable,
+                packagedRuntimeEnvironment = RuntimeEnvironment(
+                    RuntimeKernel.LINUX,
+                    RuntimeArchitecture.AARCH64,
+                    true,
+                ),
+                applicationDirectory = directory / "home",
+                privateDirectory = directory / "private",
+                temporaryDirectory = directory / "tmp",
+                certificateSources = emptyList(),
+                sqliteDriver = BundledSQLiteDriver(),
+                platformEnvironment = mapOf("PATH" to "/usr/bin:/bin"),
+                proxyPassword = "host-test-secret",
+            ),
+            startProcess = {
+                launched = true
+                error("non-file runtime must not launch")
+            },
+        )
+        try {
+            val failure = runCatching { runtime.start() }.exceptionOrNull()
+            assertIs<IllegalStateException>(failure)
+            assertTrue(failure.message.orEmpty().contains("missing or not executable"))
+            assertTrue(!launched)
+        } finally {
+            runtime.close()
+            FileSystem.SYSTEM.deleteRecursively(directory, mustExist = false)
+        }
+    }
+
+    @Test
     fun loopbackProxyRequiresAuthenticationAndRejectsPrivateDestinations() {
         val password = "proxy-test-secret"
         val proxy = LoopbackConnectProxy(password)
