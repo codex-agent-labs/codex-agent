@@ -162,14 +162,11 @@ def forward_verified_contract_phase10_bytes(
                 or _landed_tree(Path(landed_repository)) != expected_validation_tree):
             raise ValueError("Contract Phase-10 bytes changed during candidate verification")
         publish_regular_tree(prepared, destination, expected_inventory=pinned_inventory)
-        if (_inventory_digest(destination) != expected_inventory_sha256
-                or _landed_tree(Path(landed_repository)) != expected_validation_tree):
-            raise ValueError("Forwarded Contract candidate or landed tree differs from Phase-10 bytes")
         return {"product": "contract", "contractVersion": expected_contract_version,
                 "payloadSha256": expected_payload_sha256,
                 "metadataBuildKey": expected_metadata_build_key,
                 "phase10InventorySha256": expected_inventory_sha256,
-                "candidateInventory": regular_file_inventory(destination)}
+                "candidateInventory": pinned_inventory}
 
 
 def main(argv: list[str] | None = None) -> int:

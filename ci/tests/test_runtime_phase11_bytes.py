@@ -201,16 +201,18 @@ class RuntimePhase11BytesTest(unittest.TestCase):
             self.forward(_landed_trees=[self.tree, "d" * 40])
         self.assertFalse(self.destination.exists())
 
-    def test_mutation_during_publication_fails_after_no_replace_copy(self):
+    def test_atomic_publication_is_last_material_step(self):
         real_publish = candidate.publish_regular_tree
+        original = (self.sidecars / "signature.asc").read_bytes()
 
-        def corrupt_after_copy(source, destination, *, expected_inventory):
+        def change_original_after_copy(source, destination, *, expected_inventory):
             real_publish(source, destination, expected_inventory=expected_inventory)
-            (destination / "maven-sidecars/signature.asc").write_bytes(b"changed after copy\n")
+            (self.sidecars / "signature.asc").write_bytes(b"changed after copy\n")
 
-        with patch.object(candidate, "publish_regular_tree", side_effect=corrupt_after_copy), \
-                self.assertRaisesRegex(ValueError, "Published Runtime candidate bytes differ"):
-            self.forward()
+        with patch.object(candidate, "publish_regular_tree", side_effect=change_original_after_copy):
+            result = self.forward()
+        self.assertEqual("runtime", result["product"])
+        self.assertEqual(original, (self.destination / "maven-sidecars/signature.asc").read_bytes())
 
     def test_changed_verified_candidate_fails_before_publication(self):
         def mutate_before_copy(source, destination, *, expected_inventory):

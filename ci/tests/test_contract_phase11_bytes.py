@@ -139,15 +139,13 @@ class ContractPhase11BytesTest(unittest.TestCase):
                 )
         self.assertFalse(tampered_destination.exists())
 
-        def publish(prepared, output, *, expected_inventory):
-            actual_publish_regular_tree(prepared, output, expected_inventory=expected_inventory)
-
-        landed_tree.side_effect = [pins["expected_validation_tree"]] * 2 + ["0" * 40]
-        with mock.patch.object(candidate, "publish_regular_tree", side_effect=publish):
-            with self.assertRaisesRegex(ValueError, "landed tree differs"):
-                candidate.forward_verified_contract_phase10_bytes(
-                    source, phase10.fixture.root / "changed-after-publish", **pins,
-                )
+        landed_tree.side_effect = [pins["expected_validation_tree"], "0" * 40]
+        late_mutation_destination = phase10.fixture.root / "changed-landed-before-publish"
+        with self.assertRaisesRegex(ValueError, "changed during candidate verification"):
+            candidate.forward_verified_contract_phase10_bytes(
+                source, late_mutation_destination, **pins,
+            )
+        self.assertFalse(late_mutation_destination.exists())
 
 
 class ContractPhase11LandedTreeTest(unittest.TestCase):

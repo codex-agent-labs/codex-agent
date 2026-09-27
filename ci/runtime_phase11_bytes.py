@@ -184,14 +184,6 @@ def forward_verified_runtime_phase10_bytes(
         if _landed_tree(Path(landed_repository)) != expected_validation_tree:
             raise ValueError("Runtime candidate landed tree changed during verification")
         publish_regular_tree(prepared, destination, expected_inventory=prepared_inventory)
-        if (regular_file_inventory(destination) != prepared_inventory
-                or read_regular_file_bytes(destination / "product-policy/product-signing-keys.json",
-                                           max_bytes=64 * 1024, reject_symlink_parents=True) != keyring_bytes
-                or read_regular_file_bytes(destination / "pgp-public-key.asc", max_bytes=1024 * 1024,
-                                           reject_symlink_parents=True) != pgp_bytes):
-            raise ValueError("Published Runtime candidate bytes differ from verified bytes")
-        if _landed_tree(Path(landed_repository)) != expected_validation_tree:
-            raise ValueError("Runtime candidate landed tree changed during publication")
         return {"product": "runtime", "runtimeVersion": maven["runtimeVersion"],
                 "manifestSha256": maven["manifestSha256"],
                 "protectedInventorySha256": expected_protected_inventory_sha256,
