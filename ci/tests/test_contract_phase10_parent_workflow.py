@@ -56,6 +56,10 @@ class ContractPhase10ParentWorkflowTest(unittest.TestCase):
         self.assertIn("phase10OutputArtifactId: ${{ needs.contract-phase10-maven.outputs.phase10OutputArtifactId }}", record)
         self.assertIn("phase11PinsJson: ${{ needs.contract-phase10-pins.outputs.pins_json }}", record)
         self.assertIn("phase11PinsSha256: ${{ needs.contract-phase10-pins.outputs.pins_sha256 }}", record)
+        child = RECORD.read_text(encoding="utf-8")
+        self.assertIn("phase10OutputArtifactId:\n        value: ${{ jobs.upload.outputs.artifact_id }}", child)
+        self.assertIn("phase10OutputArtifactSha256:\n        value: ${{ jobs.upload.outputs.artifact_sha256 }}", child)
+        self.assertIn("recordArtifactId:\n        value: ${{ jobs.record.outputs.artifact_id }}", child)
 
     def test_protected_pins_are_canonical_and_not_derived_from_child_artifact(self):
         job = workflow_job(self.parent, "contract-phase10-pins")
@@ -114,8 +118,11 @@ class ContractPhase10ParentWorkflowTest(unittest.TestCase):
         self.assertIn("CONTRACT_PHASE10_REQUIRED: ${{ github.event_name != 'workflow_dispatch' && needs.contract-validation.outputs.contract_complete == 'true' }}", gate)
         for value in ("CONTRACT_PHASE10_PGP_RESULT", "CONTRACT_PHASE10_MAVEN_RESULT",
                       "CONTRACT_PHASE10_PINS_RESULT", "CONTRACT_PHASE10_RECORD_RESULT",
-                      "CONTRACT_PHASE10_MAVEN_ARTIFACT_SHA256", "CONTRACT_PHASE10_RECORD_ARTIFACT_SHA256"):
+                      "CONTRACT_PHASE10_MAVEN_ARTIFACT_SHA256", "CONTRACT_PHASE10_RECORD_ARTIFACT_SHA256",
+                      "CONTRACT_PHASE10_REUPLOAD_ARTIFACT_ID", "CONTRACT_PHASE10_REUPLOAD_ARTIFACT_SHA256"):
             self.assertIn(value, gate)
+        self.assertIn('[[ "$CONTRACT_PHASE10_REUPLOAD_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1', gate)
+        self.assertIn('[[ "$CONTRACT_PHASE10_REUPLOAD_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1', gate)
         self.assertIn("if [ \"$CONTRACT_PHASE10_REQUIRED\" = true ]; then", gate)
 
 

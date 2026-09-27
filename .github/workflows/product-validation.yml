@@ -457,7 +457,7 @@ jobs:
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.contract-phase10-maven.result == 'success' &&
       needs.contract-phase10-pins.result == 'success'
-    uses: codex-agent-labs/codex-agent/.github/workflows/contract-phase10-output-record.yml@914cd6234e0543f20deb716a930353c0820b62cc
+    uses: codex-agent-labs/codex-agent/.github/workflows/contract-phase10-output-record.yml@28b62441367b277892827f40ff2586dbb5f53f69
     with:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
       trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
@@ -5128,6 +5128,8 @@ jobs:
           CONTRACT_PHASE10_MAVEN_ARTIFACT_SHA256: ${{ needs.contract-phase10-maven.outputs.phase10OutputArtifactSha256 }}
           CONTRACT_PHASE10_PINS_RESULT: ${{ needs.contract-phase10-pins.result }}
           CONTRACT_PHASE10_RECORD_RESULT: ${{ needs.contract-phase10-output-record.result }}
+          CONTRACT_PHASE10_REUPLOAD_ARTIFACT_ID: ${{ needs.contract-phase10-output-record.outputs.phase10OutputArtifactId }}
+          CONTRACT_PHASE10_REUPLOAD_ARTIFACT_SHA256: ${{ needs.contract-phase10-output-record.outputs.phase10OutputArtifactSha256 }}
           CONTRACT_PHASE10_RECORD_ARTIFACT_ID: ${{ needs.contract-phase10-output-record.outputs.recordArtifactId }}
           CONTRACT_PHASE10_RECORD_ARTIFACT_SHA256: ${{ needs.contract-phase10-output-record.outputs.recordArtifactSha256 }}
           PRODUCT_RESUME_RESULT: ${{ needs.product-resume.result }}
@@ -5192,6 +5194,8 @@ jobs:
             [[ "$CONTRACT_PHASE10_MAVEN_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
             test "$CONTRACT_PHASE10_PINS_RESULT" = success || exit 1
             test "$CONTRACT_PHASE10_RECORD_RESULT" = success || exit 1
+            [[ "$CONTRACT_PHASE10_REUPLOAD_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+            [[ "$CONTRACT_PHASE10_REUPLOAD_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
             [[ "$CONTRACT_PHASE10_RECORD_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
             [[ "$CONTRACT_PHASE10_RECORD_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           fi
