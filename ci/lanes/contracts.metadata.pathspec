@@ -1,6 +1,8 @@
 .github/dependabot.yml
 .github/workflows/contract-phase10-later-record.yml
 .github/workflows/sdk-phase10-later-authority.yml
+ci/sdk_phase10_original_plan.py
+ci/sdk_phase11_bytes.py
 .github/workflows/promote.yml
 .github/workflows/publish.yml
 .github/workflows/release-candidate.yml
