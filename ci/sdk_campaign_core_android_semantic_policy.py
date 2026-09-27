@@ -4,8 +4,12 @@ This reader snapshots caller authority. It does not authenticate the policy's
 origin, inspect captured originals, run a verifier, or grant release admission.
 """
 
-from pathlib import Path
 import re
+from pathlib import Path
+import sys
+
+if __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from products.inventory import (
     load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys,

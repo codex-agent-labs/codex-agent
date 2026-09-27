@@ -6,6 +6,10 @@ This reader grants no original, tooling, or release admission.
 
 import os
 from pathlib import Path
+import sys
+
+if __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from products.inventory import (
     load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys,

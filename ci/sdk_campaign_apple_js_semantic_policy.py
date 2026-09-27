@@ -7,6 +7,10 @@ any observed receipt, stage, handoff, or evidence record.
 
 import re
 from pathlib import Path
+import sys
+
+if __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from products.inventory import (load_canonical_json_bytes, read_regular_file_bytes,
     require_exact_keys, require_relative_path, require_sha256)
