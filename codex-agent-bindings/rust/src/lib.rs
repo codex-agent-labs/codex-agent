@@ -369,7 +369,7 @@ fn exact_external_runtime_path(requested: &Path) -> Result<PathBuf, CodexError> 
                 path.display()
             ))
         })?;
-        if metadata.file_type().is_symlink()
+        if compatibility::is_link_or_reparse(&metadata)
             || (final_entry && !metadata.is_file())
             || (!final_entry && !metadata.is_dir())
         {
@@ -400,7 +400,7 @@ fn external_evidence_directory(path: &Path) -> Result<PathBuf, CodexError> {
     name.push(".evidence");
     let evidence = PathBuf::from(name);
     if !std::fs::symlink_metadata(&evidence)
-        .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+        .is_ok_and(|metadata| metadata.is_dir() && !compatibility::is_link_or_reparse(&metadata))
     {
         return Err(CodexError::load(
             "external Runtime requires trusted release evidence beside the selected library",

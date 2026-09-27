@@ -9,7 +9,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Map, Value};
 
-use crate::compatibility::EmbeddedRuntimeSnapshot;
+use crate::compatibility::{EmbeddedRuntimeSnapshot, is_link_or_reparse};
 
 const ROOT_NAMESPACE: &str = "codex-agent-sdk-runtime-root-v1";
 const PRODUCT_NAMESPACE: &str = "codex-agent-product-v1";
@@ -25,7 +25,7 @@ fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     while let Some(entry) = current {
         let metadata = fs::symlink_metadata(entry)
             .map_err(|error| format!("external evidence is missing or unsafe: {error}"))?;
-        if metadata.file_type().is_symlink()
+        if is_link_or_reparse(&metadata)
             || (entry == path && (!metadata.is_file() || metadata.len() > limit))
             || (entry != path && !metadata.is_dir())
         {

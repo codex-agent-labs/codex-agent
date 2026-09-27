@@ -8,6 +8,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const DECLARATION: &[u8] = include_bytes!("../native/sdk-compatibility.json");
 const EMBEDDED_RUNTIME: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/codex-agent-runtime"));
 
+#[cfg(any(windows, test))]
+fn has_windows_reparse_attribute(attributes: u32) -> bool {
+    attributes & 0x400 != 0
+}
+
+pub(crate) fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        return has_windows_reparse_attribute(metadata.file_attributes());
+    }
+    #[cfg(not(windows))]
+    false
+}
+
 #[derive(Debug)]
 enum Json {
     Object(BTreeMap<String, Json>),
@@ -853,19 +871,25 @@ fn cache_root() -> Result<PathBuf, String> {
 }
 
 fn create_safe_directory(path: &Path) -> Result<(), String> {
-    fs::create_dir_all(path)
-        .map_err(|error| format!("create Runtime cache {}: {error}", path.display()))?;
-    let mut current = Some(path);
-    while let Some(directory) = current {
+    if !path.is_absolute() {
+        return Err("Runtime cache directory must be an absolute path".into());
+    }
+    let mut directories: Vec<_> = path.ancestors().collect();
+    directories.reverse();
+    for directory in directories {
+        if !directory.exists() {
+            fs::create_dir(directory).map_err(|error| {
+                format!("create Runtime cache {}: {error}", directory.display())
+            })?;
+        }
         let metadata = fs::symlink_metadata(directory)
             .map_err(|error| format!("inspect Runtime cache {}: {error}", directory.display()))?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        if is_link_or_reparse(&metadata) || !metadata.is_dir() {
             return Err(format!(
                 "Runtime cache has an unsafe directory: {}",
                 directory.display()
             ));
         }
-        current = directory.parent().filter(|parent| parent != &directory);
     }
     Ok(())
 }
@@ -873,7 +897,7 @@ fn create_safe_directory(path: &Path) -> Result<(), String> {
 fn verify_regular_digest(path: &Path, expected: &str, expected_len: u64) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("inspect Runtime snapshot {}: {error}", path.display()))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() != expected_len {
+    if is_link_or_reparse(&metadata) || !metadata.is_file() || metadata.len() != expected_len {
         return Err(format!(
             "Runtime snapshot is not a regular file: {}",
             path.display()
@@ -934,7 +958,7 @@ fn verify_path_binding(
         .map_err(|error| format!("inspect held Runtime snapshot: {error}"))?;
     let path_metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("inspect Runtime snapshot path: {error}"))?;
-    if path_metadata.file_type().is_symlink()
+    if is_link_or_reparse(&path_metadata)
         || !path_metadata.is_file()
         || held.len() != expected_len
         || path_metadata.len() != expected_len
@@ -961,7 +985,7 @@ fn verify_path_binding(
         .map_err(|error| format!("inspect held Runtime snapshot: {error}"))?;
     let path_metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("inspect Runtime snapshot path: {error}"))?;
-    if path_metadata.file_type().is_symlink()
+    if is_link_or_reparse(&path_metadata)
         || !path_metadata.is_file()
         || held.len() != expected_len
         || path_metadata.len() != expected_len
@@ -1072,6 +1096,39 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_creation_rejects_linked_parent_before_writing_through_it() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "codex-agent-rust-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(root.join("actual")).unwrap();
+        symlink(root.join("actual"), root.join("linked")).unwrap();
+        let result = create_safe_directory(&root.join("linked/new"));
+        assert!(result.is_err());
+        assert!(!root.join("actual/new").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cache_creation_rejects_relative_root() {
+        assert!(create_safe_directory(Path::new("relative-cache")).is_err());
+    }
+
+    #[test]
+    fn reparse_attribute_rejects_junction_and_other_reparse_tags() {
+        assert!(!has_windows_reparse_attribute(0x10));
+        assert!(has_windows_reparse_attribute(0x400));
+        assert!(has_windows_reparse_attribute(0x410));
+    }
 
     fn identity(abi: &str) -> Vec<u8> {
         format!(
