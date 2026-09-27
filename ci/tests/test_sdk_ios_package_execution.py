@@ -87,6 +87,8 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         self.gate_failure = False
         self.contract_mismatch = False
         self.finalized = None
+        self.reject_published_verify = False
+        self.shard_verifications = []
 
     @contextmanager
     def verified_inputs(self, *args, **kwargs):
@@ -283,6 +285,13 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
             token="token",
         )
         arguments.update(changes)
+
+        def verify_candidate(path, _instance):
+            self.shard_verifications.append(Path(path))
+            if self.reject_published_verify and Path(path) == self.destination / "shard":
+                raise ValueError("post-publication verification must not run")
+            return self.finalized
+
         with ExitStack() as stack:
             stack.enter_context(patch.object(
                 workflow.product_reuse,
@@ -311,7 +320,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
             stack.enter_context(patch.object(
                 workflow,
                 "verify_phase_shard",
-                side_effect=lambda *_: self.finalized,
+                side_effect=verify_candidate,
             ))
             return workflow.execute(self.plan, self.discovery, self.state, self.destination, **arguments)
 
@@ -328,6 +337,14 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         retained_plan = self.destination / "original-plan/impact-plan.json"
         self.assertEqual(self.plan_bytes, retained_plan.read_bytes())
         self.assertFalse((self.destination / "shard/original-plan").exists())
+
+    def test_complete_candidate_is_verified_before_atomic_publish_only(self):
+        self.reject_published_verify = True
+        result = self.invoke()
+        self.assertEqual(self.finalized, result)
+        self.assertEqual(1, len(self.shard_verifications))
+        self.assertNotEqual(self.destination / "shard", self.shard_verifications[0])
+        self.assertTrue((self.destination / "shard").is_dir())
 
     def test_optional_apple_policy_reaches_both_state_replay_seams_only(self):
         policy = {"caller": "external Apple policy"}

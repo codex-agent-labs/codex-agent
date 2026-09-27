@@ -97,6 +97,12 @@ class SdkPhase10RecordWorkflowTest(unittest.TestCase):
         upload = source.split("      - name: Upload exact signed pair", 1)[1]
         self.assertIn("path: ${{ runner.temp }}/sdk-signed-index", upload)
         self.assertIn("overwrite: false", upload)
+        admission = (ROOT / "ci/sdk_phase10_release_index_admission.py").read_text(encoding="utf-8")
+        self.assertIn('_WORKFLOW = ".github/workflows/sdk-phase10-later-record.yml"', admission)
+        self.assertIn('_JOB = "sdk-phase10-record / sdk-phase10-record"', admission)
+        self.assertIn("name: sdk-phase10-record", source)
+        self.assertIn("name: codex-agent-sdk-phase10-release-index-${{ steps.approval.outputs.original_tree }}-attestation-${{ github.run_id }}-attempt-${{ github.run_attempt }}", upload)
+        self.assertIn('f"codex-agent-sdk-phase10-release-index-{original[\'tree\']}"', admission)
         self.assertNotIn("gradlew", source)
         self.assertNotIn("cargo build", source)
 

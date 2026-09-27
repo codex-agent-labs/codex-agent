@@ -209,7 +209,7 @@ def execute(
                 or read_regular_file_bytes(retained_plan, reject_symlink_parents=True) != plan_bytes):
             raise ValueError("SDK iOS package original plan changed before publication")
         publish_regular_tree(candidate, destination / "shard")
-    return verify_phase_shard(destination / "shard", _INSTANCE)
+    return finalized
 
 
 def main(argv=None) -> int:
