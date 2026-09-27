@@ -21,16 +21,16 @@ class SdkCatalogCustodyWorkflowTest(unittest.TestCase):
         caller = WORKFLOW.with_name("ci.yml").read_text(encoding="utf-8")
         dispatch = caller.split("  workflow_dispatch:\n", 1)[1].split("\npermissions:", 1)[0]
         self.assertIn("default: validation", dispatch)
-        self.assertIn("options: [validation, sdk-catalog-custody]", dispatch)
+        self.assertIn("options: [validation, sdk-catalog-custody, runtime-phase10-record, contract-phase10-record]", dispatch)
         self.assertEqual(10, len(re.findall(r"^      [A-Za-z][A-Za-z0-9]*:\s*$", dispatch, re.MULTILINE)))
         validation = workflow_job(caller, "product-validation")
         custody = workflow_job(caller, "sdk-failed-catalog-custody")
         gate = workflow_job(caller, "merge-gate")
         self.assertIn("if: github.event_name != 'workflow_dispatch' || inputs.purpose == 'validation'", validation)
         self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody'", custody)
-        self.assertIn("'SDK custody / complete' || 'CI / merge-gate'", gate)
+        self.assertIn("'SDK custody / complete' ||", gate)
         self.assertIn("if: always()", gate)
-        self.assertIn("needs: [product-validation, sdk-failed-catalog-custody]", gate)
+        self.assertIn("needs: [product-validation, sdk-failed-catalog-custody, runtime-phase10-record, contract-phase10-record]", gate)
         gate_script = textwrap.dedent(gate.split("        run: |\n", 1)[1])
         for event, purpose, product, custody_result, accepted in (
                 ("pull_request", "", "success", "skipped", True),
@@ -39,7 +39,8 @@ class SdkCatalogCustodyWorkflowTest(unittest.TestCase):
                 ("workflow_dispatch", "sdk-catalog-custody", "success", "success", False),
                 ("workflow_dispatch", "other", "skipped", "skipped", False)):
             environment = {**os.environ, "EVENT": event, "PURPOSE": purpose,
-                "PRODUCT_VALIDATION_RESULT": product, "SDK_CUSTODY_RESULT": custody_result}
+                "PRODUCT_VALIDATION_RESULT": product, "SDK_CUSTODY_RESULT": custody_result,
+                "RUNTIME_RECORD_RESULT": "skipped", "CONTRACT_RECORD_RESULT": "skipped"}
             result = subprocess.run(["bash", "-e", "-c", gate_script], env=environment,
                 capture_output=True, text=True, timeout=10)
             self.assertEqual(0 if accepted else 1, result.returncode,
