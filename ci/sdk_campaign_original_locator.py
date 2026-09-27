@@ -433,6 +433,16 @@ def discover_reused_sdk_original_pins(selections, *, pull_request, repository,
     return pins
 
 
+CUSTODY_SELECTION_KEYS = {
+        "catalog_producer", "catalog_artifact_id", "catalog_artifact_sha256",
+        "catalog_workflow_sha", "catalog_workflow_path", "catalog_job_name",
+        "custody_producer", "custody_artifact_id", "custody_artifact_sha256",
+        "custody_workflow_sha", "custody_job_name", "trusted_source_commit",
+        "keyring_path", "keys_directory", "expected_keyring_sha256",
+        "expected_keys_inventory_sha256",
+}
+
+
 def discover_reused_sdk_original_pins_from_custody(selections, *, repository,
         pull_request, trusted_workflow_sha, custody_selection,
         custody_destination, token, environ=None):
@@ -442,14 +452,8 @@ def discover_reused_sdk_original_pins_from_custody(selections, *, repository,
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
     require_no_signing_secret(os.environ)
-    custody_selection = require_exact_keys(custody_selection, {
-        "catalog_producer", "catalog_artifact_id", "catalog_artifact_sha256",
-        "catalog_workflow_sha", "catalog_workflow_path", "catalog_job_name",
-        "custody_producer", "custody_artifact_id", "custody_artifact_sha256",
-        "custody_workflow_sha", "custody_job_name", "trusted_source_commit",
-        "keyring_path", "keys_directory", "expected_keyring_sha256",
-        "expected_keys_inventory_sha256",
-    }, "SDK custody selection")
+    custody_selection = require_exact_keys(custody_selection, CUSTODY_SELECTION_KEYS,
+        "SDK custody selection")
     failed = validate_producer(custody_selection["catalog_producer"])
     if failed["repository"] != repository or failed["pullRequest"] != pull_request:
         raise ValueError("SDK custody producer differs from independently selected PR")

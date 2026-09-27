@@ -150,6 +150,97 @@ class SdkCampaignCatalogProducerTest(TestCase):
             with self.held():
                 pass
 
+    def test_custody_descriptor_groups_reused_phases_once_and_rejects_crosspair(self):
+        producer = {"repository": "codex-agent-labs/codex-agent",
+            "workflowPath": ".github/workflows/ci.yml", "commit": "a" * 40,
+            "tree": "b" * 40, "event": "pull_request", "runId": 71,
+            "runAttempt": 2, "pullRequest": 31}
+        custody_producer = {**producer, "event": "workflow_dispatch", "runId": 91,
+            "pullRequest": None}
+        selection = {"catalog_producer": producer, "catalog_artifact_id": 201,
+            "catalog_artifact_sha256": _DIGEST,
+            "catalog_workflow_sha": "b" * 40,
+            "catalog_workflow_path": ".github/workflows/product-validation.yml",
+            "catalog_job_name": "product-validation / sdk-partial-catalog",
+            "custody_producer": custody_producer, "custody_artifact_id": 301,
+            "custody_artifact_sha256": _DIGEST, "custody_workflow_sha": "c" * 40,
+            "custody_job_name": "product-validation / sdk-catalog-custody",
+            "trusted_source_commit": "c" * 40,
+            "keyring_path": Path("independent-keyring.json"),
+            "keys_directory": Path("independent-keys"),
+            "expected_keyring_sha256": _DIGEST,
+            "expected_keys_inventory_sha256": _DIGEST}
+        selected = self.instances[:2]
+        fresh = {instance: {"producer": {}, "expected_build_key": _DIGEST,
+            "expected_product_version": "0.8.0",
+            "trusted_workflow_path": ".github/workflows/product-validation.yml",
+            "trusted_job_name": "product-validation / sdk-worker"}
+            for instance in self.instances if instance not in selected}
+        request = {"expected_build_key": _DIGEST, "expected_product_version": "0.8.0",
+            "pull_request": 31, "repository": producer["repository"],
+            "trusted_worker_workflow_path": ".github/workflows/product-validation.yml",
+            "trusted_worker_job_name": "product-validation / sdk-worker",
+            "failed_catalog_producer": producer, "custody_ref": "prior-failed-catalog"}
+        reused = {instance: dict(request) for instance in selected}
+        descriptors = {"prior-failed-catalog": {"selection": selection,
+            "destination": Path("held-custody")}}
+        found = {instance: {"receipt_sha256": _DIGEST,
+            "original_artifact_id": 101, "original_artifact_sha256": _DIGEST,
+            "catalog_artifact_id": 201, "catalog_artifact_sha256": _DIGEST,
+            "catalog_public_key": Path("held-custody/public-key.pub"),
+            "catalog_public_key_sha256": _DIGEST, "pull_request": 31,
+            "worker_workflow_path": ".github/workflows/product-validation.yml",
+            "worker_job_name": "product-validation / sdk-worker",
+            "catalog_workflow_path": ".github/workflows/product-validation.yml",
+            "catalog_job_name": "product-validation / sdk-partial-catalog"}
+            for instance in selected}
+        with patch.object(catalog, "discover_fresh_sdk_original_pin", return_value={
+                "receipt_sha256": _DIGEST, "artifact_id": 1,
+                "artifact_sha256": _DIGEST,
+                "workflow_path": ".github/workflows/product-validation.yml",
+                "job_name": "product-validation / sdk-worker"}) as fresh_lookup, \
+             patch.object(catalog, "discover_reused_sdk_original_pins_from_custody",
+                 return_value=found) as custody_lookup, \
+             patch.object(catalog, "discover_reused_sdk_original_pins") as ordinary_lookup:
+            pins = catalog.discover_sdk_campaign_original_pins(fresh, reused,
+                trusted_workflow_sha="a" * 40, token="synthetic-token", environ={},
+                custody_catalogs=descriptors)
+            self.assertEqual(61, len(pins))
+            self.assertEqual(59, fresh_lookup.call_count)
+            custody_lookup.assert_called_once()
+            ordinary_lookup.assert_not_called()
+            self.assertEqual(set(selected), set(custody_lookup.call_args.args[0]))
+            self.assertEqual("b" * 40, pins[selected[0]].catalog_workflow_sha)
+            self.assertEqual(pins[selected[0]].catalog_public_key,
+                pins[selected[1]].catalog_public_key)
+            for wrong, wrong_descriptors in (
+                    ({**request, "failed_catalog_producer": {**producer, "tree": "0" * 40}}, descriptors),
+                    ({**request, "catalog_public_key": Path("self-selected.pub")}, descriptors),
+                    ({**request, "custody_ref": "another"}, descriptors),
+                    ({**request, "custody_ref": []}, descriptors)):
+                changed = dict(reused)
+                changed[selected[0]] = wrong
+                with self.subTest(wrong=wrong, descriptors=wrong_descriptors), \
+                        self.assertRaises(ValueError):
+                    catalog.discover_sdk_campaign_original_pins(fresh, changed,
+                        trusted_workflow_sha="a" * 40, token="synthetic-token",
+                        environ={}, custody_catalogs=wrong_descriptors)
+            duplicate = dict(reused)
+            duplicate[selected[1]] = {**request, "custody_ref": "duplicate"}
+            with self.assertRaisesRegex(ValueError, "descriptor is duplicated"):
+                catalog.discover_sdk_campaign_original_pins(fresh, duplicate,
+                    trusted_workflow_sha="a" * 40, token="synthetic-token", environ={},
+                    custody_catalogs={**descriptors, "duplicate": {"selection": selection,
+                        "destination": Path("another-custody")}})
+            with self.assertRaisesRegex(ValueError, "catalog artifact ID"):
+                catalog.discover_sdk_campaign_original_pins(fresh, reused,
+                    trusted_workflow_sha="a" * 40, token="synthetic-token", environ={},
+                    custody_catalogs={"prior-failed-catalog": {"selection": {
+                        **selection, "catalog_artifact_id": []},
+                        "destination": Path("held-custody")}})
+            self.assertEqual(59, fresh_lookup.call_count)
+            self.assertEqual(1, custody_lookup.call_count)
+
     def test_candidate_keeps_state_observation_through_selected_replay(self):
         producer = {"repository": "codex-agent-labs/codex-agent",
             "workflowPath": ".github/workflows/ci.yml", "commit": "a" * 40,
@@ -183,6 +274,7 @@ class SdkCampaignCatalogProducerTest(TestCase):
         arguments = dict(state_artifact_id=5, state_artifact_sha256=_DIGEST,
             state_wave=0, sdk_state_wave=4, repository_root=Path("repository"),
             fresh_selections={}, reused_selections={}, artifact_paths={},
+            custody_catalogs={"independent": {"selection": {}, "destination": Path("custody")}},
             semantic_controls={}, completed_catalog_pin=selected,
             trusted_workflow_sha="a" * 40, token="synthetic-token", environ={})
         with patch.object(catalog, "held_sdk_campaign_observation", side_effect=observation), \
@@ -195,6 +287,8 @@ class SdkCampaignCatalogProducerTest(TestCase):
                 self.assertEqual({"observation", "replay"}, active)
             self.assertEqual(set(), active)
             discover.assert_called_once()
+            self.assertIs(arguments["custody_catalogs"],
+                discover.call_args.kwargs["custody_catalogs"])
             completed.assert_called_once()
             self.assertIs(completed.call_args.args[0], self.observations)
             self.assertEqual(transport, completed.call_args.args[1])

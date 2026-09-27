@@ -542,6 +542,17 @@ class ReusedSdkOriginalTest(unittest.TestCase):
         self.assertEqual([{"worker": {"path": path, "sha": fixture_module.PIN}},
                           {"catalog": {"path": path, "sha": fixture_module.PIN}}],
             [route[1]["trusted_workflows_by_phase"] for route in self.observed_routes])
+        self.observed_routes.clear()
+        with self.official():
+            with self.held(trusted_worker_workflow_path=path,
+                    trusted_worker_job_name=self.worker_job["name"],
+                    trusted_catalog_workflow_path=path,
+                    trusted_catalog_job_name=self.catalog_job["name"],
+                    catalog_workflow_sha="c" * 40):
+                pass
+        self.assertEqual([{"worker": {"path": path, "sha": fixture_module.PIN}},
+                          {"catalog": {"path": path, "sha": "c" * 40}}],
+            [route[1]["trusted_workflows_by_phase"] for route in self.observed_routes])
         for routes in ({"trusted_worker_workflow_path": path},
                        {"trusted_catalog_job_name": self.catalog_job["name"]}):
             self.observed_routes.clear()

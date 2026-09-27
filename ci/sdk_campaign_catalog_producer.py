@@ -15,7 +15,8 @@ from types import MappingProxyType
 
 from ci.sdk_campaign_observation import ObservedSdkOriginal, held_sdk_campaign_observation
 from ci.sdk_campaign_original_locator import (
-    discover_fresh_sdk_original_pin, discover_reused_sdk_original_pins,
+    CUSTODY_SELECTION_KEYS, discover_fresh_sdk_original_pin,
+    discover_reused_sdk_original_pins, discover_reused_sdk_original_pins_from_custody,
 )
 from ci.sdk_campaign_original_worker import held_fresh_sdk_worker_upload
 from ci.sdk_campaign_reused_original import (
@@ -58,6 +59,7 @@ class ReusedSdkOriginalPin:
     catalog_workflow_path: str
     catalog_job_name: str
     failed_catalog_producer_bytes: bytes | None = None
+    catalog_workflow_sha: str | None = None
 
 
 _FRESH_SELECTION_KEYS = {
@@ -70,6 +72,11 @@ _REUSED_SELECTION_KEYS = {
     "trusted_worker_workflow_path", "trusted_worker_job_name",
     "trusted_catalog_workflow_path", "trusted_catalog_job_name",
 }
+_CUSTODY_REUSED_SELECTION_KEYS = {
+    "expected_build_key", "expected_product_version", "pull_request", "repository",
+    "trusted_worker_workflow_path", "trusted_worker_job_name",
+    "failed_catalog_producer", "custody_ref",
+}
 _COMPLETED_CATALOG_PIN_KEYS = {
     "producer", "artifact_name", "artifact_id", "artifact_sha256",
     "index_sha256", "public_key_sha256", "trusted_workflow_path",
@@ -78,7 +85,7 @@ _COMPLETED_CATALOG_PIN_KEYS = {
 
 
 def discover_sdk_campaign_original_pins(fresh, reused, *, trusted_workflow_sha,
-        token, environ):
+        token, environ, custody_catalogs=None):
     """Resolve caller-selected 61-phase authorities without campaign observations.
 
     The caller owns each build key/version/producer/catalog/key/workflow route.
@@ -90,6 +97,43 @@ def discover_sdk_campaign_original_pins(fresh, reused, *, trusted_workflow_sha,
             or set(fresh) & set(reused)
             or set(fresh) | set(reused) != SDK_CAMPAIGN_INSTANCES):
         raise ValueError("SDK original pin discovery requires exactly 61 disjoint phase selections")
+    custody_catalogs = {} if custody_catalogs is None else custody_catalogs
+    if not isinstance(custody_catalogs, Mapping):
+        raise ValueError("SDK custody catalogs require caller-owned selections")
+    custody_refs = set()
+    for request in reused.values():
+        if isinstance(request, Mapping) and "custody_ref" in request:
+            ref = request["custody_ref"]
+            if type(ref) is not str or not ref:
+                raise ValueError("SDK custody reference must be nonempty caller-owned text")
+            custody_refs.add(ref)
+    if set(custody_catalogs) != custody_refs:
+        raise ValueError("SDK custody references must match exact caller-owned descriptors")
+    custody_by_ref = {}
+    custody_identities, destinations = set(), set()
+    for ref, descriptor in custody_catalogs.items():
+        descriptor = require_exact_keys(descriptor, {"selection", "destination"},
+            "SDK custody descriptor")
+        selection = require_exact_keys(descriptor["selection"], CUSTODY_SELECTION_KEYS,
+            "SDK custody selection")
+        destination = descriptor["destination"]
+        if not isinstance(destination, Path):
+            raise ValueError("SDK custody destination must be a caller-owned path")
+        catalog_producer = validate_producer(selection["catalog_producer"])
+        custody_producer = validate_producer(selection["custody_producer"])
+        catalog_id = require_integer(selection["catalog_artifact_id"],
+            "SDK custody catalog artifact ID", 1)
+        custody_id = require_integer(selection["custody_artifact_id"],
+            "SDK custody upload artifact ID", 1)
+        require_sha256(selection["catalog_artifact_sha256"], "SDK custody catalog digest")
+        require_sha256(selection["custody_artifact_sha256"], "SDK custody upload digest")
+        identity = (canonical_json_bytes(catalog_producer), catalog_id,
+            canonical_json_bytes(custody_producer), custody_id)
+        if identity in custody_identities or destination in destinations:
+            raise ValueError("SDK custody descriptor is duplicated")
+        custody_identities.add(identity)
+        destinations.add(destination)
+        custody_by_ref[ref] = (selection, destination, catalog_producer)
     for instance, request in fresh.items():
         if not isinstance(instance, PhaseInstanceId):
             raise ValueError("Fresh SDK selection has invalid phase identity")
@@ -97,9 +141,18 @@ def discover_sdk_campaign_original_pins(fresh, reused, *, trusted_workflow_sha,
     for instance, request in reused.items():
         if not isinstance(instance, PhaseInstanceId):
             raise ValueError("Reused SDK selection has invalid phase identity")
-        require_exact_keys(request, _REUSED_SELECTION_KEYS |
-            ({"failed_catalog_producer"} if "failed_catalog_producer" in request else set()),
-            "Reused SDK original selection")
+        if "custody_ref" in request:
+            require_exact_keys(request, _CUSTODY_REUSED_SELECTION_KEYS,
+                "Custody-backed SDK original selection")
+            selection, _, producer = custody_by_ref[request["custody_ref"]]
+            if (validate_producer(request["failed_catalog_producer"]) != producer
+                    or request["repository"] != producer["repository"]
+                    or request["pull_request"] != producer["pullRequest"]):
+                raise ValueError("SDK custody phase differs from its caller-owned descriptor")
+        else:
+            require_exact_keys(request, _REUSED_SELECTION_KEYS |
+                ({"failed_catalog_producer"} if "failed_catalog_producer" in request else set()),
+                "Reused SDK original selection")
     pins = {instance: FreshSdkOriginalPin(**discover_fresh_sdk_original_pin(
         instance, **fresh[instance], trusted_workflow_sha=trusted_workflow_sha,
         token=token, environ=environ)) for instance in sorted(fresh)}
@@ -108,8 +161,13 @@ def discover_sdk_campaign_original_pins(fresh, reused, *, trusted_workflow_sha,
     worker_fields = ("expected_build_key", "expected_product_version",
         "trusted_worker_workflow_path", "trusted_worker_job_name")
     groups = {}
+    custody_groups = {}
     for instance in sorted(reused):
         request = reused[instance]
+        if "custody_ref" in request:
+            custody_groups.setdefault(request["custody_ref"], {})[instance] = {
+                field: request[field] for field in worker_fields}
+            continue
         failed = request.get("failed_catalog_producer")
         failed_bytes = (None if failed is None else
             canonical_json_bytes(validate_producer(failed)))
@@ -126,6 +184,20 @@ def discover_sdk_campaign_original_pins(fresh, reused, *, trusted_workflow_sha,
             raise ValueError("Reused SDK catalog discovery returned incomplete phases")
         pins.update({instance: ReusedSdkOriginalPin(**{
             **found[instance], "failed_catalog_producer_bytes": common[-1],
+        }) for instance in selections})
+    for ref, selections in custody_groups.items():
+        selection, destination, producer = custody_by_ref[ref]
+        found = discover_reused_sdk_original_pins_from_custody(selections,
+            repository=producer["repository"], pull_request=producer["pullRequest"],
+            trusted_workflow_sha=trusted_workflow_sha,
+            custody_selection=selection, custody_destination=destination,
+            token=token, environ=environ)
+        if set(found) != set(selections):
+            raise ValueError("Custody-backed SDK discovery returned incomplete phases")
+        failed_bytes = canonical_json_bytes(producer)
+        pins.update({instance: ReusedSdkOriginalPin(**{
+            **found[instance], "failed_catalog_producer_bytes": failed_bytes,
+            "catalog_workflow_sha": selection["catalog_workflow_sha"],
         }) for instance in selections})
     require_no_signing_secret(environ)
     return MappingProxyType(pins)
@@ -190,7 +262,7 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
 
     catalog_fields = ("catalog_artifact_id", "catalog_artifact_sha256", "catalog_public_key",
         "catalog_public_key_sha256", "pull_request", "catalog_workflow_path", "catalog_job_name",
-        "failed_catalog_producer_bytes")
+        "failed_catalog_producer_bytes", "catalog_workflow_sha")
     groups = Counter(tuple(getattr(pin, field) for field in catalog_fields)
         for pin in pins.values() if type(pin) is ReusedSdkOriginalPin)
     held, catalogs = {}, {}
@@ -217,7 +289,7 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
                             artifact_sha256=pin.catalog_artifact_sha256,
                             public_key=pin.catalog_public_key,
                             public_key_sha256=pin.catalog_public_key_sha256,
-                            trusted_workflow_sha=trusted_workflow_sha,
+                            trusted_workflow_sha=pin.catalog_workflow_sha or trusted_workflow_sha,
                             trusted_workflow_path=pin.catalog_workflow_path,
                             trusted_job_name=pin.catalog_job_name,
                             failed_catalog_producer=(None if pin.failed_catalog_producer_bytes is None else
@@ -241,6 +313,7 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
                     trusted_worker_job_name=pin.worker_job_name,
                     trusted_catalog_workflow_path=pin.catalog_workflow_path,
                     trusted_catalog_job_name=pin.catalog_job_name,
+                    catalog_workflow_sha=pin.catalog_workflow_sha,
                     failed_catalog_producer=(None if pin.failed_catalog_producer_bytes is None else
                         validate_producer(load_canonical_json_bytes(pin.failed_catalog_producer_bytes))),
                     **shared_arg))
@@ -313,6 +386,7 @@ def held_sdk_campaign_candidate(plan_path, *, state_artifact_id,
         state_artifact_sha256, state_wave, sdk_state_wave, repository_root,
         fresh_selections, reused_selections, artifact_paths, semantic_controls,
         completed_catalog_pin, trusted_workflow_sha, token, environ,
+        custody_catalogs=None,
         sdk_validation_tooling=None, sdk_apple_validation_policy=None,
         sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Replay caller-selected current state and 61 originals without release trust."""
@@ -335,7 +409,8 @@ def held_sdk_campaign_candidate(plan_path, *, state_artifact_id,
                 or validate_producer(current["captureProducer"]) != selected_producer):
             raise ValueError("SDK campaign state differs from independently selected producer")
         pins = discover_sdk_campaign_original_pins(fresh_selections, reused_selections,
-            trusted_workflow_sha=trusted_workflow_sha, token=token, environ=environ)
+            trusted_workflow_sha=trusted_workflow_sha, token=token, environ=environ,
+            custody_catalogs=custody_catalogs)
         with held_completed_sdk_campaign_replay(observations, transport, pins,
                 artifact_paths, semantic_controls,
                 completed_catalog_pin=selected_catalog,

@@ -275,7 +275,8 @@ def _held_reused_sdk_original(instance, original, current_transport_bytes, *,
         trusted_workflow_sha, token, environ=None,
         trusted_worker_workflow_path=None, trusted_worker_job_name=None,
         trusted_catalog_workflow_path=None, trusted_catalog_job_name=None,
-        failed_catalog_producer=None, _shared_catalog=None):
+        failed_catalog_producer=None, catalog_workflow_sha=None,
+        _shared_catalog=None):
     """Hold exact original bytes under independently pinned same-PR catalog trust.
 
     The public key and artifact ID/digest are selected outside the replay and
@@ -286,7 +287,8 @@ def _held_reused_sdk_original(instance, original, current_transport_bytes, *,
     require_no_signing_secret(os.environ)
     original_workflow_route("worker", "unused", trusted_workflow_sha,
         trusted_worker_workflow_path, trusted_worker_job_name)
-    original_workflow_route("catalog", "unused", trusted_workflow_sha,
+    catalog_sha = catalog_workflow_sha or trusted_workflow_sha
+    original_workflow_route("catalog", "unused", catalog_sha,
         trusted_catalog_workflow_path, trusted_catalog_job_name)
     if not isinstance(instance, PhaseInstanceId) or instance not in SDK_CAMPAIGN_INSTANCES:
         raise ValueError("Reused SDK original requires one registered phase")
@@ -374,7 +376,7 @@ def _held_reused_sdk_original(instance, original, current_transport_bytes, *,
         held_reused_sdk_catalog(repository=producer["repository"], pull_request=pull_request,
             artifact_id=catalog_artifact_id, artifact_sha256=catalog_artifact_sha256,
             public_key=key_input, public_key_sha256=expected_public_key_sha256,
-            trusted_workflow_sha=trusted_workflow_sha, token=token, environ=environment,
+            trusted_workflow_sha=catalog_sha, token=token, environ=environment,
             trusted_workflow_path=trusted_catalog_workflow_path,
             trusted_job_name=trusted_catalog_job_name,
             failed_catalog_producer=failed_catalog_producer))
@@ -387,7 +389,7 @@ def _held_reused_sdk_original(instance, original, current_transport_bytes, *,
                     "keyBytes", "keySha256", "workflowSha", "workflowPath", "jobName"))
                 != (producer["repository"], pull_request, catalog_artifact_id,
                     catalog_artifact_sha256, key_path, pinned_key, expected_public_key_sha256,
-                    trusted_workflow_sha, trusted_catalog_workflow_path, trusted_catalog_job_name)):
+                    catalog_sha, trusted_catalog_workflow_path, trusted_catalog_job_name)):
             raise ValueError("Reused SDK catalog snapshot differs from independent policy")
         if snapshot["indexSha256"] != transport["indexSha256"]:
             raise ValueError("Reused SDK replay differs from signed catalog")
