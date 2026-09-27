@@ -1952,6 +1952,26 @@ jobs:
           compression-level: 0
           retention-days: 90
 
+  runtime-phase10-maven:
+    name: runtime-phase10-maven
+    needs: [plan, contract-phase10-pgp-authority, runtime-aggregate-attestation]
+    if: >-
+      always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
+      needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.contract-phase10-pgp-authority.result == 'success' &&
+      needs.runtime-aggregate-attestation.result == 'success'
+    uses: codex-agent-labs/codex-agent/.github/workflows/runtime-phase10-maven.yml@4144824b5e0d4e1e4ca85d30a2c4f40f31dce62b
+    with:
+      planOutputs: ${{ toJSON(needs.plan.outputs) }}
+      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      aggregateArtifactId: ${{ needs.runtime-aggregate-attestation.outputs.artifact_id }}
+      aggregateArtifactSha256: ${{ needs.runtime-aggregate-attestation.outputs.artifact_digest }}
+      aggregateBuildKey: ${{ needs.runtime-aggregate-attestation.outputs.aggregate_key }}
+      metadataReceiptSha256: ${{ needs.runtime-aggregate-attestation.outputs.aggregate_receipt_sha256 }}
+      expectedPgpKeySha256: ${{ needs.contract-phase10-pgp-authority.outputs.pgp_key_sha256 }}
+    secrets: inherit
+
   sdk-inputs:
     name: sdk-inputs
     needs: [workflow-lint, plan, contract-validation, runtime-continuation, runtime-aggregate-attestation]
@@ -5101,7 +5121,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-pins, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-catalog, sdk-parity]
+    needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-pins, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, runtime-phase10-maven, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-catalog, sdk-parity]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -5148,6 +5168,10 @@ jobs:
           AGGREGATE_ATTESTATION_RESULT: ${{ needs.runtime-aggregate-attestation.result }}
           AGGREGATE_ATTESTATION_ARTIFACT_ID: ${{ needs.runtime-aggregate-attestation.outputs.artifact_id }}
           AGGREGATE_ATTESTATION_ARTIFACT_DIGEST: ${{ needs.runtime-aggregate-attestation.outputs.artifact_digest }}
+          RUNTIME_PHASE10_MAVEN_REQUIRED: ${{ needs.runtime-aggregate-attestation.result == 'success' }}
+          RUNTIME_PHASE10_MAVEN_RESULT: ${{ needs.runtime-phase10-maven.result }}
+          RUNTIME_PHASE10_MAVEN_ARTIFACT_ID: ${{ needs.runtime-phase10-maven.outputs.sidecarArtifactId }}
+          RUNTIME_PHASE10_MAVEN_ARTIFACT_SHA256: ${{ needs.runtime-phase10-maven.outputs.sidecarArtifactSha256 }}
           SDK_INPUTS_REQUIRED: ${{ needs.runtime-continuation.outputs.sdk_handoff_required }}
           SDK_INPUTS_RESULT: ${{ needs.sdk-inputs.result }}
           SDK_INPUTS_ARTIFACT_ID: ${{ needs.sdk-inputs.outputs.artifact_id }}
@@ -5198,6 +5222,11 @@ jobs:
             [[ "$CONTRACT_PHASE10_REUPLOAD_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
             [[ "$CONTRACT_PHASE10_RECORD_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
             [[ "$CONTRACT_PHASE10_RECORD_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          fi
+          if [ "$RUNTIME_PHASE10_MAVEN_REQUIRED" = true ]; then
+            test "$RUNTIME_PHASE10_MAVEN_RESULT" = success || exit 1
+            [[ "$RUNTIME_PHASE10_MAVEN_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+            [[ "$RUNTIME_PHASE10_MAVEN_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           fi
           if [ "$TOOLING_MISS" = true ]; then
             test "$TOOLING_ATTESTATION_RESULT" = success || exit 1

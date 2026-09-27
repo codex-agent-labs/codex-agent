@@ -1,10 +1,13 @@
 """The protected Runtime sidecar child keeps observation and signing separate."""
 
 from pathlib import Path
+import re
+import subprocess
 import unittest
 
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/runtime-phase10-maven.yml"
+PARENT = WORKFLOW.with_name("product-validation.yml")
 
 
 class RuntimePhase10MavenWorkflowTest(unittest.TestCase):
@@ -38,6 +41,25 @@ class RuntimePhase10MavenWorkflowTest(unittest.TestCase):
         self.assertIn("--protected-output \"$RUNNER_TEMP/runtime-phase10-capture/original\"", signing)
         self.assertIn("--keyring trusted-source/gradle/release/product-signing-keys.json", signing)
         self.assertIn("sidecarArtifactSha256:\n        value: ${{ jobs.sidecars.outputs.artifact_sha256 }}", source)
+
+    def test_parent_pins_reviewed_child_and_gates_its_exact_upload(self):
+        parent = PARENT.read_text(encoding="utf-8")
+        job = parent.split("  runtime-phase10-maven:\n", 1)[1].split("\n  sdk-inputs:", 1)[0]
+        match = re.search(r"uses: codex-agent-labs/codex-agent/\.github/workflows/"
+                          r"runtime-phase10-maven\.yml@([0-9a-f]{40})", job)
+        self.assertIsNotNone(match)
+        pinned = subprocess.check_output(["git", "show",
+            f"{match.group(1)}:.github/workflows/runtime-phase10-maven.yml"],
+            cwd=WORKFLOW.parents[2], text=True)
+        self.assertEqual(self.source, pinned)
+        self.assertIn("aggregateArtifactId: ${{ needs.runtime-aggregate-attestation.outputs.artifact_id }}", job)
+        self.assertIn("aggregateArtifactSha256: ${{ needs.runtime-aggregate-attestation.outputs.artifact_digest }}", job)
+        self.assertIn("expectedPgpKeySha256: ${{ needs.contract-phase10-pgp-authority.outputs.pgp_key_sha256 }}", job)
+        gate = parent.split("  merge-gate:\n", 1)[1]
+        self.assertIn("runtime-phase10-maven, sdk-inputs", gate.split("    runs-on:", 1)[0])
+        self.assertIn('test "$RUNTIME_PHASE10_MAVEN_RESULT" = success || exit 1', gate)
+        self.assertIn('[[ "$RUNTIME_PHASE10_MAVEN_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1', gate)
+        self.assertIn('[[ "$RUNTIME_PHASE10_MAVEN_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1', gate)
 
 
 if __name__ == "__main__":
