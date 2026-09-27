@@ -391,6 +391,7 @@ def held_sdk_campaign_candidate(plan_path, *, state_artifact_id,
         state_artifact_sha256, state_wave, sdk_state_wave, repository_root,
         fresh_selections, reused_selections, artifact_paths, semantic_controls,
         completed_catalog_pin, trusted_workflow_sha, token, environ,
+        original_run_id=None, original_run_attempt=None,
         custody_catalogs=None,
         sdk_validation_tooling=None, sdk_apple_validation_policy=None,
         sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
@@ -400,10 +401,19 @@ def held_sdk_campaign_candidate(plan_path, *, state_artifact_id,
     selected_catalog = require_exact_keys(completed_catalog_pin,
         _COMPLETED_CATALOG_PIN_KEYS, "Completed SDK catalog pin")
     selected_producer = validate_producer(selected_catalog["producer"])
+    if ((original_run_id is None) != (original_run_attempt is None)):
+        raise ValueError("SDK original run ID and attempt must be paired")
+    if original_run_id is not None and (
+            type(original_run_id) is not int or type(original_run_attempt) is not int
+            or original_run_id != selected_producer["runId"]
+            or original_run_attempt != selected_producer["runAttempt"]):
+        raise ValueError("SDK original run differs from independently pinned producer")
     with held_sdk_campaign_observation(plan_path, artifact_id=state_artifact_id,
             artifact_sha256=state_artifact_sha256,
             state_wave=state_wave, sdk_state_wave=sdk_state_wave,
             repository_root=repository_root, environ=environ, token=token,
+            original_run_id=original_run_id,
+            original_run_attempt=original_run_attempt,
             sdk_validation_tooling=sdk_validation_tooling,
             sdk_apple_validation_policy=sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
@@ -503,9 +513,11 @@ def held_sdk_campaign_candidate_from_official_authority(plan_path, repository_ro
         *, authority_artifact_id, authority_artifact_sha256,
         expected_authority_sha256, authority_workflow_sha,
         authority_workflow_path, authority_job_name, trusted_workflow_sha,
-        election_files, semantic_files, token, environ, **candidate_options):
+        election_files, semantic_files, token, environ,
+        original_run_id=None, original_run_attempt=None, **candidate_options):
     """Replay from one officially observed authority upload; never sign here."""
-    if {"repository_root", "trusted_workflow_sha", "token", "environ"} & set(candidate_options):
+    if {"repository_root", "trusted_workflow_sha", "token", "environ",
+            "original_run_id", "original_run_attempt"} & set(candidate_options):
         raise ValueError("Official SDK authority caller cannot replace protected context")
     from ci.sdk_campaign_authority_upload import held_official_sdk_campaign_authority
     with held_official_sdk_campaign_authority(plan_path, repository_root,
@@ -515,7 +527,8 @@ def held_sdk_campaign_candidate_from_official_authority(plan_path, repository_ro
             trusted_workflow_sha=authority_workflow_sha,
             trusted_workflow_path=authority_workflow_path,
             trusted_job_name=authority_job_name, token=token,
-            environ=environ) as (authority_file, transport):
+            environ=environ, original_run_id=original_run_id,
+            original_run_attempt=original_run_attempt) as (authority_file, transport):
         with held_sdk_campaign_candidate_from_authority(plan_path,
                 authority_file=authority_file,
                 expected_authority_sha256=expected_authority_sha256,
@@ -523,5 +536,7 @@ def held_sdk_campaign_candidate_from_official_authority(plan_path, repository_ro
                 repository_root=repository_root,
                 trusted_workflow_sha=trusted_workflow_sha,
                 token=token, environ=environ,
+                original_run_id=original_run_id,
+                original_run_attempt=original_run_attempt,
                 **candidate_options) as verified:
             yield verified, transport

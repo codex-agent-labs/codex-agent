@@ -5230,7 +5230,8 @@ def capture_runtime_resume_upload(
     plan_path: Path, destination: Path, *, artifact_id: int, artifact_sha256: str,
     trusted_workflow_sha: str, repository_root: Path | None = None,
     environ: Mapping[str, str] | None = None, token: str, state_wave: int = 0,
-    sdk_state_wave: int | None = None,
+    sdk_state_wave: int | None = None, original_run_id: int | None = None,
+    original_run_attempt: int | None = None,
 ) -> dict[str, Any]:
     """Retain the exact resumed upload; full product replay grants admission."""
     require_integer(artifact_id, "Runtime resume artifact ID", 1)
@@ -5254,7 +5255,9 @@ def capture_runtime_resume_upload(
         plan = _validate_plan(captured_plan, root)
         if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
             raise ValueError("Runtime resume capture requires an authorized PR or merge-group run")
-        producer = _consumer(plan, os.environ if environ is None else environ)["producer"]
+        producer = _consumer(plan, os.environ if environ is None else environ,
+                             original_run_id=original_run_id,
+                             original_run_attempt=original_run_attempt)["producer"]
         job_name = "product-validation / product-resume" if state_wave == 0 else f"product-validation / runtime-collect-{state_wave}"
         artifact_name = (f"codex-agent-product-resume-{producer['tree']}" if state_wave == 0 else
                          f"codex-agent-runtime-wave-{state_wave}-state-{producer['tree']}-attempt-{producer['runAttempt']}")

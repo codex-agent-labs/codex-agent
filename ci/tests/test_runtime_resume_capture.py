@@ -31,7 +31,8 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
         self.artifact.update(name=f"codex-agent-product-resume-{self.producer['tree']}",
                              digest=sha256_bytes(self.raw), size_in_bytes=len(self.raw))
 
-    def capture(self, destination, *, run=None, commit=None, jobs=None, artifact=None, raw=None):
+    def capture(self, destination, *, run=None, commit=None, jobs=None, artifact=None, raw=None,
+                original_run_id=None, original_run_attempt=None, environment=None):
         with mock.patch.object(product_reuse, "api_json", side_effect=[
             self.run if run is None else run, self.commit if commit is None else commit,
             self.artifact if artifact is None else artifact,
@@ -43,8 +44,20 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
             result = product_reuse.capture_runtime_resume_upload(
                 self.plan_path, destination, artifact_id=101, artifact_sha256=self.artifact["digest"],
                 trusted_workflow_sha=self.pin, repository_root=self.root,
-                environ=self.environment, token="not-a-real-token")
+                environ=self.environment if environment is None else environment,
+                original_run_id=original_run_id, original_run_attempt=original_run_attempt,
+                token="not-a-real-token")
         return result, query, listing, download
+
+    def test_later_dispatch_selects_explicit_original_run_without_spoofing_environment(self):
+        later = {**self.environment, "GITHUB_RUN_ID": "102", "GITHUB_RUN_ATTEMPT": "1"}
+        result, _, listing, _ = self.capture(
+            self.root / "build/later-run-resume-capture", environment=later,
+            original_run_id=91, original_run_attempt=3)
+        self.assertEqual(self.producer, result["captureProducer"])
+        listing.assert_called_once_with(
+            "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/91/attempts/3/jobs",
+            "jobs", "not-a-real-token")
 
     def capture_members(self, destination, members):
         raw = archive(members)

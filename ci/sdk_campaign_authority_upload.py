@@ -35,7 +35,8 @@ def held_official_sdk_campaign_authority(plan_path: Path, repository_root: Path,
         *, artifact_id: int, artifact_sha256: str,
         expected_authority_sha256: str, trusted_workflow_sha: str,
         trusted_workflow_path: str, trusted_job_name: str,
-        token: str, environ=None):
+        token: str, environ=None, original_run_id=None,
+        original_run_attempt=None):
     """Yield exact authority file and official transport evidence before replay."""
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
@@ -57,7 +58,9 @@ def held_official_sdk_campaign_authority(plan_path: Path, repository_root: Path,
         plan = products._validate_plan(captured_plan, root)
         if plan["remoteBuildAuthorized"] is not True or plan["event"] != "pull_request":
             raise ValueError("SDK campaign authority requires an authorized PR plan")
-        producer = validate_producer(products._consumer(plan, environment)["producer"])
+        producer = validate_producer(products._consumer(plan, environment,
+            original_run_id=original_run_id,
+            original_run_attempt=original_run_attempt)["producer"])
         if producer["event"] != "pull_request":
             raise ValueError("SDK campaign authority requires the exact PR producer")
         name = (f"codex-agent-sdk-campaign-authority-{producer['tree']}-"

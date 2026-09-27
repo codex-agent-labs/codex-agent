@@ -131,6 +131,22 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             stage_prepared_sdk_release_index(prepared, staged)
 
+    def test_original_run_is_pinned_before_official_observation(self):
+        @contextmanager
+        def official(*_args, **_kwargs):
+            yield ((self.receipts, object()), object())
+
+        with patch("ci.sdk_campaign_catalog_producer.held_sdk_campaign_candidate_from_official_authority",
+                   side_effect=official) as held:
+            self._prepare(original_run_id=3, original_run_attempt=1)
+            self.assertEqual(3, held.call_args.kwargs["original_run_id"])
+            self.assertEqual(1, held.call_args.kwargs["original_run_attempt"])
+            for changes in ({"original_run_id": 3},
+                            {"original_run_id": 4, "original_run_attempt": 1}):
+                with self.assertRaisesRegex(ValueError, "original run"):
+                    self._prepare(**changes)
+            self.assertEqual(1, held.call_count)
+
     def test_unpinned_inputs_fail_before_observation_and_raw_map_is_not_an_issuer(self):
         with patch("ci.sdk_campaign_catalog_producer.held_sdk_campaign_candidate_from_official_authority") as official:
             with self.assertRaisesRegex(ValueError, "protected pin"):
@@ -210,7 +226,8 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
         with patch("ci.sdk_campaign_catalog_producer.held_sdk_campaign_candidate_from_official_authority",
                    official):
             prepared = self._prepare()
-        arguments = self._cli_prepare_arguments()
+        arguments = self._cli_prepare_arguments() + [
+            "--original-run-id", "3", "--original-run-attempt", "1"]
         with patch.dict(os.environ, {"GITHUB_TOKEN": "observation-only"}, clear=True), \
              patch("ci.sdk_campaign_release_issuer.prepare_sdk_release_index") as replay, \
              redirect_stderr(StringIO()), self.assertRaises(SystemExit):
@@ -225,6 +242,8 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
             self.assertEqual(0, main(arguments))
         replay.assert_called_once()
         self.assertEqual("observation-only", replay.call_args.kwargs["token"])
+        self.assertEqual(3, replay.call_args.kwargs["original_run_id"])
+        self.assertEqual(1, replay.call_args.kwargs["original_run_attempt"])
         manifest = self.root / "prepared/product-index.json"
         self.assertEqual(prepared, manifest.read_bytes())
         self.assertEqual(str(manifest), json.loads(printed.getvalue())["preparedIndex"])

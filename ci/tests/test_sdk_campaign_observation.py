@@ -99,6 +99,17 @@ class SdkCampaignObservationTest(TestCase):
             self.assertEqual((originals[first].stage_path / "outputs/fixture/content.bin").read_bytes(),
                              str(first).encode())
 
+    def test_explicit_original_run_pair_reaches_shared_capture(self):
+        state = SimpleNamespace(prior_by_instance=self.records,
+            prior_carrier_phases=self.records, sources=self.sources)
+        capture, replay = self.observe(state)
+        options = {**self.kwargs(), "original_run_id": 3, "original_run_attempt": 1}
+        with capture as held, replay, observed.held_sdk_campaign_observation(
+                self.root / "plan.json", **options):
+            pass
+        self.assertEqual(3, held.call_args.kwargs["original_run_id"])
+        self.assertEqual(1, held.call_args.kwargs["original_run_attempt"])
+
     def test_missing_original_fails_closed(self):
         missing = min(SDK_CAMPAIGN_INSTANCES)
         state = SimpleNamespace(prior_by_instance=self.records,

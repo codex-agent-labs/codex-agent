@@ -43,6 +43,7 @@ _TOKEN_NAMES = frozenset({
 })
 _CANDIDATE_OPTIONS = frozenset({
     "state_artifact_id", "state_artifact_sha256", "state_wave", "sdk_state_wave",
+    "original_run_id", "original_run_attempt",
     "custody_catalogs", "sdk_validation_tooling", "sdk_apple_validation_policy",
     "sdk_facade_metadata_admission", "sdk_android_metadata_admission",
 })
@@ -93,6 +94,9 @@ def prepare_sdk_release_index(plan_path, repository_root, *, authority_file,
         raise ValueError("SDK release preparation requires an observation token")
     if set(candidate_options) - _CANDIDATE_OPTIONS or not _REQUIRED_CANDIDATE_OPTIONS <= set(candidate_options):
         raise ValueError("SDK release preparation accepts only its exact observation options")
+    if ((candidate_options.get("original_run_id") is None) !=
+            (candidate_options.get("original_run_attempt") is None)):
+        raise ValueError("SDK original run ID and attempt must be paired")
     keyring_bytes, signing, _ = _release_key(
         keyring_path, keys_directory, expected_keyring_sha256)
     from ci.sdk_campaign_pinned_election import held_pinned_sdk_campaign_authority
@@ -100,6 +104,13 @@ def prepare_sdk_release_index(plan_path, repository_root, *, authority_file,
 
     with held_pinned_sdk_campaign_authority(Path(authority_file),
             expected_authority_sha256) as authority:
+        if candidate_options.get("original_run_id") is not None:
+            original = authority["completedCatalogPin"]["producer"]
+            if (type(candidate_options["original_run_id"]) is not int
+                    or type(candidate_options["original_run_attempt"]) is not int
+                    or candidate_options["original_run_id"] != original["runId"]
+                    or candidate_options["original_run_attempt"] != original["runAttempt"]):
+                raise ValueError("SDK original run differs from independently pinned producer")
         with held_sdk_campaign_candidate_from_official_authority(plan_path,
                 repository_root, authority_artifact_id=authority_artifact_id,
                 authority_artifact_sha256=authority_artifact_sha256,
@@ -333,6 +344,8 @@ def _prepare_or_verify_cli(args):
                 state_artifact_id=args.state_artifact_id,
                 state_artifact_sha256=args.state_artifact_sha256,
                 state_wave=args.state_wave, sdk_state_wave=args.sdk_state_wave,
+                original_run_id=args.original_run_id,
+                original_run_attempt=args.original_run_attempt,
                 custody_catalogs=custody,
                 sdk_validation_tooling=(None if controlled["sdk_validation_tooling"] is None
                     else load_canonical_json_bytes(controlled["sdk_validation_tooling"])),
@@ -420,6 +433,8 @@ def main(argv=None):
         for name in ("authority-artifact-id", "state-artifact-id", "state-wave"):
             command.add_argument("--" + name, type=int, required=True)
         command.add_argument("--sdk-state-wave", type=int)
+        command.add_argument("--original-run-id", type=int)
+        command.add_argument("--original-run-attempt", type=int)
         for name in ("authority-artifact-sha256", "authority-workflow-sha",
                      "authority-workflow-path", "authority-job-name", "trusted-workflow-sha",
                      "state-artifact-sha256"):

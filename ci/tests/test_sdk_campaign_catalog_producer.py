@@ -318,6 +318,27 @@ class SdkCampaignCatalogProducerTest(TestCase):
             completed.assert_called_once()
             self.assertIs(completed.call_args.args[0], self.observations)
             self.assertEqual(transport, completed.call_args.args[1])
+        selected_run = {**arguments, "original_run_id": producer["runId"],
+            "original_run_attempt": producer["runAttempt"]}
+        with patch.object(catalog, "held_sdk_campaign_observation", side_effect=observation) as held, \
+             patch.object(catalog, "discover_sdk_campaign_original_pins",
+                 return_value=self.pins), \
+             patch.object(catalog, "held_completed_sdk_campaign_replay",
+                 side_effect=replay):
+            with catalog.held_sdk_campaign_candidate(Path("plan.json"), **selected_run):
+                pass
+            self.assertEqual(producer["runId"], held.call_args.kwargs["original_run_id"])
+            self.assertEqual(producer["runAttempt"],
+                held.call_args.kwargs["original_run_attempt"])
+        for invalid in ({"original_run_id": producer["runId"]},
+                        {"original_run_id": producer["runId"] + 1,
+                         "original_run_attempt": producer["runAttempt"]}):
+            with patch.object(catalog, "held_sdk_campaign_observation") as held, \
+                 self.assertRaisesRegex(ValueError, "original run"):
+                with catalog.held_sdk_campaign_candidate(
+                        Path("plan.json"), **{**arguments, **invalid}):
+                    pass
+            held.assert_not_called()
         wrong = canonical_json_bytes({"captureProducer": {**producer, "tree": "0" * 40}})
         @contextmanager
         def wrong_observation(*_args, **_kwargs):

@@ -28,7 +28,8 @@ class SdkCampaignAuthorityUploadTest(TestCase):
             "tree": "b" * 40, "event": "pull_request", "runId": 41,
             "runAttempt": 2, "pullRequest": 31}
 
-    def hold(self, *, digest=None, authorized=True, archive=None):
+    def hold(self, *, digest=None, authorized=True, archive=None,
+             original_run_id=None, original_run_attempt=None):
         calls = []
 
         def download(artifact_id, transport_digest, name, producer, _run, _token,
@@ -41,7 +42,7 @@ class SdkCampaignAuthorityUploadTest(TestCase):
         with (patch.object(locator.products, "_validate_plan", return_value={
                 "remoteBuildAuthorized": authorized, "event": "pull_request"}),
               patch.object(locator.products, "_consumer",
-                return_value={"producer": self.producer}),
+                return_value={"producer": self.producer}) as consumer,
               patch.object(locator.products, "_observe_ci_producer_jobs",
                 return_value=[{"run": {"head_sha": "a" * 40}}]) as observed,
               patch.object(locator.products, "_download_contract_ci_upload",
@@ -54,9 +55,14 @@ class SdkCampaignAuthorityUploadTest(TestCase):
                     trusted_workflow_sha="c" * 40,
                     trusted_workflow_path=".github/workflows/product-validation.yml",
                     trusted_job_name="product-validation / sdk-authority-upload",
-                    token="local-test-token", environ={}) as (path, evidence):
+                    token="local-test-token", environ={},
+                    original_run_id=original_run_id,
+                    original_run_attempt=original_run_attempt) as (path, evidence):
                 self.assertEqual(self.authority, path.read_bytes())
                 self.assertEqual(self.producer, evidence["producer"])
+            self.assertEqual(original_run_id, consumer.call_args.kwargs["original_run_id"])
+            self.assertEqual(original_run_attempt,
+                consumer.call_args.kwargs["original_run_attempt"])
             return calls, observed, window
 
     def test_exact_official_upload_and_job_window(self):
@@ -66,6 +72,9 @@ class SdkCampaignAuthorityUploadTest(TestCase):
                          "-attempt-2", calls[0][2])
         observed.assert_called_once()
         window.assert_called_once()
+
+    def test_later_run_observes_explicit_original_authority_producer(self):
+        self.hold(original_run_id=41, original_run_attempt=2)
 
     def test_wrong_authority_digest_and_extra_member_reject(self):
         with self.assertRaisesRegex(ValueError, "independently pinned bytes"):
@@ -83,16 +92,21 @@ class SdkCampaignAuthorityUploadTest(TestCase):
 
     def test_composite_holds_official_upload_through_candidate_replay(self):
         events = []
+        forwarding = []
 
         @contextmanager
-        def upload(*_args, **_kwargs):
+        def upload(*_args, **kwargs):
             events.append("upload-enter")
+            forwarding.append(("upload", kwargs["original_run_id"],
+                kwargs["original_run_attempt"]))
             yield self.root / "authority.json", {"artifactId": 17}
             events.append("upload-exit")
 
         @contextmanager
-        def candidate(*_args, **_kwargs):
+        def candidate(*_args, **kwargs):
             events.append("candidate-enter")
+            forwarding.append(("candidate", kwargs["original_run_id"],
+                kwargs["original_run_attempt"]))
             yield "verified"
             events.append("candidate-exit")
 
@@ -109,7 +123,9 @@ class SdkCampaignAuthorityUploadTest(TestCase):
                     authority_job_name="product-validation / sdk-authority-upload",
                     trusted_workflow_sha="c" * 40,
                     election_files={}, semantic_files={}, token="local-test-token",
-                    environ={}) as (verified, transport):
+                    environ={}, original_run_id=41,
+                    original_run_attempt=2) as (verified, transport):
                 self.assertEqual(("verified", {"artifactId": 17}), (verified, transport))
         self.assertEqual(["upload-enter", "candidate-enter", "candidate-exit",
                           "upload-exit"], events)
+        self.assertEqual([("upload", 41, 2), ("candidate", 41, 2)], forwarding)

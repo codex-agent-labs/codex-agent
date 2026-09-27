@@ -38,6 +38,7 @@ class ObservedSdkOriginal:
 def held_sdk_campaign_observation(plan_path, *, artifact_id, artifact_sha256,
         trusted_workflow_sha, state_wave=0, sdk_state_wave=None,
         repository_root, environ, token,
+        original_run_id=None, original_run_attempt=None,
         sdk_validation_tooling=None, sdk_apple_validation_policy=None,
         sdk_facade_metadata_admission=None,
         sdk_android_metadata_admission=None):
@@ -56,7 +57,9 @@ def held_sdk_campaign_observation(plan_path, *, artifact_id, artifact_sha256,
             Path(plan_path), captured, artifact_id=artifact_id,
             artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
             sdk_state_wave=sdk_state_wave, state_wave=state_wave, repository_root=root,
-            environ=environ, token=token)
+            environ=environ, token=token,
+            original_run_id=original_run_id,
+            original_run_attempt=original_run_attempt)
         transport_bytes = read_regular_file_bytes(captured / "capture-transport.json",
             max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
         if canonical_json_bytes(transport) != transport_bytes:
