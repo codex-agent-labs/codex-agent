@@ -1052,15 +1052,6 @@ _AuthenticatedRuntime _authenticatedRuntime(
   final file = File(path);
   requireAbsoluteRegularFile(file, 'Codex Agent C SDK');
   final cached = _authenticatedRuntimes[path];
-  if (cached != null && !explicitOverride) {
-    if (runtimeFileSha256(file) != cached.digest) {
-      throw const CodexException(
-        'Codex Agent Runtime changed after authentication',
-      );
-    }
-    return cached;
-  }
-
   final compatibility = RuntimeCompatibility.load();
   final target = currentClassifier();
   final packagedUri = Isolate.resolvePackageUriSync(
@@ -1071,6 +1062,21 @@ _AuthenticatedRuntime _authenticatedRuntime(
   final embedded = packagedUri != null &&
       packagedUri.scheme == 'file' &&
       File.fromUri(packagedUri).path == file.path;
+  if (cached != null && !explicitOverride && embedded) {
+    final digest = runtimeFileSha256(file);
+    if (digest != cached.digest ||
+        digest != compatibility.embeddedVariants[target]?.librarySha256) {
+      throw const CodexException(
+        'Codex Agent Runtime changed after authentication',
+      );
+    }
+    compatibility.verifyRuntimeIdentity(
+      readRuntimeIdentity(cached.library),
+      target,
+      embedded: true,
+    );
+    return cached;
+  }
   final snapshot = snapshotRuntimeLibrary(
     file,
     compatibility,
@@ -1084,14 +1090,16 @@ _AuthenticatedRuntime _authenticatedRuntime(
                 snapshot.file, file, compatibility, target)
             : null;
     if (cached != null && beforeDynamicOpen == null) {
+      final cachedIdentity = readRuntimeIdentity(cached.library);
       if (snapshot.digest != cached.digest ||
           (authorization != null &&
-              readRuntimeIdentity(cached.library) !=
-                  jsonEncode(authorization['runtimeIdentity']))) {
+              cachedIdentity != jsonEncode(authorization['runtimeIdentity']))) {
         throw const CodexException(
           'Codex Agent Runtime changed after authentication',
         );
       }
+      compatibility.verifyRuntimeIdentity(cachedIdentity, target,
+          embedded: embedded);
       snapshot.removeAfterLoad();
       return cached;
     }

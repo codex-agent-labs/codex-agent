@@ -485,8 +485,7 @@ List<int> _sdkRuntimeRoot() {
     throw const CodexException(
         'external Runtime release evidence is unavailable: SDK root is absent');
   }
-  requireAbsoluteRegularFile(file, 'SDK Runtime root');
-  return file.readAsBytesSync();
+  return _evidenceFile(file.parent, file.uri.pathSegments.last, maxBytes: 4096);
 }
 
 Map<String, Object?> _keyRecord(Object? value) {

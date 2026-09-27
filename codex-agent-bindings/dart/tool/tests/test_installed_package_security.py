@@ -108,6 +108,8 @@ class InstalledDartPackageSecurityTest(unittest.TestCase):
             self.assertIn("SDK root is absent", probe(str(library)))
             root.write_bytes(b"not an Ed25519 key\n")
             self.assertIn("public key is not canonical", probe(str(library)))
+            root.write_bytes(b"x" * 4097)
+            self.assertIn("has invalid size", probe(str(library)))
 
 
 if __name__ == "__main__":

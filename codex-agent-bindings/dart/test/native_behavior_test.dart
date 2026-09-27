@@ -3,11 +3,17 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:codex_agent/codex_agent.dart';
 import 'package:codex_agent/src/ffi.dart'
-    show authenticatedRuntimeLibraryForTesting, readRuntimeIdentity;
+    show
+        NativeApi,
+        authenticatedRuntimeLibraryForTesting,
+        currentClassifier,
+        libraryNameFor,
+        readRuntimeIdentity;
 import 'package:codex_agent/src/runtime_compatibility.dart'
     show runtimeFileSha256;
 import 'package:test/test.dart';
@@ -64,20 +70,23 @@ void main() {
       try {
         final rootKey = _testKey(temporary, 'root');
         final config = _isolatedPackage(temporary, rootKey.public);
-        final result = await Process.run(Platform.resolvedExecutable, [
-          '--packages=${config.path}',
-          'run',
-          'test:test',
-          'test/native_behavior_test.dart',
-          '-r',
-          'expanded',
-        ], environment: {
-          ...Platform.environment,
-          'CODEX_AGENT_TEST_ISOLATED': '1',
-          'CODEX_AGENT_TEST_ROOT_PRIVATE': rootKey.privateKey,
-          'CODEX_AGENT_TEST_ROOT_PUBLIC': '${rootKey.privateKey}.pub',
-          'CODEX_AGENT_TEST_PACKAGE_CONFIG': config.path,
-        });
+        final result = await Process.run(
+            Platform.resolvedExecutable,
+            [
+              '--packages=${config.path}',
+              'run',
+              'test:test',
+              'test/native_behavior_test.dart',
+              '-r',
+              'expanded',
+            ],
+            environment: {
+              ...Platform.environment,
+              'CODEX_AGENT_TEST_ISOLATED': '1',
+              'CODEX_AGENT_TEST_ROOT_PRIVATE': rootKey.privateKey,
+              'CODEX_AGENT_TEST_ROOT_PUBLIC': '${rootKey.privateKey}.pub',
+              'CODEX_AGENT_TEST_PACKAGE_CONFIG': config.path,
+            }..remove('CODEX_AGENT_LIBRARY'));
         expect(result.exitCode, 0,
             reason: '${result.stdout}\n${result.stderr}');
       } finally {
@@ -105,8 +114,8 @@ void main() {
 
   test('cached runtime still requires intact signed evidence', () {
     final loaded = authenticatedRuntimeLibraryForTesting(libraryPath);
-    final signature = File(
-        '$libraryPath.evidence/runtime-library-authorization.sig');
+    final signature =
+        File('$libraryPath.evidence/runtime-library-authorization.sig');
     final original = signature.readAsBytesSync();
     try {
       signature.writeAsBytesSync([...original, 120]);
@@ -118,6 +127,47 @@ void main() {
       signature.writeAsBytesSync(original);
     }
     expect(authenticatedRuntimeLibraryForTesting(libraryPath), same(loaded));
+  });
+
+  test(
+      'cached embedded runtime rechecks the installed compatibility declaration',
+      () {
+    final uri = Isolate.resolvePackageUriSync(
+      Uri.parse('package:codex_agent/src/native/sdk-compatibility.json'),
+    )!;
+    final declaration = File.fromUri(uri);
+    final original = declaration.readAsBytesSync();
+    final target = currentClassifier();
+    final packaged = File(
+      '${declaration.parent.path}/$target/${libraryNameFor(target)}',
+    );
+    packaged.parent.createSync(recursive: true);
+    File(libraryPath).copySync(packaged.path);
+    try {
+      final value = jsonDecode(utf8.decode(original)) as Map<String, Object?>;
+      final runtime = value['runtime']! as Map<String, Object?>;
+      final variant = (runtime['embeddedVariants']! as List<Object?>)
+          .cast<Map<String, Object?>>()
+          .singleWhere((item) => item['target'] == target);
+      final identity =
+          jsonDecode(readRuntimeIdentity(DynamicLibrary.open(libraryPath)))
+              as Map<String, Object?>;
+      variant['runtimeLibrarySha256'] = runtimeFileSha256(packaged);
+      variant['componentId'] = identity['componentId'];
+      declaration.writeAsStringSync(_canonical(value));
+      NativeApi.loadResolved();
+
+      const differentContract =
+          'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+      (value['contract']! as Map<String, Object?>)['digest'] =
+          differentContract;
+      runtime['requiredContractDigest'] = differentContract;
+      declaration.writeAsStringSync(_canonical(value));
+      expect(() => NativeApi.loadResolved(), throwsA(isA<CodexException>()));
+    } finally {
+      declaration.writeAsBytesSync(original);
+      packaged.deleteSync();
+    }
   });
 
   test('Host Agent Conversation lifecycle, values, state and ownership',
