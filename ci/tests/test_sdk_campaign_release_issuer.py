@@ -167,6 +167,9 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "observation token"):
             sign_approved_sdk_release_index(manifest, **{**options,
                 "environ": {"GITHUB_TOKEN": "even-an-empty-variable-is-forbidden"}})
+        with self.assertRaisesRegex(ValueError, "observation token"):
+            sign_approved_sdk_release_index(manifest, **{**options,
+                "environ": {"GITHUB_API_TOKEN": "observer"}})
 
     def test_no_secret_stage_rejects_development_catalog_and_signing_context(self):
         with self.assertRaises(ValueError):

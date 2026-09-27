@@ -38,7 +38,7 @@ from products.signing_isolation import SIGNING_SECRET, require_no_signing_secret
 
 
 _TOKEN_NAMES = frozenset({
-    "GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_RUNTIME_TOKEN",
+    "GITHUB_TOKEN", "GH_TOKEN", "GITHUB_API_TOKEN", "ACTIONS_RUNTIME_TOKEN",
     "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
 })
 _CANDIDATE_OPTIONS = frozenset({
