@@ -41,6 +41,15 @@ class RuntimePhase10UploadLocatorTest(unittest.TestCase):
         self.assertEqual({"artifact_id": 701, "artifact_sha256": self.f.artifact["digest"]}, self.call())
         self.assertFalse(self.f.output.exists())
 
+    def test_explicit_original_run_ignores_later_attestation_run_environment(self):
+        self.environment = {"GITHUB_RUN_ID": "999", "GITHUB_RUN_ATTEMPT": "9"}
+        self.assertEqual({"artifact_id": 701, "artifact_sha256": self.f.artifact["digest"]},
+                         self.call(original_run_id=71, original_run_attempt=2))
+        with patch.object(locator.products, "_observe_ci_producer_jobs") as observer, \
+                self.assertRaisesRegex(ValueError, "supplied together"):
+            self.call(original_run_id=71)
+        observer.assert_not_called()
+
     def test_official_selection_captures_exact_original_bytes(self):
         with patch.object(locator.products, "_validate_plan", return_value=self.f.plan), \
                 patch("reuse.api_request", side_effect=self.api), \

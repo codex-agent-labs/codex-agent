@@ -22,8 +22,19 @@ from reuse import github_output
 _JOB = "product-validation / runtime-aggregate-attestation"
 
 
-def locate_runtime_phase10_upload(plan_path, candidate_root, *, trusted_workflow_sha, environ=None, token):
-    """Return the exact successful job's current-run upload ID/digest only."""
+def _selected_producer(plan, environment, original_run_id, original_run_attempt):
+    if (original_run_id is None) != (original_run_attempt is None):
+        raise ValueError("Original Runtime run ID and attempt must be supplied together")
+    return products.validate_producer(products._consumer(
+        plan, environment, original_run_id=original_run_id,
+        original_run_attempt=original_run_attempt,
+    )["producer"])
+
+
+def locate_runtime_phase10_upload(plan_path, candidate_root, *, trusted_workflow_sha,
+                                  original_run_id=None, original_run_attempt=None,
+                                  environ=None, token):
+    """Return the exact selected successful job's upload ID/digest only."""
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
     require_no_signing_secret(os.environ)
@@ -37,7 +48,7 @@ def locate_runtime_phase10_upload(plan_path, candidate_root, *, trusted_workflow
         plan = products._validate_plan(captured_plan, candidate)
         if plan["remoteBuildAuthorized"] is not True or plan["event"] not in {"pull_request", "merge_group"}:
             raise ValueError("Runtime Phase-10 locator requires an authorized PR or merge-group plan")
-        producer = products.validate_producer(products._consumer(plan, environment)["producer"])
+        producer = _selected_producer(plan, environment, original_run_id, original_run_attempt)
         observation = products._observe_ci_producer_jobs(
             {"aggregate": producer}, jobs_by_phase={"aggregate": _JOB},
             trusted_workflow_sha=trusted_workflow_sha, token=token,
@@ -74,10 +85,12 @@ def locate_runtime_phase10_upload(plan_path, candidate_root, *, trusted_workflow
 
 def capture_observed_runtime_phase10_upload(
         plan_path, candidate_root, destination, *, trusted_workflow_sha,
-        expected_build_key, expected_metadata_receipt_sha256, environ=None, token):
+        expected_build_key, expected_metadata_receipt_sha256,
+        original_run_id=None, original_run_attempt=None, environ=None, token):
     """Capture the exact located upload; product/release admission stays separate."""
     selected = locate_runtime_phase10_upload(
         plan_path, candidate_root, trusted_workflow_sha=trusted_workflow_sha,
+        original_run_id=original_run_id, original_run_attempt=original_run_attempt,
         environ=environ, token=token,
     )
     return products.capture_runtime_aggregate_release_upload(
@@ -85,6 +98,7 @@ def capture_observed_runtime_phase10_upload(
         expected_build_key=expected_build_key,
         expected_metadata_receipt_sha256=expected_metadata_receipt_sha256,
         repository_root=candidate_root, environ=environ, token=token,
+        original_run_id=original_run_id, original_run_attempt=original_run_attempt,
     )
 
 
@@ -93,6 +107,8 @@ def main(argv=None):
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--candidate-root", type=Path, required=True)
     parser.add_argument("--trusted-workflow-sha", required=True)
+    parser.add_argument("--original-run-id", type=int)
+    parser.add_argument("--original-run-attempt", type=int)
     parser.add_argument("--destination", type=Path)
     parser.add_argument("--expected-build-key")
     parser.add_argument("--expected-metadata-receipt-sha256")
@@ -105,12 +121,16 @@ def main(argv=None):
         if args.destination is None:
             value = locate_runtime_phase10_upload(
                 args.plan, args.candidate_root, trusted_workflow_sha=args.trusted_workflow_sha,
+                original_run_id=args.original_run_id,
+                original_run_attempt=args.original_run_attempt,
                 environ=os.environ, token=os.environ["GITHUB_TOKEN"],
             )
         else:
             captured = capture_observed_runtime_phase10_upload(
                 args.plan, args.candidate_root, args.destination,
                 trusted_workflow_sha=args.trusted_workflow_sha,
+                original_run_id=args.original_run_id,
+                original_run_attempt=args.original_run_attempt,
                 expected_build_key=args.expected_build_key,
                 expected_metadata_receipt_sha256=args.expected_metadata_receipt_sha256,
                 environ=os.environ, token=os.environ["GITHUB_TOKEN"],

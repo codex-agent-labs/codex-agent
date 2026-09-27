@@ -2059,13 +2059,21 @@ def _reverify_complete(
     )
 
 
-def _consumer(plan: Mapping[str, Any], environ: Mapping[str, str]) -> dict[str, Any]:
+def _consumer(plan: Mapping[str, Any], environ: Mapping[str, str], *,
+              original_run_id: int | None = None,
+              original_run_attempt: int | None = None) -> dict[str, Any]:
     event = require_string(plan["event"], "impact plan.event")
     def positive_environment_integer(name: str) -> int:
         value = environ.get(name)
         if not isinstance(value, str) or re.fullmatch(r"[1-9][0-9]*", value) is None:
             raise ValueError(f"{name} must be a positive decimal integer")
         return int(value)
+    if (original_run_id is None) != (original_run_attempt is None):
+        raise ValueError("Original CI run and attempt must be supplied together")
+    run_id = (positive_environment_integer("GITHUB_RUN_ID") if original_run_id is None else
+              require_integer(original_run_id, "Original CI run ID", 1))
+    run_attempt = (positive_environment_integer("GITHUB_RUN_ATTEMPT") if original_run_attempt is None else
+                   require_integer(original_run_attempt, "Original CI run attempt", 1))
     return {
         "kind": "ci",
         "producer": {
@@ -2074,8 +2082,8 @@ def _consumer(plan: Mapping[str, Any], environ: Mapping[str, str]) -> dict[str, 
             "commit": plan["validationCommit"],
             "tree": plan["validationTree"],
             "event": event,
-            "runId": positive_environment_integer("GITHUB_RUN_ID"),
-            "runAttempt": positive_environment_integer("GITHUB_RUN_ATTEMPT"),
+            "runId": run_id,
+            "runAttempt": run_attempt,
             "pullRequest": plan["pullRequest"] if event == "pull_request" else None,
         },
     }
@@ -5310,7 +5318,7 @@ def capture_runtime_resume_upload(
 
 def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact_id, artifact_sha256,
         trusted_workflow_sha, expected_build_key, expected_metadata_receipt_sha256,
-        repository_root=None, environ=None, token):
+        repository_root=None, environ=None, original_run_id=None, original_run_attempt=None, token):
     """Capture a fixed protected job's exact upload, not its product admission.
 
     Original signature/content authentication remains in the existing full
@@ -5344,7 +5352,10 @@ def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact
         plan = _validate_plan(captured_plan, root)
         if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
             raise ValueError("Aggregate upload capture requires an authorized PR or merge-group plan")
-        producer = validate_producer(_consumer(plan, os.environ if environ is None else environ)["producer"])
+        producer = validate_producer(_consumer(
+            plan, os.environ if environ is None else environ,
+            original_run_id=original_run_id, original_run_attempt=original_run_attempt,
+        )["producer"])
         job = "product-validation / runtime-aggregate-attestation"
         observed = _observe_ci_producer_jobs({"aggregate": producer}, jobs_by_phase={"aggregate": job},
             trusted_workflow_sha=trusted_workflow_sha, token=token)
