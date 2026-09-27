@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 from ci import runtime_phase10_output_record as gate
@@ -164,6 +165,113 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
         (self.sidecars / "signature.asc").write_bytes(b"tampered\n")
         with self.assertRaisesRegex(ValueError, "sidecars"):
             self.verify()
+
+    def admit_original(self, *, overrides=None, archive_files=None, plan=None):
+        producer = {
+            "repository": "codex-agent-labs/codex-agent",
+            "workflowPath": ".github/workflows/ci.yml",
+            "commit": self.candidate_commit, "tree": self.candidate_tree,
+            "event": "pull_request", "runId": 77, "runAttempt": 2,
+            "pullRequest": 31,
+        }
+        selected = {
+            "repository": producer["repository"], "validationCommit": producer["commit"],
+            "validationTree": producer["tree"], "event": producer["event"],
+            "pullRequest": producer["pullRequest"], "remoteBuildAuthorized": True,
+        }
+        if plan is not None:
+            selected.update(plan)
+        files = archive_files or {"record.json": self.record_path.read_bytes(),
+                                  "record.sig": self.signature.read_bytes()}
+        archive = self.root / "original-record.zip"
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zipped:
+            for name, raw in sorted(files.items()):
+                zipped.writestr(name, raw)
+        artifact_sha = sha256_bytes(archive.read_bytes())
+        inputs = dict(expected_producer=producer,
+            trusted_record_workflow_path=".github/workflows/runtime-phase10-output-record.yml",
+            trusted_record_workflow_sha="f" * 40,
+            trusted_record_job_name="product-validation / runtime-phase10-output-record",
+            record_artifact_name="runtime-record-original-77-2",
+            record_artifact_id=27, record_artifact_sha256=artifact_sha,
+            expected_record_sha256=sha256_bytes(self.record_path.read_bytes()),
+            expected_signature_sha256=sha256_bytes(self.signature.read_bytes()),
+            trusted_source_commit=self.commit,
+            trusted_aggregate_workflow_sha="e" * 40,
+            expected_pgp_key_sha256=self.pins["expected_pgp_key_sha256"],
+            token="local-test-token", environ={"GITHUB_RUN_ID": "999"})
+        inputs.update(overrides or {})
+
+        def official(_, __, destination, **kwargs):
+            self.assertEqual("77", kwargs["environ"]["GITHUB_RUN_ID"])
+            self.assertEqual("2", kwargs["environ"]["GITHUB_RUN_ATTEMPT"])
+            (destination / "original").mkdir(parents=True)
+            shutil.copy2(self.output / "caller.json", destination / "original/caller.json")
+            return deepcopy(self.upload)
+
+        def download(artifact_id, digest, name, pinned_producer, run, token, *, destination):
+            self.assertEqual(27, artifact_id)
+            self.assertEqual(artifact_sha, digest)
+            self.assertEqual(inputs["record_artifact_name"], name)
+            self.assertEqual(producer, pinned_producer)
+            shutil.copy2(archive, destination)
+            return {"id": 27, "digest": artifact_sha}, destination
+
+        with patch.object(gate.product_reuse, "_validate_plan", return_value=selected), \
+             patch.object(gate.product_reuse, "_observe_ci_producer_jobs",
+                          return_value=[{"run": {"head_sha": self.candidate_commit}, "jobs": []}]), \
+             patch.object(gate.product_reuse, "_download_contract_ci_upload",
+                          side_effect=download) as fetched, \
+             patch.object(gate.product_reuse, "_require_artifact_job_window") as window, \
+             patch.object(gate, "capture_observed_runtime_phase10_upload", side_effect=official), \
+             patch.object(gate, "forward_verified_runtime_phase10_bytes") as deep:
+            result = gate.admit_original_runtime_phase10_output_record(
+                self.plan, self.validation, self.repository, self.output,
+                self.sidecars, self.pgp, self.root / "admitted-record", **inputs)
+        return result, fetched, window, deep
+
+    def test_later_run_admits_only_official_pinned_signed_original(self):
+        result, fetched, window, deep = self.admit_original()
+        self.assertEqual(self.record, result["record"])
+        self.assertEqual(27, result["officialRecordUpload"]["artifact"]["id"])
+        self.assertEqual(self.record_path.read_bytes(), result["recordPath"].read_bytes())
+        self.assertEqual(self.signature.read_bytes(), result["signaturePath"].read_bytes())
+        self.assertEqual(result["retainedFiles"], regular_file_inventory(self.root / "admitted-record"))
+        self.assertEqual(result["recordSha256"], sha256_bytes(result["recordPath"].read_bytes()))
+        self.assertEqual(result["signatureSha256"], sha256_bytes(result["signaturePath"].read_bytes()))
+        fetched.assert_called_once()
+        window.assert_called_once()
+        deep.assert_called_once()
+
+    def test_later_run_rejects_signed_pair_changed_after_deep_verification(self):
+        original = gate.verify_signed_runtime_phase10_output_record
+
+        def mutate_after_verify(record_path, *args, **kwargs):
+            verified = original(record_path, *args, **kwargs)
+            record_path.write_bytes(b"changed after verification\n")
+            return verified
+
+        with patch.object(gate, "verify_signed_runtime_phase10_output_record",
+                          side_effect=mutate_after_verify), \
+             self.assertRaisesRegex(ValueError, "changed during admission"):
+            self.admit_original()
+        self.assertFalse((self.root / "admitted-record").exists())
+
+    def test_later_run_rejects_wrong_producer_before_record_download(self):
+        with self.assertRaisesRegex(ValueError, "producer differs"):
+            self.admit_original(plan={"validationTree": "0" * 40})
+
+    def test_later_run_rejects_record_or_signature_not_independently_pinned(self):
+        for field in ("expected_record_sha256", "expected_signature_sha256"):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "independent pins"):
+                self.admit_original(overrides={field: "sha256:" + "0" * 64})
+
+    def test_later_run_rejects_extra_official_record_member(self):
+        with self.assertRaisesRegex(ValueError, "unexpected files"):
+            self.admit_original(archive_files={
+                "record.json": self.record_path.read_bytes(),
+                "record.sig": self.signature.read_bytes(), "extra.txt": b"not allowed",
+            })
 
     def test_independent_source_workflow_pgp_and_keyring_pins(self):
         for override in ({"trusted_source_commit": "0" * 40},

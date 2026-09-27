@@ -19,12 +19,14 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ci import product_reuse
+from ci.receipt import safe_extract
 from ci.runtime_phase10_upload_locator import capture_observed_runtime_phase10_upload
 from ci.runtime_phase11_bytes import _landed_tree, forward_verified_runtime_phase10_bytes
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
     regular_file_inventory, require_exact_keys, require_integer, require_sha256,
-    publish_regular_tree, sha256_bytes, snapshot_regular_tree, write_canonical_json,
+    publish_regular_tree, sha256_bytes, snapshot_regular_tree, verified_zip_contents,
+    write_canonical_json,
 )
 from ci.products.signatures import (
     load_keyring, require_active_release_key, verify_manifest_signature,
@@ -40,6 +42,140 @@ _PINS = {
     "expected_workflow_sha", "expected_keyring_sha256",
     "expected_keys_inventory_sha256", "expected_pgp_key_sha256",
 }
+
+
+def admit_original_runtime_phase10_output_record(
+    plan_path: Path, validation_repository: Path, repository_root: Path,
+    protected_output: Path, maven_sidecars: Path, pgp_public_key: Path,
+    destination: Path, *,
+    expected_producer: Mapping, trusted_record_workflow_path: str,
+    trusted_record_workflow_sha: str, trusted_record_job_name: str,
+    record_artifact_name: str, record_artifact_id: int,
+    record_artifact_sha256: str, expected_record_sha256: str,
+    expected_signature_sha256: str, trusted_source_commit: str,
+    trusted_aggregate_workflow_sha: str, expected_pgp_key_sha256: str,
+    token: str, environ=None,
+) -> dict:
+    """Admit a later-run original only from caller-pinned official record bytes.
+
+    The original producer, route and artifact pins must come from protected
+    caller authority, never the downloaded record or current run environment.
+    """
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    require_no_signing_secret(os.environ)
+    destination = Path(destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Runtime original record destination already exists")
+    target = destination.resolve(strict=False)
+    for source in (plan_path, validation_repository, repository_root):
+        original = Path(source).resolve(strict=True)
+        if target == original or target in original.parents:
+            raise ValueError("Runtime original record destination overlaps an input")
+    for source in (protected_output, maven_sidecars, pgp_public_key):
+        original = Path(source).resolve(strict=True)
+        if target == original or target in original.parents or original in target.parents:
+            raise ValueError("Runtime original record destination overlaps an input")
+    producer = product_reuse.validate_producer(dict(expected_producer))
+    if producer["event"] not in {"pull_request", "merge_group"} or \
+            type(record_artifact_name) is not str or not record_artifact_name or \
+            type(trusted_record_job_name) is not str or not trusted_record_job_name or \
+            type(token) is not str or not token:
+        raise ValueError("Runtime original record requires pinned PR/merge-group transport")
+    require_integer(record_artifact_id, "Runtime original record artifact ID", 1)
+    for label, value in (("artifact", record_artifact_sha256),
+                         ("record", expected_record_sha256),
+                         ("signature", expected_signature_sha256)):
+        require_sha256(value, f"Runtime original {label} digest")
+    plan_bytes = read_regular_file_bytes(
+        Path(plan_path), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
+    )
+    with tempfile.TemporaryDirectory(prefix="rt-original-record-") as temporary:
+        root = Path(temporary).resolve()
+        original_plan = root / "impact-plan.json"
+        original_plan.write_bytes(plan_bytes)
+        plan = product_reuse._validate_plan(original_plan, Path(validation_repository))
+        if plan["remoteBuildAuthorized"] is not True or any(
+            plan[field] != producer[other] for field, other in (
+                ("repository", "repository"), ("validationCommit", "commit"),
+                ("validationTree", "tree"), ("event", "event"),
+                ("pullRequest", "pullRequest"),
+            )
+        ):
+            raise ValueError("Runtime original record producer differs from validated plan")
+        observed = product_reuse._observe_ci_producer_jobs(
+            {"record": producer}, jobs_by_phase={"record": trusted_record_job_name},
+            trusted_workflows_by_phase={"record": {
+                "path": trusted_record_workflow_path,
+                "sha": trusted_record_workflow_sha,
+            }}, token=token,
+        )[0]
+        archive = root / "official-record.zip"
+        artifact, _ = product_reuse._download_contract_ci_upload(
+            record_artifact_id, record_artifact_sha256, record_artifact_name,
+            producer, observed["run"], token, destination=archive,
+        )
+        product_reuse._require_artifact_job_window(observed, trusted_record_job_name, artifact)
+        inventory, _, _ = verified_zip_contents(
+            archive, retained_paths=(), **product_reuse._CATALOG_ZIP_LIMITS,
+        )
+        if {row["relativePath"] for row in inventory} != {"record.json", "record.sig"}:
+            raise ValueError("Runtime original record upload has unexpected files")
+        extracted = root / "record"
+        safe_extract(archive, extracted)
+        if regular_file_inventory(extracted) != inventory:
+            raise ValueError("Runtime original record extraction differs from official upload")
+        record_path, signature_path = extracted / "record.json", extracted / "record.sig"
+        record_bytes = read_regular_file_bytes(record_path, max_bytes=16 * 1024 * 1024)
+        signature_bytes = read_regular_file_bytes(signature_path, max_bytes=64 * 1024)
+        if sha256_bytes(record_bytes) != expected_record_sha256 or \
+                sha256_bytes(signature_bytes) != expected_signature_sha256:
+            raise ValueError("Runtime original signed record differs from independent pins")
+        # The existing locator reads run identity from its environment. Supply
+        # the independently pinned *original* identity, never the consumer run.
+        original_environment = {**environment, "GITHUB_RUN_ID": str(producer["runId"]),
+                                "GITHUB_RUN_ATTEMPT": str(producer["runAttempt"])}
+        record = verify_signed_runtime_phase10_output_record(
+            record_path, signature_path, repository_root, protected_output,
+            maven_sidecars, pgp_public_key, original_plan,
+            validation_repository=validation_repository,
+            trusted_source_commit=trusted_source_commit,
+            trusted_workflow_sha=trusted_aggregate_workflow_sha,
+            expected_pgp_key_sha256=expected_pgp_key_sha256,
+            token=token, environ=original_environment,
+        )
+        if (read_regular_file_bytes(Path(plan_path), max_bytes=16 * 1024 * 1024,
+                                    reject_symlink_parents=True) != plan_bytes
+                or read_regular_file_bytes(record_path) != record_bytes
+                or read_regular_file_bytes(signature_path) != signature_bytes
+                or regular_file_inventory(extracted) != inventory):
+            raise ValueError("Runtime original record inputs changed during admission")
+        retained = root / "retained"
+        snapshot_regular_tree(extracted, retained / "signed-record")
+        transport = {"schemaVersion": 1, "artifact": artifact,
+                     "producer": producer, "observed": observed,
+                     "recordSha256": expected_record_sha256,
+                     "signatureSha256": expected_signature_sha256}
+        write_canonical_json(retained / "transport.json", transport)
+        retained_files = regular_file_inventory(retained)
+        if (regular_file_inventory(retained / "signed-record") != inventory
+                or regular_file_inventory(extracted) != inventory
+                or read_regular_file_bytes(record_path) != record_bytes
+                or read_regular_file_bytes(signature_path) != signature_bytes):
+            raise ValueError("Runtime original signed record changed before retention")
+        require_no_signing_secret(environment)
+        require_no_signing_secret(os.environ)
+        publish_regular_tree(retained, destination, expected_inventory=retained_files)
+        if (regular_file_inventory(destination) != retained_files
+                or regular_file_inventory(destination / "signed-record") != inventory):
+            raise ValueError("Runtime retained signed record differs from verified bytes")
+        return {"record": record, "recordSha256": expected_record_sha256,
+                "signatureSha256": expected_signature_sha256,
+                "recordPath": destination / "signed-record/record.json",
+                "signaturePath": destination / "signed-record/record.sig",
+                "transportPath": destination / "transport.json",
+                "retainedFiles": retained_files,
+                "officialRecordUpload": transport}
 
 
 def prepare_runtime_phase10_output_record(
