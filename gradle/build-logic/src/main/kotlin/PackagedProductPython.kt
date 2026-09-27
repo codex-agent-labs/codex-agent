@@ -11,7 +11,8 @@ internal fun runPackagedProductPython(
 ): String {
     val root = Files.createTempDirectory("codex-agent-product-python-").toRealPath().toFile()
     try {
-        val resources = listOf("ci/products/__init__.py", "ci/products/inventory.py") + selected
+        val resources = listOf("ci/products/__init__.py", "ci/products/inventory.py",
+            "ci/products/zip_central_directory.py") + selected
         resources.distinct().forEach { relative ->
             val resource = "python/$relative"
             val output = root.resolve(relative)

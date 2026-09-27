@@ -1175,29 +1175,12 @@ def verified_zip_contents(
                     raise ValueError("ZIP archive end-of-central-directory record is malformed")
                 member_count = int.from_bytes(tail[eocd + 10:eocd + 12], "little")
                 central_size = int.from_bytes(tail[eocd + 12:eocd + 16], "little")
-                locator = eocd - 20
-                if locator >= 0 and tail[locator:locator + 4] == b"PK\x06\x07":
-                    absolute_locator = archive_stat.st_size - tail_size + locator
-                    _, disk, zip64_offset, disks = struct.unpack_from("<4sIQI", tail, locator)
-                    if disk != 0 or disks != 1 or zip64_offset + 56 > absolute_locator:
-                        raise ValueError("ZIP64 central-directory locator is unsafe")
-                    snapshot.seek(zip64_offset)
-                    record = snapshot.read(56)
-                    if len(record) != 56:
-                        raise ValueError("ZIP64 end-of-central-directory record is truncated")
-                    signature, record_size, _, _, disk, start_disk, count_disk, count, size, offset = struct.unpack(
-                        "<4sQHHIIQQQQ", record)
-                    if (signature != b"PK\x06\x06" or record_size < 44
-                            or zip64_offset + 12 + record_size != absolute_locator or disk != 0
-                            or start_disk != 0 or count_disk != count
-                            or offset + size != zip64_offset):
-                        raise ValueError("ZIP64 central directory is malformed")
-                    if ((member_count != 0xFFFF and member_count != count)
-                            or (central_size != 0xFFFFFFFF and central_size != size)):
-                        raise ValueError("ZIP64 central directory differs from the ordinary end record")
-                    member_count, central_size = count, size
-                elif member_count == 0xFFFF or central_size == 0xFFFFFFFF:
-                    raise ValueError("ZIP64 central-directory locator is missing")
+                from .zip_central_directory import verify_zip64_end_record
+
+                member_count, central_size = verify_zip64_end_record(
+                    snapshot, archive_stat.st_size, tail, eocd, tail_size,
+                    member_count, central_size,
+                )
                 if max_members is not None and member_count > max_members:
                     raise ValueError("ZIP archive contains too many members")
                 if max_central_directory_bytes is not None and central_size > max_central_directory_bytes:

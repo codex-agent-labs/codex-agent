@@ -59,6 +59,25 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_zip64_transport_preflight_does_not_invalidate_contract_binary(self) -> None:
+        path = "ci/products/zip_central_directory.py"
+        canonical = "ci/products/inventory.py"
+        binary = PhaseInstanceId("contract", "contract", "binary", "common")
+        selected = classify_paths([path])
+        self.assertEqual(set(PHASE_INSTANCE_IDS), identities(selected))
+        self.assertEqual((), selected.inventory_paths)
+        self.assertEqual((canonical,), phase_inventory_paths([canonical, path], binary))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "ci/products").mkdir(parents=True)
+            (root / canonical).write_bytes(b"canonical-v1")
+            (root / path).write_bytes(b"transport-v1")
+            first = phase_file_inventory(root, [canonical, path], binary)
+            (root / path).write_bytes(b"transport-v2")
+            self.assertEqual(first, phase_file_inventory(root, [canonical, path], binary))
+            (root / canonical).write_bytes(b"canonical-v2")
+            self.assertNotEqual(first, phase_file_inventory(root, [canonical, path], binary))
+
     def test_new_release_controls_select_owning_phases_without_entering_payload_keys(self) -> None:
         sdk = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "sdk"}
         cases = {

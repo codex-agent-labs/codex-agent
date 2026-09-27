@@ -16,6 +16,7 @@ val contractPythonSources = files(
     "ci/products/contract.py",
     "ci/products/contract_model.py",
     "ci/products/inventory.py",
+    "ci/products/zip_central_directory.py",
     "ci/products/receipt.py",
     "ci/products/test_results.py",
 )

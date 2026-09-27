@@ -19,10 +19,10 @@ class ProductPhaseMappingContractTest {
     fun Contract_phase_tasks_watch_only_the_Contract_Python_closure() {
         val sources = between(contract, "val contractPythonSources = files(", "val contractMavenRepository =")
         listOf("__init__.py", "__main__.py", "contract.py", "contract_model.py",
-            "inventory.py", "receipt.py", "test_results.py").forEach { file ->
+            "inventory.py", "zip_central_directory.py", "receipt.py", "test_results.py").forEach { file ->
             assertTrue("\"ci/products/$file\"" in sources, file)
         }
-        assertEquals(7, Regex("\"ci/products/").findAll(sources).count())
+        assertEquals(8, Regex("\"ci/products/").findAll(sources).count())
         assertEquals(10, Regex("producerSources.from\\(contractPythonSources\\)").findAll(contract).count())
         assertFalse("producerSources.from(layout.projectDirectory.dir(\"ci/products\"))" in contract)
     }

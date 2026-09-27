@@ -242,6 +242,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/contract_phase10_inventory.py",
     "ci/products/contract_phase10_maven.py",
     "ci/products/runtime_phase10_maven.py",
+    "ci/products/zip_central_directory.py",
     "ci/products/sdk_apple_package_admission.py",
     "ci/products/sdk_campaign_android.py",
     "ci/products/sdk_campaign_apple.py",

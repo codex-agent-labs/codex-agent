@@ -23,6 +23,7 @@ tasks.processResources {
         include(
             "products/__init__.py",
             "products/inventory.py",
+            "products/zip_central_directory.py",
             "products/test_results.py",
             "products/runtime_evidence.py",
             "products/c_abi.py",

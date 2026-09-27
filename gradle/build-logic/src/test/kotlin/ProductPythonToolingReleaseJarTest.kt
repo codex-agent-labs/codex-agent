@@ -16,7 +16,8 @@ class ProductPythonToolingReleaseJarTest {
         try {
             val jar = releaseToolingJar.copyTo(root.resolve("release-tooling.jar"))
             assertEquals((productPythonResources.values.flatten() +
-                listOf("ci/products/__init__.py", "ci/products/inventory.py"))
+                listOf("ci/products/__init__.py", "ci/products/inventory.py",
+                    "ci/products/zip_central_directory.py"))
                 .map { "python/$it" }.toSet(), jar.pythonProductResources())
 
             val manifest = root.resolve("runtime-manifest.json").apply { writeText(runtimeManifest()) }

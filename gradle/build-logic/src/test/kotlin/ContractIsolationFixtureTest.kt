@@ -92,7 +92,7 @@ class ContractIsolationFixtureTest {
             copyDirectory("gradle/wrapper", fixture)
             copyFile("ci/impact.py", fixture)
             listOf("__init__.py", "__main__.py", "contract.py", "contract_model.py",
-                "inventory.py", "receipt.py", "test_results.py").forEach {
+                "inventory.py", "zip_central_directory.py", "receipt.py", "test_results.py").forEach {
                 copyFile("ci/products/$it", fixture)
             }
             assertFalse(fixture.resolve("ci/products/registry.py").exists())
