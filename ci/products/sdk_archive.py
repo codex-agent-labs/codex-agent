@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import gzip
 import io
 from pathlib import Path, PurePosixPath
 import tarfile
@@ -35,6 +37,22 @@ _ARCHIVE_LIMIT = 1024 * 1024 * 1024
 _JSON_LIMIT = 16 * 1024 * 1024
 
 
+@contextmanager
+def _bounded_tar(contents: bytes):
+    """Bound all decompressed TAR bytes, including metadata before member iteration."""
+    with tempfile.TemporaryFile() as expanded:
+        with gzip.GzipFile(fileobj=io.BytesIO(contents), mode="rb") as source:
+            total = 0
+            while chunk := source.read(1024 * 1024):
+                total += len(chunk)
+                if total > _ARCHIVE_LIMIT:
+                    raise ValueError("npm archive expanded bytes exceed their limit")
+                expanded.write(chunk)
+        expanded.seek(0)
+        with tarfile.open(fileobj=expanded, mode="r:") as archive:
+            yield archive
+
+
 def validate_sdk_compatibility_bytes(contents: bytes) -> dict[str, Any]:
     return validate_sdk_compatibility(load_canonical_json_bytes(contents))
 
@@ -58,27 +76,41 @@ def _inspect_npm_sdk(
     runtime_files: dict[str, bytes] = {}
     runtime_size = 0
     package_metadata = None
-    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as package:
+    with _bounded_tar(archive_bytes) as package:
         seen: set[str] = set()
-        for member in package.getmembers():
+        for member in package:
+            if len(seen) >= 100_000 or member.size < 0:
+                raise ValueError("npm archive inventory exceeds its limit")
             path = PurePosixPath(member.name)
             normalized = str(path) + ("/" if member.isdir() else "")
             if (normalized in seen or normalized != member.name or
                     any(ord(character) < 32 or ord(character) == 127 for character in member.name) or
                     "\\" in member.name or path.is_absolute() or ".." in path.parts or
-                    member.issym() or member.islnk() or not (member.isfile() or member.isdir())):
+                    member.issym() or member.islnk() or
+                    (member.isdir() and member.size != 0) or
+                    not (member.isfile() or member.isdir())):
                 raise ValueError(f"unsafe or duplicate npm archive member: {member.name}")
             seen.add(normalized)
             if member.isfile() and path.name == "sdk-compatibility.json":
+                if member.size > _JSON_LIMIT:
+                    raise ValueError("npm compatibility member exceeds its size limit")
                 source = package.extractfile(member)
                 if source is None:
                     raise ValueError("npm compatibility archive member has no payload")
-                declarations.append((member.name, source.read()))
+                contents = source.read(member.size + 1)
+                if len(contents) != member.size:
+                    raise ValueError("npm compatibility archive member size is invalid")
+                declarations.append((member.name, contents))
             if member.isfile() and member.name == "package/package.json":
+                if member.size > _JSON_LIMIT:
+                    raise ValueError("npm package metadata exceeds its size limit")
                 source = package.extractfile(member)
                 if source is None:
                     raise ValueError("npm package metadata has no payload")
-                package_metadata = load_json_bytes(source.read())
+                contents = source.read(member.size + 1)
+                if len(contents) != member.size:
+                    raise ValueError("npm package metadata member size is invalid")
+                package_metadata = load_json_bytes(contents)
             if member.isfile() and member.name.startswith("package/dist/"):
                 runtime_size += member.size
                 if (not member.name.endswith((".js", ".js.map"))

@@ -7,6 +7,7 @@ import stat
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json, load_canonical_json_bytes,
@@ -109,6 +110,38 @@ class SdkArchiveTest(unittest.TestCase):
             compatibility.write_bytes(canonical_json_bytes(declaration))
             pack()
             with self.assertRaisesRegex(ValueError, "compatibility SDK version"):
+                verify_npm_sdk_compatibility(archive, compatibility, output, sdk_version="0.2.0")
+
+    def test_npm_archive_rejects_oversized_json_members_before_parsing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            compatibility = root / "sdk-compatibility.json"
+            compatibility.write_bytes(canonical_json_bytes(sdk_compatibility()))
+            archive = root / "codex-agent-0.2.0.tgz"
+            output = root / "evidence.json"
+            oversized = b"x" * (16 * 1024 * 1024 + 1)
+            metadata = b'{"name":"@codex-agent-labs/codex-agent","version":"0.2.0"}'
+            for members, error in (
+                ([(NPM_COMPATIBILITY_PATH, oversized), ("package/package.json", metadata)],
+                 "compatibility member exceeds"),
+                ([(NPM_COMPATIBILITY_PATH, compatibility.read_bytes()),
+                  ("package/package.json", oversized)], "package metadata exceeds"),
+            ):
+                with self.subTest(error=error):
+                    _tar(archive, members)
+                    with self.assertRaisesRegex(ValueError, error):
+                        verify_npm_sdk_compatibility(archive, compatibility, output, sdk_version="0.2.0")
+                    self.assertFalse(output.exists())
+            with patch("ci.products.sdk_archive._ARCHIVE_LIMIT", 1024 * 1024):
+                _tar(archive, [("package/large.bin", b"x" * (1024 * 1024 + 1))])
+                with self.assertRaisesRegex(ValueError, "expanded bytes exceed"):
+                    verify_npm_sdk_compatibility(archive, compatibility, output, sdk_version="0.2.0")
+            with tarfile.open(archive, "w:gz") as package:
+                directory = tarfile.TarInfo("package/odd/")
+                directory.type = tarfile.DIRTYPE
+                directory.size = 12
+                package.addfile(directory, io.BytesIO(b"bad-data-123"))
+            with self.assertRaisesRegex(ValueError, "unsafe or duplicate npm archive member"):
                 verify_npm_sdk_compatibility(archive, compatibility, output, sdk_version="0.2.0")
 
 
