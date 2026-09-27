@@ -132,10 +132,27 @@ internal static partial class NativeLibraryLoader
     {
         using var stream = assembly.GetManifestResourceStream(CompatibilityResource)
             ?? throw new InvalidDataException("Codex Agent SDK compatibility declaration is missing.");
-        using var bytes = new MemoryStream();
-        stream.CopyTo(bytes);
-        return ParseCompatibility(new UTF8Encoding(false, true).GetString(bytes.ToArray()));
+        return ParseCompatibility(new UTF8Encoding(false, true).GetString(
+            ReadPackagedResource(stream, 65536, "SDK compatibility declaration")));
     }
+
+    private static byte[] ReadPackagedResource(Stream source, int limit, string label)
+    {
+        var bytes = new byte[limit + 1];
+        var length = 0;
+        while (length < bytes.Length)
+        {
+            var count = source.Read(bytes.AsSpan(length));
+            if (count == 0) break;
+            length += count;
+        }
+        if (length > limit) throw new InvalidDataException($"{label} exceeds its size limit.");
+        Array.Resize(ref bytes, length);
+        return bytes;
+    }
+
+    internal static byte[] ReadPackagedResourceForTests(Stream source, int limit) =>
+        ReadPackagedResource(source, limit, "Test packaged resource");
 
     internal static void ValidateCompatibilityForTests(string json) => _ = ParseCompatibility(json);
 

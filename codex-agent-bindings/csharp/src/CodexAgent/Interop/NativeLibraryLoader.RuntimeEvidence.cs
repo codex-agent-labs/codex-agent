@@ -16,9 +16,7 @@ internal static partial class NativeLibraryLoader
     {
         using var source = typeof(NativeLibraryLoader).Assembly.GetManifestResourceStream("CodexAgent.sdk-runtime-root.pub")
             ?? throw new InvalidDataException("External Runtime requires release-attested evidence: SDK-pinned root is unavailable.");
-        using var output = new MemoryStream();
-        source.CopyTo(output);
-        return output.ToArray();
+        return ReadPackagedResource(source, 4096, "SDK Runtime trust root");
     }
 
     private static byte[] ReadEvidence(string path, int limit = 1024 * 1024)

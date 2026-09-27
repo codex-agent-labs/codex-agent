@@ -271,10 +271,18 @@ def _validate_compatibility(data: bytes) -> dict[str, Any]:
     return root
 
 
+def _read_packaged_resource(resource: Any, label: str, limit: int) -> bytes:
+    with resource.open("rb") as stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise OSError(f"{label} exceeds its size limit")
+    return data
+
+
 def _load_compatibility() -> dict[str, Any]:
     resource = files("codex_agent").joinpath("native", "sdk-compatibility.json")
     try:
-        return _validate_compatibility(resource.read_bytes())
+        return _validate_compatibility(_read_packaged_resource(resource, "SDK compatibility declaration", 1024 * 1024))
     except FileNotFoundError as error:
         raise OSError("Codex Agent SDK compatibility declaration is missing") from error
 
@@ -424,7 +432,7 @@ def resolve_library_path(explicit: str | os.PathLike[str] | None = None) -> Path
 def _read_sdk_runtime_root() -> bytes:
     resource = files("codex_agent").joinpath("native", "sdk-runtime-root.pub")
     try:
-        return resource.read_bytes()
+        return _read_packaged_resource(resource, "SDK Runtime trust root", 4096)
     except FileNotFoundError as error:
         raise OSError("External Runtime requires release-attested evidence: SDK-pinned root is unavailable") from error
 

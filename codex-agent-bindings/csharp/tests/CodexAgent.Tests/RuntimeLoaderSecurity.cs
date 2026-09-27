@@ -60,6 +60,11 @@ internal static class RuntimeLoaderSecurity
     {
         var compatibility = Compatibility();
         NativeLibraryLoader.ValidateCompatibilityForTests(compatibility);
+        using (var exact = new MemoryStream(new byte[4096]))
+            if (NativeLibraryLoader.ReadPackagedResourceForTests(exact, 4096).Length != 4096)
+                throw new InvalidOperationException("A valid packaged resource was rejected.");
+        using (var oversized = new MemoryStream(new byte[4097]))
+            Reject<InvalidDataException>(() => NativeLibraryLoader.ReadPackagedResourceForTests(oversized, 4096));
         foreach (var json in new[] { "{\"schemaVersion\":1.0}\n", "{\"nested\":{\"value\":1e0}}\n" })
             Reject<InvalidDataException>(() => NativeLibraryLoader.ValidateEvidenceJsonForTests(json));
         NativeLibraryLoader.ValidateIdentityForTests(compatibility, Identity().ToJsonString(), "macos-arm64", true);

@@ -28,6 +28,7 @@ from codex_agent._ffi import (  # noqa: E402
     NativeLibrary,
     _library_name,
     _load_compatibility,
+    _read_sdk_runtime_root,
     _read_runtime_identity,
     _snapshot_embedded_library,
     _validate_compatibility,
@@ -351,9 +352,22 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
 
     def test_missing_packaged_compatibility_declaration_fails_closed(self) -> None:
         with patch("codex_agent._ffi.files") as resources:
-            resources.return_value.joinpath.return_value.read_bytes.side_effect = FileNotFoundError
+            resources.return_value.joinpath.return_value.open.side_effect = FileNotFoundError
             with self.assertRaisesRegex(OSError, "compatibility declaration is missing"):
                 _load_compatibility()
+
+    def test_packaged_policy_and_root_reads_are_bounded(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            root = Path(directory)
+            native = root / "native"
+            native.mkdir()
+            (native / "sdk-compatibility.json").write_bytes(b"x" * (1024 * 1024 + 1))
+            (native / "sdk-runtime-root.pub").write_bytes(b"x" * 4097)
+            with patch("codex_agent._ffi.files", return_value=root):
+                with self.assertRaisesRegex(OSError, "SDK compatibility declaration exceeds its size limit"):
+                    _load_compatibility()
+                with self.assertRaisesRegex(OSError, "SDK Runtime trust root exceeds its size limit"):
+                    _read_sdk_runtime_root()
 
     def test_immutable_snapshot_survives_deterministic_source_swap(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT) as directory:
