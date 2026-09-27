@@ -63,6 +63,12 @@ follows:
   `merge-validation`; keep product signing credentials in
   `product-attestation` and Maven Central credentials in the protected
   publication environment, with required reviewers.
+- Set `CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA` as a `product-attestation`
+  environment variable to the full, independently reviewed commit SHA that
+  contains the Contract Phase-10 verifier and signer. The Contract output-record
+  workflow rejects an absent or different pin before checking out signer code;
+  its carrier remains uninvoked until this pin, the active release key, exact
+  Phase-10 sidecars, and independently selected caller inputs exist.
 - Set `CI_MERGE_QUEUE_ENABLED=true` when the merge-queue rules and trusted
   workflow are configured.
 
