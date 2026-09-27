@@ -96,7 +96,8 @@ class SdkIosBinaryProjectionTest(unittest.TestCase):
             repository_root=self.root, environ={}, token="synthetic")
         original = destination / "original"
         inspect.assert_called_once_with(original / "product-resume-inputs/plan/impact-plan.json",
-            original / "product-resume-state", original / "runtime-state", repository_root=self.root, environ={})
+            original / "product-resume-state", original / "runtime-state", repository_root=self.root, environ={},
+            sdk_original_workflow_sha=PIN)
         self.assertEqual(original / "runtime-state", result["state_root"])
         self.assertEqual(["sdk-ios"], [row["component"] for row in result["matrix"]["include"]])
         self.assertEqual(regular_file_inventory(self.inputs), regular_file_inventory(original))
@@ -125,19 +126,20 @@ class SdkIosBinaryProjectionTest(unittest.TestCase):
                     trusted_workflow_sha=PIN, repository_root=self.root, environ={}, token="synthetic")
                 self.assertFalse(result["fullReuse"])
         collected.assert_called_once_with(self.plan, self.discovery, self.state, self.destination / "collection",
-            trusted_workflow_sha=PIN, repository_root=self.root, environ={}, token="synthetic", sdk_ios_binary_only=True)
+            trusted_workflow_sha=PIN, repository_root=self.root, environ={}, token="synthetic",
+            sdk_worker_workflow_path=None, sdk_worker_job_name=None, sdk_ios_binary_only=True)
         failed = (workflow.PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"),) if failure else ()
         shards = [] if failure else [self.destination / "collection" / row["shardDirectory"]]
         advanced.assert_called_once_with(self.plan, self.discovery, self.state, shards,
             self.destination / "handoff/runtime-state", self.output, repository_root=self.root, environ={},
-            failed_instances=failed, sdk_ios_binary_only=True)
+            failed_instances=failed, sdk_ios_binary_only=True, sdk_original_workflow_sha=PIN)
         if failure:
             matrix.assert_not_called()
             self.assertIn("sdk_workers_required=false", self.output.read_text())
         else:
             matrix.assert_called_once_with(self.destination / "handoff/product-resume-inputs/plan/impact-plan.json",
                 self.destination / "handoff/product-resume-state", self.destination / "handoff/runtime-state",
-                self.output, repository_root=self.root, environ={}, ios_binary=True)
+                self.output, repository_root=self.root, environ={}, trusted_workflow_sha=PIN, ios_binary=True)
         self.assertEqual(before, regular_file_inventory(self.inputs))
         for name in ("product-resume-inputs", "product-resume-state"):
             self.assertEqual(regular_file_inventory(self.inputs / name),

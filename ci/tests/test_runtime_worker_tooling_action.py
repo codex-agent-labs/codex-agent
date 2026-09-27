@@ -72,7 +72,9 @@ class RuntimeWorkerToolingActionTest(unittest.TestCase):
                         "--plan", base["PLAN"], "--discovery-root", base["DISCOVERY"],
                         "--state-root", base["STATE"], "--product", "runtime",
                         "--component", base["COMPONENT"], "--phase", base["PHASE"],
-                        "--target", base["TARGET"], "--expected-build-key", base["BUILD_KEY"],
+                        "--target", base["TARGET"],
+                        "--sdk-original-workflow-sha", base["TRUSTED_WORKFLOW_SHA"],
+                        "--expected-build-key", base["BUILD_KEY"],
                         "--destination", "build/runtime-worker",
                     ]
                     if policy:

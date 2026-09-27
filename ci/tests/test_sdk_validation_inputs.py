@@ -258,7 +258,9 @@ class SdkValidationInputsTest(unittest.TestCase):
                     destination = root / case
                     artifact = {"id": 7, "digest": sha256_bytes(archive.read_bytes()),
                                 "archive_download_url": "https://example.invalid/never-requested"}
-                    with patch.object(product_reuse, "download_artifact", return_value=archive.read_bytes()):
+                    with patch.object(product_reuse, "download_artifact_to_file",
+                            side_effect=lambda _artifact, _token, target, **_kwargs:
+                                Path(target).write_bytes(archive.read_bytes())):
                         if case != "valid":
                             with self.assertRaises((ValueError, OSError)):
                                 product_reuse._materialize_catalog("same-pr", artifact, "fixture", destination,

@@ -35,6 +35,7 @@ class RuntimeIsolationFixtureTest {
         "ci/products/signatures.py",
         "ci/products/test_results.py",
         "ci/products/toolchain.py",
+        "ci/products/zip_central_directory.py",
     )
 
     @Test

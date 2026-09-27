@@ -65,6 +65,7 @@ class AppleCollectionForwardingTest(unittest.TestCase):
             self.assertIs(advanced_result, result)
             collected.assert_called_once_with(f.plan, f.discovery, f.state, destination / "collection",
                 trusted_workflow_sha=fixtures.PIN, repository_root=f.root, environ={}, token="observer",
+                sdk_worker_workflow_path=None, sdk_worker_job_name=None,
                 sdk_family="ios-validation", **policy)
             successes = [row for row in rows if row["result"] == "success"]
             advanced.assert_called_once_with(f.plan, f.discovery, f.state,

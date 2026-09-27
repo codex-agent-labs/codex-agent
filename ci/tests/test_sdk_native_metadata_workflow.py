@@ -94,7 +94,8 @@ class SdkNativeMetadataWorkflowTest(unittest.TestCase):
         self.events.append("inspect")
         self.assertEqual((self.plan_path, self.discovery, self.preparation_state), args)
         self.assertEqual({"repository_root": self.root, "environ": self.arguments["environ"],
-                          "sdk_validation_tooling": self.tooling}, kwargs)
+                          "sdk_validation_tooling": self.tooling,
+                          "sdk_original_workflow_sha": self.arguments["trusted_workflow_sha"]}, kwargs)
         rows = [self.preparation]
         if self.failure == "missing-preparation":
             rows = []
@@ -121,7 +122,8 @@ class SdkNativeMetadataWorkflowTest(unittest.TestCase):
         self.assertEqual((self.plan_path, self.discovery, self.state, self.instance, self.destination / "inputs"),
                          (plan, discovery, state, instance, destination))
         self.assertEqual({"expected_build_key": self.ready["buildKey"], "repository_root": self.root,
-            "environ": self.arguments["environ"], "sdk_validation_tooling": self.tooling}, kwargs)
+            "environ": self.arguments["environ"], "sdk_validation_tooling": self.tooling,
+            "sdk_original_workflow_sha": self.arguments["trusted_workflow_sha"]}, kwargs)
         for identity, original in {**self.original_paths,
                 PhaseInstanceId("contract", "contract", "metadata", "common"): self.contract}.items():
             target = destination / self.name(identity)
@@ -140,7 +142,8 @@ class SdkNativeMetadataWorkflowTest(unittest.TestCase):
             "compatibility_request": self.destination / "sdk-inputs/sdk-compatibility-request.json",
             "runtime_stages": self.destination / "runtime-stages",
             "staged_sdks": self.destination / "staged-sdks", "sdk_validation_tooling": self.tooling,
-            "repository_root": self.root, "environ": self.arguments["environ"]}, kwargs)
+            "repository_root": self.root, "environ": self.arguments["environ"],
+            "sdk_original_workflow_sha": self.arguments["trusted_workflow_sha"]}, kwargs)
         self.assertEqual({row["relativePath"] for row in regular_file_inventory(self.sdk)},
                          {row["relativePath"] for row in regular_file_inventory(self.destination / "sdk-inputs")})
         for identity, original in self.original_paths.items():

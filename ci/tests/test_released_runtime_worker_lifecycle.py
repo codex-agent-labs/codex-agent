@@ -110,7 +110,9 @@ class ReleasedRuntimeWorkerLifecycleTest(unittest.TestCase):
         def downloaded_catalog(plan, destination, trust, *_arguments):
             # Only official transport/discovery is a seam. The production catalog
             # importer still verifies the actual index, object and complete carrier.
-            with patch.object(adapter, "download_artifact", return_value=buffer.getvalue()):
+            with patch.object(adapter, "download_artifact_to_file",
+                    side_effect=lambda _artifact, _token, archive, **_kwargs:
+                    Path(archive).write_bytes(buffer.getvalue())):
                 return [adapter._materialize_catalog("promoted-main", {"id": 991}, "synthetic-token",
                     destination, cls.producer["repository"], cls.producer["pullRequest"], trust)]
 

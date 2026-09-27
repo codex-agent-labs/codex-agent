@@ -93,7 +93,8 @@ class RuntimeNativeCollectionTest(unittest.TestCase):
         with mock.patch.object(product_reuse, "_verified_product_state", return_value=self.state), \
                 mock.patch.object(product_reuse, "api_json", side_effect=query) as api, \
                 mock.patch.object(product_reuse, "paginated_items", side_effect=listing) as lists, \
-                mock.patch.object(product_reuse, "download_artifact", side_effect=lambda artifact, token: self.raw[artifact["id"]]) as download, \
+                mock.patch.object(product_reuse, "download_artifact_to_file", side_effect=lambda artifact, token, destination, **kwargs:
+                    Path(destination).write_bytes(self.raw[artifact["id"]])) as download, \
                 mock.patch.object(product_reuse, "verify_phase_shard", side_effect=verify) as verifier:
             result = product_reuse.collect_runtime_workers(
                 self.plan_path, self.discovery, self.state_root, destination,

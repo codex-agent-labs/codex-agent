@@ -47,7 +47,10 @@ class SdkAppleValidationBootstrapTest(unittest.TestCase):
         live = {SIGNING_SECRET: ""} if live_secret else {}
         with patch.dict(os.environ, live, clear=True), \
                 patch.object(capture, "_validate_plan", return_value=self.source.plan), \
-                patch("reuse.api_request", side_effect=self.source.api):
+                patch("reuse.api_request", side_effect=self.source.api), \
+                patch.object(capture, "download_artifact_to_file",
+                    side_effect=lambda _artifact, _token, destination, **_kwargs:
+                        Path(destination).write_bytes(self.source.raw)):
             return capture.capture_elected_sdk_ios_validation_upload(
                 self.source.plan_path, self.source.output, **arguments,
             )

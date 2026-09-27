@@ -36,6 +36,7 @@ class SdkCoreMavenWorkerActionTest(unittest.TestCase):
         values = {name: "" for name in (
             "SDK_INPUTS_ID", "SDK_INPUTS_SHA256", "BINARY_ARTIFACT_ID",
             "BINARY_ARTIFACT_SHA256", "BINARY_CONTRACT_EVIDENCE", "BINARY_ORIGINAL_CONTEXT",
+            "BINARY_ORIGINAL_WORKFLOW_PATH", "BINARY_ORIGINAL_JOB_NAME",
             "SDK_VALIDATION_TOOLING", "SDK_APPLE_VALIDATION_POLICY",
             "SDK_FACADE_METADATA_POLICY", "SDK_ANDROID_METADATA_POLICY")}
         values.update(PHASE=phase, GITHUB_OUTPUT=str(root / "github-output"))
