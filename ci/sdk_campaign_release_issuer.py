@@ -20,7 +20,10 @@ else:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from products.aggregate import validate_product_index
-from products.index import IndexEntrySource, _mint_release_admission, build_product_index
+from products.index import (
+    IndexEntrySource, SignedProductIndex, _mint_release_admission,
+    build_product_index, verify_release_product_index,
+)
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
     read_regular_file_bytes, require_exact_keys, require_sha256, sha256_bytes,
@@ -205,6 +208,49 @@ def sign_approved_sdk_release_index(prepared_index: Path, *, expected_index_sha2
                 reject_symlink_parents=True) != keyring_bytes):
         raise ValueError("Protected SDK signing input changed after verification")
     return signature
+
+
+def verify_signed_sdk_release_index_against_official_replay(
+        signed: SignedProductIndex, plan_path, repository_root, *,
+        expected_index_sha256, expected_signature_sha256,
+        keyring_path, keys_directory, expected_keyring_sha256, **replay_options):
+    """Recheck signed bytes against the full official all-61 replay without a key.
+
+    The three expected digests must come from protected caller approval, not
+    from the signed files or a development catalog. This grants no approval by
+    itself; the caller retains the verified bytes and replay result externally.
+    """
+    require_no_signing_secret(os.environ)
+    require_no_signing_secret(replay_options.get("environ", {}))
+    if not isinstance(signed, SignedProductIndex):
+        raise ValueError("Signed SDK campaign index source is invalid")
+    index_pin = require_sha256(expected_index_sha256, "Protected SDK index digest")
+    signature_pin = require_sha256(expected_signature_sha256, "Protected SDK signature digest")
+    keyring_bytes, _, _ = _release_key(
+        keyring_path, keys_directory, expected_keyring_sha256)
+    index_bytes = read_regular_file_bytes(signed.manifest, max_bytes=16 * 1024 * 1024,
+        reject_symlink_parents=True)
+    signature_bytes = read_regular_file_bytes(signed.signature, max_bytes=1024 * 1024,
+        reject_symlink_parents=True)
+    if sha256_bytes(index_bytes) != index_pin or sha256_bytes(signature_bytes) != signature_pin:
+        raise ValueError("Signed SDK index differs from independent protected approval")
+    index, verified_bytes = verify_release_product_index(signed,
+        keyring_path=keyring_path, keys_directory=keys_directory)
+    if verified_bytes != index_bytes:
+        raise ValueError("Signed SDK index changed during signature verification")
+    replayed = prepare_sdk_release_index(plan_path, repository_root,
+        keyring_path=keyring_path, keys_directory=keys_directory,
+        expected_keyring_sha256=expected_keyring_sha256, **replay_options)
+    if replayed != index_bytes:
+        raise ValueError("Signed SDK index differs from full official campaign replay")
+    if (read_regular_file_bytes(signed.manifest, max_bytes=16 * 1024 * 1024,
+            reject_symlink_parents=True) != index_bytes
+            or read_regular_file_bytes(signed.signature, max_bytes=1024 * 1024,
+                reject_symlink_parents=True) != signature_bytes
+            or read_regular_file_bytes(keyring_path, max_bytes=64 * 1024,
+                reject_symlink_parents=True) != keyring_bytes):
+        raise ValueError("Signed SDK verification inputs changed during replay")
+    return index, index_bytes
 
 
 def _approved_environment_digest(name):

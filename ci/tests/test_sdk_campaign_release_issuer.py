@@ -13,13 +13,14 @@ from unittest.mock import patch
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, sha256_bytes, write_canonical_json,
 )
+from products.index import SignedProductIndex
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from ci.products.signatures import (
     generate_development_key, verify_manifest_signature,
 )
 from ci.sdk_campaign_release_issuer import (
     main, prepare_sdk_release_index, sign_approved_sdk_release_index,
-    stage_prepared_sdk_release_index,
+    stage_prepared_sdk_release_index, verify_signed_sdk_release_index_against_official_replay,
 )
 from ci.tests.product_chain_support import output, write_receipt
 
@@ -75,7 +76,7 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
                 "trusted_workflow_path": ".github/workflows/product-validation.yml",
                 "trusted_job_name": "product-validation / sdk-catalog"}})
 
-    def _prepare(self, **changes):
+    def _prepare_options(self, **changes):
         args = dict(authority_file=self.authority, authority_artifact_id=7,
             authority_artifact_sha256=sha256_bytes(b"authority upload"),
             expected_authority_sha256=sha256_bytes(self.authority.read_bytes()),
@@ -90,7 +91,11 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
             expected_keyring_sha256=sha256_bytes(self.keyring.read_bytes()),
             repository=self.repository, context=self.context, producer=self.producer)
         args.update(changes)
-        return prepare_sdk_release_index(self.root / "plan.json", self.root, **args)
+        return args
+
+    def _prepare(self, **changes):
+        return prepare_sdk_release_index(self.root / "plan.json", self.root,
+            **self._prepare_options(**changes))
 
     def test_preparation_keeps_all_61_admissions_inside_held_official_replay(self):
         events = []
@@ -260,6 +265,66 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
              redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             main(args)
         replay.assert_not_called()
+
+    def test_signed_index_rechecks_exact_originals_under_full_official_replay(self):
+        receipts = self.receipts
+
+        @contextmanager
+        def official(*_args, **_kwargs):
+            yield ((receipts, object()), object())
+
+        with patch("ci.sdk_campaign_catalog_producer.held_sdk_campaign_candidate_from_official_authority",
+                   official):
+            prepared = self._prepare()
+        manifest = self.root / "signed-product-index.json"
+        manifest.write_bytes(prepared)
+        signature = sign_approved_sdk_release_index(manifest,
+            expected_index_sha256=sha256_bytes(prepared), keyring_path=self.keyring,
+            keys_directory=self.keys,
+            expected_keyring_sha256=sha256_bytes(self.keyring.read_bytes()),
+            private_key=self.private_key, environ={})
+        detached = self.root / "signed-product-index.sig"
+        detached.write_bytes(signature)
+        signed = SignedProductIndex(manifest, detached)
+        options = self._prepare_options()
+        with patch("ci.sdk_campaign_catalog_producer.held_sdk_campaign_candidate_from_official_authority",
+                   official):
+            index, raw = verify_signed_sdk_release_index_against_official_replay(
+                signed, self.root / "plan.json", self.root,
+                expected_index_sha256=sha256_bytes(prepared),
+                expected_signature_sha256=sha256_bytes(signature), **options)
+        self.assertEqual(61, len(index["entries"]))
+        self.assertEqual(prepared, raw)
+
+        with patch("ci.sdk_campaign_catalog_producer.held_sdk_campaign_candidate_from_official_authority") as replay:
+            with self.assertRaisesRegex(ValueError, "independent protected approval"):
+                verify_signed_sdk_release_index_against_official_replay(
+                    signed, self.root / "plan.json", self.root,
+                    expected_index_sha256=sha256_bytes(prepared),
+                    expected_signature_sha256=sha256_bytes(b"wrong"), **options)
+            replay.assert_not_called()
+        with patch.dict(os.environ, {"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": "secret"}), \
+                patch("ci.sdk_campaign_catalog_producer.held_sdk_campaign_candidate_from_official_authority") as replay:
+            with self.assertRaisesRegex(ValueError, "signing-secret"):
+                verify_signed_sdk_release_index_against_official_replay(
+                    signed, self.root / "plan.json", self.root,
+                    expected_index_sha256=sha256_bytes(prepared),
+                    expected_signature_sha256=sha256_bytes(signature), **options)
+            replay.assert_not_called()
+
+        instance = min(SDK_CAMPAIGN_INSTANCES)
+        changed = write_receipt(self.root / "changed-receipt.json", product="sdk",
+            component=instance.component, phase=instance.phase, target=instance.target,
+            version="0.8.0", version_identity="0.8.0",
+            outputs=[output("fixture", self.path, b"changed original")], upstream=[],
+            context={"producer": self.producer})
+        receipts = {**receipts, instance: canonical_json_bytes(changed)}
+        with patch("ci.sdk_campaign_catalog_producer.held_sdk_campaign_candidate_from_official_authority",
+                   official), self.assertRaisesRegex(ValueError, "full official campaign replay"):
+            verify_signed_sdk_release_index_against_official_replay(
+                signed, self.root / "plan.json", self.root,
+                expected_index_sha256=sha256_bytes(prepared),
+                expected_signature_sha256=sha256_bytes(signature), **options)
 
 
 if __name__ == "__main__":
