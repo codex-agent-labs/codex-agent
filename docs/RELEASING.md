@@ -69,6 +69,12 @@ follows:
   workflow rejects an absent or different pin before checking out signer code;
   its carrier remains uninvoked until this pin, the active release key, exact
   Phase-10 sidecars, and independently selected caller inputs exist.
+- Before invoking that carrier, set environment variables
+  `CODEX_AGENT_CONTRACT_PHASE11_PINS_SHA256`,
+  `CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY_SHA256`, and
+  `CODEX_AGENT_CONTRACT_PHASE10_UPLOAD_JOB` from independently reviewed exact
+  inputs. The protected record job requires each value to match the caller and
+  fails closed when any is absent; it does not discover or approve those inputs.
 - Set `CI_MERGE_QUEUE_ENABLED=true` when the merge-queue rules and trusted
   workflow are configured.
 

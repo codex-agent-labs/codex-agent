@@ -78,12 +78,31 @@ jobs:
         id: authority
         env:
           PROTECTED_SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
+          PROTECTED_PINS_SHA256: ${{ vars.CODEX_AGENT_CONTRACT_PHASE11_PINS_SHA256 }}
+          PROTECTED_PGP_KEY_SHA256: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY_SHA256 }}
+          PROTECTED_UPLOAD_JOB: ${{ vars.CODEX_AGENT_CONTRACT_PHASE10_UPLOAD_JOB }}
           CALLER_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+          CALLER_PINS_SHA256: ${{ inputs.phase11PinsSha256 }}
+          CALLER_PGP_KEY_SHA256: ${{ inputs.expectedPgpKeySha256 }}
+          CALLER_UPLOAD_JOB: ${{ inputs.trustedUploadJobName }}
         run: |
           set -euo pipefail
           [[ "$PROTECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PROTECTED_PINS_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$PROTECTED_PGP_KEY_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test -n "$PROTECTED_UPLOAD_JOB"
+          test "${#PROTECTED_UPLOAD_JOB}" -le 256
+          [[ "$PROTECTED_UPLOAD_JOB" != *$'\n'* && "$PROTECTED_UPLOAD_JOB" != *$'\r'* ]]
           test "$CALLER_SOURCE_SHA" = "$PROTECTED_SOURCE_SHA"
-          printf 'source_sha=%s\n' "$PROTECTED_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          test "$CALLER_PINS_SHA256" = "$PROTECTED_PINS_SHA256"
+          test "$CALLER_PGP_KEY_SHA256" = "$PROTECTED_PGP_KEY_SHA256"
+          test "$CALLER_UPLOAD_JOB" = "$PROTECTED_UPLOAD_JOB"
+          {
+            printf 'source_sha=%s\n' "$PROTECTED_SOURCE_SHA"
+            printf 'pins_sha256=%s\n' "$PROTECTED_PINS_SHA256"
+            printf 'pgp_key_sha256=%s\n' "$PROTECTED_PGP_KEY_SHA256"
+            printf 'upload_job=%s\n' "$PROTECTED_UPLOAD_JOB"
+          } >> "$GITHUB_OUTPUT"
       - name: Check out reviewed verifier and signer
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -116,10 +135,10 @@ jobs:
         id: prepare
         env:
           PHASE11_PINS_JSON: ${{ inputs.phase11PinsJson }}
-          PHASE11_PINS_SHA256: ${{ inputs.phase11PinsSha256 }}
-          TRUSTED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
-          TRUSTED_UPLOAD_JOB: ${{ inputs.trustedUploadJobName }}
-          EXPECTED_PGP_KEY_SHA256: ${{ inputs.expectedPgpKeySha256 }}
+          PHASE11_PINS_SHA256: ${{ steps.authority.outputs.pins_sha256 }}
+          TRUSTED_SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+          TRUSTED_UPLOAD_JOB: ${{ steps.authority.outputs.upload_job }}
+          EXPECTED_PGP_KEY_SHA256: ${{ steps.authority.outputs.pgp_key_sha256 }}
           OUTPUT_ARTIFACT_ID: ${{ needs.upload.outputs.artifact_id }}
           OUTPUT_ARTIFACT_SHA256: ${{ needs.upload.outputs.artifact_sha256 }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -145,7 +164,7 @@ jobs:
       - name: Sign only the independently prepared record
         id: sign
         env:
-          TRUSTED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
           RECORD_SHA256: ${{ steps.prepare.outputs.record_sha256 }}
           CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
         run: |
@@ -158,9 +177,9 @@ jobs:
           printf 'signature_sha256=%s\n' "$(jq -er '.signatureSha256' "$RUNNER_TEMP/sign-result.json")" >> "$GITHUB_OUTPUT"
       - name: Re-observe official upload and publish only the verified signed pair
         env:
-          TRUSTED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
-          TRUSTED_UPLOAD_JOB: ${{ inputs.trustedUploadJobName }}
-          EXPECTED_PGP_KEY_SHA256: ${{ inputs.expectedPgpKeySha256 }}
+          TRUSTED_SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+          TRUSTED_UPLOAD_JOB: ${{ steps.authority.outputs.upload_job }}
+          EXPECTED_PGP_KEY_SHA256: ${{ steps.authority.outputs.pgp_key_sha256 }}
           OUTPUT_ARTIFACT_ID: ${{ needs.upload.outputs.artifact_id }}
           OUTPUT_ARTIFACT_SHA256: ${{ needs.upload.outputs.artifact_sha256 }}
           RECORD_SHA256: ${{ steps.prepare.outputs.record_sha256 }}

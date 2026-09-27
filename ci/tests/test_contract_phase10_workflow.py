@@ -1,6 +1,10 @@
 """The protected Contract record carrier never signs or rebuilds payload bytes."""
 
 from pathlib import Path
+import os
+import subprocess
+import tempfile
+import textwrap
 import unittest
 
 
@@ -9,6 +13,41 @@ WORKFLOW = (Path(__file__).resolve().parents[2] /
 
 
 class ContractPhase10WorkflowTests(unittest.TestCase):
+    def test_protected_pin_gate_rejects_missing_or_substituted_authority(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        step = workflow.split("      - name: Require protected reviewed source before checkout\n", 1)[1]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1].split(
+            "      - name: Check out reviewed verifier and signer\n", 1,
+        )[0])
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "gate-output"
+            authority = {
+                "PROTECTED_SOURCE_SHA": "a" * 40,
+                "PROTECTED_PINS_SHA256": "sha256:" + "b" * 64,
+                "PROTECTED_PGP_KEY_SHA256": "sha256:" + "c" * 64,
+                "PROTECTED_UPLOAD_JOB": "product-validation / contract-phase10-output",
+            }
+            callers = {
+                "CALLER_SOURCE_SHA": authority["PROTECTED_SOURCE_SHA"],
+                "CALLER_PINS_SHA256": authority["PROTECTED_PINS_SHA256"],
+                "CALLER_PGP_KEY_SHA256": authority["PROTECTED_PGP_KEY_SHA256"],
+                "CALLER_UPLOAD_JOB": authority["PROTECTED_UPLOAD_JOB"],
+            }
+            for changed in (None, *authority, *callers):
+                environment = {**os.environ, **authority, **callers,
+                               "GITHUB_OUTPUT": str(output)}
+                if changed:
+                    environment[changed] = ""
+                result = subprocess.run(["bash", "-c", script], env=environment,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(0 if changed is None else 1, result.returncode,
+                                 (changed, result.stderr))
+                if changed:
+                    self.assertFalse(output.exists())
+                else:
+                    self.assertEqual(4, len(output.read_text().splitlines()))
+                    output.unlink()
+
     def test_official_upload_precedes_protected_record(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("  workflow_call:\n", workflow)
@@ -17,8 +56,21 @@ class ContractPhase10WorkflowTests(unittest.TestCase):
         self.assertIn("    needs: [upload]\n", workflow)
         self.assertIn("    environment: product-attestation\n", workflow)
         self.assertIn("PROTECTED_SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}", workflow)
+        self.assertIn("PROTECTED_PINS_SHA256: ${{ vars.CODEX_AGENT_CONTRACT_PHASE11_PINS_SHA256 }}", workflow)
+        self.assertIn("PROTECTED_PGP_KEY_SHA256: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY_SHA256 }}", workflow)
+        self.assertIn("PROTECTED_UPLOAD_JOB: ${{ vars.CODEX_AGENT_CONTRACT_PHASE10_UPLOAD_JOB }}", workflow)
         self.assertIn('test "$CALLER_SOURCE_SHA" = "$PROTECTED_SOURCE_SHA"', workflow)
+        self.assertIn('test "$CALLER_PINS_SHA256" = "$PROTECTED_PINS_SHA256"', workflow)
+        self.assertIn('test "$CALLER_PGP_KEY_SHA256" = "$PROTECTED_PGP_KEY_SHA256"', workflow)
+        self.assertIn('test "$CALLER_UPLOAD_JOB" = "$PROTECTED_UPLOAD_JOB"', workflow)
         self.assertIn("ref: ${{ steps.authority.outputs.source_sha }}", workflow)
+        self.assertEqual(workflow.count("TRUSTED_SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}"), 3)
+        self.assertEqual(workflow.count("TRUSTED_UPLOAD_JOB: ${{ steps.authority.outputs.upload_job }}"), 2)
+        self.assertNotIn("TRUSTED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}", workflow)
+        self.assertNotIn("TRUSTED_UPLOAD_JOB: ${{ inputs.trustedUploadJobName }}", workflow)
+        self.assertIn("PHASE11_PINS_SHA256: ${{ steps.authority.outputs.pins_sha256 }}", workflow)
+        self.assertEqual(workflow.count("EXPECTED_PGP_KEY_SHA256: ${{ steps.authority.outputs.pgp_key_sha256 }}"), 2)
+        self.assertNotIn("EXPECTED_PGP_KEY_SHA256: ${{ inputs.expectedPgpKeySha256 }}", workflow)
         self.assertLess(workflow.index("name: Require protected reviewed source before checkout"),
                         workflow.index("name: Check out reviewed verifier and signer"))
         self.assertIn("--trusted-job-name \"$TRUSTED_UPLOAD_JOB\"", workflow)
