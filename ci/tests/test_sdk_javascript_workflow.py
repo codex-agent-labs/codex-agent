@@ -106,7 +106,8 @@ class SdkJavascriptWorkflowTest(unittest.TestCase):
         self.assertEqual((self.plan, self.discovery, self.state), (plan, discovery, state))
         self.assertEqual(self.destination / "inputs", destination)
         self.assertEqual({"expected_build_key": self.arguments["expected_build_key"],
-            "repository_root": self.repository, "environ": self.arguments["environ"]}, arguments)
+            "repository_root": self.repository, "environ": self.arguments["environ"],
+            "sdk_original_workflow_sha": self.arguments["trusted_workflow_sha"]}, arguments)
         # This is the explicit original-object materialization seam. No claim
         # is made that these representative stages satisfy the whole planner.
         snapshot_regular_tree(self.originals, destination)
