@@ -302,6 +302,161 @@ jobs:
       trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
     secrets: inherit
 
+  contract-phase10-pgp-authority:
+    name: contract-phase10-pgp-authority
+    needs: [plan, contract-validation]
+    if: >-
+      always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
+      needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.contract-validation.result == 'success' &&
+      needs.contract-validation.outputs.contract_complete == 'true' &&
+      needs.contract-validation.outputs.contract_attestation_result == 'success'
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    outputs:
+      pgp_key_sha256: ${{ steps.pin.outputs.pgp_key_sha256 }}
+    steps:
+      - name: Require reviewed Contract source and protected PGP key pin
+        id: pin
+        env:
+          PROTECTED_SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
+          PROTECTED_PGP_KEY_SHA256: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY_SHA256 }}
+          REVIEWED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+        run: |
+          set -euo pipefail
+          [[ "$PROTECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$PROTECTED_PGP_KEY_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          test "$PROTECTED_SOURCE_SHA" = "$REVIEWED_SOURCE_SHA"
+          printf 'pgp_key_sha256=%s\n' "$PROTECTED_PGP_KEY_SHA256" >> "$GITHUB_OUTPUT"
+
+  contract-phase10-maven:
+    name: contract-phase10-maven
+    needs: [plan, contract-validation, contract-phase10-pgp-authority]
+    if: >-
+      always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
+      needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.contract-validation.result == 'success' &&
+      needs.contract-validation.outputs.contract_complete == 'true' &&
+      needs.contract-phase10-pgp-authority.result == 'success'
+    uses: codex-agent-labs/codex-agent/.github/workflows/contract-phase10-maven.yml@914cd6234e0543f20deb716a930353c0820b62cc
+    with:
+      planOutputs: ${{ toJSON(needs.plan.outputs) }}
+      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      contractComplete: ${{ needs.contract-validation.outputs.contract_complete }}
+      contractInputsArtifactId: ${{ needs.contract-validation.outputs.contract_attestation_inputs_artifact_id }}
+      contractInputsArtifactSha256: ${{ needs.contract-validation.outputs.contract_attestation_inputs_artifact_sha256 }}
+      contractVersion: ${{ needs.contract-validation.outputs.contract_version }}
+      expectedPgpKeySha256: ${{ needs.contract-phase10-pgp-authority.outputs.pgp_key_sha256 }}
+    secrets: inherit
+
+  contract-phase10-pins:
+    name: contract-phase10-pins
+    needs: [plan, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven]
+    if: >-
+      always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
+      needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.contract-validation.outputs.contract_complete == 'true' &&
+      needs.contract-phase10-pgp-authority.result == 'success' &&
+      needs.contract-phase10-maven.result == 'success'
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    outputs:
+      pins_json: ${{ steps.pins.outputs.pins_json }}
+      pins_sha256: ${{ steps.pins.outputs.pins_sha256 }}
+      upload_job: ${{ steps.pins.outputs.upload_job }}
+    steps:
+      - name: Require protected independent Phase-11 selection before checkout
+        env:
+          PROTECTED_SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
+          PROTECTED_PINS_SHA256: ${{ vars.CODEX_AGENT_CONTRACT_PHASE11_PINS_SHA256 }}
+          PROTECTED_UPLOAD_JOB: ${{ vars.CODEX_AGENT_CONTRACT_PHASE10_UPLOAD_JOB }}
+          REVIEWED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+        run: |
+          set -euo pipefail
+          [[ "$PROTECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$PROTECTED_PINS_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          test "$PROTECTED_SOURCE_SHA" = "$REVIEWED_SOURCE_SHA"
+          test -n "$PROTECTED_UPLOAD_JOB"
+          test "${#PROTECTED_UPLOAD_JOB}" -le 256
+          [[ "$PROTECTED_UPLOAD_JOB" != *$'\n'* && "$PROTECTED_UPLOAD_JOB" != *$'\r'* ]] || exit 1
+      - name: Check out reviewed Contract pin verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ inputs.trustedWorkflowSha }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify protected exact pins and forward the selection
+        id: pins
+        env:
+          PYTHONPATH: ${{ github.workspace }}/trusted-source
+          PROTECTED_PINS_JSON: ${{ vars.CODEX_AGENT_CONTRACT_PHASE11_PINS_JSON }}
+          PROTECTED_PINS_SHA256: ${{ vars.CODEX_AGENT_CONTRACT_PHASE11_PINS_SHA256 }}
+          PROTECTED_UPLOAD_JOB: ${{ vars.CODEX_AGENT_CONTRACT_PHASE10_UPLOAD_JOB }}
+          PROTECTED_SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
+          EXPECTED_PGP_KEY_SHA256: ${{ needs.contract-phase10-pgp-authority.outputs.pgp_key_sha256 }}
+          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
+          CONTRACT_VERSION: ${{ needs.contract-validation.outputs.contract_version }}
+        run: |
+          set -euo pipefail
+          test "$(git -C trusted-source rev-parse 'HEAD^{commit}')" = "$PROTECTED_SOURCE_SHA"
+          python3 -B - <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+          from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, require_exact_keys, sha256_bytes
+          fields = {'expected_inventory_sha256', 'expected_contract_version',
+                    'expected_payload_sha256', 'expected_metadata_build_key',
+                    'expected_source_commit', 'expected_source_tree',
+                    'expected_validation_tree', 'expected_workflow_sha',
+                    'expected_caller_sha256', 'expected_keyring_sha256',
+                    'expected_keys_inventory_sha256', 'expected_pgp_key_sha256'}
+          raw = os.environ['PROTECTED_PINS_JSON'].encode('utf-8') + b'\n'
+          pins = require_exact_keys(load_canonical_json_bytes(raw), fields, 'protected Contract Phase-11 pins')
+          if sha256_bytes(raw) != os.environ['PROTECTED_PINS_SHA256'] or raw != canonical_json_bytes(pins):
+              raise ValueError('Protected Contract Phase-11 pins differ from independent digest')
+          tree = subprocess.check_output(['git', '-C', 'trusted-source', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+          required = {'expected_source_commit': os.environ['PROTECTED_SOURCE_SHA'],
+                      'expected_source_tree': tree,
+                      'expected_workflow_sha': os.environ['PROTECTED_SOURCE_SHA'],
+                      'expected_validation_tree': os.environ['VALIDATION_TREE'],
+                      'expected_contract_version': os.environ['CONTRACT_VERSION'],
+                      'expected_pgp_key_sha256': os.environ['EXPECTED_PGP_KEY_SHA256']}
+          if any(pins[name] != value for name, value in required.items()):
+              raise ValueError('Protected Contract Phase-11 pins differ from selected release identity')
+          upload_job = os.environ['PROTECTED_UPLOAD_JOB']
+          if not upload_job or len(upload_job) > 256 or any(char in upload_job for char in '\r\n'):
+              raise ValueError('Protected Contract upload job name is invalid')
+          with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as output:
+              output.write('pins_json=' + raw.decode('utf-8').rstrip('\n') + '\n')
+              output.write('pins_sha256=' + sha256_bytes(raw) + '\n')
+              output.write('upload_job=' + upload_job + '\n')
+          PY
+
+  contract-phase10-output-record:
+    name: contract-phase10-output-record
+    needs: [plan, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-pins]
+    if: >-
+      always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
+      needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.contract-phase10-maven.result == 'success' &&
+      needs.contract-phase10-pins.result == 'success'
+    uses: codex-agent-labs/codex-agent/.github/workflows/contract-phase10-output-record.yml@914cd6234e0543f20deb716a930353c0820b62cc
+    with:
+      planOutputs: ${{ toJSON(needs.plan.outputs) }}
+      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      phase10OutputArtifactId: ${{ needs.contract-phase10-maven.outputs.phase10OutputArtifactId }}
+      phase11PinsJson: ${{ needs.contract-phase10-pins.outputs.pins_json }}
+      phase11PinsSha256: ${{ needs.contract-phase10-pins.outputs.pins_sha256 }}
+      expectedPgpKeySha256: ${{ needs.contract-phase10-pgp-authority.outputs.pgp_key_sha256 }}
+      trustedUploadJobName: ${{ needs.contract-phase10-pins.outputs.upload_job }}
+    secrets: inherit
+
   product-resume:
     name: product-resume
     if: >-
@@ -4935,7 +5090,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, contract-validation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-catalog, sdk-parity]
+    needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-pins, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-catalog, sdk-parity]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -4955,6 +5110,15 @@ jobs:
           CONTRACT_ATTESTATION_RESULT: ${{ needs.contract-validation.outputs.contract_attestation_result }}
           CONTRACT_ATTESTATION_ARTIFACT_ID: ${{ needs.contract-validation.outputs.contract_attestation_artifact_id }}
           CONTRACT_ATTESTATION_ARTIFACT_DIGEST: ${{ needs.contract-validation.outputs.contract_attestation_artifact_digest }}
+          CONTRACT_PHASE10_REQUIRED: ${{ github.event_name != 'workflow_dispatch' && needs.contract-validation.outputs.contract_complete == 'true' }}
+          CONTRACT_PHASE10_PGP_RESULT: ${{ needs.contract-phase10-pgp-authority.result }}
+          CONTRACT_PHASE10_MAVEN_RESULT: ${{ needs.contract-phase10-maven.result }}
+          CONTRACT_PHASE10_MAVEN_ARTIFACT_ID: ${{ needs.contract-phase10-maven.outputs.phase10OutputArtifactId }}
+          CONTRACT_PHASE10_MAVEN_ARTIFACT_SHA256: ${{ needs.contract-phase10-maven.outputs.phase10OutputArtifactSha256 }}
+          CONTRACT_PHASE10_PINS_RESULT: ${{ needs.contract-phase10-pins.result }}
+          CONTRACT_PHASE10_RECORD_RESULT: ${{ needs.contract-phase10-output-record.result }}
+          CONTRACT_PHASE10_RECORD_ARTIFACT_ID: ${{ needs.contract-phase10-output-record.outputs.recordArtifactId }}
+          CONTRACT_PHASE10_RECORD_ARTIFACT_SHA256: ${{ needs.contract-phase10-output-record.outputs.recordArtifactSha256 }}
           PRODUCT_RESUME_RESULT: ${{ needs.product-resume.result }}
           SDK_COMPLETION_RESULT: ${{ needs.sdk-completion.result }}
           SDK_COMPLETE: ${{ needs.sdk-completion.outputs.complete }}
@@ -5009,6 +5173,16 @@ jobs:
           fi
           if [ "$CONTRACT_BINARY_REQUIRED" = true ]; then
             test "$CONTRACT_BINARY_RESULT" = success || exit 1
+          fi
+          if [ "$CONTRACT_PHASE10_REQUIRED" = true ]; then
+            test "$CONTRACT_PHASE10_PGP_RESULT" = success || exit 1
+            test "$CONTRACT_PHASE10_MAVEN_RESULT" = success || exit 1
+            [[ "$CONTRACT_PHASE10_MAVEN_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+            [[ "$CONTRACT_PHASE10_MAVEN_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+            test "$CONTRACT_PHASE10_PINS_RESULT" = success || exit 1
+            test "$CONTRACT_PHASE10_RECORD_RESULT" = success || exit 1
+            [[ "$CONTRACT_PHASE10_RECORD_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+            [[ "$CONTRACT_PHASE10_RECORD_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           fi
           if [ "$TOOLING_MISS" = true ]; then
             test "$TOOLING_ATTESTATION_RESULT" = success || exit 1
