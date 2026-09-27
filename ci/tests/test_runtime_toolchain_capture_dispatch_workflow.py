@@ -27,6 +27,8 @@ class RuntimeToolchainCaptureDispatchTest(unittest.TestCase):
         self.assertIn('test "$(git rev-parse \'HEAD^{tree}\')" = "$VALIDATION_TREE"',
                       CAPTURE.read_text(encoding="utf-8"))
         self.assertIn("  workflow_call:\n", CAPTURE.read_text(encoding="utf-8"))
+        self.assertEqual(2, CAPTURE.read_text(encoding="utf-8").count(
+            "::error::product-attestation requires reviewers, disabled admin bypass"))
 
         gate = caller.split("  merge-gate:\n", 1)[1]
         script = textwrap.dedent(gate.split("        run: |\n", 1)[1])
