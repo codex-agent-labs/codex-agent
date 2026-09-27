@@ -23,10 +23,12 @@ from pathlib import Path, PurePosixPath
 
 if __package__:
     from .products.aggregate import validate_sdk_compatibility
-    from .products.inventory import load_canonical_json_bytes, public_key_fingerprint, require_semver
+    from .products.inventory import (load_canonical_json_bytes, public_key_fingerprint,
+                                     read_regular_file_bytes, require_regular_directory, require_semver)
 else:
     from products.aggregate import validate_sdk_compatibility
-    from products.inventory import load_canonical_json_bytes, public_key_fingerprint, require_semver
+    from products.inventory import (load_canonical_json_bytes, public_key_fingerprint,
+                                    read_regular_file_bytes, require_regular_directory, require_semver)
 
 
 HOSTS = {
@@ -1322,13 +1324,17 @@ def _consume(
         raise ValueError("Partial installed consumers cannot issue an all-language lane receipt")
     sdk_version = require_semver(sdk_version, "SDK version")
     classifier = host_classifier()
-    sdk_library = (sdks / classifier / HOSTS[classifier][4]).resolve()
-    if not sdk_library.is_file() or sdk_library.is_symlink():
-        raise ValueError(f"missing matching-host SDK: {sdk_library}")
+    require_regular_directory(sdks, "Staged SDK root")
+    require_regular_directory(sdks / classifier, "Matching-host SDK")
+    staged_library = sdks / classifier / HOSTS[classifier][4]
+    require_regular_directory(staged_library.parent, "Matching-host SDK library directory")
+    if not staged_library.is_file() or staged_library.is_symlink():
+        raise ValueError(f"missing matching-host SDK: {staged_library}")
+    sdk_library = staged_library.resolve()
     sdk_compatibility = sdks / "sdk-compatibility.json"
-    if not sdk_compatibility.is_file() or sdk_compatibility.is_symlink():
-        raise ValueError(f"missing SDK compatibility declaration: {sdk_compatibility}")
-    compatibility = validate_sdk_compatibility(load_canonical_json_bytes(sdk_compatibility.read_bytes()))
+    compatibility = validate_sdk_compatibility(load_canonical_json_bytes(
+        read_regular_file_bytes(sdk_compatibility, max_bytes=65536)))
+    public_key_fingerprint(read_regular_file_bytes(sdks / "sdk-runtime-root.pub", max_bytes=4096))
     if compatibility["sdkVersion"] != sdk_version:
         raise ValueError("installed consumer SDK compatibility version mismatch")
     require_embedded_package_versions(packages, sdk_version, languages)
@@ -1679,13 +1685,13 @@ def main() -> None:
         )
     elif arguments.command == "consume-language":
         consume_language(
-            arguments.repository.resolve(), arguments.packages.resolve(), arguments.sdks.resolve(),
+            arguments.repository.resolve(), arguments.packages.resolve(), arguments.sdks,
             output, sdk_version, arguments.language, offline=arguments.offline,
             expected_classifier=arguments.expected_classifier,
             package_negative_evidence=arguments.package_negative_evidence,
         )
     else:
-        consume(arguments.repository.resolve(), arguments.packages.resolve(), arguments.sdks.resolve(),
+        consume(arguments.repository.resolve(), arguments.packages.resolve(), arguments.sdks,
                 arguments.plan.resolve(), output, sdk_version)
 
 

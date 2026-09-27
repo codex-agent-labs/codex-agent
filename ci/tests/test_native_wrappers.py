@@ -1568,6 +1568,7 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
         library.parent.mkdir(parents=True)
         library.write_bytes(b"synthetic unexecuted native input")
         (sdks / "sdk-compatibility.json").write_bytes(canonical_json_bytes(sdk_compatibility()))
+        (sdks / "sdk-runtime-root.pub").write_bytes(TEST_SDK_ROOT)
         selected = {}
         for language in languages:
             source = repository / "codex-agent-bindings" / language
@@ -1602,6 +1603,45 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
             else:
                 package.write_bytes(b"synthetic uninstalled wheel input")
         return repository, packages, sdks, library, selected
+
+    @unittest.skipIf(sys.platform == "win32", "symlink fixture is POSIX-specific")
+    def test_installed_consumer_rejects_symbolic_staged_library_before_package_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository, packages, sdks, library, _ = self.fixture(root, ("python",))
+            target = root / "real-library"
+            library.rename(target)
+            library.symlink_to(target)
+            with patch("native_wrappers.host_classifier", return_value="linux-x64"), \
+                    patch("native_wrappers.require_embedded_package_versions",
+                          side_effect=AssertionError("package work must not start")):
+                with self.assertRaisesRegex(ValueError, "missing matching-host SDK"):
+                    _consume(repository, packages, sdks, None, root / "output", "0.2.0",
+                             languages=("python",))
+
+    @unittest.skipIf(sys.platform == "win32", "symlink fixture is POSIX-specific")
+    def test_installed_consumer_rejects_symbolic_staged_directory_and_root(self) -> None:
+        for target in ("stage-root", "classifier", "runtime-root"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repository, packages, sdks, _, _ = self.fixture(root, ("python",))
+                if target == "stage-root":
+                    original = sdks
+                    moved = root / "real-stage"
+                elif target == "classifier":
+                    original = sdks / "linux-x64"
+                    moved = root / "real-classifier"
+                else:
+                    original = sdks / "sdk-runtime-root.pub"
+                    moved = root / "real-root.pub"
+                original.rename(moved)
+                original.symlink_to(moved, target_is_directory=target != "runtime-root")
+                with patch("native_wrappers.host_classifier", return_value="linux-x64"), \
+                        patch("native_wrappers.require_embedded_package_versions",
+                              side_effect=AssertionError("package work must not start")):
+                    with self.assertRaises(ValueError):
+                        _consume(repository, packages, sdks, None, root / "output", "0.2.0",
+                                 languages=("python",))
 
     def controls(self, stack: ExitStack, selected: dict, library: Path):
         values = {}
@@ -1753,6 +1793,15 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
                     "0.2.0", "python", offline=True, expected_classifier="linux-x64",
                     package_negative_evidence=None,
                 )
+            if sys.platform != "win32":
+                actual_sdks = root / "actual-sdks"
+                actual_sdks.mkdir()
+                linked_sdks = root / "linked-sdks"
+                linked_sdks.symlink_to(actual_sdks, target_is_directory=True)
+                with patch.object(sys, "argv", [*command[:7], str(linked_sdks), *command[8:]]), \
+                        patch("native_wrappers.consume_language") as consume_mock:
+                    main()
+                    self.assertEqual(consume_mock.call_args.args[2], linked_sdks)
             with patch.object(sys, "argv", command + ["--plan", str(root / "plan")]), \
                     patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
                 parse_args()
