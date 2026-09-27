@@ -38,7 +38,10 @@ class CaptureSdkToolingActionTest(unittest.TestCase):
             'RUNNER_TEMP': str(self.scratch), 'GITHUB_OUTPUT': str(self.output), 'GITHUB_TOKEN': 'caller-token',
             'ARTIFACT_ID': '91', 'ARTIFACT_SHA256': 'sha256:' + 'c' * 64,
             'TRANSPORT_PRODUCER': json.dumps(self.producer, indent=2),
-            'TRUSTED_WORKFLOW_SHA': 'd' * 40, 'POLICY_REVISION': 'e' * 40}
+            'TRUSTED_WORKFLOW_SHA': 'd' * 40,
+            'TRUSTED_WORKFLOW_PATH': '.github/workflows/contract-validation.yml',
+            'TRUSTED_JOB_NAME': 'product-validation / contract-validation / product-contracts',
+            'POLICY_REVISION': 'e' * 40}
         self.action = (ROOT / '.github/actions/capture-sdk-tooling/action.yml').read_text()
 
     def execute(self):
@@ -50,11 +53,15 @@ class CaptureSdkToolingActionTest(unittest.TestCase):
         self.assertEqual([sys.executable, '-B', '-m', 'ci.tooling_capture'], command[:4])
         fields = dict(zip(command[4::2], command[5::2]))
         self.assertEqual({'--destination', '--repository-root', '--transport-producer', '--java-executable',
-            '--artifact-id', '--artifact-sha256', '--trusted-workflow-sha', '--policy-revision'}, set(fields))
+            '--artifact-id', '--artifact-sha256', '--trusted-workflow-sha', '--trusted-workflow-path',
+            '--trusted-job-name', '--policy-revision'}, set(fields))
         self.assertEqual(str(self.repository), fields['--repository-root'])
         self.assertEqual(str(self.java.resolve()), fields['--java-executable'])
         for flag, variable in (('artifact-id', 'ARTIFACT_ID'), ('artifact-sha256', 'ARTIFACT_SHA256'),
-                               ('trusted-workflow-sha', 'TRUSTED_WORKFLOW_SHA'), ('policy-revision', 'POLICY_REVISION')):
+                               ('trusted-workflow-sha', 'TRUSTED_WORKFLOW_SHA'),
+                               ('trusted-workflow-path', 'TRUSTED_WORKFLOW_PATH'),
+                               ('trusted-job-name', 'TRUSTED_JOB_NAME'),
+                               ('policy-revision', 'POLICY_REVISION')):
             self.assertEqual(self.environment[variable], fields['--' + flag])
         producer = Path(fields['--transport-producer'])
         destination = Path(fields['--destination'])
@@ -133,7 +140,8 @@ class CaptureSdkToolingActionTest(unittest.TestCase):
         original = dict(self.environment)
         for changes in ({'JAVA_HOME': 'relative'}, {'JAVA_HOME': str(self.root / 'missing-java')},
                         {'RUNNER_TEMP': str(self.repository)}, {'RUNNER_TEMP': str(self.repository / 'nested')},
-                        {'RUNNER_TEMP': str(self.root)}, {'TRANSPORT_PRODUCER': '{"runId":1,"runId":2}'}):
+                        {'RUNNER_TEMP': str(self.root)}, {'TRANSPORT_PRODUCER': '{"runId":1,"runId":2}'},
+                        {'TRUSTED_WORKFLOW_PATH': ''}, {'TRUSTED_JOB_NAME': ''}):
             with self.subTest(changes=changes):
                 self.environment = {**original, **changes}
                 with patch('subprocess.run') as run, self.assertRaises((ValueError, OSError)):
@@ -159,7 +167,8 @@ class CaptureSdkToolingActionTest(unittest.TestCase):
         self.assertEqual(1, self.action.count('GITHUB_TOKEN: ${{ github.token }}'))
         inputs = self.action.split('inputs:\n', 1)[1].split('outputs:\n', 1)[0]
         import re
-        self.assertEqual({'artifact-id', 'artifact-sha256', 'transport-producer', 'trusted-workflow-sha', 'policy-revision', 'plan-id'},
+        self.assertEqual({'artifact-id', 'artifact-sha256', 'transport-producer', 'trusted-workflow-sha',
+                          'trusted-workflow-path', 'trusted-job-name', 'policy-revision', 'plan-id'},
                          set(re.findall(r'^  ([a-z0-9-]+):$', inputs, re.MULTILINE)))
         for forbidden in ('--keyring', '--public-key', '--evidence', 'secrets.', 'setup-java', 'setup-kmp',
                           'java -jar', './gradlew', 'ci.tooling_release'):
