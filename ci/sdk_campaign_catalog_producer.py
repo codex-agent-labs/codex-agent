@@ -441,3 +441,25 @@ def held_sdk_campaign_candidate_from_election(plan_path, *, policy_files,
         with held_sdk_campaign_candidate(plan_path, fresh_selections=fresh,
                 reused_selections=reused, **candidate_options) as verified:
             yield verified
+
+
+@contextmanager
+def held_sdk_campaign_candidate_from_policies(plan_path, *, election_files,
+        expected_election_sha256, semantic_files, expected_semantic_sha256,
+        **candidate_options):
+    """Pin exact original elections and typed semantics before observation."""
+    if {"fresh_selections", "reused_selections", "semantic_controls"} & set(candidate_options):
+        raise ValueError("Pinned SDK campaign policies cannot be replaced by caller controls")
+    from ci.sdk_campaign_pinned_election import (
+        held_pinned_sdk_campaign_election, held_pinned_sdk_campaign_semantics,
+    )
+    with held_pinned_sdk_campaign_election(election_files, expected_election_sha256) as (
+            fresh, reused), held_pinned_sdk_campaign_semantics(
+            semantic_files, expected_semantic_sha256) as controls:
+        semantics = dict(controls)
+        semantics["android_control"] = {**controls["android_control"],
+            "token": candidate_options["token"], "environ": candidate_options["environ"]}
+        with held_sdk_campaign_candidate(plan_path, fresh_selections=fresh,
+                reused_selections=reused, semantic_controls=semantics,
+                **candidate_options) as verified:
+            yield verified

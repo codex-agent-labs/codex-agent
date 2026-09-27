@@ -14,6 +14,9 @@ from types import MappingProxyType
 from ci.sdk_apple_js_campaign_election import load_family_election as load_apple_js
 from ci.sdk_campaign_core_android_election import load_core_android_election
 from ci.sdk_campaign_native_policy import load_native_election
+from ci.sdk_campaign_apple_js_semantic_policy import load_apple_js_semantic_policy
+from ci.sdk_campaign_core_android_semantic_policy import load_core_android_semantic_policy
+from ci.sdk_campaign_native_semantic_policy import load_native_semantic_policy
 from products.inventory import read_regular_file_bytes, require_sha256, sha256_bytes
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from products.signing_isolation import require_no_signing_secret
@@ -24,6 +27,57 @@ _LOADERS = {
     "native": load_native_election,
     "apple-js": load_apple_js,
 }
+
+
+@contextmanager
+def held_pinned_sdk_campaign_semantics(policy_files: Mapping[str, Path],
+        expected_sha256: Mapping[str, str]):
+    """Hold all eight typed semantic controls from three independently pinned files."""
+    require_no_signing_secret(os.environ)
+    if (not isinstance(policy_files, Mapping) or not isinstance(expected_sha256, Mapping)
+            or set(policy_files) != set(_LOADERS) or set(expected_sha256) != set(_LOADERS)):
+        raise ValueError("SDK semantic policy requires all three independent families")
+    pinned, controls, seen_paths = {}, {}, set()
+    for family in _LOADERS:
+        path = policy_files[family]
+        if (not isinstance(path, Path) or not path.is_absolute()
+                or path.resolve(strict=True) != path or path in seen_paths):
+            raise ValueError("SDK semantic policy requires distinct canonical absolute files")
+        seen_paths.add(path)
+        raw = read_regular_file_bytes(path, max_bytes=1024 * 1024,
+            reject_symlink_parents=True)
+        expected = require_sha256(expected_sha256[family], f"{family} semantic digest")
+        if sha256_bytes(raw) != expected:
+            raise ValueError(f"{family} semantic policy differs from independent digest")
+        if family == "core-android":
+            maven, core_validation, core_policy, core_metadata, android, reread = \
+                load_core_android_semantic_policy(path)
+            controls.update(maven_controls=maven,
+                core_validation_controls=core_validation,
+                core_validation_policy=core_policy,
+                core_metadata_control=core_metadata, android_control=android)
+        elif family == "native":
+            native, reread = load_native_semantic_policy(path, expected)
+            controls["native_control"] = native
+        else:
+            apple, javascript, reread = load_apple_js_semantic_policy(path)
+            controls.update(apple_control=apple, javascript_control=javascript)
+        if reread != raw:
+            raise ValueError(f"{family} semantic policy changed while reading")
+        pinned[family] = (path, raw)
+    if set(controls) != {"maven_controls", "core_validation_controls",
+            "core_validation_policy", "core_metadata_control", "android_control",
+            "native_control", "apple_control", "javascript_control"}:
+        raise ValueError("SDK semantic policy lacks an exact verifier control")
+    before = deepcopy(controls)
+    try:
+        yield MappingProxyType(controls)
+    finally:
+        require_no_signing_secret(os.environ)
+        if controls != before or any(read_regular_file_bytes(path,
+                max_bytes=1024 * 1024, reject_symlink_parents=True) != raw
+                for path, raw in pinned.values()):
+            raise ValueError("SDK semantic policy changed during campaign replay")
 
 
 @contextmanager
