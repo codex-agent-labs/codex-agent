@@ -1,3 +1,7 @@
+from contextlib import redirect_stdout
+from io import StringIO
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -5,7 +9,10 @@ from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from ci import contract_phase10_reuse_admission as admission
-from ci.products.inventory import load_canonical_json_bytes, regular_file_inventory, sha256_file
+from ci.products.inventory import (
+    canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory,
+    sha256_bytes, sha256_file,
+)
 
 
 class ContractPhase10ReuseAdmissionTest(unittest.TestCase):
@@ -134,6 +141,43 @@ class ContractPhase10ReuseAdmissionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inputs changed before reuse capture"):
             self.invoke(mutate_snapshot=True)
         self.assertFalse(self.destination.exists())
+
+    def test_cli_requires_independently_pinned_canonical_original_producer(self):
+        producer_file = self.root / "producer.json"
+        producer_file.write_bytes(canonical_json_bytes(self.producer))
+        arguments = ["--plan", str(self.plan),
+                     "--validation-repository", str(self.validation),
+                     "--trusted-repository", str(self.trusted),
+                     "--destination", str(self.destination),
+                     "--original-producer", str(producer_file),
+                     "--expected-original-producer-sha256", sha256_bytes(b"wrong"),
+                     "--trusted-source-commit", "c" * 40,
+                     "--trusted-workflow-sha", "c" * 40,
+                     "--trusted-workflow-path", ".github/workflows/contract-phase10-output-record.yml",
+                     "--output-job-name", "product-validation / contract-phase10-output-record / contract-phase10-output",
+                     "--record-job-name", "product-validation / contract-phase10-output-record / contract-phase10-record",
+                     "--expected-pgp-key-sha256", "sha256:" + "d" * 64,
+                     "--output-artifact-id", "17",
+                     "--output-artifact-sha256", sha256_file(self.archives["output"]),
+                     "--record-artifact-id", "18",
+                     "--record-artifact-sha256", sha256_file(self.archives["record"])]
+        with (patch.dict(os.environ, {"GITHUB_TOKEN": "fixture-token"}),
+              patch.object(admission, "capture_reusable_contract_phase10_output") as capture,
+              self.assertRaisesRegex(ValueError, "independent digest")):
+            admission.main(arguments)
+        capture.assert_not_called()
+        arguments[arguments.index("--expected-original-producer-sha256") + 1] = sha256_bytes(
+            producer_file.read_bytes())
+        with (patch.dict(os.environ, {"GITHUB_TOKEN": "fixture-token"}),
+              patch.object(admission, "capture_reusable_contract_phase10_output",
+                           return_value={"files": []}) as capture,
+              redirect_stdout(StringIO()) as printed):
+            self.assertEqual(0, admission.main(arguments))
+        self.assertEqual(self.producer, capture.call_args.kwargs["original_producer"])
+        self.assertEqual(17, capture.call_args.kwargs["output_artifact_id"])
+        self.assertEqual(18, capture.call_args.kwargs["record_artifact_id"])
+        self.assertEqual({"destination": str(self.destination), "files": []},
+                         json.loads(printed.getvalue()))
 
 
 if __name__ == "__main__":

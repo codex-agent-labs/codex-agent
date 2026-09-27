@@ -8,6 +8,8 @@ authority for locating the other upload.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import argparse
+import json
 from pathlib import Path
 import os
 import tempfile
@@ -15,9 +17,9 @@ import tempfile
 from ci import product_reuse as products
 from ci.contract_phase10_output_record import verify_signed_contract_phase10_output_record
 from ci.products.inventory import (
-    publish_regular_tree, read_regular_file_bytes,
+    load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
     regular_file_inventory, require_integer, require_sha256, sha256_file,
-    snapshot_regular_tree, verified_zip_contents, write_canonical_json,
+    sha256_bytes, snapshot_regular_tree, verified_zip_contents, write_canonical_json,
 )
 from ci.products.signing_isolation import require_no_signing_secret
 from ci.receipt import safe_extract
@@ -140,3 +142,45 @@ def capture_reusable_contract_phase10_output(
         require_no_signing_secret(os.environ)
         publish_regular_tree(captured, destination, expected_inventory=inventory)
     return {"record": record, "producer": producer, "files": inventory}
+
+
+def main(argv=None) -> int:
+    require_no_signing_secret(os.environ)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    for name in ("plan", "validation-repository", "trusted-repository", "destination",
+                 "original-producer"):
+        parser.add_argument(f"--{name}", type=Path, required=True)
+    for name in ("expected-original-producer-sha256", "trusted-source-commit",
+                 "trusted-workflow-sha", "trusted-workflow-path", "output-job-name",
+                 "record-job-name", "expected-pgp-key-sha256", "output-artifact-id",
+                 "output-artifact-sha256", "record-artifact-id", "record-artifact-sha256"):
+        parser.add_argument(f"--{name}", required=True)
+    args = parser.parse_args(argv)
+    producer_bytes = read_regular_file_bytes(
+        args.original_producer, max_bytes=64 * 1024, reject_symlink_parents=True,
+    )
+    if sha256_bytes(producer_bytes) != require_sha256(
+        args.expected_original_producer_sha256, "independent Contract original producer digest",
+    ):
+        raise ValueError("Contract original producer differs from independent digest")
+    result = capture_reusable_contract_phase10_output(
+        args.plan, args.validation_repository, args.trusted_repository,
+        args.destination, original_producer=load_canonical_json_bytes(producer_bytes),
+        trusted_source_commit=args.trusted_source_commit,
+        trusted_workflow_sha=args.trusted_workflow_sha,
+        trusted_workflow_path=args.trusted_workflow_path,
+        output_job_name=args.output_job_name, record_job_name=args.record_job_name,
+        expected_pgp_key_sha256=args.expected_pgp_key_sha256,
+        output_artifact_id=int(args.output_artifact_id),
+        output_artifact_sha256=args.output_artifact_sha256,
+        record_artifact_id=int(args.record_artifact_id),
+        record_artifact_sha256=args.record_artifact_sha256,
+        token=os.environ["GITHUB_TOKEN"], environ=os.environ,
+    )
+    print(json.dumps({"destination": str(args.destination), "files": result["files"]},
+                     sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
