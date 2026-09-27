@@ -852,6 +852,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         ".github/workflows/contract-validation.yml": _contract(),
         ".github/workflows/contract-phase10-maven.yml": _from_phase("contract", "contract", "metadata"),
         ".github/workflows/contract-phase10-output-record.yml": _from_phase("contract", "contract", "metadata"),
+        ".github/workflows/contract-phase10-later-record.yml": _from_phase("contract", "contract", "metadata"),
         ".github/workflows/runtime-phase10-maven.yml": _from_phase("runtime", "runtime-aggregate", "metadata"),
         ".github/workflows/runtime-phase10-output-record.yml": _from_phase("runtime", "runtime-aggregate", "metadata"),
         ".github/workflows/sdk-core-binary-validation.yml": _from_phase("sdk", "sdk-core", "binary"),
@@ -908,6 +909,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 def _is_control_only(path: str) -> bool:
     if path in {".github/workflows/contract-phase10-maven.yml",
                 ".github/workflows/contract-phase10-output-record.yml",
+                ".github/workflows/contract-phase10-later-record.yml",
                 ".github/workflows/sdk-failed-catalog-custody.yml"}:
         return True  # Protected evidence carriers do not define product bytes.
     if path in {"ci/sdk_maven_evidence.py", "ci/sdk_metadata_evidence.py", "ci/sdk_metadata_policy.py",
