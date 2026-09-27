@@ -32,7 +32,8 @@ class SdkPhase10AuthorityWorkflowTest(unittest.TestCase):
             "PRODUCT_VALIDATION_RESULT": "skipped", "SDK_CUSTODY_RESULT": "skipped",
             "RUNTIME_RECORD_RESULT": "skipped", "CONTRACT_RECORD_RESULT": "skipped",
             "SDK_AUTHORITY_RESULT": "success", "SDK_AUTHORITY_ARTIFACT_ID": "123",
-            "SDK_AUTHORITY_ARTIFACT_SHA256": "sha256:" + "a" * 64}
+            "SDK_AUTHORITY_ARTIFACT_SHA256": "sha256:" + "a" * 64,
+            "SDK_RECORD_RESULT": "skipped"}
         for changed in ({}, {"SDK_AUTHORITY_RESULT": "failure"},
                         {"SDK_AUTHORITY_ARTIFACT_ID": ""},
                         {"SDK_AUTHORITY_ARTIFACT_SHA256": "sha256:bad"},

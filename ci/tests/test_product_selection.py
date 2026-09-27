@@ -328,6 +328,7 @@ class ProductSelectionTest(unittest.TestCase):
                 ("ci/runtime_phase10_sidecar_upload.py", runtime_metadata),
                 (".github/workflows/sdk-failed-catalog-custody.yml", sdk),
                 (".github/workflows/sdk-phase10-later-authority.yml", set()),
+                (".github/workflows/sdk-phase10-later-record.yml", set()),
                 ("ci/sdk_campaign_release_issuer.py", sdk_metadata),
                 ("ci/sdk_phase10_original_plan.py", sdk_metadata),
                 ("ci/sdk_phase10_protected_inputs.py", sdk_metadata),

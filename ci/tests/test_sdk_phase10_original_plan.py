@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -18,6 +19,17 @@ class SdkPhase10OriginalPlanTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="sdk-original-plan-test-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
+        subprocess.run(["git", "-C", str(self.root), "init", "-q"], check=True)
+        (self.root / "ci/lanes").mkdir(parents=True)
+        (self.root / "ci/lanes/shared.test.pathspec").write_text("ci/**\n")
+        subprocess.run(["git", "-C", str(self.root), "add",
+            "ci/lanes/shared.test.pathspec"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "-c", "user.name=Test",
+            "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture"], check=True)
+        self.commit = subprocess.check_output(["git", "-C", str(self.root),
+            "rev-parse", "HEAD"], text=True).strip()
+        self.tree = subprocess.check_output(["git", "-C", str(self.root),
+            "rev-parse", "HEAD^{tree}"], text=True).strip()
         self.plan = self.root / "impact-plan.json"
         self.plan.write_bytes(b"approved original plan\n")
         self.archive = self.root / "plan-upload.zip"
@@ -25,8 +37,8 @@ class SdkPhase10OriginalPlanTest(unittest.TestCase):
             zipped.writestr("impact-plan.json", self.plan.read_bytes())
             zipped.writestr("planner-control.json", b"{}\n")
         self.producer = {"repository": "codex-agent-labs/codex-agent",
-            "workflowPath": ".github/workflows/ci.yml", "commit": "a" * 40,
-            "tree": "b" * 40, "event": "pull_request", "runId": 41,
+            "workflowPath": ".github/workflows/ci.yml", "commit": self.commit,
+            "tree": self.tree, "event": "pull_request", "runId": 41,
             "runAttempt": 2, "pullRequest": 31}
         self.destination = self.root / "capture"
 
@@ -76,7 +88,7 @@ class SdkPhase10OriginalPlanTest(unittest.TestCase):
             (self.destination / "official-plan.zip").read_bytes())
         self.assertEqual(self.plan.read_bytes(),
             (self.destination / "plan/impact-plan.json").read_bytes())
-        self.assertEqual("codex-agent-ci-plan-" + "b" * 40, calls[0][2])
+        self.assertEqual("codex-agent-ci-plan-" + self.tree, calls[0][2])
         self.assertEqual(self.producer, calls[0][3])
         self.assertEqual(capture.products._CATALOG_ZIP_LIMITS["max_archive_bytes"],
             calls[0][4])
@@ -119,6 +131,57 @@ class SdkPhase10OriginalPlanTest(unittest.TestCase):
                     side_effect=ValueError("Checkout commit does not match the impact plan")),
               patch.object(capture.products, "_observe_ci_producer_jobs") as observe,
               self.assertRaisesRegex(ValueError, "Checkout commit")):
+            capture.capture_sdk_phase10_original_plan(
+                self.plan, self.root, self.destination,
+                original_producer=self.producer,
+                expected_original_producer_sha256=sha256_bytes(
+                    canonical_json_bytes(self.producer)),
+                plan_artifact_id=17, plan_artifact_sha256=sha256_file(self.archive),
+                expected_plan_sha256=sha256_file(self.plan),
+                trusted_workflow_sha="c" * 40, token="observer", environ={})
+        observe.assert_not_called()
+        self.assertFalse(self.destination.exists())
+
+    def test_mutated_or_extra_lane_pathspec_rejects_before_observation(self):
+        policy = self.root / "ci/lanes/shared.test.pathspec"
+        policy.write_text("tampered/**\n")
+        with (patch.object(capture.products, "_validate_plan") as validate,
+              patch.object(capture.products, "_observe_ci_producer_jobs") as observe,
+              self.assertRaisesRegex(ValueError, "lane policy differs")):
+            capture.capture_sdk_phase10_original_plan(
+                self.plan, self.root, self.destination,
+                original_producer=self.producer,
+                expected_original_producer_sha256=sha256_bytes(
+                    canonical_json_bytes(self.producer)),
+                plan_artifact_id=17, plan_artifact_sha256=sha256_file(self.archive),
+                expected_plan_sha256=sha256_file(self.plan),
+                trusted_workflow_sha="c" * 40, token="observer", environ={})
+        validate.assert_not_called()
+        observe.assert_not_called()
+        self.assertFalse(self.destination.exists())
+        policy.write_text("ci/**\n")
+        (self.root / "ci/lanes/extra.test.pathspec").write_text("untracked/**\n")
+        with self.assertRaisesRegex(ValueError, "lane policy differs"):
+            capture.capture_sdk_phase10_original_plan(
+                self.plan, self.root, self.destination,
+                original_producer=self.producer,
+                expected_original_producer_sha256=sha256_bytes(
+                    canonical_json_bytes(self.producer)),
+                plan_artifact_id=17, plan_artifact_sha256=sha256_file(self.archive),
+                expected_plan_sha256=sha256_file(self.plan),
+                trusted_workflow_sha="c" * 40, token="observer", environ={})
+        self.assertFalse(self.destination.exists())
+
+    def test_lane_policy_mutated_during_plan_validation_rejects(self):
+        policy = self.root / "ci/lanes/shared.test.pathspec"
+
+        def mutate(_plan, _root):
+            policy.write_text("changed during validation/**\n")
+            return {"remoteBuildAuthorized": True, "event": "pull_request"}
+
+        with (patch.object(capture.products, "_validate_plan", side_effect=mutate),
+              patch.object(capture.products, "_observe_ci_producer_jobs") as observe,
+              self.assertRaisesRegex(ValueError, "lane policy differs")):
             capture.capture_sdk_phase10_original_plan(
                 self.plan, self.root, self.destination,
                 original_producer=self.producer,

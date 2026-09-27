@@ -874,6 +874,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         ".github/workflows/sdk-validation.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/sdk-failed-catalog-custody.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/sdk-phase10-later-authority.yml": set(),
+        ".github/workflows/sdk-phase10-later-record.yml": set(),
         ".github/workflows/sdk-binding-parity.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/sdk-consumer-validation.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/promote.yml": set(ALL_METADATA),
@@ -920,7 +921,8 @@ def _is_control_only(path: str) -> bool:
                 ".github/workflows/contract-phase10-output-record.yml",
                 ".github/workflows/contract-phase10-later-record.yml",
                 ".github/workflows/sdk-failed-catalog-custody.yml",
-                ".github/workflows/sdk-phase10-later-authority.yml"}:
+                ".github/workflows/sdk-phase10-later-authority.yml",
+                ".github/workflows/sdk-phase10-later-record.yml"}:
         return True  # Protected evidence carriers do not define product bytes.
     if path in {"ci/sdk_maven_evidence.py", "ci/sdk_metadata_evidence.py", "ci/sdk_metadata_policy.py",
                 "ci/sdk_facade_metadata_policy.py", "ci/sdk_android_metadata_policy.py",

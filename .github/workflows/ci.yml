@@ -12,7 +12,7 @@ on:
         required: true
         type: choice
         default: validation
-        options: [validation, sdk-catalog-custody, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority]
+        options: [validation, sdk-catalog-custody, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record]
       baseCommit:
         description: Exact base commit SHA
         required: false
@@ -115,10 +115,18 @@ jobs:
       contents: read
     uses: codex-agent-labs/codex-agent/.github/workflows/sdk-phase10-later-authority.yml@07b3448d3757a351643d9d87c54446ede386af6c
 
+  sdk-phase10-record:
+    if: github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-record'
+    permissions:
+      actions: read
+      contents: read
+    uses: codex-agent-labs/codex-agent/.github/workflows/sdk-phase10-later-record.yml@46d14ca801dd7b448e4a712c0b42dd4ddff62bcc
+    secrets: inherit
+
   merge-gate:
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody' && 'SDK custody / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-phase10-record' && 'Runtime record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'contract-phase10-record' && 'Contract record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-authority' && 'SDK authority / complete' || 'CI / merge-gate' }}
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody' && 'SDK custody / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-phase10-record' && 'Runtime record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'contract-phase10-record' && 'Contract record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-authority' && 'SDK authority / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-record' && 'SDK record / complete' || 'CI / merge-gate' }}
     if: always()
-    needs: [product-validation, sdk-failed-catalog-custody, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority]
+    needs: [product-validation, sdk-failed-catalog-custody, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record]
     runs-on: ubuntu-24.04
     steps:
       - name: Require exactly the selected trusted workflow
@@ -138,6 +146,9 @@ jobs:
           SDK_AUTHORITY_RESULT: ${{ needs.sdk-phase10-authority.result }}
           SDK_AUTHORITY_ARTIFACT_ID: ${{ needs.sdk-phase10-authority.outputs.authorityArtifactId }}
           SDK_AUTHORITY_ARTIFACT_SHA256: ${{ needs.sdk-phase10-authority.outputs.authorityArtifactSha256 }}
+          SDK_RECORD_RESULT: ${{ needs.sdk-phase10-record.result }}
+          SDK_RECORD_ARTIFACT_ID: ${{ needs.sdk-phase10-record.outputs.recordArtifactId }}
+          SDK_RECORD_ARTIFACT_SHA256: ${{ needs.sdk-phase10-record.outputs.recordArtifactSha256 }}
         run: |
           if [ "$EVENT" = workflow_dispatch ] && [ "$PURPOSE" = sdk-catalog-custody ]; then
             test "$PRODUCT_VALIDATION_RESULT" = skipped
@@ -145,12 +156,14 @@ jobs:
             test "$RUNTIME_RECORD_RESULT" = skipped
             test "$CONTRACT_RECORD_RESULT" = skipped
             test "$SDK_AUTHORITY_RESULT" = skipped
+            test "$SDK_RECORD_RESULT" = skipped
           elif [ "$EVENT" = workflow_dispatch ] && [ "$PURPOSE" = runtime-phase10-record ]; then
             test "$PRODUCT_VALIDATION_RESULT" = skipped
             test "$SDK_CUSTODY_RESULT" = skipped
             test "$RUNTIME_RECORD_RESULT" = success
             test "$CONTRACT_RECORD_RESULT" = skipped
             test "$SDK_AUTHORITY_RESULT" = skipped
+            test "$SDK_RECORD_RESULT" = skipped
             [[ "$RUNTIME_RECORD_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
             [[ "$RUNTIME_RECORD_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
             [[ "$RUNTIME_TRANSPORT_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
@@ -161,6 +174,7 @@ jobs:
             test "$RUNTIME_RECORD_RESULT" = skipped
             test "$CONTRACT_RECORD_RESULT" = success
             test "$SDK_AUTHORITY_RESULT" = skipped
+            test "$SDK_RECORD_RESULT" = skipped
             [[ "$CONTRACT_RECORD_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
             [[ "$CONTRACT_RECORD_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           elif [ "$EVENT" = workflow_dispatch ] && [ "$PURPOSE" = sdk-phase10-authority ]; then
@@ -169,8 +183,18 @@ jobs:
             test "$RUNTIME_RECORD_RESULT" = skipped
             test "$CONTRACT_RECORD_RESULT" = skipped
             test "$SDK_AUTHORITY_RESULT" = success
+            test "$SDK_RECORD_RESULT" = skipped
             [[ "$SDK_AUTHORITY_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
             [[ "$SDK_AUTHORITY_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          elif [ "$EVENT" = workflow_dispatch ] && [ "$PURPOSE" = sdk-phase10-record ]; then
+            test "$PRODUCT_VALIDATION_RESULT" = skipped
+            test "$SDK_CUSTODY_RESULT" = skipped
+            test "$RUNTIME_RECORD_RESULT" = skipped
+            test "$CONTRACT_RECORD_RESULT" = skipped
+            test "$SDK_AUTHORITY_RESULT" = skipped
+            test "$SDK_RECORD_RESULT" = success
+            [[ "$SDK_RECORD_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+            [[ "$SDK_RECORD_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           else
             test "$EVENT" != workflow_dispatch || test "$PURPOSE" = validation
             test "$PRODUCT_VALIDATION_RESULT" = success
@@ -178,4 +202,5 @@ jobs:
             test "$RUNTIME_RECORD_RESULT" = skipped
             test "$CONTRACT_RECORD_RESULT" = skipped
             test "$SDK_AUTHORITY_RESULT" = skipped
+            test "$SDK_RECORD_RESULT" = skipped
           fi
