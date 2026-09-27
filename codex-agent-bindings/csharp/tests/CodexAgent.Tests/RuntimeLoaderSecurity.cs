@@ -521,6 +521,14 @@ internal static class RuntimeLoaderSecurity
             Reject<InvalidDataException>(() => NativeLibraryLoader.RejectUnverifiedExternalForTests(
                 library, compatibility, Target));
             File.WriteAllBytes(signature, original);
+            var cyclicEvidenceLink = Path.Combine(evidence, "cycle");
+            Directory.CreateSymbolicLink(cyclicEvidenceLink, evidence);
+            try
+            {
+                Reject<InvalidDataException>(() => NativeLibraryLoader.RejectUnverifiedExternalForTests(
+                    library, compatibility, Target));
+            }
+            finally { Directory.Delete(cyclicEvidenceLink); }
             var originalClaim = File.ReadAllBytes(claim);
             foreach (var mutation in new Action<JsonObject>[]
             {

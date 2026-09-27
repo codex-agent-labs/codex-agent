@@ -237,7 +237,8 @@ internal static partial class NativeLibraryLoader
         };
         foreach (var id in keys.Keys) expectedFiles.Add("keys/" + id + ".pub");
         var actualFiles = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var entry in Directory.EnumerateFileSystemEntries(evidenceRoot, "*", SearchOption.AllDirectories))
+        foreach (var entry in Directory.EnumerateFileSystemEntries(evidenceRoot)
+                     .Concat(Directory.EnumerateFileSystemEntries(Path.Combine(evidenceRoot, "keys"))))
         {
             if ((File.GetAttributes(entry) & FileAttributes.ReparsePoint) != 0)
                 throw new InvalidDataException("Runtime evidence contains an unsafe link.");
