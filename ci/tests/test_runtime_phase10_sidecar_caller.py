@@ -147,6 +147,24 @@ class RuntimePhase10SidecarCallerTest(unittest.TestCase):
             signer.assert_not_called()
         self.assertFalse(self.destination.exists())
 
+    def test_observation_token_rejects_before_verification_or_signing(self):
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "observer"}), \
+                patch.object(caller, "verified_runtime_aggregate_handoff") as proof, \
+                patch.object(caller, "produce_runtime_phase10_maven_sidecars") as signer:
+            with self.assertRaisesRegex(ValueError, "observation token"):
+                caller.produce_authenticated_runtime_maven_sidecars(
+                    self.output, self.destination,
+                    expected_metadata_receipt_sha256=self.digest,
+                    expected_build_key=self.key, keyring=self.keyring, keys_directory=self.keys,
+                    pgp_public_key=self.pgp_key,
+                    expected_pgp_key_sha256=sha256_bytes(self.pgp_key.read_bytes()),
+                    signing_home=self.signing_home, signing_fingerprint="A" * 40,
+                    passphrase="secret",
+                )
+            proof.assert_not_called()
+            signer.assert_not_called()
+        self.assertFalse(self.destination.exists())
+
     def test_transported_verifier_key_is_not_accepted_as_caller_policy(self):
         untrusted = self.output / "transported-keyring.json"
         untrusted.write_bytes(self.keyring.read_bytes())

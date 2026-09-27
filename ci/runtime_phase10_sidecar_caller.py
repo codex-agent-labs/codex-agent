@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -27,6 +28,10 @@ from products.sdk_protected_runtime import _original_carrier
 
 
 _METADATA = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+_OBSERVATION_TOKENS = frozenset({
+    "GITHUB_TOKEN", "GH_TOKEN", "GITHUB_API_TOKEN", "ACTIONS_RUNTIME_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+})
 
 
 def produce_authenticated_runtime_maven_sidecars(
@@ -44,6 +49,8 @@ def produce_authenticated_runtime_maven_sidecars(
     passphrase: str,
 ) -> dict:
     """Verify fresh/retained original release bytes before using the PGP key."""
+    if _OBSERVATION_TOKENS & set(os.environ):
+        raise ValueError("Runtime Maven signing process must not have an observation token")
     protected_output, destination = Path(protected_output), Path(destination)
     expected_metadata_receipt_sha256 = require_sha256(
         expected_metadata_receipt_sha256, "Original Runtime metadata receipt",
