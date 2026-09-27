@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import redirect_stdout
+from io import StringIO
+import json
 import os
 from pathlib import Path
 import shutil
@@ -272,6 +275,51 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
                 "record.json": self.record_path.read_bytes(),
                 "record.sig": self.signature.read_bytes(), "extra.txt": b"not allowed",
             })
+
+    def test_original_admission_cli_requires_independently_pinned_producer(self):
+        producer = {
+            "repository": "codex-agent-labs/codex-agent",
+            "workflowPath": ".github/workflows/ci.yml",
+            "commit": self.candidate_commit, "tree": self.candidate_tree,
+            "event": "pull_request", "runId": 77, "runAttempt": 2,
+            "pullRequest": 31,
+        }
+        producer_path = self.root / "original-producer.json"
+        producer_path.write_bytes(canonical_json_bytes(producer))
+        args = ["admit-original", "--plan", str(self.plan),
+                "--validation-repository", str(self.validation),
+                "--repository-root", str(self.repository),
+                "--protected-output", str(self.output),
+                "--maven-sidecars", str(self.sidecars),
+                "--pgp-public-key", str(self.pgp),
+                "--destination", str(self.root / "admitted-record"),
+                "--original-producer", str(producer_path),
+                "--expected-original-producer-sha256", "sha256:" + "0" * 64,
+                "--trusted-record-workflow-path", ".github/workflows/runtime-phase10-output-record.yml",
+                "--trusted-record-workflow-sha", "f" * 40,
+                "--trusted-record-job-name", "product-validation / runtime-phase10-output-record",
+                "--record-artifact-name", "runtime-record-original-77-2",
+                "--record-artifact-id", "27",
+                "--record-artifact-sha256", "sha256:" + "a" * 64,
+                "--expected-record-sha256", sha256_bytes(self.record_path.read_bytes()),
+                "--expected-signature-sha256", sha256_bytes(self.signature.read_bytes()),
+                "--trusted-source-commit", self.commit,
+                "--trusted-aggregate-workflow-sha", "e" * 40,
+                "--expected-pgp-key-sha256", self.pins["expected_pgp_key_sha256"]]
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "local-test-token"}), \
+             patch.object(gate, "admit_original_runtime_phase10_output_record") as admit, \
+             self.assertRaisesRegex(ValueError, "independent digest"):
+            gate.main(args)
+        admit.assert_not_called()
+        args[args.index("--expected-original-producer-sha256") + 1] = sha256_bytes(producer_path.read_bytes())
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "local-test-token"}), \
+             patch.object(gate, "admit_original_runtime_phase10_output_record",
+                          return_value={"recordSha256": "sha256:" + "a" * 64,
+                                        "recordPath": self.root / "admitted-record/signed-record/record.json"}) as admit, \
+             redirect_stdout(StringIO()) as output:
+            self.assertEqual(0, gate.main(args))
+        self.assertEqual(producer, admit.call_args.kwargs["expected_producer"])
+        self.assertEqual("sha256:" + "a" * 64, json.loads(output.getvalue())["recordSha256"])
 
     def test_independent_source_workflow_pgp_and_keyring_pins(self):
         for override in ({"trusted_source_commit": "0" * 40},

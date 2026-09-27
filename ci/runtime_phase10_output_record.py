@@ -501,6 +501,17 @@ def main(argv=None) -> int:
     require_no_signing_secret(os.environ)
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
+    admitted = commands.add_parser("admit-original", allow_abbrev=False)
+    for name in ("plan", "validation-repository", "repository-root", "protected-output",
+                 "maven-sidecars", "pgp-public-key", "destination", "original-producer"):
+        admitted.add_argument(f"--{name}", type=Path, required=True)
+    for name in ("expected-original-producer-sha256", "trusted-record-workflow-path",
+                 "trusted-record-workflow-sha", "trusted-record-job-name",
+                 "record-artifact-name", "record-artifact-id", "record-artifact-sha256",
+                 "expected-record-sha256", "expected-signature-sha256",
+                 "trusted-source-commit", "trusted-aggregate-workflow-sha",
+                 "expected-pgp-key-sha256"):
+        admitted.add_argument(f"--{name}", required=True)
     for command in ("prepare", "verify-publish"):
         selected = commands.add_parser(command, allow_abbrev=False)
         for name in ("plan", "repository-root", "validation-repository", "protected-output",
@@ -518,6 +529,36 @@ def main(argv=None) -> int:
             selected.add_argument("--expected-record-sha256", required=True)
             selected.add_argument("--expected-signature-sha256", required=True)
     args = parser.parse_args(argv)
+    if args.command == "admit-original":
+        producer_bytes = read_regular_file_bytes(
+            args.original_producer, max_bytes=64 * 1024, reject_symlink_parents=True,
+        )
+        if sha256_bytes(producer_bytes) != require_sha256(
+            args.expected_original_producer_sha256, "independent Runtime original producer digest",
+        ):
+            raise ValueError("Runtime original producer differs from independent digest")
+        result = admit_original_runtime_phase10_output_record(
+            args.plan, args.validation_repository, args.repository_root,
+            args.protected_output, args.maven_sidecars, args.pgp_public_key,
+            args.destination,
+            expected_producer=load_canonical_json_bytes(producer_bytes),
+            trusted_record_workflow_path=args.trusted_record_workflow_path,
+            trusted_record_workflow_sha=args.trusted_record_workflow_sha,
+            trusted_record_job_name=args.trusted_record_job_name,
+            record_artifact_name=args.record_artifact_name,
+            record_artifact_id=int(args.record_artifact_id),
+            record_artifact_sha256=args.record_artifact_sha256,
+            expected_record_sha256=args.expected_record_sha256,
+            expected_signature_sha256=args.expected_signature_sha256,
+            trusted_source_commit=args.trusted_source_commit,
+            trusted_aggregate_workflow_sha=args.trusted_aggregate_workflow_sha,
+            expected_pgp_key_sha256=args.expected_pgp_key_sha256,
+            token=os.environ["GITHUB_TOKEN"], environ=os.environ,
+        )
+        print(json.dumps({key: (str(value) if isinstance(value, Path) else value)
+                          for key, value in result.items() if key != "record" and
+                          key != "officialRecordUpload"}, sort_keys=True, separators=(",", ":")))
+        return 0
     common = dict(
         trusted_source_commit=args.trusted_source_commit,
         trusted_workflow_sha=args.trusted_workflow_sha,
