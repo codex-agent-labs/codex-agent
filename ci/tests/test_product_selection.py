@@ -330,8 +330,10 @@ class ProductSelectionTest(unittest.TestCase):
                 (".github/workflows/sdk-phase10-later-authority.yml", set()),
                 ("ci/sdk_campaign_release_issuer.py", sdk_metadata),
                 ("ci/sdk_phase10_original_plan.py", sdk_metadata),
+                ("ci/sdk_phase10_protected_inputs.py", sdk_metadata),
                 ("ci/sdk_phase10_release_index_admission.py", sdk_metadata),
                 ("ci/sdk_phase11_bytes.py", sdk_metadata),
+                ("ci/sdk_phase11_objects.py", sdk_metadata),
                 ("ci/sdk_catalog_custody.py", sdk),
                 ("ci/sdk_catalog_custody_locator.py", sdk),
                 ("ci/sdk_catalog_custody_signer.py", sdk)):

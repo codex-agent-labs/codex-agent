@@ -19,13 +19,30 @@ from ci import product_reuse as products
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
     regular_file_inventory, require_integer, require_sha256, sha256_bytes,
-    sha256_file, verified_zip_contents, write_canonical_json,
+    sha256_file, verified_zip_contents, write_canonical_json, git_file_inventory,
+    tree_entries,
 )
 from products.receipt import validate_producer
 from products.signing_isolation import require_no_signing_secret
 
 
 _PLAN_JOB = "product-validation / plan"
+
+
+def require_original_lane_policy(repository_root, revision):
+    """Reject dirty/extra legacy pathspecs before and after plan validation."""
+    root = Path(repository_root).resolve(strict=True)
+    prefix = "ci/lanes/"
+    paths = tuple(path for path, _ in tree_entries(root, revision)
+        if path.startswith(prefix))
+    if not paths:
+        raise ValueError("Original SDK checkout has no committed lane policy")
+    committed = [{**row, "relativePath": row["relativePath"].removeprefix(prefix)}
+        for row in git_file_inventory(root, revision, paths)]
+    current = regular_file_inventory(root / "ci/lanes", allow_empty=True)
+    if current != committed:
+        raise ValueError("Original SDK lane policy differs from the pinned Git tree")
+    return committed
 
 
 def capture_sdk_phase10_original_plan(plan_path, repository_root, destination, *,
@@ -61,7 +78,10 @@ def capture_sdk_phase10_original_plan(plan_path, repository_root, destination, *
         private = Path(temporary).resolve()
         copy = private / "impact-plan.json"
         copy.write_bytes(raw)
+        lane_policy = require_original_lane_policy(root, producer["commit"])
         plan = products._validate_plan(copy, root)
+        if require_original_lane_policy(root, producer["commit"]) != lane_policy:
+            raise ValueError("Original SDK lane policy changed during plan validation")
         selected = validate_producer(products._consumer(plan, {},
             original_run_id=producer["runId"],
             original_run_attempt=producer["runAttempt"])["producer"])
@@ -100,6 +120,7 @@ def capture_sdk_phase10_original_plan(plan_path, repository_root, destination, *
         captured = regular_file_inventory(staged)
         if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024,
                     reject_symlink_parents=True) != raw
+                or require_original_lane_policy(root, producer["commit"]) != lane_policy
                 or sha256_file(staged / "official-plan.zip") != artifact_sha):
             raise ValueError("SDK original plan changed before capture")
         require_no_signing_secret(environment)
