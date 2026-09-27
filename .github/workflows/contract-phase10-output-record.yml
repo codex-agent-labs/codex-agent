@@ -1,0 +1,198 @@
+name: Contract Phase-10 Output Record
+
+on:
+  workflow_call:
+    inputs:
+      planOutputs:
+        required: true
+        type: string
+      trustedWorkflowSha:
+        required: true
+        type: string
+      phase10OutputArtifactId:
+        required: true
+        type: string
+      phase11PinsJson:
+        required: true
+        type: string
+      phase11PinsSha256:
+        required: true
+        type: string
+      expectedPgpKeySha256:
+        required: true
+        type: string
+      trustedUploadJobName:
+        required: true
+        type: string
+    outputs:
+      recordArtifactId:
+        value: ${{ jobs.record.outputs.artifact_id }}
+      recordArtifactSha256:
+        value: ${{ jobs.record.outputs.artifact_sha256 }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  upload:
+    name: contract-phase10-output
+    if: >-
+      fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_sha256: sha256:${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - name: Download finalized Phase-10 output without rebuilding it
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ inputs.phase10OutputArtifactId }}
+          merge-multiple: true
+          path: phase10-output
+      - name: Preserve exact output for official job-window observation
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-contract-phase10-maven-${{ fromJSON(inputs.planOutputs).validation_tree }}-attempt-${{ github.run_attempt }}
+          path: phase10-output
+          compression-level: 0
+          retention-days: 90
+
+  record:
+    name: contract-phase10-record
+    needs: [upload]
+    if: needs.upload.result == 'success'
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_sha256: sha256:${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - name: Require protected reviewed source before checkout
+        id: authority
+        env:
+          PROTECTED_SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
+          CALLER_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+        run: |
+          set -euo pipefail
+          [[ "$PROTECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$CALLER_SOURCE_SHA" = "$PROTECTED_SOURCE_SHA"
+          printf 'source_sha=%s\n' "$PROTECTED_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+      - name: Check out reviewed verifier and signer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.authority.outputs.source_sha }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the exact validated tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          path: validation-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download original plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          merge-multiple: true
+          path: plan
+      - name: Download the completed official output upload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.upload.outputs.artifact_id }}
+          merge-multiple: true
+          path: phase10-output
+      - name: Verify exact bytes and prepare the external record without signing access
+        id: prepare
+        env:
+          PHASE11_PINS_JSON: ${{ inputs.phase11PinsJson }}
+          PHASE11_PINS_SHA256: ${{ inputs.phase11PinsSha256 }}
+          TRUSTED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_UPLOAD_JOB: ${{ inputs.trustedUploadJobName }}
+          EXPECTED_PGP_KEY_SHA256: ${{ inputs.expectedPgpKeySha256 }}
+          OUTPUT_ARTIFACT_ID: ${{ needs.upload.outputs.artifact_id }}
+          OUTPUT_ARTIFACT_SHA256: ${{ needs.upload.outputs.artifact_sha256 }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$PHASE11_PINS_JSON" > "$RUNNER_TEMP/phase11-pins.json"
+          python3 -B trusted-source/ci/contract_phase10_output_record.py prepare \
+            --plan plan/impact-plan.json \
+            --repository-root trusted-source \
+            --validation-repository validation-source \
+            --protected-output phase10-output \
+            --destination "$RUNNER_TEMP/prepared-record" \
+            --phase11-pins "$RUNNER_TEMP/phase11-pins.json" \
+            --expected-phase11-pins-sha256 "$PHASE11_PINS_SHA256" \
+            --trusted-source-commit "$TRUSTED_SOURCE_SHA" \
+            --trusted-workflow-sha "$TRUSTED_SOURCE_SHA" \
+            --trusted-workflow-path .github/workflows/contract-phase10-output-record.yml \
+            --trusted-job-name "$TRUSTED_UPLOAD_JOB" \
+            --expected-pgp-key-sha256 "$EXPECTED_PGP_KEY_SHA256" \
+            --artifact-id "$OUTPUT_ARTIFACT_ID" \
+            --artifact-sha256 "$OUTPUT_ARTIFACT_SHA256" > "$RUNNER_TEMP/prepared-result.json"
+          printf 'record_sha256=%s\n' "$(jq -er '.recordSha256' "$RUNNER_TEMP/prepared-result.json")" >> "$GITHUB_OUTPUT"
+      - name: Sign only the independently prepared record
+        id: sign
+        env:
+          TRUSTED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+          RECORD_SHA256: ${{ steps.prepare.outputs.record_sha256 }}
+          CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/contract_phase10_record_signer.py \
+            --prepared-record "$RUNNER_TEMP/prepared-record/record.json" \
+            --repository-root trusted-source \
+            --trusted-source-commit "$TRUSTED_SOURCE_SHA" \
+            --expected-record-sha256 "$RECORD_SHA256" > "$RUNNER_TEMP/sign-result.json"
+          printf 'signature_sha256=%s\n' "$(jq -er '.signatureSha256' "$RUNNER_TEMP/sign-result.json")" >> "$GITHUB_OUTPUT"
+      - name: Re-observe official upload and publish only the verified signed pair
+        env:
+          TRUSTED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_UPLOAD_JOB: ${{ inputs.trustedUploadJobName }}
+          EXPECTED_PGP_KEY_SHA256: ${{ inputs.expectedPgpKeySha256 }}
+          OUTPUT_ARTIFACT_ID: ${{ needs.upload.outputs.artifact_id }}
+          OUTPUT_ARTIFACT_SHA256: ${{ needs.upload.outputs.artifact_sha256 }}
+          RECORD_SHA256: ${{ steps.prepare.outputs.record_sha256 }}
+          SIGNATURE_SHA256: ${{ steps.sign.outputs.signature_sha256 }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/contract_phase10_output_record.py verify-publish \
+            --plan plan/impact-plan.json \
+            --repository-root trusted-source \
+            --validation-repository validation-source \
+            --protected-output phase10-output \
+            --destination "$RUNNER_TEMP/verified-record" \
+            --record "$RUNNER_TEMP/prepared-record/record.json" \
+            --signature "$RUNNER_TEMP/prepared-record/record.sig" \
+            --expected-record-sha256 "$RECORD_SHA256" \
+            --expected-signature-sha256 "$SIGNATURE_SHA256" \
+            --trusted-source-commit "$TRUSTED_SOURCE_SHA" \
+            --trusted-workflow-sha "$TRUSTED_SOURCE_SHA" \
+            --trusted-workflow-path .github/workflows/contract-phase10-output-record.yml \
+            --trusted-job-name "$TRUSTED_UPLOAD_JOB" \
+            --expected-pgp-key-sha256 "$EXPECTED_PGP_KEY_SHA256" \
+            --artifact-id "$OUTPUT_ARTIFACT_ID" \
+            --artifact-sha256 "$OUTPUT_ARTIFACT_SHA256"
+      - name: Preserve the exact verified record and signature
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-contract-phase10-output-record-${{ fromJSON(inputs.planOutputs).validation_tree }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/verified-record
+          compression-level: 0
+          retention-days: 90
