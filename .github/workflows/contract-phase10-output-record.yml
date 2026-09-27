@@ -87,12 +87,12 @@ jobs:
           CALLER_UPLOAD_JOB: ${{ inputs.trustedUploadJobName }}
         run: |
           set -euo pipefail
-          [[ "$PROTECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$PROTECTED_PINS_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]]
-          [[ "$PROTECTED_PGP_KEY_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$PROTECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$PROTECTED_PINS_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$PROTECTED_PGP_KEY_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           test -n "$PROTECTED_UPLOAD_JOB"
           test "${#PROTECTED_UPLOAD_JOB}" -le 256
-          [[ "$PROTECTED_UPLOAD_JOB" != *$'\n'* && "$PROTECTED_UPLOAD_JOB" != *$'\r'* ]]
+          [[ "$PROTECTED_UPLOAD_JOB" != *$'\n'* && "$PROTECTED_UPLOAD_JOB" != *$'\r'* ]] || exit 1
           test "$CALLER_SOURCE_SHA" = "$PROTECTED_SOURCE_SHA"
           test "$CALLER_PINS_SHA256" = "$PROTECTED_PINS_SHA256"
           test "$CALLER_PGP_KEY_SHA256" = "$PROTECTED_PGP_KEY_SHA256"

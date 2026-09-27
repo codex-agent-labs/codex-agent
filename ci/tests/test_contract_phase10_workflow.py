@@ -33,14 +33,20 @@ class ContractPhase10WorkflowTests(unittest.TestCase):
                 "CALLER_PGP_KEY_SHA256": authority["PROTECTED_PGP_KEY_SHA256"],
                 "CALLER_UPLOAD_JOB": authority["PROTECTED_UPLOAD_JOB"],
             }
-            for changed in (None, *authority, *callers):
+            cases = [
+                {}, *({name: ""} for name in (*authority, *callers)),
+                {"PROTECTED_SOURCE_SHA": "", "CALLER_SOURCE_SHA": ""},
+                {"PROTECTED_PINS_SHA256": "", "CALLER_PINS_SHA256": ""},
+                {"PROTECTED_PGP_KEY_SHA256": "", "CALLER_PGP_KEY_SHA256": ""},
+                {"PROTECTED_UPLOAD_JOB": "bad\njob", "CALLER_UPLOAD_JOB": "bad\njob"},
+            ]
+            for changed in cases:
                 environment = {**os.environ, **authority, **callers,
                                "GITHUB_OUTPUT": str(output)}
-                if changed:
-                    environment[changed] = ""
+                environment.update(changed)
                 result = subprocess.run(["bash", "-c", script], env=environment,
                                         capture_output=True, text=True, timeout=10)
-                self.assertEqual(0 if changed is None else 1, result.returncode,
+                self.assertEqual(0 if not changed else 1, result.returncode,
                                  (changed, result.stderr))
                 if changed:
                     self.assertFalse(output.exists())

@@ -38,6 +38,12 @@ on:
         value: ${{ jobs.contract-attestation.outputs.artifact_id }}
       contract_attestation_artifact_digest:
         value: ${{ jobs.contract-attestation.outputs.artifact_digest }}
+      contract_attestation_inputs_artifact_id:
+        value: ${{ jobs.contract-continuation.outputs.attestation_inputs_id }}
+      contract_attestation_inputs_artifact_sha256:
+        value: ${{ jobs.contract-continuation.outputs.attestation_inputs_digest }}
+      contract_version:
+        value: ${{ jobs.contract-continuation.outputs.contract_version }}
 
 permissions:
   actions: read
