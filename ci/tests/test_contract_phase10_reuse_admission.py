@@ -5,7 +5,7 @@ from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from ci import contract_phase10_reuse_admission as admission
-from ci.products.inventory import regular_file_inventory, sha256_file
+from ci.products.inventory import load_canonical_json_bytes, regular_file_inventory, sha256_file
 
 
 class ContractPhase10ReuseAdmissionTest(unittest.TestCase):
@@ -50,7 +50,7 @@ class ContractPhase10ReuseAdmissionTest(unittest.TestCase):
             kind = "output" if artifact_id == 17 else "record"
             seen.append((artifact_id, digest, name, original))
             destination.write_bytes(self.archives[kind].read_bytes())
-            return {"id": artifact_id}, destination
+            return {"id": artifact_id, "digest": digest, "name": name}, destination
 
         def verify(record, signature, _trusted, _validation, output, _plan, **pins):
             self.assertEqual(b"signed record\n", record.read_bytes())
@@ -102,6 +102,11 @@ class ContractPhase10ReuseAdmissionTest(unittest.TestCase):
         self.assertEqual(self.producer, result["producer"])
         self.assertEqual(b"primary", (self.destination / "output/maven/primary.jar").read_bytes())
         self.assertEqual(b"signature\n", (self.destination / "signed-record/record.sig").read_bytes())
+        transport = load_canonical_json_bytes((self.destination / "transport.json").read_bytes())
+        self.assertEqual(self.producer, transport["producer"])
+        self.assertEqual({"output": 17, "record": 18},
+                         {kind: upload["id"] for kind, upload in transport["officialUploads"].items()})
+        self.assertEqual("a" * 40, transport["observedAttempt"]["run"]["head_sha"])
         self.assertEqual(2, window.call_count)
         self.assertEqual({"output", "record"}, set(observe.call_args.kwargs["jobs_by_phase"]))
 

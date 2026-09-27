@@ -123,8 +123,8 @@ def capture_reusable_contract_phase10_output(
         snapshot_regular_tree(root / "record", captured / "signed-record")
         write_canonical_json(captured / "transport.json", {
             "schemaVersion": 1, "producer": producer,
-            "outputArtifact": {"id": output_artifact_id, "sha256": output_artifact_sha256},
-            "recordArtifact": {"id": record_artifact_id, "sha256": record_artifact_sha256},
+            "observedAttempt": observation,
+            "officialUploads": uploads,
         })
         inventory = regular_file_inventory(captured)
         if (regular_file_inventory(root / "output") != record["outputFiles"]
