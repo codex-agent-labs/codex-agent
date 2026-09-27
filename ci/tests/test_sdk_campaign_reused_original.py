@@ -340,6 +340,91 @@ class ReusedSdkOriginalTest(unittest.TestCase):
                 self.assertEqual(self.original_object.read_bytes(), object_path.read_bytes())
                 self.assertEqual("failure", evidence["catalogProducer"][0]["run"]["conclusion"])
 
+    def test_early_js_partial_catalog_has_separate_exact_child_route(self):
+        producer = self.fixture.producer
+        name = locator.failed_sdk_early_js_partial_catalog_name(producer)
+        path = ".github/workflows/sdk-javascript-validation.yml"
+        job = "product-validation / sdk-javascript-wave / sdk-partial-catalog"
+        self.catalog_artifact["name"] = name
+        self.catalog_job["name"] = job
+        self.run = {**self.run, "status": "completed", "conclusion": "failure"}
+        worker_job, _ = fresh_sdk_worker_route(self.instance, self.descriptor["receipt"])
+        selection = {self.instance: {
+            "expected_build_key": self.ready["buildKey"],
+            "expected_product_version": "0.3.0",
+            "trusted_worker_workflow_path": ".github/workflows/product-validation.yml",
+            "trusted_worker_job_name": worker_job,
+        }}
+        with self.official(), patch.object(locator, "_locate", return_value={
+                "artifact_id": 901, "artifact_sha256": sha256_bytes(self.worker_raw)}), \
+                patch.object(reused.product_reuse, "paginated_items",
+                    return_value=[self.catalog_artifact]):
+            pins = locator.discover_reused_sdk_original_pins(selection,
+                pull_request=31, repository=producer["repository"],
+                catalog_artifact_name=name, catalog_public_key=self.key,
+                expected_public_key_sha256=sha256_bytes(self.key.read_bytes()),
+                trusted_workflow_sha=fixture_module.PIN,
+                trusted_catalog_workflow_path=path, trusted_catalog_job_name=job,
+                token="synthetic-token", environ={}, failed_catalog_producer=producer)
+            self.assertEqual(902, pins[self.instance]["catalog_artifact_id"])
+            with self.held(failed_catalog_producer=producer,
+                    trusted_catalog_workflow_path=path, trusted_catalog_job_name=job,
+                    trusted_worker_workflow_path=".github/workflows/product-validation.yml",
+                    trusted_worker_job_name=worker_job) as (evidence, object_path):
+                self.assertEqual(self.original_object.read_bytes(), object_path.read_bytes())
+                self.assertEqual("failure", evidence["catalogProducer"][0]["run"]["conclusion"])
+
+    def test_early_js_partial_catalog_rejects_cross_route_before_discovery(self):
+        producer = self.fixture.producer
+        name = locator.failed_sdk_early_js_partial_catalog_name(producer)
+        route = {"trusted_catalog_workflow_path": ".github/workflows/sdk-javascript-validation.yml",
+                 "trusted_catalog_job_name": "product-validation / sdk-javascript-wave / sdk-partial-catalog"}
+        worker_job, _ = fresh_sdk_worker_route(self.instance, self.descriptor["receipt"])
+        selection = {self.instance: {
+            "expected_build_key": self.ready["buildKey"],
+            "expected_product_version": "0.3.0",
+            "trusted_worker_workflow_path": ".github/workflows/product-validation.yml",
+            "trusted_worker_job_name": worker_job,
+        }}
+        def discover(artifact_name, **changes):
+            return locator.discover_reused_sdk_original_pins(selection,
+                pull_request=31, repository=producer["repository"],
+                catalog_artifact_name=artifact_name, catalog_public_key=self.key,
+                expected_public_key_sha256=sha256_bytes(self.key.read_bytes()),
+                trusted_workflow_sha=fixture_module.PIN, token="synthetic-token",
+                environ={}, failed_catalog_producer=producer, **{**route, **changes})
+        for change in (
+                {"trusted_catalog_workflow_path": ".github/workflows/product-validation.yml"},
+                {"trusted_catalog_job_name": "product-validation / sdk-partial-catalog"}):
+            with self.subTest(change=change), patch.object(reused.product_reuse, "paginated_items") as listing, \
+                    self.assertRaisesRegex(ValueError, "exact child workflow and job"):
+                discover(name, **change)
+            listing.assert_not_called()
+        with patch.object(reused.product_reuse, "paginated_items") as listing, \
+                self.assertRaisesRegex(ValueError, "caller-pinned namespace"):
+            discover("codex-agent-sdk-early-js-partial-catalog-v1-pull-request-31-impostor")
+        listing.assert_not_called()
+        with patch.object(reused.product_reuse, "paginated_items") as listing, \
+                self.assertRaisesRegex(ValueError, "independent digest"):
+            locator.discover_reused_sdk_original_pins(selection,
+                pull_request=31, repository=producer["repository"],
+                catalog_artifact_name=name, catalog_public_key=self.key,
+                expected_public_key_sha256=sha256_bytes(self.other_key.read_bytes()),
+                trusted_workflow_sha=fixture_module.PIN, token="synthetic-token",
+                environ={}, failed_catalog_producer=producer, **route)
+        listing.assert_not_called()
+        artifact = {**self.catalog_artifact, "name": name}
+        with patch.object(reused.product_reuse, "download_artifact_to_file") as download, \
+                self.assertRaisesRegex(ValueError, "exact child workflow and job"):
+            locator.materialize_failed_sdk_partial_catalog(artifact,
+                self.fixture.repository / "rejected-early-js-catalog", producer=producer,
+                repository=producer["repository"], pull_request=31,
+                public_key=self.key, public_key_sha256=sha256_bytes(self.key.read_bytes()),
+                trusted_workflow_sha=fixture_module.PIN,
+                trusted_workflow_path=".github/workflows/product-validation.yml",
+                trusted_job_name=route["trusted_catalog_job_name"], token="synthetic-token")
+        download.assert_not_called()
+
     def test_failed_run_partial_catalog_rejects_wrong_job_and_upload_window(self):
         producer = self.fixture.producer
         self.catalog_artifact["name"] = locator.failed_sdk_partial_catalog_name(producer)

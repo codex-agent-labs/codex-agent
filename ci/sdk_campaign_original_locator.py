@@ -70,12 +70,37 @@ def failed_sdk_partial_catalog_name(producer):
             f"{producer['tree']}-attempt-{producer['runAttempt']}")
 
 
+_EARLY_JS_CATALOG_PATH = ".github/workflows/sdk-javascript-validation.yml"
+_EARLY_JS_CATALOG_JOB = "product-validation / sdk-javascript-wave / sdk-partial-catalog"
+
+
+def failed_sdk_early_js_partial_catalog_name(producer):
+    """Reserve a distinct failed-attempt name for the future early JS child."""
+    producer = validate_producer(producer)
+    if producer["event"] != "pull_request":
+        raise ValueError("Early JS partial SDK catalog requires a pull-request producer")
+    return (f"codex-agent-sdk-early-js-partial-catalog-v1-pull-request-{producer['pullRequest']}-"
+            f"{producer['tree']}-attempt-{producer['runAttempt']}")
+
+
+def require_failed_sdk_partial_catalog_route(producer, artifact_name, workflow_path, job_name):
+    """Bind the caller's name and workflow pair before retrieving catalog bytes."""
+    if artifact_name == failed_sdk_partial_catalog_name(producer):
+        return artifact_name
+    if artifact_name == failed_sdk_early_js_partial_catalog_name(producer):
+        if workflow_path != _EARLY_JS_CATALOG_PATH or job_name != _EARLY_JS_CATALOG_JOB:
+            raise ValueError("Early JS partial SDK catalog requires its exact child workflow and job")
+        return artifact_name
+    raise ValueError("Partial SDK catalog differs from its caller-pinned namespace")
+
+
 def materialize_failed_sdk_partial_catalog(artifact, destination, *, producer,
         repository, pull_request, public_key, public_key_sha256,
         trusted_workflow_sha, trusted_workflow_path, trusted_job_name, token):
     """Admit only a signed partial cache from a failed run's successful catalog job."""
     producer = validate_producer(producer)
-    name = failed_sdk_partial_catalog_name(producer)
+    name = require_failed_sdk_partial_catalog_route(producer, artifact.get("name"),
+        trusted_workflow_path, trusted_job_name)
     if (producer["repository"] != repository or producer["pullRequest"] != pull_request
             or not trusted_workflow_path or not trusted_job_name):
         raise ValueError("Partial SDK catalog differs from independent producer or route")
@@ -231,9 +256,12 @@ def discover_reused_sdk_original_pins(selections, *, pull_request, repository,
     prefix = f"{products._CATALOG_PREFIX}pull-request-{pull_request}-"
     failed = (None if failed_catalog_producer is None else
               validate_producer(failed_catalog_producer))
-    if (type(catalog_artifact_name) is not str or
-            (catalog_artifact_name != failed_sdk_partial_catalog_name(failed) if failed else
-             not catalog_artifact_name.startswith(prefix) or not catalog_artifact_name[len(prefix):])):
+    if type(catalog_artifact_name) is not str:
+        raise ValueError("Reused SDK catalog requires a caller-pinned same-PR artifact name")
+    if failed is not None:
+        require_failed_sdk_partial_catalog_route(failed, catalog_artifact_name,
+            trusted_catalog_workflow_path, trusted_catalog_job_name)
+    elif not catalog_artifact_name.startswith(prefix) or not catalog_artifact_name[len(prefix):]:
         raise ValueError("Reused SDK catalog requires a caller-pinned same-PR artifact name")
     catalog_job, catalog_policy = original_workflow_route("catalog", trusted_catalog_job_name,
         trusted_workflow_sha, trusted_catalog_workflow_path, trusted_catalog_job_name)
