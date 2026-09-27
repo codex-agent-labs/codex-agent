@@ -31,7 +31,9 @@ BOUNDARY_FILES = ("real-sdk-leaf-service-null-boundary.c", "real-sdk-leaf-servic
 
 def _required(path: Path, *, directory: bool = False) -> Path:
     path = Path(os.path.abspath(path.expanduser()))
-    if path.is_symlink() or not (path.is_dir() if directory else path.is_file()):
+    if any(item.is_symlink() for item in (path, *path.parents)) or not (
+        path.is_dir() if directory else path.is_file()
+    ):
         raise ValueError(f"Required regular {'directory' if directory else 'file'} is missing: {path}")
     return path.resolve()
 

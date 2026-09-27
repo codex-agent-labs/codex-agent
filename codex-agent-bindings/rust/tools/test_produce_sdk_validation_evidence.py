@@ -212,6 +212,20 @@ class RustEvidenceProducerTest(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual(b"original evidence", sentinel.read_bytes())
 
+    def test_symbolic_input_parent_preserves_previous_evidence(self):
+        self.output.mkdir()
+        sentinel = self.output / "previous-proof"
+        sentinel.write_bytes(b"original evidence")
+        alias = self.root / "alias"
+        alias.symlink_to(self.root, target_is_directory=True)
+        inputs = (*self.inputs[:4], alias / self.inputs[4].name)
+        with patch.object(producer, "_invalidate") as invalidate, patch.object(producer.subprocess, "run") as run, \
+                self.assertRaisesRegex(ValueError, "Required regular"):
+            producer.produce(*inputs, self.output)
+        invalidate.assert_not_called()
+        run.assert_not_called()
+        self.assertEqual(b"original evidence", sentinel.read_bytes())
+
     def test_missing_source_or_exact_program_preserves_previous_evidence_before_deletion(self):
         self.output.mkdir()
         sentinel = self.output / "previous-proof"
