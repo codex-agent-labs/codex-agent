@@ -59,11 +59,24 @@ class SdkCampaignOriginalLocatorTest(TestCase):
             shard / descriptor["objectPath"], shard.parent / "stage")
         return instance, ready, original, archive(files)
 
-    def locate(self, instance, original, digest=None, environ=None):
+    def locate(self, instance, original, digest=None, environ=None, workflow_path=None, job_name=None):
         return locator.locate_fresh_sdk_original_upload(instance, original,
             expected_receipt_sha256=digest or sha256_bytes(original.receipt_bytes),
             trusted_workflow_sha=fixture_module.PIN, token="synthetic-token",
-            environ={} if environ is None else environ)
+            environ={} if environ is None else environ,
+            trusted_workflow_path=workflow_path, trusted_job_name=job_name)
+
+    def child_reference(self, query, workflow_path):
+        original = query.side_effect
+        def api(url, token):
+            result = original(url, token)
+            if url.endswith(f"/attempts/{self.fixture.producer['runAttempt']}"):
+                return {**result, "referenced_workflows": [*result["referenced_workflows"], {
+                    "path": f"{self.fixture.producer['repository']}/{workflow_path}@{fixture_module.PIN}",
+                    "sha": fixture_module.PIN,
+                }]}
+            return result
+        query.side_effect = api
 
     def test_fresh_pin_is_derived_from_official_worker_not_observed_state(self):
         for family in ("javascript", "core", "android"):
@@ -73,11 +86,14 @@ class SdkCampaignOriginalLocatorTest(TestCase):
                     android_phase="package" if family == "android" else None)
                 job, _ = locator.fresh_sdk_worker_route(instance,
                     validate_phase_receipt(load_canonical_json_bytes(original.receipt_bytes)))
+                child = ".github/workflows/sdk-android-package-validation.yml"
                 arguments = dict(producer=self.fixture.producer, expected_build_key=ready["buildKey"],
                     expected_product_version="0.3.0", trusted_workflow_sha=fixture_module.PIN,
-                    trusted_workflow_path=".github/workflows/product-validation.yml",
+                    trusted_workflow_path=child if family == "android" else ".github/workflows/product-validation.yml",
                     trusted_job_name=job, token="synthetic-token", environ={})
-                with self.fixture.official_api({instance: ready}, {instance: raw}) as (_, _, download):
+                with self.fixture.official_api({instance: ready}, {instance: raw}) as (query, _, download):
+                    if family == "android":
+                        self.child_reference(query, child)
                     pin = locator.discover_fresh_sdk_original_pin(instance, **arguments)
                     self.assertEqual(sha256_bytes(original.receipt_bytes), pin["receipt_sha256"])
                     self.assertEqual(sha256_bytes(raw), pin["artifact_sha256"])
@@ -169,20 +185,37 @@ class SdkCampaignOriginalLocatorTest(TestCase):
                 instance, _, original, raw = self.selected(android_phase=phase)
                 receipt = validate_phase_receipt(load_canonical_json_bytes(original.receipt_bytes))
                 job, name = locator.fresh_sdk_worker_route(instance, receipt)
-                self.assertEqual(f"product-validation / sdk-sdk-android-{phase}-android", job)
+                self.assertEqual(
+                    f"product-validation / sdk-android-{phase}-result / sdk-android-{phase}-android", job)
                 self.assertEqual(f"codex-agent-sdk-worker-sdk-android-{phase}-android-"
                     f"{receipt['buildKey'].removeprefix('sha256:')}-{producer['tree']}-attempt-{producer['runAttempt']}", name)
-                with self.fixture.official_api({instance: receipt}, {instance: raw}) as (_, _, download):
-                    pin = self.locate(instance, original)
+                child = (".github/workflows/sdk-android-validation.yml" if phase == "validation" else
+                         f".github/workflows/sdk-android-{phase}-validation.yml")
+                with self.fixture.official_api({instance: receipt}, {instance: raw}) as (query, _, download):
+                    self.child_reference(query, child)
+                    pin = self.locate(instance, original, workflow_path=child, job_name=job)
                     self.assertEqual({"artifact_id": 901, "artifact_sha256": sha256_bytes(raw)}, pin)
                     download.assert_not_called()
                     with worker.held_fresh_sdk_worker_upload(instance, original,
                             canonical_json_bytes({"captureProducer": producer}),
                             expected_receipt_sha256=sha256_bytes(original.receipt_bytes),
                             artifact_id=pin["artifact_id"], artifact_sha256=pin["artifact_sha256"],
-                            trusted_workflow_sha=fixture_module.PIN, token="synthetic-token", environ={}) as (evidence, _):
+                            trusted_workflow_sha=fixture_module.PIN, token="synthetic-token", environ={},
+                            trusted_workflow_path=child, trusted_job_name=job) as (evidence, _):
                         self.assertEqual(901, evidence["artifact"]["id"])
                     download.assert_called_once()
+                if phase == "package":
+                    with self.fixture.official_api({instance: receipt}, {instance: raw}) as (query, _, download):
+                        self.child_reference(query, child)
+                        with self.assertRaises(ValueError):
+                            locator.discover_fresh_sdk_original_pin(instance,
+                                producer=producer, expected_build_key=receipt["buildKey"],
+                                expected_product_version=receipt["productVersion"],
+                                trusted_workflow_sha=fixture_module.PIN,
+                                trusted_workflow_path=child,
+                                trusted_job_name="product-validation / sdk-sdk-android-package-android",
+                                token="synthetic-token", environ={})
+                        download.assert_not_called()
 
     def test_invalid_android_route_and_signing_context_reject_before_api(self):
         instance, _, original, _ = self.selected()

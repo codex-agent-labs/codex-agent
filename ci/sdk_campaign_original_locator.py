@@ -32,7 +32,8 @@ def fresh_sdk_worker_route(instance, receipt):
     if instance.component == "sdk-android":
         if instance.phase not in ("binary", "package", "validation", "metadata") or instance.target != "android":
             raise ValueError("SDK Android original route requires one exact worker phase")
-        job = f"product-validation / sdk-sdk-android-{instance.phase}-android"
+        job = (f"product-validation / sdk-android-{instance.phase}-result / "
+               f"sdk-android-{instance.phase}-android")
         producer = receipt["producer"]
         name = (f"codex-agent-sdk-worker-sdk-android-{instance.phase}-android-"
                 f"{receipt['buildKey'].removeprefix('sha256:')}-{producer['tree']}-attempt-{producer['runAttempt']}")
