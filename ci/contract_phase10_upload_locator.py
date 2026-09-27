@@ -29,7 +29,8 @@ from ci.reuse import github_output
 def observe_contract_phase10_upload(plan_path: Path, repository_root: Path,
         protected_output: Path, *, trusted_workflow_sha: str,
         trusted_workflow_path: str, trusted_job_name: str,
-        artifact_id: int, artifact_sha256: str, environ=None, token: str) -> dict:
+        artifact_id: int, artifact_sha256: str, environ=None, token: str,
+        original_run_id=None, original_run_attempt=None) -> dict:
     """Bind one official upload to the exact already-finalized Phase-10 files."""
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
@@ -53,7 +54,10 @@ def observe_contract_phase10_upload(plan_path: Path, repository_root: Path,
         plan = products._validate_plan(captured_plan, root)
         if plan["remoteBuildAuthorized"] is not True or plan["event"] not in {"pull_request", "merge_group"}:
             raise ValueError("Contract Phase-10 upload requires an authorized plan")
-        producer = products.validate_producer(products._consumer(plan, environment)["producer"])
+        producer = products.validate_producer(products._consumer(
+            plan, environment, original_run_id=original_run_id,
+            original_run_attempt=original_run_attempt,
+        )["producer"])
         name = (f"codex-agent-contract-phase10-maven-{producer['tree']}-"
                 f"attempt-{producer['runAttempt']}")
         observed = products._observe_ci_producer_jobs(
@@ -93,6 +97,8 @@ def main(argv=None) -> int:
                  "artifact-id", "artifact-sha256"):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--github-output", type=Path)
+    parser.add_argument("--original-run-id", type=int)
+    parser.add_argument("--original-run-attempt", type=int)
     args = parser.parse_args(argv)
     try:
         result = observe_contract_phase10_upload(
@@ -101,7 +107,9 @@ def main(argv=None) -> int:
             trusted_workflow_path=args.trusted_workflow_path,
             trusted_job_name=args.trusted_job_name,
             artifact_id=int(args.artifact_id), artifact_sha256=args.artifact_sha256,
-            environ=os.environ, token=os.environ["GITHUB_TOKEN"])
+            environ=os.environ, token=os.environ["GITHUB_TOKEN"],
+            original_run_id=args.original_run_id,
+            original_run_attempt=args.original_run_attempt)
         if args.github_output is not None:
             github_output(args.github_output, {key: result[key] for key in (
                 "artifactId", "artifactSha256", "artifactName", "inventorySha256")})

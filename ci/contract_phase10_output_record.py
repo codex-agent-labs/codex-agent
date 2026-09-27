@@ -52,6 +52,7 @@ def prepare_contract_phase10_output_record(
     trusted_workflow_sha: str, trusted_workflow_path: str,
     trusted_job_name: str, expected_pgp_key_sha256: str,
     artifact_id: int, artifact_sha256: str, token: str, environ=None,
+    original_run_id=None, original_run_attempt=None,
 ) -> dict:
     """Create an unsigned record using reviewed source policy and the validation checkout."""
     environment = os.environ if environ is None else environ
@@ -111,6 +112,8 @@ def prepare_contract_phase10_output_record(
             trusted_job_name=trusted_job_name,
             artifact_id=artifact_id, artifact_sha256=artifact_sha256,
             token=token, environ=environment,
+            original_run_id=original_run_id,
+            original_run_attempt=original_run_attempt,
         )
         if pins["expected_validation_tree"] != observation["producer"]["tree"] or \
                 observation["inventorySha256"] != pins["expected_inventory_sha256"]:
@@ -145,6 +148,7 @@ def verify_signed_contract_phase10_output_record(
     trusted_workflow_sha: str, trusted_workflow_path: str,
     trusted_job_name: str, expected_pgp_key_sha256: str,
     artifact_id: int, artifact_sha256: str, token: str, environ=None,
+    original_run_id=None, original_run_attempt=None,
 ) -> dict:
     """Require an independently pinned signer, official upload, and exact files.
 
@@ -234,6 +238,8 @@ def verify_signed_contract_phase10_output_record(
             trusted_job_name=trusted_job_name,
             artifact_id=artifact_id, artifact_sha256=artifact_sha256,
             token=token, environ=environment,
+            original_run_id=original_run_id,
+            original_run_attempt=original_run_attempt,
         )
         if record["officialUpload"] != observation or \
                 pins["expected_validation_tree"] != observation["producer"]["tree"]:
@@ -267,6 +273,7 @@ def publish_verified_contract_phase10_output_record(
     trusted_workflow_path: str, trusted_job_name: str,
     expected_pgp_key_sha256: str, artifact_id: int,
     artifact_sha256: str, token: str, environ=None,
+    original_run_id=None, original_run_attempt=None,
 ) -> dict:
     """Re-observe, deeply verify, then publish only the external signed pair."""
     environment = os.environ if environ is None else environ
@@ -312,6 +319,8 @@ def publish_verified_contract_phase10_output_record(
             expected_pgp_key_sha256=expected_pgp_key_sha256,
             artifact_id=artifact_id, artifact_sha256=artifact_sha256,
             token=token, environ=environment,
+            original_run_id=original_run_id,
+            original_run_attempt=original_run_attempt,
         )
         if (read_regular_file_bytes(record_path, max_bytes=16 * 1024 * 1024,
                                     reject_symlink_parents=True) != record_bytes
@@ -347,6 +356,8 @@ def main(argv=None) -> int:
                      "trusted-workflow-path", "trusted-job-name",
                      "expected-pgp-key-sha256", "artifact-id", "artifact-sha256"):
             selected.add_argument(f"--{name}", required=True)
+        selected.add_argument("--original-run-id", type=int)
+        selected.add_argument("--original-run-attempt", type=int)
         if command == "prepare":
             selected.add_argument("--phase11-pins", type=Path, required=True)
             selected.add_argument("--expected-phase11-pins-sha256", required=True)
@@ -364,6 +375,8 @@ def main(argv=None) -> int:
         expected_pgp_key_sha256=args.expected_pgp_key_sha256,
         artifact_id=int(args.artifact_id), artifact_sha256=args.artifact_sha256,
         token=os.environ["GITHUB_TOKEN"], environ=os.environ,
+        original_run_id=args.original_run_id,
+        original_run_attempt=args.original_run_attempt,
     )
     if args.command == "prepare":
         pins_bytes = read_regular_file_bytes(

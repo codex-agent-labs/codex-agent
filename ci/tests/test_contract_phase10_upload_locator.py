@@ -28,7 +28,8 @@ class ContractPhase10UploadLocatorTest(unittest.TestCase):
         with ZipFile(self.archive, "w", ZIP_DEFLATED) as zipped:
             zipped.write(self.output / "sidecar-selection.json", "sidecar-selection.json")
 
-    def invoke(self, *, archive=None, plan_authorized=True):
+    def invoke(self, *, archive=None, plan_authorized=True,
+               original_run_id=None, original_run_attempt=None):
         archive = self.archive if archive is None else archive
         seen = []
 
@@ -39,7 +40,7 @@ class ContractPhase10UploadLocatorTest(unittest.TestCase):
 
         with (patch.object(locator.products, "_validate_plan", return_value={
                 "remoteBuildAuthorized": plan_authorized, "event": "pull_request"}),
-              patch.object(locator.products, "_consumer", return_value={"producer": self.producer}),
+              patch.object(locator.products, "_consumer", return_value={"producer": self.producer}) as consumer,
               patch.object(locator.products, "_observe_ci_producer_jobs", return_value=[{
                   "run": {"status": "completed", "conclusion": "failure", "head_sha": "a" * 40}}]),
               patch.object(locator.products, "_download_contract_ci_upload", side_effect=download),
@@ -49,7 +50,11 @@ class ContractPhase10UploadLocatorTest(unittest.TestCase):
                 trusted_workflow_path=".github/workflows/product-validation.yml",
                 trusted_job_name="product-validation / contract-phase10-maven",
                 artifact_id=17, artifact_sha256="sha256:" + "d" * 64,
-                environ={}, token="local-test-token")
+                environ={}, token="local-test-token",
+                original_run_id=original_run_id,
+                original_run_attempt=original_run_attempt)
+            self.assertEqual(original_run_id, consumer.call_args.kwargs["original_run_id"])
+            self.assertEqual(original_run_attempt, consumer.call_args.kwargs["original_run_attempt"])
         return result, seen, window
 
     def test_exact_job_upload_survives_sibling_failure(self):
@@ -67,6 +72,10 @@ class ContractPhase10UploadLocatorTest(unittest.TestCase):
             zipped.writestr("sidecar-selection.json", b"changed\n")
         with self.assertRaisesRegex(ValueError, "differs from finalized output"):
             self.invoke(archive=altered)
+
+    def test_later_dispatch_selects_pinned_original_run(self):
+        result, _, _ = self.invoke(original_run_id=41, original_run_attempt=2)
+        self.assertEqual(self.producer, result["producer"])
 
     def test_unauthorized_plan_fails_before_official_lookup(self):
         with self.assertRaisesRegex(ValueError, "authorized plan"):
