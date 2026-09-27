@@ -316,11 +316,18 @@ class ProductSelectionTest(unittest.TestCase):
 
     def test_protected_contract_and_sdk_custody_controls_do_not_change_product_bytes(self):
         contract_metadata = {PhaseInstanceId("contract", "contract", "metadata", "common")}
+        runtime_metadata = {PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")}
         sdk = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "sdk"}
+        sdk_metadata = {instance for instance in sdk if instance.phase == "metadata"}
         for path, expected in (
                 (".github/workflows/contract-phase10-maven.yml", contract_metadata),
                 (".github/workflows/contract-phase10-output-record.yml", contract_metadata),
+                ("ci/contract_phase10_reuse_admission.py", contract_metadata),
+                (".github/workflows/runtime-phase10-maven.yml", runtime_metadata),
+                (".github/workflows/runtime-phase10-output-record.yml", runtime_metadata),
+                ("ci/runtime_phase10_sidecar_upload.py", runtime_metadata),
                 (".github/workflows/sdk-failed-catalog-custody.yml", sdk),
+                ("ci/sdk_campaign_release_issuer.py", sdk_metadata),
                 ("ci/sdk_catalog_custody.py", sdk),
                 ("ci/sdk_catalog_custody_locator.py", sdk),
                 ("ci/sdk_catalog_custody_signer.py", sdk)):

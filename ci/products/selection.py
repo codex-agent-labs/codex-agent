@@ -236,6 +236,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/contract_equal_tree_original.py",
     "ci/contract_phase10_maven_caller.py",
     "ci/contract_phase10_output_record.py",
+    "ci/contract_phase10_reuse_admission.py",
     "ci/contract_phase10_record_signer.py",
     "ci/contract_phase10_sidecar_caller.py",
     "ci/contract_phase11_bytes.py",
@@ -260,6 +261,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/runtime_phase10_sidecar_caller.py",
     "ci/runtime_phase10_library_caller.py",
     "ci/runtime_phase10_output_record.py",
+    "ci/runtime_phase10_sidecar_upload.py",
     "ci/runtime_phase10_record_signer.py",
     "ci/runtime_phase11_bytes.py",
     "ci/sdk_android_archive_provision.py",
@@ -274,6 +276,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_campaign_observation.py",
     "ci/sdk_campaign_catalog_producer.py",
     "ci/sdk_campaign_catalog_caller.py",
+    "ci/sdk_campaign_release_issuer.py",
     "ci/sdk_campaign_authority_upload.py",
     "ci/sdk_campaign_authority_producer.py",
     "ci/sdk_campaign_core_android_election.py",
@@ -632,6 +635,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path in {
         "ci/contract_equal_tree_original.py", "ci/contract_phase10_maven_caller.py",
         "ci/contract_phase10_output_record.py",
+        "ci/contract_phase10_reuse_admission.py",
         "ci/contract_phase10_record_signer.py",
         "ci/contract_phase10_sidecar_caller.py", "ci/contract_phase10_upload_locator.py",
         "ci/contract_phase11_bytes.py",
@@ -641,12 +645,15 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path in {"ci/products/runtime_phase10_maven.py", "ci/runtime_phase10_sidecar_caller.py",
                 "ci/products/runtime_library_authorization.py", "ci/runtime_phase10_library_caller.py",
                 "ci/runtime_phase10_upload_locator.py", "ci/runtime_phase10_output_record.py",
+                "ci/runtime_phase10_sidecar_upload.py",
                 "ci/runtime_phase10_record_signer.py",
                 "ci/runtime_phase11_bytes.py"}:
         return _from_phase("runtime", "runtime-aggregate", "metadata")
     if path == "ci/products/sdk_phase10_maven.py":
         return (_from_phase("sdk", "sdk-core", "metadata") |
                 _from_phase("sdk", "sdk-android", "metadata"))
+    if path == "ci/sdk_campaign_release_issuer.py":
+        return {instance for instance in ALL_METADATA if instance.product == "sdk"}
     if path == "ci/products/sdk_campaign_maven.py":
         return (_from_phase("sdk", "sdk-core", "binary") |
                 _from_phase("sdk", "sdk-android", "binary"))
@@ -845,6 +852,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         ".github/workflows/contract-validation.yml": _contract(),
         ".github/workflows/contract-phase10-maven.yml": _from_phase("contract", "contract", "metadata"),
         ".github/workflows/contract-phase10-output-record.yml": _from_phase("contract", "contract", "metadata"),
+        ".github/workflows/runtime-phase10-maven.yml": _from_phase("runtime", "runtime-aggregate", "metadata"),
+        ".github/workflows/runtime-phase10-output-record.yml": _from_phase("runtime", "runtime-aggregate", "metadata"),
         ".github/workflows/sdk-core-binary-validation.yml": _from_phase("sdk", "sdk-core", "binary"),
         ".github/workflows/sdk-core-package-validation.yml": _from_phase("sdk", "sdk-core", "package"),
         ".github/workflows/sdk-core-validation.yml": _from_phase("sdk", "sdk-core", "validation"),

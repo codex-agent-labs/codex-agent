@@ -117,7 +117,7 @@ class RunLaneContractTest(unittest.TestCase):
         caller = (CI_ROOT.parent / ".github/workflows/ci.yml").read_text(
             encoding="utf-8"
         )
-        reviewed = "b3cfc04d63ab6a561a00a125a87eb732e94db023"
+        reviewed = "aa9c42b3581ed6fd08d5ea4cf6432675459cd7b1"
         references = re.findall(
             r"uses: codex-agent-labs/codex-agent/\.github/workflows/product-validation\.yml@([^\s]+)",
             caller,
@@ -138,9 +138,10 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertEqual(1, caller.count("\n  product-validation:\n"))
         self.assertEqual(1, caller.count("\n  merge-gate:\n"))
         gate = caller.split("\n  merge-gate:\n", 1)[1]
-        self.assertIn("'SDK custody / complete' || 'CI / merge-gate'", gate)
+        self.assertIn("'SDK custody / complete' ||", gate)
+        self.assertIn("'Runtime record / complete' || 'CI / merge-gate'", gate)
         self.assertIn("if: always()", gate)
-        self.assertIn("needs: [product-validation, sdk-failed-catalog-custody]", gate)
+        self.assertIn("needs: [product-validation, sdk-failed-catalog-custody, runtime-phase10-record]", gate)
         self.assertIn('test "$PRODUCT_VALIDATION_RESULT" = success', gate)
         self.assertIn('test "$SDK_CUSTODY_RESULT" = skipped', gate)
         self.assertNotIn("actions/checkout@", caller)
@@ -1549,7 +1550,7 @@ class ImpactPlanTest(GitFixture):
         self.assertIn("fail-fast: false", sdk_consumers)
         gate = workflow[workflow.index("\n  merge-gate:"):]
         self.assertIn(
-            "needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-pins, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-catalog, sdk-parity]",
+            "needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-pins, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, runtime-phase10-maven, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-catalog, sdk-parity]",
             gate,
         )
         self.assertIn("pattern: codex-agent-ci-*", gate)
