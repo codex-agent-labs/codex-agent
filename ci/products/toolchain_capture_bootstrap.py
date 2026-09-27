@@ -11,7 +11,7 @@ import tempfile
 import tomllib
 from urllib.request import urlopen
 
-from .inventory import git_regular_blob_bytes, sha256_file, write_canonical_json
+from .inventory import git_regular_blob_bytes, require_regular_directory, sha256_file, write_canonical_json
 from .sdk_facade_native_policy import _archive_subset
 from .toolchain import (
     HOSTS, PROFILE_SHAPES, RUNTIME_VERIFICATION_METADATA, TARGETS, VERSION_CATALOG,
@@ -20,6 +20,12 @@ from .toolchain import (
 
 
 MAVEN = "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin"
+
+
+def _require_safe_directory_chain(path: Path) -> None:
+    for directory in reversed((path, *path.parents)):
+        if os.path.lexists(directory):
+            require_regular_directory(directory, "Kotlin/Native data path")
 
 
 def _pinned_file(url: str, destination: Path, expected: str, source: Path | None) -> None:
@@ -68,10 +74,13 @@ def prepare(
     if output_dir.exists() or output_dir.is_symlink():
         raise ValueError("Capture input directory must be fresh")
     konan_data_dir = konan_data_dir.absolute()
-    if konan_data_dir.is_symlink():
-        raise ValueError("Kotlin/Native data directory is a symlink")
+    _require_safe_directory_chain(konan_data_dir)
     output_dir.mkdir(parents=True)
     konan_data_dir.mkdir(parents=True, exist_ok=True)
+    _require_safe_directory_chain(konan_data_dir)
+    dependencies = konan_data_dir / "dependencies"
+    if os.path.lexists(dependencies):
+        require_regular_directory(dependencies, "Kotlin/Native dependency root")
     plugin = output_dir / plugin_name
     archive = output_dir / archive_name
     _pinned_file(

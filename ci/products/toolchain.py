@@ -24,6 +24,7 @@ from .inventory import (
     require_exact_keys,
     require_identifier,
     require_integer,
+    require_regular_directory,
     require_string,
     require_sha256,
     run_git,
@@ -522,6 +523,7 @@ def _validate_tool_record(value: Any, label: str) -> dict[str, Any]:
 def _konan_dependencies(
     properties: Mapping[str, str], host: str, target: str, directory: Path,
 ) -> dict[str, Any]:
+    require_regular_directory(directory, "Kotlin/Native dependency root")
     keys = [f"llvmHome.{host}", f"libffiDir.{host}"]
     target_key = f"dependencies.{target}" if host == target else f"dependencies.{host}-{target}"
     keys.append(target_key)

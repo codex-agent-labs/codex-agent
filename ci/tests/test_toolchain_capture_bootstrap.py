@@ -13,7 +13,7 @@ from ci.products.toolchain_capture_bootstrap import prepare
 class CaptureBootstrapTest(unittest.TestCase):
     def test_pinned_inputs_precede_dependency_only_compiler_check(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             plugin = root / "plugin.jar"
             plugin.write_bytes(b"pinned Kotlin plugin")
             archive = root / "native.tar.gz"
@@ -64,6 +64,26 @@ class CaptureBootstrapTest(unittest.TestCase):
                     prepare(root, "a" * 40, "linux-x64", root / "rejected", root / "rejected-konan",
                             plugin_source=plugin, archive_source=tampered)
                 self.assertFalse((root / "rejected-konan" / prefix).exists())
+
+                linked = root / "linked-konan"
+                linked.mkdir()
+                actual_dependencies = root / "actual-dependencies"
+                actual_dependencies.mkdir()
+                try:
+                    (linked / "dependencies").symlink_to(actual_dependencies, target_is_directory=True)
+                except (OSError, NotImplementedError):
+                    self.skipTest("Directory symlinks are unavailable on this host")
+                with self.assertRaisesRegex(ValueError, "dependency root.*unsafe"):
+                    prepare(root, "a" * 40, "linux-x64", root / "linked-rejected", linked,
+                            plugin_source=plugin, archive_source=archive)
+                self.assertFalse((linked / prefix).exists())
+
+                redirected = root / "redirected-konan"
+                redirected.symlink_to(root / "actual-konan", target_is_directory=True)
+                with self.assertRaisesRegex(ValueError, "data path.*unsafe"):
+                    prepare(root, "a" * 40, "linux-x64", root / "ancestor-rejected",
+                            redirected / "nested", plugin_source=plugin, archive_source=archive)
+                self.assertFalse((root / "actual-konan").exists())
 
 
 if __name__ == "__main__":

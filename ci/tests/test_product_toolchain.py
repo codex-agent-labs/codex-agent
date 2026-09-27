@@ -26,6 +26,7 @@ from ci.products.toolchain import (
     validate_producer_observation,
     validate_verification_record,
     verify_capture,
+    _konan_dependencies,
     _supervisor_observation,
     _verification_record,
     verify_toolchain_profile,
@@ -482,6 +483,17 @@ class ProductToolchainTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "metadata lacks one exact checksum"):
             from ci.products.toolchain import _metadata_checksum
             _metadata_checksum(b"<verification-metadata/>", "kotlin-native-prebuilt.tar.gz")
+
+    def test_konan_dependency_root_must_not_be_a_symlink(self) -> None:
+        actual = self.root / "actual-dependencies"
+        actual.mkdir()
+        link = self.root / "linked-dependencies"
+        try:
+            link.symlink_to(actual, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("Directory symlinks are unavailable on this host")
+        with self.assertRaisesRegex(ValueError, "dependency root.*unsafe"):
+            _konan_dependencies({}, "linux_x64", "linux_x64", link)
 
     def test_observer_rejects_forged_or_unsupported_host_before_tool_probe(self) -> None:
         for actual_os, actual_arch in (("Darwin", "x86_64"), ("Linux", "aarch64"), ("Linux", "mips")):
