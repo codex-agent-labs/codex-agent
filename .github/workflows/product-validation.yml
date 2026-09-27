@@ -223,6 +223,8 @@ jobs:
         env:
           ORIGINAL_PRODUCT_MATRIX: ${{ steps.impact.outputs.product_matrix }}
           TOOLING_MISS: ${{ steps.product-reuse.outputs.tooling_miss }}
+          PRODUCT_FULL_REUSE: ${{ steps.product-reuse.outputs.full_reuse }}
+          PRODUCT_TARGET_JOBS_REQUIRED: ${{ steps.product-reuse.outputs.target_jobs_required }}
           AUTHORIZED: ${{ steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' }}
           VALIDATION_REUSED: ${{ steps.validation-reuse.outputs.reused }}
         run: |
@@ -231,11 +233,20 @@ jobs:
           miss = os.environ['TOOLING_MISS']
           if miss not in ('', 'true', 'false'):
               raise ValueError('Invalid tooling miss state')
+          full_reuse = os.environ['PRODUCT_FULL_REUSE']
+          target_jobs = os.environ['PRODUCT_TARGET_JOBS_REQUIRED']
+          if full_reuse not in ('', 'true', 'false') or target_jobs not in ('', 'true', 'false'):
+              raise ValueError('Invalid product reuse state')
           matrix = []
           if os.environ['AUTHORIZED'] == 'true' and os.environ['VALIDATION_REUSED'] != 'true':
-              matrix = json.loads(os.environ['ORIGINAL_PRODUCT_MATRIX'])
-              if miss == 'true' and not any(row['lane'] == 'contracts' for row in matrix):
-                  matrix.insert(0, dict(lane='contracts', build=False, test=False, metadata=False))
+              if (full_reuse, target_jobs) not in (('true', 'false'), ('false', 'true')):
+                  raise ValueError('Inconsistent product reuse state')
+              if full_reuse == 'true' and miss == 'true':
+                  raise ValueError('Full reuse cannot miss release tooling')
+              if target_jobs == 'true':
+                  matrix = json.loads(os.environ['ORIGINAL_PRODUCT_MATRIX'])
+                  if miss == 'true' and not any(row['lane'] == 'contracts' for row in matrix):
+                      matrix.insert(0, dict(lane='contracts', build=False, test=False, metadata=False))
           contracts = [row for row in matrix if row['lane'] == 'contracts']
           if len(contracts) > 1:
               raise ValueError('Contract product lane is duplicated')

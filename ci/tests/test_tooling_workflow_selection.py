@@ -24,7 +24,8 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
         )[0]
         cls.script = textwrap.dedent(embedded)
 
-    def select(self, matrix, *, miss="false", authorized="true", reused="false"):
+    def select(self, matrix, *, miss="false", authorized="true", reused="false",
+               full_reuse="false", target_jobs="true"):
         with tempfile.TemporaryDirectory(prefix="tooling-workflow-selection-") as temporary:
             output = Path(temporary) / "github-output"
             result = subprocess.run(
@@ -32,6 +33,8 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
                 env={
                     "ORIGINAL_PRODUCT_MATRIX": json.dumps(matrix),
                     "TOOLING_MISS": miss,
+                    "PRODUCT_FULL_REUSE": full_reuse,
+                    "PRODUCT_TARGET_JOBS_REQUIRED": target_jobs,
                     "AUTHORIZED": authorized,
                     "VALIDATION_REUSED": reused,
                     "GITHUB_OUTPUT": str(output),
@@ -83,6 +86,31 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertEqual([], selected["product_matrix"])
                 self.assertEqual({"include": []}, selected["contract_matrix"])
+
+    def test_verified_full_reuse_suppresses_both_product_matrices(self):
+        original = [
+            {"lane": "contracts", "build": True, "test": True, "metadata": True},
+            {"lane": "portable", "build": True, "test": False, "metadata": False},
+        ]
+        result, selected = self.select(original, full_reuse="true", target_jobs="false")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], selected["product_matrix"])
+        self.assertEqual({"include": []}, selected["contract_matrix"])
+
+    def test_inconsistent_reuse_state_fails_closed(self):
+        for full_reuse, target_jobs, miss in (
+            ("true", "true", "false"),
+            ("false", "false", "false"),
+            ("", "", "false"),
+            ("true", "false", "true"),
+        ):
+            with self.subTest(full_reuse=full_reuse, target_jobs=target_jobs, miss=miss):
+                result, selected = self.select(
+                    [{"lane": "portable", "build": True, "test": False, "metadata": False}],
+                    full_reuse=full_reuse, target_jobs=target_jobs, miss=miss,
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertIsNone(selected)
 
     def test_invalid_tooling_miss_is_rejected_without_output(self):
         for miss in ("TRUE", "0", " true"):
