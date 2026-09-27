@@ -7,17 +7,47 @@ on:
     types: [checks_requested]
   workflow_dispatch:
     inputs:
+      purpose:
+        description: Validation or protected custody of one prior failed SDK catalog
+        required: true
+        type: choice
+        default: validation
+        options: [validation, sdk-catalog-custody]
       baseCommit:
         description: Exact base commit SHA
-        required: true
+        required: false
         type: string
       validationCommit:
         description: Exact candidate commit SHA
-        required: true
+        required: false
         type: string
       validationTree:
         description: Exact candidate tree SHA
-        required: true
+        required: false
+        type: string
+      producerJson:
+        description: Exact canonical producer JSON from the earlier failed PR attempt
+        required: false
+        type: string
+      catalogArtifactId:
+        description: Independently approved original failed-catalog upload ID
+        required: false
+        type: string
+      catalogArtifactSha256:
+        description: Independently approved original failed-catalog upload SHA-256
+        required: false
+        type: string
+      trustedWorkflowSha:
+        description: Independently reviewed original catalog workflow SHA
+        required: false
+        type: string
+      trustedWorkflowPath:
+        description: Independently reviewed original catalog child workflow path
+        required: false
+        type: string
+      trustedJobName:
+        description: Independently reviewed original catalog job name
+        required: false
         type: string
 
 permissions:
@@ -25,11 +55,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || github.event_name == 'merge_group' && format('ci-merge-group-{0}', github.ref) || format('ci-dispatch-{0}', github.sha) }}
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || github.event_name == 'merge_group' && format('ci-merge-group-{0}', github.ref) || format('ci-dispatch-{0}-{1}', github.sha, inputs.purpose) }}
   cancel-in-progress: true
 
 jobs:
   product-validation:
+    if: github.event_name != 'workflow_dispatch' || inputs.purpose == 'validation'
     permissions:
       actions: read
       contents: read
@@ -42,13 +73,39 @@ jobs:
       validationCommit: ${{ inputs.validationCommit || '' }}
       validationTree: ${{ inputs.validationTree || '' }}
 
+  sdk-failed-catalog-custody:
+    if: github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody'
+    permissions:
+      actions: read
+      contents: read
+    uses: codex-agent-labs/codex-agent/.github/workflows/sdk-failed-catalog-custody.yml@1404edc25f96a7c4bac8c4fa057965d95a452b20
+    with:
+      producerJson: ${{ inputs.producerJson }}
+      catalogArtifactId: ${{ inputs.catalogArtifactId }}
+      catalogArtifactSha256: ${{ inputs.catalogArtifactSha256 }}
+      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      trustedWorkflowPath: ${{ inputs.trustedWorkflowPath }}
+      trustedJobName: ${{ inputs.trustedJobName }}
+    secrets: inherit
+
   merge-gate:
-    name: CI / merge-gate
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody' && 'SDK custody / complete' || 'CI / merge-gate' }}
     if: always()
-    needs: product-validation
+    needs: [product-validation, sdk-failed-catalog-custody]
     runs-on: ubuntu-24.04
     steps:
-      - name: Require the trusted product workflow
+      - name: Require exactly the selected trusted workflow
         env:
+          EVENT: ${{ github.event_name }}
+          PURPOSE: ${{ inputs.purpose }}
           PRODUCT_VALIDATION_RESULT: ${{ needs.product-validation.result }}
-        run: test "$PRODUCT_VALIDATION_RESULT" = success
+          SDK_CUSTODY_RESULT: ${{ needs.sdk-failed-catalog-custody.result }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ] && [ "$PURPOSE" = sdk-catalog-custody ]; then
+            test "$PRODUCT_VALIDATION_RESULT" = skipped
+            test "$SDK_CUSTODY_RESULT" = success
+          else
+            test "$EVENT" != workflow_dispatch || test "$PURPOSE" = validation
+            test "$PRODUCT_VALIDATION_RESULT" = success
+            test "$SDK_CUSTODY_RESULT" = skipped
+          fi
