@@ -86,19 +86,39 @@ jobs:
           path: trusted-source
           fetch-depth: 0
           persist-credentials: false
-      # Activation HOLD: the current caller observes GitHub originals and signs
-      # with both product and PGP secrets in one protected step. Separate those
-      # privileges before enabling this workflow in the parent campaign.
-      - name: Authenticate original Contract bytes and create external Maven sidecars
+      - name: Authenticate original Contract bytes without signing keys
+        id: prepare
         env:
           TRUSTED_SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
           EXPECTED_PGP_KEY_SHA256: ${{ steps.authority.outputs.pgp_key_sha256 }}
-          PGP_FINGERPRINT: ${{ steps.authority.outputs.pgp_fingerprint }}
           CONTRACT_INPUTS_ID: ${{ inputs.contractInputsArtifactId }}
           CONTRACT_INPUTS_SHA256: ${{ inputs.contractInputsArtifactSha256 }}
           CONTRACT_VERSION: ${{ inputs.contractVersion }}
           VALIDATION_TREE: ${{ fromJSON(inputs.planOutputs).validation_tree }}
           GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prepared=$(python3 -B trusted-source/ci/contract_phase10_maven_caller.py prepare \
+            --repository-root "$GITHUB_WORKSPACE/trusted-source" \
+            --destination "$RUNNER_TEMP/contract-phase10-maven-prepared" \
+            --trusted-source-sha "$TRUSTED_SOURCE_SHA" \
+            --trusted-workflow-sha "$TRUSTED_SOURCE_SHA" \
+            --artifact-id "$CONTRACT_INPUTS_ID" \
+            --artifact-sha256 "$CONTRACT_INPUTS_SHA256" \
+            --validation-tree "$VALIDATION_TREE" \
+            --contract-version "$CONTRACT_VERSION" \
+            --trusted-contract-workflow-path .github/workflows/contract-validation.yml \
+            --trusted-contract-binary-job 'product-validation / contract-validation / product-contracts' \
+            --trusted-contract-continuation-job 'product-validation / contract-validation / contract-continuation' \
+            --pgp-public-key "$RUNNER_TEMP/contract-pgp-public.asc" \
+            --expected-pgp-key-sha256 "$EXPECTED_PGP_KEY_SHA256")
+          preparation_sha=$(python3 -c 'import json,re,sys; value=json.load(sys.stdin)["preparationSha256"]; assert re.fullmatch(r"sha256:[0-9a-f]{64}", value); print(value)' <<< "$prepared")
+          printf 'sha256=%s\n' "$preparation_sha" >> "$GITHUB_OUTPUT"
+      - name: Sign pinned Contract bytes and create external Maven sidecars offline
+        env:
+          EXPECTED_PGP_KEY_SHA256: ${{ steps.authority.outputs.pgp_key_sha256 }}
+          PGP_FINGERPRINT: ${{ steps.authority.outputs.pgp_fingerprint }}
+          PREPARATION_SHA256: ${{ steps.prepare.outputs.sha256 }}
           CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
           SIGNING_IN_MEMORY_KEY: ${{ secrets.SIGNING_IN_MEMORY_KEY }}
           SIGNING_IN_MEMORY_KEY_PASSWORD: ${{ secrets.SIGNING_IN_MEMORY_KEY_PASSWORD }}
@@ -110,19 +130,10 @@ jobs:
           mkdir -m 700 "$RUNNER_TEMP/contract-pgp-home"
           printf '%s' "$SIGNING_IN_MEMORY_KEY" | gpg --homedir "$RUNNER_TEMP/contract-pgp-home" --batch --import
           printf '%s' "$SIGNING_IN_MEMORY_KEY_PASSWORD" | \
-            python3 -B trusted-source/ci/contract_phase10_maven_caller.py \
-              --repository-root "$GITHUB_WORKSPACE/trusted-source" \
+            python3 -B trusted-source/ci/contract_phase10_maven_caller.py sign \
+              --prepared "$RUNNER_TEMP/contract-phase10-maven-prepared" \
               --destination "$RUNNER_TEMP/contract-phase10-maven" \
-              --trusted-source-sha "$TRUSTED_SOURCE_SHA" \
-              --trusted-workflow-sha "$TRUSTED_SOURCE_SHA" \
-              --artifact-id "$CONTRACT_INPUTS_ID" \
-              --artifact-sha256 "$CONTRACT_INPUTS_SHA256" \
-              --validation-tree "$VALIDATION_TREE" \
-              --contract-version "$CONTRACT_VERSION" \
-              --trusted-contract-workflow-path .github/workflows/contract-validation.yml \
-              --trusted-contract-binary-job 'product-validation / contract-validation / product-contracts' \
-              --trusted-contract-continuation-job 'product-validation / contract-validation / contract-continuation' \
-              --pgp-public-key "$RUNNER_TEMP/contract-pgp-public.asc" \
+              --expected-preparation-sha256 "$PREPARATION_SHA256" \
               --expected-pgp-key-sha256 "$EXPECTED_PGP_KEY_SHA256" \
               --signing-home "$RUNNER_TEMP/contract-pgp-home" \
               --signing-fingerprint "$PGP_FINGERPRINT"

@@ -89,6 +89,9 @@ class ContractPhase10MavenWorkflowTest(unittest.TestCase):
         self.assertIn("--artifact-id \"$CONTRACT_INPUTS_ID\"", workflow)
         self.assertIn("--artifact-sha256 \"$CONTRACT_INPUTS_SHA256\"", workflow)
         self.assertIn("--expected-pgp-key-sha256 \"$EXPECTED_PGP_KEY_SHA256\"", workflow)
+        self.assertIn("--destination \"$RUNNER_TEMP/contract-phase10-maven-prepared\"", workflow)
+        self.assertIn("--prepared \"$RUNNER_TEMP/contract-phase10-maven-prepared\"", workflow)
+        self.assertIn("--expected-preparation-sha256 \"$PREPARATION_SHA256\"", workflow)
         self.assertIn("--destination \"$RUNNER_TEMP/contract-phase10-maven\"", workflow)
         self.assertIn("path: ${{ runner.temp }}/contract-phase10-maven", workflow)
         producer_name = ("codex-agent-contract-phase10-maven-original-"
@@ -105,8 +108,15 @@ class ContractPhase10MavenWorkflowTest(unittest.TestCase):
         self.assertIn("phase10OutputArtifactId:\n        value: ${{ jobs.sidecars.outputs.artifact_id }}", workflow)
         self.assertIn("phase10OutputArtifactSha256:\n"
                       "        value: ${{ jobs.sidecars.outputs.artifact_sha256 }}", workflow)
-        preflight, sign = workflow.split("      - name: Authenticate original Contract bytes", 1)
+        preflight, remainder = workflow.split(
+            "      - name: Authenticate original Contract bytes without signing keys", 1)
+        prepare, sign = remainder.split(
+            "      - name: Sign pinned Contract bytes and create external Maven sidecars offline", 1)
         self.assertNotIn("secrets.", preflight)
+        self.assertNotIn("secrets.", prepare)
+        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", prepare)
+        self.assertNotIn("GITHUB_TOKEN:", sign)
+        self.assertNotIn("github.token", sign)
         self.assertIn("SIGNING_IN_MEMORY_KEY: ${{ secrets.SIGNING_IN_MEMORY_KEY }}", sign)
         self.assertIn("CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY:", sign)
         for command in ("./gradlew", "cargo build", "cmake --build", "xcodebuild", "npm run"):
