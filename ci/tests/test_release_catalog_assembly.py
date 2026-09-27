@@ -357,7 +357,9 @@ class ReleaseCatalogAssemblyTest(unittest.TestCase):
             snapshot_regular_tree(self.keys, policy / "keys")
             (policy / "keyring.json").write_bytes(self.keyring.read_bytes())
             trust = transport.ReleaseTrust(policy / "keyring.json", policy / "keys")
-            with patch.object(transport, "download_artifact", return_value=buffer.getvalue()) as download:
+            with patch.object(transport, "download_artifact_to_file",
+                    side_effect=lambda _artifact, _token, destination, **_kwargs:
+                    Path(destination).write_bytes(buffer.getvalue())) as download:
                 catalog = transport._materialize_catalog("promoted-main", {"id": 1}, "fixture", imported,
                     self.repository, None, trust)
             download.assert_called_once()
