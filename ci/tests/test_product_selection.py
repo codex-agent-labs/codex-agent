@@ -1843,6 +1843,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/sdk_campaign_catalog_producer.py",
             "ci/sdk_campaign_catalog_caller.py",
             "ci/sdk_campaign_authority_upload.py",
+            "ci/sdk_campaign_authority_producer.py",
             "ci/sdk_apple_js_campaign_election.py",
             "ci/sdk_campaign_apple_js_semantic_policy.py",
             "ci/sdk_campaign_core_android_election.py",
