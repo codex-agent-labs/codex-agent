@@ -240,6 +240,32 @@ class SdkCampaignCatalogProducerTest(TestCase):
                         "destination": Path("held-custody")}})
             self.assertEqual(59, fresh_lookup.call_count)
             self.assertEqual(1, custody_lookup.call_count)
+        changed_selection = {**selection, "catalog_producer": dict(producer),
+            "custody_producer": dict(custody_producer)}
+        changed_requests = {instance: dict(request) for instance in selected}
+        def mutate_during_fresh(*_args, **_kwargs):
+            changed_selection["catalog_artifact_id"] = 999
+            changed_selection["catalog_workflow_sha"] = "0" * 40
+            changed_selection["catalog_producer"]["tree"] = "0" * 40
+            changed_requests[selected[0]]["expected_build_key"] = "sha256:" + "0" * 64
+            return {"receipt_sha256": _DIGEST, "artifact_id": 1,
+                "artifact_sha256": _DIGEST,
+                "workflow_path": ".github/workflows/product-validation.yml",
+                "job_name": "product-validation / sdk-worker"}
+        with patch.object(catalog, "discover_fresh_sdk_original_pin",
+                side_effect=mutate_during_fresh), \
+             patch.object(catalog, "discover_reused_sdk_original_pins_from_custody",
+                 return_value=found) as custody_lookup:
+            catalog.discover_sdk_campaign_original_pins(fresh, changed_requests,
+                trusted_workflow_sha="a" * 40, token="synthetic-token", environ={},
+                custody_catalogs={"prior-failed-catalog": {"selection": changed_selection,
+                    "destination": Path("held-custody")}})
+        self.assertEqual(201, custody_lookup.call_args.kwargs["custody_selection"]["catalog_artifact_id"])
+        self.assertEqual("b" * 40, custody_lookup.call_args.kwargs["custody_selection"]["catalog_workflow_sha"])
+        self.assertEqual("b" * 40,
+            custody_lookup.call_args.kwargs["custody_selection"]["catalog_producer"]["tree"])
+        self.assertEqual(_DIGEST,
+            custody_lookup.call_args.args[0][selected[0]]["expected_build_key"])
 
     def test_candidate_keeps_state_observation_through_selected_replay(self):
         producer = {"repository": "codex-agent-labs/codex-agent",

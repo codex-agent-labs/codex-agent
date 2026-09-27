@@ -114,13 +114,15 @@ def discover_sdk_campaign_original_pins(fresh, reused, *, trusted_workflow_sha,
     for ref, descriptor in custody_catalogs.items():
         descriptor = require_exact_keys(descriptor, {"selection", "destination"},
             "SDK custody descriptor")
-        selection = require_exact_keys(descriptor["selection"], CUSTODY_SELECTION_KEYS,
-            "SDK custody selection")
+        selection = dict(require_exact_keys(descriptor["selection"], CUSTODY_SELECTION_KEYS,
+            "SDK custody selection"))
         destination = descriptor["destination"]
         if not isinstance(destination, Path):
             raise ValueError("SDK custody destination must be a caller-owned path")
         catalog_producer = validate_producer(selection["catalog_producer"])
         custody_producer = validate_producer(selection["custody_producer"])
+        selection["catalog_producer"] = dict(catalog_producer)
+        selection["custody_producer"] = dict(custody_producer)
         catalog_id = require_integer(selection["catalog_artifact_id"],
             "SDK custody catalog artifact ID", 1)
         custody_id = require_integer(selection["custody_artifact_id"],
@@ -138,6 +140,7 @@ def discover_sdk_campaign_original_pins(fresh, reused, *, trusted_workflow_sha,
         if not isinstance(instance, PhaseInstanceId):
             raise ValueError("Fresh SDK selection has invalid phase identity")
         require_exact_keys(request, _FRESH_SELECTION_KEYS, "Fresh SDK original selection")
+    custody_requests = {}
     for instance, request in reused.items():
         if not isinstance(instance, PhaseInstanceId):
             raise ValueError("Reused SDK selection has invalid phase identity")
@@ -149,6 +152,8 @@ def discover_sdk_campaign_original_pins(fresh, reused, *, trusted_workflow_sha,
                     or request["repository"] != producer["repository"]
                     or request["pull_request"] != producer["pullRequest"]):
                 raise ValueError("SDK custody phase differs from its caller-owned descriptor")
+            custody_requests[instance] = {field: request[field]
+                for field in _CUSTODY_REUSED_SELECTION_KEYS if field != "failed_catalog_producer"}
         else:
             require_exact_keys(request, _REUSED_SELECTION_KEYS |
                 ({"failed_catalog_producer"} if "failed_catalog_producer" in request else set()),
@@ -163,8 +168,8 @@ def discover_sdk_campaign_original_pins(fresh, reused, *, trusted_workflow_sha,
     groups = {}
     custody_groups = {}
     for instance in sorted(reused):
-        request = reused[instance]
-        if "custody_ref" in request:
+        request = custody_requests.get(instance, reused[instance])
+        if instance in custody_requests:
             custody_groups.setdefault(request["custody_ref"], {})[instance] = {
                 field: request[field] for field in worker_fields}
             continue
