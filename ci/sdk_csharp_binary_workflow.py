@@ -25,12 +25,81 @@ from products.sdk_package import _require_capability_output_separate
 from products.signing_isolation import require_no_signing_secret
 from sdk_csharp_binary_phase import execute as execute_binary
 from products.sdk_csharp_binary import verify_csharp_binary_stage
+from products.plan import _contract_projection_from_request_components
+from products.registry import phase_instance_dependencies
+from products.reuse import _plan
+from products.selection import phase_git_inventory
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 
 
 _INSTANCE = PhaseInstanceId("sdk", "csharp", "binary", "desktop")
 _PACKAGE = {"product": "sdk", "component": "csharp", "phase": "package", "target": "desktop"}
 _LIMIT = 16 * 1024 * 1024
+
+
+def lookup_only_plan(plan, discovery, state, *, repository_root, environ,
+                     sdk_validation_tooling=None, sdk_apple_validation_policy=None,
+                     sdk_original_workflow_sha=None, sdk_facade_metadata_admission=None,
+                     sdk_android_metadata_admission=None):
+    """Derive a C# binary key from authenticated originals, without selecting a build."""
+    root = Path(repository_root).resolve(strict=True)
+    released_runtime = {}
+
+    def capture_released_default(selected):
+        if released_runtime:
+            raise ValueError("Lookup-only C# Runtime default was elected twice")
+        handoff = selected["handoff"]
+        for identity, raw in handoff["receiptBytes"].items():
+            if identity.product == "runtime":
+                released_runtime[identity] = validate_phase_receipt(load_canonical_json_bytes(raw))
+
+    verified = product_reuse._verified_product_state(
+        Path(plan), Path(discovery), Path(state), root, environ, sdk_validation_tooling,
+        sdk_runtime_consumer=capture_released_default,
+        sdk_apple_validation_policy=sdk_apple_validation_policy,
+        sdk_original_workflow_sha=sdk_original_workflow_sha,
+        sdk_facade_metadata_admission=sdk_facade_metadata_admission,
+        sdk_android_metadata_admission=sdk_android_metadata_admission)
+    if _INSTANCE in verified.closure:
+        raise ValueError("C# binary is already in the selected product closure")
+    predecessors = phase_instance_dependencies(_INSTANCE)
+    external = verified.rebased_request.get("sdkRuntimeSource") == "released-default"
+    if any(instance not in (released_runtime if external and instance.product == "runtime" else verified.sources)
+           for instance in predecessors):
+        raise ValueError("Lookup-only C# binary lacks an authenticated original predecessor")
+    revision = verified.plan["validationCommit"]
+    versions = product_reuse._versions(root, revision)
+    evidence = verified.rebased_request["contractEvidence"]
+    if evidence is None or evidence["expectedTrustDomain"] != "release":
+        raise ValueError("Lookup-only C# binary requires release-attested Contract evidence")
+    projection = _contract_projection_from_request_components(versions, evidence, ("common",))
+    receipts = []
+    for instance in predecessors:
+        if external and instance.product == "runtime":
+            receipt = released_runtime[instance]
+            if product_reuse._identity(receipt) != instance:
+                raise ValueError("Lookup-only C# Runtime default identity differs from its original")
+            receipts.append(receipt)
+            continue
+        record = verified.prior_by_instance[instance]
+        original = product_reuse.verify_object(verified.sources[instance],
+            build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
+            object_sha256=record["objectSha256"])
+        if product_reuse._identity(original["receipt"]) != instance:
+            raise ValueError("Lookup-only C# predecessor identity differs from its original")
+        receipts.append(original["receipt"])
+    authorities, unavailable = product_reuse._authorities(root, revision, (_INSTANCE,))
+    if authorities is None:
+        raise ValueError(unavailable or "C# binary toolchain authority is unavailable")
+    authority = authorities[0]
+    return _plan(_INSTANCE, {_INSTANCE: {
+        "inventory": phase_git_inventory(root, revision, _INSTANCE),
+        "versions": versions,
+        "toolchain_profile_digest": authority["toolchainProfileDigest"],
+        "flags_digest": authority["flagsDigest"],
+        "output_schema_version": authority["outputSchemaVersion"],
+        "contract_projection": projection,
+    }}, receipts, root, revision)
 
 
 def execute(plan, discovery, state, destination, *, expected_build_key,

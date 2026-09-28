@@ -1037,6 +1037,29 @@ class ProductPlanTest(unittest.TestCase):
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, expected_error):
                 plan(instance, upstream_receipts=malformed, versions=newer)
 
+    def test_csharp_binary_accepts_authenticated_older_default_runtime(self) -> None:
+        instance = PhaseInstanceId("sdk", "csharp", "binary", "desktop")
+        originals = upstreams(instance)
+        aggregate = next(value for value in originals if value["component"] == "runtime-aggregate")
+        aggregate["productVersion"] = "2.3.3"
+        aggregate["inputs"]["versionIdentity"] = "2.3.3"
+        aggregate["buildKey"] = compute_build_key(
+            product=aggregate["product"], component=aggregate["component"],
+            phase=aggregate["phase"], target=aggregate["target"], inputs=aggregate["inputs"])
+        newer = {**VERSIONS, "runtime-release": "2.4.0", "runtime-compatibility": "2.4.0"}
+        baseline = plan(instance, upstream_receipts=originals)
+        retained = plan(instance, upstream_receipts=originals, versions=newer)
+        self.assertEqual(baseline, retained)
+
+        malformed = copy.deepcopy(originals)
+        changed = next(value for value in malformed if value["component"] == "runtime-aggregate")
+        changed["inputs"]["versionIdentity"] = "2.4.0"
+        changed["buildKey"] = compute_build_key(
+            product=changed["product"], component=changed["component"],
+            phase=changed["phase"], target=changed["target"], inputs=changed["inputs"])
+        with self.assertRaisesRegex(ValueError, "Phase receipt version identity does not match its product release"):
+            plan(instance, upstream_receipts=malformed, versions=newer)
+
     def test_unknown_instance_and_unsupported_output_schema_fail_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unknown product phase instance"):
             plan_phase(

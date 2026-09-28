@@ -207,6 +207,8 @@ def _validate_upstream_version(
     compatible_embedded_runtime = (
         consumer.product == "sdk"
         and (
+            (consumer.phase == "binary" and consumer.component == "csharp")
+            or
             consumer.phase == "package" and consumer.component in SDK_COMPATIBILITY_COMPONENTS
             or consumer.phase == "validation" and consumer.component in (*NATIVE_BINDINGS, "javascript")
         )

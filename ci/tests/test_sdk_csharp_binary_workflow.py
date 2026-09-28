@@ -8,8 +8,8 @@ import unittest
 from unittest.mock import patch
 
 from ci import sdk_csharp_binary_workflow as workflow
-from ci.tests.product_chain_support import write_receipt
-from products.inventory import snapshot_regular_tree, write_canonical_json
+from ci.tests.product_chain_support import output, write_receipt
+from products.inventory import canonical_json_bytes, snapshot_regular_tree, write_canonical_json
 from products.receipt import write_output_manifest
 from products.restore import PHASE_PLAN_KEYS
 
@@ -155,6 +155,75 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "selected C# package"):
             self.invoke()
         self.assertEqual(["verified-s858", "verified-s858-exit"], self.calls)
+
+    def test_lookup_only_plan_current_and_released_default_have_same_real_key(self):
+        dependencies = workflow.phase_instance_dependencies(workflow._INSTANCE)
+        receipts = {instance: write_receipt(self.root / f"lookup-{index}.json",
+            product=instance.product, component=instance.component, phase=instance.phase,
+            target=instance.target, version="0.8.0", version_identity="0.8.0",
+            outputs=[output("fixture", "outputs/value", str(index).encode())], upstream=[],
+            context={"producer": self.producer}) for index, instance in enumerate(dependencies)}
+        records = {instance: {"buildKey": "sha256:" + "1" * 64,
+            "receiptSha256": "sha256:" + "2" * 64,
+            "objectSha256": "sha256:" + "3" * 64} for instance in dependencies}
+        projection = {"schemaVersion": 1, "receiptSha256": "sha256:" + "7" * 64,
+            "bundlePath": "outputs/codex-agent-contract-0.8.0.zip",
+            "bundleSha256": "sha256:" + "8" * 64,
+            "manifestSha256": "sha256:" + "9" * 64,
+            "contractVersion": "0.8.0", "contractDigest": "sha256:" + "a" * 64,
+            "componentDigests": [{"component": "common", "sha256": "sha256:" + "b" * 64}]}
+        keys = []
+        for external in (False, True):
+            versions = {name: "0.8.0" for name in
+                ("contract", "runtime-release", "runtime-compatibility", "sdk")}
+            if external:
+                versions["runtime-release"] = "0.8.1"  # SDK still embeds the authenticated 0.8.0 default.
+            sources = {instance: self.root / str(index) for index, instance in enumerate(dependencies)
+                       if not external or instance.product == "contract"}
+            verified = SimpleNamespace(closure=tuple(sources),
+                plan={"validationCommit": "a" * 40},
+                rebased_request={"contractEvidence": {"expectedTrustDomain": "release"},
+                    **({"sdkRuntimeSource": "released-default"} if external else {})},
+                sources=sources, prior_by_instance=records)
+            by_path = {path: receipts[instance] for instance, path in sources.items()}
+
+            def original_state(*_args, **kwargs):
+                self.assertNotEqual(_args[1], _args[2])  # Advanced wave, not discovery-only replay.
+                if external:
+                    kwargs["sdk_runtime_consumer"]({"handoff": {"receiptBytes": {
+                        identity: canonical_json_bytes(receipt) for identity, receipt in receipts.items()
+                        if identity.product == "runtime"}}})
+                return verified
+
+            with (patch.object(workflow.product_reuse, "_verified_product_state", side_effect=original_state),
+              patch.object(workflow.product_reuse, "_versions", return_value=versions),
+              patch.object(workflow, "_contract_projection_from_request_components", return_value="signed-common"),
+              patch("products.plan._contract_projection_value", return_value=projection),
+              patch("products.reuse.verified_phase_toolchain_digest", side_effect=lambda _r, _v, _i, value: value),
+              patch("products.reuse.verified_phase_flags_digest", side_effect=lambda _r, _v, _i, value: value),
+              patch.object(workflow.product_reuse, "verify_object",
+                           side_effect=lambda path, **_kwargs: {"receipt": by_path[path]}),
+              patch.object(workflow.product_reuse, "_authorities", return_value=([{
+                  "toolchainProfileDigest": "sha256:" + "4" * 64,
+                  "flagsDigest": "sha256:" + "5" * 64,
+                  "outputSchemaVersion": 1}], None)),
+              patch.object(workflow, "phase_git_inventory", return_value=[{
+                  "relativePath": "tracked/input", "bytes": 1, "sha256": "sha256:" + "6" * 64}])):
+                result = workflow.lookup_only_plan(self.plan, self.discovery, self.state,
+                    repository_root=self.root, environ={})
+            keys.append(result["buildKey"])
+        self.assertEqual(keys[0], keys[1])
+        self.assertTrue(keys[0].startswith("sha256:"))
+
+    def test_lookup_only_plan_refuses_missing_original(self):
+        verified = SimpleNamespace(closure=(), sources={}, prior_by_instance={},
+            rebased_request={"sdkRuntimeSource": "released-default"})
+        with (patch.object(workflow.product_reuse, "_verified_product_state", return_value=verified),
+              patch.object(workflow, "_plan") as planner):
+            with self.assertRaisesRegex(ValueError, "authenticated original predecessor"):
+                workflow.lookup_only_plan(self.plan, self.discovery, self.state,
+                    repository_root=self.root, environ={})
+        planner.assert_not_called()
 
 
 if __name__ == "__main__":
