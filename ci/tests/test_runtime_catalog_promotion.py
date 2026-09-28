@@ -140,6 +140,8 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
         return json.dumps(value).encode()
 
     def invoke(self, **changes):
+        capture_mutation = changes.pop("_capture_mutation", None)
+        capture_sha_override = changes.pop("_capture_sha", None)
         arguments = dict(trusted_source_sha=self.source_pin, trusted_workflow_sha=self.workflow_pin,
             trusted_promotion_workflow_sha=self.promotion_pin, final_commit=self.final,
             expected_validation_tree=self.tree, expected_build_key=self.receipt["buildKey"],
@@ -153,7 +155,19 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
             event_payload=self.event, environment=self.environment, token="synthetic-token")
         arguments.update(changes)
         with patch("reuse.api_request", side_effect=self.api):
-            return caller.promote_runtime_aggregate_catalog(self.trusted, self.candidate, self.destination, **arguments)
+            captured = Path(tempfile.mkdtemp(prefix="capture-", dir=self.work)) / "capture"
+            capture_args = {**arguments, "environment": {
+                key: value for key, value in self.environment.values.items() if key != SECRET
+            }}
+            result = caller.capture_promotable_runtime_aggregate_catalog(
+                self.trusted, self.candidate, captured, **capture_args)
+            if capture_mutation is not None:
+                capture_mutation(captured)
+            sign_args = {key: value for key, value in arguments.items() if key != "token"}
+            return caller.sign_promoted_runtime_aggregate_catalog(
+                self.trusted, self.candidate, captured, self.destination,
+                expected_capture_inventory_sha256=(capture_sha_override or result["captureInventorySha256"]),
+                **sign_args)
 
     def test_equal_tree_retained_upload_full_signature_object_catalog_and_original_history(self):
         self.assertNotEqual(self.final, self.tested)
@@ -187,7 +201,7 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
             self.environment.values[field] = value
             try:
                 with self.subTest(field=field), patch("reuse.api_request", side_effect=AssertionError("HTTP before preflight")), self.assertRaises(ValueError):
-                    caller.promote_runtime_aggregate_catalog(self.trusted, self.candidate, self.destination,
+                    caller.capture_promotable_runtime_aggregate_catalog(self.trusted, self.candidate, self.work / "capture",
                         trusted_source_sha=self.source_pin, trusted_workflow_sha=self.workflow_pin,
                         trusted_promotion_workflow_sha=self.promotion_pin, final_commit=self.final,
                         expected_validation_tree=self.tree, expected_build_key=self.receipt["buildKey"],
@@ -198,7 +212,7 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
                         expected_carrier_inventory_sha256=self.carrier_digest,
                         expected_attestation_sha256=self.attestation_digest,
                         expected_signature_sha256=self.signature_digest,
-                        event_payload=self.event, environment=self.environment, token="synthetic-token")
+                        event_payload=self.event, environment={key: value for key, value in self.environment.values.items() if key != SECRET}, token="synthetic-token")
             finally:
                 self.environment.values[field] = previous
         tracked = self.candidate / "gradle/release/versions/contract.txt"
@@ -296,6 +310,21 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
         self.assertFalse(self.destination.exists())
         self.assertEqual(self.original_inventory, regular_file_inventory(self.carrier, allow_empty=True))
 
+    def test_signer_rejects_token_wrong_capture_pin_and_capture_mutation_before_secret(self):
+        for change in (
+                {"_capture_sha": "sha256:" + "f" * 64},
+                {"_capture_mutation": lambda root: (root / "original-evidence/upload.zip").write_bytes(b"tampered")},
+        ):
+            with self.subTest(change=next(iter(change))), self.assertRaises(ValueError):
+                self.invoke(**change)
+            self.assertEqual(0, self.environment.secret_reads)
+            self.assertFalse(self.destination.exists())
+        self.environment.values["GITHUB_TOKEN"] = "must-not-reach-signer"
+        with self.assertRaisesRegex(ValueError, "observation token"):
+            self.invoke()
+        self.assertEqual(0, self.environment.secret_reads)
+        self.assertFalse(self.destination.exists())
+
     def test_late_candidate_mutation_cannot_publish_even_after_real_catalog_verification(self):
         original_stage = caller.transport.stage_promoted_aggregate_catalog
         tracked = self.candidate / "gradle/release/versions/contract.txt"
@@ -325,7 +354,7 @@ class RuntimeCatalogPromotionCliTest(unittest.TestCase):
         self.work = Path(temporary.name).resolve()
         self.event = self.work / "event.json"
         self.event.write_text('{ "after": "synthetic", "deleted": false }\n')
-        self.arguments = ["--repository-root", str(self.work / "trusted"),
+        self.arguments = ["capture", "--repository-root", str(self.work / "trusted"),
             "--candidate-root", str(self.work / "candidate"), "--destination", str(self.work / "output"),
             "--trusted-source-sha", "a" * 40, "--trusted-workflow-sha", "b" * 40,
             "--trusted-promotion-workflow-sha", "c" * 40, "--final-commit", "d" * 40,
@@ -341,10 +370,10 @@ class RuntimeCatalogPromotionCliTest(unittest.TestCase):
             "--expected-signature-sha256", "sha256:" + "7" * 64]
 
     def test_dispatch_preserves_explicit_pins_event_and_environment_only_credentials(self):
-        environment = {"GITHUB_EVENT_PATH": str(self.event), "GITHUB_TOKEN": "synthetic-token",
-                       SECRET: "synthetic-secret-not-read-by-cli"}
+        environment = {"GITHUB_EVENT_PATH": str(self.event), "GITHUB_TOKEN": "synthetic-token"}
         with patch.dict(os.environ, environment, clear=True), \
-                patch.object(caller, "promote_runtime_aggregate_catalog") as gate:
+                patch.object(caller, "capture_promotable_runtime_aggregate_catalog",
+                             return_value={"captureInventorySha256": "sha256:" + "8" * 64}) as gate:
             caller.main(self.arguments)
             gate.assert_called_once_with(self.work / "trusted", self.work / "candidate", self.work / "output",
                 trusted_source_sha="a" * 40, trusted_workflow_sha="b" * 40,
@@ -364,9 +393,58 @@ class RuntimeCatalogPromotionCliTest(unittest.TestCase):
             self.assertIs(gate.call_args.kwargs["environment"], os.environ)
             self.assertNotIn("private_key", gate.call_args.kwargs)
 
+    def test_sign_dispatch_requires_separate_capture_pin_and_no_cli_key(self):
+        arguments = ["sign", *self.arguments[1:], "--capture-root", str(self.work / "capture"),
+                     "--expected-capture-inventory-sha256", "sha256:" + "8" * 64]
+        with patch.dict(os.environ, {"GITHUB_EVENT_PATH": str(self.event), SECRET: "fixture"}, clear=True), \
+                patch.object(caller, "sign_promoted_runtime_aggregate_catalog") as gate:
+            caller.main(arguments)
+            self.assertEqual(self.work / "capture", gate.call_args.args[2])
+            self.assertEqual("sha256:" + "8" * 64,
+                             gate.call_args.kwargs["expected_capture_inventory_sha256"])
+            self.assertNotIn("token", gate.call_args.kwargs)
+            self.assertIs(gate.call_args.kwargs["environment"], os.environ)
+        with patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit):
+            caller.main([*arguments, "--private-key", "forbidden"])
+
+    def test_signer_rejects_all_observation_token_names_even_when_empty(self):
+        options = {self.arguments[index][2:].replace("-", "_"): self.arguments[index + 1]
+                   for index in range(1, len(self.arguments), 2)}
+        for name in ("repository_root", "candidate_root", "destination"):
+            options.pop(name)
+        options.update(expected_capture_inventory_sha256="sha256:" + "8" * 64,
+                       event_payload={}, environment={})
+        cases = [(name, "observation token") for name in caller._OBSERVATION_TOKENS]
+        cases.extend((name, "other signing secrets") for name in caller._CAPTURE_SECRETS)
+        for name, message in cases:
+            for scope in ("supplied", "live"):
+                with self.subTest(name=name, scope=scope), patch.dict(
+                        os.environ, ({name: ""} if scope == "live" else {}), clear=True):
+                    options["environment"] = {name: ""} if scope == "supplied" else {}
+                    with self.assertRaisesRegex(ValueError, message):
+                        caller.sign_promoted_runtime_aggregate_catalog(
+                            self.work / "trusted", self.work / "candidate",
+                            self.work / "capture", self.work / "signed", **options)
+
+    def test_capture_rejects_all_signing_secret_names_even_when_empty(self):
+        options = {self.arguments[index][2:].replace("-", "_"): self.arguments[index + 1]
+                   for index in range(1, len(self.arguments), 2)}
+        for name in ("repository_root", "candidate_root", "destination"):
+            options.pop(name)
+        options.update(event_payload={}, environment={}, token="observation-only")
+        for name in (*caller._CAPTURE_SECRETS, SECRET):
+            for scope in ("supplied", "live"):
+                with self.subTest(name=name, scope=scope), patch.dict(
+                        os.environ, ({name: ""} if scope == "live" else {}), clear=True):
+                    options["environment"] = {name: ""} if scope == "supplied" else {}
+                    with self.assertRaisesRegex(ValueError, "signing"):
+                        caller.capture_promotable_runtime_aggregate_catalog(
+                            self.work / "trusted", self.work / "candidate",
+                            self.work / "capture", **options)
+
     def test_every_authority_argument_is_required_and_cli_credentials_are_rejected(self):
-        with patch.object(caller, "promote_runtime_aggregate_catalog") as gate, patch("sys.stderr", new_callable=io.StringIO):
-            for offset in range(0, len(self.arguments), 2):
+        with patch.object(caller, "capture_promotable_runtime_aggregate_catalog") as gate, patch("sys.stderr", new_callable=io.StringIO):
+            for offset in range(1, len(self.arguments), 2):
                 with self.subTest(flag=self.arguments[offset]), self.assertRaises(SystemExit) as error:
                     caller.main(self.arguments[:offset] + self.arguments[offset + 2:])
                 self.assertEqual(2, error.exception.code)
@@ -379,7 +457,7 @@ class RuntimeCatalogPromotionCliTest(unittest.TestCase):
     def test_missing_duplicate_malformed_and_symbolic_event_never_dispatch(self):
         symbolic = self.work / "symbolic.json"
         symbolic.symlink_to(self.event)
-        with patch.object(caller, "promote_runtime_aggregate_catalog") as gate, patch("sys.stderr", new_callable=io.StringIO):
+        with patch.object(caller, "capture_promotable_runtime_aggregate_catalog") as gate, patch("sys.stderr", new_callable=io.StringIO):
             for environment in ({}, {"GITHUB_EVENT_PATH": str(symbolic)},
                                 {"GITHUB_EVENT_PATH": str(self.work / "absent.json")}):
                 with self.subTest(environment=environment), patch.dict(os.environ, environment, clear=True), self.assertRaises(SystemExit) as error:
@@ -401,7 +479,8 @@ class RuntimeCatalogPromotionCliTest(unittest.TestCase):
                 result = subprocess.run([sys.executable, *invocation, "--help"], cwd=repository,
                     env=environment, capture_output=True, text=True, check=False)
                 self.assertEqual(0, result.returncode, result.stderr)
-                self.assertIn("--trusted-promotion-workflow-sha", result.stdout)
+                self.assertIn("capture", result.stdout)
+                self.assertIn("sign", result.stdout)
                 self.assertNotIn("--private-key", result.stdout)
 
 
