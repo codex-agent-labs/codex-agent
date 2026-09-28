@@ -330,6 +330,7 @@ class ProductSelectionTest(unittest.TestCase):
                 (".github/workflows/sdk-promoted-catalog.yml", set()),
                 ("ci/products/sdk_catalog_promotion.py", set()),
                 ("ci/sdk_catalog_promotion_caller.py", set()),
+                ("ci/sdk_phase11_maven.py", set()),
                 (".github/workflows/runtime-phase10-maven.yml", runtime_metadata),
                 (".github/workflows/runtime-phase10-output-record.yml", runtime_metadata),
                 ("ci/runtime_phase10_sidecar_upload.py", runtime_metadata),

@@ -287,6 +287,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_phase10_maven_caller.py",
     "ci/sdk_phase10_release_index_admission.py",
     "ci/sdk_phase11_bytes.py",
+    "ci/sdk_phase11_maven.py",
     "ci/sdk_phase11_objects.py",
     "ci/sdk_campaign_authority_upload.py",
     "ci/sdk_campaign_authority_producer.py",
@@ -644,8 +645,9 @@ def _native_metadata_owners(path: str) -> set[PhaseInstanceId]:
 def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path == "ci/products/gradle_bootstrap.py":
         return set(ALL_INSTANCES)
-    if path in {"ci/products/sdk_catalog_promotion.py", "ci/sdk_catalog_promotion_caller.py"}:
-        return set()  # Promoted index/transport is an external release envelope.
+    if path in {"ci/products/sdk_catalog_promotion.py", "ci/sdk_catalog_promotion_caller.py",
+                "ci/sdk_phase11_maven.py"}:
+        return set()  # Phase-11 release envelopes never define product phase bytes.
     if path in {
         "ci/contract_catalog_caller.py", "ci/contract_catalog_promotion.py",
         "ci/contract_equal_tree_original.py", "ci/contract_phase10_maven_caller.py",
