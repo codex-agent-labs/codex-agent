@@ -137,6 +137,7 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
         consumed = set(re.findall(r"needs\.contract-validation\.outputs\.([a-z0-9_]+)", self.parent))
         self.assertTrue(consumed <= declared, consumed - declared)
         self.assertIn("needs: [plan]", workflow_job(self.parent, "contract-validation"))
+        self.assertIn("always() && !cancelled() && needs.plan.result == 'success'", workflow_job(self.parent, "contract-validation"))
         for name, predecessors in (
             ("tooling-attestation", "needs: [contract-binary]"),
             ("product-tooling", "needs: [tooling-attestation]"),
