@@ -8,9 +8,11 @@ import unittest
 from unittest.mock import patch
 
 from ci import sdk_android_original_upload_locator as locator
+from ci import sdk_facade_capture as facade
 from ci.tests import test_sdk_facade_capture as facade_fixture
 from ci.tests import test_runtime_aggregate_upload as transport_fixture
-from products.inventory import canonical_json_bytes, sha256_bytes
+from products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
+    regular_file_inventory, sha256_bytes, write_canonical_json)
 
 
 class AndroidOriginalUploadLocatorTest(unittest.TestCase):
@@ -103,6 +105,41 @@ class AndroidOriginalUploadLocatorTest(unittest.TestCase):
             self.call(listed=[self.artifact, deepcopy(self.artifact)])
         with self.assertRaisesRegex(ValueError, "detail"):
             self.call(detail={**self.artifact, "digest": "sha256:" + "0" * 64})
+
+    def test_retained_locator_requires_selected_receipt_and_intact_carrier(self):
+        with patch.object(facade.products, "_validate_plan", return_value=self.plan), patch(
+                "reuse.api_request", side_effect=self.api):
+            getattr(facade, f"capture_sdk_android_{self.phase}_upload")(
+                self.plan_path, self.output, **{self.phase + "_receipt_path": self.receipt_path},
+                artifact_id=701, artifact_sha256=self.artifact["digest"],
+                trusted_workflow_sha=self.pin, repository_root=self.root,
+                environ={}, token="synthetic-token")
+        selected = sha256_bytes(self.receipt_bytes)
+        authenticated = regular_file_inventory(self.output, allow_empty=True)
+        self.assertEqual({"artifact_id": 701, "artifact_sha256": self.artifact["digest"]},
+            locator.locate_retained_sdk_android_upload(
+                self.output, self.receipt_path, expected_receipt_sha256=selected,
+                authenticated_capture_inventory=authenticated, environ={}))
+        with self.assertRaisesRegex(ValueError, "independent caller selection"):
+            locator.locate_retained_sdk_android_upload(
+                self.output, self.receipt_path,
+                expected_receipt_sha256="sha256:" + "0" * 64,
+                authenticated_capture_inventory=authenticated, environ={})
+        transport_path = self.output / "capture-transport.json"
+        transport = transport_path.read_bytes()
+        changed = load_canonical_json_bytes(transport)
+        changed["artifact"]["id"] = 702
+        write_canonical_json(transport_path, changed)
+        with self.assertRaisesRegex(ValueError, "authenticated caller inventory"):
+            locator.locate_retained_sdk_android_upload(
+                self.output, self.receipt_path, expected_receipt_sha256=selected,
+                authenticated_capture_inventory=authenticated, environ={})
+        transport_path.write_bytes(transport)
+        (self.output / "original/inputs/original.bin").write_bytes(b"changed")
+        with self.assertRaises(ValueError):
+            locator.locate_retained_sdk_android_upload(
+                self.output, self.receipt_path, expected_receipt_sha256=selected,
+                authenticated_capture_inventory=authenticated, environ={})
 
 
 class AndroidMetadataOriginalUploadLocatorTest(AndroidOriginalUploadLocatorTest):

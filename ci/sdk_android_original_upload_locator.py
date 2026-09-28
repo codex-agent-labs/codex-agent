@@ -15,10 +15,11 @@ if __package__:
 
 import product_reuse as products
 from products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
-    read_regular_file_bytes, require_integer, require_sha256, sha256_bytes)
+    read_regular_file_bytes, regular_file_inventory, require_integer, require_sha256,
+    sha256_bytes)
 from products.receipt import validate_phase_receipt, validate_producer
 from products.signing_isolation import require_no_signing_secret
-from sdk_facade_capture import _capture_route
+from sdk_facade_capture import _capture_route, verify_retained_sdk_phase_upload
 
 
 _LIMIT = 16 * 1024 * 1024
@@ -45,6 +46,42 @@ def locate_sdk_android_metadata_upload(plan_path, metadata_receipt_path, *,
         expected_receipt_sha256=expected_receipt_sha256,
         trusted_workflow_sha=trusted_workflow_sha, repository_root=repository_root,
         environ=environ, token=token)
+
+
+def locate_retained_sdk_android_upload(capture_path, receipt_path, *,
+        expected_receipt_sha256, authenticated_capture_inventory, environ=None):
+    """Extract coordinates only from a caller-authenticated exact carrier."""
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    if environment is not os.environ:
+        require_no_signing_secret(os.environ)
+    require_sha256(expected_receipt_sha256, "Caller-selected Android receipt")
+    capture, receipt_path = Path(capture_path).absolute(), Path(receipt_path).absolute()
+    before = regular_file_inventory(capture, allow_empty=True)
+    if before != authenticated_capture_inventory:
+        raise ValueError("Retained Android capture differs from authenticated caller inventory")
+    receipt_bytes = read_regular_file_bytes(
+        receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True)
+    if sha256_bytes(receipt_bytes) != expected_receipt_sha256:
+        raise ValueError("Retained Android receipt differs from independent caller selection")
+    receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+    if tuple(receipt[name] for name in ("product", "component", "phase", "target")) not in {
+            ("sdk", "sdk-android", phase, "android") for phase in ("validation", "metadata")}:
+        raise ValueError("Retained Android locator requires a validation or metadata receipt")
+    verify_retained_sdk_phase_upload(capture, receipt_bytes)
+    transport = load_canonical_json_bytes(read_regular_file_bytes(
+        capture / "capture-transport.json", max_bytes=_LIMIT, reject_symlink_parents=True))
+    artifact = transport["artifact"]
+    result = {
+        "artifact_id": require_integer(artifact.get("id"), "Retained Android upload ID", 1),
+        "artifact_sha256": require_sha256(artifact.get("digest"), "Retained Android upload digest"),
+    }
+    if (regular_file_inventory(capture, allow_empty=True) != before
+            or read_regular_file_bytes(receipt_path, max_bytes=_LIMIT,
+                                       reject_symlink_parents=True) != receipt_bytes):
+        raise ValueError("Retained Android upload or selected receipt changed during lookup")
+    require_no_signing_secret(environment)
+    return result
 
 
 def _locate_sdk_android_upload(plan_path, receipt_path, *, phase,
