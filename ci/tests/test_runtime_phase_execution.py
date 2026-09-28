@@ -1,6 +1,7 @@
 """Exercise the fixed Runtime worker boundary with synthetic process bytes."""
 
 from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import shutil
@@ -464,6 +465,26 @@ class ProductWorkerCheckoutTest(unittest.TestCase):
             self.assertEqual("macos-arm64", prepare.call_args.args[2])
             self.assertEqual({}, adapter._provision_runtime_native_toolchain(
                 root, "a" * 40, "macos-arm64", root / "offline-worker", {}))
+
+    def test_node_binary_fetch_uses_only_integrity_locked_registry_entries(self):
+        for component, lock in (("node-js", "package-lock.json"),
+                                ("node-wasm", "wasm/package-lock.json")):
+            with self.subTest(component=component):
+                environment = {"CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH": "true", "npm_config_offline": "true"}
+                instance = adapter.PhaseInstanceId("runtime", component, "binary", component)
+                adapter._allow_locked_runtime_node_fetch(instance, environment)
+                self.assertEqual("false", environment["npm_config_offline"])
+                self.assertEqual("https://registry.npmjs.org/", environment["npm_config_registry"])
+                package_lock = Path(__file__).resolve().parents[2] / "runtime/gradle/kotlin-js-store" / lock
+                packages = json.loads(package_lock.read_text(encoding="utf-8"))["packages"]
+                for package in packages.values():
+                    if package.get("resolved", "").startswith("https://registry.npmjs.org/"):
+                        self.assertTrue(package.get("integrity", "").startswith("sha512-"))
+                package_environment = {"CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH": "true",
+                                       "npm_config_offline": "true"}
+                adapter._allow_locked_runtime_node_fetch(
+                    adapter.PhaseInstanceId("runtime", component, "package", component), package_environment)
+                self.assertEqual("true", package_environment["npm_config_offline"])
 
     def test_shared_guard_rejects_untracked_sdk_sources_without_rejecting_user_notes(self):
         with tempfile.TemporaryDirectory(prefix="product-checkout-fixture-") as temporary:

@@ -12,8 +12,10 @@ import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
+import kotlinx.cinterop.set
 import kotlinx.cinterop.value
 
 class CodexAgentCAbiTest {

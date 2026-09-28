@@ -4140,6 +4140,13 @@ def _provision_runtime_native_toolchain(root, revision, component, destination, 
     return {"codexAgent.kotlinPluginJar": paths["plugin"], "codexAgent.nativeArchive": paths["archive"]}
 
 
+def _allow_locked_runtime_node_fetch(instance, environment):
+    if (instance.component in {"node-js", "node-wasm"} and instance.phase == "binary" and
+            environment.get("CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH") == "true"):
+        environment["npm_config_offline"] = "false"
+        environment["npm_config_registry"] = "https://registry.npmjs.org/"
+
+
 def _runtime_worker_environment(root, producer, destination, environ):
     from products.gradle_bootstrap import require_preprovisioned_gradle
     environment = dict(environ)
@@ -4264,6 +4271,7 @@ def execute_runtime_phase(
     if not needs_archive and app_server_archive is not None:
         raise ValueError("App-server archive is only valid for native binary production")
     environment, wrapper = _runtime_worker_environment(root, state.producer, destination, environment)
+    _allow_locked_runtime_node_fetch(instance, environment)
     stage = root / f"codex-agent-runtime-desktop/build/product-stage/runtime/{instance.component}/{instance.phase}"
     if instance.phase == "validation" and instance.component not in NATIVE_TARGETS:
         stage /= instance.target

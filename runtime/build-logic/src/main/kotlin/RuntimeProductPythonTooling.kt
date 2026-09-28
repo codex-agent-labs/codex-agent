@@ -99,7 +99,7 @@ private fun runRuntimeProductPython(
         Files.write(root.resolve("ci/__init__.py").toPath(), byteArrayOf(), StandardOpenOption.CREATE_NEW)
         val captured = runtimePythonInventory(root)
         val processLog = Files.createTempFile("codex-agent-runtime-product-python-", ".log").also { log = it }
-        val bootstrap = "import runpy,sys; sys.path.insert(0,sys.argv.pop(1));\n$entry"
+        val bootstrap = "import runpy,sys; sys.stdout.reconfigure(newline='\\n'); sys.path.insert(0,sys.argv.pop(1));\n$entry"
         val command = listOf("python3", "-I", "-S", "-B", "-c", bootstrap, root.absolutePath) + arguments
         val process = ProcessBuilder(command)
             .directory(root)

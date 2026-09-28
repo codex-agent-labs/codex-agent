@@ -11,7 +11,9 @@ import kotlin.test.assertTrue
 class RuntimeProductPythonToolingTest {
     @Test
     fun `existing packaged modules retain their entrypoints and strict allowlist`() {
-        assertTrue("targets" in runRuntimeProductPythonModule("c_abi", listOf("describe")))
+        val catalog = runRuntimeProductPythonModule("c_abi", listOf("describe"))
+        assertTrue("targets" in catalog)
+        assertTrue(catalog.endsWith("\n") && '\r' !in catalog)
         assertTrue("inspect-manifest" in runRuntimeProductPythonModule("runtime_evidence", listOf("--help")))
         assertFailsWith<IllegalStateException> { runRuntimeProductPythonModule("contract", emptyList()) }
     }
