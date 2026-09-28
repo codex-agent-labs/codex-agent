@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
 import stat
 import tempfile
@@ -107,6 +108,20 @@ class ProductRestoreTest(unittest.TestCase):
 
     def store(self) -> dict[str, object]:
         return store_local_object(self.stage, self.receipt_path, self.cache)
+
+    def test_object_zip_fsync_uses_writable_descriptor(self) -> None:
+        output = self.root / "object.zip"
+        original_open = os.open
+        modes = []
+
+        def record_open(path, flags, *args, **kwargs):
+            if Path(path) == output:
+                modes.append(flags)
+            return original_open(path, flags, *args, **kwargs)
+
+        with mock.patch.object(product_restore.os, "open", side_effect=record_open):
+            product_restore._write_object(self.stage, self.receipt_bytes, output)
+        self.assertEqual([os.O_WRONLY | getattr(os, "O_BINARY", 0)], modes)
 
     def test_oversized_stage_manifest_is_rejected_before_cache_store(self) -> None:
         manifest = self.stage / "output-manifest.json"

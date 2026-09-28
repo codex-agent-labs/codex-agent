@@ -820,7 +820,7 @@ def _write_object(stage: Path, receipt_bytes: bytes, output: Path) -> None:
             relative = name[len(STAGE_PREFIX):]
             with (stage / relative).open("rb") as source, archive.open(info, "w") as target:
                 shutil.copyfileobj(source, target, length=1024 * 1024)
-    descriptor = os.open(output, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    descriptor = os.open(output, os.O_WRONLY | getattr(os, "O_BINARY", 0))
     try:
         os.fsync(descriptor)
     finally:
