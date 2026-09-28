@@ -449,7 +449,7 @@ def sign_promoted_runtime_aggregate_catalog(repository_root, candidate_root, cap
                 or sha256_bytes(canonical_json_bytes(original_files)) != expected_capture
                 or _checkout(trusted, trusted_source_sha)[1] != source_tree
                 or _checkout(candidate, final_commit)[1] != final_tree):
-            raise ValueError("Runtime original capture changed before signed catalog publication")
+            raise ValueError("Runtime original capture changed before publication")
         _require_capability_output_separate(destination, [trusted, candidate, capture_root])
         publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=ready_files)
     return index
