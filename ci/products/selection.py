@@ -589,7 +589,7 @@ def _runtime_build_logic_selection(path: str) -> set[PhaseInstanceId] | None:
         return _runtime(RUNTIME_COMPONENTS)
     if name == "RuntimeEvidenceExecutionCapture.kt":
         return _runtime(("jvm", "node-js", "node-wasm"), "validation",
-                        validation_targets=NATIVE_TARGETS) | _runtime(NATIVE_TARGETS, "validation")
+                        validation_targets=(*NATIVE_TARGETS, "node-js-binding")) | _runtime(NATIVE_TARGETS, "validation")
     if name in _RUNTIME_BUILD_LOGIC_JVM:
         return _runtime(("jvm",), "validation")
     if name in _RUNTIME_BUILD_LOGIC_NODE:
