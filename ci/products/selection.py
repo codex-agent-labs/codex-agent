@@ -355,6 +355,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/impact.py",
     "ci/lane_selection.py",
     "ci/run-lane.sh",
+    "ci/select_caller_java.sh",
     "ci/runner_identity.py",
     "ci/legacy_lanes.py",
     "ci/product_legacy.py",

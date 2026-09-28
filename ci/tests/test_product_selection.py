@@ -301,6 +301,14 @@ class ProductSelectionTest(unittest.TestCase):
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((), phase_inventory_paths([path], instance))
 
+    def test_caller_java_selection_replans_without_changing_product_bytes(self):
+        path = "ci/select_caller_java.sh"
+        result = classify_paths([path])
+        self.assertEqual(set(PHASE_INSTANCE_IDS), identities(result))
+        self.assertEqual((), result.unknown_paths)
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((), phase_inventory_paths([path], instance))
+
     def test_metadata_admission_and_carrier_are_control_only(self):
         core = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
         android = PhaseInstanceId("sdk", "sdk-android", "metadata", "android")
