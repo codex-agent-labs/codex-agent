@@ -129,6 +129,20 @@ class SdkIosBinaryPackageWorkerTest(unittest.TestCase):
                 self.execute(**{name: value})
         self.assertEqual([], self.process_calls)
 
+    def test_tampered_imported_binary_or_contract_rejects_before_gradle(self):
+        for original in (self.binary, self.contract):
+            artifact = original["stage"] / "outputs/artifact.bin"
+            before = artifact.read_bytes()
+            try:
+                artifact.write_bytes(before + b"tampered")
+                with self.subTest(component=original["receipt"]["component"]), \
+                        self.assertRaisesRegex(ValueError, "Declared file inventory does not match"):
+                    self.execute()
+                self.assertEqual([], self.process_calls)
+                self.assertFalse(self.destination.exists())
+            finally:
+                artifact.write_bytes(before)
+
     def test_every_binary_gradle_owned_root_must_be_fresh_and_is_preserved(self):
         sdk_build = self.root / "codex-agent-sdk/build"
         ios_build = self.root / "codex-agent-runtime-ios/build"

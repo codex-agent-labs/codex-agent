@@ -4,6 +4,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from unittest import mock
 
 from ci.products.inventory import sha256_file
@@ -11,6 +12,46 @@ from ci.products.toolchain_capture_bootstrap import prepare
 
 
 class CaptureBootstrapTest(unittest.TestCase):
+    def test_windows_capture_uses_pinned_zip_and_dependency_only_launcher(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            plugin = root / "plugin.jar"
+            plugin.write_bytes(b"pinned Kotlin plugin")
+            archive = root / "native.zip"
+            prefix = "kotlin-native-prebuilt-windows-x86_64-2.3.10"
+            with zipfile.ZipFile(archive, "w") as target:
+                for relative, data in (
+                    ("bin/konanc.bat", b"@echo off\r\n"),
+                    ("konan/compiler.fingerprint", b"1234567890abcdef"),
+                    ("konan/konan.properties", b"dependenciesUrl=https://download.jetbrains.com/kotlin/native\n"),
+                    ("konan/lib/kotlin-native-compiler-embeddable.jar", b"compiler"),
+                ):
+                    target.writestr(f"{prefix}/{relative}", data)
+            plugin_name = "kotlin-gradle-plugin-2.3.10-gradle813.jar"
+            archive_name = "kotlin-native-prebuilt-2.3.10-windows-x86_64.zip"
+            metadata = (
+                "<verification-metadata><components><component>"
+                f'<artifact name="{plugin_name}"><sha256 value="{sha256_file(plugin)[7:]}"/></artifact>'
+                f'<artifact name="{archive_name}"><sha256 value="{sha256_file(archive)[7:]}"/></artifact>'
+                "</component></components></verification-metadata>"
+            ).encode()
+            authorities = {
+                "gradle/libs.versions.toml": b'[versions]\nkotlin = "2.3.10"\n',
+                "runtime/gradle/verification-metadata.xml": metadata,
+            }
+            with mock.patch.dict(os.environ, {"RUNNER_OS": "Windows", "RUNNER_ARCH": "X64"}), \
+                    mock.patch("ci.products.toolchain_capture_bootstrap.git_regular_blob_bytes",
+                               side_effect=lambda _, __, path: authorities[path]), \
+                    mock.patch("ci.products.toolchain_capture_bootstrap.subprocess.run") as run:
+                paths = prepare(root, "a" * 40, "windows-x64", root / "out", root / "konan",
+                                plugin_source=plugin, archive_source=archive)
+            self.assertEqual(archive_name, Path(paths["archive"]).name)
+            self.assertEqual("mingw_x64", paths["konanTarget"])
+            self.assertEqual((str(Path(paths["compiler"]) / "bin/konanc.bat"),
+                              "-target", "mingw_x64", "-Xcheck-dependencies"),
+                             run.call_args.args[0])
+            self.assertTrue(run.call_args.kwargs["check"])
+
     def test_pinned_inputs_precede_dependency_only_compiler_check(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
