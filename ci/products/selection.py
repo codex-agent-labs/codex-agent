@@ -235,6 +235,7 @@ _IOS_BINARY_BUILD_LOGIC = frozenset({
 _CONTROL_ONLY_FILES = frozenset({
     "ci/contract_catalog_caller.py",
     "ci/contract_catalog_promotion.py",
+    "ci/contract_candidate_admission.py",
     "ci/contract_equal_tree_original.py",
     "ci/contract_phase10_maven_caller.py",
     "ci/contract_phase10_output_record.py",
@@ -274,6 +275,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_android_core14_fresh_inputs.py",
     "ci/sdk_android_original_control.py",
     "ci/sdk_android_original_upload_locator.py",
+    "ci/sdk_android_validation_handoff.py",
     "ci/sdk_android_package_policy.py",
     "ci/sdk_android_validation_policy.py",
     "ci/sdk_apple_original_package_selection.py",
