@@ -16,6 +16,7 @@ from ci.products.restore import finalize_phase_object
 from ci.products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from ci.sdk_phase10_maven_caller import (
     prepare_sdk_phase10_maven_handoff, sign_sdk_phase10_maven_handoff,
+    verify_sdk_phase10_maven_handoff,
 )
 from ci.tests.test_products import phase_receipt, producer
 
@@ -190,6 +191,19 @@ class SdkPhase10MavenCallerTest(unittest.TestCase):
                 signing_home=self.signing_home, signing_fingerprint="A" * 40,
                 passphrase="passphrase")
 
+    def _verify(self, digest):
+        def fake_verify(stage, receipt, sidecars, public, key_sha):
+            return {"component": Path(stage).parent.name,
+                    "sidecarFiles": regular_file_inventory(sidecars)}
+        with patch("ci.sdk_phase10_maven_caller.verify_release_product_index",
+                   return_value=(self.signed_index, self.index.read_bytes())), \
+             patch("ci.sdk_phase10_maven_caller.verify_sdk_phase10_maven",
+                   side_effect=fake_verify):
+            return verify_sdk_phase10_maven_handoff(
+                self.signed, expected_preparation_sha256=digest,
+                expected_control_sha256=self.control_sha,
+                expected_pgp_key_sha256=self.control["pgpPublicKeySha256"])
+
     def test_exact_three_packages_survive_token_free_signing(self):
         prepared = self._prepare()
         result = self._sign(prepared["preparationSha256"])
@@ -199,6 +213,49 @@ class SdkPhase10MavenCallerTest(unittest.TestCase):
                 (self.signed / "maven-sidecars" / row["component"] / "payload.asc").read_bytes())
         self.assertEqual(self.index.read_bytes(),
             (self.signed / "custody/campaign/product-index.json").read_bytes())
+        verified = self._verify(prepared["preparationSha256"])
+        self.assertEqual(["sdk-core", "sdk-android", "sdk-ios"],
+            [entry["component"] for entry in verified["uploadSources"]])
+        self.assertEqual([f"maven-sidecars/{entry['component']}"
+                          for entry in verified["uploadSources"]],
+            [entry["relativePath"] for entry in verified["uploadSources"]])
+        self.assertEqual(sha256_bytes(canonical_json_bytes(verified["files"])),
+            verified["signedFilesSha256"])
+        for entry in verified["uploadSources"]:
+            self.assertEqual(sha256_bytes(canonical_json_bytes(entry["files"])),
+                entry["inventorySha256"])
+
+    def test_signed_upload_sources_reject_extra_or_changed_sidecars(self):
+        digest = self._prepare()["preparationSha256"]
+        self._sign(digest)
+        (self.signed / "maven-sidecars/sdk-core/extra.asc").write_bytes(b"extra")
+        with self.assertRaisesRegex(ValueError, "sidecar inventory"):
+            self._verify(digest)
+
+    def test_signed_upload_sources_reject_changed_custody(self):
+        digest = self._prepare()["preparationSha256"]
+        self._sign(digest)
+        receipt = self.signed / "custody/sdk-core/phase-receipt.json"
+        receipt.write_bytes(receipt.read_bytes() + b"tamper")
+        with self.assertRaisesRegex(ValueError, "custody differs"):
+            self._verify(digest)
+
+    def test_signed_upload_sources_reject_changed_sidecar_selection(self):
+        digest = self._prepare()["preparationSha256"]
+        self._sign(digest)
+        selection = self.signed / "sidecar-selection.json"
+        selected = load_canonical_json_bytes(selection.read_bytes())
+        selected["packages"][0]["sidecarFiles"] = []
+        write_canonical_json(selection, selected)
+        with self.assertRaisesRegex(ValueError, "sidecar inventory"):
+            self._verify(digest)
+
+    def test_signed_upload_source_verifier_rejects_observation_token(self):
+        digest = self._prepare()["preparationSha256"]
+        self._sign(digest)
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "token"}):
+            with self.assertRaisesRegex(ValueError, "observation token"):
+                self._verify(digest)
 
     def test_signed_campaign_repository_or_pr_cannot_disagree_with_originals(self):
         digest = self._prepare()["preparationSha256"]

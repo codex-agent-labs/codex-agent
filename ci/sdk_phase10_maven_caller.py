@@ -28,7 +28,9 @@ from ci.products.receipt import validate_producer
 from ci.products.registry import PhaseInstanceId
 from ci.products.restore import restore_object, verify_phase_shard
 from ci.products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
-from ci.products.sdk_phase10_maven import produce_sdk_phase10_maven_sidecars
+from ci.products.sdk_phase10_maven import (
+    produce_sdk_phase10_maven_sidecars, verify_sdk_phase10_maven,
+)
 from ci.sdk_phase10_maven_campaign import capture_sdk_phase10_maven_campaign
 from ci.sdk_facade_capture import verify_retained_sdk_phase_upload
 
@@ -263,6 +265,8 @@ def sign_sdk_phase10_maven_handoff(
         published = root / "published"
         published.mkdir()
         snapshot_regular_tree(custody, published / "custody", allow_empty=True)
+        (published / "control.json").write_bytes(_read(held / "control.json"))
+        (published / "preparation.json").write_bytes(raw)
         (published / "publication-pgp-public-key.asc").write_bytes(_read(public_key, 1024 * 1024))
         (published / "maven-sidecars").mkdir()
         results = []
@@ -286,6 +290,120 @@ def sign_sdk_phase10_maven_handoff(
     return {"packages": results, "files": output}
 
 
+def verify_sdk_phase10_maven_handoff(
+    signed: Path, *, expected_preparation_sha256: str,
+    expected_control_sha256: str, expected_pgp_key_sha256: str,
+) -> dict:
+    """Verify the held signed bytes and expose exactly three upload directories."""
+    if _TOKENS & set(os.environ):
+        raise ValueError("SDK Maven signed verifier must not receive an observation token")
+    signed = Path(signed)
+    files = regular_file_inventory(signed)
+    preparation_raw = _read(signed / "preparation.json")
+    if sha256_bytes(preparation_raw) != require_sha256(
+            expected_preparation_sha256, "SDK preparation digest"):
+        raise ValueError("SDK Maven signed preparation differs from protected pin")
+    preparation = require_exact_keys(load_canonical_json_bytes(preparation_raw),
+        {"schemaVersion", "approvedControlSha256", "preparedFiles"}, "SDK Maven preparation")
+    control_sha = require_sha256(expected_control_sha256, "SDK control digest")
+    if preparation["schemaVersion"] != 1 or preparation["approvedControlSha256"] != control_sha:
+        raise ValueError("SDK Maven signed control differs from protected pin")
+    control = _selection(_read(signed / "control.json"), control_sha)
+    expected_key = require_sha256(expected_pgp_key_sha256, "SDK PGP key digest")
+    if control["pgpPublicKeySha256"] != expected_key or sha256_bytes(
+            _read(signed / "publication-pgp-public-key.asc", 1024 * 1024)) != expected_key:
+        raise ValueError("SDK Maven signed PGP key differs from protected pin")
+    held_paths = {"control.json", "publication-pgp-public-key.asc"}
+    held_files = [entry for entry in files if entry["relativePath"] in held_paths
+                  or entry["relativePath"].startswith("custody/")]
+    if preparation["preparedFiles"] != held_files:
+        raise ValueError("SDK Maven signed custody differs from approved preparation")
+    custody = signed / "custody"
+    campaign = custody / "campaign"
+    index, raw_index = verify_release_product_index(
+        SignedProductIndex(campaign / "product-index.json", campaign / "product-index.sig"),
+        keyring_path=campaign / "product-signing-keys.json", keys_directory=campaign / "keys")
+    entries = {PhaseInstanceId(*(entry[field] for field in
+        ("product", "component", "phase", "target"))): entry for entry in index["entries"]}
+    if (sha256_bytes(raw_index) != control["signedIndexSha256"]
+            or sha256_bytes(_read(campaign / "product-index.sig")) != control["signatureSha256"]
+            or sha256_bytes(_read(campaign / "product-signing-keys.json")) != control["keyringSha256"]
+            or sha256_bytes(canonical_json_bytes(regular_file_inventory(campaign / "keys"))) !=
+                control["keysInventorySha256"]
+            or index["repository"] != "codex-agent-labs/codex-agent"
+            or index["trustDomain"] != "release"
+            or index["context"]["kind"] != "pull-request"
+            or len(index["entries"]) != len(SDK_CAMPAIGN_INSTANCES)
+            or len({entry["productVersion"] for entry in index["entries"]}) != 1
+            or any(row["producer"]["repository"] != index["repository"]
+                   or row["producer"]["pullRequest"] != index["context"]["pullRequest"]
+                   for row in control["packages"])
+            or set(entries) != SDK_CAMPAIGN_INSTANCES):
+        raise ValueError("SDK Maven signed campaign differs from protected index")
+    custody_record = require_exact_keys(load_canonical_json_bytes(_read(custody / "custody.json")),
+        {"schemaVersion", "product", "signedIndexSha256", "signedIndexSignatureSha256", "packages"},
+        "SDK Maven custody")
+    selection = require_exact_keys(load_canonical_json_bytes(_read(signed / "sidecar-selection.json")),
+        {"schemaVersion", "product", "approvedControlSha256", "preparationSha256", "packages"},
+        "SDK Maven sidecar selection")
+    if (custody_record["schemaVersion"] != 1 or custody_record["product"] != "sdk"
+            or custody_record["signedIndexSha256"] != control["signedIndexSha256"]
+            or custody_record["signedIndexSignatureSha256"] != control["signatureSha256"]
+            or selection["schemaVersion"] != 1 or selection["product"] != "sdk"
+            or selection["approvedControlSha256"] != control_sha
+            or selection["preparationSha256"] != expected_preparation_sha256
+            or type(custody_record["packages"]) is not list
+            or type(selection["packages"]) is not list
+            or len(custody_record["packages"]) != 3 or len(selection["packages"]) != 3):
+        raise ValueError("SDK Maven signed sidecar selection differs from custody")
+    uploads = []
+    expected_paths = {"control.json", "preparation.json", "publication-pgp-public-key.asc",
+                      "sidecar-selection.json"}
+    expected_paths.update(entry["relativePath"] for entry in held_files
+                          if entry["relativePath"].startswith("custody/"))
+    for row in control["packages"]:
+        component = row["component"]
+        matched = [item for item in custody_record["packages"] if item["component"] == component]
+        signed_result = [item for item in selection["packages"] if item["component"] == component]
+        if len(matched) != 1 or len(signed_result) != 1:
+            raise ValueError("SDK Maven signed package is missing or duplicated")
+        original = matched[0]
+        if (original["target"] != row["target"]
+                or original["receiptSha256"] != row["receiptSha256"]
+                or original["producerSha256"] != row["producerSha256"]
+                or original["artifactId"] != row["artifactId"]
+                or original["artifactSha256"] != row["artifactSha256"]):
+            raise ValueError("SDK Maven signed package differs from protected original")
+        instance = PhaseInstanceId("sdk", component, "package", row["target"])
+        receipt = custody / component / "phase-receipt.json"
+        receipt_bytes = _read(receipt)
+        if sha256_bytes(receipt_bytes) != row["receiptSha256"]:
+            raise ValueError("SDK Maven signed receipt differs from protected original")
+        _verify_index_receipt(entries[instance], {"receipt": load_canonical_json_bytes(receipt_bytes),
+                                                   "receiptSha256": row["receiptSha256"]})
+        stage = custody / component / "stage"
+        if regular_file_inventory(stage) != original["stageFiles"]:
+            raise ValueError("SDK Maven signed stage differs from protected original")
+        source = "maven-sidecars/" + component
+        sidecars = signed / source
+        verified = verify_sdk_phase10_maven(
+            stage, receipt, sidecars, signed / "publication-pgp-public-key.asc", expected_key)
+        if verified != signed_result[0]:
+            raise ValueError("SDK Maven signed sidecar inventory differs from verification")
+        expected_paths.update(source + "/" + item["relativePath"]
+                              for item in verified["sidecarFiles"])
+        uploads.append({"component": component, "relativePath": source,
+                        "files": verified["sidecarFiles"],
+                        "inventorySha256": sha256_bytes(canonical_json_bytes(verified["sidecarFiles"]))})
+    if {entry["relativePath"] for entry in files} != expected_paths or \
+            regular_file_inventory(signed) != files:
+        raise ValueError("SDK Maven signed handoff contains extra or changed files")
+    return {"schemaVersion": 1, "product": "sdk",
+            "signedIndexSha256": control["signedIndexSha256"],
+            "pgpPublicKeySha256": expected_key, "uploadSources": uploads,
+            "files": files, "signedFilesSha256": sha256_bytes(canonical_json_bytes(files))}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     commands = parser.add_subparsers(dest="mode", required=True)
@@ -299,6 +417,10 @@ def main(argv: list[str] | None = None) -> int:
                  "expected-control-sha256", "expected-pgp-key-sha256",
                  "signing-home", "signing-fingerprint"):
         sign.add_argument("--" + name, required=True)
+    verify = commands.add_parser("verify")
+    for name in ("signed", "expected-preparation-sha256",
+                 "expected-control-sha256", "expected-pgp-key-sha256"):
+        verify.add_argument("--" + name, required=True)
     arguments = parser.parse_args(argv)
     try:
         if arguments.mode == "prepare":
@@ -310,7 +432,7 @@ def main(argv: list[str] | None = None) -> int:
                 original_plan=Path(arguments.original_plan), original_root=Path(arguments.original_root),
                 receipts_directory=Path(arguments.receipts_directory),
                 pgp_public_key=Path(arguments.pgp_public_key), token=os.environ.get("GITHUB_TOKEN", ""))
-        else:
+        elif arguments.mode == "sign":
             result = sign_sdk_phase10_maven_handoff(
                 Path(arguments.prepared), Path(arguments.destination),
                 expected_preparation_sha256=arguments.expected_preparation_sha256,
@@ -318,6 +440,12 @@ def main(argv: list[str] | None = None) -> int:
                 expected_pgp_key_sha256=arguments.expected_pgp_key_sha256,
                 signing_home=Path(arguments.signing_home),
                 signing_fingerprint=arguments.signing_fingerprint, passphrase=sys.stdin.read())
+        else:
+            result = verify_sdk_phase10_maven_handoff(
+                Path(arguments.signed),
+                expected_preparation_sha256=arguments.expected_preparation_sha256,
+                expected_control_sha256=arguments.expected_control_sha256,
+                expected_pgp_key_sha256=arguments.expected_pgp_key_sha256)
     except (OSError, ValueError, KeyError, TypeError) as error:
         parser.error(str(error))
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
