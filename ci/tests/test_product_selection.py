@@ -193,6 +193,7 @@ class ProductSelectionTest(unittest.TestCase):
         paths = (
             "ci/contract_candidate_admission.py", "ci/runtime_candidate_transport.py",
             "ci/sdk_candidate_admission.py", "ci/sdk_candidate_catalog.py",
+            "ci/sdk_candidate_semantics.py",
             "ci/sdk_android_validation_handoff.py",
             "ci/products/signing_isolation.py", "ci/runtime_preparation_capture.py",
             "ci/runtime_preparation_locator.py", "ci/runtime_prepared_aggregate.py",

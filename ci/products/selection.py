@@ -239,6 +239,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/runtime_candidate_transport.py",
     "ci/sdk_candidate_admission.py",
     "ci/sdk_candidate_catalog.py",
+    "ci/sdk_candidate_semantics.py",
     "ci/contract_equal_tree_original.py",
     "ci/contract_phase10_maven_caller.py",
     "ci/contract_phase10_output_record.py",
