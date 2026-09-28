@@ -111,10 +111,17 @@ def prepare(
     konanc = compiler / "bin" / ("konanc.bat" if runner_os == "Windows" else "konanc")
     if not konanc.is_file() or konanc.is_symlink():
         raise ValueError("Pinned compiler lacks its dependency-only launcher")
-    subprocess.run(
-        (str(konanc), "-target", TARGETS[profile_id], "-Xcheck-dependencies"),
-        check=True, env={**os.environ, "KONAN_DATA_DIR": str(konan_data_dir)},
-    )
+    # Kotlin/Native exits before checking dependencies when no source is given.
+    # This disposable probe may compile, but never becomes a product input/output.
+    with tempfile.TemporaryDirectory(prefix=".konan-probe-", dir=konan_data_dir) as temporary:
+        probe = Path(temporary) / "probe.kt"
+        probe.write_text("fun main() = Unit\n", encoding="utf-8")
+        subprocess.run(
+            (str(konanc), "-target", TARGETS[profile_id], "-Xcheck-dependencies",
+             str(probe), "-output", str(Path(temporary) / "probe")),
+            check=True, env={**os.environ, "KONAN_DATA_DIR": str(konan_data_dir)},
+        )
+    require_regular_directory(dependencies, "Kotlin/Native dependency root")
     paths = {
         "archive": str(archive), "compiler": str(compiler), "konanDataDir": str(konan_data_dir),
         "konanTarget": TARGETS[profile_id], "plugin": str(plugin),

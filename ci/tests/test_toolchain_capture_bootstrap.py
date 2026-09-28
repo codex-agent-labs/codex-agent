@@ -11,6 +11,15 @@ from ci.products.inventory import sha256_file
 from ci.products.toolchain_capture_bootstrap import prepare
 
 
+def _provision_probe(command, *, check, env):
+    assert check is True
+    assert command[3] == "-Xcheck-dependencies"
+    assert Path(command[4]).read_text(encoding="utf-8") == "fun main() = Unit\n"
+    assert command[5] == "-output"
+    assert Path(command[6]).parent == Path(command[4]).parent
+    (Path(env["KONAN_DATA_DIR"]) / "dependencies").mkdir()
+
+
 class CaptureBootstrapTest(unittest.TestCase):
     def test_windows_capture_uses_pinned_zip_and_dependency_only_launcher(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -42,14 +51,15 @@ class CaptureBootstrapTest(unittest.TestCase):
             with mock.patch.dict(os.environ, {"RUNNER_OS": "Windows", "RUNNER_ARCH": "X64"}), \
                     mock.patch("ci.products.toolchain_capture_bootstrap.git_regular_blob_bytes",
                                side_effect=lambda _, __, path, *, max_bytes: authorities[path]), \
-                    mock.patch("ci.products.toolchain_capture_bootstrap.subprocess.run") as run:
+                    mock.patch("ci.products.toolchain_capture_bootstrap.subprocess.run",
+                               side_effect=_provision_probe) as run:
                 paths = prepare(root, "a" * 40, "windows-x64", root / "out", root / "konan",
                                 plugin_source=plugin, archive_source=archive)
             self.assertEqual(archive_name, Path(paths["archive"]).name)
             self.assertEqual("mingw_x64", paths["konanTarget"])
             self.assertEqual((str(Path(paths["compiler"]) / "bin/konanc.bat"),
                               "-target", "mingw_x64", "-Xcheck-dependencies"),
-                             run.call_args.args[0])
+                             run.call_args.args[0][:4])
             self.assertTrue(run.call_args.kwargs["check"])
 
     def test_pinned_inputs_precede_dependency_only_compiler_check(self):
@@ -87,7 +97,8 @@ class CaptureBootstrapTest(unittest.TestCase):
             with mock.patch.dict(os.environ, {"RUNNER_OS": "Linux", "RUNNER_ARCH": "X64"}), \
                     mock.patch("ci.products.toolchain_capture_bootstrap.git_regular_blob_bytes",
                                side_effect=lambda _, __, path, *, max_bytes: authorities[path]), \
-                    mock.patch("ci.products.toolchain_capture_bootstrap.subprocess.run") as run:
+                    mock.patch("ci.products.toolchain_capture_bootstrap.subprocess.run",
+                               side_effect=_provision_probe) as run:
                 paths = prepare(root, "a" * 40, "linux-x64", output, konan,
                                 plugin_source=plugin, archive_source=archive)
                 self.assertEqual(archive_name, Path(paths["archive"]).name)
@@ -95,9 +106,14 @@ class CaptureBootstrapTest(unittest.TestCase):
                 self.assertTrue(Path(paths["compiler"]).joinpath("bin/konanc").is_file())
                 command = run.call_args.args[0]
                 self.assertEqual((str(Path(paths["compiler"]) / "bin/konanc"),
-                                  "-target", "linux_x64", "-Xcheck-dependencies"), command)
+                                  "-target", "linux_x64", "-Xcheck-dependencies"), command[:4])
                 self.assertEqual(str(konan), run.call_args.kwargs["env"]["KONAN_DATA_DIR"])
                 self.assertTrue(run.call_args.kwargs["check"])
+
+                run.side_effect = lambda *_args, **_kwargs: None
+                with self.assertRaisesRegex(ValueError, "dependency root.*missing or unsafe"):
+                    prepare(root, "a" * 40, "linux-x64", root / "empty-deps",
+                            root / "empty-konan", plugin_source=plugin, archive_source=archive)
 
                 tampered = root / "tampered.tar.gz"
                 tampered.write_bytes(archive.read_bytes() + b"x")
