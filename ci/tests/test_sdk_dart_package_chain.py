@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from ci.tests.product_chain_sdk import _materialize_sources, _stage_sdks
 from ci.tests.test_product_native_chain import build_chain
@@ -26,15 +27,13 @@ class DartPackageContentChainTest(unittest.TestCase):
         sdks, version = _stage_sdks(work, chain["variants"], chain["compatibility"], chain["context"])
         sources = _materialize_sources(work, sdks, ("dart",))
         wrappers.set_source_sdk_version(sources, version, ("dart",))
-        wrappers.require_prepared_native_assets(sources, sdks, version, ("dart",))
         output = work / "packages"
-        (output / "dart").mkdir(parents=True)
         staged = work / "dart-release"
-        wrappers.stage_dart_release(sources / "dart", staged)
+        with patch.object(wrappers, "run", side_effect=AssertionError(
+                "Dart package-only phase must not run a build or pub command")):
+            wrappers.package_once(sources, sdks, output, version, ("dart",))
         archive = output / "dart" / f"codex-agent-dart-{version}.tar.gz"
-        wrappers.deterministic_tar(staged, archive, f"codex_agent-{version}")
-        wrappers.write_package_toolchains(output, ("dart",))
-        wrappers.verify_native_wrapper_sdk_packages(output, sdks, version, "dart")
+        wrappers.stage_dart_release(sources / "dart", staged)
         return sdks, staged, archive, version
 
     def test_two_original_producers_yield_equal_verified_dart_archive(self):
