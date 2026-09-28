@@ -9,7 +9,7 @@ from unittest.mock import patch
 from ci.products.index import SignedProductIndex
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory,
-    sha256_bytes, snapshot_regular_tree, write_canonical_json,
+    sha256_bytes, snapshot_regular_tree, verified_zip_contents, write_canonical_json,
 )
 from ci.products.receipt import compute_build_key, output_inventory_digest, write_output_manifest
 from ci.products.restore import finalize_phase_object
@@ -401,6 +401,36 @@ class SdkPhase10MavenCallerTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "held package differs"):
                 self._sign(sha256_bytes(preparation.read_bytes()))
             sign.assert_not_called()
+
+    def test_self_consistent_held_plan_substitution_stops_before_pgp(self):
+        self._prepare()
+        capture = self.prepared / "plan-captures/sdk-core"
+        plan = capture / "plan/impact-plan.json"
+        changed = load_canonical_json_bytes(plan.read_bytes())
+        changed["component"] = "sdk-core-substituted"
+        changed_bytes = canonical_json_bytes(changed)
+        plan.write_bytes(changed_bytes)
+        archive = capture / "official-plan.zip"
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as output_zip:
+            output_zip.writestr("impact-plan.json", changed_bytes)
+        transport_path = capture / "transport.json"
+        transport = load_canonical_json_bytes(transport_path.read_bytes())
+        transport["planSha256"] = sha256_bytes(changed_bytes)
+        transport["artifact"]["digest"] = sha256_bytes(archive.read_bytes())
+        transport["originalInventory"] = verified_zip_contents(archive)[0]
+        write_canonical_json(transport_path, transport)
+        with zipfile.ZipFile(archive) as verified:
+            self.assertEqual(changed_bytes, verified.read("impact-plan.json"))
+        preparation = self.prepared / "preparation.json"
+        held = load_canonical_json_bytes(preparation.read_bytes())
+        held["preparedFiles"] = [entry for entry in regular_file_inventory(self.prepared)
+            if entry["relativePath"] != "preparation.json"]
+        write_canonical_json(preparation, held)
+        with patch("ci.sdk_phase10_maven_caller.produce_sdk_phase10_maven_sidecars") as sign:
+            with self.assertRaisesRegex(ValueError, "original plan differs from independent approval"):
+                self._sign(sha256_bytes(preparation.read_bytes()))
+            sign.assert_not_called()
+        self.assertFalse(self.signed.exists())
 
     def test_preparation_cannot_choose_its_own_control_authority(self):
         digest = self._prepare()["preparationSha256"]
