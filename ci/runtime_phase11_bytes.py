@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 import subprocess
@@ -27,6 +28,7 @@ from products.registry import PhaseInstanceId
 from products.runtime_aggregate_handoff import verified_runtime_aggregate_handoff
 from products.runtime_phase10_maven import verify_runtime_phase10_maven
 from products.sdk_protected_runtime import _original_carrier
+from products.signing_isolation import require_no_signing_secret
 
 
 _METADATA = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
@@ -70,6 +72,7 @@ def forward_verified_runtime_phase10_bytes(
     The result is an offline candidate input, not a publication or a new
     attestation. Output paths preserve every original relative file and byte.
     """
+    require_no_signing_secret(os.environ)
     protected_output, maven_sidecars, destination = map(
         Path, (protected_output, maven_sidecars, destination),
     )
@@ -183,6 +186,7 @@ def forward_verified_runtime_phase10_bytes(
             raise ValueError("Verified Runtime candidate bytes changed before publication")
         if _landed_tree(Path(landed_repository)) != expected_validation_tree:
             raise ValueError("Runtime candidate landed tree changed during verification")
+        require_no_signing_secret(os.environ)
         publish_regular_tree(prepared, destination, expected_inventory=prepared_inventory)
         return {"product": "runtime", "runtimeVersion": maven["runtimeVersion"],
                 "manifestSha256": maven["manifestSha256"],

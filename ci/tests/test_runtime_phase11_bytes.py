@@ -151,6 +151,39 @@ class RuntimePhase11BytesTest(unittest.TestCase):
         self.assertEqual(regular_file_inventory(self.sidecars),
                          regular_file_inventory(self.destination / "maven-sidecars"))
 
+    def test_signing_secret_cannot_enter_or_arrive_during_forwarding(self):
+        secret = "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY"
+        pins = self.kwargs()
+        with patch.dict(candidate.os.environ, {secret: "fixture"}), \
+                patch.object(candidate, "_tree_digest", side_effect=AssertionError("read input")), \
+                self.assertRaisesRegex(ValueError, "signing-secret context"):
+            candidate.forward_verified_runtime_phase10_bytes(
+                self.release, self.sidecars, self.destination, **pins,
+            )
+        self.assertFalse(self.destination.exists())
+
+        @contextmanager
+        def verified(root, *, keyring, keys_directory):
+            stage = root / "selected-inputs/predecessors/runtime-runtime-aggregate-metadata-aggregate/stage"
+            yield {"originalPhases": {candidate._METADATA: {"stage": stage}},
+                   "indexInputs": {"manifest": stage / "outputs/codex-agent-runtime-0.8.0-manifest.json"}}
+
+        def secret_after_verification(*args):
+            candidate.os.environ[secret] = "fixture"
+            return {"runtimeVersion": "0.8.0", "manifestSha256": sha256_bytes(_MANIFEST)}
+
+        with patch.dict(candidate.os.environ, {}, clear=True), \
+                patch.object(candidate, "verify_runtime_phase10_maven", side_effect=secret_after_verification), \
+                patch.object(candidate, "_landed_tree", return_value=self.tree), \
+                patch.object(candidate, "verified_runtime_aggregate_handoff", side_effect=verified), \
+                self.assertRaisesRegex(ValueError, "signing-secret context"):
+            candidate.forward_verified_runtime_phase10_bytes(
+                self.release, self.sidecars, self.destination, **pins,
+            )
+        self.assertFalse(self.destination.exists())
+        with patch.dict(candidate.os.environ, {"UNRELATED_RELEASE_NOTE": "fixture"}, clear=True):
+            self.assertEqual("runtime", self.forward()["product"])
+
     def test_retained_release_wrapper_preserves_original_and_current_context(self):
         retained = self.release / "retained-release"
         retained.mkdir()
