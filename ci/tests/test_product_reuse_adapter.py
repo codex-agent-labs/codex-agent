@@ -354,6 +354,13 @@ class PriorFailedPrAttemptTest(unittest.TestCase):
         listing.assert_not_called()
         exact.assert_called_once()
 
+    def test_cancelled_attempt_is_eligible_for_exact_phase_admission(self):
+        cancelled = {**self.run, "conclusion": "cancelled"}
+        with mock.patch.object(product_reuse, "paginated_items", return_value=[cancelled]), \
+                mock.patch.object(product_reuse, "api_json", return_value=cancelled):
+            self.assertEqual(cancelled, product_reuse._prior_failed_pr_attempt(
+                self.plan, self.producer, "token"))
+
     def test_skips_nonfailed_or_other_pr_and_fails_closed_on_mismatched_exact_attempt(self):
         with mock.patch.object(product_reuse, "paginated_items", return_value=[
             {**self.run, "conclusion": "success"},

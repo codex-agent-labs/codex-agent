@@ -326,7 +326,7 @@ def _prior_failed_pr_attempt(
     plan: Mapping[str, Any], producer: Mapping[str, Any], token: str,
     *, api: str = "https://api.github.com",
 ) -> dict[str, Any] | None:
-    """Select one prior failed PR attempt; its phase uploads still need admission."""
+    """Select one prior interrupted PR attempt; its phase uploads still need admission."""
     if plan["event"] != "pull_request" or plan["pullRequest"] is None:
         return None
     repository = plan["repository"]
@@ -343,7 +343,7 @@ def _prior_failed_pr_attempt(
             and run.get("event") == "pull_request"
             and run.get("path") == ".github/workflows/ci.yml"
             and run.get("status") == "completed"
-            and run.get("conclusion") == "failure"
+            and run.get("conclusion") in {"failure", "cancelled"}
             and run_matches_pr(run, plan["pullRequest"])
             and all(isinstance(run.get(field), dict)
                     and run[field].get("full_name") == repository
@@ -353,7 +353,7 @@ def _prior_failed_pr_attempt(
 
     if current_attempt > 1:
         previous = api_json(f"{prefix}/{current_run}/attempts/{current_attempt - 1}", token)
-        if previous.get("conclusion") != "failure":
+        if previous.get("conclusion") not in {"failure", "cancelled"}:
             return None
         if not eligible(previous, current_run, current_attempt - 1):
             raise ValueError("Prior failed PR attempt differs from the current run")
@@ -364,7 +364,8 @@ def _prior_failed_pr_attempt(
         "workflow_runs", token)
     candidates = [run for run in runs if isinstance(run, dict)
                   and type(run.get("id")) is int and 0 < run["id"] < current_run
-                  and run.get("conclusion") == "failure" and run_matches_pr(run, plan["pullRequest"])]
+                  and run.get("conclusion") in {"failure", "cancelled"}
+                  and run_matches_pr(run, plan["pullRequest"])]
     if not candidates:
         return None
     selected = max(candidates, key=lambda run: run["id"])
