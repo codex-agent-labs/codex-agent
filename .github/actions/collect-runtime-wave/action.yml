@@ -151,12 +151,25 @@ runs:
         include-hidden-files: true
         compression-level: 0
         retention-days: 90
-    - if: always()
+    - if: ${{ failure() }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-${{ inputs.product == 'sdk-ios-binary' && 'sdk' || inputs.product }}-wave-${{ inputs.wave }}-diagnostics-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
         path: |
-          ${{ failure() && 'build/runtime-next' || 'build/runtime-next/collection' }}
+          build/runtime-next
+          build/runtime-input/capture-transport.json
+          build/runtime-plan
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90
+    - if: ${{ success() }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-${{ inputs.product == 'sdk-ios-binary' && 'sdk' || inputs.product }}-wave-${{ inputs.wave }}-diagnostics-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: |
+          build/runtime-next/collection
           build/runtime-input/capture-transport.json
           build/runtime-plan
         if-no-files-found: warn

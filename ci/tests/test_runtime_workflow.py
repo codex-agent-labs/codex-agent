@@ -79,7 +79,8 @@ class RuntimeWorkflowTest(unittest.TestCase):
         collected = (root / '.github/actions/collect-runtime-wave/action.yml').read_text()
         self.assertIn('path: build/runtime-next/handoff', collected)
         self.assertIn('build/runtime-next/collection', collected)
-        self.assertIn("failure() && 'build/runtime-next'", collected)
+        self.assertIn('if: ${{ failure() }}', collected)
+        self.assertNotIn('${{ failure() &&', collected)
         self.assertNotIn('overwrite: true', collected)
 
     def test_sdk_input_job_is_selected_guarded_build_free_and_required_by_gate(self):

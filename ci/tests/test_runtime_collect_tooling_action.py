@@ -61,8 +61,10 @@ class RuntimeCollectToolingActionTest(unittest.TestCase):
             SDK_VALIDATION_TOOLING='/caller/tooling.json', PYTHON_EXIT='17')
         self.assertEqual(17, result.returncode)
         self.assertIn('--sdk-validation-tooling', args)
-        self.assertIn("    - if: always()", source)
-        self.assertIn("failure() && 'build/runtime-next' || 'build/runtime-next/collection'", source)
+        self.assertIn("    - if: ${{ success() }}", source)
+        self.assertIn("    - if: ${{ failure() }}", source)
+        self.assertLess(source.index("    - if: ${{ failure() }}"), source.index("    - if: ${{ success() }}"))
+        self.assertNotIn("${{ failure() &&", source)
 
 
 if __name__ == '__main__':
