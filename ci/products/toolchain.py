@@ -560,10 +560,9 @@ def _supervisor_observation(
         raise ValueError("Supervisor compiler is missing")
     compiler_path = Path(compiler_path_value).resolve()
     if runner_os == "Windows":
-        linker_path_value = find_executable("link")
-        if linker_path_value is None:
+        linker_path = compiler_path.with_name("link.exe")
+        if not linker_path.is_file():
             raise ValueError("MSVC linker is missing")
-        linker_path = Path(linker_path_value).resolve()
         compiler_version = _one_line(execute((str(compiler_path), "/Bv", "/?"), root), "MSVC version")
         linker_version = _one_line(execute((str(linker_path), "/?"), root), "MSVC linker version")
         family = "msvc"

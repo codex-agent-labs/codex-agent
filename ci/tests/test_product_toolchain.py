@@ -480,6 +480,28 @@ class ProductToolchainTest(unittest.TestCase):
         self.assertIn((str(ld), "-v"), commands)
         self.assertNotIn((str(ld), "--version"), commands)
 
+    def test_windows_supervisor_uses_linker_beside_msvc_compiler(self) -> None:
+        compiler = self.root / "msvc/cl.exe"
+        linker = compiler.with_name("link.exe")
+        git_linker = self.root / "git/link.exe"
+        for path in (compiler, linker, git_linker):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(path.name.encode())
+        commands = []
+
+        def execute(command: tuple[str, ...], root: Path) -> str:
+            commands.append(command)
+            return "Microsoft (R) C/C++ Optimizing Compiler Version 14.51.36231" \
+                if command[0] == str(compiler) else "Microsoft (R) Incremental Linker Version 14.51.36231"
+
+        result = _supervisor_observation(
+            self.root, "Windows", "cl", {"VCToolsVersion": "14.51.36231", "WindowsSDKVersion": "10.0.26100.0\\"},
+            execute, lambda name: {"cl": str(compiler), "link": str(git_linker)}.get(name),
+        )
+        self.assertEqual(sha256_bytes(linker.read_bytes()), result["linkerBinarySha256"])
+        self.assertIn((str(linker), "/?"), commands)
+        self.assertNotIn((str(git_linker), "/?"), commands)
+
     def test_observer_rejects_unpinned_native_archive_before_invoking_konanc(self) -> None:
         with self.assertRaisesRegex(ValueError, "metadata lacks one exact checksum"):
             from ci.products.toolchain import _metadata_checksum
