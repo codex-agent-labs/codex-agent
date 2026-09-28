@@ -85,6 +85,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.3"
@@ -97,6 +98,7 @@ jobs:
       - if: steps.actionlint-cache.outputs.cache-hit != 'true'
         run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - run: '"$HOME/go/bin/actionlint"'
+      - run: sudo install -d -m 1777 /private/tmp
       - run: python3 -m unittest discover -s ci/tests -v
       - if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true'
         uses: ./.github/actions/setup-kmp
