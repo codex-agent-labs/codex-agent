@@ -139,7 +139,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-    uses: codex-agent-labs/codex-agent/.github/workflows/sdk-phase10-maven-sidecars.yml@32fe4bf1158f3cda44d4c5982f1578d8c2829d2f
+    uses: codex-agent-labs/codex-agent/.github/workflows/sdk-phase10-maven-sidecars.yml@cdf46ce88650c294d5b65233dd12f07325c92332
     secrets: inherit
 
   merge-gate:
