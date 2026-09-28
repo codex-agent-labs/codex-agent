@@ -268,6 +268,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/runtime_phase10_sidecar_upload.py",
     "ci/runtime_phase10_record_signer.py",
     "ci/runtime_phase11_bytes.py",
+    "ci/runtime_phase11_library_bytes.py",
     "ci/sdk_android_archive_provision.py",
     "ci/sdk_android_core14_caller.py",
     "ci/sdk_android_core14_fresh_inputs.py",
@@ -646,7 +647,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path == "ci/products/gradle_bootstrap.py":
         return set(ALL_INSTANCES)
     if path in {"ci/products/sdk_catalog_promotion.py", "ci/sdk_catalog_promotion_caller.py",
-                "ci/sdk_phase11_maven.py"}:
+                "ci/sdk_phase11_maven.py", "ci/runtime_phase11_library_bytes.py"}:
         return set()  # Phase-11 release envelopes never define product phase bytes.
     if path in {
         "ci/contract_catalog_caller.py", "ci/contract_catalog_promotion.py",
