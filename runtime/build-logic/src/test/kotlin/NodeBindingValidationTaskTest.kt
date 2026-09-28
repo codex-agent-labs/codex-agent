@@ -115,6 +115,44 @@ class NodeBindingValidationTaskTest {
     }
 
     @Test
+    fun `staging rejects a symlinked installed root or package namespace`() {
+        val fixture = createTempDirectory("node-binding-installed-root").toFile()
+        try {
+            val installed = fixture.resolve("install/node_modules").also(File::mkdirs)
+            val source = program(fixture)
+            val packages = listOf("mocha", "kotlin-web-helpers", "source-map-support")
+            packages.forEach { name ->
+                installed.resolve(name).also(File::mkdirs).resolve("package.json")
+                    .writeText("{\"version\":\"1.0.0\"}")
+            }
+            val lock = fixture.resolve("package-lock.json")
+            lock.writeText("{\"packages\":{" + packages.joinToString(",") { name ->
+                "\"node_modules/$name\":{\"version\":\"1.0.0\"}"
+            } + "}}")
+            stageNodeBindingRunner(source, installed, lock, fixture.resolve("valid-stage"))
+
+            val alias = fixture.resolve("alias/node_modules")
+            alias.parentFile.mkdirs()
+            Files.createSymbolicLink(alias.toPath(), installed.toPath())
+            assertFailsWith<IllegalStateException> {
+                stageNodeBindingRunner(source, alias, lock, fixture.resolve("linked-root-stage"))
+            }
+
+            val external = fixture.resolve("external/helper").also(File::mkdirs)
+            external.resolve("package.json").writeText("{\"version\":\"1.0.0\"}")
+            installed.resolve("mocha/package.json")
+                .writeText("{\"version\":\"1.0.0\",\"dependencies\":{\"@scope/helper\":\"1.0.0\"}}")
+            Files.createSymbolicLink(installed.resolve("@scope").toPath(), external.parentFile.toPath())
+            lock.writeText(lock.readText().dropLast(2) + ",\"node_modules/@scope/helper\":{\"version\":\"1.0.0\"}}}")
+            assertFailsWith<IllegalStateException> {
+                stageNodeBindingRunner(source, installed, lock, fixture.resolve("linked-namespace-stage"))
+            }
+        } finally {
+            fixture.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `Gradle directory records are accepted only with canonical safe paths modes and empty bytes`() {
         for (name in listOf("program/", "node_modules/", "node_modules/@isaacs/cliui/")) {
             requireNodeBindingArchiveMember(name, true, 0, 0x41ed)

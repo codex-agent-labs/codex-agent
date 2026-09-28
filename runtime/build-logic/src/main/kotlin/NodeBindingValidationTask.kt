@@ -1,5 +1,6 @@
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import org.gradle.api.DefaultTask
@@ -35,8 +36,20 @@ abstract class StageNodeBindingValidationRunnerTask : DefaultTask() {
 }
 
 internal fun stageNodeBindingRunner(program: File, modules: File, lock: File, output: File) {
-    val packages = lock.readReleaseObject().getValue("packages").jsonObject
     val root = modules.absoluteFile.normalize()
+    val boundary = checkNotNull(root.parentFile.parentFile).toPath()
+    fun requireRealInstalledDirectory(path: File) {
+        val candidate = path.absoluteFile.normalize().toPath()
+        check(candidate.startsWith(boundary)) { "Node harness dependency escapes its installed root" }
+        generateSequence(candidate) { it.parent }.takeWhile { it.startsWith(boundary) }.forEach { ancestor ->
+            check(!Files.isSymbolicLink(ancestor) &&
+                (!Files.exists(ancestor, NOFOLLOW_LINKS) || Files.isDirectory(ancestor, NOFOLLOW_LINKS))) {
+                "Unsafe Node harness dependency ancestor: $ancestor"
+            }
+        }
+    }
+    requireRealInstalledDirectory(root)
+    val packages = lock.readReleaseObject().getValue("packages").jsonObject
     val selected = linkedSetOf<File>()
     fun resolve(owner: File, name: String): File {
         check(name.matches(Regex("(?:@[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+"))) {
@@ -45,15 +58,17 @@ internal fun stageNodeBindingRunner(program: File, modules: File, lock: File, ou
         var cursor = owner
         while (cursor.toPath().startsWith(root.parentFile.toPath())) {
             val candidate = cursor.resolve("node_modules/$name")
+            requireRealInstalledDirectory(candidate)
             if (candidate.isDirectory) return candidate
             cursor = cursor.parentFile ?: break
         }
         error("Pinned Node harness dependency is missing: $name")
     }
     fun visit(directory: File) {
-        check(directory.toPath().startsWith(root.toPath()) && !Files.isSymbolicLink(directory.toPath())) {
+        check(directory.toPath().startsWith(root.toPath())) {
             "Node harness dependency escapes its installed root"
         }
+        requireRealInstalledDirectory(directory)
         if (!selected.add(directory)) return
         val manifest = directory.resolve("package.json").readReleaseObject()
         val key = directory.relativeTo(root.parentFile).invariantSeparatorsPath
