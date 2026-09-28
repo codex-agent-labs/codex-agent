@@ -638,7 +638,7 @@ def package_once(
             rust_source = sources / "rust"
             rust_target = work / "rust-target"
             run(
-                "cargo", "package", "--locked", "--allow-dirty", "--offline",
+                "cargo", "package", "--no-verify", "--locked", "--allow-dirty", "--offline",
                 cwd=rust_source, env=os.environ | {"CARGO_TARGET_DIR": str(rust_target)},
             )
             rust_output = output / "rust"

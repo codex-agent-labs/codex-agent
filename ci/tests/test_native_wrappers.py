@@ -308,6 +308,29 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 for path in files(root / "packages")
             ])
 
+    def test_rust_package_disables_cargo_compile_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "sources/rust").mkdir(parents=True)
+            calls = []
+
+            def package_command(*command, cwd, env):
+                calls.append(command)
+                target = Path(env["CARGO_TARGET_DIR"]) / "package"
+                target.mkdir(parents=True)
+                (target / "codex-agent-0.8.0.crate").write_bytes(b"crate")
+
+            with patch("native_wrappers.require_prepared_native_assets"), \
+                    patch("native_wrappers.set_source_sdk_version"), \
+                    patch("native_wrappers.run", side_effect=package_command), \
+                    patch("native_wrappers.write_package_toolchains"), \
+                    patch("native_wrappers.verify_native_wrapper_sdk_packages"):
+                package_once(root / "sources", root / "sdks", root / "packages", "0.8.0", ("rust",))
+
+            self.assertEqual(1, len(calls))
+            self.assertEqual(("cargo", "package", "--no-verify", "--locked", "--allow-dirty", "--offline"), calls[0])
+            self.assertEqual(b"crate", (root / "packages/rust/codex-agent-0.8.0.crate").read_bytes())
+
     def test_dart_publish_dry_run_reads_the_verified_final_archive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
