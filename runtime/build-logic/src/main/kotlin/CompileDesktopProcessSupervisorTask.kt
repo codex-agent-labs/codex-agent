@@ -30,7 +30,8 @@ abstract class CompileDesktopProcessSupervisorTask @Inject constructor(
         output.parentFile.mkdirs()
         processes.exec {
             if (windows.get()) {
-                commandLine(listOf(compiler.get()) + compilerArguments.get() + listOf(source, "/Fe:$output"))
+                val objectFile = output.parentFile.resolve(source.nameWithoutExtension + ".obj")
+                commandLine(listOf(compiler.get()) + compilerArguments.get() + listOf(source, "/Fo:$objectFile", "/Fe:$output"))
             } else {
                 commandLine(listOf(compiler.get()) + compilerArguments.get() + listOf(source, "-o", output))
             }

@@ -74,6 +74,8 @@ class RuntimeBinaryFlagsTest {
             assertTrue(it !in supervisor, "Supervisor task hard-codes Runtime binary flag: $it")
         }
         assertTrue("compilerArguments.get()" in supervisor)
+        assertTrue("output.parentFile.resolve(source.nameWithoutExtension + \".obj\")" in supervisor)
+        assertTrue("\"/Fo:\$objectFile\"" in supervisor)
         assertTrue("supervisorCompilerArguments" in plugin)
         assertTrue("codexAgentRuntimeBinaryFlagsDigest" in plugin)
         assertTrue("codexAgent.runtimeBinaryFlagsDigest" in plugin)
