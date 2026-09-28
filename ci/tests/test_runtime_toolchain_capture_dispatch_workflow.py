@@ -42,6 +42,7 @@ class RuntimeToolchainCaptureDispatchTest(unittest.TestCase):
             "CONTRACT_RECORD_RESULT": "skipped",
             "SDK_AUTHORITY_RESULT": "skipped",
             "SDK_RECORD_RESULT": "skipped",
+            "SDK_MAVEN_RESULT": "skipped",
         }
         for capture, product, expected in (
             ("success", "skipped", 0),
