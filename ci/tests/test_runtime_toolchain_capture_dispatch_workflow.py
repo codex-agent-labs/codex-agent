@@ -26,6 +26,10 @@ class RuntimeToolchainCaptureDispatchTest(unittest.TestCase):
         self.assertIn('test "$GITHUB_SHA" = "$VALIDATION_COMMIT"', CAPTURE.read_text(encoding="utf-8"))
         self.assertIn('test "$(git rev-parse \'HEAD^{tree}\')" = "$VALIDATION_TREE"',
                       CAPTURE.read_text(encoding="utf-8"))
+        self.assertIn("GIT_CONFIG_KEY_0: core.autocrlf", CAPTURE.read_text(encoding="utf-8"))
+        self.assertIn("GIT_CONFIG_VALUE_0: 'false'", CAPTURE.read_text(encoding="utf-8"))
+        self.assertIn('test -z "$(git status --porcelain --untracked-files=no)"',
+                      CAPTURE.read_text(encoding="utf-8"))
         self.assertIn("  workflow_call:\n", CAPTURE.read_text(encoding="utf-8"))
         self.assertEqual(2, CAPTURE.read_text(encoding="utf-8").count(
             "::error::product-attestation requires reviewers, disabled admin bypass"))
