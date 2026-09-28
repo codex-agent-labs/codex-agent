@@ -243,8 +243,7 @@ jobs:
         if: fromJSON(inputs.planOutputs).tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"

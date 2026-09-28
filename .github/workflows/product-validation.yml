@@ -519,8 +519,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -620,8 +619,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -706,8 +704,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -763,8 +760,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -847,8 +843,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -904,8 +899,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -988,8 +982,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -1045,8 +1038,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -1129,8 +1121,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -1192,8 +1183,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -1441,8 +1431,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -1555,8 +1544,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -1613,8 +1601,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -2113,8 +2100,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -2166,8 +2152,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -2224,8 +2209,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -3126,8 +3110,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -3181,8 +3164,7 @@ jobs:
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -3239,8 +3221,7 @@ jobs:
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -3325,8 +3306,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -3380,8 +3360,7 @@ jobs:
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -3435,8 +3414,7 @@ jobs:
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -3521,8 +3499,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -3577,8 +3554,7 @@ jobs:
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -3661,8 +3637,7 @@ jobs:
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -3747,8 +3722,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -3803,8 +3777,7 @@ jobs:
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -3869,8 +3842,7 @@ jobs:
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           java_binary=java
           if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
           test -f "$selected_java_home/bin/$java_binary"
@@ -3954,8 +3926,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
@@ -4018,8 +3989,7 @@ jobs:
       - name: Select installed caller Java
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
@@ -4081,8 +4051,7 @@ jobs:
       - name: Select installed caller Java
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
@@ -4182,8 +4151,7 @@ jobs:
       - name: Select installed caller Java
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
@@ -4274,8 +4242,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
@@ -4338,8 +4305,7 @@ jobs:
       - name: Select installed caller Java
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
@@ -4397,8 +4363,7 @@ jobs:
       - name: Select installed caller Java
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
@@ -4505,8 +4470,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
@@ -4634,8 +4598,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
@@ -4707,8 +4670,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
@@ -4777,8 +4739,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
@@ -4864,8 +4825,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
@@ -5007,8 +4967,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
@@ -5114,8 +5073,7 @@ jobs:
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling

@@ -54,8 +54,7 @@ jobs:
         if: fromJSON(inputs.planOutputs).tooling_required == 'true'
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
@@ -109,8 +108,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
@@ -180,8 +178,7 @@ jobs:
       - name: Select installed caller Java
         run: |
           set -euo pipefail
-          java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"
-          selected_java_home="${!java_home_variable}"
+          source ci/select_caller_java.sh
           test -f "$selected_java_home/bin/java"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
