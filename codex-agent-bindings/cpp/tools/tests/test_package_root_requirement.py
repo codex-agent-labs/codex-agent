@@ -45,15 +45,23 @@ class PackageRootRequirementTest(unittest.TestCase):
                        "-DCODEX_AGENT_CPP_PACKAGE_ONLY=ON",
                        f"-DCodexAgent_C_SDK_ROOT={sdk}",
                        f"-DCodexAgent_NATIVE_CLASSIFIER={classifier}"]
-            missing = subprocess.run(command, capture_output=True, text=True)
+            # A package-only configure/install must succeed even when neither
+            # host compiler exists; validation consumers configure separately.
+            no_compiler = {**os.environ, "CC": str(root / "missing-cc"),
+                           "CXX": str(root / "missing-cxx")}
+            missing = subprocess.run(command, capture_output=True, text=True,
+                                     env=no_compiler)
             self.assertNotEqual(0, missing.returncode)
             self.assertIn("sdk-runtime-root.pub", missing.stdout + missing.stderr)
 
             trusted_root = sdk / "share/CodexAgent/native/sdk-runtime-root.pub"
             root_bytes = (SOURCE.parents[1] / "gradle/release/keys/sdk-runtime-root.pub").read_bytes()
             trusted_root.write_bytes(root_bytes)
-            present = subprocess.run(command, capture_output=True, text=True)
+            present = subprocess.run(command, capture_output=True, text=True,
+                                     env=no_compiler)
             self.assertEqual(0, present.returncode, present.stdout + present.stderr)
+            self.assertFalse((root / "build/CMakeFiles/CMakeCXXCompiler.cmake").exists())
+            self.assertFalse((root / "build/CMakeFiles/CodexAgentLoader.dir").exists())
             config = (root / "build/CodexAgentConfig.cmake").read_text()
             self.assertIn(
                 '"${CodexAgent_SDK_RUNTIME_ROOT}|' + hashlib.sha256(root_bytes).hexdigest() + '"',
@@ -61,8 +69,10 @@ class PackageRootRequirementTest(unittest.TestCase):
             )
             installed = root / "installed"
             result = subprocess.run([cmake, "--install", str(root / "build"), "--prefix", str(installed)],
-                                    capture_output=True, text=True)
+                                    capture_output=True, text=True, env=no_compiler)
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertFalse(any(path.suffix in {".o", ".obj"}
+                                 for path in (root / "build").rglob("*")))
             consumer = root / "consumer"
             consumer.mkdir()
             (consumer / "CMakeLists.txt").write_text(
