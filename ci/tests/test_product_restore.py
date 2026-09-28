@@ -123,6 +123,37 @@ class ProductRestoreTest(unittest.TestCase):
             product_restore._write_object(self.stage, self.receipt_bytes, output)
         self.assertEqual([os.O_WRONLY | getattr(os, "O_BINARY", 0)], modes)
 
+    def test_windows_no_replace_publication_renames_readonly_temp(self) -> None:
+        source = self.root / "candidate"
+        source.write_bytes(b"immutable")
+        target = self.root / "target"
+        rename = os.rename
+
+        def checked_rename(temporary: Path, destination: Path) -> None:
+            self.assertEqual(0, temporary.stat().st_mode & stat.S_IWUSR)
+            rename(temporary, destination)
+
+        with mock.patch.object(product_restore, "_is_windows", return_value=True), \
+                mock.patch.object(product_restore, "_windows_directory_path", return_value=self.root), \
+                mock.patch.object(product_restore.os, "rename", side_effect=checked_rename):
+            self.assertTrue(product_restore._publish_no_replace(source, target))
+        self.assertEqual(b"immutable", target.read_bytes())
+        self.assertEqual(0, target.stat().st_mode & stat.S_IWUSR)
+        self.assertEqual({"stage", "phase-receipt.json", "candidate", "target"},
+                         {path.name for path in self.root.iterdir() if path.name != "cache"})
+
+    def test_windows_no_replace_conflict_preserves_existing_and_cleans_temp(self) -> None:
+        source = self.root / "candidate"
+        source.write_bytes(b"new")
+        target = self.root / "target"
+        target.write_bytes(b"existing")
+        with mock.patch.object(product_restore, "_is_windows", return_value=True), \
+                mock.patch.object(product_restore, "_windows_directory_path", return_value=self.root), \
+                mock.patch.object(product_restore.os, "rename", side_effect=FileExistsError):
+            self.assertFalse(product_restore._publish_no_replace(source, target))
+        self.assertEqual(b"existing", target.read_bytes())
+        self.assertFalse(any(path.name.startswith(".target-") for path in self.root.iterdir()))
+
     def test_oversized_stage_manifest_is_rejected_before_cache_store(self) -> None:
         manifest = self.stage / "output-manifest.json"
         with manifest.open("r+b") as output:

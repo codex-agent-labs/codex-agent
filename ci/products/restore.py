@@ -886,13 +886,15 @@ def _publish_no_replace(source: Path, target: Path) -> bool:
             descriptor = -1
             temporary.chmod(0o444)
             try:
-                os.link(temporary, target)
-                return True
+                os.rename(temporary, target)  # Windows rejects an existing target atomically.
             except FileExistsError:
                 return False
+            return True
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
+            if temporary.exists():
+                temporary.chmod(0o666)  # Windows cannot delete a read-only file.
             temporary.unlink(missing_ok=True)
 
     parent = _open_directory(target.parent, "Immutable cache parent", create=True)
