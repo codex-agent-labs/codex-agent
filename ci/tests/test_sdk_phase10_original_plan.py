@@ -44,6 +44,7 @@ class SdkPhase10OriginalPlanTest(unittest.TestCase):
 
     def invoke(self, *, producer=None, producer_pin=None, plan_pin=None,
                artifact_pin=None, archive=None, run_conclusion="success",
+               run_status="completed",
                mutate_plan=False):
         producer = self.producer if producer is None else producer
         source_archive = self.archive if archive is None else archive
@@ -64,7 +65,7 @@ class SdkPhase10OriginalPlanTest(unittest.TestCase):
               patch.object(capture.products, "_consumer", return_value={
                     "producer": self.producer}) as consumer,
               patch.object(capture.products, "_observe_ci_producer_jobs",
-                  return_value=[{"run": {"status": "completed",
+                  return_value=[{"run": {"status": run_status,
                       "conclusion": run_conclusion}, "jobs": []}]) as observe,
               patch.object(capture.products, "_download_contract_ci_upload",
                   side_effect=download),
@@ -98,12 +99,18 @@ class SdkPhase10OriginalPlanTest(unittest.TestCase):
             observe.call_args.kwargs["jobs_by_phase"])
         window.assert_called_once()
 
+    def test_successful_plan_job_from_completed_failed_run_is_usable(self):
+        result, *_ = self.invoke(run_conclusion="failure")
+        self.assertEqual(sha256_file(self.archive), result["artifactSha256"])
+        self.assertEqual(self.archive.read_bytes(),
+                         (self.destination / "official-plan.zip").read_bytes())
+
     def test_wrong_producer_plan_and_hosted_upload_fail_closed(self):
         cases = [
             ({"producer_pin": sha256_bytes(b"wrong")}, "independent approval"),
             ({"plan_pin": sha256_bytes(b"wrong")}, "independent file approval"),
             ({"artifact_pin": sha256_bytes(b"wrong")}, "pinned official upload"),
-            ({"run_conclusion": "failure"}, "did not complete"),
+            ({"run_status": "in_progress"}, "not terminal"),
             ({"mutate_plan": True}, "changed before capture"),
         ]
         for changes, message in cases:

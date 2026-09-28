@@ -90,9 +90,8 @@ def capture_sdk_phase10_original_plan(plan_path, repository_root, destination, *
         observed = products._observe_ci_producer_jobs(
             {"plan": producer}, jobs_by_phase={"plan": _PLAN_JOB},
             trusted_workflow_sha=trusted_workflow_sha, token=token)[0]
-        if (observed["run"].get("status") != "completed"
-                or observed["run"].get("conclusion") != "success"):
-            raise ValueError("SDK original plan run did not complete successfully")
+        if observed["run"].get("status") != "completed":
+            raise ValueError("SDK original plan run is not terminal")
         archive = private / "official-plan.zip"
         artifact, _ = products._download_contract_ci_upload(
             artifact_id, artifact_sha, f"codex-agent-ci-plan-{producer['tree']}",
