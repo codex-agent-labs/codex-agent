@@ -145,6 +145,10 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
             ("contract-attestation", "needs: [contract-continuation]"),
         ):
             self.assertIn(predecessors, workflow_job(self.workflow, name))
+        self.assertIn(
+            "trusted-job-name: product-validation / contract-validation / tooling-attestation",
+            workflow_job(self.workflow, "contract-continuation"),
+        )
         status = workflow_job(self.workflow, "contract-status")
         self.assertIn("if: always()", status)
         self.assertIn("needs: [contract-binary, tooling-attestation, product-tooling, contract-continuation, contract-attestation]", status)
