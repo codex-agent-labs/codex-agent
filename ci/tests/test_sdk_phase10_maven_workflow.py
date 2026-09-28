@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import os
+import re
 import subprocess
 import tempfile
 import textwrap
@@ -147,6 +148,31 @@ class SdkPhase10MavenWorkflowTest(unittest.TestCase):
         self.assertIn("indexAdmissionArtifactSha256:", source)
         self.assertIn("path: ${{ runner.temp }}/sdk-admitted-index\n", source)
         self.assertEqual(5, source.count("overwrite: false"))
+
+    def test_caller_pins_reviewed_child_and_requires_all_five_uploads(self):
+        caller = WORKFLOW.with_name("ci.yml").read_text(encoding="utf-8")
+        child = caller.split("  sdk-phase10-maven-sidecars:\n", 1)[1].split("\n  merge-gate:", 1)[0]
+        self.assertIn("inputs.purpose == 'sdk-phase10-maven-sidecars'", child)
+        pin = re.search(r"sdk-phase10-maven-sidecars\.yml@([0-9a-f]{40})", child)
+        self.assertIsNotNone(pin)
+        committed = subprocess.check_output(["git", "show", pin.group(1) + ":.github/workflows/sdk-phase10-maven-sidecars.yml"], cwd=WORKFLOW.parents[2], text=True)
+        self.assertEqual(self.source, committed)
+        gate = caller.split("  merge-gate:\n", 1)[1]
+        script = textwrap.dedent(gate.split("        run: |\n", 1)[1])
+        env = {**os.environ, "EVENT": "workflow_dispatch", "PURPOSE": "sdk-phase10-maven-sidecars",
+               "PRODUCT_VALIDATION_RESULT": "skipped", "SDK_CUSTODY_RESULT": "skipped",
+               "TOOLCHAIN_CAPTURE_RESULT": "skipped", "RUNTIME_RECORD_RESULT": "skipped",
+               "CONTRACT_RECORD_RESULT": "skipped", "SDK_AUTHORITY_RESULT": "skipped",
+               "SDK_RECORD_RESULT": "skipped", "SDK_MAVEN_RESULT": "success"}
+        for label in ("CORE", "ANDROID", "IOS", "RECORD", "INDEX"):
+            env["SDK_MAVEN_" + label + "_ID"] = "123"
+            env["SDK_MAVEN_" + label + "_SHA256"] = "sha256:" + "a" * 64
+        for change in ({}, {"SDK_MAVEN_RESULT": "failure"}, {"SDK_MAVEN_CORE_ID": ""},
+                       {"SDK_MAVEN_INDEX_SHA256": "sha256:bad"},
+                       {"PRODUCT_VALIDATION_RESULT": "success"}):
+            result = subprocess.run(["bash", "-e", "-c", script], env={**env, **change},
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(0 if not change else 1, result.returncode, change)
 
 
 if __name__ == "__main__":

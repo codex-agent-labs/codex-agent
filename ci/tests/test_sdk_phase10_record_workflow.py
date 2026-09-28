@@ -56,8 +56,9 @@ class SdkPhase10RecordWorkflowTest(unittest.TestCase):
         script = textwrap.dedent(gate.split("        run: |\n", 1)[1])
         environment = {**os.environ, "EVENT": "workflow_dispatch", "PURPOSE": "sdk-phase10-record",
             "PRODUCT_VALIDATION_RESULT": "skipped", "SDK_CUSTODY_RESULT": "skipped",
-            "RUNTIME_RECORD_RESULT": "skipped", "CONTRACT_RECORD_RESULT": "skipped",
+            "TOOLCHAIN_CAPTURE_RESULT": "skipped", "RUNTIME_RECORD_RESULT": "skipped", "CONTRACT_RECORD_RESULT": "skipped",
             "SDK_AUTHORITY_RESULT": "skipped", "SDK_RECORD_RESULT": "success",
+            "SDK_MAVEN_RESULT": "skipped",
             "SDK_RECORD_ARTIFACT_ID": "123", "SDK_RECORD_ARTIFACT_SHA256": "sha256:" + "a" * 64}
         for changed in ({}, {"SDK_RECORD_RESULT": "failure"},
                         {"SDK_RECORD_ARTIFACT_ID": ""},

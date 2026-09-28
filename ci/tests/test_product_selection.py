@@ -325,6 +325,7 @@ class ProductSelectionTest(unittest.TestCase):
                 ("ci/contract_phase10_reuse_admission.py", contract_metadata),
                 ("ci/contract_catalog_caller.py", contract_metadata),
                 ("ci/contract_catalog_promotion.py", contract_metadata),
+                (".github/workflows/contract-promoted-catalog.yml", set()),
                 (".github/workflows/runtime-phase10-maven.yml", runtime_metadata),
                 (".github/workflows/runtime-phase10-output-record.yml", runtime_metadata),
                 ("ci/runtime_phase10_sidecar_upload.py", runtime_metadata),

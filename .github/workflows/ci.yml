@@ -12,7 +12,7 @@ on:
         required: true
         type: choice
         default: validation
-        options: [validation, sdk-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record]
+        options: [validation, sdk-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars]
       baseCommit:
         description: Exact base commit SHA
         required: false
@@ -131,13 +131,21 @@ jobs:
     permissions:
       actions: read
       contents: read
-    uses: codex-agent-labs/codex-agent/.github/workflows/sdk-phase10-later-record.yml@46d14ca801dd7b448e4a712c0b42dd4ddff62bcc
+    uses: codex-agent-labs/codex-agent/.github/workflows/sdk-phase10-later-record.yml@c494ef048be1c207a143aec94a6333c4169fc795
+    secrets: inherit
+
+  sdk-phase10-maven-sidecars:
+    if: github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-maven-sidecars'
+    permissions:
+      actions: read
+      contents: read
+    uses: codex-agent-labs/codex-agent/.github/workflows/sdk-phase10-maven-sidecars.yml@32fe4bf1158f3cda44d4c5982f1578d8c2829d2f
     secrets: inherit
 
   merge-gate:
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody' && 'SDK custody / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-toolchain-capture' && 'Runtime toolchain / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-phase10-record' && 'Runtime record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'contract-phase10-record' && 'Contract record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-authority' && 'SDK authority / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-record' && 'SDK record / complete' || 'CI / merge-gate' }}
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody' && 'SDK custody / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-toolchain-capture' && 'Runtime toolchain / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-phase10-record' && 'Runtime record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'contract-phase10-record' && 'Contract record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-authority' && 'SDK authority / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-record' && 'SDK record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-maven-sidecars' && 'SDK Maven sidecars / complete' || 'CI / merge-gate' }}
     if: always()
-    needs: [product-validation, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record]
+    needs: [product-validation, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars]
     runs-on: ubuntu-24.04
     steps:
       - name: Require exactly the selected trusted workflow
@@ -161,9 +169,23 @@ jobs:
           SDK_RECORD_RESULT: ${{ needs.sdk-phase10-record.result }}
           SDK_RECORD_ARTIFACT_ID: ${{ needs.sdk-phase10-record.outputs.recordArtifactId }}
           SDK_RECORD_ARTIFACT_SHA256: ${{ needs.sdk-phase10-record.outputs.recordArtifactSha256 }}
+          SDK_MAVEN_RESULT: ${{ needs.sdk-phase10-maven-sidecars.result }}
+          SDK_MAVEN_CORE_ID: ${{ needs.sdk-phase10-maven-sidecars.outputs.coreArtifactId }}
+          SDK_MAVEN_CORE_SHA256: ${{ needs.sdk-phase10-maven-sidecars.outputs.coreArtifactSha256 }}
+          SDK_MAVEN_ANDROID_ID: ${{ needs.sdk-phase10-maven-sidecars.outputs.androidArtifactId }}
+          SDK_MAVEN_ANDROID_SHA256: ${{ needs.sdk-phase10-maven-sidecars.outputs.androidArtifactSha256 }}
+          SDK_MAVEN_IOS_ID: ${{ needs.sdk-phase10-maven-sidecars.outputs.iosArtifactId }}
+          SDK_MAVEN_IOS_SHA256: ${{ needs.sdk-phase10-maven-sidecars.outputs.iosArtifactSha256 }}
+          SDK_MAVEN_RECORD_ID: ${{ needs.sdk-phase10-maven-sidecars.outputs.recordArtifactId }}
+          SDK_MAVEN_RECORD_SHA256: ${{ needs.sdk-phase10-maven-sidecars.outputs.recordArtifactSha256 }}
+          SDK_MAVEN_INDEX_ID: ${{ needs.sdk-phase10-maven-sidecars.outputs.indexAdmissionArtifactId }}
+          SDK_MAVEN_INDEX_SHA256: ${{ needs.sdk-phase10-maven-sidecars.outputs.indexAdmissionArtifactSha256 }}
         run: |
           if [ "$PURPOSE" != runtime-toolchain-capture ]; then
             test "$TOOLCHAIN_CAPTURE_RESULT" = skipped
+          fi
+          if [ "$PURPOSE" != sdk-phase10-maven-sidecars ]; then
+            test "$SDK_MAVEN_RESULT" = skipped
           fi
           if [ "$EVENT" = workflow_dispatch ] && [ "$PURPOSE" = sdk-catalog-custody ]; then
             test "$PRODUCT_VALIDATION_RESULT" = skipped
@@ -218,6 +240,20 @@ jobs:
             test "$SDK_RECORD_RESULT" = success
             [[ "$SDK_RECORD_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
             [[ "$SDK_RECORD_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          elif [ "$EVENT" = workflow_dispatch ] && [ "$PURPOSE" = sdk-phase10-maven-sidecars ]; then
+            test "$PRODUCT_VALIDATION_RESULT" = skipped
+            test "$SDK_CUSTODY_RESULT" = skipped
+            test "$RUNTIME_RECORD_RESULT" = skipped
+            test "$CONTRACT_RECORD_RESULT" = skipped
+            test "$SDK_AUTHORITY_RESULT" = skipped
+            test "$SDK_RECORD_RESULT" = skipped
+            test "$SDK_MAVEN_RESULT" = success
+            for id in "$SDK_MAVEN_CORE_ID" "$SDK_MAVEN_ANDROID_ID" "$SDK_MAVEN_IOS_ID" "$SDK_MAVEN_RECORD_ID" "$SDK_MAVEN_INDEX_ID"; do
+              [[ "$id" =~ ^[1-9][0-9]*$ ]] || exit 1
+            done
+            for digest in "$SDK_MAVEN_CORE_SHA256" "$SDK_MAVEN_ANDROID_SHA256" "$SDK_MAVEN_IOS_SHA256" "$SDK_MAVEN_RECORD_SHA256" "$SDK_MAVEN_INDEX_SHA256"; do
+              [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+            done
           else
             test "$EVENT" != workflow_dispatch || test "$PURPOSE" = validation
             test "$PRODUCT_VALIDATION_RESULT" = success
