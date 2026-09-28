@@ -252,6 +252,39 @@ val materializeNativeWrapperPackageAssets = tasks.register<MaterializeCrossLangu
 }
 
 val nativeWrapperBindingRoot = rootProject.layout.projectDirectory.dir("codex-agent-bindings")
+val csharpDotnetProfile = layout.file(providers.gradleProperty("codexAgent.csharpDotnetProfile").map(::file))
+val csharpBinaryPhaseRoot = layout.buildDirectory.dir("product-stage/sdk/csharp/binary")
+val stageCSharpNativeWrapperSdkBinaryPhase = tasks.register<BuildCSharpNativeWrapperSdkBinaryTask>(
+    "stageCSharpNativeWrapperSdkBinaryPhase",
+) {
+    group = "distribution"
+    description = "Builds the C# assembly once from SDK source and authenticated compatibility."
+    dependsOn(generateNativeWrapperSdkCompatibility)
+    sourcesDirectory.set(nativeWrapperBindingRoot.dir("csharp/src/CodexAgent"))
+    sdkCompatibility.set(generateNativeWrapperSdkCompatibility.flatMap { it.outputFile })
+    sdkRuntimeRootPublicKey.set(rootProject.layout.projectDirectory.file(
+        "gradle/release/keys/sdk-runtime-root.pub",
+    ))
+    sdkVersionFile.set(rootProject.layout.projectDirectory.file("gradle/release/versions/sdk.txt"))
+    binaryScript.set(rootProject.layout.projectDirectory.file("ci/native_wrappers.py"))
+    dotnetProfile.set(csharpDotnetProfile)
+    outputDirectory.set(csharpBinaryPhaseRoot.map { it.dir("outputs/csharp") })
+    repositoryRoot.set(rootProject.layout.projectDirectory)
+}
+tasks.register<WriteProductOutputManifestTask>("writeCSharpNativeWrapperSdkBinaryOutputManifest") {
+    dependsOn(stageCSharpNativeWrapperSdkBinaryPhase)
+    product.set("sdk")
+    component.set("csharp")
+    phase.set("binary")
+    target.set("desktop")
+    productVersion.set(nativeWrapperSdkVersion)
+    outputRoots.set(mapOf("csharp-binary" to "outputs/csharp"))
+    outputsDirectory.set(csharpBinaryPhaseRoot.map { it.dir("outputs") })
+    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(rootProject.layout.projectDirectory)
+    stageRoot.set(csharpBinaryPhaseRoot)
+    manifestFile.set(csharpBinaryPhaseRoot.map { it.file("output-manifest.json") })
+}
 val nativeWrapperLanguageSpecs = linkedMapOf(
     "python" to ("Python" to listOf("build/**", "dist/**", "**/__pycache__/**", "**/*.egg-info/**")),
     "csharp" to ("CSharp" to listOf("artifacts/**", "**/bin/**", "**/obj/**")),
@@ -315,6 +348,7 @@ val nativeWrapperSdkPackageTaskNames = linkedMapOf(
 // Supplying only half must never fall back to restaging all five native SDKs.
 val importedNativeWrapperPackageSources = providers.gradleProperty("codexAgent.nativeWrapperPackageSourcesRoot")
 val importedNativeWrapperPackageSdks = providers.gradleProperty("codexAgent.nativeWrapperPackageSdksRoot")
+val importedCSharpBinaryStage = providers.gradleProperty("codexAgent.csharpBinaryStageRoot")
 check(importedNativeWrapperPackageSources.isPresent == importedNativeWrapperPackageSdks.isPresent) {
     "Imported native wrapper package sources and SDKs must be supplied together"
 }
@@ -338,6 +372,35 @@ val nativeWrapperSdkPackageManifestTasks = nativeWrapperSdkPackageTaskNames.mapV
         packageScript.set(rootProject.layout.projectDirectory.file("ci/native_wrappers.py"))
         outputDirectory.set(phaseOutputs)
         repositoryRoot.set(rootProject.layout.projectDirectory)
+    }
+    if (language == "csharp") {
+        val binarySnapshot = layout.buildDirectory.dir(
+            nativeWrapperCandidateTree.map { "imported-sdk-binary-stages/$it/csharp" },
+        )
+        val reset = tasks.register<Delete>("resetImportedCSharpBinaryStage") { delete(binarySnapshot) }
+        val snapshot = tasks.register<SnapshotImportedProductStageTask>("snapshotImportedCSharpBinaryStage") {
+            dependsOn(reset)
+            sourceDirectory.set(layout.dir(importedCSharpBinaryStage.map(::file)))
+            outputDirectory.set(binarySnapshot)
+            producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+            repositoryRoot.set(rootProject.layout.projectDirectory)
+        }
+        val verify = tasks.register<VerifyImportedProductOutputManifestTask>("verifyImportedCSharpBinaryStage") {
+            dependsOn(snapshot)
+            product.set("sdk")
+            component.set("csharp")
+            phase.set("binary")
+            target.set("desktop")
+            productVersion.set(nativeWrapperSdkVersion)
+            stageRoot.set(binarySnapshot)
+            producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+            repositoryRoot.set(rootProject.layout.projectDirectory)
+        }
+        stage.configure {
+            dependsOn(verify)
+            csharpBinaryDirectory.set(binarySnapshot.map { it.dir("outputs/csharp") })
+            dotnetProfile.set(csharpDotnetProfile)
+        }
     }
     val evidenceTitle = manifestTaskName.removePrefix("write").removeSuffix("OutputManifest")
     val evidence = tasks.register<Sync>("stage${evidenceTitle}Evidence") {

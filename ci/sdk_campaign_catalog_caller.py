@@ -25,7 +25,7 @@ def stage_completed_sdk_catalog(state, destination: Path) -> dict:
     require_no_signing_secret(os.environ)
     selected = {instance for instance in state.prior_by_instance if instance.product == "sdk"}
     if selected != SDK_CAMPAIGN_INSTANCES or state.producer["event"] != "pull_request":
-        raise ValueError("SDK catalog requires a completed exact-61 PR selection")
+        raise ValueError("SDK catalog requires a completed exact-62 PR selection")
     if any(instance not in state.sources for instance in selected):
         raise ValueError("SDK catalog lacks an original object for a selected phase")
     sources, envelopes, archives = {}, {}, {}

@@ -217,11 +217,11 @@ class SdkPhase10MavenCampaignTest(unittest.TestCase):
 
     def test_non_61_or_development_index_is_not_campaign_authority(self):
         self.campaign["trustDomain"] = "development"
-        with self.assertRaisesRegex(ValueError, "release-signed all-61"):
+        with self.assertRaisesRegex(ValueError, "release-signed all-62"):
             self._run()
         self.campaign["trustDomain"] = "release"
         self.campaign["entries"].pop()
-        with self.assertRaisesRegex(ValueError, "release-signed all-61"):
+        with self.assertRaisesRegex(ValueError, "release-signed all-62"):
             self._run()
 
 

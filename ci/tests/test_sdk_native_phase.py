@@ -74,6 +74,13 @@ class SdkNativePhaseTest(unittest.TestCase):
         self.request.write_bytes(b"synthetic caller-verified S858 boundary\n")
         self.request_input = self.root / "authenticated-input"
         self.request_input.write_bytes(b"original caller-verified K/R bytes\n")
+        self.binary = None
+        if language == "csharp":
+            self.binary = self.root / "originals/sdk-csharp-binary-desktop/stage"
+            (self.binary / "outputs/csharp").mkdir(parents=True)
+            (self.binary / "outputs/csharp/CodexAgent.dll").write_bytes(b"synthetic compiled C#\n")
+            write_output_manifest(self.binary, "sdk", "csharp", "binary", "desktop", "0.3.0",
+                                  {"csharp-binary": "outputs/csharp"})
         self.calls, self.predecessor_calls = [], []
         self.host, self.return_code, self.launch_error = "linux-x64", 0, False
         self.output_version = "0.3.0"
@@ -93,7 +100,7 @@ class SdkNativePhaseTest(unittest.TestCase):
         self.assertIn("ciProductPhase", command)
         self.assertIn("--offline", command)
         fields = dict(value[2:].split("=", 1) for value in command if value.startswith("-P"))
-        self.assertEqual(fields, {
+        expected_fields = {
             "codexAgent.product": "sdk", "codexAgent.component": self.plan["component"],
             "codexAgent.phase": "package", "codexAgent.target": "desktop",
             "codexAgent.candidateCommit": self.producer["commit"],
@@ -102,7 +109,12 @@ class SdkNativePhaseTest(unittest.TestCase):
             "codexAgent.nativeWrapperPackageSourcesRoot": str(self.sources),
             "codexAgent.nativeWrapperPackageSdksRoot": str(self.sdks),
             "codexAgent.sdkCompatibilityRequest": str(self.request),
-        })
+        }
+        if self.binary is not None:
+            expected_fields["codexAgent.csharpBinaryStageRoot"] = str(self.binary)
+            expected_fields["codexAgent.csharpDotnetProfile"] = str(
+                self.root / "gradle/release/toolchains/sdk/csharp.json")
+        self.assertEqual(fields, expected_fields)
         arguments["stdout"].write(b"raw Gradle\xff\x00\n")
         if self.launch_error:
             raise OSError("synthetic process launch failure")
@@ -118,7 +130,8 @@ class SdkNativePhaseTest(unittest.TestCase):
         arguments = dict(producer=self.producer, sdk_version="0.3.0", repository_root=self.root,
             destination=self.destination, runtime_stages=self.runtime,
             prepared_sources=self.sources, staged_sdks=self.sdks,
-            compatibility_request=self.request, predecessor=self.predecessor, environ={})
+            compatibility_request=self.request, predecessor=self.predecessor, environ={},
+            csharp_binary_stage=self.binary)
         with ExitStack() as stack:
             stack.enter_context(patch("native_wrappers.host_classifier", return_value=self.host))
             stack.enter_context(patch.object(product_reuse, "_runtime_worker_environment", return_value=(
@@ -126,6 +139,7 @@ class SdkNativePhaseTest(unittest.TestCase):
             self.checkout = stack.enter_context(patch.object(product_reuse, "_runtime_worker_checkout"))
             stack.enter_context(patch.object(worker, "_request_inventory", side_effect=lambda _: {
                 self.request_input: sha256_bytes(self.request_input.read_bytes())}))
+            stack.enter_context(patch.object(worker, "verify_sdk_dotnet_toolchain"))
             stack.enter_context(patch.object(worker.subprocess, "run", side_effect=self.process))
             stack.enter_context(patch("products.restore.finalize_phase_object",
                                       side_effect=AssertionError("premature admission")))
@@ -140,7 +154,8 @@ class SdkNativePhaseTest(unittest.TestCase):
                 prepared = regular_file_inventory(self.root / "prepared")
                 self.assertEqual(worker.route(self.plan), {
                     "runner": "ubuntu-24.04", "runnerOs": "Linux", "runnerArch": "X64",
-                    "toolchainProfile": None, "producerRole": None, "supervisor": None,
+                    "toolchainProfile": "sdk-csharp" if language == "csharp" else None,
+                    "producerRole": None, "supervisor": None,
                 })
                 result = self.invoke()
                 self.assertEqual(result, {"stage": self.stage, "diagnostics": self.destination,

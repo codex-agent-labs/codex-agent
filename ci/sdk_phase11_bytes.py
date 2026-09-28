@@ -1,7 +1,7 @@
 """Verify and forward the exact Phase-10 SDK signed-index capture offline.
 
 Independent S1048 pins and the landed-tree identity are caller inputs. This
-forwards the campaign index and its evidence, not the 61 referenced phase objects.
+forwards the campaign index and its evidence, not the 62 referenced phase objects.
 """
 
 from __future__ import annotations

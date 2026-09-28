@@ -40,6 +40,7 @@ from native_wrappers import (  # noqa: E402
     normalize_python_sdist,
     package_python,
     package_once,
+    require_csharp_binary,
     reject_raw_c_abi_proofs,
     main,
     package_all,
@@ -87,6 +88,57 @@ def write_zip_file(path: Path, name: str, contents: str, additional: dict[str, b
 
 
 class NativeWrapperReleaseTest(unittest.TestCase):
+    def test_csharp_package_uses_only_authenticated_prebuilt_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = root / "sources/csharp/src/CodexAgent"
+            project.mkdir(parents=True)
+            (project / "CodexAgent.csproj").write_text(
+                "<Project><PropertyGroup><VersionPrefix>0.8.0</VersionPrefix></PropertyGroup></Project>"
+            )
+            native = root / "sources/csharp/native"
+            native.mkdir()
+            (native / "sdk-compatibility.json").write_bytes(b"compatibility")
+            (native / "sdk-runtime-root.pub").write_bytes(b"root key")
+            binary = root / "binary"
+            binary.mkdir()
+            for name in ("CodexAgent.dll", "CodexAgent.pdb", "CodexAgent.xml", "CodexAgent.deps.json"):
+                (binary / name).write_bytes(name.encode())
+            shutil.copy2(native / "sdk-compatibility.json", binary / "sdk-compatibility.json")
+            shutil.copy2(native / "sdk-runtime-root.pub", binary / "sdk-runtime-root.pub")
+            require_csharp_binary(binary, native / "sdk-compatibility.json", native / "sdk-runtime-root.pub")
+            commands: list[tuple[str, ...]] = []
+            with patch("native_wrappers.verify_sdk_dotnet_toolchain", side_effect=ValueError("wrong dotnet")), \
+                    patch("native_wrappers.run") as forbidden:
+                with self.assertRaisesRegex(ValueError, "wrong dotnet"):
+                    package_once(root / "sources", root / "sdks", root / "rejected", "0.8.0",
+                                 ("csharp",), binary, root / "csharp-profile.json")
+                forbidden.assert_not_called()
+
+            def invoke(*arguments: object, **_kwargs: object) -> None:
+                command = tuple(map(str, arguments))
+                commands.append(command)
+                if command[:2] == ("dotnet", "pack"):
+                    output = Path(command[command.index("--output") + 1])
+                    (output / "CodexAgent.0.8.0.nupkg").write_bytes(b"fixture")
+
+            with patch("native_wrappers.require_prepared_native_assets"), \
+                    patch("native_wrappers.verify_sdk_dotnet_toolchain"), \
+                    patch("native_wrappers.run", side_effect=invoke), \
+                    patch("native_wrappers.normalize_nupkg"), \
+                    patch("native_wrappers.write_package_toolchains"), \
+                    patch("native_wrappers.verify_native_wrapper_sdk_packages"):
+                package_once(root / "sources", root / "sdks", root / "packages", "0.8.0", ("csharp",),
+                             binary, root / "csharp-profile.json")
+            self.assertEqual([command[:2] for command in commands], [("dotnet", "restore"), ("dotnet", "pack")])
+            self.assertIn("--no-build", commands[1])
+            self.assertIn("--no-restore", commands[1])
+            self.assertIn("--source", commands[0])
+
+            (binary / "sdk-compatibility.json").write_bytes(b"different")
+            with self.assertRaisesRegex(ValueError, "compatibility differs"):
+                require_csharp_binary(binary, native / "sdk-compatibility.json", native / "sdk-runtime-root.pub")
+
     def test_cpp_source_package_records_packager_not_host_compiler(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

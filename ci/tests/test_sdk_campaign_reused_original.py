@@ -152,7 +152,7 @@ class ReusedSdkOriginalTest(unittest.TestCase):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 reused.verify_completed_sdk_catalog_pin(held, **{**pins, **changed})
         index["entries"].pop()
-        with self.assertRaisesRegex(ValueError, "exact 61"):
+        with self.assertRaisesRegex(ValueError, "exact 62"):
             reused.verify_completed_sdk_catalog_pin(held, **pins)
         held.active = False
         with self.assertRaisesRegex(ValueError, "active authenticated hold"):

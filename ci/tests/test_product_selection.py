@@ -894,10 +894,11 @@ class ProductSelectionTest(unittest.TestCase):
         self.assertNotIn("ci/products/signatures.py", embedded)
         self.assertNotIn("ci/products/c_abi.py", embedded)
 
-    def assert_binding_only(self, path: str, language: str) -> None:
+    def assert_binding_only(self, path: str, language: str, *, compiled: bool = False) -> None:
         result = classify_paths([path])
         selected = identities(result)
-        self.assertEqual({"package", "validation", "metadata"}, {
+        self.assertEqual(({"binary", "package", "validation", "metadata"} if compiled else
+                          {"package", "validation", "metadata"}), {
             instance.phase for instance in component(result, "sdk", language)
         })
         self.assertEqual({language}, {
@@ -917,7 +918,8 @@ class ProductSelectionTest(unittest.TestCase):
         }
         for language, suffix in examples.items():
             with self.subTest(language=language, location="new"):
-                self.assert_binding_only(f"codex-agent-bindings/{language}/{suffix}", language)
+                self.assert_binding_only(f"codex-agent-bindings/{language}/{suffix}", language,
+                                         compiled=language == "csharp")
             with self.subTest(language=language, location="old"):
                 self.assert_binding_only(
                     f"codex-agent-runtime-desktop/bindings/{language}/{suffix}",
@@ -941,7 +943,8 @@ class ProductSelectionTest(unittest.TestCase):
     def test_sdk_root_rotation_selects_only_native_sdk_packages(self) -> None:
         selected = identities(classify_paths(["gradle/release/keys/sdk-runtime-root.pub"]))
         self.assertEqual(set(NATIVE_BINDINGS), {item.component for item in selected})
-        self.assertTrue(all(item.product == "sdk" and item.phase != "binary" for item in selected))
+        self.assertEqual({PhaseInstanceId("sdk", "csharp", "binary", "desktop")},
+                         {item for item in selected if item.phase == "binary"})
 
     def test_csharp_root_inspector_changes_only_csharp_validation(self) -> None:
         selected = identities(classify_paths([
@@ -949,6 +952,15 @@ class ProductSelectionTest(unittest.TestCase):
         ]))
         self.assertEqual({"csharp"}, {item.component for item in selected})
         self.assertEqual({"validation", "metadata"}, {item.phase for item in selected})
+
+    def test_csharp_toolchain_authority_selects_only_csharp(self) -> None:
+        for path in ("gradle/release/toolchains/sdk/csharp.json",
+                     "ci/products/sdk_dotnet_toolchain.py"):
+            with self.subTest(path=path):
+                selected = identities(classify_paths([path]))
+                self.assertEqual({"csharp"}, {item.component for item in selected})
+                self.assertEqual({"binary", "package", "validation", "metadata"},
+                                 {item.phase for item in selected})
 
     def test_sdk_default_runtime_selects_sdk_packages_without_runtime_rebuild(self) -> None:
         result = classify_paths(["gradle/release/sdk-default-runtime.txt"])
@@ -1689,7 +1701,8 @@ class ProductSelectionTest(unittest.TestCase):
             {"sdk-core", "sdk-android", "sdk-ios", *NATIVE_BINDINGS, "javascript"},
             {instance.component for instance in sdk.instances},
         )
-        self.assertTrue(all(instance.phase in {"package", "validation", "metadata"} for instance in sdk.instances))
+        self.assertEqual({PhaseInstanceId("sdk", "csharp", "binary", "desktop")},
+                         {instance for instance in sdk.instances if instance.phase == "binary"})
 
         root = classify_paths(["ci/products/sdk_runtime_root.py"])
         self.assertEqual(set(NATIVE_BINDINGS), {instance.component for instance in root.instances})
@@ -1744,8 +1757,8 @@ class ProductSelectionTest(unittest.TestCase):
         ])
         self.assertEqual({"sdk-core", "sdk-android", "sdk-ios", *NATIVE_BINDINGS},
                          {instance.component for instance in shared_packages.instances})
-        self.assertTrue(all(instance.product == "sdk" and instance.phase != "binary"
-                            for instance in shared_packages.instances))
+        self.assertEqual({PhaseInstanceId("sdk", "csharp", "binary", "desktop")},
+                         {instance for instance in shared_packages.instances if instance.phase == "binary"})
 
         gradle = classify_paths([
             "gradle/build-logic/src/main/kotlin/SdkMavenPackageTask.kt",
@@ -1854,7 +1867,8 @@ class ProductSelectionTest(unittest.TestCase):
             path = f".github/actions/{name}/action.yml"
             expected = sdk if name == "sdk-javascript-worker" else sdk | {
                 item for item in PHASE_INSTANCE_IDS if item.product == "runtime" or
-                item.product == "sdk" and item.component in {"sdk-ios", "python", "csharp", "rust", "cpp", "dart"}}
+                item.product == "sdk" and item.component in {"sdk-ios", "python", "csharp", "rust", "cpp", "dart"}
+                and (item.component == "sdk-ios" or item.phase != "binary")}
             result = classify_paths((path,))
             self.assertEqual(expected, identities(result))
             self.assertEqual((), result.unknown_paths)
@@ -1870,7 +1884,8 @@ class ProductSelectionTest(unittest.TestCase):
         for name in ("sdk-native-prepare", "sdk-native-package-worker"):
             path = f".github/actions/{name}/action.yml"
             self.assertEqual({item for item in PHASE_INSTANCE_IDS if item.product == "sdk" and
-                              item.component in {"python", "csharp", "rust", "cpp", "dart"}},
+                              item.component in {"python", "csharp", "rust", "cpp", "dart"}
+                              and item.phase != "binary"},
                              identities(classify_paths((path,))))
             self.assertEqual((), classify_paths((path,)).inventory_paths)
 
@@ -2145,7 +2160,8 @@ class ProductSelectionTest(unittest.TestCase):
         result = classify_paths([".github/workflows/desktop-runtime-evidence.yml"])
         sdk = {instance for instance in result.instances if instance.product == "sdk"}
         self.assertEqual({instance for instance in PHASE_INSTANCE_IDS
-                          if instance.product == "sdk" and instance.component in NATIVE_BINDINGS}, sdk)
+                          if instance.product == "sdk" and instance.component in NATIVE_BINDINGS
+                          and instance.phase != "binary"}, sdk)
         self.assertFalse(any(instance.product == "contract" for instance in result.instances))
         self.assertEqual((), result.inventory_paths)
 

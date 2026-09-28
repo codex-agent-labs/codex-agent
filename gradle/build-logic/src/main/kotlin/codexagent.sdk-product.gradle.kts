@@ -220,6 +220,8 @@ tasks.register("sdkProductPhase") {
                 sdk.get().tasks.named("writeJavaScriptSdkMetadataOutputManifest")
             Triple("sdk", "python", "package") ->
                 sdk.get().tasks.named("writePythonNativeWrapperSdkPackageOutputManifest")
+            Triple("sdk", "csharp", "binary") ->
+                sdk.get().tasks.named("writeCSharpNativeWrapperSdkBinaryOutputManifest")
             Triple("sdk", "csharp", "package") ->
                 sdk.get().tasks.named("writeCSharpNativeWrapperSdkPackageOutputManifest")
             Triple("sdk", "rust", "package") ->

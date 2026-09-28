@@ -25,7 +25,7 @@ def verify_sdk_campaign_objects(
     envelopes: Mapping[PhaseInstanceId, dict],
     archives: Mapping[PhaseInstanceId, Path],
 ) -> dict[PhaseInstanceId, dict]:
-    """Bind all 61 original SDK receipts and objects for content-only reuse.
+    """Bind all 62 original SDK receipts and objects for content-only reuse.
 
     This is not stage, semantic, transport, producer, or release admission.
     """
@@ -61,7 +61,7 @@ def verify_sdk_campaign_selection(
     archives: Mapping[PhaseInstanceId, Path],
     stages: Mapping[PhaseInstanceId, Path],
 ) -> dict[PhaseInstanceId, dict]:
-    """Bind all 61 selected receipts, objects and stages without release trust."""
+    """Bind all 62 selected receipts, objects and stages without release trust."""
     selected = verify_sdk_campaign_objects(sources, envelopes, archives)
     if not isinstance(stages, Mapping) or set(stages) != SDK_CAMPAIGN_INSTANCES:
         raise ValueError("SDK campaign stages must contain every exact SDK phase instance")

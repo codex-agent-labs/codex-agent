@@ -42,7 +42,7 @@ def held_sdk_campaign_observation(plan_path, *, artifact_id, artifact_sha256,
         sdk_validation_tooling=None, sdk_apple_validation_policy=None,
         sdk_facade_metadata_admission=None,
         sdk_android_metadata_admission=None):
-    """Observe one official state upload, then hold all 61 original object bytes.
+    """Observe one official state upload, then hold all 62 original object bytes.
 
     The caller still owns the exact terminal state locator and all semantic
     policies. Its release signer must independently authenticate this transport,
@@ -76,7 +76,7 @@ def held_sdk_campaign_observation(plan_path, *, artifact_id, artifact_sha256,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
             sdk_android_metadata_admission=sdk_android_metadata_admission)
         if not SDK_CAMPAIGN_INSTANCES <= set(state.prior_by_instance):
-            raise ValueError("Observed SDK state lacks the exact 61-phase campaign")
+            raise ValueError("Observed SDK state lacks the exact 62-phase campaign")
         if not SDK_CAMPAIGN_INSTANCES <= set(state.sources) or not SDK_CAMPAIGN_INSTANCES <= set(state.prior_carrier_phases):
             raise ValueError("Observed SDK carrier lacks an original phase object")
         observations = {}

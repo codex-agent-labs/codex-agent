@@ -45,7 +45,7 @@ def load_native_election(path: Path):
         raise ValueError("Native SDK election has the wrong schema or family")
     rows = policy["selections"]
     if type(rows) is not list or len(rows) != len(NATIVE_CAMPAIGN_INSTANCES):
-        raise ValueError("Native SDK election requires exactly 35 selections")
+        raise ValueError("Native SDK election requires exactly 36 selections")
     fresh, reused = {}, {}
     previous = None
     for row in rows:

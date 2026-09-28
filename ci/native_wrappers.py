@@ -25,10 +25,12 @@ if __package__:
     from .products.aggregate import validate_sdk_compatibility
     from .products.inventory import (load_canonical_json_bytes, public_key_fingerprint,
                                      read_regular_file_bytes, require_regular_directory, require_semver)
+    from .products.sdk_dotnet_toolchain import verify_sdk_dotnet_toolchain
 else:
     from products.aggregate import validate_sdk_compatibility
     from products.inventory import (load_canonical_json_bytes, public_key_fingerprint,
                                     read_regular_file_bytes, require_regular_directory, require_semver)
+    from products.sdk_dotnet_toolchain import verify_sdk_dotnet_toolchain
 
 
 HOSTS = {
@@ -594,15 +596,79 @@ def invalidate_output(path: Path) -> None:
     shutil.rmtree(path)
 
 
+CSHARP_BINARY_FILES = {
+    "CodexAgent.dll", "CodexAgent.pdb", "CodexAgent.xml", "CodexAgent.deps.json",
+    "sdk-compatibility.json", "sdk-runtime-root.pub",
+}
+
+
+def require_csharp_binary(binary: Path, compatibility: Path, root_key: Path) -> None:
+    if {path.relative_to(binary).as_posix() for path in files(binary)} != CSHARP_BINARY_FILES:
+        raise ValueError("C# binary stage inventory mismatch")
+    if any((binary / name).stat().st_size == 0 for name in CSHARP_BINARY_FILES):
+        raise ValueError("C# binary stage contains an empty file")
+    if (binary / "sdk-compatibility.json").read_bytes() != read_regular_file_bytes(compatibility):
+        raise ValueError("C# binary compatibility differs from package input")
+    if (binary / "sdk-runtime-root.pub").read_bytes() != read_regular_file_bytes(root_key):
+        raise ValueError("C# binary trust root differs from package input")
+
+
+def build_csharp_binary(source: Path, compatibility: Path, root_key: Path, output: Path,
+                        sdk_version: str, dotnet_profile: Path) -> None:
+    verify_sdk_dotnet_toolchain(dotnet_profile)
+    require_source_sdk_version(source.parents[2], sdk_version, ("csharp",))
+    read_regular_file_bytes(compatibility)
+    read_regular_file_bytes(root_key)
+    invalidate_output(output)
+    with tempfile.TemporaryDirectory(prefix="codex-agent-csharp-binary-") as temporary:
+        work = Path(temporary).resolve()
+        project = work / "csharp/src/CodexAgent"
+        shutil.copytree(source, project, symlinks=True, ignore=shutil.ignore_patterns("bin", "obj"))
+        files(project)
+        native = work / "csharp/native"
+        native.mkdir()
+        shutil.copy2(compatibility, native / "sdk-compatibility.json")
+        shutil.copy2(root_key, native / "sdk-runtime-root.pub")
+        feed = work / "empty-feed"
+        feed.mkdir()
+        properties = (
+            "-p:NuGetAudit=false", f"-p:Version={sdk_version}",
+            "-p:ContinuousIntegrationBuild=true",
+            f"-p:PathMap={project}=/_/csharp",
+        )
+        run("dotnet", "restore", project / "CodexAgent.csproj", "--source", feed,
+            *properties, cwd=project)
+        run("dotnet", "build", project / "CodexAgent.csproj", "--configuration", "Release",
+            "--no-restore", *properties, cwd=project)
+        output.mkdir(parents=True)
+        compiled = project / "bin/Release/net8.0"
+        for name in sorted(CSHARP_BINARY_FILES - {"sdk-compatibility.json", "sdk-runtime-root.pub"}):
+            source_file = compiled / name
+            if not source_file.is_file() or source_file.is_symlink():
+                raise ValueError(f"missing regular C# compiled output: {name}")
+            shutil.copy2(source_file, output / name)
+        shutil.copy2(native / "sdk-compatibility.json", output / "sdk-compatibility.json")
+        shutil.copy2(native / "sdk-runtime-root.pub", output / "sdk-runtime-root.pub")
+        require_csharp_binary(output, compatibility, root_key)
+
+
 def package_once(
     sources: Path,
     sdks: Path,
     output: Path,
     sdk_version: str,
     languages: tuple[str, ...] = LANGUAGES,
+    csharp_binary: Path | None = None,
+    dotnet_profile: Path | None = None,
 ) -> None:
     if not languages or len(set(languages)) != len(languages) or any(language not in LANGUAGES for language in languages):
         raise ValueError(f"invalid native wrapper language selection: {languages}")
+    if "csharp" in languages and csharp_binary is None:
+        raise ValueError("C# package requires authenticated binary stage")
+    if "csharp" in languages:
+        if dotnet_profile is None:
+            raise ValueError("C# package requires pinned .NET toolchain profile")
+        verify_sdk_dotnet_toolchain(dotnet_profile)
     clean_output(output)
     require_prepared_native_assets(sources, sdks, sdk_version, languages)
     with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-package-") as temporary:
@@ -623,12 +689,26 @@ def package_once(
             package_python(sources / "python", python_output, work)
 
         if "csharp" in languages:
+            assert csharp_binary is not None
             csharp_source = sources / "csharp"
+            compatibility = csharp_source / "native/sdk-compatibility.json"
+            root_key = csharp_source / "native/sdk-runtime-root.pub"
+            require_csharp_binary(csharp_binary, compatibility, root_key)
+            project = csharp_source / "src/CodexAgent"
+            feed = work / "empty-nuget-feed"
+            feed.mkdir()
+            run("dotnet", "restore", project / "CodexAgent.csproj", "--source", feed,
+                "-p:NuGetAudit=false", cwd=csharp_source)
+            compiled = project / "bin/Release/net8.0"
+            compiled.mkdir(parents=True)
+            for name in sorted(CSHARP_BINARY_FILES - {"sdk-compatibility.json", "sdk-runtime-root.pub"}):
+                shutil.copy2(csharp_binary / name, compiled / name)
             csharp_output = output / "csharp"
             csharp_output.mkdir()
             run(
                 "dotnet", "pack", "src/CodexAgent/CodexAgent.csproj", "--configuration", "Release",
-                "--output", csharp_output,
+                "--no-build", "--no-restore", "--output", csharp_output,
+                "-p:NuGetAudit=false",
                 f"-p:Version={sdk_version}",
                 f"-p:PathMap={csharp_source}=/_/csharp", cwd=csharp_source,
             )
@@ -694,14 +774,16 @@ def package_all(
     output: Path,
     sdk_version: str,
     languages: tuple[str, ...] = LANGUAGES,
+    csharp_binary: Path | None = None,
+    dotnet_profile: Path | None = None,
 ) -> None:
     invalidate_output(output)
     try:
         sdk_version = require_semver(sdk_version, "SDK version")
-        package_once(sources, sdks, output, sdk_version, languages)
+        package_once(sources, sdks, output, sdk_version, languages, csharp_binary, dotnet_profile)
         with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-reproducibility-") as temporary:
             second = Path(temporary) / "packages"
-            package_once(sources, sdks, second, sdk_version, languages)
+            package_once(sources, sdks, second, sdk_version, languages, csharp_binary, dotnet_profile)
             first_inventory = dict(package_inventory(output))
             second_inventory = dict(package_inventory(second))
             if first_inventory != second_inventory:
@@ -1650,12 +1732,21 @@ def _consume(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
+    binary = commands.add_parser("csharp-binary")
+    binary.add_argument("--source", type=Path, required=True)
+    binary.add_argument("--compatibility", type=Path, required=True)
+    binary.add_argument("--root-key", type=Path, required=True)
+    binary.add_argument("--output", type=Path, required=True)
+    binary.add_argument("--sdk-version-file", type=Path, required=True)
+    binary.add_argument("--dotnet-profile", type=Path, required=True)
     package = commands.add_parser("package")
     package.add_argument("--sources", type=Path, required=True)
     package.add_argument("--sdks", type=Path, required=True)
     package.add_argument("--output", type=Path, required=True)
     package.add_argument("--sdk-version-file", type=Path, required=True)
     package.add_argument("--language", choices=LANGUAGES, action="append")
+    package.add_argument("--csharp-binary", type=Path)
+    package.add_argument("--dotnet-profile", type=Path)
     for name in ("consume", "consume-language"):
         consumer = commands.add_parser(name)
         consumer.add_argument("--repository", type=Path, required=True)
@@ -1679,10 +1770,16 @@ def main() -> None:
     if arguments.command != "consume-language":
         invalidate_output(output)
     sdk_version = require_sdk_version_file(arguments.sdk_version_file.resolve())
-    if arguments.command == "package":
+    if arguments.command == "csharp-binary":
+        build_csharp_binary(arguments.source.resolve(), arguments.compatibility.resolve(),
+                            arguments.root_key.resolve(), output, sdk_version,
+                            arguments.dotnet_profile.resolve())
+    elif arguments.command == "package":
         package_all(
             arguments.sources.resolve(), arguments.sdks.resolve(), output, sdk_version,
-            tuple(arguments.language or LANGUAGES),
+            tuple(arguments.language or LANGUAGES), arguments.csharp_binary.resolve()
+            if arguments.csharp_binary is not None else None,
+            arguments.dotnet_profile.resolve() if arguments.dotnet_profile is not None else None,
         )
     elif arguments.command == "consume-language":
         consume_language(

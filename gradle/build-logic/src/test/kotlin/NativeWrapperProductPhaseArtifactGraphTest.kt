@@ -8,6 +8,29 @@ import org.gradle.testkit.runner.GradleRunner
 
 class NativeWrapperProductPhaseArtifactGraphTest {
     @Test
+    fun `CSharp package imports an authenticated binary and cannot compile`() {
+        val binary = sdk.substringAfter("val csharpBinaryPhaseRoot =")
+            .substringBefore("val nativeWrapperLanguageSpecs =")
+        assertTrue("stageCSharpNativeWrapperSdkBinaryPhase" in binary)
+        assertTrue("writeCSharpNativeWrapperSdkBinaryOutputManifest" in binary)
+        assertTrue("\"csharp-binary\" to \"outputs/csharp\"" in binary)
+        assertTrue("dotnetProfile.set(csharpDotnetProfile)" in binary)
+        val packageStage = sdk.substringAfter("val nativeWrapperSdkPackageManifestTasks =")
+            .substringBefore("// The snapshot verifier checks integrity")
+        assertTrue("codexAgent.csharpBinaryStageRoot" in sdk)
+        assertTrue("verifyImportedCSharpBinaryStage" in packageStage)
+        assertTrue("stage.configure {\n            dependsOn(verify)" in packageStage)
+        assertTrue("csharpBinaryDirectory.set(binarySnapshot.map { it.dir(\"outputs/csharp\") })" in packageStage)
+        assertTrue("dotnetProfile.set(csharpDotnetProfile)" in packageStage)
+        val task = File("src/main/kotlin/CrossLanguageNativeWrapperGradleTasks.kt").readText()
+            .substringAfter("abstract class PackageNativeWrapperSdkTask")
+            .substringBefore("abstract class NativeWrapperInstalledConsumerTask")
+        assertTrue("--csharp-binary" in task)
+        assertTrue("--dotnet-profile" in task)
+        assertFalse("dotnet build" in task)
+    }
+
+    @Test
     fun `imported validation SDKs keep original verifiers without restaging producers`() {
         val property = sdk.substringAfter("val importedNativeWrapperStagedSdks =")
             .substringBefore("val nativeWrapperRuntimeSnapshotRoot =")

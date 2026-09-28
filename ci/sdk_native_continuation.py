@@ -25,7 +25,9 @@ from sdk_native_prepare import validate_anchor
 _IDENTITY = ("product", "component", "phase", "target")
 _LOCATOR = ("artifact_id", "artifact_digest", "state_wave", "sdk_state_wave")
 _STAGES = {
-    "package": ("sdk-javascript", "sdk-native-plan", "sdk-native-workers", "sdk-collect-4", "4"),
+    # Wave 19 is an additive pre-package compatibility slot; numbers are upload identities, not chronology.
+    "csharp-binary": ("sdk-javascript", "sdk-csharp-binary-plan", "sdk-csharp-binary", "sdk-collect-19", "19"),
+    "package": ("sdk-csharp-binary-result", "sdk-native-plan", "sdk-native-workers", "sdk-collect-4", "4"),
     "ios-package": ("sdk-native-packages", "sdk-ios-package-plan", "sdk-ios-package", "sdk-collect-5", "5"),
     "javascript-metadata": ("sdk-ios-packages", "sdk-javascript-metadata-plan", "sdk-javascript-metadata", "sdk-collect-6", "6"),
     "validation": ("sdk-javascript-metadata-result", "sdk-native-validation-plan", "sdk-native-validation", "sdk-collect-7", "7"),
@@ -86,7 +88,7 @@ def _locator(outputs):
     if (not re.fullmatch(r"[1-9][0-9]*", result["artifact_id"])
             or not re.fullmatch(r"sha256:[0-9a-f]{64}", result["artifact_digest"])
             or result["state_wave"] not in ("0", "1", "2", "3", "4", "5")
-            or result["sdk_state_wave"] not in ("", *(str(wave) for wave in range(1, 19)))
+            or result["sdk_state_wave"] not in ("", *(str(wave) for wave in range(1, 20)))
             or (result["sdk_state_wave"] and result["state_wave"] != "0")):
         raise ValueError("Invalid native state artifact identity or wave")
     return result

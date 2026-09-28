@@ -461,6 +461,7 @@ _RUNTIME_TOOLCHAIN_PROFILE_PREFIX = "gradle/release/toolchains/runtime/"
 _RUNTIME_TOOLCHAIN_PROFILE_PATHS = frozenset(
     f"{_RUNTIME_TOOLCHAIN_PROFILE_PREFIX}{target}.json" for target in NATIVE_TARGETS
 )
+_SDK_CSHARP_TOOLCHAIN_PROFILE_PATH = "gradle/release/toolchains/sdk/csharp.json"
 
 
 def _from_phase(
@@ -669,7 +670,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         return (_from_phase("sdk", "sdk-core", "binary") |
                 _from_phase("sdk", "sdk-android", "binary"))
     if path in {"ci/products/sdk_campaign_selection.py", "ci/products/sdk_campaign_dev_catalog.py",
-                "ci/products/sdk_campaign_semantics.py",
+    "ci/products/sdk_campaign_semantics.py",
                 "ci/products/sdk_campaign_index.py", "ci/sdk_campaign_observation.py",
                 "ci/sdk_campaign_catalog_producer.py", "ci/sdk_campaign_catalog_caller.py",
                 "ci/sdk_campaign_authority_upload.py",
@@ -691,7 +692,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
                 "ci/sdk_policy_snapshot.py"}:
         return {instance for instance in ALL_INSTANCES if instance.product == "sdk"}
     if path in {"ci/products/sdk_campaign_native.py"}:
-        return _bindings(NATIVE_BINDINGS)
+        return _bindings(NATIVE_BINDINGS) | _from_phase("sdk", "csharp", "binary")
     if path == "ci/products/sdk_campaign_javascript.py":
         return _from_phase("sdk", "javascript", "package")
     if path == "ci/products/sdk_javascript_validation_phase.py":
@@ -724,6 +725,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path in {"ci/sdk_android_core14_caller.py",
                 "ci/sdk_android_core14_fresh_inputs.py", "ci/sdk_android_original_control.py"}:
         return _from_phase("sdk", "sdk-android", "binary")
+    if path in {"ci/sdk_csharp_binary_phase.py", "ci/sdk_csharp_binary_workflow.py"}:
+        return _from_phase("sdk", "csharp", "binary")
     if path == "ci/sdk_android_package_policy.py":
         return _from_phase("sdk", "sdk-android", "package")
     if path == "ci/sdk_android_validation_policy.py":
@@ -828,6 +831,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         return set(ALL_INSTANCES)
     if _is_prefix(path, ".github/actions/sdk-javascript-worker/"):
         return _from_phase("sdk", "javascript", "package")
+    if _is_prefix(path, ".github/actions/sdk-csharp-binary-worker/"):
+        return _from_phase("sdk", "csharp", "binary")
     if _is_prefix(path, ".github/actions/sdk-ios-binary-worker/"):
         return _from_phase("sdk", "sdk-ios", "binary")
     if any(_is_prefix(path, f".github/actions/{name}/") for name in (
@@ -943,6 +948,8 @@ def _is_control_only(path: str) -> bool:
         return True  # Authenticated execution/receipt composition, not product content.
     if path == "ci/sdk_maven_phase.py":
         return True  # Fixed execution controller; tracked producers own product bytes.
+    if path in {"ci/sdk_csharp_binary_phase.py", "ci/sdk_csharp_binary_workflow.py"}:
+        return True  # Binary execution and receipt admission; Gradle owns payload bytes.
     if path == "ci/products/sdk_android_validation_content.py":
         return False  # Defines Android validation and metadata product bytes.
     if path in {"ci/products/sdk_android_metadata.py",
@@ -1004,6 +1011,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             return _from_phase("sdk", language, "validation")
         if language == "javascript" and _binding_validation_path(path, language):
             return _from_phase("sdk", language, "validation")
+        if language == "csharp" and _is_prefix(path, "codex-agent-bindings/csharp/src/") and path.endswith((".cs", ".csproj")):
+            return _from_phase("sdk", "csharp", "binary")
         return _bindings((language,))
 
     if (
@@ -1093,6 +1102,7 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         selected = set()
         for component in ("sdk-core", "sdk-android", "sdk-ios", *NATIVE_BINDINGS, "javascript"):
             selected.update(_from_phase("sdk", component, "package"))
+        selected.update(_from_phase("sdk", "csharp", "binary"))
         return selected
     if path == "ci/products/sdk_maven.py":
         return _from_phase("runtime", "runtime-aggregate", "metadata") | _bindings(NATIVE_BINDINGS) | set().union(*(
@@ -1118,7 +1128,7 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             )))
         return selected
     if path == "ci/native_wrappers.py":
-        return _bindings(NATIVE_BINDINGS)
+        return _bindings(NATIVE_BINDINGS) | _from_phase("sdk", "csharp", "binary")
 
     if path in {"ci/products/toolchain.py", "ci/products/toolchain_capture_bootstrap.py"}:
         # Production profiles are not tracked per target yet (S605). This one
@@ -1127,6 +1137,11 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
     if path in _RUNTIME_TOOLCHAIN_PROFILE_PATHS:
         target = path.removeprefix(_RUNTIME_TOOLCHAIN_PROFILE_PREFIX).removesuffix(".json")
         return _runtime((target,))
+    if path in {_SDK_CSHARP_TOOLCHAIN_PROFILE_PATH, "ci/products/sdk_dotnet_toolchain.py"}:
+        return (_from_phase("sdk", "csharp", "binary") |
+                _from_phase("sdk", "csharp", "package"))
+    if path == "ci/products/sdk_csharp_binary.py":
+        return _from_phase("sdk", "csharp", "package")
 
     runtime_build_logic = _runtime_build_logic_selection(path)
     if runtime_build_logic is not None:
@@ -1252,7 +1267,7 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             _bindings((*NATIVE_BINDINGS, "javascript")),
         )
     if path == "gradle/release/keys/sdk-runtime-root.pub":
-        return _bindings(NATIVE_BINDINGS)
+        return _bindings(NATIVE_BINDINGS) | _from_phase("sdk", "csharp", "binary")
     if path == "gradle/release/versions/runtime.txt":
         return {PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")}
     if path == "gradle/release/versions/sdk.txt":
@@ -1261,6 +1276,7 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             _from_phase("sdk", "sdk-android", "binary"),
             _from_phase("sdk", "sdk-ios", "binary"),
             _bindings((*NATIVE_BINDINGS, "javascript")),
+            _from_phase("sdk", "csharp", "binary"),
         )
     if path == "gradle/release/versions/contract.txt":
         return set(ALL_INSTANCES)
@@ -1316,10 +1332,12 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
 
     sdk_build_logic = {
         "codexagent.javascript-sdk.gradle.kts": _bindings(("javascript",)),
-        "codexagent.native-wrapper-sdk.gradle.kts": _bindings(NATIVE_BINDINGS).union(*(
-            _from_phase("sdk", component, "package")
-            for component in ("sdk-core", "sdk-android", "sdk-ios")
-        )),
+        "codexagent.native-wrapper-sdk.gradle.kts": _bindings(NATIVE_BINDINGS).union(
+            _from_phase("sdk", "csharp", "binary"), *(
+                _from_phase("sdk", component, "package")
+                for component in ("sdk-core", "sdk-android", "sdk-ios")
+            ),
+        ),
         "codexagent.android-runtime-evidence.gradle.kts": _from_phase("sdk", "sdk-android", "binary"),
         "codexagent.ios-runtime.gradle.kts": _from_phase("sdk", "sdk-ios", "binary"),
     }
@@ -1460,6 +1478,12 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
         # Imported native validation executes packaged tooling even when its package is reused.
         direct.update(PhaseInstanceId("sdk", language, "validation", target)
                       for language in NATIVE_BINDINGS for target in NATIVE_TARGETS)
+    if path in {"gradle/build-logic/build.gradle.kts", "gradle/build-logic/settings.gradle.kts",
+                "gradle/libs.versions.toml", "gradle/wrapper/gradle-wrapper.properties",
+                "gradle/build-logic/src/main/kotlin/codexagent.native-wrapper-sdk.gradle.kts",
+                "ci/native_wrappers.py"}:
+        # C# compilation and packaging are separate reusable outputs of these inputs.
+        direct.add(PhaseInstanceId("sdk", "csharp", "package", "desktop"))
     if path == "codex-agent-runtime-desktop/codex-app-server-distributions.json":
         # Imported JVM/Node host validation reads this original source independently of binary reuse.
         direct.update(instance for instance in selected if instance.product == "runtime"
@@ -1557,6 +1581,7 @@ def phase_inventory_paths(
         if (
             path == _RUNTIME_BINARY_FLAGS_PATH
             or path in _RUNTIME_TOOLCHAIN_PROFILE_PATHS
+            or path == _SDK_CSHARP_TOOLCHAIN_PROFILE_PATH
             or path in _DOC_FILES
             or path in _STATIC_ONLY_FILES
             or _is_prefix(path, "docs/")

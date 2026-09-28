@@ -71,6 +71,7 @@ from products.plan import (
     sdk_validation_dependencies,
 )
 from products.runtime_flags import load_runtime_binary_flags_bytes
+from products.sdk_dotnet_toolchain import load_sdk_dotnet_profile_bytes
 from products.runtime_adapter_content import rebase_adapter_comparison_records
 from products.sdk_validation import rebase_sdk_validation_records
 from products.sdk_release_selection import sdk_runtime_source
@@ -1165,13 +1166,14 @@ def _authorities(
         if profile is None:
             toolchain_digest = NOT_APPLICABLE_TOOLCHAIN_DIGEST
         else:
-            profile_path = f"{_PROFILE_ROOT}/{profile}.json"
+            profile_path = ("gradle/release/toolchains/sdk/csharp.json" if profile == "sdk-csharp"
+                            else f"{_PROFILE_ROOT}/{profile}.json")
             if profile_path not in paths:
                 return None, "toolchain-profile-unavailable"
-            toolchain_digest = load_toolchain_profile_bytes(
-                git_regular_blob_bytes(root, revision, profile_path, max_bytes=65_536),
-                profile,
-            ).digest
+            profile_bytes = git_regular_blob_bytes(root, revision, profile_path, max_bytes=65_536)
+            toolchain_digest = (load_sdk_dotnet_profile_bytes(profile_bytes).digest
+                                if profile == "sdk-csharp" else
+                                load_toolchain_profile_bytes(profile_bytes, profile).digest)
         if (
             instance.product == "runtime"
             and instance.component in NATIVE_TARGETS
@@ -3309,7 +3311,7 @@ def _sdk_ios_binary_worker_instance(instance):
 
 
 SDK_WORKER_FAMILIES = (
-    "native-package", "ios-package", "javascript-metadata", "native-validation",
+    "csharp-binary", "native-package", "ios-package", "javascript-metadata", "native-validation",
     "native-metadata", "ios-validation", "ios-metadata",
     "core-binary", "core-package", "core-validation", "core-metadata",
     "android-binary", "android-package", "android-validation", "android-metadata",
@@ -3319,6 +3321,8 @@ SDK_WORKER_FAMILIES = (
 def _sdk_family_worker_instance(instance, family):
     if type(family) is not str or family not in SDK_WORKER_FAMILIES:
         raise ValueError("Unsupported SDK worker family")
+    if family == "csharp-binary":
+        return instance == PhaseInstanceId("sdk", "csharp", "binary", "desktop")
     if family == "native-package":
         return instance in {PhaseInstanceId("sdk", language, "package", "desktop") for language in NATIVE_BINDINGS}
     if family == "native-validation":
@@ -5244,7 +5248,7 @@ def capture_runtime_resume_upload(
     if type(state_wave) is not int or not 0 <= state_wave <= 5:
         raise ValueError("Runtime state wave must be an integer from zero through five")
     if sdk_state_wave is not None and (type(sdk_state_wave) is not int
-            or sdk_state_wave not in range(1, 19) or state_wave != 0):
+            or sdk_state_wave not in range(1, 20) or state_wave != 0):
         raise ValueError("SDK state wave must be one through eighteen, without a Runtime state wave")
     require_sha256(artifact_sha256, "Runtime resume artifact digest")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
@@ -5272,7 +5276,7 @@ def capture_runtime_resume_upload(
             artifact_name = (f"codex-agent-sdk-wave-{sdk_state_wave}-state-{producer['tree']}-"
                              f"attempt-{producer['runAttempt']}")
         workflow_policy = {"trusted_workflow_sha": trusted_workflow_sha}
-        if sdk_state_wave is not None and sdk_state_wave >= 11:
+        if sdk_state_wave is not None and 11 <= sdk_state_wave <= 18:
             from ci.sdk_nested_wave_locator import _COLLECTORS
             workflow_name, parent_job = _COLLECTORS[sdk_state_wave]
             job_name = f"product-validation / {parent_job} / sdk-collect-{sdk_state_wave}"

@@ -110,7 +110,7 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
         return prepare_sdk_release_index(self.root / "plan.json", self.root,
             **self._prepare_options(**changes))
 
-    def test_preparation_keeps_all_61_admissions_inside_held_official_replay(self):
+    def test_preparation_keeps_all_62_admissions_inside_held_official_replay(self):
         events = []
 
         @contextmanager
@@ -129,7 +129,7 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
         index = load_canonical_json_bytes(prepared)
         self.assertEqual(["held", "released"], events)
         self.assertEqual("release", index["trustDomain"])
-        self.assertEqual(61, len(index["entries"]))
+        self.assertEqual(62, len(index["entries"]))
         self.assertEqual(self.signing, index["signing"])
 
         staged = self.root / "prepared"
@@ -412,7 +412,7 @@ class SdkCampaignReleaseIssuerTest(unittest.TestCase):
                 signed, self.root / "plan.json", self.root,
                 expected_index_sha256=sha256_bytes(prepared),
                 expected_signature_sha256=sha256_bytes(signature), **options)
-        self.assertEqual(61, len(index["entries"]))
+        self.assertEqual(62, len(index["entries"]))
         self.assertEqual(prepared, raw)
 
         with patch("ci.sdk_campaign_catalog_producer.held_sdk_campaign_candidate_from_official_authority") as replay:

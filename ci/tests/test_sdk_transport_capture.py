@@ -92,7 +92,7 @@ class SdkTransportCaptureTest(unittest.TestCase):
             "--artifact-id", "71", "--artifact-sha256", "sha256:" + "a" * 64,
             "--trusted-workflow-sha", "b" * 40, "--sdk-state-wave", "17"]
         for extra in (("--sdk-android-metadata-policy", "untrusted.json"),
-                      ("--sdk-state-wave", "19"), ("--state-wave", "6")):
+                      ("--sdk-state-wave", "20"), ("--state-wave", "6")):
             with self.subTest(extra=extra), patch.object(sdk_workflow, "capture_transport") as capture, \
                     self.assertRaises(SystemExit):
                 sdk_workflow.main([*arguments, *extra])

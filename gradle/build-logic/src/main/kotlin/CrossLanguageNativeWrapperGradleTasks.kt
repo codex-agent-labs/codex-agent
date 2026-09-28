@@ -14,6 +14,7 @@ import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.OutputFile
+import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
@@ -250,6 +251,50 @@ abstract class MaterializeCrossLanguageNativeWrapperPackageAssetsTask @Inject co
 }
 
 @DisableCachingByDefault(because = "Language package tools and their verified profiles own reuse")
+abstract class BuildCSharpNativeWrapperSdkBinaryTask @Inject constructor(
+    private val processes: ExecOperations,
+) : DefaultTask() {
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val sourcesDirectory: DirectoryProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val sdkCompatibility: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val sdkRuntimeRootPublicKey: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val sdkVersionFile: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val binaryScript: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val dotnetProfile: RegularFileProperty
+    @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
+    @get:Internal abstract val repositoryRoot: DirectoryProperty
+
+    @TaskAction
+    fun buildBinary() {
+        val output = outputDirectory.get().asFile
+        output.deleteRecursively()
+        try {
+            processes.exec {
+                workingDir(repositoryRoot.get().asFile)
+                environment("PYTHONDONTWRITEBYTECODE", "1")
+                commandLine(
+                    "python3", binaryScript.get().asFile.absolutePath, "csharp-binary",
+                    "--source", sourcesDirectory.get().asFile.absolutePath,
+                    "--compatibility", sdkCompatibility.get().asFile.absolutePath,
+                    "--root-key", sdkRuntimeRootPublicKey.get().asFile.absolutePath,
+                    "--output", output.absolutePath,
+                    "--sdk-version-file", sdkVersionFile.get().asFile.absolutePath,
+                    "--dotnet-profile", dotnetProfile.get().asFile.absolutePath,
+                )
+            }
+        } catch (error: Exception) {
+            output.deleteRecursively()
+            throw error
+        }
+    }
+}
+
+@DisableCachingByDefault(because = "Language package tools and their verified profiles own reuse")
 abstract class PackageNativeWrapperSdkTask @Inject constructor(
     private val processes: ExecOperations,
 ) : DefaultTask() {
@@ -258,10 +303,14 @@ abstract class PackageNativeWrapperSdkTask @Inject constructor(
     abstract val sourcesDirectory: DirectoryProperty
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val sdkDirectory: DirectoryProperty
+    @get:Optional @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val csharpBinaryDirectory: DirectoryProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val sdkVersionFile: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val packageScript: RegularFileProperty
+    @get:Optional @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val dotnetProfile: RegularFileProperty
     @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
     @get:Internal abstract val repositoryRoot: DirectoryProperty
 
@@ -273,7 +322,7 @@ abstract class PackageNativeWrapperSdkTask @Inject constructor(
             processes.exec {
                 workingDir(repositoryRoot.get().asFile)
                 environment("PYTHONDONTWRITEBYTECODE", "1")
-                commandLine(
+                val command = mutableListOf(
                     "python3", packageScript.get().asFile.absolutePath, "package",
                     "--sources", sourcesDirectory.get().asFile.parentFile.absolutePath,
                     "--sdks", sdkDirectory.get().asFile.absolutePath,
@@ -281,6 +330,13 @@ abstract class PackageNativeWrapperSdkTask @Inject constructor(
                     "--sdk-version-file", sdkVersionFile.get().asFile.absolutePath,
                     "--language", language.get(),
                 )
+                if (language.get() == "csharp") {
+                    check(csharpBinaryDirectory.isPresent) { "C# package requires an imported binary stage" }
+                    check(dotnetProfile.isPresent) { "C# package requires a pinned .NET toolchain profile" }
+                    command.addAll(listOf("--csharp-binary", csharpBinaryDirectory.get().asFile.absolutePath))
+                    command.addAll(listOf("--dotnet-profile", dotnetProfile.get().asFile.absolutePath))
+                }
+                commandLine(command)
             }
         } catch (error: Exception) {
             output.deleteRecursively()

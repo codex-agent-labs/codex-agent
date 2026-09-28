@@ -110,7 +110,7 @@ class SdkPhase11BytesTest(unittest.TestCase):
                 "context": {"kind": "pull-request", "pullRequest": 31,
                     **{name: self.original[name] for name in (
                         "commit", "tree", "runId", "runAttempt")}},
-                "entries": [{"productVersion": "0.8.0"}] * 61}
+                "entries": [{"productVersion": "0.8.0"}] * 62}
             return index, self.index_bytes
 
         with patch.object(candidate, "_landed_tree", side_effect=trees or (lambda _: self.tree)), \

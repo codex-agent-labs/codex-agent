@@ -2,7 +2,7 @@
 
 The protected caller must independently pin the canonical control JSON and
 download the signed index, original plan, and three original receipts. This
-module neither elects originals nor repeats the all-61 semantic campaign.
+module neither elects originals nor repeats the all-62 semantic campaign.
 """
 
 from __future__ import annotations

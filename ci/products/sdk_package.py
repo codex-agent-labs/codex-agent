@@ -19,8 +19,9 @@ from .inventory import (
 from .plan import (
     NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST,
     _contract_projection_from_request, _native_runtime_projections_from_request,
-    native_runtime_validation_dependencies, plan_phase,
+    native_runtime_validation_dependencies, plan_phase, verified_phase_toolchain_digest,
 )
+from .sdk_dotnet_toolchain import load_sdk_dotnet_profile_bytes
 from .receipt import output_inventory_digest, validate_phase_receipt, verify_output_manifest_identity, write_output_manifest
 from .registry import (
     NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId, phase_instance_dependencies, required_contract_components,
@@ -180,12 +181,19 @@ def _verify_plan(repository: Path, receipt: dict[str, Any], versions: dict[str, 
     version_bytes = git_regular_blob_bytes(repository, commit, "gradle/release/versions/sdk.txt", max_bytes=256)
     if version_bytes != (require_semver(receipt["productVersion"], "SDK product version") + "\n").encode():
         raise ValueError("SDK receipt version differs from its original source version")
+    instance = _instance(receipt)
+    toolchain_digest = NOT_APPLICABLE_TOOLCHAIN_DIGEST
+    if instance.component == "csharp" and instance.phase in {"binary", "package"}:
+        toolchain_digest = load_sdk_dotnet_profile_bytes(git_regular_blob_bytes(
+            repository, commit, "gradle/release/toolchains/sdk/csharp.json", max_bytes=65_536,
+        )).digest
+        verified_phase_toolchain_digest(repository, commit, instance, toolchain_digest)
     result = plan_phase(
-        _instance(receipt), inventory=phase_git_inventory(repository, commit, _instance(receipt)),
+        instance, inventory=phase_git_inventory(repository, commit, instance),
         versions=versions, upstream_receipts=upstream,
-        toolchain_profile_digest=NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+        toolchain_profile_digest=toolchain_digest,
         flags_digest=NOT_APPLICABLE_FLAGS_DIGEST, output_schema_version=1,
-        contract_projection=projection.restrict(required_contract_components(_instance(receipt))),
+        contract_projection=projection.restrict(required_contract_components(instance)),
         native_runtime_projections=native_projections,
     )
     if receipt["inputs"] != result["inputs"] or receipt["buildKey"] != result["buildKey"]:
@@ -276,10 +284,11 @@ def verify_sdk_package_inputs(
     elif runtime_package_stage is not None or runtime_package_receipt is not None:
         raise ValueError("Unexpected Node Runtime package inputs for this SDK family")
     elif native:
-        if runtime_stage_root is None or staged_sdks is None or any(value is not None for value in (
-            binary_stage_root, binary_receipt_path, binary_contract_evidence,
-        )):
-            raise ValueError("Native SDK input verification requires only its Runtime staging inputs")
+        csharp_binary = instance.component == "csharp"
+        if (runtime_stage_root is None or staged_sdks is None or binary_contract_evidence is not None
+                or (binary_stage_root is None) != (binary_receipt_path is None)
+                or (binary_stage_root is not None) != csharp_binary):
+            raise ValueError("Native SDK input verification requires its exact Runtime and C# binary inputs")
     elif binary_stage_root is None or binary_receipt_path is None or binary_contract_evidence is None or \
             runtime_stage_root is not None or staged_sdks is not None:
         raise ValueError("Maven SDK input verification requires its original binary and Contract evidence")
@@ -312,12 +321,14 @@ def verify_sdk_package_inputs(
             if validation_content_output is not None:
                 _require_capability_output_separate(validation_content_output, (
                     Path(stage_root), Path(receipt_path), Path(compatibility_request), runtime_stage_root, staged_sdks,
+                    binary_stage_root, binary_receipt_path,
                     Path(validation_stage_root), Path(validation_receipt_path),
                     _original_artifact_directories(original_arguments),
                     original_arguments["contract_attestation"].parent / CONTRACT_EXECUTION_CLOSURE_DIRECTORY,
                 ))
             _require_capability_output_separate(validation_inputs_output, (
                 Path(stage_root), Path(receipt_path), Path(compatibility_request), runtime_stage_root, staged_sdks,
+                binary_stage_root, binary_receipt_path,
                 Path(validation_receipt_path) if validation_receipt_path is not None else None,
                 Path(validation_stage_root) if validation_stage_root is not None else None,
                 original_arguments,
@@ -404,6 +415,25 @@ def verify_sdk_package_inputs(
             upstream[node_identity] = node
         elif native:
             from .sdk_native import SDK_ROOT_PATH, verify_native_sdk_package_phase
+            if instance.component == "csharp":
+                from .sdk_csharp_binary import verify_csharp_binary_stage
+                binary, binary_bytes = _receipt(binary_receipt_path)
+                binary_identity = PhaseInstanceId("sdk", "csharp", "binary", "desktop")
+                if _instance(binary) != binary_identity:
+                    raise ValueError("C# package has the wrong binary predecessor")
+                binary_inventory = regular_file_inventory(Path(binary_stage_root))
+                binary_stage = root / "csharp-binary-stage"
+                snapshot_regular_tree(Path(binary_stage_root), binary_stage)
+                if regular_file_inventory(binary_stage) != binary_inventory:
+                    raise ValueError("C# binary predecessor changed during snapshot")
+                root_key = root / "csharp-sdk-root.pub"
+                root_key.write_bytes(git_regular_blob_bytes(repository, receipt["producer"]["commit"],
+                                                        SDK_ROOT_PATH, max_bytes=4096))
+                verify_csharp_binary_stage(binary_stage, binary, handoff / COMPATIBILITY_NAME, root_key)
+                _verify_plan(repository, binary, versions,
+                             [upstream[identity] for identity in phase_instance_dependencies(binary_identity)],
+                             projection, None)
+                upstream[binary_identity] = binary
             if validation_inputs_output is not None:
                 runtime_original, sdks_original = Path(runtime_stage_root), Path(staged_sdks)
                 runtime_inventory, sdks_inventory = regular_file_inventory(runtime_original), regular_file_inventory(sdks_original)
@@ -417,6 +447,21 @@ def verify_sdk_package_inputs(
                 stage, captured_receipt, handoff / REQUEST_NAME, runtime_stage_root, staged_sdks,
                 git_regular_blob_bytes(repository, receipt["producer"]["commit"], SDK_ROOT_PATH, max_bytes=4096),
             )
+            if instance.component == "csharp":
+                archive = stage / "outputs/csharp" / f"CodexAgent.{versions['sdk']}.nupkg"
+                with ZipFile(archive) as package:
+                    member = package.getinfo("lib/net8.0/CodexAgent.dll")
+                    if member.file_size > 64 * 1024 * 1024:
+                        raise ValueError("C# package assembly is unreasonably large")
+                    with package.open(member) as stream:
+                        assembly = stream.read(64 * 1024 * 1024 + 1)
+                    if len(assembly) != member.file_size:
+                        raise ValueError("C# package assembly length differs from its archive record")
+                if (sha256_bytes(assembly) != sha256_bytes(read_regular_file_bytes(
+                        binary_stage / "outputs/csharp/CodexAgent.dll", max_bytes=64 * 1024 * 1024))
+                        or _receipt(binary_receipt_path)[1] != binary_bytes
+                        or regular_file_inventory(Path(binary_stage_root)) != binary_inventory):
+                    raise ValueError("C# package assembly differs from its original binary predecessor")
         else:
             from .sdk_maven import verify_packaged_sdk_maven_phase, verify_sdk_maven_binary_predecessor
             if binary_contract_evidence.get("expectedTrustDomain") != arguments["required_trust_domain"]:

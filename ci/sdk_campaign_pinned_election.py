@@ -63,7 +63,7 @@ def held_pinned_sdk_campaign_authority(path: Path, expected_sha256: str):
                          for family, value in selected.items()}
     rows = document["artifactPaths"]
     if type(rows) is not list or len(rows) != len(SDK_CAMPAIGN_INSTANCES):
-        raise ValueError("SDK campaign authority requires exactly 61 artifact paths")
+        raise ValueError("SDK campaign authority requires exactly 62 artifact paths")
     artifact_paths, order = {}, []
     for row in rows:
         row = require_exact_keys(row, {"identity", "relativePath"},
@@ -160,7 +160,7 @@ def held_pinned_sdk_campaign_semantics(policy_files: Mapping[str, Path],
 @contextmanager
 def held_pinned_sdk_campaign_election(policy_files: Mapping[str, Path],
         expected_sha256: Mapping[str, str]):
-    """Yield exact 61 caller selections, rechecking every pinned file on exit.
+    """Yield exact 62 caller selections, rechecking every pinned file on exit.
 
     Enter this context before any state/catalog observation. The digest source
     must be protected independently of these files; matching self-supplied
@@ -190,7 +190,7 @@ def held_pinned_sdk_campaign_election(policy_files: Mapping[str, Path],
         reused.update(family_reused)
         pinned[family] = (path, raw)
     if set(fresh) & set(reused) or set(fresh) | set(reused) != SDK_CAMPAIGN_INSTANCES:
-        raise ValueError("SDK election does not cover exactly 61 disjoint phases")
+        raise ValueError("SDK election does not cover exactly 62 disjoint phases")
     if len({request["expected_product_version"] for request in (*fresh.values(), *reused.values())}) != 1:
         raise ValueError("SDK election requires one exact SDK version")
     selections_before = deepcopy((fresh, reused))

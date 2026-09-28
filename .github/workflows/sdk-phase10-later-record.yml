@@ -158,7 +158,7 @@ jobs:
             --plan-artifact-sha256 "$(jq -er '.planArtifactSha256' "$control")" \
             --expected-plan-sha256 "$(jq -er '.planSha256' "$control")" \
             --trusted-workflow-sha "$(jq -er '.trustedWorkflowSha' "$control")"
-      - name: Reobserve all 61 originals and prepare the approved unsigned index
+      - name: Reobserve all 62 originals and prepare the approved unsigned index
         env:
           GITHUB_TOKEN: ${{ github.token }}
           CODEX_AGENT_SDK_AUTHORITY_APPROVED_SHA256: ${{ vars.CODEX_AGENT_SDK_AUTHORITY_APPROVED_SHA256 }}

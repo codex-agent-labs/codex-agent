@@ -210,7 +210,7 @@ class SdkCampaignSelectionTest(unittest.TestCase):
             destination = Path(temporary).resolve() / "catalog"
             producer = next(iter(self.envelopes.values()))["receipt"]["producer"]
             first = min(SDK_CAMPAIGN_INSTANCES)
-            with self.assertRaisesRegex(ValueError, "all 61 phases"):
+            with self.assertRaisesRegex(ValueError, "all 62 phases"):
                 stage_sdk_same_pr_catalog({key: value for key, value in self.sources.items()
                     if key != first}, self.envelopes, self.archives,
                     producer=producer, destination=destination)
@@ -279,7 +279,7 @@ class SdkCampaignSelectionTest(unittest.TestCase):
                         "--github-output", str(github_output),
                         "--sdk-original-workflow-sha", "a" * 40,
                     ]), 0)
-                self.assertIn('"phaseCount":61', stdout.getvalue())
+                self.assertIn('"phaseCount":62', stdout.getvalue())
                 self.assertEqual(json.loads(stdout.getvalue()), {
                     key: int(value) if key in {"phaseCount", "objectBytes"} else value
                     for key, value in (row.split("=", 1)

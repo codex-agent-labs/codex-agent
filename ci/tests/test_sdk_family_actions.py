@@ -90,6 +90,18 @@ class SdkFamilyActionsTest(unittest.TestCase):
                 self.assertEqual("synthetic environment-only token", token)
                 self.assertNotIn("--token", args)
 
+    def test_csharp_binary_uses_wave_nineteen_after_wave_three(self):
+        result, args, _, output = self.run_action("capture", STATE_PRODUCT="sdk",
+            SDK_FAMILY="csharp-binary", SDK_STATE_WAVE="3")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(self.capture_arguments(output,
+            ["--sdk-state-wave", "3", "--family", "csharp-binary"], sdk=True), args)
+        result, args, _, output = self.run_action("collect", PRODUCT="sdk",
+            SDK_FAMILY="csharp-binary", WAVE="19")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(self.collect_arguments(output,
+            ["--family", "csharp-binary"], sdk=True, wave="19"), args)
+
     def test_capture_preserves_default_javascript_ios_binary_and_runtime_selection(self):
         cases = (
             ({}, False, []),

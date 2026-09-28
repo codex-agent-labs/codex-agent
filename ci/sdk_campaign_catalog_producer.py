@@ -1,4 +1,4 @@
-"""Hold all 61 authenticated SDK originals for a no-secret campaign replay.
+"""Hold all 62 authenticated SDK originals for a no-secret campaign replay.
 
 The protected caller selects the pins independently of the captured state and
 runs the full SDK semantic verifier inside this context. This is neither a
@@ -86,7 +86,7 @@ _COMPLETED_CATALOG_PIN_KEYS = {
 
 def discover_sdk_campaign_original_pins(fresh, reused, *, trusted_workflow_sha,
         token, environ, custody_catalogs=None):
-    """Resolve caller-selected 61-phase authorities without campaign observations.
+    """Resolve caller-selected 62-phase authorities without campaign observations.
 
     The caller owns each build key/version/producer/catalog/key/workflow route.
     This is a no-secret transport locator, not SDK release admission.
@@ -96,7 +96,7 @@ def discover_sdk_campaign_original_pins(fresh, reused, *, trusted_workflow_sha,
     if (not isinstance(fresh, Mapping) or not isinstance(reused, Mapping)
             or set(fresh) & set(reused)
             or set(fresh) | set(reused) != SDK_CAMPAIGN_INSTANCES):
-        raise ValueError("SDK original pin discovery requires exactly 61 disjoint phase selections")
+        raise ValueError("SDK original pin discovery requires exactly 62 disjoint phase selections")
     custody_catalogs = {} if custody_catalogs is None else custody_catalogs
     if not isinstance(custody_catalogs, Mapping):
         raise ValueError("SDK custody catalogs require caller-owned selections")
@@ -213,7 +213,7 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
         trusted_workflow_sha, token, environ):
     """Hold exact original uploads across the caller's all-family semantic replay.
 
-    The 61 pins must come from protected, independent policy/official discovery;
+    The 62 pins must come from protected, independent policy/official discovery;
     deriving them from observations or replay records defeats this boundary.
     """
     require_no_signing_secret(environ)
@@ -221,7 +221,7 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
             or set(observations) != SDK_CAMPAIGN_INSTANCES
             or set(pins) != SDK_CAMPAIGN_INSTANCES
             or type(current_transport_bytes) is not bytes):
-        raise ValueError("SDK original uploads require the exact 61 observed phases and pins")
+        raise ValueError("SDK original uploads require the exact 62 observed phases and pins")
     for instance in SDK_CAMPAIGN_INSTANCES:
         original, pin = observations[instance], pins[instance]
         if not isinstance(instance, PhaseInstanceId) or not isinstance(original, ObservedSdkOriginal):
@@ -333,14 +333,14 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
 @contextmanager
 def held_sdk_campaign_semantic_replay(observations, current_transport_bytes, pins,
         artifact_paths, semantic_controls, *, trusted_workflow_sha, token, environ):
-    """Run all 61 existing family gates while exact original uploads remain held.
+    """Run all 62 existing family gates while exact original uploads remain held.
 
     This non-secret boundary grants neither release admission nor a signed index.
     Artifact paths and all producer/upload pins are caller-owned inputs.
     """
     if (not isinstance(artifact_paths, Mapping) or set(artifact_paths) != SDK_CAMPAIGN_INSTANCES
             or not isinstance(semantic_controls, Mapping)):
-        raise ValueError("SDK semantic replay requires 61 caller-selected artifacts and controls")
+        raise ValueError("SDK semantic replay requires 62 caller-selected artifacts and controls")
     with held_sdk_campaign_original_uploads(observations, current_transport_bytes, pins,
             trusted_workflow_sha=trusted_workflow_sha, token=token, environ=environ) as evidence:
         sources, envelopes, archives, stages = {}, {}, {}, {}
@@ -395,7 +395,7 @@ def held_sdk_campaign_candidate(plan_path, *, state_artifact_id,
         custody_catalogs=None,
         sdk_validation_tooling=None, sdk_apple_validation_policy=None,
         sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
-    """Replay caller-selected current state and 61 originals without release trust."""
+    """Replay caller-selected current state and 62 originals without release trust."""
     require_no_signing_secret(environ)
     require_no_signing_secret(os.environ)
     selected_catalog = require_exact_keys(completed_catalog_pin,
@@ -437,7 +437,7 @@ def held_sdk_campaign_candidate(plan_path, *, state_artifact_id,
 @contextmanager
 def held_sdk_campaign_candidate_from_election(plan_path, *, policy_files,
         expected_election_sha256, **candidate_options):
-    """Pin all 61 caller elections before the first state observation.
+    """Pin all 62 caller elections before the first state observation.
 
     The caller must source the three digests independently from protected
     policy. Original uploads, semantic controls and release trust remain the
@@ -483,7 +483,7 @@ def held_sdk_campaign_candidate_from_policies(plan_path, *, election_files,
 def held_sdk_campaign_candidate_from_authority(plan_path, *, authority_file,
         expected_authority_sha256, election_files, semantic_files,
         **candidate_options):
-    """Bind the six policy digests, 61 artifact paths and catalog before observation.
+    """Bind the six policy digests, 62 artifact paths and catalog before observation.
 
     The authority digest must be independently protected. This no-secret
     replay neither authenticates that external approval nor signs an index.

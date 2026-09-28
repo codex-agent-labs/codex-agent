@@ -24,6 +24,7 @@ class SdkFamilyWorkflowTest(unittest.TestCase):
             {**workflow.product_reuse._identity_record(instance),
              "buildKey": "sha256:" + "a" * 64} for instance in PHASE_INSTANCE_IDS]}
         for family, expected in (
+                ("csharp-binary", {PhaseInstanceId("sdk", "csharp", "binary", "desktop")}),
                 ("native-package", {PhaseInstanceId("sdk", language, "package", "desktop") for language in NATIVE_BINDINGS}),
                 ("javascript-metadata", {PhaseInstanceId("sdk", "javascript", "metadata", "node")})):
             value = workflow.matrix(self.plan, self.discovery, self.state, self.repository / family,
@@ -46,6 +47,7 @@ class SdkFamilyWorkflowTest(unittest.TestCase):
             (source / name).mkdir(parents=True)
             (source / name / "retained").write_bytes(b"original\x00\xff")
         for family, wave, identity in (
+                ("csharp-binary", 19, PhaseInstanceId("sdk", "csharp", "binary", "desktop")),
                 ("native-package", 4, PhaseInstanceId("sdk", "python", "package", "desktop")),
                 ("javascript-metadata", 6, PhaseInstanceId("sdk", "javascript", "metadata", "node"))):
             for failure in (False, True):

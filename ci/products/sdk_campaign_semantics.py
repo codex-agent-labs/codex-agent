@@ -4,7 +4,7 @@ An independently reviewed, non-secret caller owns the held selection and
 policy/capture pins. The protected signer separately authenticates its original
 inputs and semantic output, then grants release trust without executing any
 candidate or tooling code. This helper only checks that the existing full
-family gates return the 61 selected original receipts.
+family gates return the 62 selected original receipts.
 """
 
 from collections.abc import Mapping
@@ -28,7 +28,7 @@ def _id(component, phase, target):
 def verify_sdk_campaign_semantics(*, sources, envelopes, stages, maven_controls,
         core_validation_controls, core_validation_policy, core_metadata_control,
         android_control, apple_control, javascript_control, native_control):
-    """Return exact original bytes only after all 61 real semantic gates pass.
+    """Return exact original bytes only after all 62 real semantic gates pass.
 
     ``sources``, ``envelopes`` and ``stages`` must be the private values yielded
     by ``held_sdk_campaign_selection`` on the non-secret replay runner. Controls
@@ -38,7 +38,7 @@ def verify_sdk_campaign_semantics(*, sources, envelopes, stages, maven_controls,
     """
     for name, values in (("sources", sources), ("envelopes", envelopes), ("stages", stages)):
         if not isinstance(values, Mapping) or set(values) != SDK_CAMPAIGN_INSTANCES:
-            raise ValueError(f"SDK semantic campaign {name} must contain all 61 instances")
+            raise ValueError(f"SDK semantic campaign {name} must contain all 62 instances")
     originals = {}
     for instance in SDK_CAMPAIGN_INSTANCES:
         selected, envelope = _validate_envelope(envelopes[instance])
@@ -122,7 +122,7 @@ def verify_sdk_campaign_semantics(*, sources, envelopes, stages, maven_controls,
         stages={instance: stages[instance] for instance in NATIVE_CAMPAIGN_INSTANCES},
         **native_control)
     if not isinstance(native_receipts, Mapping) or set(native_receipts) != NATIVE_CAMPAIGN_INSTANCES:
-        raise ValueError("Native campaign did not verify all 35 phases")
+        raise ValueError("Native campaign did not verify all 36 phases")
     result.update({instance: value[1] for instance, value in native_receipts.items()})
     if set(result) != SDK_CAMPAIGN_INSTANCES or result != originals:
         raise ValueError("SDK semantic campaign changed an original receipt")

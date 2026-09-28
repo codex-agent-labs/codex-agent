@@ -93,7 +93,7 @@ class SdkCampaignIndexTest(unittest.TestCase):
 
     def test_signed_index_binds_all_original_receipts_and_objects(self):
         index, raw = self._verify()
-        self.assertEqual(len(index["entries"]), 61)
+        self.assertEqual(len(index["entries"]), 62)
         self.assertEqual(raw, self.source.manifest.read_bytes())
 
     def test_signed_wrong_original_or_context_fails(self):

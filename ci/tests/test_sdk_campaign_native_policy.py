@@ -42,7 +42,7 @@ class NativeElectionTest(TestCase):
         policy = _policy()
         fresh, reused, raw = self.load(policy)
         self.assertEqual(set(fresh), NATIVE_CAMPAIGN_INSTANCES)
-        self.assertEqual(len(fresh), 35)
+        self.assertEqual(len(fresh), 36)
         self.assertEqual(reused, {})
         self.assertEqual(raw, canonical_json_bytes(policy))
 
@@ -61,7 +61,7 @@ class NativeElectionTest(TestCase):
             "trusted_catalog_workflow_path": ".github/workflows/sdk-failed-catalog.yml",
             "trusted_catalog_job_name": "catalog"}
         fresh, reused, _ = self.load(policy)
-        self.assertEqual(len(fresh), 34)
+        self.assertEqual(len(fresh), 35)
         self.assertEqual(len(reused), 1)
         self.assertEqual(next(iter(reused.values()))["catalog_public_key"], key)
         policy["selections"][0]["request"]["catalog_public_key"] = "relative.pub"

@@ -52,6 +52,7 @@ from .selection import phase_git_inventory
 from .runtime_flags import load_runtime_binary_flags_bytes
 from .runtime_identity import derive_runtime_identity_from_git
 from .toolchain import load_toolchain_profile_bytes
+from .sdk_dotnet_toolchain import load_sdk_dotnet_profile_bytes
 from .sdk_runtime_content import VerifiedNativeRuntimeProjection, verify_native_runtime_projection
 from .runtime_adapter_content import VerifiedAdapterRuntimeProjection
 from .sdk_validation import VerifiedSdkValidationProjection, sdk_validation_provider
@@ -159,15 +160,16 @@ def verified_phase_toolchain_digest(
         return NOT_APPLICABLE_TOOLCHAIN_DIGEST
     if type(revision) is not str or _GIT_OBJECT_ID.fullmatch(revision) is None:
         raise ValueError("Repository revision must be an exact lowercase Git object ID")
-    profile = load_toolchain_profile_bytes(
-        git_regular_blob_bytes(
-            root,
-            revision,
-            f"{_RUNTIME_TOOLCHAIN_PROFILE_ROOT}/{profile_id}.json",
-            max_bytes=65_536,
-        ),
-        profile_id,
-    )
+    if profile_id == "sdk-csharp":
+        profile = load_sdk_dotnet_profile_bytes(git_regular_blob_bytes(
+            root, revision, "gradle/release/toolchains/sdk/csharp.json", max_bytes=65_536,
+        ))
+    else:
+        profile = load_toolchain_profile_bytes(
+            git_regular_blob_bytes(root, revision,
+                f"{_RUNTIME_TOOLCHAIN_PROFILE_ROOT}/{profile_id}.json", max_bytes=65_536),
+            profile_id,
+        )
     if supplied_digest != profile.digest:
         raise ValueError("Plan request toolchainProfileDigest does not match the tracked target authority")
     return profile.digest
@@ -594,7 +596,7 @@ def attach_runtime_binary_identity(
     plan: dict[str, Any],
     contract_projection: VerifiedContractProjection | None,
 ) -> dict[str, Any]:
-    if required_toolchain_profile(instance) is None:
+    if instance.product != "runtime" or required_toolchain_profile(instance) is None:
         return plan
     result = dict(plan)
     result["runtimeBinaryIdentity"] = derive_runtime_identity_from_git(

@@ -148,7 +148,7 @@ COMPONENTS = tuple(sorted((
             "sdk",
             language,
             "node" if language == "javascript" else "desktop",
-            ("package", "validation", "metadata"),
+            PHASE_ORDER if language == "csharp" else ("package", "validation", "metadata"),
             "sdk",
             ("contract", "runtime-node-js") if language == "javascript" else
             tuple(sorted(("contract", *(f"runtime-{target}" for target in NATIVE_TARGETS)))),
@@ -214,11 +214,16 @@ NATIVE_BINARY_TOOLCHAIN_PROFILES = {
     PhaseInstanceId("runtime", target, "binary", target): target
     for target in NATIVE_TARGETS
 }
+SDK_CSHARP_TOOLCHAIN_INSTANCES = frozenset({
+    PhaseInstanceId("sdk", "csharp", phase, "desktop") for phase in ("binary", "package")
+})
 
 
 def required_toolchain_profile(instance: PhaseInstanceId) -> str | None:
     if instance not in PHASE_INSTANCE_IDS:
         raise ValueError(f"Unknown product phase instance: {instance}")
+    if instance in SDK_CSHARP_TOOLCHAIN_INSTANCES:
+        return "sdk-csharp"
     return NATIVE_BINARY_TOOLCHAIN_PROFILES.get(instance)
 
 
@@ -251,8 +256,13 @@ def phase_instance_dependencies(instance: PhaseInstanceId) -> tuple[PhaseInstanc
             PhaseInstanceId("runtime", component_name, "metadata", component_name)
             for component_name in RUNTIME_COMPONENTS
         )
-    elif phase.product == "sdk" and phase.component in {"sdk-core", "sdk-android", "sdk-ios"} and phase.phase == "binary":
+    elif phase.product == "sdk" and phase.component in {"sdk-core", "sdk-android", "sdk-ios", "csharp"} and phase.phase == "binary":
         dependencies.append(PhaseInstanceId("contract", "contract", "metadata", "common"))
+        if phase.component == "csharp":
+            dependencies.extend(
+                PhaseInstanceId("runtime", target, "metadata", target) for target in NATIVE_TARGETS
+            )
+            dependencies.append(PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"))
     elif phase == PhaseId("sdk", "sdk-core", "validation"):
         dependencies.append(PhaseInstanceId("contract", "contract", "metadata", "common"))
     elif (
@@ -317,6 +327,8 @@ def required_contract_components(instance: PhaseInstanceId) -> tuple[str, ...]:
         components = ("android",)
     elif phase == PhaseId("sdk", "sdk-ios", "binary"):
         components = ("ios-arm64", "ios-simulator-arm64")
+    elif phase == PhaseId("sdk", "csharp", "binary"):
+        components = ("common",)
     elif phase == PhaseId("sdk", "sdk-core", "package"):
         components = ("common",)
     elif phase == PhaseId("sdk", "sdk-android", "package"):
@@ -349,8 +361,8 @@ def phase_dependencies(phase: PhaseId) -> tuple[PhaseId, ...]:
 def validate_registry() -> None:
     if PHASE_ORDER != tuple(phase for phase in PHASE_ORDER if phase in RECEIPT_PHASES):
         raise ValueError("Registry phase order disagrees with receipt schema")
-    if len(COMPONENTS) != 19 or len(PHASE_IDS) != 67 or len(PHASE_INSTANCE_IDS) != 111:
-        raise ValueError("Registry must contain 19 components, 67 phases, and 111 instances")
+    if len(COMPONENTS) != 19 or len(PHASE_IDS) != 68 or len(PHASE_INSTANCE_IDS) != 112:
+        raise ValueError("Registry must contain 19 components, 68 phases, and 112 instances")
     if tuple(component.name for component in COMPONENTS) != tuple(sorted(COMPONENTS_BY_NAME)):
         raise ValueError("Product component names must be sorted and unique")
     if len(COMPONENTS_BY_IDENTITY) != len(COMPONENTS):

@@ -154,7 +154,7 @@ def prepare_sdk_release_index(plan_path, repository_root, *, authority_file,
                 token=token, environ=environ, **candidate_options) as (verified, transport):
             receipts, _evidence = verified
             if not isinstance(receipts, Mapping) or set(receipts) != SDK_CAMPAIGN_INSTANCES:
-                raise ValueError("Official SDK replay did not verify all 61 originals")
+                raise ValueError("Official SDK replay did not verify all 62 originals")
             current = validate_producer(producer)
             if (repository != current["repository"] or context.get("kind") != "pull-request"
                     or context.get("pullRequest") != current["pullRequest"]
@@ -271,7 +271,7 @@ def stage_prepared_sdk_release_index(prepared: bytes, destination: Path):
 def sign_approved_sdk_release_index(prepared_index: Path, *, expected_index_sha256,
         keyring_path: Path, keys_directory: Path, expected_keyring_sha256,
         private_key: Path, environ: Mapping[str, str]):
-    """Sign exactly an independently approved all-61 index, without observation.
+    """Sign exactly an independently approved all-62 index, without observation.
 
     The protected caller must obtain ``expected_index_sha256`` independently
     from its approval authority; deriving it from ``prepared_index`` here would
@@ -315,7 +315,7 @@ def verify_signed_sdk_release_index_against_official_replay(
         keyring_path, keys_directory, expected_keyring_sha256,
         evidence_destination=None, expected_keys_inventory_sha256=None,
         **replay_options):
-    """Recheck signed bytes against the full official all-61 replay without a key.
+    """Recheck signed bytes against the full official all-62 replay without a key.
 
     The three expected digests must come from protected caller approval, not
     from the signed files or a development catalog. This grants no approval by

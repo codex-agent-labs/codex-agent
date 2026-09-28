@@ -1,6 +1,6 @@
 """Capture the three SDK Maven package objects against a protected campaign index.
 
-This is a no-secret, token-bearing custody step. The signed all-61 index is the
+This is a no-secret, token-bearing custody step. The signed all-62 index is the
 prior protected release/semantic decision; this module does not repeat host,
 compiler, Firebase, or Apple execution proof and grants no signing authority.
 Only the separately pinned same-PR original uploads and their exact object
@@ -53,7 +53,7 @@ def capture_sdk_phase10_maven_campaign(
 
     Each selection is protected caller input, not discovered from an upload.
     A successful result is custody/content evidence only. The prior protected
-    all-61 signer, not this function, established semantic release admission.
+    all-62 signer, not this function, established semantic release admission.
     """
     require_no_signing_secret(os.environ)
     if type(token) is not str or not token or set(selections) != _PACKAGES:
@@ -97,7 +97,7 @@ def capture_sdk_phase10_maven_campaign(
             or len(index["entries"]) != len(SDK_CAMPAIGN_INSTANCES)
             or set(entries) != SDK_CAMPAIGN_INSTANCES
             or len({entry["productVersion"] for entry in index["entries"]}) != 1):
-        raise ValueError("SDK Maven custody requires the exact release-signed all-61 PR campaign")
+        raise ValueError("SDK Maven custody requires the exact release-signed all-62 PR campaign")
     with tempfile.TemporaryDirectory(prefix="sdk-phase10-maven-") as temporary:
         root = Path(temporary).resolve()
         prepared = root / "custody"

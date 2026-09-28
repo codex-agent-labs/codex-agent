@@ -841,6 +841,20 @@ class ProductReuseAdapterTest(unittest.TestCase):
         ), self.assertRaises(ValueError):
             product_reuse._authorities(self.root, COMMIT, (native,))
 
+    def test_csharp_binary_and_package_use_the_exact_sdk_profile(self) -> None:
+        path = "gradle/release/toolchains/sdk/csharp.json"
+        raw = (Path(__file__).resolve().parents[2] / path).read_bytes()
+        instances = tuple(PhaseInstanceId("sdk", "csharp", phase, "desktop")
+                          for phase in ("binary", "package"))
+        with mock.patch.object(product_reuse, "tree_entries", return_value=[(path, object())]), \
+                mock.patch.object(product_reuse, "git_regular_blob_bytes", return_value=raw) as read_blob:
+            records, reason = product_reuse._authorities(self.root, COMMIT, instances)
+        self.assertIsNone(reason)
+        self.assertEqual([sha256_bytes(raw)] * 2,
+                         [record["toolchainProfileDigest"] for record in records])
+        self.assertEqual([mock.call(self.root, COMMIT, path, max_bytes=65_536)] * 2,
+                         read_blob.call_args_list)
+
     def test_native_profile_lookup_waits_until_contract_is_fully_reused(self) -> None:
         native = PhaseInstanceId("runtime", "linux-x64", "binary", "linux-x64")
         contract_records = [{

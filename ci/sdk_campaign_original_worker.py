@@ -1,7 +1,7 @@
 """Observe one fresh SDK worker upload without granting release or semantic trust.
 
 Reused catalog objects have a different provenance route and are rejected here.
-The caller must hold the selected 61-phase state while using this context.
+The caller must hold the selected 62-phase state while using this context.
 """
 
 from contextlib import contextmanager

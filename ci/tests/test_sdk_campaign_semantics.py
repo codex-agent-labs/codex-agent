@@ -67,7 +67,7 @@ class SdkCampaignSemanticsTest(TestCase):
                 core_validation_policy={}, core_metadata_control={}, android_control={},
                 apple_control={}, javascript_control={}, native_control={})
 
-    def test_all_61_originals_require_every_family(self):
+    def test_all_62_originals_require_every_family(self):
         self.assertEqual(self.run_campaign(), self.originals)
         self.assertEqual([name for name, _ in self.calls].count("maven"), 4)
         self.assertEqual({name for name, _ in self.calls},
@@ -82,11 +82,11 @@ class SdkCampaignSemanticsTest(TestCase):
         with self.assertRaisesRegex(ValueError, "changed an original receipt"):
             self.run_campaign(native_result=native)
         native.pop(changed)
-        with self.assertRaisesRegex(ValueError, "all 35 phases"):
+        with self.assertRaisesRegex(ValueError, "all 36 phases"):
             self.run_campaign(native_result=native)
 
     def test_missing_selection_fails_before_any_family_gate(self):
         self.sources.pop(next(iter(self.sources)))
-        with self.assertRaisesRegex(ValueError, "all 61 instances"):
+        with self.assertRaisesRegex(ValueError, "all 62 instances"):
             self.run_campaign()
         self.assertEqual(self.calls, [])

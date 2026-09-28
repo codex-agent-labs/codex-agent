@@ -33,6 +33,7 @@ from ci.products.registry import (
 from ci.products.runtime_flags import load_runtime_binary_flags
 from ci.products.selection import phase_git_inventory
 from ci.products.toolchain import PROFILE_SHAPES, PROFILE_TOOL_NAMES
+from ci.products.sdk_dotnet_toolchain import load_sdk_dotnet_profile_bytes
 
 
 DIGEST_A = sha256_bytes(b"a")
@@ -424,6 +425,28 @@ class ProductPlanTest(unittest.TestCase):
                     PhaseInstanceId("runtime", "linux-x64", "binary", "linux-x64"),
                     sha256_bytes((profiles / "linux-x64.json").read_bytes()),
                 )
+
+    def test_csharp_toolchain_uses_sdk_profile_for_binary_and_package(self) -> None:
+        profile_bytes = (Path(__file__).resolve().parents[2] /
+                         "gradle/release/toolchains/sdk/csharp.json").read_bytes()
+        digest = load_sdk_dotnet_profile_bytes(profile_bytes).digest
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            profile = root / "gradle/release/toolchains/sdk/csharp.json"
+            profile.parent.mkdir(parents=True)
+            profile.write_bytes(profile_bytes)
+            subprocess.run(("git", "init", "-q"), cwd=root, check=True)
+            subprocess.run(("git", "config", "user.email", "fixture@example.invalid"), cwd=root, check=True)
+            subprocess.run(("git", "config", "user.name", "Fixture"), cwd=root, check=True)
+            subprocess.run(("git", "add", "."), cwd=root, check=True)
+            subprocess.run(("git", "commit", "-qm", "sdk profile"), cwd=root, check=True)
+            revision = subprocess.run(("git", "rev-parse", "HEAD"), cwd=root, check=True,
+                                      capture_output=True, text=True).stdout.strip()
+            for phase in ("binary", "package"):
+                instance = PhaseInstanceId("sdk", "csharp", phase, "desktop")
+                self.assertEqual(digest, verified_phase_toolchain_digest(root, revision, instance, digest))
+                with self.assertRaisesRegex(ValueError, "does not match"):
+                    verified_phase_toolchain_digest(root, revision, instance, DIGEST_A)
 
     def test_native_flags_are_derived_from_the_exact_revision_and_invalidate_one_target(self) -> None:
         authority = Path(__file__).resolve().parents[2] / (

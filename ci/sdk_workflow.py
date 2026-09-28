@@ -280,7 +280,7 @@ def matrix(plan, discovery, state, github_output_path, *, repository_root=None, 
             return native_route(ready)
         if ios_binary or family in ("ios-package", "ios-validation", "ios-metadata", "core-binary"):
             return {"runner": "macos-26", "runnerOs": "macOS", "runnerArch": "ARM64"}
-        if family in ("javascript-metadata", "core-package", "core-metadata",
+        if family in ("csharp-binary", "javascript-metadata", "core-package", "core-metadata",
                       "android-binary", "android-package", "android-validation", "android-metadata"):
             return {"runner": "ubuntu-24.04", "runnerOs": "Linux", "runnerArch": "X64"}
         return route(ready)
@@ -343,7 +343,7 @@ def capture_transport(plan, destination, github_output_path, *, artifact_id,
     """
     if (type(state_wave) is not int or state_wave not in range(6)
             or (sdk_state_wave is not None and (type(sdk_state_wave) is not int
-                or sdk_state_wave not in range(1, 19) or state_wave != 0))):
+                or sdk_state_wave not in range(1, 20) or state_wave != 0))):
         raise ValueError("SDK transport requires one exact current state wave")
     root = Path(repository_root).resolve(strict=True)
     plan, _, destination = product_reuse._product_materialization_paths(root, plan, plan, destination)
@@ -379,7 +379,7 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
             sdk_worker_workflow_path=None, sdk_worker_job_name=None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Advance only the exact elected SDK partition using the shared collector."""
-    family_waves = {"native-package": 4, "ios-package": 5, "javascript-metadata": 6,
+    family_waves = {"csharp-binary": 19, "native-package": 4, "ios-package": 5, "javascript-metadata": 6,
                     "native-validation": 7, "native-metadata": 8, "ios-validation": 9, "ios-metadata": 10,
                     "core-binary": 11, "core-package": 12, "core-validation": 13, "core-metadata": 14,
                     "android-binary": 15, "android-package": 16, "android-validation": 17,
@@ -648,7 +648,7 @@ def _workflow_main(argv):
     captured.add_argument("--state-wave", type=int, default=0)
     captured.add_argument("--sdk-state-wave", type=int)
     parsers["collect"].add_argument("--input-root", type=Path, required=True)
-    parsers["collect"].add_argument("--wave", type=int, choices=range(1, 19), required=True)
+    parsers["collect"].add_argument("--wave", type=int, choices=range(1, 20), required=True)
     parsers["collect"].add_argument("--sdk-worker-workflow-path")
     parsers["collect"].add_argument("--sdk-worker-job-name")
     arguments = vars(parser.parse_args(argv))
@@ -676,7 +676,7 @@ def _capture_transport_main(argv):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--artifact-id", type=int, required=True)
     parser.add_argument("--state-wave", type=int, choices=range(6), default=0)
-    parser.add_argument("--sdk-state-wave", type=int, choices=range(1, 19))
+    parser.add_argument("--sdk-state-wave", type=int, choices=range(1, 20))
     arguments = vars(parser.parse_args(argv))
     arguments["github_output_path"] = arguments.pop("github_output")
     try:

@@ -88,9 +88,9 @@ class SdkPhase11ObjectsTest(unittest.TestCase):
                 **{**args, **changes})
         return result, index_copy
 
-    def test_all_61_original_objects_and_index_forward_exactly(self):
+    def test_all_62_original_objects_and_index_forward_exactly(self):
         result, copy_index = self.forward()
-        self.assertEqual(61, result["objectCount"])
+        self.assertEqual(62, result["objectCount"])
         copy_index.assert_called_once()
         self.assertEqual((self.capture / "signed-pair/product-index.json").read_bytes(),
             (self.destination / "signed-campaign/signed-pair/product-index.json").read_bytes())
@@ -102,7 +102,7 @@ class SdkPhase11ObjectsTest(unittest.TestCase):
 
     def test_missing_or_self_selected_pins_cannot_forward(self):
         self._write_pins([])
-        with self.assertRaisesRegex(ValueError, "61-phase"):
+        with self.assertRaisesRegex(ValueError, "62-phase"):
             self.forward()
         self.assertFalse(self.destination.exists())
         self._write_pins()

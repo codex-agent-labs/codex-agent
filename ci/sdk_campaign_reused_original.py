@@ -86,7 +86,7 @@ def verify_completed_sdk_catalog_pin(snapshot, *, producer, artifact_name,
     instances = [PhaseInstanceId(*(entry[field] for field in
         ("product", "component", "phase", "target"))) for entry in entries]
     if len(instances) != len(SDK_CAMPAIGN_INSTANCES) or set(instances) != SDK_CAMPAIGN_INSTANCES:
-        raise ValueError("Completed SDK catalog lacks the exact 61 phases")
+        raise ValueError("Completed SDK catalog lacks the exact 62 phases")
     return index_sha256
 
 
@@ -123,7 +123,7 @@ def verify_completed_sdk_catalog_originals(snapshot, observations, artifact_path
             or not isinstance(observations, Mapping) or not isinstance(artifact_paths, Mapping)
             or set(observations) != SDK_CAMPAIGN_INSTANCES
             or set(artifact_paths) != SDK_CAMPAIGN_INSTANCES):
-        raise ValueError("Completed SDK catalog requires 61 held original selections")
+        raise ValueError("Completed SDK catalog requires 62 held original selections")
     listed = snapshot.values["index"]["entries"]
     entries = {PhaseInstanceId(*(entry[field] for field in
         ("product", "component", "phase", "target"))): entry

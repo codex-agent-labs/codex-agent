@@ -202,7 +202,7 @@ def discover_fresh_sdk_original_pin(instance, *, producer, expected_build_key,
 
     The caller supplies the exact phase, build key, version, current producer and
     reviewed workflow route independently. This is a non-secret locator only;
-    the 61-original holder still re-downloads and verifies the complete shard.
+    the 62-original holder still re-downloads and verifies the complete shard.
     """
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)

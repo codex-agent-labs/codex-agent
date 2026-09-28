@@ -76,6 +76,7 @@ if (sdkBinaryRequest) {
         )
         "sdk-android" -> listOf("android")
         "sdk-ios" -> listOf("ios-arm64", "ios-simulator-arm64")
+        "csharp" -> listOf("common")
         else -> error("Unsupported SDK binary component: $component")
     }
     val requiredProperties = listOf(

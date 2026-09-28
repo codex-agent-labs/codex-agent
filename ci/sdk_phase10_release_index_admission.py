@@ -1,4 +1,4 @@
-"""Capture a later protected SDK index upload against the original 61-phase PR.
+"""Capture a later protected SDK index upload against the original 62-phase PR.
 
 This no-secret handoff requires independent pins for both producers and every
 uploaded byte. It does not authorize a dispatch or mint release trust itself.

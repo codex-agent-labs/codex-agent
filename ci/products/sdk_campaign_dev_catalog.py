@@ -44,7 +44,7 @@ def stage_sdk_partial_same_pr_catalog(
     """Preserve successful original phases of an incomplete PR in a development index.
 
     A partial index is only a cache source. It is never a completed campaign or
-    release-admission artifact; those gates still require the exact 61 phases.
+    release-admission artifact; those gates still require the exact 62 phases.
     """
     return _stage_sdk_same_pr_catalog(sources, envelopes, archives, producer=producer,
                                       destination=destination, partial=True)
@@ -76,9 +76,9 @@ def _stage_sdk_same_pr_catalog(sources, envelopes, archives, *, producer, destin
         raise ValueError("Same-PR SDK catalog requires a current PR")
     if partial:
         if not selected_instances or not selected_instances < SDK_CAMPAIGN_INSTANCES:
-            raise ValueError("Partial SDK catalog requires a nonempty proper subset of 61 phases")
+            raise ValueError("Partial SDK catalog requires a nonempty proper subset of 62 phases")
     elif selected_instances != SDK_CAMPAIGN_INSTANCES:
-        raise ValueError("Same-PR SDK catalog requires one current PR and all 61 phases")
+        raise ValueError("Same-PR SDK catalog requires one current PR and all 62 phases")
     if set(envelopes) != selected_instances or set(archives) != selected_instances:
         raise ValueError("Same-PR SDK catalog sources, envelopes and archives must match")
     selected_sources = dict(sources)

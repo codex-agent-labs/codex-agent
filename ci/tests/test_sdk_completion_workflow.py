@@ -308,7 +308,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
     def test_catalog_job_uses_completed_state_and_no_product_build(self):
         job = self.job("sdk-catalog")
         self.assertIn("github.event_name == 'pull_request'", job)
-        self.assertIn("needs.sdk-completion.outputs.phase_count == '61'", job)
+        self.assertIn("needs.sdk-completion.outputs.phase_count == '62'", job)
         self.assertIn("artifact-id: ${{ needs.sdk-completion.outputs.artifact_id }}", job)
         self.assertIn("artifact-sha256: ${{ needs.sdk-completion.outputs.artifact_digest }}", job)
         self.assertIn("python3 -B -m ci.sdk_campaign_catalog_caller", job)

@@ -113,6 +113,19 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                     ("contract", "contract", "metadata", "common") or len(bundles) != 1
                     or bundles[0]["sha256"] != selection["contractPayloadSha256"]):
                 raise ValueError("Current Contract differs from authenticated native SDK inputs")
+            csharp_binary = None
+            if component == "csharp":
+                binary_root = prepared / "sdk-csharp-binary-desktop"
+                binary_receipt = product_reuse.validate_phase_receipt(product_reuse._canonical_control(
+                    binary_root / PHASE_RECEIPT_NAME, "C# binary predecessor receipt"))
+                if tuple(binary_receipt[name] for name in ("product", "component", "phase", "target")) != (
+                        "sdk", "csharp", "binary", "desktop"):
+                    raise ValueError("C# package has the wrong binary predecessor")
+                csharp_binary = binary_root / "stage"
+                binary_manifest = product_reuse.verify_output_manifest_identity(
+                    csharp_binary, "sdk", "csharp", "binary", "desktop", selection["sdkVersion"])
+                if binary_manifest["outputs"] != binary_receipt["outputs"]:
+                    raise ValueError("C# binary predecessor differs from its original receipt")
 
             def original(product, target_component, phase, target):
                 original_identity = PhaseInstanceId(product, target_component, phase, target)
@@ -149,19 +162,24 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                     raise ValueError("Native package original inputs or preparation capture changed")
 
             unchanged()
+            binary_argument = {"csharp_binary_stage": csharp_binary} if csharp_binary is not None else {}
             result = execute_package(ready, producer=producer, sdk_version=selection["sdkVersion"],
                 repository_root=root, destination=destination / "worker", runtime_stages=runtime_stages,
                 prepared_sources=capture / "original/prepared-sources", staged_sdks=capture / "original/staged-sdks",
                 compatibility_request=inputs["sdk"]["directory"] / REQUEST_NAME,
-                predecessor=original, environ=environ)
+                predecessor=original, environ=environ, **binary_argument)
             unchanged()
             finalized = product_reuse.finalize_phase_object(stage_root=result["stage"], phase_plan=ready,
                 producer=producer, product_version=selection["sdkVersion"],
                 trust_domain="development" if producer["event"] == "pull_request" else "release",
                 destination=candidate)
+            binary_gate = ({"binary_stage_root": csharp_binary,
+                            "binary_receipt_path": binary_root / PHASE_RECEIPT_NAME}
+                           if csharp_binary is not None else {})
             verified, raw = verify_sdk_package_inputs(root, result["stage"], candidate / PHASE_RECEIPT_NAME,
                 inputs["sdk"]["directory"] / REQUEST_NAME,
-                runtime_stage_root=runtime_stages, staged_sdks=capture / "original/staged-sdks")
+                runtime_stage_root=runtime_stages, staged_sdks=capture / "original/staged-sdks",
+                **binary_gate)
             if verified != finalized["receipt"] or raw != read_regular_file_bytes(candidate / PHASE_RECEIPT_NAME):
                 raise ValueError("Native package full gate returned a different original candidate receipt")
             candidate_inventory = regular_file_inventory(candidate)

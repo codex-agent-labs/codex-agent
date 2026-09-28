@@ -57,6 +57,8 @@ class ProductPhaseMappingContractTest {
                 "writeJavaScriptSdkMetadataOutputManifest",
             Triple("sdk", "python", "package") to
                 "writePythonNativeWrapperSdkPackageOutputManifest",
+            Triple("sdk", "csharp", "binary") to
+                "writeCSharpNativeWrapperSdkBinaryOutputManifest",
             Triple("sdk", "csharp", "package") to
                 "writeCSharpNativeWrapperSdkPackageOutputManifest",
             Triple("sdk", "rust", "package") to
@@ -282,7 +284,7 @@ class ProductPhaseMappingContractTest {
                 "\"writeJavaScriptSdkPackageOutputManifest\")" in javascriptPackage(),
         )
         assertEquals(
-            4, // Maven package, native package, validation, and metadata share the same writer.
+            5, // Maven package, C# binary, native package, validation, and metadata share the writer.
             Regex("tasks\\.register<WriteProductOutputManifestTask>").findAll(nativeWrapperPackage()).count(),
         )
         assertEquals(1, Regex("abstract class WriteProductOutputManifestTask").findAll(manifestTask).count())

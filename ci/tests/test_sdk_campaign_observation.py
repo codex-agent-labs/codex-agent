@@ -91,7 +91,7 @@ class SdkCampaignObservationTest(TestCase):
         capture, replay = self.observe(state)
         with capture, replay, observed.held_sdk_campaign_observation(self.root / "plan.json", **self.kwargs()) as (
                 transport, originals):
-            self.assertEqual(len(originals), 61)
+            self.assertEqual(len(originals), 62)
             self.assertEqual(load_canonical_json_bytes(transport)["artifact"]["id"], 7)
             first = min(SDK_CAMPAIGN_INSTANCES)
             self.assertEqual(originals[first].replay_record_canonical, canonical_json_bytes(self.records[first]))

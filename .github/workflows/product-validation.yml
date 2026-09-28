@@ -2625,13 +2625,199 @@ jobs:
           PY
 
 
-  sdk-native-plan:
+  sdk-csharp-binary-plan:
+    name: sdk-csharp-binary-plan
     needs: [plan, sdk-plan, sdk-javascript]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-javascript.result == 'success' &&
       needs.sdk-javascript.outputs.artifact_id != '' &&
+      needs.sdk-plan.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
+      sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+      - id: capture
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          product: sdk
+          sdk-family: csharp-binary
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+
+  sdk-csharp-binary:
+    name: sdk-csharp-binary-desktop
+    needs: [plan, sdk-plan, sdk-javascript, sdk-csharp-binary-plan, sdk-inputs]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-csharp-binary-plan.result == 'success' &&
+      needs.sdk-csharp-binary-plan.outputs.sdk_workers_required == 'true' &&
+      needs.sdk-inputs.result == 'success' &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.sdk-csharp-binary-plan.outputs.sdk_matrix || '{"include":[]}') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+      - uses: ./.github/actions/sdk-csharp-binary-worker
+        with:
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
+          sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
+          tree: ${{ needs.plan.outputs.validation_tree }}
+          build-key: ${{ matrix.buildKey }}
+
+  sdk-collect-19:
+    name: sdk-collect-19
+    needs: [plan, sdk-plan, sdk-javascript, sdk-csharp-binary-plan, sdk-csharp-binary]
+    if: >-
+      always() && needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-csharp-binary-plan.result == 'success' &&
+      needs.sdk-csharp-binary-plan.outputs.sdk_workers_required == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
+      wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+      - id: collect
+        uses: ./.github/actions/collect-runtime-wave
+        with:
+          product: sdk
+          sdk-family: csharp-binary
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          wave: '19'
+          tree: ${{ needs.plan.outputs.validation_tree }}
+
+  sdk-csharp-binary-result:
+    name: sdk-csharp-binary-result
+    needs: [plan, sdk-javascript, sdk-csharp-binary-plan, sdk-csharp-binary, sdk-collect-19]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.result.outputs.artifact_id }}
+      artifact_digest: ${{ steps.result.outputs.artifact_digest }}
+      state_wave: ${{ steps.result.outputs.state_wave }}
+      sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: result
+        name: Fail after collecting the elected C# binary result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_native_continuation import select_native_state
+          from ci.reuse import github_output
+          github_output(Path(os.environ['GITHUB_OUTPUT']),
+                        select_native_state(json.loads(os.environ['RESULTS']), stage='csharp-binary'))
+          PY
+
+  sdk-native-plan:
+    needs: [plan, sdk-plan, sdk-csharp-binary-result]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-csharp-binary-result.result == 'success' &&
+      needs.sdk-csharp-binary-result.outputs.artifact_id != '' &&
       needs.sdk-plan.result == 'success'
     runs-on: ubuntu-24.04
     outputs:
@@ -2673,10 +2859,10 @@ jobs:
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          artifact-id: ${{ needs.sdk-csharp-binary-result.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-csharp-binary-result.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-csharp-binary-result.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-csharp-binary-result.outputs.sdk_state_wave }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
       - id: preparation
         env:
@@ -2708,7 +2894,7 @@ jobs:
 
   sdk-native-prepare:
     name: sdk-native-prepare
-    needs: [plan, sdk-plan, sdk-javascript, sdk-native-plan, sdk-inputs]
+    needs: [plan, sdk-plan, sdk-csharp-binary-result, sdk-native-plan, sdk-inputs]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -2757,10 +2943,10 @@ jobs:
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          artifact-id: ${{ needs.sdk-csharp-binary-result.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-csharp-binary-result.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-csharp-binary-result.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-csharp-binary-result.outputs.sdk_state_wave }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
           sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
@@ -2772,7 +2958,7 @@ jobs:
 
   sdk-native-workers:
     name: sdk-${{ matrix.component }}-package-desktop
-    needs: [plan, sdk-plan, sdk-javascript, sdk-native-plan, sdk-native-prepare, sdk-inputs]
+    needs: [plan, sdk-plan, sdk-csharp-binary-result, sdk-native-plan, sdk-native-prepare, sdk-inputs]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -2813,10 +2999,10 @@ jobs:
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          artifact-id: ${{ needs.sdk-csharp-binary-result.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-csharp-binary-result.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-csharp-binary-result.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-csharp-binary-result.outputs.sdk_state_wave }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
           sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
@@ -2834,7 +3020,7 @@ jobs:
 
   sdk-collect-4:
     name: sdk-collect-4
-    needs: [plan, sdk-plan, sdk-javascript, sdk-native-plan, sdk-native-prepare, sdk-native-workers]
+    needs: [plan, sdk-plan, sdk-csharp-binary-result, sdk-native-plan, sdk-native-prepare, sdk-native-workers]
     if: >-
       always() && needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-plan.result == 'success' &&
@@ -2876,10 +3062,10 @@ jobs:
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          artifact-id: ${{ needs.sdk-csharp-binary-result.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-csharp-binary-result.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-csharp-binary-result.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-csharp-binary-result.outputs.sdk_state_wave }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           wave: '4'
           tree: ${{ needs.plan.outputs.validation_tree }}
@@ -2888,7 +3074,7 @@ jobs:
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
-    needs: [plan, sdk-javascript, sdk-native-plan, sdk-native-workers, sdk-collect-4, sdk-native-prepare]
+    needs: [plan, sdk-csharp-binary-result, sdk-native-plan, sdk-native-workers, sdk-collect-4, sdk-native-prepare]
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
@@ -4905,7 +5091,7 @@ jobs:
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-completion.result == 'success' &&
       needs.sdk-completion.outputs.complete == 'true' &&
-      needs.sdk-completion.outputs.phase_count == '61'
+      needs.sdk-completion.outputs.phase_count == '62'
     runs-on: ubuntu-24.04
     outputs:
       artifact_name: ${{ steps.identity.outputs.name }}
@@ -5062,7 +5248,7 @@ jobs:
           PRODUCT_RESUME_RESULT: ${{ needs.product-resume.result }}
           SDK_COMPLETION_RESULT: ${{ needs.sdk-completion.result }}
           SDK_COMPLETE: ${{ needs.sdk-completion.outputs.complete }}
-          SDK_CATALOG_REQUIRED: ${{ github.event_name == 'pull_request' && needs.sdk-completion.outputs.phase_count == '61' }}
+          SDK_CATALOG_REQUIRED: ${{ github.event_name == 'pull_request' && needs.sdk-completion.outputs.phase_count == '62' }}
           SDK_CATALOG_RESULT: ${{ needs.sdk-catalog.result }}
           SDK_CATALOG_NAME: ${{ needs.sdk-catalog.outputs.artifact_name }}
           SDK_CATALOG_ID: ${{ needs.sdk-catalog.outputs.artifact_id }}

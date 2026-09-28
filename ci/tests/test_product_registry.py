@@ -21,8 +21,8 @@ from ci.products.registry import (
 class ProductRegistryTest(unittest.TestCase):
     def test_registry_has_exact_logical_and_concrete_cardinality(self) -> None:
         self.assertEqual(19, len(COMPONENTS))
-        self.assertEqual(67, len(PHASE_IDS))
-        self.assertEqual(111, len(PHASE_INSTANCE_IDS))
+        self.assertEqual(68, len(PHASE_IDS))
+        self.assertEqual(112, len(PHASE_INSTANCE_IDS))
         validate_registry()
 
     def test_every_component_has_one_registry_owned_product_family_coordinate(self) -> None:
@@ -92,12 +92,24 @@ class ProductRegistryTest(unittest.TestCase):
             })
         for language in ("cpp", "csharp", "dart", "python", "rust"):
             with self.subTest(language=language):
+                predecessors = expected | ({
+                    PhaseInstanceId("sdk", "csharp", "binary", "desktop"),
+                } if language == "csharp" else set())
                 self.assertEqual(
-                    tuple(sorted(expected)),
+                    tuple(sorted(predecessors)),
                     phase_instance_dependencies(
                         PhaseInstanceId("sdk", language, "package", "desktop"),
                     ),
                 )
+
+    def test_csharp_binary_binds_embedded_compatibility_without_native_package_bytes(self) -> None:
+        binary = PhaseInstanceId("sdk", "csharp", "binary", "desktop")
+        expected = {PhaseInstanceId("contract", "contract", "metadata", "common"),
+                    PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")}
+        expected.update(PhaseInstanceId("runtime", target, "metadata", target)
+                        for target in NATIVE_TARGETS)
+        self.assertEqual(expected, set(phase_instance_dependencies(binary)))
+        self.assertEqual(("common",), required_contract_components(binary))
 
     def test_native_validation_binds_original_bootstrap_and_contract_even_on_other_hosts(self) -> None:
         contract = PhaseInstanceId("contract", "contract", "metadata", "common")
@@ -159,6 +171,7 @@ class ProductRegistryTest(unittest.TestCase):
             PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"): (
                 "ios-arm64", "ios-simulator-arm64",
             ),
+            PhaseInstanceId("sdk", "csharp", "binary", "desktop"): ("common",),
             PhaseInstanceId("sdk", "python", "package", "desktop"): tuple(sorted(("common", *NATIVE_TARGETS))),
             PhaseInstanceId("sdk", "javascript", "package", "node"): ("node-js",),
         }
@@ -171,7 +184,7 @@ class ProductRegistryTest(unittest.TestCase):
                     phase_instance_dependencies(instance),
                 )
 
-    def test_only_five_native_runtime_binaries_have_classified_toolchain_profiles(self) -> None:
+    def test_compiled_runtime_and_csharp_phases_have_classified_toolchain_profiles(self) -> None:
         classified = {
             instance: required_toolchain_profile(instance)
             for instance in PHASE_INSTANCE_IDS
@@ -180,8 +193,9 @@ class ProductRegistryTest(unittest.TestCase):
         self.assertEqual({
             PhaseInstanceId("runtime", target, "binary", target): target
             for target in NATIVE_TARGETS
-        }, classified)
-        self.assertEqual(106, sum(
+        } | {PhaseInstanceId("sdk", "csharp", phase, "desktop"): "sdk-csharp"
+             for phase in ("binary", "package")}, classified)
+        self.assertEqual(105, sum(
             required_toolchain_profile(instance) is None
             for instance in PHASE_INSTANCE_IDS
         ))

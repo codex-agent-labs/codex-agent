@@ -35,7 +35,7 @@ class SdkCampaignCatalogProducerTest(TestCase):
             self.observations, b"current-transport", self.pins,
             trusted_workflow_sha="pinned-workflow", token="observation-token", environ={})
 
-    def test_independent_phase_selection_discovers_all_61_before_replay(self):
+    def test_independent_phase_selection_discovers_all_62_before_replay(self):
         fresh = {instance: {
             "producer": {"selected": position}, "expected_build_key": _DIGEST,
             "expected_product_version": "0.8.0",
@@ -73,8 +73,8 @@ class SdkCampaignCatalogProducerTest(TestCase):
              }) as discover_reused:
             pins = catalog.discover_sdk_campaign_original_pins(fresh, reused,
                 trusted_workflow_sha="reviewed-sha", token="observation-token", environ={})
-            self.assertEqual(61, len(pins))
-            self.assertEqual(59, discover_fresh.call_count)
+            self.assertEqual(62, len(pins))
+            self.assertEqual(60, discover_fresh.call_count)
             discover_reused.assert_called_once()
             self.assertEqual(set(selected), set(discover_reused.call_args.args[0]))
             self.assertEqual(reused[selected[0]]["catalog_artifact_name"],
@@ -82,10 +82,10 @@ class SdkCampaignCatalogProducerTest(TestCase):
             self.assertIsInstance(pins[selected[0]], catalog.ReusedSdkOriginalPin)
             self.assertIsInstance(pins[self.instances[2]], catalog.FreshSdkOriginalPin)
             fresh.pop(self.instances[2])
-            with self.assertRaisesRegex(ValueError, "exactly 61 disjoint"):
+            with self.assertRaisesRegex(ValueError, "exactly 62 disjoint"):
                 catalog.discover_sdk_campaign_original_pins(fresh, reused,
                     trusted_workflow_sha="reviewed-sha", token="observation-token", environ={})
-            self.assertEqual(59, discover_fresh.call_count)
+            self.assertEqual(60, discover_fresh.call_count)
 
     def test_failed_catalog_producer_is_frozen_from_independent_selection(self):
         producer = {"repository": "codex-agent-labs/codex-agent",
@@ -205,8 +205,8 @@ class SdkCampaignCatalogProducerTest(TestCase):
             pins = catalog.discover_sdk_campaign_original_pins(fresh, reused,
                 trusted_workflow_sha="a" * 40, token="synthetic-token", environ={},
                 custody_catalogs=descriptors)
-            self.assertEqual(61, len(pins))
-            self.assertEqual(59, fresh_lookup.call_count)
+            self.assertEqual(62, len(pins))
+            self.assertEqual(60, fresh_lookup.call_count)
             custody_lookup.assert_called_once()
             ordinary_lookup.assert_not_called()
             self.assertEqual(set(selected), set(custody_lookup.call_args.args[0]))
@@ -238,7 +238,7 @@ class SdkCampaignCatalogProducerTest(TestCase):
                     custody_catalogs={"prior-failed-catalog": {"selection": {
                         **selection, "catalog_artifact_id": []},
                         "destination": Path("held-custody")}})
-            self.assertEqual(59, fresh_lookup.call_count)
+            self.assertEqual(60, fresh_lookup.call_count)
             self.assertEqual(1, custody_lookup.call_count)
         changed_selection = {**selection, "catalog_producer": dict(producer),
             "custody_producer": dict(custody_producer)}
@@ -357,7 +357,7 @@ class SdkCampaignCatalogProducerTest(TestCase):
                 pass
         observation.assert_not_called()
 
-    def test_all_61_originals_remain_held_through_replay_and_close_on_failure(self):
+    def test_all_62_originals_remain_held_through_replay_and_close_on_failure(self):
         active = set()
         closed = []
 
@@ -396,7 +396,7 @@ class SdkCampaignCatalogProducerTest(TestCase):
         reused.assert_not_called()
 
         self.pins.pop(instance)
-        with self.assertRaisesRegex(ValueError, "exact 61"):
+        with self.assertRaisesRegex(ValueError, "exact 62"):
             with self.held():
                 pass
 
@@ -417,8 +417,8 @@ class SdkCampaignCatalogProducerTest(TestCase):
         with patch.object(catalog, "held_fresh_sdk_worker_upload", side_effect=holder) as fresh, \
              patch.object(catalog, "held_reused_sdk_original", side_effect=holder) as reused:
             with self.held() as evidence:
-                self.assertEqual(61, len(evidence))
-            self.assertEqual(60, fresh.call_count)
+                self.assertEqual(62, len(evidence))
+            self.assertEqual(61, fresh.call_count)
             reused.assert_called_once()
             self.assertEqual(101, reused.call_args.kwargs["original_artifact_id"])
             self.assertEqual(201, reused.call_args.kwargs["catalog_artifact_id"])
@@ -573,7 +573,7 @@ class SdkCampaignCatalogProducerTest(TestCase):
     def test_semantic_replay_rejects_missing_artifact_or_changed_receipt(self):
         missing = {instance: "outputs/fixture.bin" for instance in self.instances[1:]}
         with patch.object(catalog, "held_sdk_campaign_original_uploads") as originals, \
-             self.assertRaisesRegex(ValueError, "61 caller-selected artifacts"):
+             self.assertRaisesRegex(ValueError, "62 caller-selected artifacts"):
             with catalog.held_sdk_campaign_semantic_replay(self.observations, b"transport", self.pins,
                     missing, {}, trusted_workflow_sha="pin", token="token", environ={}):
                 pass

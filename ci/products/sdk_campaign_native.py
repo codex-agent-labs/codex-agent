@@ -25,7 +25,7 @@ NATIVE_CAMPAIGN_INSTANCES = frozenset(
                            ("validation", NATIVE_TARGETS),
                            ("metadata", ("desktop",)))
     for target in targets
-)
+) | {PhaseInstanceId("sdk", "csharp", "binary", "desktop")}
 
 
 def verify_sdk_campaign_native(
@@ -37,7 +37,7 @@ def verify_sdk_campaign_native(
     policy_revision: str, required_trust_domain: str,
     tooling_keyring: Path | None = None, tooling_keys_directory: Path | None = None,
 ) -> tuple[dict[PhaseInstanceId, tuple[dict, bytes]], dict[PhaseInstanceId, VerifiedSdkValidationProjection]]:
-    """Verify all five packages, 25 host validations, and five metadata phases.
+    """Verify one C# binary, five packages, 25 host validations, and five metadata phases.
 
     The caller must first bind selected objects to their source/envelopes and
     authenticate every upstream path and tooling policy. Returned host values
@@ -46,7 +46,7 @@ def verify_sdk_campaign_native(
     if (not isinstance(sources, Mapping) or not isinstance(stages, Mapping)
             or set(sources) != NATIVE_CAMPAIGN_INSTANCES
             or set(stages) != NATIVE_CAMPAIGN_INSTANCES):
-        raise ValueError("Native SDK campaign requires its exact 35 phase instances")
+        raise ValueError("Native SDK campaign requires its exact 36 phase instances")
 
     originals = {}
     inventories = {}
@@ -100,11 +100,18 @@ def verify_sdk_campaign_native(
         for component in NATIVE_BINDINGS:
             package = PhaseInstanceId("sdk", component, "package", "desktop")
             metadata = PhaseInstanceId("sdk", component, "metadata", "desktop")
+            binary = PhaseInstanceId("sdk", "csharp", "binary", "desktop")
+            binary_inputs = ({"binary_stage_root": captured[binary],
+                              "binary_receipt_path": receipt_paths[binary]}
+                             if component == "csharp" else {})
             value = verify_sdk_package_inputs(repository, captured[package], receipt_paths[package],
-                compatibility_request, runtime_stage_root=runtime_stages, staged_sdks=staged_sdks)
+                compatibility_request, runtime_stage_root=runtime_stages, staged_sdks=staged_sdks,
+                **binary_inputs)
             if value != originals[package]:
                 raise ValueError("Native SDK package verifier returned another original receipt")
             verified_receipts[package] = value
+            if component == "csharp":
+                verified_receipts[binary] = originals[binary]
 
             validation_root = private / component / "validation"
             validation_receipt_root = private / "receipts" / component / "validation"

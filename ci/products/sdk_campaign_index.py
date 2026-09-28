@@ -24,7 +24,7 @@ def verify_signed_sdk_campaign_originals(
     archives: Mapping[PhaseInstanceId, Path],
     stages: Mapping[PhaseInstanceId, Path],
 ) -> tuple[dict, bytes]:
-    """Authenticate the release-signed PR index and all 61 original phase objects."""
+    """Authenticate the release-signed PR index and all 62 original phase objects."""
     index, raw = verify_release_product_index(
         index_source, keyring_path=keyring_path, keys_directory=keys_directory,
     )

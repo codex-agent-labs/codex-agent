@@ -66,7 +66,7 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
 
     @staticmethod
     def needs():
-        return {"sdk-javascript": {"result": "success", "outputs": {
+        return {"sdk-csharp-binary-result": {"result": "success", "outputs": {
                     "artifact_id": "71", "artifact_digest": "sha256:" + "d" * 64,
                     "state_wave": "0", "sdk_state_wave": "2"}},
                 "sdk-native-plan": {"result": "success", "outputs": {"sdk_workers_required": "true", "preparation_required": "true"}},
@@ -77,7 +77,7 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
 
     def test_original_terminal_state_is_recaptured_before_one_preparation_and_parallel_packages(self):
         planned = self.job("sdk-native-plan")
-        self.assertIn("needs.sdk-javascript.result == 'success'", planned)
+        self.assertIn("needs.sdk-csharp-binary-result.result == 'success'", planned)
         self.assertIn("needs.plan.outputs.event_authorized == 'true'", self.job("sdk-javascript"))
         self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", planned)
         self.assertLess(planned.index("./.github/actions/capture-runtime-state"), planned.index("- id: preparation"))
@@ -104,12 +104,41 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         for job in (planned, prepare, workers, self.job("sdk-collect-4")):
             for flag, field in (("artifact-id", "artifact_id"), ("artifact-sha256", "artifact_digest"),
                                 ("state-wave", "state_wave"), ("sdk-state-wave", "sdk_state_wave")):
-                self.assertIn(flag + ": ${{ needs.sdk-javascript.outputs." + field + " }}", job)
+                self.assertIn(flag + ": ${{ needs.sdk-csharp-binary-result.outputs." + field + " }}", job)
         for flag, field in (("prepared-artifact-id", "artifact_id"), ("prepared-artifact-sha256", "artifact_digest"),
                             ("preparation-component", "preparation_component"), ("preparation-build-key", "preparation_build_key"),
                             ("preparation-state-id", "preparation_state_id"), ("preparation-state-sha256", "preparation_state_digest"),
                             ("preparation-state-wave", "preparation_state_wave"), ("preparation-sdk-state-wave", "preparation_sdk_state_wave")):
             self.assertIn(flag + ": ${{ needs.sdk-native-prepare.outputs." + field + " }}", workers)
+
+    def test_csharp_binary_is_authenticated_and_collected_before_package_election(self):
+        planned = self.job("sdk-csharp-binary-plan")
+        worker = self.job("sdk-csharp-binary")
+        collector = self.job("sdk-collect-19")
+        result = self.job("sdk-csharp-binary-result")
+        native = self.job("sdk-native-plan")
+        for job in (planned, worker, result, native):
+            self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", job)
+        self.assertIn("sdk-family: csharp-binary", planned)
+        self.assertNotIn("setup-kmp", planned)
+        self.assertIn("fromJSON(needs.sdk-csharp-binary-plan.outputs.sdk_matrix", worker)
+        self.assertIn("uses: ./.github/actions/sdk-csharp-binary-worker", worker)
+        self.assertIn("needs.sdk-inputs.result == 'success'", worker)
+        self.assertIn("sdk-family: csharp-binary", collector)
+        self.assertIn("wave: '19'", collector)
+        self.assertIn("always()", collector)
+        self.assertNotIn("needs.sdk-csharp-binary.result", collector.split("    runs-on:", 1)[0])
+        self.assertIn("select_native_state(json.loads(os.environ['RESULTS']), stage='csharp-binary')", result)
+        self.assertIn("sdk-csharp-binary-result", native.split("    runs-on:", 1)[0])
+        for flag, field in (("artifact-id", "artifact_id"), ("artifact-sha256", "artifact_digest"),
+                            ("state-wave", "state_wave"), ("sdk-state-wave", "sdk_state_wave")):
+            self.assertIn(flag + ": ${{ needs.sdk-csharp-binary-result.outputs." + field + " }}", native)
+        action = (ROOT / ".github/actions/sdk-csharp-binary-worker/action.yml").read_text()
+        self.assertLess(action.index("uses: ./.github/actions/capture-runtime-state"),
+                        action.index("uses: ./.github/actions/setup-kmp"))
+        self.assertIn("--sdk-inputs-artifact-sha256", action)
+        self.assertIn("--expected-build-key", action)
+        self.assertIn("codex-agent-sdk-worker-sdk-csharp-binary-desktop-", action)
 
     def test_collection_waits_for_failed_workers_and_final_gate_is_required(self):
         collector = self.job("sdk-collect-4")
@@ -124,7 +153,7 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         self.assertIn("wave: '4'", collector)
         summary = self.job("sdk-native-packages")
         self.assertIn("always()", summary)
-        for name in ("sdk-javascript", "sdk-native-plan", "sdk-native-prepare", "sdk-native-workers", "sdk-collect-4"):
+        for name in ("sdk-csharp-binary-result", "sdk-native-plan", "sdk-native-prepare", "sdk-native-workers", "sdk-collect-4"):
             self.assertIn(name, summary.split("    runs-on:", 1)[0])
         gate = self.job("merge-gate").split("    runs-on:", 1)[0]
         self.assertIn("sdk-native-packages", gate)
@@ -187,7 +216,7 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         base = self.needs()
         self.assertEqual({"artifact_id": "73", "artifact_digest": "sha256:" + "e" * 64,
                           "state_wave": "0", "sdk_state_wave": "4"}, self.summary(base))
-        for name in ("sdk-javascript", "sdk-native-plan", "sdk-native-prepare", "sdk-native-workers", "sdk-collect-4"):
+        for name in ("sdk-csharp-binary-result", "sdk-native-plan", "sdk-native-prepare", "sdk-native-workers", "sdk-collect-4"):
             for result in ("failure", "cancelled", "skipped"):
                 needs = deepcopy(base)
                 needs[name]["result"] = result
@@ -207,11 +236,11 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
             base["sdk-native-plan"]["outputs"]["sdk_workers_required"] = "false"
             base["sdk-native-plan"]["outputs"]["preparation_required"] = "false"
             if no_handoff:
-                base["sdk-javascript"]["outputs"] = {}
+                base["sdk-csharp-binary-result"]["outputs"] = {}
                 base["sdk-native-plan"] = {"result": "skipped", "outputs": {}}
             for name in ("sdk-native-prepare", "sdk-native-workers", "sdk-collect-4"):
                 base[name] = {"result": "skipped", "outputs": {}}
-            expected = base["sdk-javascript"]["outputs"] if not no_handoff else dict(artifact_id="", artifact_digest="", state_wave="", sdk_state_wave="")
+            expected = base["sdk-csharp-binary-result"]["outputs"] if not no_handoff else dict(artifact_id="", artifact_digest="", state_wave="", sdk_state_wave="")
             self.assertEqual(expected, self.summary(base))
             for name in ("sdk-native-prepare", "sdk-native-workers", "sdk-collect-4"):
                 needs = deepcopy(base)
@@ -227,7 +256,7 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         needs["sdk-native-plan"]["outputs"].update(sdk_workers_required="false", preparation_required="true")
         for name in ("sdk-native-workers", "sdk-collect-4"):
             needs[name] = {"result": "skipped", "outputs": {}}
-        self.assertEqual(needs["sdk-javascript"]["outputs"], self.summary(needs))
+        self.assertEqual(needs["sdk-csharp-binary-result"]["outputs"], self.summary(needs))
         needs["sdk-native-prepare"]["result"] = "skipped"
         with self.assertRaises(ValueError):
             self.summary(needs)

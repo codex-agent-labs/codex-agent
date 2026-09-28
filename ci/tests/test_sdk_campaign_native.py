@@ -58,8 +58,17 @@ class NativeCampaignTest(unittest.TestCase):
             component = Path(stage_root).parts[-3]
             instance = PhaseInstanceId("sdk", component, "package", "desktop")
             self.assertEqual(Path(receipt_path).read_bytes(), self.sources[instance].receipt_bytes)
-            self.assertEqual(options, {"runtime_stage_root": self.root / "runtime",
-                                       "staged_sdks": self.root / "sdks"})
+            expected = {"runtime_stage_root": self.root / "runtime",
+                        "staged_sdks": self.root / "sdks"}
+            if component == "csharp":
+                binary = PhaseInstanceId("sdk", "csharp", "binary", "desktop")
+                self.assertEqual(Path(options["binary_receipt_path"]).read_bytes(),
+                                 self.sources[binary].receipt_bytes)
+                self.assertEqual(Path(options["binary_stage_root"]).parts[-3:],
+                                 ("csharp", "binary", "desktop"))
+                expected.update(binary_stage_root=options["binary_stage_root"],
+                                binary_receipt_path=options["binary_receipt_path"])
+            self.assertEqual(options, expected)
             calls["package"].append(instance)
             if package is not None:
                 package(instance)
@@ -115,7 +124,7 @@ class NativeCampaignTest(unittest.TestCase):
         first, second = sorted(NATIVE_CAMPAIGN_INSTANCES)[:2]
         sources = dict(self.sources)
         del sources[first]
-        with self.assertRaisesRegex(ValueError, "exact 35"):
+        with self.assertRaisesRegex(ValueError, "exact 36"):
             verify_sdk_campaign_native(repository=self.root, sources=sources, stages=self.stages,
                 compatibility_request=self.root, runtime_stages=self.root, staged_sdks=self.root,
                 tooling_evidence=self.root, tooling_public_key=self.root, java_executable=self.root,

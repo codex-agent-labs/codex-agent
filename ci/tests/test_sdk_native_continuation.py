@@ -117,7 +117,14 @@ class NativeStateSelectionTest(unittest.TestCase):
         stale["sdk-core-package-result"] = stale.pop("sdk-core-package-wave")
         with self.assertRaises(ValueError):
             routing.select_native_state(stale, stage="core-validation")
-        for invalid in ("19", "0", "01", "-1"):
+        self.assertEqual(("sdk-javascript", "sdk-csharp-binary-plan", "sdk-csharp-binary", "sdk-collect-19", "19"),
+                         routing._STAGES["csharp-binary"])
+        for required in (False, True):
+            selected = needs_for("csharp-binary", required=required, state=locator("2", "0"))
+            self.assertEqual((locator("19", "0") | {"artifact_id": "456", "artifact_digest": "sha256:" + "b" * 64})
+                             if required else locator("2", "0"),
+                             routing.select_native_state(selected, stage="csharp-binary"))
+        for invalid in ("20", "0", "01", "-1"):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 routing._locator(locator(invalid, "0"))
 
@@ -289,7 +296,7 @@ class NativeStateSelectionTest(unittest.TestCase):
                     needs[name]["outputs"][field] = value
                     with self.subTest(stage=stage, name=name, field=field), self.assertRaises(ValueError):
                         routing.select_native_state(needs, stage=stage)
-            for state in (locator("0", "0"), locator("7", "1"), locator("19", "0"), locator("", "6")):
+            for state in (locator("0", "0"), locator("7", "1"), locator("20", "0"), locator("", "6")):
                 with self.assertRaises(ValueError):
                     routing.select_native_state(needs_for(stage, state=state), stage=stage)
             for name in (workers, collector):

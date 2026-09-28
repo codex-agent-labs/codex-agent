@@ -23,6 +23,7 @@ from products.restore import PHASE_PLAN_KEYS
 from products.sdk_native_metadata import _inventory
 from products.sdk_package import _require_capability_output_separate
 from products.sdk_validation_inputs import _request_inventory
+from products.sdk_dotnet_toolchain import verify_sdk_dotnet_toolchain
 
 
 _LIMIT = 16 * 1024 * 1024
@@ -37,7 +38,8 @@ def route(plan: Mapping[str, Any]) -> dict[str, Any]:
                 for item in PHASE_INSTANCE_IDS)):
         raise ValueError("Only native-wrapper SDK package phases have an implemented worker")
     return {"runner": "ubuntu-24.04", "runnerOs": "Linux", "runnerArch": "X64",
-            "toolchainProfile": None, "producerRole": None, "supervisor": None}
+            "toolchainProfile": "sdk-csharp" if identity[1] == "csharp" else None,
+            "producerRole": None, "supervisor": None}
 
 
 def _runtime_originals(runtime_stages, runtime_inventory, predecessor):
@@ -82,6 +84,7 @@ def execute(
     compatibility_request: Path,
     predecessor: Callable[[str, str, str, str], Mapping[str, Any]],
     environ: Mapping[str, str],
+    csharp_binary_stage: Path | None = None,
 ) -> dict[str, Any]:
     """Run existing root ciProductPhase only; never finalize or publish evidence.
 
@@ -108,18 +111,31 @@ def execute(
     if HOSTS[host_classifier()][2:4] != (elected_route["runnerOs"], elected_route["runnerArch"]):
         raise ValueError("Native SDK package actual host differs from its elected route")
     root = Path(repository_root).resolve(strict=True)
+    dotnet_profile = root / "gradle/release/toolchains/sdk/csharp.json" if plan["component"] == "csharp" else None
+    if dotnet_profile is not None:
+        verify_sdk_dotnet_toolchain(dotnet_profile)
     destination = Path(destination).absolute()
     runtime_stages = Path(runtime_stages)
     prepared_sources, sdks = Path(prepared_sources), Path(staged_sdks)
     request = Path(compatibility_request)
+    binary = Path(csharp_binary_stage) if csharp_binary_stage is not None else None
+    if (component := plan["component"]) == "csharp" and binary is None:
+        raise ValueError("C# package requires an authenticated binary predecessor")
+    if component != "csharp" and binary is not None:
+        raise ValueError("Only C# may import the C# binary predecessor")
     if any(not path.is_absolute() for path in (runtime_stages, prepared_sources, sdks, request)):
         raise ValueError("Native SDK inputs must be explicit absolute paths")
+    if binary is not None and not binary.is_absolute():
+        raise ValueError("C# binary predecessor must be an explicit absolute path")
     runtime_inventory = _inventory(runtime_stages)
     source_inventory, sdk_inventory = _inventory(prepared_sources), _inventory(sdks)
     request_bytes = read_regular_file_bytes(request, max_bytes=_LIMIT, reject_symlink_parents=True)
     request_inventory = _request_inventory(request)
     plan_bytes, producer_bytes = canonical_json_bytes(plan), canonical_json_bytes(producer)
     component, tree = plan["component"], producer["tree"]
+    binary_inventory = _inventory(binary) if binary is not None else None
+    if binary is not None:
+        verify_output_manifest_identity(binary, "sdk", "csharp", "binary", "desktop", sdk_version)
     build = root / "codex-agent-sdk/build"
     stage = build / f"product-stage/sdk/{component}/package"
     # Both supplied trees were produced once by the separately authenticated
@@ -132,6 +148,8 @@ def execute(
     originals = _runtime_originals(runtime_stages, runtime_inventory, predecessor)
     inputs = [runtime_stages, prepared_sources, sdks, request, *request_inventory,
               *(path for original, _, receipt, _ in originals for path in (original, receipt))]
+    if binary is not None:
+        inputs.append(binary)
     _require_capability_output_separate(destination, [*owned, *inputs])
     for output in owned:
         _require_capability_output_separate(output, inputs)
@@ -147,6 +165,8 @@ def execute(
         _runtime_originals_unchanged(runtime_stages, runtime_inventory, originals)
         if _inventory(prepared_sources) != source_inventory or _inventory(sdks) != sdk_inventory:
             raise ValueError("Original prepared native SDK source or staging inputs changed")
+        if binary is not None and _inventory(binary) != binary_inventory:
+            raise ValueError("Original C# binary predecessor changed")
         if (read_regular_file_bytes(request, max_bytes=_LIMIT, reject_symlink_parents=True) != request_bytes
                 or _request_inventory(request) != request_inventory):
             raise ValueError("Original SDK compatibility request or inputs changed")
@@ -165,6 +185,9 @@ def execute(
         "codexAgent.nativeWrapperPackageSdksRoot": str(sdks),
         "codexAgent.sdkCompatibilityRequest": str(request),
     }
+    if binary is not None:
+        fields["codexAgent.csharpBinaryStageRoot"] = str(binary)
+        fields["codexAgent.csharpDotnetProfile"] = str(dotnet_profile)
     command = _runtime_worker_command(wrapper, fields, environment, build_directory=".")
     unchanged()
     if any(path.exists() or path.is_symlink() for path in owned):

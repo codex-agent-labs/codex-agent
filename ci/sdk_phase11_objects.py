@@ -1,4 +1,4 @@
-"""Forward 61 exact SDK phase objects only with independent Phase-10 object pins.
+"""Forward 62 exact SDK phase objects only with independent Phase-10 object pins.
 
 The signed campaign index omits enclosing object-ZIP digests. The caller must
 provide an S1048-approved canonical pin file and its independent SHA-256; this
@@ -67,7 +67,7 @@ def forward_verified_sdk_phase10_objects(
         raise ValueError("SDK object pins target another signed campaign index")
     rows = pins["objects"]
     if type(rows) is not list or len(rows) != len(SDK_CAMPAIGN_INSTANCES):
-        raise ValueError("SDK object pins require every exact 61-phase object")
+        raise ValueError("SDK object pins require every exact 62-phase object")
     selected = {}
     order = []
     for row in rows:
@@ -102,7 +102,7 @@ def forward_verified_sdk_phase10_objects(
             for entry in index["entries"]}
         if (len(index["entries"]) != len(SDK_CAMPAIGN_INSTANCES)
                 or set(entries) != SDK_CAMPAIGN_INSTANCES):
-            raise ValueError("SDK signed campaign index lacks exact 61-phase membership")
+            raise ValueError("SDK signed campaign index lacks exact 62-phase membership")
         expected_files = []
         for instance in sorted(SDK_CAMPAIGN_INSTANCES):
             row, entry = selected[instance], entries[instance]
@@ -122,7 +122,7 @@ def forward_verified_sdk_phase10_objects(
                 "bytes": verified["objectBytes"], "sha256": row["objectSha256"]})
         expected_files.sort(key=lambda record: record["relativePath"])
         if regular_file_inventory(objects) != expected_files:
-            raise ValueError("SDK object source differs from exact 61-object inventory")
+            raise ValueError("SDK object source differs from exact 62-object inventory")
         snapshot_regular_tree(objects, prepared / "objects")
         if regular_file_inventory(prepared / "objects") != expected_files:
             raise ValueError("SDK phase objects changed during candidate capture")
