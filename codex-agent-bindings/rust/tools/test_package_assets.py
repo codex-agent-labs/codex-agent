@@ -79,6 +79,32 @@ class PackageAssetsTest(unittest.TestCase):
             self.assertIn("native/sdk-runtime-root.pub", members)
             self.assertTrue(set(LIBRARIES) <= members)
 
+    def test_package_only_does_not_invoke_compiler_or_linker(self) -> None:
+        cargo = os.environ.get("CODEX_AGENT_TEST_CARGO") or shutil.which("cargo")
+        if cargo is None:
+            self.skipTest("local Cargo is unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "rust"
+            shutil.copytree(ROOT, source, ignore=shutil.ignore_patterns("target", "__pycache__"))
+            for name in LIBRARIES:
+                path = source / name
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"fixture")
+            shutil.copyfile(ROOT_KEY, source / "native/sdk-runtime-root.pub")
+            forbidden_compiler = str(source / "compiler-must-not-run")
+            result = subprocess.run(
+                [cargo, "package", "--no-verify", "--locked", "--offline", "--allow-dirty"],
+                cwd=source,
+                env=os.environ | {
+                    "RUSTC": forbidden_compiler,
+                    "RUSTC_WRAPPER": forbidden_compiler,
+                },
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            version = tomllib.loads((source / "Cargo.toml").read_text())["package"]["version"]
+            self.assertTrue((source / f"target/package/codex-agent-{version}.crate").is_file())
+
     def test_extracted_crate_rejects_tampered_default_and_unauthenticated_override(self) -> None:
         cargo = os.environ.get("CODEX_AGENT_TEST_CARGO") or shutil.which("cargo")
         if cargo is None:
