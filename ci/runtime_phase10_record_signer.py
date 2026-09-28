@@ -31,6 +31,10 @@ from ci.products.signatures import (
 _KEYRING = "gradle/release/product-signing-keys.json"
 _KEYS = "gradle/release/keys"
 _SECRET = "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY"
+_OBSERVATION_TOKENS = frozenset({
+    "GITHUB_TOKEN", "GH_TOKEN", "GITHUB_API_TOKEN", "ACTIONS_RUNTIME_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+})
 
 
 def sign_prepared_runtime_phase10_record(
@@ -39,6 +43,8 @@ def sign_prepared_runtime_phase10_record(
 ) -> dict:
     """Sign only the pinned record with its source-pinned release key."""
     environment = os.environ if environ is None else environ
+    if _OBSERVATION_TOKENS & (set(environment) | set(os.environ)):
+        raise ValueError("Runtime record signer must not receive an observation token")
     secret = environment.get(_SECRET)
     if type(secret) is not str or not secret:
         raise ValueError("Protected Runtime release signing key is unavailable")

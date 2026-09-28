@@ -826,6 +826,24 @@ class RuntimePhase10OutputRecordTest(unittest.TestCase):
                 expected_record_sha256=digest, environ=secret,
             )
 
+    def test_signer_rejects_live_or_supplied_observation_token_before_key_use(self):
+        self.signature.unlink()
+        secret = {"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": self.private.read_text()}
+        digest = sha256_bytes(self.record_path.read_bytes())
+        for injected in (secret | {"GITHUB_TOKEN": "observer"}, secret):
+            with self.subTest(supplied="GITHUB_TOKEN" in injected), \
+                    patch.dict(os.environ, {"GITHUB_TOKEN": "observer"} if injected is secret else {}), \
+                    patch.object(signer, "git_regular_blob_bytes") as source, \
+                    patch.object(signer, "sign_manifest") as sign, \
+                    self.assertRaisesRegex(ValueError, "observation token"):
+                signer.sign_prepared_runtime_phase10_record(
+                    self.record_path, self.repository, trusted_source_commit=self.commit,
+                    expected_record_sha256=digest, environ=injected,
+                )
+            source.assert_not_called()
+            sign.assert_not_called()
+            self.assertFalse(self.signature.exists())
+
     def test_publisher_forwards_exact_verified_pair(self):
         original_record = self.record_path.read_bytes()
         original_signature = self.signature.read_bytes()
