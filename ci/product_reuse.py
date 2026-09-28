@@ -4107,7 +4107,11 @@ def _runtime_worker_command(wrapper, properties, environment, *, build_directory
         raise ValueError("Product worker requires an exact supported command platform")
     if build_directory not in {"runtime", "."}:
         raise ValueError("Product worker requires the fixed Runtime or root SDK build")
-    command = [str(wrapper), "--offline", "--no-daemon", "--configuration-cache",
+    verified_fetch = environment.get("CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH", "")
+    if verified_fetch not in {"", "true"} or (verified_fetch and build_directory != "runtime"):
+        raise ValueError("Verified dependency fetch is only supported for Runtime product workers")
+    command = [str(wrapper), *(["--dependency-verification=strict"] if verified_fetch else ["--offline"]),
+               "--no-daemon", "--configuration-cache",
                "--configuration-cache-problems=fail", "-p", build_directory, "ciProductPhase",
                *(f"-P{key}={value}" for key, value in sorted(properties.items()))]
     if platform_name == "nt":

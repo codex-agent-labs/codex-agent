@@ -442,6 +442,13 @@ class ProductWorkerCheckoutTest(unittest.TestCase):
                 self.assertIn("--offline", command)
             with self.assertRaisesRegex(ValueError, "fixed Runtime or root SDK"):
                 adapter._runtime_worker_command(Path("/trusted/gradlew"), {}, {}, build_directory="/untrusted")
+            fetched = adapter._runtime_worker_command(Path("/trusted/gradlew"), {},
+                {"CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH": "true"})
+            self.assertIn("--dependency-verification=strict", fetched)
+            self.assertNotIn("--offline", fetched)
+            with self.assertRaisesRegex(ValueError, "only supported for Runtime"):
+                adapter._runtime_worker_command(Path("/trusted/gradlew"), {},
+                    {"CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH": "true"}, build_directory=".")
 
     def test_shared_guard_rejects_untracked_sdk_sources_without_rejecting_user_notes(self):
         with tempfile.TemporaryDirectory(prefix="product-checkout-fixture-") as temporary:

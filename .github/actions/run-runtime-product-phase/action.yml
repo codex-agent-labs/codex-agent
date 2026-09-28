@@ -90,6 +90,7 @@ runs:
         SUPERVISOR_ID: ${{ inputs.supervisor-id }}
         SUPERVISOR_SHA256: ${{ inputs.supervisor-sha256 }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH: 'true'
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail

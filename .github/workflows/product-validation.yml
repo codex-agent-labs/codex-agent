@@ -562,6 +562,7 @@ jobs:
           DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
           STATE: ${{ steps.captured.outputs.state-root }}
           BUILD_KEY: ${{ needs.product-resume.outputs.supervisor_key }}
+          CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH: 'true'
         run: |
           tooling=()
           if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
