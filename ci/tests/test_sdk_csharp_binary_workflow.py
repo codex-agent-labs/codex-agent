@@ -1,6 +1,8 @@
 """C# binary orchestration gates; hosted/original trust functions are mocked."""
 
 from contextlib import contextmanager
+from contextlib import redirect_stderr
+import io
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -11,7 +13,7 @@ from ci import sdk_csharp_binary_workflow as workflow
 from ci.tests.product_chain_support import output, write_receipt
 from products.inventory import canonical_json_bytes, sha256_bytes, snapshot_regular_tree, write_canonical_json
 from products.receipt import write_output_manifest
-from products.restore import PHASE_PLAN_KEYS
+from products.restore import PHASE_PLAN_KEYS, finalize_phase_object
 from products.sdk_dotnet_toolchain import load_sdk_dotnet_profile_bytes
 
 
@@ -369,30 +371,30 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
             "desktop", "0.8.0")
         original_producer = {**self.producer, "commit": "d" * 40, "tree": "e" * 40,
             "runId": 20, "runAttempt": 2}
-        receipt = write_receipt(self.root / "selected-csharp-receipt.json", product="sdk",
+        planned = write_receipt(self.root / "selected-csharp-receipt.json", product="sdk",
             component="csharp", phase="binary", target="desktop", version="0.8.0",
             version_identity="0.8.0", outputs=manifest["outputs"], upstream=[],
             context={"producer": original_producer})
-        raw = canonical_json_bytes(receipt)
-        record = {"state": "retained", "buildKey": receipt["buildKey"], "receiptSha256": sha256_bytes(raw),
-            "objectSha256": "sha256:" + "f" * 64}
+        shard = self.root / "selected-csharp-shard"
+        finalized = finalize_phase_object(stage_root=stage,
+            phase_plan={name: planned[name] for name in PHASE_PLAN_KEYS},
+            producer=original_producer, product_version="0.8.0",
+            trust_domain="development", destination=shard)
+        receipt = finalized["receipt"]
+        object_path = shard / finalized["objectPath"]
+        object_bytes = object_path.read_bytes()
+        record = {"state": "retained", "buildKey": finalized["buildKey"],
+            "receiptSha256": finalized["receiptSha256"],
+            "objectSha256": finalized["objectSha256"]}
         selected = SimpleNamespace(closure=(workflow._INSTANCE,),
-            sources={workflow._INSTANCE: self.root / "authenticated-object.zip"},
+            sources={workflow._INSTANCE: object_path},
             prior_by_instance={workflow._INSTANCE: record},
             prior_ready_plans={},
             prior_carrier_phases={workflow._INSTANCE: {"transportSource": None}},
             producer=self.producer, plan={"validationCommit": self.producer["commit"]})
 
-        def restore(_archive, destination, **kwargs):
-            self.assertEqual({key: record[key] for key in ("buildKey", "receiptSha256", "objectSha256")},
-                {"buildKey": kwargs["build_key"],
-                "receiptSha256": kwargs["receipt_sha256"], "objectSha256": kwargs["object_sha256"]})
-            snapshot_regular_tree(stage, destination)
-            return {"receipt": receipt, "receiptBytes": raw}
-
         with (patch.object(workflow.sdk_workflow, "verified_inputs", side_effect=self.verified),
               patch.object(workflow.product_reuse, "_verified_product_state", return_value=selected),
-              patch.object(workflow, "restore_object", side_effect=restore),
               patch.object(workflow, "git_regular_blob_bytes",
                            return_value=(self.root / "gradle/release/keys/sdk-runtime-root.pub").read_bytes())):
             with workflow.verified_selected_csharp_original(self.plan, self.discovery, self.state,
@@ -404,6 +406,24 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
                 self.assertEqual(original_producer, original["receipt"]["producer"])
                 self.assertEqual(None, original["transportSource"])
                 self.assertTrue((captured_stage / "outputs/csharp/CodexAgent.dll").is_file())
+            tampered_object = self.root / "tampered-object.zip"
+            tampered_object.write_bytes(object_bytes + b"x")
+            for label in ("object byte", "pinned digest"):
+                with self.subTest(label=label):
+                    if label == "object byte":
+                        selected.sources[workflow._INSTANCE] = tampered_object
+                    else:
+                        selected.sources[workflow._INSTANCE] = object_path
+                        record["objectSha256"] = "sha256:" + "0" * 64
+                    destination = self.root / ("build/rejected-" + label.replace(" ", "-"))
+                    with self.assertRaisesRegex(ValueError, "Product cache object SHA-256"):
+                        workflow.stage_csharp_original(self.plan, self.discovery, self.state,
+                            destination, sdk_inputs_artifact_id=10,
+                            sdk_inputs_artifact_sha256="sha256:" + "c" * 64,
+                            trusted_workflow_sha="sha256:" + "d" * 64,
+                            keyring=self.keyring, keys_directory=self.keys,
+                            repository_root=self.root, environ={}, token="fixture-token")
+                    self.assertFalse(destination.exists())
         self.assertFalse(captured_stage.exists())
 
     def test_csharp_original_route_uses_selected_carrier_only_when_selected(self):
@@ -424,6 +444,37 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
                     self.assertEqual("selected" if selected else "same-pr", original["route"])
             self.assertEqual(int(selected), selected_route.call_count)
             self.assertEqual(int(not selected), lookup_route.call_count)
+
+    def test_stage_original_cli_dispatches_without_binary_key(self):
+        args = ["stage-original", "--plan", str(self.plan),
+            "--discovery-root", str(self.discovery), "--state-root", str(self.state),
+            "--destination", str(self.destination), "--keyring", str(self.keyring),
+            "--keys-directory", str(self.keys), "--repository-root", str(self.root),
+            "--sdk-inputs-artifact-sha256", "sha256:" + "c" * 64,
+            "--trusted-workflow-sha", "sha256:" + "d" * 64,
+            "--sdk-inputs-artifact-id", "10"]
+        with (patch.object(workflow, "stage_csharp_original") as stage,
+              patch.object(workflow, "execute") as binary):
+            self.assertEqual(0, workflow.main(args))
+        stage.assert_called_once()
+        self.assertEqual(self.destination, stage.call_args.kwargs["destination"])
+        self.assertNotIn("expected_build_key", stage.call_args.kwargs)
+        binary.assert_not_called()
+
+        @contextmanager
+        def missing_original(*_args, **_kwargs):
+            raise ValueError("same-PR C# binary original is unavailable")
+            yield
+
+        with (patch.object(workflow, "verified_csharp_original", side_effect=missing_original),
+              patch.object(workflow, "execute") as binary,
+              redirect_stderr(io.StringIO()) as errors,
+              self.assertRaises(SystemExit) as failure):
+            workflow.main(args)
+        self.assertEqual(2, failure.exception.code)
+        self.assertIn("same-PR C# binary original is unavailable", errors.getvalue())
+        self.assertFalse(self.destination.exists())
+        binary.assert_not_called()
 
 
 if __name__ == "__main__":

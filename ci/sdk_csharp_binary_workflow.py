@@ -496,12 +496,18 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    stage_original = bool(argv and argv[0] == "stage-original")
+    if stage_original:
+        argv.pop(0)
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "destination", "keyring", "keys-directory", "repository-root"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     for flag, name in (("discovery-root", "discovery"), ("state-root", "state")):
         parser.add_argument(f"--{flag}", dest=name, type=Path, required=True)
-    for name in ("expected-build-key", "sdk-inputs-artifact-sha256", "trusted-workflow-sha"):
+    if not stage_original:
+        parser.add_argument("--expected-build-key", required=True)
+    for name in ("sdk-inputs-artifact-sha256", "trusted-workflow-sha"):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--sdk-inputs-artifact-id", type=int, required=True)
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
@@ -516,7 +522,8 @@ def main(argv=None):
             if path is not None:
                 arguments[name] = product_reuse._canonical_control(path, "Caller " + name)
         with metadata_admission_options(args) as admissions:
-            execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions)
+            worker = stage_csharp_original if stage_original else execute
+            worker(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

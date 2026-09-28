@@ -150,6 +150,21 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         self.assertIn("--expected-build-key", action)
         self.assertIn("codex-agent-sdk-worker-sdk-csharp-binary-desktop-", action)
 
+    def test_legacy_package_job_restores_authenticated_csharp_without_compiling_it(self):
+        child = (ROOT / ".github/workflows/sdk-validation.yml").read_text()
+        job = re.search(r"(?ms)^  native-wrapper-package-validation:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)", child)[0]
+        self.assertIn("fetch-depth: 0", job)
+        self.assertLess(job.index("uses: ./.github/actions/capture-sdk-tooling"),
+                        job.index("uses: ./.github/actions/capture-runtime-state"))
+        self.assertLess(job.index("uses: ./.github/actions/capture-runtime-state"),
+                        job.index("ci.sdk_csharp_binary_workflow stage-original"))
+        self.assertLess(job.index("ci.sdk_csharp_binary_workflow stage-original"),
+                        job.index("python \"$tool/ci/native_wrappers.py\" package"))
+        self.assertIn("--sdk-inputs-artifact-id \"$SDK_INPUTS_ARTIFACT_ID\"", job)
+        self.assertIn("--csharp-binary \"$PWD/build/sdk-native-csharp-original/csharp-binary\"", job)
+        self.assertIn("--dotnet-profile \"$PWD/build/sdk-native-csharp-original/sdk-csharp-toolchain.json\"", job)
+        self.assertNotIn("sdk_csharp_binary_workflow --expected-build-key", job)
+
     def test_collection_waits_for_failed_workers_and_final_gate_is_required(self):
         collector = self.job("sdk-collect-4")
         self.assertIn("sdk-native-workers]", collector)

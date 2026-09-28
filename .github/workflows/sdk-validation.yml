@@ -334,11 +334,69 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
           ref: ${{ inputs.validationCommit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}
           path: .
+      - name: Select installed caller Java for SDK tooling
+        if: inputs.toolingRequired == 'true'
+        shell: bash
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: inputs.toolingRequired == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          plan-id: ${{ inputs.planId }}
+          artifact-id: ${{ inputs.toolingArtifactId }}
+          artifact-sha256: ${{ inputs.toolingArtifactSha256 }}
+          transport-producer: ${{ inputs.toolingTransportProducer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / product-contracts
+          policy-revision: ${{ inputs.validationCommit }}
+      - id: captured
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          product: sdk
+          sdk-family: ${{ format('native-{0}', inputs.preparationPhase) }}
+          plan-id: ${{ inputs.planId }}
+          artifact-id: ${{ inputs.stateArtifactId }}
+          artifact-sha256: ${{ inputs.stateArtifactSha256 }}
+          state-wave: ${{ inputs.stateWave }}
+          sdk-state-wave: ${{ inputs.sdkStateWave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+      - name: Authenticate the original C# binary for package-only assembly
+        shell: bash
+        env:
+          PLAN: ${{ steps.captured.outputs.plan-path }}
+          DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+          STATE: ${{ steps.captured.outputs.state-root }}
+          SDK_INPUTS_ARTIFACT_ID: ${{ inputs.sdkInputsArtifactId }}
+          SDK_INPUTS_ARTIFACT_SHA256: ${{ inputs.sdkInputsArtifactSha256 }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
+          SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          selected=()
+          if [ -n "$SDK_VALIDATION_TOOLING" ]; then selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+          python3 -B -m ci.sdk_csharp_binary_workflow stage-original \
+            --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+            --destination "$PWD/build/sdk-native-csharp-original" \
+            --sdk-inputs-artifact-id "$SDK_INPUTS_ARTIFACT_ID" \
+            --sdk-inputs-artifact-sha256 "$SDK_INPUTS_ARTIFACT_SHA256" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --keyring "$PWD/gradle/release/product-signing-keys.json" \
+            --keys-directory "$PWD/gradle/release/keys" \
+            --repository-root "$PWD" ${selected[@]+"${selected[@]}"}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
@@ -370,6 +428,8 @@ jobs:
           python "$tool/ci/native_wrappers.py" package \
             --sources "$PWD/codex-agent-sdk/build/native-wrapper-package-sources" \
             --sdks "$PWD/codex-agent-sdk/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}" \
+            --csharp-binary "$PWD/build/sdk-native-csharp-original/csharp-binary" \
+            --dotnet-profile "$PWD/build/sdk-native-csharp-original/sdk-csharp-toolchain.json" \
             --output "$PWD/$release/packages" \
             --sdk-version-file "$PWD/gradle/release/versions/sdk.txt"
           cp -R "codex-agent-sdk/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}" "$release/sdks"
