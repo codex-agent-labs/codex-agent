@@ -361,6 +361,17 @@ class PriorFailedPrAttemptTest(unittest.TestCase):
             self.assertEqual(cancelled, product_reuse._prior_failed_pr_attempt(
                 self.plan, self.producer, "token"))
 
+    def test_native_recovery_skips_newer_run_without_current_attempt_upload(self):
+        older = {**self.run, "id": 80, "conclusion": "cancelled"}
+        prefix = "codex-agent-runtime-worker-macos-x64-binary-macos-x64-"
+        with mock.patch.object(product_reuse, "paginated_items", side_effect=[
+            [older, self.run], [{"name": prefix + "key-tree-attempt-1", "expired": False}],
+            [{"name": prefix + "key-tree-attempt-2", "expired": False}],
+        ]) as listing, mock.patch.object(product_reuse, "api_json", side_effect=[self.run, older]):
+            self.assertEqual(older, product_reuse._prior_failed_pr_attempt(
+                self.plan, self.producer, "token", required_artifact_prefixes=(prefix,)))
+        self.assertEqual(3, listing.call_count)
+
     def test_skips_nonfailed_or_other_pr_and_fails_closed_on_mismatched_exact_attempt(self):
         with mock.patch.object(product_reuse, "paginated_items", return_value=[
             {**self.run, "conclusion": "success"},

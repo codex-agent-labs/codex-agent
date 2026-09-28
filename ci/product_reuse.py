@@ -324,7 +324,7 @@ def _same_pr_run(
 
 def _prior_failed_pr_attempt(
     plan: Mapping[str, Any], producer: Mapping[str, Any], token: str,
-    *, api: str = "https://api.github.com",
+    *, api: str = "https://api.github.com", required_artifact_prefixes: tuple[str, ...] = (),
 ) -> dict[str, Any] | None:
     """Select one prior interrupted PR attempt; its phase uploads still need admission."""
     if plan["event"] != "pull_request" or plan["pullRequest"] is None:
@@ -348,8 +348,18 @@ def _prior_failed_pr_attempt(
             and all(isinstance(run.get(field), dict)
                     and run[field].get("full_name") == repository
                     and run[field].get("fork") is False
-                    for field in ("repository", "head_repository"))
+            for field in ("repository", "head_repository"))
         )
+
+    def has_required_artifact(run_id: int, attempt: int) -> bool:
+        if not required_artifact_prefixes:
+            return True
+        artifacts = paginated_items(f"{prefix}/{run_id}/artifacts", "artifacts", token)
+        return any(isinstance(artifact, dict) and artifact.get("expired") is False
+                   and isinstance(artifact.get("name"), str)
+                   and artifact["name"].startswith(required_artifact_prefixes)
+                   and artifact["name"].endswith(f"-attempt-{attempt}")
+                   for artifact in artifacts)
 
     if current_attempt > 1:
         previous = api_json(f"{prefix}/{current_run}/attempts/{current_attempt - 1}", token)
@@ -357,7 +367,7 @@ def _prior_failed_pr_attempt(
             return None
         if not eligible(previous, current_run, current_attempt - 1):
             raise ValueError("Prior failed PR attempt differs from the current run")
-        return previous
+        return previous if has_required_artifact(current_run, current_attempt - 1) else None
 
     runs = paginated_items(
         f"{api}/repos/{repository}/actions/workflows/ci.yml/runs?event=pull_request&status=completed",
@@ -368,12 +378,15 @@ def _prior_failed_pr_attempt(
                   and run_matches_pr(run, plan["pullRequest"])]
     if not candidates:
         return None
-    selected = max(candidates, key=lambda run: run["id"])
-    attempt = require_integer(selected.get("run_attempt"), "Prior product run attempt", 1)
-    original = api_json(f"{prefix}/{selected['id']}/attempts/{attempt}", token)
-    if not eligible(original, selected["id"], attempt):
-        raise ValueError("Prior failed PR attempt differs from its official workflow listing")
-    return original
+    for selected in sorted(candidates, key=lambda run: run["id"], reverse=True):
+        attempt = require_integer(selected.get("run_attempt"), "Prior product run attempt", 1)
+        original = api_json(f"{prefix}/{selected['id']}/attempts/{attempt}", token)
+        if not eligible(original, selected["id"], attempt):
+            raise ValueError("Prior failed PR attempt differs from its official workflow listing")
+        if not has_required_artifact(selected["id"], attempt):
+            continue
+        return original
+    return None
 
 
 def verify_contract_producer_runs(
@@ -992,7 +1005,8 @@ def capture_prior_failed_runtime_prefixes(
         raise ValueError("Prior Runtime capture destination must not exist")
     if not targets:
         return {}
-    prior = _prior_failed_pr_attempt(plan, producer, token)
+    prefixes = tuple(f"codex-agent-runtime-worker-{target}-binary-{target}-" for target in targets)
+    prior = _prior_failed_pr_attempt(plan, producer, token, required_artifact_prefixes=prefixes)
     if prior is None:
         return {}
     run_id = prior["id"]
@@ -1071,7 +1085,10 @@ def _prior_failed_runtime_objects(
     if plan is not None and consumer_producer is not None:
         if not token:
             raise ValueError("Prior failed Runtime selection recheck requires a token")
-        official = _prior_failed_pr_attempt(plan, consumer_producer, token)
+        prefixes = tuple(f"codex-agent-runtime-worker-{target.name}-binary-{target.name}-"
+                         for target in capture_root.iterdir() if target.name in NATIVE_TARGETS)
+        official = _prior_failed_pr_attempt(plan, consumer_producer, token,
+                                            required_artifact_prefixes=prefixes)
         if (official is None or official["id"] != run_id
                 or official["run_attempt"] != attempt
                 or selection["pullRequest"] != plan["pullRequest"]):
