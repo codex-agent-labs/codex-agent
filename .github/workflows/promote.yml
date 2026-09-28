@@ -254,3 +254,16 @@ jobs:
             build/promotion/source/binding-obligations-m11.json
           compression-level: 0
           retention-days: 90
+
+  contract-promoted-catalog:
+    if: >-
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      vars.CI_MERGE_QUEUE_ENABLED == 'true' &&
+      vars.CODEX_AGENT_CONTRACT_PROMOTION_ENABLED == 'true' &&
+      needs.discover.result == 'success'
+    needs: discover
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/contract-promoted-catalog.yml
+    secrets: inherit

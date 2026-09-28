@@ -12,9 +12,20 @@ import unittest
 
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/contract-promoted-catalog.yml"
+PARENT = WORKFLOW.with_name("promote.yml")
 
 
 class ContractPromotedCatalogWorkflowTest(unittest.TestCase):
+    def test_parent_calls_catalog_only_after_non_authoritative_arm_switch(self):
+        parent = PARENT.read_text()
+        job = parent.split("  contract-promoted-catalog:\n", 1)[1]
+        self.assertIn("github.ref == 'refs/heads/main' && github.ref_protected", job)
+        self.assertIn("vars.CI_MERGE_QUEUE_ENABLED == 'true'", job)
+        self.assertIn("vars.CODEX_AGENT_CONTRACT_PROMOTION_ENABLED == 'true'", job)
+        self.assertNotIn("CODEX_AGENT_CONTRACT_PROMOTION_PHASE_SELECTION_SHA256", job)
+        self.assertIn("needs.discover.result == 'success'", job)
+        self.assertIn("uses: ./.github/workflows/contract-promoted-catalog.yml", job)
+
     def test_authority_rejects_missing_or_mismatched_protected_values_before_checkout(self):
         source = WORKFLOW.read_text()
         precheckout = source.split("      - name: Require independently approved S1048 Contract selection before checkout\n", 1)[1]
