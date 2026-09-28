@@ -233,6 +233,7 @@ _IOS_BINARY_BUILD_LOGIC = frozenset({
     "codexagent.ios-runtime.gradle.kts",
 })
 _CONTROL_ONLY_FILES = frozenset({
+    "ci/contract_catalog_promotion.py",
     "ci/contract_equal_tree_original.py",
     "ci/contract_phase10_maven_caller.py",
     "ci/contract_phase10_output_record.py",
@@ -641,7 +642,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path == "ci/products/gradle_bootstrap.py":
         return set(ALL_INSTANCES)
     if path in {
-        "ci/contract_equal_tree_original.py", "ci/contract_phase10_maven_caller.py",
+        "ci/contract_catalog_promotion.py", "ci/contract_equal_tree_original.py", "ci/contract_phase10_maven_caller.py",
         "ci/contract_phase10_output_record.py",
         "ci/contract_phase10_reuse_admission.py",
         "ci/contract_phase10_record_signer.py",
