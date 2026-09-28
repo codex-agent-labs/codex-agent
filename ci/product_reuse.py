@@ -480,11 +480,12 @@ def _observe_ci_producer_jobs(
         producer = original["producer"]
         url = f"https://api.github.com/repos/{repository}/actions/runs/{run_id}/attempts/{attempt}"
         run = api_json(url, token)
+        # A completed original uploader, checked below, is authoritative; the
+        # enclosing run status can briefly regress while new jobs are queued.
         if (require_integer(run.get("id"), "Contract original CI run ID", 1) != run_id
                 or require_integer(run.get("run_attempt"), "Contract original CI attempt", 1) != attempt
                 or run.get("path") != producer["workflowPath"]
                 or run.get("event") != producer["event"]
-                or run.get("status") not in {"in_progress", "waiting", "completed"}
                 or any(not isinstance(run.get(field), dict)
                        or run[field].get("full_name") != repository
                        or run[field].get("fork") is not False

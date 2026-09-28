@@ -282,7 +282,7 @@ class ContractProducerRunTest(unittest.TestCase):
     def test_wrong_run_policy_and_failed_missing_or_ambiguous_jobs_fail_closed(self):
         for change in (
             {"id": 8}, {"run_attempt": 1}, {"head_sha": "d" * 40},
-            {"event": "push"}, {"path": ".github/workflows/other.yml"}, {"status": "queued"},
+            {"event": "push"}, {"path": ".github/workflows/other.yml"},
             {"pull_requests": [{"number": 32}]}, {"head_repository": {"full_name": "attacker/repo", "fork": True}},
             {"pull_requests": [{"number": 31}]}, {"pull_requests": self.run["pull_requests"] * 2},
             {"repository": None}, {"referenced_workflows": []}, {"referenced_workflows": None},
