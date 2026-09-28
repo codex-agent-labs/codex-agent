@@ -4099,7 +4099,7 @@ def _runtime_worker_checkout(root, producer):
                           ":(exclude).codex/**", ":(exclude)**/build/**",
                           ":(exclude)**/.gradle/**", ":(exclude)**/__pycache__/**")
     if untracked:
-        raise ValueError("Runtime worker rejects untracked source or build policy")
+        raise ValueError(f"Runtime worker rejects untracked source or build policy: {untracked.splitlines()[:20]!r}")
 
 
 def _runtime_worker_command(wrapper, properties, environment, *, build_directory="runtime", platform_name=None):
