@@ -272,7 +272,7 @@ class ContractOriginalCiCaptureTest(unittest.TestCase):
         for run in (
             {**self.run, "run_attempt": 1},
             {**self.run, "head_sha": "e" * 40},
-            {**self.run, "status": "queued"},
+            {**self.run, "event": "push"},
             {**self.run, "referenced_workflows": []},
         ):
             with self.subTest(run=run), self.assertRaises(ValueError):

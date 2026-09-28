@@ -314,7 +314,7 @@ def sha256_bytes(contents: bytes) -> str:
 
 def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
     # Windows path stat reports creation time as ctime; fstat may report change time.
-    timestamp = value.st_birthtime_ns if _is_windows() else value.st_ctime_ns
+    timestamp = getattr(value, "st_birthtime_ns", value.st_ctime_ns) if _is_windows() else value.st_ctime_ns
     return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, timestamp
 
 
