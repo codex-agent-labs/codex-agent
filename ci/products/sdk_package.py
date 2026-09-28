@@ -705,6 +705,8 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("repository", "stage", "receipt", "compatibility-request", "runtime-stages", "staged-sdks"):
         native.add_argument(f"--{name}", type=Path, required=True)
     native.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
+    native.add_argument("--binary-stage", type=Path)
+    native.add_argument("--binary-receipt", type=Path)
     native.add_argument("--validation-inputs-output", type=Path)
     native.add_argument("--validation-receipt", type=Path)
     native.add_argument("--validation-stage", type=Path)
@@ -732,6 +734,7 @@ def main(argv: list[str] | None = None) -> int:
     verified, _ = verify_sdk_package_inputs(
         args.repository, args.stage, args.receipt, args.compatibility_request,
         runtime_stage_root=args.runtime_stages, staged_sdks=args.staged_sdks,
+        binary_stage_root=args.binary_stage, binary_receipt_path=args.binary_receipt,
         validation_inputs_output=args.validation_inputs_output,
         validation_receipt_path=args.validation_receipt,
         validation_stage_root=args.validation_stage, validation_target=args.validation_target,

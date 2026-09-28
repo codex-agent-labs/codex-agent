@@ -17,6 +17,7 @@ from ci.products.plan import (
 )
 from ci.products.receipt import compute_build_key, output_inventory_digest, validate_phase_receipt, write_output_manifest
 from ci.products.registry import PhaseInstanceId, phase_instance_dependencies
+from ci.products.sdk_dotnet_toolchain import load_sdk_dotnet_profile_bytes
 from ci.products.sdk_maven import MAVEN_GROUPS, package_sdk_maven, verify_sdk_maven_binary_predecessor
 from ci.products.sdk_archive import NPM_COMPATIBILITY_PATH, verify_npm_sdk_compatibility
 from ci.products.sdk_package import (
@@ -353,6 +354,10 @@ class SdkPackagePlanTest(unittest.TestCase):
         root_input = cls.repository / "gradle/release/keys/sdk-runtime-root.pub"
         root_input.parent.mkdir(parents=True, exist_ok=True)
         root_input.write_bytes(pinned_root)
+        profile_path = "gradle/release/toolchains/sdk/csharp.json"
+        profile_input = cls.repository / profile_path
+        profile_input.parent.mkdir(parents=True, exist_ok=True)
+        profile_input.write_bytes((Path(__file__).resolve().parents[2] / profile_path).read_bytes())
         run_git(cls.repository, "add", ".")
         run_git(cls.repository, "-c", "user.name=SDK fixture", "-c", "user.email=fixture@invalid",
                 "-c", "commit.gpgsign=false", "commit", "-qm", "synthetic input fixture")
@@ -374,6 +379,27 @@ class SdkPackagePlanTest(unittest.TestCase):
         helper.csharp_dll = (native_fixture.csharp_resource_fixture(
             cls.root, cls.chain["compatibility"].read_bytes(), pinned_root)
             if shutil.which("dotnet") else b"synthetic non-CLR plan fixture\n")
+        cls.csharp_binary_stage = cls.root / "csharp-binary"
+        binary_outputs = cls.csharp_binary_stage / "outputs/csharp"
+        binary_outputs.mkdir(parents=True)
+        for name, contents in {
+            "CodexAgent.dll": helper.csharp_dll,
+            "CodexAgent.pdb": b"synthetic PDB\n",
+            "CodexAgent.xml": b"synthetic XML\n",
+            "CodexAgent.deps.json": b"{}\n",
+            "sdk-compatibility.json": cls.chain["compatibility"].read_bytes(),
+            "sdk-runtime-root.pub": pinned_root,
+        }.items():
+            (binary_outputs / name).write_bytes(contents)
+        binary_manifest = write_output_manifest(cls.csharp_binary_stage, "sdk", "csharp", "binary",
+                                                "desktop", "0.2.9", {"csharp-binary": "outputs/csharp"})
+        cls.csharp_binary_receipt = cls.root / "csharp-binary-receipt.json"
+        write_receipt(cls.csharp_binary_receipt, product="sdk", component="csharp", phase="binary",
+                      target="desktop", version="0.2.9", version_identity="0.2.9",
+                      outputs=binary_manifest["outputs"], upstream=[], context={"producer": cls.producer})
+        cls.bind(cls.csharp_binary_receipt, cls.upstream, cls.evidence)
+        binary = load_canonical_json_bytes(cls.csharp_binary_receipt.read_bytes())
+        cls.upstream[identity(binary)] = binary
         cls.native_stage, cls.native_receipt = helper.package(cls.root / "native")
         cls.bind(cls.native_receipt, cls.upstream, cls.evidence)
 
@@ -453,9 +479,13 @@ class SdkPackagePlanTest(unittest.TestCase):
                 contract_projection=projection, contract_payload=cls.chain["contract"]["payload"],
                 required_trust_domain="development",
             ) for item in dependencies)
+        toolchain_digest = NOT_APPLICABLE_TOOLCHAIN_DIGEST
+        if instance.component == "csharp" and instance.phase in {"binary", "package"}:
+            profile = cls.repository / "gradle/release/toolchains/sdk/csharp.json"
+            toolchain_digest = load_sdk_dotnet_profile_bytes(profile.read_bytes()).digest
         result = plan_phase(instance, inventory=phase_git_inventory(cls.repository, cls.producer["commit"], instance),
                             versions=VERSIONS, upstream_receipts=selected,
-                            toolchain_profile_digest=NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+                            toolchain_profile_digest=toolchain_digest,
                             flags_digest=NOT_APPLICABLE_FLAGS_DIGEST, contract_projection=projection,
                             native_runtime_projections=tuple(value for value in cls.native_projections if value.target in
                                 {item.target for item in dependencies}) if dependencies else None)
@@ -487,6 +517,7 @@ class SdkPackagePlanTest(unittest.TestCase):
             package, package_bytes = verify_sdk_package_inputs(
                 self.repository, self.native_stage, self.native_receipt, self.request,
                 runtime_stage_root=self.chain["variants"]["stages"], staged_sdks=self.sdks,
+                binary_stage_root=self.csharp_binary_stage, binary_receipt_path=self.csharp_binary_receipt,
                 validation_receipt_path=validation,
             )
             self.assertEqual("package", package["phase"])
@@ -590,12 +621,15 @@ class SdkPackagePlanTest(unittest.TestCase):
     def verify_native(self, receipt=None):
         return verify_sdk_package_inputs(self.repository, self.native_stage, receipt or self.native_receipt,
                                          self.request, runtime_stage_root=self.chain["variants"]["stages"],
-                                         staged_sdks=self.sdks)
+                                         staged_sdks=self.sdks, binary_stage_root=self.csharp_binary_stage,
+                                         binary_receipt_path=self.csharp_binary_receipt)
 
     def native_cli_arguments(self):
         return ["verify-native", "--repository", str(self.repository), "--stage", str(self.native_stage),
                 "--receipt", str(self.native_receipt), "--compatibility-request", str(self.request),
                 "--runtime-stages", str(self.chain["variants"]["stages"]), "--staged-sdks", str(self.sdks),
+                "--binary-stage", str(self.csharp_binary_stage),
+                "--binary-receipt", str(self.csharp_binary_receipt),
                 "--component", "csharp"]
 
     @requires_dotnet
@@ -623,7 +657,8 @@ class SdkPackagePlanTest(unittest.TestCase):
             "repositoryRoot": str(self.repository), "repositoryRevision": self.producer["commit"],
             "versions": VERSIONS, "upstreamReceipts": self.projections[instance][0],
             "contractEvidence": self.evidence, "runtimeValidationEvidence": None,
-            "nativeRuntimeEvidence": evidence, "toolchainProfileDigest": NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            "nativeRuntimeEvidence": evidence, "toolchainProfileDigest":
+                load_sdk_dotnet_profile_bytes((self.repository / "gradle/release/toolchains/sdk/csharp.json").read_bytes()).digest,
             "flagsDigest": NOT_APPLICABLE_FLAGS_DIGEST, "outputSchemaVersion": 1,
         }
         original = self.native_receipt.read_bytes()
