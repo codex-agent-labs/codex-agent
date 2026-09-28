@@ -333,6 +333,7 @@ class ProductSelectionTest(unittest.TestCase):
                 ("ci/sdk_phase10_original_plan.py", sdk_metadata),
                 ("ci/sdk_phase10_protected_inputs.py", sdk_metadata),
                 ("ci/sdk_phase10_maven_campaign.py", sdk_metadata),
+                ("ci/sdk_phase10_maven_caller.py", sdk_metadata),
                 ("ci/sdk_phase10_release_index_admission.py", sdk_metadata),
                 ("ci/sdk_phase11_bytes.py", sdk_metadata),
                 ("ci/sdk_phase11_objects.py", sdk_metadata),

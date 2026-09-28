@@ -280,6 +280,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_phase10_original_plan.py",
     "ci/sdk_phase10_protected_inputs.py",
     "ci/sdk_phase10_maven_campaign.py",
+    "ci/sdk_phase10_maven_caller.py",
     "ci/sdk_phase10_release_index_admission.py",
     "ci/sdk_phase11_bytes.py",
     "ci/sdk_phase11_objects.py",
@@ -660,6 +661,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
                 _from_phase("sdk", "sdk-android", "metadata"))
     if path in {"ci/sdk_campaign_release_issuer.py", "ci/sdk_phase10_original_plan.py",
                 "ci/sdk_phase10_protected_inputs.py", "ci/sdk_phase10_maven_campaign.py",
+                "ci/sdk_phase10_maven_caller.py",
                 "ci/sdk_phase10_release_index_admission.py", "ci/sdk_phase11_bytes.py",
                 "ci/sdk_phase11_objects.py"}:
         return {instance for instance in ALL_METADATA if instance.product == "sdk"}
