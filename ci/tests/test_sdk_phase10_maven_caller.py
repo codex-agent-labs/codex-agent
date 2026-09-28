@@ -15,7 +15,7 @@ from ci.products.receipt import compute_build_key, output_inventory_digest, writ
 from ci.products.restore import finalize_phase_object
 from ci.products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from ci.sdk_phase10_maven_caller import (
-    prepare_sdk_phase10_maven_handoff, sign_sdk_phase10_maven_handoff,
+    _selection, prepare_sdk_phase10_maven_handoff, sign_sdk_phase10_maven_handoff,
     verify_sdk_phase10_maven_handoff,
 )
 from ci.tests.test_products import phase_receipt, producer
@@ -36,6 +36,10 @@ class SdkPhase10MavenCallerTest(unittest.TestCase):
         self.original_root.mkdir()
         self.receipts = self.root / "receipts"
         self.receipts.mkdir()
+        self.package_plan_captures = self.root / "package-plan-captures"
+        self.package_plan_captures.mkdir()
+        self.package_roots = self.root / "package-roots"
+        self.package_roots.mkdir()
         self.public = self.root / "publication-pgp-public-key.asc"
         self.signing_home = self.root / "gnupg"
         self.signing_home.mkdir()
@@ -43,12 +47,30 @@ class SdkPhase10MavenCallerTest(unittest.TestCase):
                            (self.keyring, b"keyring\n"), (self.keys / "release.pub", b"public\n"),
                            (self.plan, b"plan\n"), (self.public, b"pgp public\n")):
             path.write_bytes(data)
-        original = {**producer(), "workflowPath": ".github/workflows/ci.yml"}
         packages = []
         self.captures = {}
         self.campaign_entries = []
         for number, (component, target) in enumerate((
                 ("sdk-core", "common"), ("sdk-android", "android"), ("sdk-ios", "ios")), 1):
+            original = {**producer(), "workflowPath": ".github/workflows/ci.yml",
+                "commit": str(number) * 40, "tree": str(number + 3) * 40,
+                "runId": 100 + number}
+            (self.package_roots / component).mkdir()
+            plan_capture = self.package_plan_captures / component
+            (plan_capture / "plan").mkdir(parents=True)
+            plan_bytes = canonical_json_bytes({"component": component, "producer": original})
+            (plan_capture / "plan/impact-plan.json").write_bytes(plan_bytes)
+            plan_zip = plan_capture / "official-plan.zip"
+            with zipfile.ZipFile(plan_zip, "w", compression=zipfile.ZIP_STORED) as output_zip:
+                output_zip.writestr("impact-plan.json", plan_bytes)
+            plan_zip_sha = sha256_bytes(plan_zip.read_bytes())
+            write_canonical_json(plan_capture / "transport.json", {
+                "schemaVersion": 1, "producer": original, "observation": {},
+                "artifact": {"id": number + 10, "digest": plan_zip_sha,
+                    "name": "codex-agent-ci-plan-" + original["tree"]},
+                "planSha256": sha256_bytes(plan_bytes), "originalInventory": [],
+                "trustedWorkflowSha": "b" * 40,
+                "trustedJobName": "product-validation / plan"})
             source = self.root / (component + "-source")
             source.mkdir()
             output = source / "outputs/maven/payload.jar"
@@ -97,7 +119,9 @@ class SdkPhase10MavenCallerTest(unittest.TestCase):
                 "receiptSha256": sha256_bytes(receipt), "producer": original,
                 "producerSha256": sha256_bytes(canonical_json_bytes(original)),
                 "artifactId": number, "artifactSha256": artifact_digest,
-                "trustedWorkflowSha": "a" * 40})
+                "trustedWorkflowSha": "a" * 40,
+                "planArtifactId": number + 10, "planArtifactSha256": plan_zip_sha,
+                "planSha256": sha256_bytes(plan_bytes), "planWorkflowSha": "b" * 40})
         for instance in sorted(SDK_CAMPAIGN_INSTANCES):
             entry = {"product": instance.product, "component": instance.component,
                      "phase": instance.phase, "target": instance.target,
@@ -132,6 +156,17 @@ class SdkPhase10MavenCallerTest(unittest.TestCase):
 
     def _capture(self, _index, destination, **options):
         destination = Path(destination)
+        selections = options["selections"]
+        approved = {row["component"]: row for row in self.control["packages"]}
+        for instance, selection in selections.items():
+            component = instance.component
+            self.assertEqual(self.package_plan_captures / component / "plan/impact-plan.json",
+                             Path(selection["plan"]))
+            self.assertEqual(self.package_roots / component,
+                             Path(selection["repositoryRoot"]))
+            self.assertEqual(approved[component]["producer"],
+                             load_canonical_json_bytes((self.package_plan_captures / component /
+                                 "transport.json").read_bytes())["producer"])
         campaign = destination / "campaign"
         campaign.mkdir(parents=True)
         for source, name in ((self.index, "product-index.json"),
@@ -171,6 +206,8 @@ class SdkPhase10MavenCallerTest(unittest.TestCase):
                 keyring=self.keyring, keys_directory=self.keys,
                 original_plan=self.plan, original_root=self.original_root,
                 receipts_directory=self.receipts, pgp_public_key=self.public,
+                package_plan_captures_directory=self.package_plan_captures,
+                package_roots_directory=self.package_roots,
                 token="observation-token")
 
     def _sign(self, digest, *, control_sha=None):
@@ -224,6 +261,49 @@ class SdkPhase10MavenCallerTest(unittest.TestCase):
         for entry in verified["uploadSources"]:
             self.assertEqual(sha256_bytes(canonical_json_bytes(entry["files"])),
                 entry["inventorySha256"])
+
+    def test_mixed_original_producers_keep_independent_plan_custody(self):
+        self.assertEqual(3, len({row["producer"]["commit"] for row in self.control["packages"]}))
+        digest = self._prepare()["preparationSha256"]
+        self._sign(digest)
+        self._verify(digest)
+        for component in ("sdk-core", "sdk-android", "sdk-ios"):
+            self.assertEqual((self.package_plan_captures / component / "transport.json").read_bytes(),
+                (self.signed / "plan-captures" / component / "transport.json").read_bytes())
+
+    def test_same_run_control_selection_is_allowed(self):
+        same = self.control["packages"][0]["producer"]
+        for row in self.control["packages"]:
+            row["producer"] = same
+            row["producerSha256"] = sha256_bytes(canonical_json_bytes(same))
+        encoded = canonical_json_bytes(self.control)
+        self.assertEqual(3, len(_selection(encoded, sha256_bytes(encoded))["packages"]))
+
+    def test_wrong_original_plan_or_commit_stops_before_package_capture(self):
+        component = "sdk-core"
+        capture = self.package_plan_captures / component
+        transport_path = capture / "transport.json"
+        original = load_canonical_json_bytes(transport_path.read_bytes())
+        for mutation in ("plan", "commit"):
+            with self.subTest(mutation=mutation):
+                if mutation == "plan":
+                    plan = capture / "plan/impact-plan.json"
+                    prior = plan.read_bytes()
+                    plan.write_bytes(prior + b"x")
+                else:
+                    transport = dict(original)
+                    transport["producer"] = {**transport["producer"], "commit": "f" * 40}
+                    write_canonical_json(transport_path, transport)
+                try:
+                    with patch("ci.sdk_phase10_maven_caller.capture_sdk_phase10_maven_campaign") as observe:
+                        with self.assertRaisesRegex(ValueError, "original plan differs"):
+                            self._prepare()
+                        observe.assert_not_called()
+                finally:
+                    if mutation == "plan":
+                        plan.write_bytes(prior)
+                    else:
+                        write_canonical_json(transport_path, original)
 
     def test_signed_upload_sources_reject_extra_or_changed_sidecars(self):
         digest = self._prepare()["preparationSha256"]
@@ -283,6 +363,8 @@ class SdkPhase10MavenCallerTest(unittest.TestCase):
                     keyring=self.keyring, keys_directory=self.keys,
                     original_plan=self.plan, original_root=self.original_root,
                     receipts_directory=self.receipts, pgp_public_key=self.public,
+                    package_plan_captures_directory=self.package_plan_captures,
+                    package_roots_directory=self.package_roots,
                     token="token")
             capture.assert_not_called()
 

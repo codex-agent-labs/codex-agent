@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 
@@ -22,7 +23,8 @@ from ci.products.index import SignedProductIndex, _verify_index_receipt, verify_
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys,
-    require_sha256, sha256_bytes, snapshot_regular_tree, write_canonical_json,
+    require_integer, require_sha256, sha256_bytes, sha256_file,
+    snapshot_regular_tree, write_canonical_json,
 )
 from ci.products.receipt import validate_producer
 from ci.products.registry import PhaseInstanceId
@@ -40,7 +42,8 @@ _CONTROL = {"schemaVersion", "signedIndexSha256", "signatureSha256",
             "keyringSha256", "keysInventorySha256", "planSha256",
             "pgpPublicKeySha256", "packages"}
 _PACKAGE = {"component", "target", "receiptSha256", "producer",
-            "producerSha256", "artifactId", "artifactSha256", "trustedWorkflowSha"}
+            "producerSha256", "artifactId", "artifactSha256", "trustedWorkflowSha",
+            "planArtifactId", "planArtifactSha256", "planSha256", "planWorkflowSha"}
 _TOKENS = {"GITHUB_TOKEN", "GH_TOKEN", "GITHUB_API_TOKEN",
            "ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"}
 _SECRETS = {"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY", "SIGNING_IN_MEMORY_KEY",
@@ -68,8 +71,12 @@ def _selection(raw: bytes, approved_sha256: str) -> dict:
             raise ValueError("SDK Maven selection has duplicate or wrong package identity")
         seen.add(component)
         validate_producer(row["producer"])
-        for field in ("receiptSha256", "producerSha256", "artifactSha256"):
+        for field in ("receiptSha256", "producerSha256", "artifactSha256",
+                      "planArtifactSha256", "planSha256"):
             require_sha256(row[field], f"SDK Maven {field}")
+        require_integer(row["planArtifactId"], "SDK Maven plan artifact ID", 1)
+        if re.fullmatch(r"[0-9a-f]{40}", row["planWorkflowSha"]) is None:
+            raise ValueError("SDK Maven plan workflow SHA must be a reviewed commit")
     if seen != set(_TARGETS):
         raise ValueError("SDK Maven control does not cover exact package set")
     return control
@@ -85,17 +92,40 @@ def _no_overlap(destination: Path, *sources: Path) -> None:
             raise ValueError("SDK Maven handoff output overlaps an input")
 
 
+def _verify_plan_capture(captured: Path, row: dict) -> None:
+    if {item["relativePath"] for item in regular_file_inventory(captured)} != {
+            "official-plan.zip", "plan/impact-plan.json", "transport.json"}:
+        raise ValueError("SDK Maven original plan capture has unexpected files")
+    transport = require_exact_keys(load_canonical_json_bytes(_read(captured / "transport.json")),
+        {"schemaVersion", "producer", "observation", "artifact", "planSha256",
+         "originalInventory", "trustedWorkflowSha", "trustedJobName"},
+        "SDK Maven original plan transport")
+    if (sha256_bytes(_read(captured / "plan/impact-plan.json")) != row["planSha256"]
+            or sha256_file(captured / "official-plan.zip") != row["planArtifactSha256"]
+            or transport["schemaVersion"] != 1
+            or transport["producer"] != row["producer"]
+            or transport["artifact"]["id"] != row["planArtifactId"]
+            or transport["artifact"]["digest"] != row["planArtifactSha256"]
+            or transport["artifact"]["name"] != "codex-agent-ci-plan-" + row["producer"]["tree"]
+            or transport["planSha256"] != row["planSha256"]
+            or transport["trustedWorkflowSha"] != row["planWorkflowSha"]
+            or transport["trustedJobName"] != "product-validation / plan"):
+        raise ValueError("SDK Maven package original plan differs from independent approval")
+
+
 def prepare_sdk_phase10_maven_handoff(
     control_path: Path, destination: Path, *, approved_control_sha256: str,
     signed_index: SignedProductIndex, keyring: Path, keys_directory: Path,
     original_plan: Path, original_root: Path, receipts_directory: Path,
-    pgp_public_key: Path, token: str,
+    pgp_public_key: Path, package_plan_captures_directory: Path,
+    package_roots_directory: Path, token: str,
 ) -> dict:
     """Capture only independently approved, original SDK package objects."""
     if _SECRETS & set(os.environ):
         raise ValueError("SDK Maven observation process must not receive signing secrets")
     paths = (control_path, signed_index.manifest, signed_index.signature, keyring,
-             keys_directory, original_plan, original_root, receipts_directory, pgp_public_key)
+             keys_directory, original_plan, original_root, receipts_directory, pgp_public_key,
+             package_plan_captures_directory, package_roots_directory)
     _no_overlap(Path(destination), *(Path(path) for path in paths))
     raw_control = _read(control_path)
     control = _selection(raw_control, approved_control_sha256)
@@ -106,17 +136,28 @@ def prepare_sdk_phase10_maven_handoff(
         raise ValueError("SDK Maven plan or PGP public key differs from protected control")
     receipts = {row["component"]: _read(Path(receipts_directory) / (row["component"] + ".json"))
                 for row in control["packages"]}
+    plan_captures = {}
+    for row in control["packages"]:
+        component = row["component"]
+        captured = Path(package_plan_captures_directory) / component
+        _verify_plan_capture(captured, row)
+        plan_captures[component] = captured
     selections = {
         PhaseInstanceId("sdk", row["component"], "package", row["target"]): {
-            "plan": str(original_plan), "repositoryRoot": str(original_root),
+            "plan": str(plan_captures[row["component"]] / "plan/impact-plan.json"),
+            "repositoryRoot": str(Path(package_roots_directory) / row["component"]),
             "receipt": str(Path(receipts_directory) / (row["component"] + ".json")),
-            **{name: row[name] for name in _PACKAGE - {"component", "target"}},
+            **{name: row[name] for name in _PACKAGE - {"component", "target",
+                "planArtifactId", "planArtifactSha256", "planSha256", "planWorkflowSha"}},
         } for row in control["packages"]
     }
     with tempfile.TemporaryDirectory(prefix="sdk-p10-maven-prepare-") as temporary:
         root = Path(temporary).resolve()
         prepared = root / "prepared"
         prepared.mkdir()
+        (prepared / "plan-captures").mkdir()
+        for component, captured in plan_captures.items():
+            snapshot_regular_tree(captured, prepared / "plan-captures" / component)
         capture_sdk_phase10_maven_campaign(
             signed_index, prepared / "custody",
             expected_index_sha256=control["signedIndexSha256"],
@@ -136,7 +177,10 @@ def prepare_sdk_phase10_maven_handoff(
         if (_read(control_path) != raw_control or _read(original_plan) != raw_plan
                 or _read(pgp_public_key, 1024 * 1024) != public_key
                 or any(_read(Path(receipts_directory) / (name + ".json")) != value
-                       for name, value in receipts.items())):
+                       for name, value in receipts.items())
+                or any(regular_file_inventory(captured) != regular_file_inventory(
+                       prepared / "plan-captures" / component)
+                       for component, captured in plan_captures.items())):
             raise ValueError("SDK Maven protected inputs changed during observation")
         expected = regular_file_inventory(prepared, allow_empty=True)
         if _SECRETS & set(os.environ):
@@ -177,6 +221,8 @@ def sign_sdk_phase10_maven_handoff(
                     if entry["relativePath"] != "preparation.json"]):
             raise ValueError("SDK Maven preparation inventory differs from its pin")
         control = _selection(_read(held / "control.json"), prep["approvedControlSha256"])
+        for row in control["packages"]:
+            _verify_plan_capture(held / "plan-captures" / row["component"], row)
         if control["pgpPublicKeySha256"] != require_sha256(
                 expected_pgp_key_sha256, "SDK PGP protected key digest"):
             raise ValueError("SDK Maven signer PGP key differs from protected authority")
@@ -265,6 +311,7 @@ def sign_sdk_phase10_maven_handoff(
         published = root / "published"
         published.mkdir()
         snapshot_regular_tree(custody, published / "custody", allow_empty=True)
+        snapshot_regular_tree(held / "plan-captures", published / "plan-captures")
         (published / "control.json").write_bytes(_read(held / "control.json"))
         (published / "preparation.json").write_bytes(raw)
         (published / "publication-pgp-public-key.asc").write_bytes(_read(public_key, 1024 * 1024))
@@ -309,13 +356,15 @@ def verify_sdk_phase10_maven_handoff(
     if preparation["schemaVersion"] != 1 or preparation["approvedControlSha256"] != control_sha:
         raise ValueError("SDK Maven signed control differs from protected pin")
     control = _selection(_read(signed / "control.json"), control_sha)
+    for row in control["packages"]:
+        _verify_plan_capture(signed / "plan-captures" / row["component"], row)
     expected_key = require_sha256(expected_pgp_key_sha256, "SDK PGP key digest")
     if control["pgpPublicKeySha256"] != expected_key or sha256_bytes(
             _read(signed / "publication-pgp-public-key.asc", 1024 * 1024)) != expected_key:
         raise ValueError("SDK Maven signed PGP key differs from protected pin")
     held_paths = {"control.json", "publication-pgp-public-key.asc"}
     held_files = [entry for entry in files if entry["relativePath"] in held_paths
-                  or entry["relativePath"].startswith("custody/")]
+                  or entry["relativePath"].startswith(("custody/", "plan-captures/"))]
     if preparation["preparedFiles"] != held_files:
         raise ValueError("SDK Maven signed custody differs from approved preparation")
     custody = signed / "custody"
@@ -360,7 +409,7 @@ def verify_sdk_phase10_maven_handoff(
     expected_paths = {"control.json", "preparation.json", "publication-pgp-public-key.asc",
                       "sidecar-selection.json"}
     expected_paths.update(entry["relativePath"] for entry in held_files
-                          if entry["relativePath"].startswith("custody/"))
+                          if entry["relativePath"].startswith(("custody/", "plan-captures/")))
     for row in control["packages"]:
         component = row["component"]
         matched = [item for item in custody_record["packages"] if item["component"] == component]
@@ -410,7 +459,8 @@ def main(argv: list[str] | None = None) -> int:
     prepare = commands.add_parser("prepare")
     for name in ("control", "destination", "approved-control-sha256", "signed-index",
                  "signature", "keyring", "keys-directory", "original-plan",
-                 "original-root", "receipts-directory", "pgp-public-key"):
+                 "original-root", "receipts-directory", "pgp-public-key",
+                 "package-plan-captures-directory", "package-roots-directory"):
         prepare.add_argument("--" + name, required=True)
     sign = commands.add_parser("sign")
     for name in ("prepared", "destination", "expected-preparation-sha256",
@@ -431,7 +481,10 @@ def main(argv: list[str] | None = None) -> int:
                 keyring=Path(arguments.keyring), keys_directory=Path(arguments.keys_directory),
                 original_plan=Path(arguments.original_plan), original_root=Path(arguments.original_root),
                 receipts_directory=Path(arguments.receipts_directory),
-                pgp_public_key=Path(arguments.pgp_public_key), token=os.environ.get("GITHUB_TOKEN", ""))
+                pgp_public_key=Path(arguments.pgp_public_key),
+                package_plan_captures_directory=Path(arguments.package_plan_captures_directory),
+                package_roots_directory=Path(arguments.package_roots_directory),
+                token=os.environ.get("GITHUB_TOKEN", ""))
         elif arguments.mode == "sign":
             result = sign_sdk_phase10_maven_handoff(
                 Path(arguments.prepared), Path(arguments.destination),

@@ -60,10 +60,16 @@ class SdkPhase10MavenWorkflowTest(unittest.TestCase):
 
     def test_full_official_index_replay_and_exact_receipts_precede_custody(self):
         source = self.source
-        self.assertEqual(4, source.count("merge-multiple: true"))
+        self.assertEqual(7, source.count("merge-multiple: true"))
         self.assertIn("path: original-plan\n", source)
         for component in ("sdk-core", "sdk-android", "sdk-ios"):
             self.assertIn("path: receipt-carriers/" + component + "\n", source)
+            self.assertIn("path: package-plan-raw/" + component + "\n", source)
+            self.assertIn("path: package-roots/" + component + "\n", source)
+        self.assertIn("--package-plan-captures-directory", source)
+        self.assertIn("--package-roots-directory", source)
+        self.assertIn("--plan-artifact-sha256", source)
+        self.assertIn("--expected-original-producer-sha256", source)
         for marker in ("sdk_phase10_protected_inputs.py stage",
                        "sdk_phase10_original_plan.py",
                        "sdk_phase10_release_index_admission.py",
