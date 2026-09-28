@@ -127,6 +127,7 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
         needs = re.search(r"^    needs: \[(.*?)\]$", self.gate, re.MULTILINE)
         self.assertIsNotNone(needs)
         self.assertIn("contract-validation", [name.strip() for name in needs.group(1).split(",")])
+        self.assertIn("workflow-lint", [name.strip() for name in needs.group(1).split(",")])
         self.assertIn("needs.contract-validation.outputs.contract_attestation_result", self.gate)
         self.assertIn("needs.contract-validation.outputs.contract_complete", self.gate)
         self.assertIn("needs.plan.outputs.validation_reused", self.gate)
@@ -135,7 +136,7 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
         declared = set(re.findall(r"(?m)^      ([a-z0-9_]+):\n        value:", self.workflow))
         consumed = set(re.findall(r"needs\.contract-validation\.outputs\.([a-z0-9_]+)", self.parent))
         self.assertTrue(consumed <= declared, consumed - declared)
-        self.assertIn("needs: [workflow-lint, plan]", workflow_job(self.parent, "contract-validation"))
+        self.assertIn("needs: [plan]", workflow_job(self.parent, "contract-validation"))
         for name, predecessors in (
             ("tooling-attestation", "needs: [contract-binary]"),
             ("product-tooling", "needs: [tooling-attestation]"),

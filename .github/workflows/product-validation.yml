@@ -302,7 +302,7 @@ jobs:
 
   contract-validation:
     name: contract-validation
-    needs: [workflow-lint, plan]
+    needs: [plan]
     if: >-
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -388,7 +388,7 @@ jobs:
       needs.contract-validation.outputs.contract_continuation_result == 'success' &&
       needs.contract-validation.outputs.contract_complete == 'true' &&
       needs.contract-validation.outputs.contract_attestation_result == 'success'
-    needs: [workflow-lint, plan, contract-validation]
+    needs: [plan, contract-validation]
     runs-on: ubuntu-24.04
     outputs:
       artifact_name: codex-agent-product-resume-${{ needs.plan.outputs.validation_tree }}

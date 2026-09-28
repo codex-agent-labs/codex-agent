@@ -36,7 +36,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertLess(condition.start(), self.job.index("    runs-on:"))
         needs = re.search(r"^    needs: \[(.*?)\]$", self.job, re.MULTILINE)
         self.assertIsNotNone(needs)
-        self.assertEqual({"workflow-lint", "plan", "contract-validation"},
+        self.assertEqual({"plan", "contract-validation"},
                          {value.strip() for value in needs.group(1).split(",")})
 
     def test_exact_original_uploads_are_authenticated_before_resuming(self):
