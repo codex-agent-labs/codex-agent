@@ -63,13 +63,15 @@ def _selection() -> dict:
     return {"schemaVersion": 1,
             "catalog": {"producer": _producer("push", 10),
                         "trustedWorkflowSha": _C,
-                        "jobName": "Promote / contract-promoted-catalog / contract-promoted-catalog",
+                        "jobName": candidate._CATALOG_JOB,
                         "artifactId": 20, "artifactSha256": _DIGEST,
                         "indexSha256": _DIGEST, "inventorySha256": _DIGEST},
             "phase10": {"originalProducer": _producer("pull_request", 11),
                         "recordProducer": _producer("workflow_dispatch", 12),
                         "trustedSourceCommit": _C, "trustedWorkflowSha": _C,
                         "trustedRecordWorkflowSha": _C,
+                        "planWorkflowSha": _C,
+                        "planArtifactId": 23, "planArtifactSha256": _DIGEST,
                         "expectedPgpKeySha256": _DIGEST,
                         "outputArtifactId": 21, "outputArtifactSha256": _DIGEST,
                         "recordArtifactId": 22, "recordArtifactSha256": _DIGEST,
@@ -84,7 +86,7 @@ class ContractCandidateAdmissionTest(unittest.TestCase):
             selected = root / "selection.json"
             selected.write_bytes(canonical_json_bytes(_selection()))
             arguments = ["--selection", str(selected), "--expected-selection-sha256", _DIGEST,
-                         "--plan", str(selected), "--trusted-repository", str(root),
+                         "--trusted-repository", str(root),
                          "--validation-repository", str(root), "--landed-repository", str(root),
                          "--destination", str(root / "candidate")]
             with patch.dict(os.environ, {"GITHUB_TOKEN": "token"}), \
@@ -99,34 +101,54 @@ class ContractCandidateAdmissionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inconsistent source or tree"):
             candidate._selection(selected)
 
+    def test_selection_rejects_unreviewed_catalog_job_and_missing_plan_pin(self):
+        selected = _selection()
+        selected["catalog"]["jobName"] = "unrelated-successful-job"
+        with self.assertRaisesRegex(ValueError, "fixed promotion route"):
+            candidate._selection(selected)
+        del selected["phase10"]["planArtifactSha256"]
+        with self.assertRaisesRegex(ValueError, "missing.*planArtifactSha256"):
+            candidate._selection(selected)
+
     def test_promoted_observation_requires_successful_main_and_exact_child(self):
         producer = _producer("push", 10)
-        job = {"id": 40, "run_id": 10, "head_sha": _A, "name": "promoted-catalog",
+        job = {"id": 40, "run_id": 10, "head_sha": _A, "name": candidate._CATALOG_JOB,
                "status": "completed", "conclusion": "success"}
         run = {"id": 10, "run_attempt": 1, "path": producer["workflowPath"],
                "event": "push", "head_branch": "main", "head_sha": _A,
                "status": "completed", "conclusion": "success",
+               "workflow_ref": f"{candidate._REPOSITORY}/.github/workflows/promote.yml@{_A}",
+               "referenced_workflows": [{"path": (
+                   f"{candidate._REPOSITORY}/{candidate._CATALOG_WORKFLOW}@{_C}"),
+                   "sha": _C}],
                "repository": {"full_name": candidate._REPOSITORY, "fork": False},
                "head_repository": {"full_name": candidate._REPOSITORY, "fork": False}}
         commit = {"sha": _A, "tree": {"sha": _B}}
         def api(url, _token):
             return commit if "/git/commits/" in url else run
         with patch.object(candidate.transport, "api_json", side_effect=api), \
-             patch.object(candidate.transport, "paginated_items", return_value=[job]), \
-             patch.object(candidate.transport, "_require_ci_workflow_reference") as workflow:
-            self.assertEqual(candidate._observe_catalog(producer, _C, "promoted-catalog", "token")["run"], run)
-            workflow.assert_called_once_with(run,
-                f"{candidate._REPOSITORY}/{candidate._CATALOG_WORKFLOW}@{_C}", _C)
+             patch.object(candidate.transport, "paginated_items", return_value=[job]):
+            self.assertEqual(candidate._observe_catalog(
+                producer, _C, candidate._CATALOG_JOB, "token")["run"], run)
+            run["referenced_workflows"][0]["sha"] = _A
+            with self.assertRaisesRegex(ValueError, "caller-pinned workflow"):
+                candidate._observe_catalog(producer, _C, candidate._CATALOG_JOB, "token")
+            run["referenced_workflows"][0]["sha"] = _C
             run["head_branch"] = "feature"
             with self.assertRaisesRegex(ValueError, "official main run"):
-                candidate._observe_catalog(producer, _C, "promoted-catalog", "token")
+                candidate._observe_catalog(producer, _C, candidate._CATALOG_JOB, "token")
 
     def test_join_forwards_only_when_catalog_record_and_official_bytes_match(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for name in ("trusted", "validation", "landed"):
                 (root / name).mkdir()
-            (root / "plan.json").write_text("{}\n")
+            plan_directory = root / "source-plan"
+            plan_directory.mkdir()
+            (plan_directory / "impact-plan.json").write_text("{}\n")
+            plan_archive = root / "plan.zip"
+            with ZipFile(plan_archive, "w") as output:
+                output.write(plan_directory / "impact-plan.json", "impact-plan.json")
             catalog_directory = root / "source-catalog"
             catalog_directory.mkdir()
             (catalog_directory / "product-index.json").write_bytes(b"index\n")
@@ -143,6 +165,7 @@ class ContractCandidateAdmissionTest(unittest.TestCase):
                     if file.is_file():
                         output.write(file, file.relative_to(catalog_directory).as_posix())
             selected = _selection()
+            selected["phase10"]["planArtifactSha256"] = candidate.sha256_file(plan_archive)
             selected["catalog"]["artifactSha256"] = candidate.sha256_file(archive)
             selected["catalog"]["indexSha256"] = candidate.sha256_file(
                 catalog_directory / "product-index.json")
@@ -160,9 +183,9 @@ class ContractCandidateAdmissionTest(unittest.TestCase):
             index = {"producer": selected["catalog"]["producer"],
                      "context": {"kind": "promoted-main", "tree": _B},
                      "trustDomain": "release", "entries": entries}
-            def download(_id, _sha, _name, _producer, _run, _token, *, destination):
-                destination.write_bytes(archive.read_bytes())
-                return {"id": 20}, destination
+            def download(artifact_id, _sha, _name, _producer, _run, _token, *, destination):
+                destination.write_bytes((plan_archive if artifact_id == 23 else archive).read_bytes())
+                return {"id": artifact_id}, destination
             tamper = {"closure": False}
             def capture(_plan, _validation, _trusted, destination, **_kwargs):
                 (destination / "signed-record").mkdir(parents=True)
@@ -184,6 +207,8 @@ class ContractCandidateAdmissionTest(unittest.TestCase):
                 return {"product": "contract"}
             fake_trust = type("Trust", (), {"keyring": root / "keyring", "keys": root / "keys"})()
             with patch.object(candidate, "_observe_catalog", return_value={"run": {}}), \
+                 patch.object(candidate.transport, "_observe_ci_producer_jobs",
+                              return_value=[{"run": {}, "jobs": []}]) as plan_observer, \
                  patch.object(candidate.transport, "_download_contract_ci_upload", side_effect=download), \
                  patch.object(candidate.transport, "_require_artifact_job_window"), \
                  patch.object(candidate.transport, "_release_trust", return_value=fake_trust), \
@@ -192,21 +217,29 @@ class ContractCandidateAdmissionTest(unittest.TestCase):
                  patch.object(candidate, "capture_reusable_contract_phase10_output", side_effect=capture), \
                  patch.object(candidate, "forward_verified_contract_phase10_bytes", side_effect=forward) as forwarded:
                 result = candidate.admit_contract_candidate(
-                    selected, root / "plan.json", root / "trusted", root / "validation",
+                    selected, root / "trusted", root / "validation",
                     root / "landed", root / "candidate", token="token", environ={})
                 self.assertEqual(result["candidate"]["product"], "contract")
                 forwarded.assert_called_once()
+                plan_observer.assert_called_with(
+                    {"plan": selected["phase10"]["originalProducer"]},
+                    jobs_by_phase={"plan": candidate._PLAN_JOB}, token="token",
+                    trusted_workflows_by_phase={"plan": {
+                        "path": candidate._PLAN_WORKFLOW,
+                        "sha": selected["phase10"]["planWorkflowSha"],
+                    }},
+                )
                 mismatched = copy.deepcopy(selected)
                 mismatched["phase10"]["phase11Pins"]["expected_payload_sha256"] = "sha256:" + "2" * 64
                 with self.assertRaisesRegex(ValueError, "disagree"):
                     candidate.admit_contract_candidate(
-                        mismatched, root / "plan.json", root / "trusted", root / "validation",
+                        mismatched, root / "trusted", root / "validation",
                         root / "landed", root / "rejected", token="token", environ={})
                 self.assertFalse((root / "rejected").exists())
                 tamper["closure"] = True
                 with self.assertRaisesRegex(ValueError, "different original closure"):
                     candidate.admit_contract_candidate(
-                        selected, root / "plan.json", root / "trusted", root / "validation",
+                        selected, root / "trusted", root / "validation",
                         root / "landed", root / "switched", token="token", environ={})
                 self.assertFalse((root / "switched").exists())
 
@@ -303,7 +336,7 @@ class ContractCandidateSignedChainTest(unittest.TestCase):
                            "runId": 301, "runAttempt": 1, "pullRequest": None}
         selected = {"schemaVersion": 1, "catalog": {
             "producer": promoted_producer, "trustedWorkflowSha": fixture.pin,
-            "jobName": "Promote / contract-promoted-catalog / contract-promoted-catalog",
+            "jobName": candidate._CATALOG_JOB,
             "artifactId": 30, "artifactSha256": sha256_bytes(archives[30]),
             "indexSha256": candidate.sha256_file(catalog / "product-index.json"),
             "inventorySha256": sha256_bytes(canonical_json_bytes(
@@ -333,12 +366,20 @@ class ContractCandidateSignedChainTest(unittest.TestCase):
         plan.update(lanes=lanes, full=full, unknownPaths=unknown)
         plan_path = root / "impact-plan.json"
         plan_path.write_bytes(canonical_json_bytes(plan))
+        original_plan = root / "original-plan"
+        original_plan.mkdir()
+        (original_plan / "impact-plan.json").write_bytes(plan_path.read_bytes())
+        archives[33] = archive_tree(original_plan)
+        selected["phase10"].update(planWorkflowSha=fixture.pin,
+                                   planArtifactId=33,
+                                   planArtifactSha256=sha256_bytes(archives[33]))
         job = lambda name, run, head: {"id": run + 1000, "run_id": run,
             "head_sha": head, "name": name, "status": "completed",
             "conclusion": "success", "started_at": "2026-09-06T10:00:00Z",
             "completed_at": "2026-09-06T10:30:00Z"}
         original_observation = {"run": {"head_sha": fixture.run["head_sha"]},
-                                "jobs": [job(candidate._OUTPUT_JOB, 71, fixture.run["head_sha"])]}
+                                "jobs": [job(candidate._OUTPUT_JOB, 71, fixture.run["head_sha"]),
+                                         job(candidate._PLAN_JOB, 71, fixture.run["head_sha"])]}
         record_observation = {"run": {"head_sha": fixture.source_sha},
                               "jobs": [job(candidate._RECORD_JOB, 301, fixture.source_sha)]}
         catalog_observation = {"run": {"head_sha": fixture.source_sha},
@@ -347,7 +388,6 @@ class ContractCandidateSignedChainTest(unittest.TestCase):
             "created_at": "2026-09-06T10:15:00Z"}
             for artifact_id, raw in archives.items()}
         def download(artifact_id, digest, _name, _producer, _run, _token, *, destination):
-            self.assertEqual(digest, artifacts[artifact_id]["digest"])
             destination.write_bytes(archives[artifact_id])
             return artifacts[artifact_id], destination
         def git_value(_root, _command, revision):
@@ -371,7 +411,7 @@ class ContractCandidateSignedChainTest(unittest.TestCase):
              patch("ci.contract_phase11_bytes._landed_tree",
                    return_value=fixture.producer["tree"]):
             accepted = candidate.admit_contract_candidate(
-                selected, plan_path, fixture.repository_root, validation_checkout,
+                selected, fixture.repository_root, validation_checkout,
                 validation_checkout, destination, token="fixture-token", environ={})
             self.assertEqual(pins["expected_payload_sha256"], accepted["candidate"]["payloadSha256"])
             self.assertEqual(regular_file_inventory(phase10.destination),
@@ -382,19 +422,31 @@ class ContractCandidateSignedChainTest(unittest.TestCase):
             altered["catalog"]["indexSha256"] = "sha256:" + "0" * 64
             with self.assertRaisesRegex(ValueError, "independent S1048 pins"):
                 candidate.admit_contract_candidate(
-                    altered, plan_path, fixture.repository_root, validation_checkout,
+                    altered, fixture.repository_root, validation_checkout,
                     validation_checkout, root / "tampered-index", token="fixture-token", environ={})
             self.assertFalse((root / "tampered-index").exists())
             tampered_catalog = root / "tampered-catalog"
             shutil.copytree(catalog, tampered_catalog)
             (tampered_catalog / "product-index.json").write_bytes(
                 (catalog / "product-index.json").read_bytes() + b"changed\n")
+            original_catalog_archive = archives[30]
             archives[30] = archive_tree(tampered_catalog)
             with self.assertRaisesRegex(ValueError, "independent S1048 pins"):
                 candidate.admit_contract_candidate(
-                    selected, plan_path, fixture.repository_root, validation_checkout,
+                    selected, fixture.repository_root, validation_checkout,
                     validation_checkout, root / "tampered-upload", token="fixture-token", environ={})
             self.assertFalse((root / "tampered-upload").exists())
+            archives[30] = original_catalog_archive
+            tampered_plan = root / "tampered-plan"
+            tampered_plan.mkdir()
+            (tampered_plan / "impact-plan.json").write_bytes(plan_path.read_bytes() + b"changed\n")
+            archives[33] = archive_tree(tampered_plan)
+            with self.assertRaisesRegex(ValueError, "original plan differs from independent S1048 pin"):
+                candidate.admit_contract_candidate(
+                    selected, fixture.repository_root, validation_checkout,
+                    validation_checkout, root / "tampered-plan-candidate",
+                    token="fixture-token", environ={})
+            self.assertFalse((root / "tampered-plan-candidate").exists())
 
 
 if __name__ == "__main__":

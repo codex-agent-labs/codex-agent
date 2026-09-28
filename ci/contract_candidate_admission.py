@@ -34,6 +34,9 @@ from ci.receipt import safe_extract
 
 _REPOSITORY = "codex-agent-labs/codex-agent"
 _CATALOG_WORKFLOW = ".github/workflows/contract-promoted-catalog.yml"
+_CATALOG_JOB = "contract-promoted-catalog / contract-promoted-catalog"
+_PLAN_WORKFLOW = ".github/workflows/product-validation.yml"
+_PLAN_JOB = "product-validation / plan"
 _OUTPUT_WORKFLOW = ".github/workflows/contract-phase10-output-record.yml"
 _OUTPUT_JOB = "product-validation / contract-phase10-output-record / contract-phase10-output"
 _RECORD_JOB = "contract-phase10-record / contract-phase10-record"
@@ -59,6 +62,7 @@ def _selection(value: dict) -> tuple[dict, dict]:
     phase10 = require_exact_keys(selected["phase10"], {
         "originalProducer", "recordProducer", "trustedSourceCommit",
         "trustedWorkflowSha", "trustedRecordWorkflowSha", "expectedPgpKeySha256",
+        "planWorkflowSha", "planArtifactId", "planArtifactSha256",
         "outputArtifactId", "outputArtifactSha256", "recordArtifactId",
         "recordArtifactSha256", "recordSha256", "signatureSha256", "phase11Pins",
     }, "Contract Phase-10 selection")
@@ -88,20 +92,24 @@ def _selection(value: dict) -> tuple[dict, dict]:
     for name in ("trustedWorkflowSha", "jobName"):
         if type(catalog[name]) is not str or not catalog[name]:
             raise ValueError(f"Contract catalog {name} is missing")
-    for name in ("trustedWorkflowSha", "trustedRecordWorkflowSha", "trustedSourceCommit"):
+    if catalog["jobName"] != _CATALOG_JOB:
+        raise ValueError("Contract catalog job differs from the fixed promotion route")
+    for name in ("trustedWorkflowSha", "trustedRecordWorkflowSha", "trustedSourceCommit",
+                 "planWorkflowSha"):
         if type(phase10[name]) is not str or re.fullmatch(r"[0-9a-f]{40}", phase10[name]) is None:
             raise ValueError(f"Contract Phase-10 {name} must be an exact Git commit")
     if re.fullmatch(r"[0-9a-f]{40}", catalog["trustedWorkflowSha"]) is None:
         raise ValueError("Contract catalog child workflow must be exactly pinned")
     for group in (catalog, phase10):
         for name in ("artifactId",) if group is catalog else (
-                "outputArtifactId", "recordArtifactId"):
+                "planArtifactId", "outputArtifactId", "recordArtifactId"):
             require_integer(group[name], f"Contract {name}", 1)
-    if phase10["outputArtifactId"] == phase10["recordArtifactId"]:
-        raise ValueError("Contract output and record must be distinct uploads")
+    if len({catalog["artifactId"], phase10["planArtifactId"],
+            phase10["outputArtifactId"], phase10["recordArtifactId"]}) != 4:
+        raise ValueError("Contract catalog, plan, output and record must be distinct uploads")
     for name in ("artifactSha256", "indexSha256", "inventorySha256"):
         require_sha256(catalog[name], f"Contract catalog {name}")
-    for name in ("outputArtifactSha256", "recordArtifactSha256", "recordSha256",
+    for name in ("planArtifactSha256", "outputArtifactSha256", "recordArtifactSha256", "recordSha256",
                  "signatureSha256", "expectedPgpKeySha256"):
         require_sha256(phase10[name], f"Contract Phase-10 {name}")
     return catalog, phase10
@@ -147,7 +155,7 @@ def _observe_catalog(producer: dict, workflow_sha: str, job_name: str, token: st
     return {"run": run, "testedCommit": commit, "jobs": jobs}
 
 
-def admit_contract_candidate(selection: dict, plan_path: Path, trusted_repository: Path,
+def admit_contract_candidate(selection: dict, trusted_repository: Path,
                              validation_repository: Path, landed_repository: Path,
                              destination: Path, *, token: str,
                              environ=None) -> dict:
@@ -161,7 +169,7 @@ def admit_contract_candidate(selection: dict, plan_path: Path, trusted_repositor
     destination = Path(destination)
     if destination.exists() or destination.is_symlink():
         raise ValueError("Contract candidate destination already exists")
-    for path in (plan_path, trusted_repository, validation_repository, landed_repository):
+    for path in (trusted_repository, validation_repository, landed_repository):
         source = Path(path).resolve(strict=True)
         output = destination.resolve(strict=False)
         if output == source or output in source.parents or source in output.parents:
@@ -211,8 +219,32 @@ def admit_contract_candidate(selection: dict, plan_path: Path, trusted_repositor
             extracted, root / "verified-catalog", repository=_REPOSITORY,
             source="promoted-main", keyring=trust.keyring, keys_directory=trust.keys,
         )
-        captured = root / "phase10"
         original = phase10["originalProducer"]
+        plan_observation = transport._observe_ci_producer_jobs(
+            {"plan": original}, jobs_by_phase={"plan": _PLAN_JOB}, token=token,
+            trusted_workflows_by_phase={"plan": {
+                "path": _PLAN_WORKFLOW, "sha": phase10["planWorkflowSha"],
+            }},
+        )[0]
+        plan_archive = root / "plan.zip"
+        plan_artifact, _ = transport._download_contract_ci_upload(
+            phase10["planArtifactId"], phase10["planArtifactSha256"],
+            f"codex-agent-ci-plan-{original['tree']}", original,
+            plan_observation["run"], token, destination=plan_archive,
+        )
+        transport._require_artifact_job_window(plan_observation, _PLAN_JOB, plan_artifact)
+        if sha256_file(plan_archive) != phase10["planArtifactSha256"]:
+            raise ValueError("Contract original plan differs from independent S1048 pin")
+        _, plan_files, _ = verified_zip_contents(
+            plan_archive, retained_paths=("impact-plan.json",),
+            max_retained_bytes=16 * 1024 * 1024, allow_empty_members=True,
+            **transport._CATALOG_ZIP_LIMITS,
+        )
+        if not plan_files.get("impact-plan.json"):
+            raise ValueError("Contract original plan upload lacks impact-plan.json")
+        plan_path = root / "impact-plan.json"
+        plan_path.write_bytes(plan_files["impact-plan.json"])
+        captured = root / "phase10"
         record_producer = phase10["recordProducer"]
         result = capture_reusable_contract_phase10_output(
             plan_path, validation_repository, trusted_repository, captured,
@@ -258,6 +290,7 @@ def admit_contract_candidate(selection: dict, plan_path: Path, trusted_repositor
             raise ValueError("Contract catalog and signed Phase-10 record disagree")
         if (regular_file_inventory(extracted) != catalog_files
                 or sha256_file(archive) != catalog["artifactSha256"]
+                or sha256_file(plan_archive) != phase10["planArtifactSha256"]
                 or sha256_file(captured / "signed-record/record.json") != phase10["recordSha256"]
                 or sha256_file(captured / "signed-record/record.sig") != phase10["signatureSha256"]):
             raise ValueError("Contract candidate originals changed during admission")
@@ -271,7 +304,7 @@ def admit_contract_candidate(selection: dict, plan_path: Path, trusted_repositor
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    for name in ("selection", "plan", "trusted-repository", "validation-repository",
+    for name in ("selection", "trusted-repository", "validation-repository",
                  "landed-repository", "destination"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--expected-selection-sha256", required=True)
@@ -282,7 +315,7 @@ def main(argv=None) -> int:
             args.expected_selection_sha256, "independent Contract candidate selection"):
         raise ValueError("Contract candidate selection differs from protected S1048 digest")
     result = admit_contract_candidate(
-        load_canonical_json_bytes(selected), args.plan, args.trusted_repository,
+        load_canonical_json_bytes(selected), args.trusted_repository,
         args.validation_repository, args.landed_repository, args.destination,
         token=os.environ["GITHUB_TOKEN"],
     )
