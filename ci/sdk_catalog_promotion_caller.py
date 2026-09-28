@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 
 from ci.receipt import safe_extract
+from ci import product_reuse
 from ci.product_reuse import _CATALOG_ZIP_LIMITS, _require_artifact_job_window
 from ci.sdk_campaign_pinned_election import held_pinned_sdk_campaign_authority
 from ci.sdk_campaign_reused_original import held_completed_sdk_catalog
@@ -24,7 +25,7 @@ from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys,
     require_integer, require_sha256, sha256_bytes, sha256_file,
-    verified_zip_contents, write_canonical_json,
+    snapshot_regular_tree, verified_zip_contents, write_canonical_json,
 )
 from ci.products.registry import PhaseInstanceId
 from ci.products.receipt import validate_producer
@@ -38,6 +39,14 @@ _OBJECT_PIN_KEYS = {"product", "component", "phase", "target", "buildKey",
                     "receiptSha256", "objectSha256", "relativePath"}
 _WORKFLOW = ".github/workflows/product-validation.yml"
 _JOB = "product-validation / sdk-catalog"
+_INDEX_WORKFLOW = ".github/workflows/sdk-phase10-maven-sidecars.yml"
+_INDEX_JOB = "sdk-phase10-maven-sidecars / sdk-phase10-maven-sidecars"
+_INDEX_CARRIER_PIN_KEYS = {"producerSha256", "artifactId", "artifactSha256",
+                           "artifactSize", "trustedWorkflowSha", "captureInventorySha256"}
+_INDEX_CARRIER_LIMITS = {"require_sorted": False, "max_archive_bytes": 32 * 1024 * 1024,
+    "max_central_directory_bytes": 256 * 1024, "max_members": 64,
+    "max_entry_bytes": 20 * 1024 * 1024, "max_total_bytes": 32 * 1024 * 1024,
+    "max_compression_ratio": 100}
 
 
 def _landed_commit(repository: Path) -> str:
@@ -91,6 +100,97 @@ def _object_pins(path: Path, expected_digest: str, expected_index_digest: str) -
     if order != sorted(SDK_CAMPAIGN_INSTANCES):
         raise ValueError("SDK object pins are not in canonical phase order")
     return raw, selected
+
+
+def _index_carrier_pins(pins: dict, producer: dict) -> dict:
+    selected = require_exact_keys(pins, _INDEX_CARRIER_PIN_KEYS,
+                                  "SDK official index carrier pins")
+    record = validate_producer(producer)
+    if (record["repository"] != "codex-agent-labs/codex-agent"
+            or record["workflowPath"] != ".github/workflows/ci.yml"
+            or record["event"] != "workflow_dispatch"
+            or sha256_bytes(canonical_json_bytes(record)) != require_sha256(
+                selected["producerSha256"], "SDK index carrier producer digest")):
+        raise ValueError("SDK index carrier producer differs from independent approval")
+    require_integer(selected["artifactId"], "SDK index carrier artifact ID", 1)
+    require_integer(selected["artifactSize"], "SDK index carrier artifact size", 1)
+    for field in ("artifactSha256", "captureInventorySha256"):
+        require_sha256(selected[field], "SDK index carrier " + field)
+    if (type(selected["trustedWorkflowSha"]) is not str
+            or re.fullmatch(r"[0-9a-f]{40}", selected["trustedWorkflowSha"]) is None):
+        raise ValueError("SDK index carrier child workflow requires an exact commit")
+    return selected
+
+
+def capture_official_sdk_phase10_index(
+    producer: dict, carrier_pins: dict, destination: Path, *,
+    landed_repository: Path, index_handoff_pins: dict,
+    token: str, environ: dict[str, str],
+) -> dict:
+    """Token-only capture of the fixed protected Maven-sidecar admission upload."""
+    require_no_signing_secret(environ)
+    require_no_signing_secret(os.environ)
+    if type(token) is not str or not token:
+        raise ValueError("SDK index carrier capture requires an observation token")
+    pins = _index_carrier_pins(carrier_pins, producer)
+    producer = validate_producer(producer)
+    destination = Path(destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("SDK index carrier destination already exists")
+    output = destination.resolve(strict=False)
+    landed = Path(landed_repository).resolve(strict=True)
+    if output == landed or output in landed.parents or landed in output.parents:
+        raise ValueError("SDK index carrier destination overlaps landed checkout")
+    observed = product_reuse._observe_ci_producer_jobs(
+        {"index": producer}, jobs_by_phase={"index": _INDEX_JOB},
+        trusted_workflows_by_phase={"index": {"path": _INDEX_WORKFLOW,
+            "sha": pins["trustedWorkflowSha"]}}, token=token,
+        allow_protected_dispatch=True, dispatch_authorization_job=None)[0]
+    if observed["run"].get("status") != "completed" or observed["run"].get("conclusion") != "success":
+        raise ValueError("SDK official index carrier run did not succeed")
+    name = ("codex-agent-sdk-phase10-maven-index-admission-"
+            f"{index_handoff_pins['expected_source_tree']}-attestation-"
+            f"{producer['runId']}-attempt-{producer['runAttempt']}")
+    with tempfile.TemporaryDirectory(prefix="sdk-index-carrier-") as temporary:
+        root = Path(temporary).resolve()
+        archive = root / "official-upload.zip"
+        artifact, _ = product_reuse._download_contract_ci_upload(
+            pins["artifactId"], pins["artifactSha256"], name, producer,
+            observed["run"], token, destination=archive,
+            max_bytes=_INDEX_CARRIER_LIMITS["max_archive_bytes"])
+        _require_artifact_job_window(observed, _INDEX_JOB, artifact)
+        if artifact["size_in_bytes"] != pins["artifactSize"] or archive.stat().st_size != pins["artifactSize"]:
+            raise ValueError("SDK official index carrier size differs from approval")
+        listing, _, _ = verified_zip_contents(archive, retained_paths=(),
+                                              **_INDEX_CARRIER_LIMITS)
+        extracted = root / "extracted"
+        safe_extract(archive, extracted)
+        if regular_file_inventory(extracted) != listing:
+            raise ValueError("SDK official index carrier extraction differs from upload")
+        verified = root / "verified"
+        forward_verified_sdk_phase10_bytes(extracted, verified,
+            landed_repository=landed_repository, **index_handoff_pins)
+        if (sha256_bytes(canonical_json_bytes(regular_file_inventory(verified)))
+                != pins["captureInventorySha256"]):
+            raise ValueError("SDK official index carrier lacks pinned inner capture")
+        prepared = root / "prepared"
+        prepared.mkdir()
+        snapshot_regular_tree(verified, prepared / "phase10")
+        shutil.copyfile(archive, prepared / "official-upload.zip")
+        write_canonical_json(prepared / "transport.json", {
+            "schemaVersion": 1, "producer": producer, "observed": observed,
+            "artifact": artifact, "trustedWorkflowSha": pins["trustedWorkflowSha"],
+        })
+        inventory = regular_file_inventory(prepared)
+        if (sha256_file(archive) != pins["artifactSha256"]
+                or sha256_file(prepared / "official-upload.zip") != pins["artifactSha256"]
+                or regular_file_inventory(verified) != regular_file_inventory(prepared / "phase10")):
+            raise ValueError("SDK official index carrier changed during capture")
+        require_no_signing_secret(environ)
+        require_no_signing_secret(os.environ)
+        publish_regular_tree(prepared, destination, expected_inventory=inventory)
+    return {"inventorySha256": sha256_bytes(canonical_json_bytes(inventory)),
+            "artifactId": pins["artifactId"], "artifactSha256": pins["artifactSha256"]}
 
 
 def capture_promotable_sdk_original_catalog(
@@ -193,12 +293,14 @@ def capture_promotable_sdk_original_catalog(
 
 
 def sign_promoted_sdk_catalog(
-    protected_catalog_capture: Path, protected_index_capture: Path,
+    protected_catalog_capture: Path, protected_index_carrier: Path,
     authority_file: Path, object_pins_file: Path, landed_repository: Path,
     destination: Path, *, expected_catalog_capture_inventory_sha256: str,
     expected_authority_sha256: str, expected_object_pins_sha256: str,
     expected_catalog_artifact_size: int, trusted_workflow_sha: str,
-    index_handoff_pins: dict, repository: str, context: dict, producer: dict,
+    index_handoff_pins: dict, index_carrier_producer: dict,
+    index_carrier_pins: dict, expected_index_carrier_inventory_sha256: str,
+    repository: str, context: dict, producer: dict,
     keyring: Path, keys_directory: Path, private_key: Path,
     environ: dict[str, str],
 ) -> dict:
@@ -213,6 +315,8 @@ def sign_promoted_sdk_catalog(
         raise ValueError("SDK promoted catalog signer must not receive an observation token")
     if type(index_handoff_pins) is not dict:
         raise ValueError("SDK signed-index handoff requires exact protected pins")
+    carrier_pins = _index_carrier_pins(index_carrier_pins, index_carrier_producer)
+    carrier_producer = validate_producer(index_carrier_producer)
     handoff_keys = {"expected_inventory_sha256", "expected_index_sha256",
         "expected_signature_sha256", "expected_authority_sha256",
         "expected_signed_upload_sha256", "expected_authority_upload_sha256",
@@ -235,7 +339,7 @@ def sign_promoted_sdk_catalog(
     destination = Path(destination)
     if destination.exists() or destination.is_symlink():
         raise ValueError("SDK promoted catalog destination already exists")
-    source_paths = [protected_catalog_capture, protected_index_capture, authority_file,
+    source_paths = [protected_catalog_capture, protected_index_carrier, authority_file,
                     object_pins_file, landed_repository, keyring, keys_directory, private_key]
     output = destination.resolve(strict=False)
     for path in source_paths:
@@ -249,6 +353,59 @@ def sign_promoted_sdk_catalog(
     if {row["relativePath"] for row in capture_inventory} != {
             "authority.json", "object-pins.json", "official-catalog.zip", "transport.json"}:
         raise ValueError("SDK catalog capture has unexpected or missing files")
+    carrier_inventory = regular_file_inventory(protected_index_carrier)
+    if sha256_bytes(canonical_json_bytes(carrier_inventory)) != require_sha256(
+            expected_index_carrier_inventory_sha256, "SDK official index carrier inventory"):
+        raise ValueError("SDK official index carrier differs from independent inventory pin")
+    if {row["relativePath"] for row in carrier_inventory} != {
+            "official-upload.zip", "transport.json",
+            *("phase10/" + row["relativePath"] for row in regular_file_inventory(
+                Path(protected_index_carrier) / "phase10"))}:
+        raise ValueError("SDK official index carrier has unexpected or missing files")
+    carrier_transport = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(
+        Path(protected_index_carrier) / "transport.json", max_bytes=1024 * 1024,
+        reject_symlink_parents=True)),
+        {"schemaVersion", "producer", "observed", "artifact", "trustedWorkflowSha"},
+        "SDK official index carrier transport")
+    carrier_artifact = carrier_transport["artifact"]
+    observed_carrier = carrier_transport["observed"]
+    observed_run = observed_carrier.get("run") if isinstance(observed_carrier, dict) else None
+    tested = observed_carrier.get("testedCommit") if isinstance(observed_carrier, dict) else None
+    if (carrier_transport["schemaVersion"] != 1
+            or carrier_transport["producer"] != carrier_producer
+            or carrier_transport["trustedWorkflowSha"] != carrier_pins["trustedWorkflowSha"]
+            or not isinstance(observed_run, dict)
+            or observed_run.get("id") != carrier_producer["runId"]
+            or observed_run.get("run_attempt") != carrier_producer["runAttempt"]
+            or observed_run.get("path") != carrier_producer["workflowPath"]
+            or observed_run.get("event") != carrier_producer["event"]
+            or observed_run.get("head_sha") != carrier_producer["commit"]
+            or observed_run.get("status") != "completed"
+            or observed_run.get("conclusion") != "success"
+            or not isinstance(tested, dict)
+            or tested.get("sha") != carrier_producer["commit"]
+            or not isinstance(tested.get("tree"), dict)
+            or tested["tree"].get("sha") != carrier_producer["tree"]
+            or not isinstance(carrier_artifact, dict)
+            or carrier_artifact.get("id") != carrier_pins["artifactId"]
+            or carrier_artifact.get("digest") != carrier_pins["artifactSha256"]
+            or carrier_artifact.get("size_in_bytes") != carrier_pins["artifactSize"]
+            or not isinstance(carrier_artifact.get("workflow_run"), dict)
+            or carrier_artifact["workflow_run"].get("id") != carrier_producer["runId"]
+            or carrier_artifact["workflow_run"].get("head_sha") != carrier_producer["commit"]
+            or carrier_artifact.get("name") != (
+                "codex-agent-sdk-phase10-maven-index-admission-"
+                f"{index_handoff_pins['expected_source_tree']}-attestation-"
+                f"{carrier_producer['runId']}-attempt-{carrier_producer['runAttempt']}")):
+        raise ValueError("SDK official index carrier transport differs from approval")
+    _require_artifact_job_window(observed_carrier, _INDEX_JOB, carrier_artifact)
+    jobs = [job for job in observed_carrier["jobs"] if job.get("name") == _INDEX_JOB]
+    if jobs[0].get("status") != "completed" or jobs[0].get("conclusion") != "success":
+        raise ValueError("SDK official index carrier job did not succeed")
+    carrier_archive = Path(protected_index_carrier) / "official-upload.zip"
+    if (carrier_archive.stat().st_size != carrier_pins["artifactSize"]
+            or sha256_file(carrier_archive) != carrier_pins["artifactSha256"]):
+        raise ValueError("SDK official index carrier ZIP differs from approval")
     pins_raw, object_pins = _object_pins(object_pins_file,
         expected_object_pins_sha256, index_handoff_pins["expected_index_sha256"])
     if (read_regular_file_bytes(Path(protected_catalog_capture) / "authority.json",
@@ -304,8 +461,18 @@ def sign_promoted_sdk_catalog(
             raise ValueError("SDK captured official catalog ZIP differs from protected digest")
         with tempfile.TemporaryDirectory(prefix="sdk-promoted-catalog-sign-") as temporary:
             root = Path(temporary).resolve()
+            extracted_carrier = root / "extracted-carrier"
+            listing, _, _ = verified_zip_contents(carrier_archive, retained_paths=(),
+                                                  **_INDEX_CARRIER_LIMITS)
+            safe_extract(carrier_archive, extracted_carrier)
+            if (regular_file_inventory(extracted_carrier) != listing
+                    or regular_file_inventory(extracted_carrier) != regular_file_inventory(
+                        Path(protected_index_carrier) / "phase10")
+                    or sha256_bytes(canonical_json_bytes(regular_file_inventory(
+                        extracted_carrier))) != carrier_pins["captureInventorySha256"]):
+                raise ValueError("SDK official index carrier inner bytes differ from approval")
             forwarded = root / "phase10"
-            forward_verified_sdk_phase10_bytes(protected_index_capture, forwarded,
+            forward_verified_sdk_phase10_bytes(extracted_carrier, forwarded,
                 landed_repository=landed_repository, **index_handoff_pins)
             _require_phase10_signing_policy(
                 forwarded / "replay-evidence/product-signing-keys.json",
@@ -365,6 +532,8 @@ def sign_promoted_sdk_catalog(
                 context=context, producer=producer, keyring=keyring,
                 keys_directory=keys_directory, private_key=private_key)
             if (regular_file_inventory(protected_catalog_capture) != capture_inventory
+                    or regular_file_inventory(protected_index_carrier) != carrier_inventory
+                    or sha256_file(carrier_archive) != carrier_pins["artifactSha256"]
                     or sha256_file(archive) != pin["artifact_sha256"]
                     or read_regular_file_bytes(object_pins_file, max_bytes=64 * 1024,
                         reject_symlink_parents=True) != pins_raw):

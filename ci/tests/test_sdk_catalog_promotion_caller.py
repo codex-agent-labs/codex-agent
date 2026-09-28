@@ -8,7 +8,8 @@ import unittest
 from unittest.mock import patch
 
 from ci.sdk_catalog_promotion_caller import (
-    capture_promotable_sdk_original_catalog, sign_promoted_sdk_catalog,
+    capture_official_sdk_phase10_index, capture_promotable_sdk_original_catalog,
+    sign_promoted_sdk_catalog,
 )
 from ci.products.index import IndexEntrySource
 from ci.products.inventory import (
@@ -164,6 +165,65 @@ class SdkCatalogPromotionCallerTest(unittest.TestCase):
                 self._capture()
         self.assertFalse(self.destination.exists())
 
+    def test_fixed_protected_index_upload_is_observed_before_capture(self):
+        original = self.root / "phase10-original"
+        original.mkdir()
+        landed = self.root / "landed-fixture"
+        landed.mkdir()
+        (original / "marker.json").write_bytes(canonical_json_bytes({"index": "pinned"}))
+        raw = archive({"marker.json": (original / "marker.json").read_bytes()})
+        producer = {**self.producer, "event": "workflow_dispatch", "pullRequest": None,
+                    "runId": 92, "runAttempt": 3}
+        pins = {"producerSha256": sha256_bytes(canonical_json_bytes(producer)),
+            "artifactId": 904, "artifactSha256": sha256_bytes(raw),
+            "artifactSize": len(raw), "trustedWorkflowSha": "d" * 40,
+            "captureInventorySha256": sha256_bytes(canonical_json_bytes(
+                regular_file_inventory(original)))}
+        observed = {"run": {"id": 92, "run_attempt": 3,
+            "status": "completed", "conclusion": "success"},
+            "jobs": [{"name": "sdk-phase10-maven-sidecars / sdk-phase10-maven-sidecars",
+                "started_at": "2026-01-01T00:00:00Z",
+                "completed_at": "2026-01-01T00:10:00Z"}]}
+        artifact = {"id": 904, "digest": pins["artifactSha256"],
+            "size_in_bytes": len(raw), "created_at": "2026-01-01T00:05:00Z"}
+        handoff = {"expected_source_tree": self.producer["tree"]}
+        target = self.root / "official-index"
+
+        def download(_id, _digest, name, _producer, _run, _token, *, destination, **_kw):
+            self.assertEqual(name, "codex-agent-sdk-phase10-maven-index-admission-"
+                             f"{self.producer['tree']}-attestation-92-attempt-3")
+            Path(destination).write_bytes(raw)
+            return artifact, Path(destination)
+
+        def forward(source, destination, **_kw):
+            snapshot_regular_tree(source, destination)
+
+        with patch("ci.sdk_catalog_promotion_caller.product_reuse._observe_ci_producer_jobs",
+                   return_value=[observed]) as observation, \
+             patch("ci.sdk_catalog_promotion_caller.product_reuse._download_contract_ci_upload",
+                   side_effect=download), \
+             patch("ci.sdk_catalog_promotion_caller.forward_verified_sdk_phase10_bytes",
+                   side_effect=forward):
+            result = capture_official_sdk_phase10_index(producer, pins, target,
+                landed_repository=landed, index_handoff_pins=handoff,
+                token="synthetic-token", environ={})
+        self.assertEqual(result["artifactSha256"], pins["artifactSha256"])
+        self.assertEqual((target / "official-upload.zip").read_bytes(), raw)
+        self.assertEqual((target / "phase10/marker.json").read_bytes(),
+                         (original / "marker.json").read_bytes())
+        self.assertEqual(observation.call_args.kwargs["trusted_workflows_by_phase"],
+            {"index": {"path": ".github/workflows/sdk-phase10-maven-sidecars.yml",
+                       "sha": "d" * 40}})
+        self.assertEqual(observation.call_args.kwargs["jobs_by_phase"],
+                         {"index": "sdk-phase10-maven-sidecars / sdk-phase10-maven-sidecars"})
+        with patch("ci.sdk_catalog_promotion_caller.product_reuse._observe_ci_producer_jobs",
+                   side_effect=AssertionError("observer must not run")):
+            with self.assertRaisesRegex(ValueError, "independent approval"):
+                capture_official_sdk_phase10_index(producer,
+                    {**pins, "producerSha256": sha256_bytes(b"wrong")},
+                    self.root / "bad-index", landed_repository=landed,
+                    index_handoff_pins=handoff, token="synthetic-token", environ={})
+
     def test_signer_joins_exact_captures_and_rejects_observation_token(self):
         captured = self._capture()
         private, public, development = generate_development_key(self.root / "signer-key")
@@ -218,29 +278,65 @@ class SdkCatalogPromotionCallerTest(unittest.TestCase):
             expected_source_commit=self.producer["commit"],
             expected_source_tree=self.producer["tree"],
             expected_validation_tree=self.producer["tree"])
+        carrier_producer = {**self.producer, "event": "workflow_dispatch",
+            "pullRequest": None, "runId": 92, "runAttempt": 3}
+        carrier_upload = archive({row["relativePath"]: (phase10 / row["relativePath"]).read_bytes()
+                                  for row in regular_file_inventory(phase10)})
+        carrier_pins = {"producerSha256": sha256_bytes(canonical_json_bytes(carrier_producer)),
+            "artifactId": 904, "artifactSha256": sha256_bytes(carrier_upload),
+            "artifactSize": len(carrier_upload), "trustedWorkflowSha": "d" * 40,
+            "captureInventorySha256": sha256_bytes(canonical_json_bytes(
+                regular_file_inventory(phase10)))}
+        carrier_name = ("codex-agent-sdk-phase10-maven-index-admission-"
+            f"{self.producer['tree']}-attestation-92-attempt-3")
+        carrier_artifact = {"id": 904, "digest": carrier_pins["artifactSha256"],
+            "size_in_bytes": len(carrier_upload), "name": carrier_name,
+            "created_at": "2026-01-01T00:05:00Z",
+            "workflow_run": {"id": 92, "head_sha": carrier_producer["commit"]}}
+        carrier_observed = {"run": {"id": 92, "run_attempt": 3,
+            "path": ".github/workflows/ci.yml", "event": "workflow_dispatch",
+            "head_sha": carrier_producer["commit"], "status": "completed",
+            "conclusion": "success"},
+            "testedCommit": {"sha": carrier_producer["commit"],
+                "tree": {"sha": carrier_producer["tree"]}},
+            "jobs": [{"name": "sdk-phase10-maven-sidecars / sdk-phase10-maven-sidecars",
+                "started_at": "2026-01-01T00:00:00Z",
+                "completed_at": "2026-01-01T00:10:00Z",
+                "status": "completed", "conclusion": "success"}]}
+        carrier = self.root / "official-index-carrier"
+        carrier.mkdir()
+        snapshot_regular_tree(phase10, carrier / "phase10", allow_empty=False)
+        (carrier / "official-upload.zip").write_bytes(carrier_upload)
+        (carrier / "transport.json").write_bytes(canonical_json_bytes({
+            "schemaVersion": 1, "producer": carrier_producer,
+            "observed": carrier_observed, "artifact": carrier_artifact,
+            "trustedWorkflowSha": carrier_pins["trustedWorkflowSha"]}))
         args = dict(expected_catalog_capture_inventory_sha256=recaptured["inventorySha256"],
             expected_authority_sha256=sha256_file(self.authority),
             expected_object_pins_sha256=sha256_file(self.object_pins),
             expected_catalog_artifact_size=len(self.upload),
             trusted_workflow_sha=self.workflow_sha, index_handoff_pins=handoff,
+            index_carrier_producer=carrier_producer, index_carrier_pins=carrier_pins,
+            expected_index_carrier_inventory_sha256=sha256_bytes(canonical_json_bytes(
+                regular_file_inventory(carrier))),
             repository=self.producer["repository"], context=context, producer=push,
             keyring=keyring, keys_directory=keys, private_key=private, environ={})
         with self.assertRaisesRegex(ValueError, "Phase-10 landed tree"):
-            sign_promoted_sdk_catalog(self.destination, phase10,
+            sign_promoted_sdk_catalog(self.destination, carrier,
                 self.authority, self.object_pins, landing, output,
                 **{**args, "producer": {**push, "tree": "f" * 40},
                    "context": {**context, "tree": "f" * 40}})
         with self.assertRaisesRegex(ValueError, "Phase-10 landed tree"):
-            sign_promoted_sdk_catalog(self.destination, phase10,
+            sign_promoted_sdk_catalog(self.destination, carrier,
                 self.authority, self.object_pins, landing, output,
                 **{**args, "context": {**context, "tree": "f" * 40}})
         with self.assertRaisesRegex(ValueError, "landed checkout HEAD"):
-            sign_promoted_sdk_catalog(self.destination, phase10,
+            sign_promoted_sdk_catalog(self.destination, carrier,
                 self.authority, self.object_pins, landing, output,
                 **{**args, "producer": {**push, "commit": "e" * 40},
                    "context": {**context, "commit": "e" * 40}})
         with self.assertRaisesRegex(ValueError, "landed checkout HEAD"):
-            sign_promoted_sdk_catalog(self.destination, phase10,
+            sign_promoted_sdk_catalog(self.destination, carrier,
                 self.authority, self.object_pins, landing, output,
                 **{**args, "context": {**context, "commit": "e" * 40}})
         original_keyring = keyring.read_bytes()
@@ -251,7 +347,7 @@ class SdkCatalogPromotionCallerTest(unittest.TestCase):
             "fingerprint": retired["fingerprint"]}]
         keyring.write_bytes(canonical_json_bytes(changed_policy))
         with self.assertRaisesRegex(ValueError, "pinned Phase-10 policy"):
-            sign_promoted_sdk_catalog(self.destination, phase10,
+            sign_promoted_sdk_catalog(self.destination, carrier,
                 self.authority, self.object_pins, landing, output, **args)
         keyring.write_bytes(original_keyring)
         (keys / "retired-test.pub").unlink()
@@ -265,7 +361,7 @@ class SdkCatalogPromotionCallerTest(unittest.TestCase):
         forged_inventory = sha256_bytes(canonical_json_bytes(
             regular_file_inventory(self.destination)))
         with self.assertRaisesRegex(ValueError, "producer observation"):
-            sign_promoted_sdk_catalog(self.destination, phase10,
+            sign_promoted_sdk_catalog(self.destination, carrier,
                 self.authority, self.object_pins, landing, output,
                 **{**args, "expected_catalog_capture_inventory_sha256": forged_inventory})
         transport_path.write_bytes(original_transport)
@@ -280,19 +376,28 @@ class SdkCatalogPromotionCallerTest(unittest.TestCase):
 
         with patch("ci.sdk_catalog_promotion_caller.forward_verified_sdk_phase10_bytes",
                    side_effect=verified_forward) as forwarded:
+            local_change = carrier / "phase10/signed-pair/product-index.json"
+            original_index = local_change.read_bytes()
+            local_change.write_bytes(b"caller-local replacement")
+            with self.assertRaisesRegex(ValueError, "inner bytes"):
+                sign_promoted_sdk_catalog(self.destination, carrier,
+                    self.authority, self.object_pins, landing, output,
+                    **{**args, "expected_index_carrier_inventory_sha256": sha256_bytes(
+                        canonical_json_bytes(regular_file_inventory(carrier)))})
+            local_change.write_bytes(original_index)
             with self.assertRaisesRegex(ValueError, "observation token"):
-                sign_promoted_sdk_catalog(self.destination, phase10,
+                sign_promoted_sdk_catalog(self.destination, carrier,
                     self.authority, self.object_pins, landing, output,
                     **{**args, "environ": {"GITHUB_TOKEN": "synthetic"}})
             forwarded.assert_not_called()
             with patch("ci.sdk_catalog_promotion_caller._landed_commit",
                        side_effect=[landed_head, "f" * 40]) as changing_head:
                 with self.assertRaisesRegex(ValueError, "HEAD changed during catalog signing"):
-                    sign_promoted_sdk_catalog(self.destination, phase10,
+                    sign_promoted_sdk_catalog(self.destination, carrier,
                         self.authority, self.object_pins, landing, output, **args)
             self.assertEqual(changing_head.call_count, 2)
             self.assertFalse(output.exists())
-            result = sign_promoted_sdk_catalog(self.destination, phase10,
+            result = sign_promoted_sdk_catalog(self.destination, carrier,
                 self.authority, self.object_pins, landing, output, **args)
         self.assertEqual(len(result["entries"]), 62)
         self.assertEqual(result["context"], context)
