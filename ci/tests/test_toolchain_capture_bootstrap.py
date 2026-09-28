@@ -41,7 +41,7 @@ class CaptureBootstrapTest(unittest.TestCase):
             }
             with mock.patch.dict(os.environ, {"RUNNER_OS": "Windows", "RUNNER_ARCH": "X64"}), \
                     mock.patch("ci.products.toolchain_capture_bootstrap.git_regular_blob_bytes",
-                               side_effect=lambda _, __, path: authorities[path]), \
+                               side_effect=lambda _, __, path, *, max_bytes: authorities[path]), \
                     mock.patch("ci.products.toolchain_capture_bootstrap.subprocess.run") as run:
                 paths = prepare(root, "a" * 40, "windows-x64", root / "out", root / "konan",
                                 plugin_source=plugin, archive_source=archive)
@@ -86,7 +86,7 @@ class CaptureBootstrapTest(unittest.TestCase):
             konan = root / "konan"
             with mock.patch.dict(os.environ, {"RUNNER_OS": "Linux", "RUNNER_ARCH": "X64"}), \
                     mock.patch("ci.products.toolchain_capture_bootstrap.git_regular_blob_bytes",
-                               side_effect=lambda _, __, path: authorities[path]), \
+                               side_effect=lambda _, __, path, *, max_bytes: authorities[path]), \
                     mock.patch("ci.products.toolchain_capture_bootstrap.subprocess.run") as run:
                 paths = prepare(root, "a" * 40, "linux-x64", output, konan,
                                 plugin_source=plugin, archive_source=archive)

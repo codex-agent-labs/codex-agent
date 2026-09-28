@@ -61,11 +61,15 @@ def prepare(
     role = "cross-builder" if profile_id == "linux-arm64" else "builder"
     if host is None or (role, runner_os, runner_arch) not in roles:
         raise ValueError("Capture input host does not match its selected profile")
-    catalog = tomllib.loads(git_regular_blob_bytes(root, revision, VERSION_CATALOG).decode("utf-8"))
+    catalog = tomllib.loads(git_regular_blob_bytes(
+        root, revision, VERSION_CATALOG, max_bytes=4 * 1024 * 1024,
+    ).decode("utf-8"))
     version = catalog["versions"]["kotlin"]
     if version != "2.3.10":
         raise ValueError("Capture bootstrap needs reviewed Kotlin/Native artifact routing")
-    metadata = git_regular_blob_bytes(root, revision, RUNTIME_VERIFICATION_METADATA)
+    metadata = git_regular_blob_bytes(
+        root, revision, RUNTIME_VERIFICATION_METADATA, max_bytes=4 * 1024 * 1024,
+    )
     classifier = host[1]
     extension = "zip" if runner_os == "Windows" else "tar.gz"
     archive_name = f"kotlin-native-prebuilt-{version}-{classifier}.{extension}"
