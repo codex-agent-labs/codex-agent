@@ -137,7 +137,7 @@ jobs:
           transport-producer: ${{ inputs.toolingTransportProducer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ inputs.validationCommit }}
       - id: captured
         uses: ./.github/actions/capture-runtime-state
@@ -356,7 +356,7 @@ jobs:
           transport-producer: ${{ inputs.toolingTransportProducer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ inputs.validationCommit }}
       - id: captured
         uses: ./.github/actions/capture-runtime-state

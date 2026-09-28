@@ -73,7 +73,7 @@ jobs:
           transport-producer: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -191,7 +191,7 @@ jobs:
           transport-producer: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:

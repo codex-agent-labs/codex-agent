@@ -426,7 +426,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - name: Capture exact original plan, completed state and signed external evidence
         env:
@@ -535,7 +535,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: captured
         uses: ./.github/actions/capture-runtime-state
@@ -636,7 +636,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: identity
         shell: bash
@@ -722,7 +722,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -779,7 +779,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: identity
         shell: bash
@@ -863,7 +863,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -920,7 +920,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: identity
         shell: bash
@@ -1004,7 +1004,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -1061,7 +1061,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: identity
         shell: bash
@@ -1145,7 +1145,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -1208,7 +1208,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - name: Select the latest successful original state upload
         id: parent
@@ -1457,7 +1457,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: captured
         uses: ./.github/actions/capture-runtime-state
@@ -1571,7 +1571,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -1629,7 +1629,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - name: Select the exact completed original aggregate state
         id: parent
@@ -1922,7 +1922,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: captured
         uses: ./.github/actions/capture-runtime-state
@@ -2129,7 +2129,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
         uses: ./.github/actions/capture-runtime-state
@@ -2182,7 +2182,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-ios-binary-worker
         with:
@@ -2240,7 +2240,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: parent
         env:
@@ -2308,7 +2308,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: parent
         env:
@@ -2396,7 +2396,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-javascript-worker
         with:
@@ -2448,7 +2448,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -2498,7 +2498,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-javascript-worker
         with:
@@ -2548,7 +2548,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -2662,7 +2662,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
         uses: ./.github/actions/capture-runtime-state
@@ -2714,7 +2714,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-csharp-binary-worker
         with:
@@ -2764,7 +2764,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -2852,7 +2852,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
         uses: ./.github/actions/capture-runtime-state
@@ -2938,7 +2938,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: prepare
         uses: ./.github/actions/sdk-native-prepare
@@ -2995,7 +2995,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-native-package-worker
         with:
@@ -3055,7 +3055,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -3142,7 +3142,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
         uses: ./.github/actions/capture-runtime-state
@@ -3196,7 +3196,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-ios-package-worker
         with:
@@ -3254,7 +3254,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -3341,7 +3341,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
         uses: ./.github/actions/capture-runtime-state
@@ -3395,7 +3395,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-javascript-metadata-worker
         with:
@@ -3450,7 +3450,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -3537,7 +3537,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
         uses: ./.github/actions/capture-runtime-state
@@ -3592,7 +3592,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: dart-cache
         if: matrix.component == 'dart'
@@ -3676,7 +3676,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -3763,7 +3763,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
         uses: ./.github/actions/capture-runtime-state
@@ -3818,7 +3818,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-native-metadata-worker
         with:
@@ -3884,7 +3884,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
@@ -3967,7 +3967,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: needs.plan.outputs.tooling_required == 'true'
@@ -4030,7 +4030,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -4094,7 +4094,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -4194,7 +4194,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -4287,7 +4287,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: needs.plan.outputs.tooling_required == 'true'
@@ -4350,7 +4350,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -4409,7 +4409,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -4518,7 +4518,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: needs.plan.outputs.tooling_required == 'true'
@@ -4647,7 +4647,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
       - id: capture
@@ -4720,7 +4720,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
       - id: capture
@@ -4790,7 +4790,7 @@ jobs:
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
       - id: capture
@@ -4877,7 +4877,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: needs.plan.outputs.tooling_required == 'true'
@@ -5020,7 +5020,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: apple-policy
         if: needs.plan.outputs.tooling_required == 'true'
@@ -5127,7 +5127,7 @@ jobs:
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / product-contracts
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: needs.plan.outputs.tooling_required == 'true'

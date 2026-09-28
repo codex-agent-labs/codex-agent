@@ -256,6 +256,15 @@ class ToolingCaptureTest(unittest.TestCase):
 
 
 class ToolingCaptureCliTest(unittest.TestCase):
+    def test_workflow_capture_inputs_pin_the_signed_tooling_uploader(self):
+        workflows = Path(__file__).resolve().parents[2] / ".github/workflows"
+        names = [line.strip() for path in workflows.glob("*.yml")
+                 for line in path.read_text(encoding="utf-8").splitlines()
+                 if line.lstrip().startswith("trusted-job-name:")]
+        self.assertTrue(names)
+        self.assertEqual({"trusted-job-name: product-validation / contract-validation / tooling-attestation"},
+                         set(names))
+
     def test_cli_forwards_caller_inputs_and_rejects_key_overrides(self):
         action = (Path(__file__).resolve().parents[2] /
                   ".github/actions/capture-sdk-tooling/action.yml").read_text(encoding="utf-8")
