@@ -408,9 +408,8 @@ private fun runCAbiProcess(
     check(command.isNotEmpty() && command.all { '\u0000' !in it }) { "Invalid C ABI evidence command" }
     val log = Files.createTempFile("codex-agent-c-abi-process-", ".log").toFile()
     return try {
-        val process = ProcessBuilder(command).redirectErrorStream(true).redirectOutput(log).apply {
-            environment().putAll(environment)
-        }.start()
+        val process = ProcessBuilder(command).redirectErrorStream(true).redirectOutput(log)
+            .useRuntimeEvidenceEnvironment(environment).start()
         val completed = process.waitFor(5, TimeUnit.MINUTES)
         if (!completed) process.destroyForcibly().waitFor()
         val exit = if (completed) process.exitValue() else -1

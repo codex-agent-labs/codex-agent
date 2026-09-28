@@ -157,7 +157,7 @@ internal fun runNodeEvidenceProcess(
         val process = ProcessBuilder(command)
             .redirectErrorStream(true)
             .redirectOutput(log)
-            .apply { environment().putAll(environment) }
+            .useRuntimeEvidenceEnvironment(environment)
             .start()
         val completed = process.waitFor(5, TimeUnit.MINUTES)
         if (!completed) process.destroyForcibly().waitFor()

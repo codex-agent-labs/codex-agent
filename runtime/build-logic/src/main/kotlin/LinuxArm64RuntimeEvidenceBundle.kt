@@ -301,9 +301,8 @@ internal fun runDesktopEvidenceProcess(
 ): DesktopEvidenceProcessResult {
     val log = Files.createTempFile("desktop-evidence-process", ".log").toFile()
     try {
-        val process = ProcessBuilder(command).redirectErrorStream(true).redirectOutput(log).apply {
-            environment().putAll(environment)
-        }.start()
+        val process = ProcessBuilder(command).redirectErrorStream(true).redirectOutput(log)
+            .useRuntimeEvidenceEnvironment(environment).start()
         val timedOut = !process.waitFor(5, TimeUnit.MINUTES)
         if (timedOut) {
             process.destroyForcibly()

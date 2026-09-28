@@ -79,10 +79,8 @@ internal fun executeNodeBindingValidation(archive: File, node: String, output: F
         fun run(arguments: List<String>): Pair<Int, String> {
             val log = workspace.resolve("process.log")
             val process = ProcessBuilder(listOf(node) + arguments).directory(workspace)
-                .redirectErrorStream(true).redirectOutput(log).apply {
-                    environment().remove("NODE_OPTIONS")
-                    environment().remove("NODE_PATH")
-                }.start()
+                .redirectErrorStream(true).redirectOutput(log)
+                .useRuntimeEvidenceEnvironment(emptyMap()).start()
             val completed = process.waitFor(5, TimeUnit.MINUTES)
             if (!completed) process.destroyForcibly().waitFor()
             return (if (completed) process.exitValue() else -1) to log.readText()

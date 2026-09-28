@@ -2,11 +2,31 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.util.Base64
+import java.util.Locale
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 
 internal data class RuntimeEvidenceProcessCapture(val id: String, val exitCode: Int, val output: ByteArray)
+
+private val runtimeEvidenceLanguageOverrides = setOf(
+    "NODE_OPTIONS", "NODE_PATH", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS",
+)
+private val runtimeEvidenceDeclaredLoaderPaths = setOf("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH")
+private fun isRuntimeEvidenceOverride(name: String): Boolean {
+    val key = name.uppercase(Locale.ROOT)
+    return key in runtimeEvidenceLanguageOverrides || key.startsWith("LD_") || key.startsWith("DYLD_")
+}
+
+internal fun ProcessBuilder.useRuntimeEvidenceEnvironment(declared: Map<String, String>): ProcessBuilder = apply {
+    check(declared.keys.none {
+        isRuntimeEvidenceOverride(it) && it.uppercase(Locale.ROOT) !in runtimeEvidenceDeclaredLoaderPaths
+    }) {
+        "Runtime evidence environment contains an execution override"
+    }
+    environment().keys.filter(::isRuntimeEvidenceOverride).toList().forEach(environment()::remove)
+    environment().putAll(declared)
+}
 
 internal fun validateRuntimeEvidenceOutputs(outputs: List<File>, inputs: List<File>) {
     val paths = outputs.map { it.toPath().toAbsolutePath() }
