@@ -233,6 +233,7 @@ _IOS_BINARY_BUILD_LOGIC = frozenset({
     "codexagent.ios-runtime.gradle.kts",
 })
 _CONTROL_ONLY_FILES = frozenset({
+    "ci/contract_catalog_caller.py",
     "ci/contract_catalog_promotion.py",
     "ci/contract_equal_tree_original.py",
     "ci/contract_phase10_maven_caller.py",
@@ -642,7 +643,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path == "ci/products/gradle_bootstrap.py":
         return set(ALL_INSTANCES)
     if path in {
-        "ci/contract_catalog_promotion.py", "ci/contract_equal_tree_original.py", "ci/contract_phase10_maven_caller.py",
+        "ci/contract_catalog_caller.py", "ci/contract_catalog_promotion.py",
+        "ci/contract_equal_tree_original.py", "ci/contract_phase10_maven_caller.py",
         "ci/contract_phase10_output_record.py",
         "ci/contract_phase10_reuse_admission.py",
         "ci/contract_phase10_record_signer.py",
@@ -884,6 +886,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         ".github/workflows/sdk-failed-catalog-custody.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/sdk-phase10-later-authority.yml": set(),
         ".github/workflows/sdk-phase10-later-record.yml": set(),
+        ".github/workflows/sdk-phase10-maven-sidecars.yml": set(),
         ".github/workflows/sdk-binding-parity.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/sdk-consumer-validation.yml": {instance for instance in ALL_INSTANCES if instance.product == "sdk"},
         ".github/workflows/promote.yml": set(ALL_METADATA),
@@ -931,7 +934,8 @@ def _is_control_only(path: str) -> bool:
                 ".github/workflows/contract-phase10-later-record.yml",
                 ".github/workflows/sdk-failed-catalog-custody.yml",
                 ".github/workflows/sdk-phase10-later-authority.yml",
-                ".github/workflows/sdk-phase10-later-record.yml"}:
+                ".github/workflows/sdk-phase10-later-record.yml",
+                ".github/workflows/sdk-phase10-maven-sidecars.yml"}:
         return True  # Protected evidence carriers do not define product bytes.
     if path in {"ci/sdk_maven_evidence.py", "ci/sdk_metadata_evidence.py", "ci/sdk_metadata_policy.py",
                 "ci/sdk_facade_metadata_policy.py", "ci/sdk_android_metadata_policy.py",
