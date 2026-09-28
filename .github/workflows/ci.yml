@@ -66,9 +66,9 @@ jobs:
       contents: read
       deployments: read
       id-token: write
-    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@31c401e25c5996b6b7f55bb49ffd53e4e85806b7
+    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@fde978cd4dbb112008ea5662c4c8299ce135f6b5
     with:
-      trustedWorkflowSha: 31c401e25c5996b6b7f55bb49ffd53e4e85806b7
+      trustedWorkflowSha: fde978cd4dbb112008ea5662c4c8299ce135f6b5
       baseCommit: ${{ inputs.baseCommit || '' }}
       validationCommit: ${{ inputs.validationCommit || '' }}
       validationTree: ${{ inputs.validationTree || '' }}
