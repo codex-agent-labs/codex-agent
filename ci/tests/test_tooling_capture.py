@@ -205,6 +205,14 @@ class ToolingCaptureTest(unittest.TestCase):
         observed = load_canonical_json_bytes((self.destination / "transport/capture.json").read_bytes())
         self.assertEqual(self.jobs, observed["observed"][0]["jobs"])
 
+    def test_waiting_run_accepts_only_its_completed_original_uploader(self):
+        with self.assertRaisesRegex(ValueError, "Contract original CI attempt"):
+            self.capture(api=self.api(run={**self.run, "status": "queued"}))
+        self.assertFalse(self.destination.exists())
+        self.run["status"] = "waiting"
+        self.capture()
+        self.assertTrue((self.destination / "tooling-policy.json").is_file())
+
     def test_wrong_git_key_and_tampered_signed_evidence_never_publish_policy(self):
         _, public, signing = generate_development_key(self.source.repository / "replacement-key")
         signing = {**signing, "trustDomain": "release"}
