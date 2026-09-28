@@ -720,6 +720,17 @@ class ProductInventoryTest(unittest.TestCase):
             ), self.assertRaisesRegex(ValueError, "unsafe"):
                 read_regular_file_bytes(value)
 
+            with mock.patch.object(inventory_product, "_is_windows", return_value=True):
+                self.assertEqual(read_regular_file_bytes(value, reject_symlink_parents=True),
+                                 value.read_bytes())
+                linked = root / "linked"
+                try:
+                    linked.symlink_to(root, target_is_directory=True)
+                except (OSError, NotImplementedError):
+                    self.skipTest("Directory symlinks are unavailable on this host")
+                with self.assertRaisesRegex(ValueError, "unsafe"):
+                    read_regular_file_bytes(linked / value.name, reject_symlink_parents=True)
+
 
 class ProductReceiptTest(unittest.TestCase):
     def test_output_manifest_and_receipt_validate_exact_shapes_and_identity(self):

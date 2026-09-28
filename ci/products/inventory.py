@@ -338,8 +338,12 @@ def _open_regular_file(
     try:
         if reject_symlink_parents:
             absolute = Path(os.path.abspath(path))
-            parent_descriptor = _open_directory(absolute.parent, f"{label} parent")
-            path_stat = os.stat(absolute.name, dir_fd=parent_descriptor, follow_symlinks=False)
+            if _is_windows():
+                _windows_directory_path(absolute.parent, f"{label} parent")
+                path_stat = absolute.lstat()
+            else:
+                parent_descriptor = _open_directory(absolute.parent, f"{label} parent")
+                path_stat = os.stat(absolute.name, dir_fd=parent_descriptor, follow_symlinks=False)
         else:
             absolute = path
             path_stat = path.lstat()
@@ -349,8 +353,14 @@ def _open_regular_file(
         descriptor = os.open(
             absolute.name if parent_descriptor is not None else absolute,
             flags,
-            dir_fd=parent_descriptor,
+            **({"dir_fd": parent_descriptor} if parent_descriptor is not None else {}),
         )
+        if reject_symlink_parents and _is_windows():
+            try:
+                _windows_directory_path(absolute.parent, f"{label} parent")
+            except Exception:
+                os.close(descriptor)
+                raise
         opened_stat = os.fstat(descriptor)
         if not stat.S_ISREG(opened_stat.st_mode) or (
             path_stat.st_dev, path_stat.st_ino
