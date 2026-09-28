@@ -793,6 +793,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
                 "gradle/build-logic/src/main/kotlin/SdkFacadeValidationTasks.kt"}:
         return _from_phase("sdk", "sdk-core", "validation")
     if path in {"ci/sdk_android_upload_locator.py", "ci/sdk_android_dispatch_observer.py", "ci/sdk_android_evidence_capture.py",
+                "ci/products/sdk_android_evidence_repository.py",
                 "ci/products/sdk_android_validation_phase.py",
                 "ci/products/sdk_android_validation_admission.py",
                 "ci/sdk_android_firebase_capture.py", "ci/products/sdk_android_observation.py",
@@ -996,6 +997,7 @@ def _is_control_only(path: str) -> bool:
                 "gradle/build-logic/src/main/kotlin/SdkFacadeOriginalExecution.kt"}:
         return True  # Original source capture authenticates evidence, not product bytes.
     if path in {"ci/sdk_android_upload_locator.py", "ci/sdk_android_dispatch_observer.py", "ci/sdk_android_evidence_capture.py",
+                "ci/products/sdk_android_evidence_repository.py",
                 "ci/products/sdk_android_validation_phase.py",
                 "ci/products/sdk_android_validation_admission.py",
                 "ci/sdk_android_firebase_capture.py", "ci/products/sdk_android_observation.py",

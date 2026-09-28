@@ -967,6 +967,12 @@ class ProductSelectionTest(unittest.TestCase):
         self.assertEqual({PhaseInstanceId("sdk", "csharp", "binary", "desktop")},
                          {item for item in selected if item.phase == "binary"})
 
+    def test_android_evidence_repository_changes_only_android_validation(self) -> None:
+        result = classify_paths(["ci/products/sdk_android_evidence_repository.py"])
+        self.assertEqual((), result.unknown_paths)
+        self.assertEqual({PhaseInstanceId("sdk", "sdk-android", phase, "android")
+                          for phase in ("validation", "metadata")}, identities(result))
+
     def test_csharp_root_inspector_changes_only_csharp_validation(self) -> None:
         selected = identities(classify_paths([
             "codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot/Program.cs",
