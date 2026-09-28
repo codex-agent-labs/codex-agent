@@ -72,6 +72,7 @@ jobs:
       baseCommit: ${{ inputs.baseCommit || '' }}
       validationCommit: ${{ inputs.validationCommit || '' }}
       validationTree: ${{ inputs.validationTree || '' }}
+    secrets: inherit
 
   sdk-failed-catalog-custody:
     if: github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody'

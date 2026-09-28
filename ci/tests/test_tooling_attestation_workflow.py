@@ -20,6 +20,17 @@ class ToolingAttestationWorkflowTest(unittest.TestCase):
         cls.merge_gate = (ROOT / ".github/workflows/product-validation.yml").read_text(
             encoding="utf-8").split("\n  merge-gate:\n", 1)[1]
 
+    def test_protected_secret_can_cross_both_reusable_workflow_calls(self):
+        caller = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        root_call = caller.split("\n  product-validation:\n", 1)[1].split(
+            "\n  sdk-failed-catalog-custody:\n", 1)[0]
+        child = (ROOT / ".github/workflows/product-validation.yml").read_text(encoding="utf-8")
+        contract_call = child.split("\n  contract-validation:\n", 1)[1].split(
+            "\n  contract-phase10-pgp-authority:\n", 1)[0]
+        self.assertIn("    secrets: inherit\n", root_call)
+        self.assertIn("    secrets: inherit\n", contract_call)
+        self.assertIn("environment: product-attestation", self.job)
+
     def test_job_has_the_exact_protected_missing_tooling_guard(self):
         guard = self.job.split("    if: >-\n", 1)[1].split("    needs:", 1)[0]
         for condition in (
