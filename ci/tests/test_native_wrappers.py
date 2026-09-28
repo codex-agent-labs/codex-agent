@@ -383,7 +383,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             self.assertEqual(("cargo", "package", "--no-verify", "--locked", "--allow-dirty", "--offline"), calls[0])
             self.assertEqual(b"crate", (root / "packages/rust/codex-agent-0.8.0.crate").read_bytes())
 
-    def test_dart_publish_dry_run_reads_the_verified_final_archive(self) -> None:
+    def test_dart_package_needs_no_pub_resolution_or_publish_validation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "sources/dart"
@@ -392,24 +392,18 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             (source / "lib/codex_agent.dart").write_text("library codex_agent;\n", encoding="utf-8")
             (source / "test").mkdir()
             (source / "test/omitted.dart").write_text("not shipped\n", encoding="utf-8")
-            calls = []
-
-            def observe_run(*command, cwd, **_kwargs):
-                calls.append(tuple(command))
-                if command[-2:] == ("publish", "--dry-run"):
-                    self.assertEqual("codex_agent-0.8.0", cwd.name)
-                    self.assertEqual("library codex_agent;\n", (cwd / "lib/codex_agent.dart").read_text())
-                    self.assertFalse((cwd / "test").exists())
-
             with patch("native_wrappers.require_prepared_native_assets"), \
-                    patch("native_wrappers.run", side_effect=observe_run), \
+                    patch("native_wrappers.run") as run, \
                     patch("native_wrappers.write_package_toolchains"), \
                     patch("native_wrappers.verify_native_wrapper_sdk_packages") as verify:
                 package_once(root / "sources", root / "sdks", root / "packages", "0.8.0", ("dart",))
-            self.assertEqual([("dart", "pub", "get", "--enforce-lockfile"),
-                              ("dart", "pub", "publish", "--dry-run")], calls)
+            run.assert_not_called()
             verify.assert_called_once()
-            self.assertTrue((root / "packages/dart/codex-agent-dart-0.8.0.tar.gz").is_file())
+            extracted = root / "extracted"
+            safe_extract_tar(root / "packages/dart/codex-agent-dart-0.8.0.tar.gz", extracted)
+            package = extracted / "codex_agent-0.8.0"
+            self.assertEqual("library codex_agent;\n", (package / "lib/codex_agent.dart").read_text())
+            self.assertFalse((package / "test").exists())
 
     @patch("native_wrappers.run")
     @patch("native_wrappers.subprocess.run")
@@ -1833,6 +1827,44 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
                 self.assertIn(hashlib.sha256(library.read_bytes()).hexdigest(), report)
                 self.assertIn(f"{language}-installed-host-lifecycle\tpassed\n", report)
                 self.assertTrue((output / f"evidence/{language}/toolchain.tsv").read_text().startswith("tool\tversion\n"))
+
+    def test_dart_publish_validates_imported_tar_once_and_failure_discards_evidence(self) -> None:
+        for classifier, fail_publish in (("linux-x64", False), ("linux-x64", True),
+                                         ("macos-x64", False)):
+            with self.subTest(classifier=classifier, fail_publish=fail_publish), \
+                    tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+                root = Path(temporary).resolve()
+                repository, packages, sdks, library, selected = self.fixture(root, ("dart",))
+                probes = self.controls(stack, selected, library)
+                probes["host_classifier"].return_value = classifier
+                if classifier == "macos-x64":
+                    mac_library = sdks / "macos-x64/lib/libcodex_agent.dylib"
+                    mac_library.parent.mkdir(parents=True)
+                    mac_library.write_bytes(library.read_bytes())
+                published = []
+
+                def observe(*command, cwd, **_kwargs):
+                    if command[:4] == ("dart", "pub", "publish", "--dry-run"):
+                        published.append(cwd)
+                        self.assertEqual("codex_agent-0.2.0", cwd.name)
+                        self.assertEqual("fixture\n", (cwd / "pubspec.yaml").read_text())
+                        self.assertTrue(probes["require_matching_native"].called)
+                        self.assertTrue(probes["require_matching_compatibility"].called)
+                        if fail_publish:
+                            raise RuntimeError("synthetic publish validation failure")
+
+                probes["run"].side_effect = observe
+                output = root / "evidence"
+                if fail_publish:
+                    with self.assertRaisesRegex(RuntimeError, "synthetic publish"):
+                        consume_language(repository, packages, sdks, output, "0.2.0", "dart",
+                                         expected_classifier=classifier)
+                    self.assertFalse(output.exists())
+                else:
+                    consume_language(repository, packages, sdks, output, "0.2.0", "dart",
+                                     expected_classifier=classifier)
+                    self.assertTrue((output / f"evidence/dart/{classifier}.tsv").is_file())
+                self.assertEqual(1 if classifier == "linux-x64" else 0, len(published))
 
     def test_default_legacy_path_still_executes_all_languages_and_writes_its_lane_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:

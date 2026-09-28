@@ -727,7 +727,6 @@ def package_once(
 
         if "dart" in languages:
             dart_source = sources / "dart"
-            run("dart", "pub", "get", "--enforce-lockfile", cwd=dart_source)
             dart_release = work / "dart-release"
             stage_dart_release(dart_source, dart_release)
             dart_archive = output / f"dart/codex-agent-dart-{sdk_version}.tar.gz"
@@ -761,11 +760,6 @@ def package_once(
         write_package_toolchains(output, languages)
         for language in languages:
             verify_native_wrapper_sdk_packages(output, sdks, sdk_version, language)
-        if "dart" in languages:
-            extracted = work / "dart-publish"
-            safe_extract_tar(dart_archive, extracted)
-            run("dart", "pub", "publish", "--dry-run",
-                cwd=extracted / f"codex_agent-{sdk_version}")
 
 
 def package_all(
@@ -1636,6 +1630,8 @@ def _consume(
                 dart_package, "lib/src/native/sdk-compatibility.json", sdk_compatibility, "Dart",
             )
             reject_raw_c_abi_proofs(dart_package, "Dart")
+            if classifier == "linux-x64":
+                run("dart", "pub", "publish", "--dry-run", cwd=dart_package)
             run("dart", "run", "bin/host_smoke.dart", cwd=dart_consumer, env=consumer_env)
             run(
                 "dart", "run", "bin/host_smoke.dart", dart_library,
