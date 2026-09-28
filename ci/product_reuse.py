@@ -3035,10 +3035,13 @@ class _VerifiedProductState:
 def _verified_product_state(
     plan_path: Path, discovery_root: Path, state_root: Path, root: Path,
     environment: Mapping[str, str], sdk_validation_tooling: Mapping[str, Any] | None,
-    *, sdk_runtime_consumer=None, sdk_apple_validation_policy=None,
+    *, sdk_runtime_consumer=None, authenticated_lookup_consumer=None,
+    sdk_apple_validation_policy=None,
     sdk_original_workflow_sha=None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
 ) -> _VerifiedProductState:
+    # Invocation callbacks may run before retained-result equality is checked;
+    # callers must keep captured bytes private until this function returns.
     plan = _validate_plan(plan_path, root)
     if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
         raise ValueError("Product continuation requires an authorized PR or merge-group run")
@@ -3144,6 +3147,8 @@ def _verified_product_state(
         build_plan_consumer=lambda instance, value: _retain_product_plan(replay_plans, instance, value),
         **({"sdk_runtime_consumer": sdk_runtime_consumer}
            if sdk_runtime_consumer is not None and state_root == discovery_root else {}),
+        **({"authenticated_lookup_consumer": authenticated_lookup_consumer}
+           if authenticated_lookup_consumer is not None and state_root == discovery_root else {}),
         apple_policy=sdk_apple_validation_policy,
         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     initial = _canonical_control(discovery_root / "reuse-wave-result.json", "Initial reuse result")
@@ -3210,6 +3215,8 @@ def _verified_product_state(
                     prior_ready_plans, instance, value,
                 ),
                 **({"sdk_runtime_consumer": sdk_runtime_consumer} if sdk_runtime_consumer is not None else {}),
+                **({"authenticated_lookup_consumer": authenticated_lookup_consumer}
+                   if authenticated_lookup_consumer is not None else {}),
                 apple_policy=sdk_apple_validation_policy,
                 **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
         state_by_instance = {_identity(phase): phase for phase in state_replay["phases"]}

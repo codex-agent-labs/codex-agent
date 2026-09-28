@@ -725,9 +725,18 @@ class ProductReuseTest(unittest.TestCase):
             self.assertEqual({"ok": True}, plan_reuse_wave(request,
                 sdk_apple_package_admission_factory=factory))
         self.assertIs(factory, delegated.call_args.kwargs["sdk_apple_package_admission_factory"])
+        looked_up = []
+        with mock.patch("ci.products.reuse.advance_reuse", return_value=({"ok": True}, ())):
+            self.assertEqual({"ok": True}, plan_reuse_wave(request,
+                authenticated_lookup_consumer=lambda session: looked_up.append(
+                    session.lookup("same-pr", {"buildKey": DIGEST_A}).reason)))
+        self.assertEqual(["no-index"], looked_up)
+        with self.assertRaisesRegex(ValueError, "Authenticated lookup consumer must be callable"):
+            plan_reuse_wave(request, authenticated_lookup_consumer=object())
         for name in ("sdkApplePackageAdmission", "sdkFacadeMetadataAdmission", "sdkAndroidMetadataAdmission",
                      "sdk_apple_package_admission", "sdk_apple_package_admission_factory",
-                     "sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
+                     "sdk_facade_metadata_admission", "sdk_android_metadata_admission",
+                     "authenticated_lookup_consumer"):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 plan_reuse_wave({**request, name: {"transported": "not authority"}})
 
@@ -1507,6 +1516,23 @@ class ProductReuseTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "current PR"):
             self.session(same_pr=catalog)
+
+    def test_remote_capture_restores_only_the_index_verified_object(self) -> None:
+        inputs = all_inputs(CONTRACT_BINARY)
+        plan = plan_for(CONTRACT_BINARY, inputs, {})
+        original, archive = self.object_for_plan(plan, trust_domain="development")
+        session = self.session(same_pr=self.catalog("same-pr", [(original, archive)]))
+        destination = self.root / "captured-original"
+        found = session.capture("same-pr", plan, destination)
+        self.assertEqual(original["receiptBytes"], found.envelope["receiptBytes"])
+        self.assertEqual(original["objectSha256"], found.envelope["objectSha256"])
+        self.assertTrue((destination / "output-manifest.json").is_file())
+        with self.assertRaisesRegex(ValueError, "must not exist"):
+            session.capture("same-pr", plan, destination)
+        archive.chmod(0o644)
+        archive.write_bytes(b"tampered")
+        with self.assertRaises(ReuseLookupError):
+            session.capture("same-pr", plan, self.root / "tampered-capture")
 
     def test_unavailable_stable_object_safely_falls_through_to_promoted(self) -> None:
         inputs = all_inputs(CONTRACT_BINARY)

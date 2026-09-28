@@ -198,6 +198,7 @@ class _LookupResult:
     envelope: dict[str, Any] | None
     reason: str | None
     transport_source: dict[str, Any] | None = None
+    object_path: Path | None = None
 
 
 def _identity(receipt: dict[str, Any]) -> PhaseInstanceId:
@@ -591,7 +592,7 @@ class LookupSession:
                 "indexSha256": candidate.index_sha256,
                 "artifactName": candidate.entry["artifactName"],
                 "artifactSha256": candidate.entry["artifactSha256"],
-            })
+            }, path)
         return _LookupResult(None, "artifact-unavailable")
 
     def _verify_release_attested_native_runtime(self, envelope, candidate, index):
@@ -801,6 +802,24 @@ class LookupSession:
         if source not in self._remote:
             raise ValueError(f"Unsupported lookup source: {source}")
         return self._remote_lookup(source, plan)
+
+    def capture(self, source: str, plan: dict[str, Any], destination: Path) -> _LookupResult:
+        """Restore exact authenticated remote bytes while this catalog session is live."""
+        if source == "local":
+            raise ValueError("Local cache capture uses its existing verified restore path")
+        found = self.lookup(source, plan)
+        if found.envelope is None:
+            return found
+        if found.object_path is None:
+            raise ValueError("Authenticated product lookup lacks its original object")
+        restored = restore_object(
+            found.object_path, destination,
+            build_key=plan["buildKey"], receipt_sha256=found.envelope["receiptSha256"],
+            object_sha256=found.envelope["objectSha256"],
+        )
+        if restored["receiptBytes"] != found.envelope["receiptBytes"]:
+            raise ValueError("Captured product receipt changed after index lookup")
+        return found
 
     def _restore_contract_stage(self, archive: Path, envelope: dict[str, Any]) -> Path:
         if self._restore_root is None:
@@ -1067,6 +1086,7 @@ def plan_reuse_wave(
     *,
     build_plan_consumer: Callable[[PhaseInstanceId, dict[str, Any]], None] | None = None,
     sdk_runtime_consumer: Callable[[dict[str, Any]], None] | None = None,
+    authenticated_lookup_consumer: Callable[[LookupSession], None] | None = None,
     sdk_apple_package_admission: ApplePackageAdmission | None = None,
     sdk_apple_package_admission_factory: Callable[[dict[str, Any]], ApplePackageAdmission] | None = None,
     sdk_facade_metadata_admission: FacadeMetadataAdmission | None = None,
@@ -1075,6 +1095,8 @@ def plan_reuse_wave(
     """Decode one strict control request and delegate all resolution to advance_reuse."""
     if sdk_runtime_consumer is not None and not callable(sdk_runtime_consumer):
         raise ValueError("SDK Runtime consumer must be callable")
+    if authenticated_lookup_consumer is not None and not callable(authenticated_lookup_consumer):
+        raise ValueError("Authenticated lookup consumer must be callable")
     request = require_exact_keys(
         value,
         {
@@ -1468,6 +1490,9 @@ def plan_reuse_wave(
             # Invocation-only capture, never serialized authority. The caller
             # publishes its private copy only after this context has exited.
             sdk_runtime_consumer(selected)
+        if authenticated_lookup_consumer is not None:
+            # The callback captures into private storage; no new phase is selected.
+            authenticated_lookup_consumer(session)
         return result
 
 

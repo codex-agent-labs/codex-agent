@@ -225,6 +225,90 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
                     repository_root=self.root, environ={})
         planner.assert_not_called()
 
+    def test_lookup_only_same_pr_capture_verifies_stage_and_expires(self):
+        stage = self.produce(self.ready,
+            compatibility_request=self.sdk / "sdk-compatibility-request.json")["stage"]
+        manifest = workflow.verify_output_manifest_identity(stage, "sdk", "csharp", "binary",
+            "desktop", "0.8.0")
+        original_producer = {**self.producer, "commit": "d" * 40, "tree": "e" * 40,
+            "runId": 20, "runAttempt": 2}
+        receipt = write_receipt(self.root / "original-csharp-receipt.json", product="sdk",
+            component="csharp", phase="binary", target="desktop", version="0.8.0",
+            version_identity="0.8.0", outputs=manifest["outputs"], upstream=[],
+            context={"producer": original_producer})
+
+        class Session:
+            def capture(self, source, plan, destination):
+                self_source.assertEqual("same-pr", source)
+                self_source.assertEqual(receipt["buildKey"], plan["buildKey"])
+                snapshot_regular_tree(stage, destination)
+                return SimpleNamespace(envelope={"receipt": receipt,
+                    "receiptBytes": canonical_json_bytes(receipt)},
+                    transport_source={"kind": "same-pr"})
+
+        self_source = self
+        session = Session()
+        mutate_controls = {"plan": False}
+
+        def replay(*_args, authenticated_lookup_consumer, **_kwargs):
+            authenticated_lookup_consumer(session)
+            if mutate_controls["plan"]:
+                self.plan.write_bytes(b"mutated\n")
+            return SimpleNamespace(producer=self.producer,
+                plan={"validationCommit": self.producer["commit"]})
+
+        with (patch.object(workflow, "lookup_only_plan", return_value={"buildKey": receipt["buildKey"]}),
+              patch.object(workflow.sdk_workflow, "verified_inputs", side_effect=self.verified),
+              patch.object(workflow.product_reuse, "_verified_product_state", side_effect=replay),
+              patch.object(workflow, "git_regular_blob_bytes",
+                           return_value=(self.root / "gradle/release/keys/sdk-runtime-root.pub").read_bytes())):
+            with workflow.verified_lookup_only_same_pr_original(self.plan, self.discovery, self.state,
+                    sdk_inputs_artifact_id=10, sdk_inputs_artifact_sha256="sha256:" + "c" * 64,
+                    trusted_workflow_sha="sha256:" + "d" * 64, keyring=self.keyring,
+                    keys_directory=self.keys, repository_root=self.root,
+                    environ={}, token="fixture-token") as original:
+                captured_stage = original["stage"]
+                self.assertTrue((captured_stage / "outputs/csharp/CodexAgent.dll").is_file())
+                self.assertEqual("same-pr", original["transportSource"]["kind"])
+            mutate_controls["plan"] = True
+            with self.assertRaisesRegex(ValueError, "controls changed"):
+                with workflow.verified_lookup_only_same_pr_original(self.plan, self.discovery, self.state,
+                        sdk_inputs_artifact_id=10, sdk_inputs_artifact_sha256="sha256:" + "c" * 64,
+                        trusted_workflow_sha="sha256:" + "d" * 64, keyring=self.keyring,
+                        keys_directory=self.keys, repository_root=self.root,
+                        environ={}, token="fixture-token"):
+                    self.fail("Changed plan was accepted")
+            self.plan.write_bytes(b"{}\n")
+            mutate_controls["plan"] = False
+            (stage / "outputs/csharp/sdk-compatibility.json").write_bytes(b"tampered")
+            with self.assertRaises(ValueError):
+                with workflow.verified_lookup_only_same_pr_original(self.plan, self.discovery, self.state,
+                        sdk_inputs_artifact_id=10, sdk_inputs_artifact_sha256="sha256:" + "c" * 64,
+                        trusted_workflow_sha="sha256:" + "d" * 64, keyring=self.keyring,
+                        keys_directory=self.keys, repository_root=self.root,
+                        environ={}, token="fixture-token"):
+                    self.fail("Tampered C# stage was accepted")
+        self.assertFalse(captured_stage.exists())
+
+    def test_lookup_only_same_pr_rejects_missing_original(self):
+        class Session:
+            def capture(self, _source, _plan, _destination):
+                return SimpleNamespace(envelope=None, transport_source=None)
+
+        def replay(*_args, authenticated_lookup_consumer, **_kwargs):
+            authenticated_lookup_consumer(Session())
+
+        with (patch.object(workflow, "lookup_only_plan", return_value={"buildKey": "sha256:" + "a" * 64}),
+              patch.object(workflow.sdk_workflow, "verified_inputs", side_effect=self.verified),
+              patch.object(workflow.product_reuse, "_verified_product_state", side_effect=replay),
+              self.assertRaisesRegex(ValueError, "same-PR C# binary original is unavailable")):
+            with workflow.verified_lookup_only_same_pr_original(self.plan, self.discovery, self.state,
+                    sdk_inputs_artifact_id=10, sdk_inputs_artifact_sha256="sha256:" + "c" * 64,
+                    trusted_workflow_sha="sha256:" + "d" * 64, keyring=self.keyring,
+                    keys_directory=self.keys, repository_root=self.root,
+                    environ={}, token="fixture-token"):
+                self.fail("Missing C# original was accepted")
+
 
 if __name__ == "__main__":
     unittest.main()

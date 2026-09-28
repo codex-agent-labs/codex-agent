@@ -1,6 +1,7 @@
 """Execute the C# SDK binary from elected Contract and S858 originals."""
 
 import argparse
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import sys
@@ -13,7 +14,7 @@ import product_reuse
 import sdk_workflow
 from products.contract_projection import verify_contract_component_projection
 from products.inventory import (
-    canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
+    canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, sha256_file,
 )
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
@@ -100,6 +101,93 @@ def lookup_only_plan(plan, discovery, state, *, repository_root, environ,
         "output_schema_version": authority["outputSchemaVersion"],
         "contract_projection": projection,
     }}, receipts, root, revision)
+
+
+@contextmanager
+def verified_lookup_only_same_pr_original(plan, discovery, state, *,
+        sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
+        keyring, keys_directory, repository_root, environ, token,
+        sdk_validation_tooling=None, sdk_apple_validation_policy=None,
+        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    """Expose an unselected C# original only during its authenticated capture lifetime."""
+    require_no_signing_secret(environ)
+    root = Path(repository_root).resolve(strict=True)
+    plan, discovery, state = Path(plan), Path(discovery), Path(state)
+    control_plan_bytes = read_regular_file_bytes(plan, max_bytes=_LIMIT, reject_symlink_parents=True)
+    controls = {path: regular_file_inventory(path, allow_empty=True)
+        for path in (discovery, state)}
+
+    def controls_unchanged():
+        if (read_regular_file_bytes(plan, max_bytes=_LIMIT, reject_symlink_parents=True) != control_plan_bytes
+                or any(regular_file_inventory(path, allow_empty=True) != inventory
+                       for path, inventory in controls.items())):
+            raise ValueError("Lookup-only C# plan or state controls changed")
+
+    tooling = {"sdk_validation_tooling": sdk_validation_tooling,
+        "sdk_apple_validation_policy": sdk_apple_validation_policy,
+        "sdk_facade_metadata_admission": sdk_facade_metadata_admission,
+        "sdk_android_metadata_admission": sdk_android_metadata_admission}
+    elected = lookup_only_plan(plan, discovery, state, repository_root=root, environ=environ,
+        sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
+    controls_unchanged()
+    with tempfile.TemporaryDirectory(prefix="sdk-csharp-lookup-", dir=root) as temporary:
+        private = Path(temporary).resolve()
+        stage = private / "stage"
+        captured = []
+        with sdk_workflow.verified_inputs(plan, discovery, state,
+                artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
+                trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
+                keys_directory=keys_directory, repository_root=root, environ=environ,
+                token=token, **tooling) as inputs:
+            def capture(session):
+                if captured:
+                    raise ValueError("Lookup-only C# original was captured twice")
+                found = session.capture("same-pr", elected, stage)
+                if found.envelope is None or found.transport_source is None:
+                    raise ValueError("Authenticated same-PR C# binary original is unavailable")
+                captured.append(found)
+
+            verified = product_reuse._verified_product_state(
+                Path(plan), Path(discovery), Path(state), root, environ,
+                sdk_validation_tooling, authenticated_lookup_consumer=capture,
+                sdk_apple_validation_policy=sdk_apple_validation_policy,
+                sdk_original_workflow_sha=trusted_workflow_sha,
+                sdk_facade_metadata_admission=sdk_facade_metadata_admission,
+                sdk_android_metadata_admission=sdk_android_metadata_admission)
+            controls_unchanged()
+            if len(captured) != 1:
+                raise ValueError("Lookup-only C# original was not replay-authenticated")
+            found = captured[0]
+            receipt = found.envelope["receipt"]
+            producer = receipt["producer"]
+            if (receipt["buildKey"] != elected["buildKey"]
+                    or found.transport_source["kind"] != "same-pr"
+                    or producer["event"] != "pull_request"
+                    or producer["repository"] != verified.producer["repository"]
+                    or producer["pullRequest"] != verified.producer["pullRequest"]
+                    or receipt["productVersion"] != inputs["selection"]["sdkVersion"]):
+                raise ValueError("Lookup-only C# original differs from the current PR or SDK version")
+            root_key = private / "sdk-runtime-root.pub"
+            root_key.write_bytes(git_regular_blob_bytes(root, verified.plan["validationCommit"],
+                "gradle/release/keys/sdk-runtime-root.pub", max_bytes=65_536))
+            verify_csharp_binary_stage(stage, receipt,
+                inputs["sdk"]["directory"] / COMPATIBILITY_NAME, root_key)
+            before = regular_file_inventory(stage)
+            receipt_bytes = found.envelope["receiptBytes"]
+            elected_bytes = canonical_json_bytes(elected)
+            transport_bytes = canonical_json_bytes(found.transport_source)
+            try:
+                yield {"plan": elected, "stage": stage, "receipt": receipt,
+                    "receiptBytes": receipt_bytes,
+                    "transportSource": found.transport_source}
+            finally:
+                if (regular_file_inventory(stage) != before
+                        or canonical_json_bytes(receipt) != receipt_bytes
+                        or canonical_json_bytes(elected) != elected_bytes
+                        or canonical_json_bytes(found.transport_source) != transport_bytes):
+                    raise ValueError("Lookup-only C# original changed during use")
+                controls_unchanged()
+                require_no_signing_secret(environ)
 
 
 def execute(plan, discovery, state, destination, *, expected_build_key,
