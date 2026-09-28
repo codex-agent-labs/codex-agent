@@ -18,7 +18,7 @@ from ci.tests.test_contract_release_context import trusted_repository
 from ci import runtime_catalog_promotion as caller
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory,
-    sha256_bytes, snapshot_regular_tree,
+    sha256_bytes, sha256_file, snapshot_regular_tree,
 )
 from products.index import SignedProductIndex, verify_release_product_index
 from products.restore import object_relative_path
@@ -56,11 +56,18 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
         (cls.wrapper / "selected-inputs/selection.json").write_bytes(canonical_json_bytes(selected))
         cls.receipt = load_canonical_json_bytes((cls.carrier / "aggregate-input/metadata-receipt.json").read_bytes())
         cls.digest = sha256_bytes((cls.carrier / "aggregate-input/metadata-receipt.json").read_bytes())
+        relative = object_relative_path(cls.receipt["buildKey"], cls.digest)
+        cls.object_digest = sha256_file(cls.carrier /
+            "original-evidence/phases/runtime-aggregate-metadata-aggregate/original/shard" / relative)
         provenance = load_canonical_json_bytes((cls.carrier / "caller.json").read_bytes())
         provenance.update(transportProducer=cls.producer, trustedWorkflowSha=cls.workflow_pin,
                           releaseDirectory="retained-release")
         (cls.wrapper / "caller.json").write_bytes(canonical_json_bytes(provenance))
         cls.original_inventory = regular_file_inventory(cls.carrier, allow_empty=True)
+        cls.carrier_digest = sha256_bytes(canonical_json_bytes(cls.original_inventory))
+        version = cls.receipt["productVersion"]
+        cls.attestation_digest = sha256_file(cls.carrier / f"aggregate-input/codex-agent-runtime-{version}.attestation.json")
+        cls.signature_digest = sha256_file(cls.carrier / f"aggregate-input/codex-agent-runtime-{version}.attestation.sig")
 
     @classmethod
     def git(cls, *arguments):
@@ -95,6 +102,7 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
             "completed_at": "2026-09-06T10:30:00Z"}
         self.commit = {"sha": self.tested, "tree": {"sha": self.tree}, "parents": [{"sha": self.final}]}
         self.pack(self.wrapper)
+        self.upload_digest = self.artifact["digest"]
 
     def pack(self, root):
         output = io.BytesIO()
@@ -115,6 +123,8 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
             value = {"workflow_runs": [self.listed_run]}
         elif url == base + f"/git/commits/{self.tested}":
             value = self.commit
+        elif url == base + f"/git/commits/{self.final}":
+            value = {"sha": self.final, "tree": {"sha": self.tree}, "parents": []}
         elif url == base + "/actions/runs/901/attempts/2":
             value = self.run
         elif url.startswith(base + "/actions/runs/901/attempts/2/jobs?"):
@@ -132,6 +142,14 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
     def invoke(self, **changes):
         arguments = dict(trusted_source_sha=self.source_pin, trusted_workflow_sha=self.workflow_pin,
             trusted_promotion_workflow_sha=self.promotion_pin, final_commit=self.final,
+            expected_validation_tree=self.tree, expected_build_key=self.receipt["buildKey"],
+            expected_receipt_sha256=self.digest, expected_object_sha256=self.object_digest,
+            expected_original_commit=self.tested, expected_original_run_id=901,
+            expected_original_run_attempt=2, expected_upload_artifact_id=920,
+            expected_upload_sha256=self.upload_digest,
+            expected_carrier_inventory_sha256=self.carrier_digest,
+            expected_attestation_sha256=self.attestation_digest,
+            expected_signature_sha256=self.signature_digest,
             event_payload=self.event, environment=self.environment, token="synthetic-token")
         arguments.update(changes)
         with patch("reuse.api_request", side_effect=self.api):
@@ -172,6 +190,14 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
                     caller.promote_runtime_aggregate_catalog(self.trusted, self.candidate, self.destination,
                         trusted_source_sha=self.source_pin, trusted_workflow_sha=self.workflow_pin,
                         trusted_promotion_workflow_sha=self.promotion_pin, final_commit=self.final,
+                        expected_validation_tree=self.tree, expected_build_key=self.receipt["buildKey"],
+                        expected_receipt_sha256=self.digest, expected_object_sha256=self.object_digest,
+                        expected_original_commit=self.tested, expected_original_run_id=901,
+                        expected_original_run_attempt=2, expected_upload_artifact_id=920,
+                        expected_upload_sha256=self.upload_digest,
+                        expected_carrier_inventory_sha256=self.carrier_digest,
+                        expected_attestation_sha256=self.attestation_digest,
+                        expected_signature_sha256=self.signature_digest,
                         event_payload=self.event, environment=self.environment, token="synthetic-token")
             finally:
                 self.environment.values[field] = previous
@@ -205,6 +231,41 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
             finally:
                 record[name] = previous
         self.assertEqual(0, self.environment.secret_reads)
+
+    def test_wrong_independent_s1048_identity_rejects_before_signing(self):
+        self.environment.forbid_secret = True
+        for field, value in (("expected_validation_tree", "f" * 40),
+                             ("expected_build_key", "sha256:" + "f" * 64),
+                             ("expected_receipt_sha256", "sha256:" + "f" * 64),
+                             ("expected_object_sha256", "sha256:" + "f" * 64),
+                             ("expected_original_commit", self.final),
+                             ("expected_upload_artifact_id", 921),
+                             ("expected_upload_sha256", "sha256:" + "f" * 64),
+                             ("expected_carrier_inventory_sha256", "sha256:" + "f" * 64),
+                             ("expected_attestation_sha256", "sha256:" + "f" * 64),
+                             ("expected_signature_sha256", "sha256:" + "f" * 64)):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.invoke(**{field: value})
+            self.assertFalse(self.destination.exists())
+        self.assertEqual(0, self.environment.secret_reads)
+
+    def test_late_copied_object_or_carrier_mutation_cannot_publish(self):
+        original_stage = caller.transport.stage_promoted_aggregate_catalog
+        relative = object_relative_path(self.receipt["buildKey"], self.digest)
+
+        for copied in (relative, Path("runtime-aggregate-release-evidence/handoffs") /
+                       self.digest.removeprefix("sha256:") / "caller.json"):
+            def stage(*args, **kwargs):
+                result = original_stage(*args, **kwargs)
+                target = args[0] / copied
+                target.write_bytes(target.read_bytes() + b"tampered")
+                return result
+
+            with self.subTest(copied=copied), \
+                    patch.object(caller.transport, "stage_promoted_aggregate_catalog", side_effect=stage), \
+                    self.assertRaisesRegex(ValueError, "changed before publication"):
+                self.invoke()
+            self.assertFalse(self.destination.exists())
 
     def test_tampered_signed_original_or_recursive_wrapper_reject_before_secret(self):
         self.environment.forbid_secret = True
@@ -267,7 +328,17 @@ class RuntimeCatalogPromotionCliTest(unittest.TestCase):
         self.arguments = ["--repository-root", str(self.work / "trusted"),
             "--candidate-root", str(self.work / "candidate"), "--destination", str(self.work / "output"),
             "--trusted-source-sha", "a" * 40, "--trusted-workflow-sha", "b" * 40,
-            "--trusted-promotion-workflow-sha", "c" * 40, "--final-commit", "d" * 40]
+            "--trusted-promotion-workflow-sha", "c" * 40, "--final-commit", "d" * 40,
+            "--expected-validation-tree", "e" * 40,
+            "--expected-build-key", "sha256:" + "1" * 64,
+            "--expected-receipt-sha256", "sha256:" + "2" * 64,
+            "--expected-object-sha256", "sha256:" + "3" * 64,
+            "--expected-original-commit", "f" * 40,
+            "--expected-original-run-id", "901", "--expected-original-run-attempt", "2",
+            "--expected-upload-artifact-id", "920", "--expected-upload-sha256", "sha256:" + "4" * 64,
+            "--expected-carrier-inventory-sha256", "sha256:" + "5" * 64,
+            "--expected-attestation-sha256", "sha256:" + "6" * 64,
+            "--expected-signature-sha256", "sha256:" + "7" * 64]
 
     def test_dispatch_preserves_explicit_pins_event_and_environment_only_credentials(self):
         environment = {"GITHUB_EVENT_PATH": str(self.event), "GITHUB_TOKEN": "synthetic-token",
@@ -278,6 +349,16 @@ class RuntimeCatalogPromotionCliTest(unittest.TestCase):
             gate.assert_called_once_with(self.work / "trusted", self.work / "candidate", self.work / "output",
                 trusted_source_sha="a" * 40, trusted_workflow_sha="b" * 40,
                 trusted_promotion_workflow_sha="c" * 40, final_commit="d" * 40,
+                expected_validation_tree="e" * 40,
+                expected_build_key="sha256:" + "1" * 64,
+                expected_receipt_sha256="sha256:" + "2" * 64,
+                expected_object_sha256="sha256:" + "3" * 64,
+                expected_original_commit="f" * 40, expected_original_run_id=901,
+                expected_original_run_attempt=2, expected_upload_artifact_id=920,
+                expected_upload_sha256="sha256:" + "4" * 64,
+                expected_carrier_inventory_sha256="sha256:" + "5" * 64,
+                expected_attestation_sha256="sha256:" + "6" * 64,
+                expected_signature_sha256="sha256:" + "7" * 64,
                 event_payload={"after": "synthetic", "deleted": False},
                 environment=os.environ, token="synthetic-token")
             self.assertIs(gate.call_args.kwargs["environment"], os.environ)

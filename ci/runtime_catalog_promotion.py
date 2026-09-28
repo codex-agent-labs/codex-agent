@@ -19,7 +19,7 @@ import promote
 import product_reuse as transport
 from receipt import safe_extract
 from products.inventory import (
-    load_canonical_json_bytes, load_json_bytes, publish_regular_tree, read_regular_file_bytes,
+    canonical_json_bytes, load_canonical_json_bytes, load_json_bytes, publish_regular_tree, read_regular_file_bytes,
     regular_file_inventory, require_regular_directory, require_sha256,
     sha256_bytes, sha256_file, snapshot_regular_tree, verified_zip_contents,
     write_canonical_json,
@@ -61,10 +61,17 @@ def _checkout(root, commit):
 
 def promote_runtime_aggregate_catalog(repository_root, candidate_root, destination, *,
         trusted_source_sha, trusted_workflow_sha, trusted_promotion_workflow_sha,
-        final_commit, event_payload, environment, token):
+        final_commit, expected_validation_tree, expected_build_key,
+        expected_receipt_sha256, expected_object_sha256, expected_original_commit,
+        expected_original_run_id, expected_original_run_attempt, expected_upload_artifact_id,
+        expected_upload_sha256, expected_carrier_inventory_sha256,
+        expected_attestation_sha256, expected_signature_sha256,
+        event_payload, environment, token):
     """Authenticate an original equal-tree upload and publish an external catalog.
 
-    The independently pinned caller supplies all three pins. Original receipts,
+    The protected caller supplies source/workflow pins and the exact S1048
+    validated tree, original producer/upload, metadata key/receipt/object and
+    signed-carrier digests. Original receipts,
     object ZIP and complete signed carrier remain byte-identical; the current
     authenticated upload and promotion context are retained outside the catalog.
     """
@@ -72,6 +79,20 @@ def promote_runtime_aggregate_catalog(repository_root, candidate_root, destinati
         promote.require_oid(value, "promotion caller pin")
     trusted, source_tree = _checkout(repository_root, trusted_source_sha)
     candidate, final_tree = _checkout(candidate_root, final_commit)
+    promote.require_oid(expected_validation_tree, "S1048 validated tree")
+    selected_key = require_sha256(expected_build_key, "S1048 aggregate metadata build key")
+    selected_receipt = require_sha256(expected_receipt_sha256, "S1048 aggregate metadata receipt")
+    selected_object = require_sha256(expected_object_sha256, "S1048 aggregate metadata object")
+    selected_original_commit = promote.require_oid(expected_original_commit, "S1048 original commit")
+    selected_run_id = promote.positive_int(expected_original_run_id, "S1048 original run")
+    selected_run_attempt = promote.positive_int(expected_original_run_attempt, "S1048 original attempt")
+    selected_upload_id = promote.positive_int(expected_upload_artifact_id, "S1048 upload artifact")
+    selected_upload = require_sha256(expected_upload_sha256, "S1048 upload")
+    selected_carrier = require_sha256(expected_carrier_inventory_sha256, "S1048 carrier inventory")
+    selected_attestation = require_sha256(expected_attestation_sha256, "S1048 aggregate attestation")
+    selected_signature = require_sha256(expected_signature_sha256, "S1048 aggregate signature")
+    if final_tree != expected_validation_tree:
+        raise ValueError("Promotion landed tree differs from the S1048 validated tree")
     if trusted == candidate or trusted in candidate.parents or candidate in trusted.parents:
         raise ValueError("Promotion executable and candidate checkouts must be disjoint")
     expected = {
@@ -120,12 +141,10 @@ def promote_runtime_aggregate_catalog(repository_root, candidate_root, destinati
             raise ValueError("Promotion has no caller-pinned release policy")
         require_active_release_key(load_keyring(trust.keyring, trust.keys), trust.keys)
         policy_before = regular_file_inventory(prepared / "trust")
-        selected = promote.selected_validation_run("https://api.github.com", REPOSITORY, final_tree, token)
         original = {"repository": REPOSITORY, "workflowPath": ".github/workflows/ci.yml",
-            "event": "merge_group", "commit": promote.require_oid(selected.get("head_sha"), "original tested commit"),
+            "event": "merge_group", "commit": selected_original_commit,
             "tree": final_tree, "pullRequest": None,
-            "runId": promote.positive_int(selected.get("id"), "original run"),
-            "runAttempt": promote.positive_int(selected.get("run_attempt"), "original attempt")}
+            "runId": selected_run_id, "runAttempt": selected_run_attempt}
         observed = transport._observe_ci_producer_jobs({"aggregate": original},
             jobs_by_phase={"aggregate": JOB}, trusted_workflow_sha=trusted_workflow_sha, token=token)
         run = observed[0]["run"]
@@ -135,7 +154,9 @@ def promote_runtime_aggregate_catalog(repository_root, candidate_root, destinati
         listed = promote.artifacts_for_run("https://api.github.com", REPOSITORY, original["runId"], token)
         if name not in listed:
             raise ValueError("Original equal-tree CI has no aggregate release upload")
-        artifact, raw = transport._download_contract_ci_upload(listed[name]["id"], listed[name].get("digest"),
+        if listed[name].get("id") != selected_upload_id or listed[name].get("digest") != selected_upload:
+            raise ValueError("Original aggregate upload differs from S1048 selection")
+        artifact, raw = transport._download_contract_ci_upload(selected_upload_id, selected_upload,
             name, original, run, token)
         transport._require_artifact_job_window(observed[0], JOB, artifact)
         evidence = prepared / "original-evidence"
@@ -160,9 +181,17 @@ def promote_runtime_aggregate_catalog(repository_root, candidate_root, destinati
         key = require_sha256(metadata.get("buildKey"), "Observed selected aggregate key")
         if selection.get("producer") != original or metadata.get("receiptSha256") != digest:
             raise ValueError("Original aggregate selection differs from its observed caller")
+        if (key, digest) != (selected_key, selected_receipt):
+            raise ValueError("Original aggregate identity differs from S1048 selection")
         carrier = _original_carrier(uploaded, digest, key)
         unsigned = private / "unsigned"
         with verified_runtime_aggregate_handoff(carrier, keyring=trust.keyring, keys_directory=trust.keys) as verified:
+            carrier_inventory = verified["inventory"]
+            if sha256_bytes(canonical_json_bytes(carrier_inventory)) != selected_carrier:
+                raise ValueError("Original aggregate carrier differs from S1048 selection")
+            if (sha256_file(verified["indexInputs"]["attestation"]) != selected_attestation
+                    or sha256_file(verified["indexInputs"]["signature"]) != selected_signature):
+                raise ValueError("Original aggregate attestation/signature differs from S1048 selection")
             if sha256_bytes(verified["receiptBytes"][_METADATA]) != digest or verified["receipts"][_METADATA]["buildKey"] != key:
                 raise ValueError("Signed aggregate differs from the original selected receipt/key")
             shard = verified["directory"] / "original-evidence/phases/runtime-aggregate-metadata-aggregate/original/shard"
@@ -170,12 +199,16 @@ def promote_runtime_aggregate_catalog(repository_root, candidate_root, destinati
             if value["receiptBytes"] != verified["receiptBytes"][_METADATA]:
                 raise ValueError("Original aggregate object differs from the signed receipt")
             relative = object_relative_path(key, digest)
+            if sha256_file(shard / relative) != selected_object:
+                raise ValueError("Original aggregate object differs from S1048 selection")
             output = unsigned / relative
             output.parent.mkdir(parents=True)
             output.write_bytes(read_regular_file_bytes(shard / relative))
             release = unsigned / "runtime-aggregate-release-evidence"
             handoff = f"handoffs/{digest.removeprefix('sha256:')}"
             snapshot_regular_tree(verified["directory"], release / handoff, allow_empty=True)
+            if regular_file_inventory(release / handoff, allow_empty=True) != carrier_inventory:
+                raise ValueError("Copied aggregate carrier differs from S1048 selection")
             write_canonical_json(release / "runtime-aggregate-release-evidence.json",
                                  [{"receiptSha256": digest, "handoffRoot": handoff}])
 
@@ -184,7 +217,9 @@ def promote_runtime_aggregate_catalog(repository_root, candidate_root, destinati
                     or _checkout(candidate, final_commit)[1] != final_tree
                     or regular_file_inventory(prepared / "trust") != policy_before
                     or regular_file_inventory(uploaded, allow_empty=True) != inventory
-                    or sha256_file(archive) != artifact["digest"]):
+                    or sha256_file(archive) != selected_upload
+                    or sha256_file(unsigned / object_relative_path(key, digest)) != selected_object
+                    or regular_file_inventory(release / handoff, allow_empty=True) != carrier_inventory):
                 raise ValueError("Promotion original inputs changed before publication")
 
         unchanged()
@@ -200,12 +235,20 @@ def promote_runtime_aggregate_catalog(repository_root, candidate_root, destinati
             expected_build_key=key, expected_receipt_sha256=digest, repository=REPOSITORY,
             context=context, producer=producer, keyring=trust.keyring, keys_directory=trust.keys, private_key=private_key)
         write_canonical_json(evidence / "transport.json", {"artifact": artifact, "observed": observed,
-            "captureProducer": original, "aggregateBuildKey": key, "aggregateReceiptSha256": digest})
+            "captureProducer": original, "aggregateBuildKey": key, "aggregateReceiptSha256": digest,
+            "aggregateObjectSha256": selected_object, "carrierInventorySha256": selected_carrier,
+            "aggregateAttestationSha256": selected_attestation,
+            "aggregateSignatureSha256": selected_signature})
         write_canonical_json(prepared / "caller.json", {"schemaVersion": 1, "producer": producer,
             "trustedSourceCommit": trusted_source_sha, "trustedSourceTree": source_tree,
             "trustedWorkflowSha": trusted_workflow_sha, "trustedPromotionWorkflowSha": trusted_promotion_workflow_sha,
             "environment": expected, "event": event_payload, "aggregateBuildKey": key,
-            "aggregateReceiptSha256": digest})
+            "aggregateReceiptSha256": digest, "aggregateObjectSha256": selected_object,
+            "validatedTree": expected_validation_tree,
+            "originalProducer": original, "originalUploadArtifactId": selected_upload_id,
+            "originalUploadSha256": selected_upload, "carrierInventorySha256": selected_carrier,
+            "aggregateAttestationSha256": selected_attestation,
+            "aggregateSignatureSha256": selected_signature})
         unchanged()
         output_safe()
         publish_regular_tree(prepared, destination, allow_empty=True)
@@ -218,6 +261,12 @@ def main(argv=None):
         parser.add_argument(f"--{name}", type=Path, required=True)
     for name in ("trusted-source-sha", "trusted-workflow-sha", "trusted-promotion-workflow-sha", "final-commit"):
         parser.add_argument(f"--{name}", required=True)
+    for name in ("expected-validation-tree", "expected-build-key", "expected-receipt-sha256",
+                 "expected-object-sha256", "expected-original-commit", "expected-upload-sha256",
+                 "expected-carrier-inventory-sha256", "expected-attestation-sha256", "expected-signature-sha256"):
+        parser.add_argument(f"--{name}", required=True)
+    for name in ("expected-original-run-id", "expected-original-run-attempt", "expected-upload-artifact-id"):
+        parser.add_argument(f"--{name}", type=int, required=True)
     args = parser.parse_args(argv)
     event_path = os.environ.get("GITHUB_EVENT_PATH")
     if not event_path:
@@ -233,6 +282,16 @@ def main(argv=None):
         args.repository_root, args.candidate_root, args.destination,
         trusted_source_sha=args.trusted_source_sha, trusted_workflow_sha=args.trusted_workflow_sha,
         trusted_promotion_workflow_sha=args.trusted_promotion_workflow_sha, final_commit=args.final_commit,
+        expected_validation_tree=args.expected_validation_tree, expected_build_key=args.expected_build_key,
+        expected_receipt_sha256=args.expected_receipt_sha256, expected_object_sha256=args.expected_object_sha256,
+        expected_original_commit=args.expected_original_commit,
+        expected_original_run_id=args.expected_original_run_id,
+        expected_original_run_attempt=args.expected_original_run_attempt,
+        expected_upload_artifact_id=args.expected_upload_artifact_id,
+        expected_upload_sha256=args.expected_upload_sha256,
+        expected_carrier_inventory_sha256=args.expected_carrier_inventory_sha256,
+        expected_attestation_sha256=args.expected_attestation_sha256,
+        expected_signature_sha256=args.expected_signature_sha256,
         event_payload=event, environment=os.environ, token=os.environ.get("GITHUB_TOKEN"))
 
 
