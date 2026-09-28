@@ -27,7 +27,7 @@ from products.registry import NATIVE_TARGETS
 from products.sdk_runtime_content import (
     _native_desktop_report, _native_runtime_capture, verify_native_runtime_presigning_content,
 )
-from products.signatures import load_keyring, require_active_release_key
+from products.signatures import load_keyring, private_key_bytes, require_active_release_key
 from products.signing_isolation import require_no_signing_secret
 
 
@@ -140,7 +140,7 @@ state before aggregate/SDK continuation. A success here does not elect a plan.
                     raise ValueError("Protected Runtime signing key is unavailable")
                 private_key = root / "private-key"
                 private_key.touch(mode=0o600, exist_ok=False)
-                private_key.write_bytes(secret.encode("utf-8"))
+                private_key.write_bytes(private_key_bytes(secret))
                 build_runtime_variant_attestation(
                     payload, *(receipts[phase] for phase in ("binary", "package", "validation", "metadata")),
                     _native_desktop_report(runtime, target), signing, private_key, public_key, root / "handoff",

@@ -29,7 +29,7 @@ from products.restore import object_relative_path, verify_phase_shard
 from products.runtime_aggregate_handoff import verified_runtime_aggregate_handoff
 from products.sdk_package import _require_capability_output_separate
 from products.sdk_protected_runtime import _original_carrier
-from products.signatures import load_keyring, require_active_release_key
+from products.signatures import load_keyring, private_key_bytes, require_active_release_key
 from products.signing_isolation import require_no_signing_secret
 
 
@@ -426,7 +426,7 @@ def sign_promoted_runtime_aggregate_catalog(repository_root, candidate_root, cap
             raise ValueError("Runtime signer requires the protected release key")
         private_key = private / "signing-key"
         private_key.touch(mode=0o600, exist_ok=False)
-        private_key.write_bytes(secret.encode("utf-8"))
+        private_key.write_bytes(private_key_bytes(secret))
         context = {"kind": "promoted-main", "commit": final_commit, "tree": final_tree,
             "promotionRunId": producer["runId"], "promotionRunAttempt": producer["runAttempt"]}
         index = transport.stage_promoted_aggregate_catalog(captured / "unsigned",

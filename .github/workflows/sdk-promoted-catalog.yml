@@ -288,7 +288,7 @@ jobs:
           chmod 600 "$key_file"
           trap 'rm -f "$key_file"' EXIT
           test -n "$RELEASE_PRIVATE_KEY"
-          printf '%s' "$RELEASE_PRIVATE_KEY" > "$key_file"
+          printf '%s\n' "$RELEASE_PRIVATE_KEY" > "$key_file"
           unset RELEASE_PRIVATE_KEY CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY
           python3 -B -m ci.sdk_catalog_promotion_caller sign \
             --authority "$root/inputs/authority.json" \

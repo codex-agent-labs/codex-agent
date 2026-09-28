@@ -21,7 +21,7 @@ from ci.products.inventory import (
     read_regular_file_bytes, regular_file_inventory, require_sha256, sha256_bytes,
 )
 from ci.products.signatures import (
-    require_active_release_key, sign_manifest, verify_manifest_signature,
+    private_key_bytes, require_active_release_key, sign_manifest, verify_manifest_signature,
 )
 from ci.sdk_catalog_custody import (
     PUBLIC_KEY, RECORD, SIGNATURE, _exact_inventory, _pinned_policy,
@@ -106,7 +106,7 @@ def main(argv=None) -> int:
         private_key = Path(temporary) / "release-ed25519"
         descriptor = os.open(private_key, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb") as output:
-            output.write(secret.encode("utf-8"))
+            output.write(private_key_bytes(secret))
         result = sign_prepared_failed_sdk_catalog_custody(
             args.prepared_root, args.destination,
             expected_record_sha256=args.expected_record_sha256,

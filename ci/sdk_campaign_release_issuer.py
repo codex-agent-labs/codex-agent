@@ -34,7 +34,7 @@ from products.inventory import (
 from products.receipt import validate_phase_receipt, validate_producer
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from products.signatures import (
-    load_keyring, public_key_for_metadata, require_active_release_key,
+    load_keyring, private_key_bytes, public_key_for_metadata, require_active_release_key,
     sign_manifest, verify_manifest_signature,
 )
 from products.signing_isolation import SIGNING_SECRET, require_no_signing_secret
@@ -516,7 +516,7 @@ def _sign_cli(args):
         private_key = Path(temporary).resolve() / "release-ed25519"
         descriptor = os.open(private_key, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb") as output:
-            output.write(secret.encode("utf-8"))
+            output.write(private_key_bytes(secret))
         signature = sign_approved_sdk_release_index(args.prepared_index,
             expected_index_sha256=approved_index, keyring_path=args.keyring_path,
             keys_directory=args.keys_directory, expected_keyring_sha256=approved_keyring,

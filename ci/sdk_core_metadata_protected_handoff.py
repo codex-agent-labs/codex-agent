@@ -20,7 +20,7 @@ from .products.receipt import validate_phase_receipt
 from .products.sdk_package import _require_capability_output_separate
 from .products.signing_isolation import require_no_signing_secret
 from .products.signatures import (
-    load_keyring, require_active_release_key, sign_manifest,
+    load_keyring, private_key_bytes, require_active_release_key, sign_manifest,
     validate_signing_metadata, verify_manifest_signature,
 )
 from .sdk_core_metadata_context_preparation import prepare_from_caller_policy
@@ -174,7 +174,7 @@ def sign_protected_core_context(checkpoint_directory, metadata_receipt, destinat
         manifest.write_bytes(raw)
         private = staged / "private-key"
         private.touch(mode=0o600, exist_ok=False)
-        private.write_bytes(private_key_text.encode("utf-8"))
+        private.write_bytes(private_key_bytes(private_key_text))
         unchanged()
         signature = sign_manifest(manifest, private, signing)
         verify_manifest_signature(manifest, signature, public_key, signing)

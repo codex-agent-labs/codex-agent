@@ -179,6 +179,7 @@ jobs:
           import tempfile
           from ci.contract_catalog_caller import sign_promoted_contract_catalog
           from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes
+          from ci.products.signatures import private_key_bytes
 
           if (os.environ.get("GITHUB_EVENT_NAME"), os.environ.get("GITHUB_REF"),
                   os.environ.get("GITHUB_REF_PROTECTED")) != ("push", "refs/heads/main", "true"):
@@ -198,7 +199,7 @@ jobs:
           with tempfile.TemporaryDirectory(prefix="contract-catalog-key-") as temporary:
               key = Path(temporary) / "signing-key"
               key.touch(mode=0o600, exist_ok=False)
-              key.write_bytes(os.environ["CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY"].encode())
+              key.write_bytes(private_key_bytes(os.environ["CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY"]))
               sign_promoted_contract_catalog(
                   root / "contract-original/contract-record/handoff",
                   root / "contract-phase-capture", root / "contract-promoted-catalog",

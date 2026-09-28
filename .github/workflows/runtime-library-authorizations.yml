@@ -145,7 +145,7 @@ jobs:
           set -euo pipefail
           test -n "$ROOT_PRIVATE_KEY"
           umask 077
-          printf '%s' "$ROOT_PRIVATE_KEY" > "$RUNNER_TEMP/sdk-runtime-root-key"
+          printf '%s\n' "$ROOT_PRIVATE_KEY" > "$RUNNER_TEMP/sdk-runtime-root-key"
           python3 -B trusted-source/ci/runtime_phase10_library_caller.py delegate \
             --destination "$RUNNER_TEMP/runtime-root-delegation" \
             --keyring trusted-source/gradle/release/product-signing-keys.json \
@@ -361,7 +361,7 @@ jobs:
               raise ValueError('Runtime original capture differs from token-only job')
           PY
           umask 077
-          printf '%s' "$RELEASE_PRIVATE_KEY" > "$RUNNER_TEMP/runtime-release-key"
+          printf '%s\n' "$RELEASE_PRIVATE_KEY" > "$RUNNER_TEMP/runtime-release-key"
           python3 -B trusted-source/ci/runtime_phase10_library_caller.py authorize \
             --protected-output capture/original \
             --destination "$RUNNER_TEMP/runtime-library-authorizations" \

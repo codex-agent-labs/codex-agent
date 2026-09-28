@@ -36,7 +36,7 @@ from products.runtime_aggregate import (
 from products.runtime_attestation import read_runtime_variant_handoff
 from products.sdk_runtime_content import verify_native_runtime_presigning_content
 from products.signing_isolation import require_no_signing_secret
-from products.signatures import load_keyring, require_active_release_key
+from products.signatures import load_keyring, private_key_bytes, require_active_release_key
 
 
 _METADATA = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
@@ -278,7 +278,7 @@ def _attest_selected_runtime_aggregate(
             raise ValueError("Protected Runtime aggregate signing key is unavailable")
         private_key = root / "private-key"
         private_key.touch(mode=0o600, exist_ok=False)
-        private_key.write_bytes(secret.encode("utf-8"))
+        private_key.write_bytes(private_key_bytes(secret))
         attestation = build_runtime_aggregate_attestation(**arguments, signing_metadata=signing,
             private_key=private_key, public_key=public_key, output_directory=root / "signed",
             required_variant_trust_domain="release", keyring=trust.keyring, keys_directory=trust.keys)

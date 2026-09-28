@@ -32,6 +32,14 @@ SIGNATURE_LIMIT = 64 * 1024
 PUBLIC_KEY_LIMIT = 4096
 
 
+def private_key_bytes(secret: str) -> bytes:
+    """Restore the final LF that secret transports may trim from OpenSSH keys."""
+    if type(secret) is not str or not secret:
+        raise ValueError("Product signing private key is unavailable")
+    encoded = secret.encode("utf-8")
+    return encoded if encoded.endswith(b"\n") else encoded + b"\n"
+
+
 def _require_canonical_sshsig(contents: bytes) -> None:
     if type(contents) is not bytes or not contents.startswith(SSHSIG_HEADER) or not contents.endswith(SSHSIG_FOOTER):
         raise ValueError("Product SSHSIG armor is malformed")

@@ -24,7 +24,7 @@ from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, load_json_bytes, publish_regular_tree, read_regular_file_bytes,
     regular_file_inventory, sha256_bytes, snapshot_regular_tree, write_canonical_json,
 )
-from products.signatures import load_keyring, public_key_for_metadata, require_active_release_key, sign_manifest
+from products.signatures import load_keyring, private_key_bytes, public_key_for_metadata, require_active_release_key, sign_manifest
 from products.tooling import ATTESTATION, INPUT_NAMES, _value, _verify_capture, _verify_original
 
 
@@ -151,7 +151,7 @@ No executable or product bytes are built, executed or repacked here.
                 raise ValueError("Protected tooling signing key is unavailable")
             private_key = root / "private-key"
             private_key.touch(mode=0o600, exist_ok=False)
-            private_key.write_bytes(secret.encode("utf-8"))
+            private_key.write_bytes(private_key_bytes(secret))
             write_canonical_json(fresh / ATTESTATION, value)
             sign_manifest(fresh / ATTESTATION, private_key, signing)
             _verify_capture(fresh, repository_root, public_key, "release", trust.keyring, trust.keys)

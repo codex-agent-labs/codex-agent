@@ -33,7 +33,7 @@ from products.inventory import (
     read_regular_file_bytes, regular_file_inventory, require_exact_keys, require_sha256,
     require_semver, sha256_bytes, sha256_file, snapshot_regular_tree, write_canonical_json,
 )
-from products.signatures import load_keyring, require_active_release_key
+from products.signatures import load_keyring, private_key_bytes, require_active_release_key
 
 _SECRETS = ("CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY", "SIGNING_IN_MEMORY_KEY",
             "SIGNING_IN_MEMORY_KEY_PASSWORD")
@@ -221,7 +221,7 @@ def sign_contract_phase10_maven_handoff(
         else:
             private = root / "product-private-key"
             private.touch(mode=0o600, exist_ok=False)
-            private.write_bytes(product_private_key.encode("utf-8"))
+            private.write_bytes(private_key_bytes(product_private_key))
             build_contract_attestation(
                 payload_path, closure / "receipts/metadata.json", signing, private, public_key,
                 release / "contract-input", execution_closure=closure,

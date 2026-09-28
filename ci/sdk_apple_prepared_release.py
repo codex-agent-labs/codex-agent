@@ -24,7 +24,7 @@ from products.sdk_apple_validation_attestation import (
     ATTESTATION_NAME, derive_apple_validation_attestation, verified_prepared_apple_validation,
 )
 from products.sdk_apple_validation_inputs import capture_sdk_apple_validation_evidence
-from products.signatures import load_keyring, require_active_release_key, sign_manifest, verify_manifest_signature
+from products.signatures import load_keyring, private_key_bytes, require_active_release_key, sign_manifest, verify_manifest_signature
 
 
 def attest_prepared_apple_validation_ci(repository_root, candidate_root, plan_path,
@@ -111,7 +111,7 @@ def attest_prepared_apple_validation_ci(repository_root, candidate_root, plan_pa
                 raise ValueError("Protected Apple signing key is unavailable")
             private_key = root / "private-key"
             private_key.touch(mode=0o600, exist_ok=False)
-            private_key.write_bytes(secret.encode("utf-8"))
+            private_key.write_bytes(private_key_bytes(secret))
             signature = sign_manifest(manifest, private_key, signing)
             verify_manifest_signature(manifest, signature, public_key, signing)
             if read_regular_file_bytes(manifest) != canonical_json_bytes(attestation):

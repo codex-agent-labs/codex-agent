@@ -23,7 +23,7 @@ from ci.products.inventory import (
     require_integer, require_sha256, sha256_bytes,
 )
 from ci.products.signatures import (
-    load_keyring, public_key_path, require_active_release_key,
+    load_keyring, private_key_bytes, public_key_path, require_active_release_key,
     sign_manifest, verify_manifest_signature,
 )
 
@@ -108,7 +108,7 @@ def sign_prepared_runtime_phase10_record(
         private = private_root / "release-ed25519"
         descriptor = os.open(private, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb") as output:
-            output.write(secret.encode("utf-8"))
+            output.write(private_key_bytes(secret))
         snapshot = private_root / "record.json"
         snapshot.write_bytes(record_bytes)
         signature = sign_manifest(snapshot, private, signing)

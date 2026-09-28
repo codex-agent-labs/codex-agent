@@ -214,6 +214,12 @@ class ToolingReleaseTest(unittest.TestCase):
         secret = self.private_key.read_bytes()
         self.assertFalse(any(secret in path.read_bytes() for path in self.destination.rglob("*") if path.is_file()))
 
+    def test_secret_transport_without_final_newline_still_signs(self):
+        self.environment.values[SECRET] = self.environment.values[SECRET].rstrip("\n")
+        with mock.patch("reuse.api_request", side_effect=self.api()):
+            self.attest()
+        self.assertTrue((self.destination / "caller.json").is_file())
+
     def test_child_workflow_pin_authenticates_original_tooling_job(self):
         path = ".github/workflows/contract-validation.yml"
         job = "product-validation / contract-validation / product-contracts"

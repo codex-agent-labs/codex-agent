@@ -24,7 +24,7 @@ from products.inventory import (
     load_json_bytes, publish_regular_tree, read_regular_file_bytes,
     regular_file_inventory, require_semver, sha256_file, snapshot_regular_tree, write_canonical_json,
 )
-from products.signatures import load_keyring, require_active_release_key
+from products.signatures import load_keyring, private_key_bytes, require_active_release_key
 
 
 def attest_contract_ci(
@@ -116,7 +116,7 @@ def attest_contract_ci(
                 raise ValueError("Protected Contract signing key is unavailable")
             private_key = root / "private-key"
             private_key.touch(mode=0o600, exist_ok=False)
-            private_key.write_bytes(secret.encode("utf-8"))
+            private_key.write_bytes(private_key_bytes(secret))
             build_contract_attestation(
                 payload_path, closure / "receipts/metadata.json", signing, private_key, public_key,
                 prepared / "contract-input", execution_closure=closure,
