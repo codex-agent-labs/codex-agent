@@ -18,7 +18,7 @@ class RuntimeSupervisorWorkerTest(unittest.TestCase):
         (self.root / "discovery").mkdir()
         self.destination = self.root / "build/worker"
         self.instance = worker.PhaseInstanceId("runtime", "linux-arm64", "binary", "linux-arm64")
-        self.ready = {"buildKey": "sha256:" + "a" * 64}
+        self.ready = {"buildKey": "sha256:" + "a" * 64, "runtimeBinaryIdentity": {"fixture": True}}
         self.producer = {"commit": "c" * 40}
         self.state = SimpleNamespace(prior_ready_plans={self.instance: self.ready},
                                      producer=self.producer, expected_fixed={"versions": {"runtime-release": "0.2.0"}},
@@ -43,8 +43,7 @@ class RuntimeSupervisorWorkerTest(unittest.TestCase):
         self.finalize = self.stack.enter_context(mock.patch.object(worker, "finalize_phase_object", return_value={"fixture": True}))
 
     def prepared(self, *_arguments):
-        write_canonical_json(Path(self.properties["codexAgent.runtimeBinaryPlan"]),
-                             {**self.ready, "runtimeBinaryIdentity": {"fixture": True}})
+        write_canonical_json(Path(self.properties["codexAgent.runtimeBinaryPlan"]), self.ready)
         return dict(self.properties), self.manifest
 
     def execute_supervisor(self, key=None):

@@ -4190,7 +4190,7 @@ def execute_runtime_supervisor(
     _runtime_worker_environment(root, state.producer, destination / "supervisor-diagnostics", environment)
     properties, manifest = _prepare_runtime_phase(state, instance, destination / "inputs", expected_build_key, root)
     full_plan = _canonical_control(Path(properties["codexAgent.runtimeBinaryPlan"]), "Prepared supervisor binary plan")
-    if canonical_json_bytes({key: value for key, value in full_plan.items() if key != "runtimeBinaryIdentity"}) != canonical_json_bytes(ready):
+    if canonical_json_bytes(full_plan) != canonical_json_bytes(ready):
         raise ValueError("Prepared supervisor plan differs from the original elected plan")
     return execute_supervisor(
         repository_root=root, producer=state.producer, properties=properties, phase_plan=full_plan,
@@ -4275,7 +4275,7 @@ def execute_runtime_phase(
         if canonical_json_bytes(transport["captureProducer"]) != canonical_json_bytes(state.producer):
             raise ValueError("Supervisor transport differs from the current elected producer")
         full_plan = _canonical_control(Path(properties["codexAgent.runtimeBinaryPlan"]), "Prepared binary plan")
-        if canonical_json_bytes({key: value for key, value in full_plan.items() if key != "runtimeBinaryIdentity"}) != canonical_json_bytes(ready):
+        if canonical_json_bytes(full_plan) != canonical_json_bytes(ready):
             raise ValueError("Prepared binary plan differs from the original elected plan")
         verify_supervisor_handoff(
             captured / "original", repository_root=root, revision=state.producer["commit"],
