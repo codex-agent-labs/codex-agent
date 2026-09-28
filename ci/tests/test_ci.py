@@ -117,7 +117,7 @@ class RunLaneContractTest(unittest.TestCase):
         caller = (CI_ROOT.parent / ".github/workflows/ci.yml").read_text(
             encoding="utf-8"
         )
-        reviewed = "a1fc7e1f557ee33c389e46be84ccfc9a57592537"
+        reviewed = "34d122c0da9d4537275315e32181fa9c0345bb99"
         references = re.findall(
             r"uses: codex-agent-labs/codex-agent/\.github/workflows/product-validation\.yml@([^\s]+)",
             caller,
@@ -718,22 +718,23 @@ class RunLaneContractTest(unittest.TestCase):
 
         self.assertNotIn("native-wrapper-", desktop)
         self.assertNotIn("nativeWrappers", desktop)
-        self.assertIn("needs: [workflow-lint, plan, sdk-plan, sdk-javascript, sdk-native-prepare, sdk-inputs]", caller)
+        self.assertIn("needs: [workflow-lint, plan, sdk-plan, sdk-csharp-binary-result, sdk-native-prepare, sdk-inputs]", caller)
         for condition in (
             "needs.plan.outputs.event_authorized == 'true'",
             "needs.plan.outputs.remote_build_authorized == 'true'",
             "needs.plan.outputs.validation_reused != 'true'",
             "needs.plan.outputs.native_wrappers == 'true'",
+            "needs.sdk-csharp-binary-result.result == 'success'",
             "needs.sdk-native-prepare.result == 'success'",
         ):
             self.assertIn(condition, caller)
         for field, source in (
             ("planId", "needs.plan.outputs.plan_id"),
             ("trustedWorkflowSha", "inputs.trustedWorkflowSha"),
-            ("stateArtifactId", "needs.sdk-javascript.outputs.artifact_id"),
-            ("stateArtifactSha256", "needs.sdk-javascript.outputs.artifact_digest"),
-            ("stateWave", "needs.sdk-javascript.outputs.state_wave"),
-            ("sdkStateWave", "needs.sdk-javascript.outputs.sdk_state_wave"),
+            ("stateArtifactId", "needs.sdk-csharp-binary-result.outputs.artifact_id"),
+            ("stateArtifactSha256", "needs.sdk-csharp-binary-result.outputs.artifact_digest"),
+            ("stateWave", "needs.sdk-csharp-binary-result.outputs.state_wave"),
+            ("sdkStateWave", "needs.sdk-csharp-binary-result.outputs.sdk_state_wave"),
             ("preparationStateArtifactId", "needs.sdk-native-prepare.outputs.preparation_state_id"),
             ("preparationStateArtifactSha256", "needs.sdk-native-prepare.outputs.preparation_state_digest"),
             ("preparationStateWave", "needs.sdk-native-prepare.outputs.preparation_state_wave"),
