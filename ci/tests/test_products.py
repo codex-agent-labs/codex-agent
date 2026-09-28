@@ -1553,13 +1553,13 @@ class ProductSigningTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_keyring(invalid_keyring, malformed)
 
-    def test_tracked_keyring_is_canonical_and_has_no_invented_release_key(self):
+    def test_tracked_keyring_has_verified_release_public_key(self):
         repository = Path(__file__).resolve().parents[2]
         keyring = load_canonical_json(repository / "gradle/release/product-signing-keys.json")
         validate_keyring(keyring, repository / "gradle/release/keys")
-        self.assertIsNone(keyring["activeKey"])
-        with self.assertRaises(ValueError):
-            require_active_release_key(keyring, repository / "gradle/release/keys")
+        record, public_key = require_active_release_key(keyring, repository / "gradle/release/keys")
+        self.assertEqual("product-2026-09", record["keyId"])
+        self.assertEqual(repository / "gradle/release/keys/product-2026-09.pub", public_key)
 
 
 if __name__ == "__main__":

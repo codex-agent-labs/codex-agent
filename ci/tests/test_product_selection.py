@@ -1206,6 +1206,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/products/signatures.py",
             "gradle/build-logic/src/main/kotlin/PromotedCandidateTasks.kt",
             "gradle/release/product-signing-keys.json",
+            "gradle/release/keys/product-2026-09.pub",
         ):
             with self.subTest(path=path):
                 result = classify_paths([path])

@@ -130,6 +130,7 @@ _METADATA_AUTHORITIES = frozenset({
     "gradle/build-logic/src/main/kotlin/RepositoryVerificationTasks.kt",
     "gradle/build-logic/src/main/kotlin/codexagent.root-release.gradle.kts",
     "gradle/release/product-signing-keys.json",
+    "gradle/release/keys/product-2026-09.pub",
     "gradle/release/publication-approvals.json",
 })
 _RUNTIME_BUILD_LOGIC_JVM = frozenset({

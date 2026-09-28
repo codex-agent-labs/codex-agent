@@ -1,1 +1,1 @@
-{"activeKey":null,"algorithm":"ssh-ed25519","namespace":"codex-agent-product-v1","retiredKeys":[],"schemaVersion":1,"trustDomain":"release"}
+{"activeKey":{"fingerprint":"sha256:e986db082a3e8a3df487cccfbbad76f502a0b3c4081b9ad8f26bdb6a212c0775","keyId":"product-2026-09"},"algorithm":"ssh-ed25519","namespace":"codex-agent-product-v1","retiredKeys":[],"schemaVersion":1,"trustDomain":"release"}
