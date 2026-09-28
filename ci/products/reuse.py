@@ -581,8 +581,19 @@ class LookupSession:
                             self._verify_release_attested_native_runtime(envelope, captured, index)
                         elif identity == PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"):
                             self._verify_release_attested_runtime_aggregate(envelope, captured)
+                        elif source == "promoted-main" and identity.product == "sdk":
+                            from .sdk_campaign_index import verify_release_sdk_campaign_objects
+                            # ponytail: recheck 62 originals per SDK lookup; cache only if measured cost warrants it.
+                            originals = verify_release_sdk_campaign_objects(
+                                index, captured.catalog.objects, repository=self.repository)
+                            original = originals.get(identity)
+                            if (original is None or original["receiptBytes"] != envelope["receiptBytes"]
+                                    or original["objectSha256"] != envelope["objectSha256"]):
+                                raise ValueError("SDK promoted original differs from selected receipt or object")
                         else:
                             raise ValueError("Restored receipt trust does not match its product index source")
+                elif source == "promoted-main" and identity.product == "sdk":
+                    raise ValueError("Promoted SDK requires the original development receipt and all-62 admission")
                 if identity.product == "contract" and identity.phase in {"binary", "metadata"} and self._restore_root is not None:
                     self._restore_contract_stage(path, envelope)
             except (CacheObjectError, OSError, TypeError, ValueError) as error:

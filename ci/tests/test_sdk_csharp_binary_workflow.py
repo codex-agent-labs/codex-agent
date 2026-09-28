@@ -242,6 +242,8 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
 
         class Session:
             def capture(self, source, plan, destination):
+                if source == "promoted-main":
+                    return SimpleNamespace(envelope=None, transport_source=None)
                 self_source.assertEqual("same-pr", source)
                 self_source.assertEqual(receipt["buildKey"], plan["buildKey"])
                 snapshot_regular_tree(stage, destination)
@@ -304,13 +306,54 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
         with (patch.object(workflow, "lookup_only_plan", return_value={"buildKey": "sha256:" + "a" * 64}),
               patch.object(workflow.sdk_workflow, "verified_inputs", side_effect=self.verified),
               patch.object(workflow.product_reuse, "_verified_product_state", side_effect=replay),
-              self.assertRaisesRegex(ValueError, "same-PR C# binary original is unavailable")):
+              self.assertRaisesRegex(ValueError, "C# binary original is unavailable")):
             with workflow.verified_lookup_only_same_pr_original(self.plan, self.discovery, self.state,
                     sdk_inputs_artifact_id=10, sdk_inputs_artifact_sha256="sha256:" + "c" * 64,
                     trusted_workflow_sha="sha256:" + "d" * 64, keyring=self.keyring,
                     keys_directory=self.keys, repository_root=self.root,
                     environ={}, token="fixture-token"):
                 self.fail("Missing C# original was accepted")
+
+    def test_lookup_only_promoted_original_preserves_foreign_pr_producer(self):
+        stage = self.produce(self.ready,
+            compatibility_request=self.sdk / "sdk-compatibility-request.json")["stage"]
+        manifest = workflow.verify_output_manifest_identity(stage, "sdk", "csharp", "binary",
+            "desktop", "0.8.0")
+        earlier = {**self.producer, "commit": "d" * 40, "tree": "e" * 40,
+                   "runId": 20, "pullRequest": 1}
+        receipt = write_receipt(self.root / "promoted-csharp-receipt.json", product="sdk",
+            component="csharp", phase="binary", target="desktop", version="0.8.0",
+            version_identity="0.8.0", outputs=manifest["outputs"], upstream=[],
+            context={"producer": earlier})
+        called = []
+
+        class Session:
+            def capture(self, source, plan, destination):
+                called.append(source)
+                snapshot_regular_tree(stage, destination)
+                return SimpleNamespace(envelope={"receipt": receipt,
+                    "receiptBytes": canonical_json_bytes(receipt)},
+                    transport_source={"kind": "promoted-main"})
+
+        def replay(*_args, authenticated_lookup_consumer, **_kwargs):
+            authenticated_lookup_consumer(Session())
+            return SimpleNamespace(producer=self.producer,
+                plan={"validationCommit": self.producer["commit"]})
+
+        with (patch.object(workflow, "lookup_only_plan", return_value={"buildKey": receipt["buildKey"]}),
+              patch.object(workflow.sdk_workflow, "verified_inputs", side_effect=self.verified),
+              patch.object(workflow.product_reuse, "_verified_product_state", side_effect=replay),
+              patch.object(workflow, "git_regular_blob_bytes",
+                           return_value=(self.root / "gradle/release/keys/sdk-runtime-root.pub").read_bytes())):
+            with workflow.verified_lookup_only_same_pr_original(self.plan, self.discovery,
+                    self.state, sdk_inputs_artifact_id=10,
+                    sdk_inputs_artifact_sha256="sha256:" + "c" * 64,
+                    trusted_workflow_sha="sha256:" + "d" * 64,
+                    keyring=self.keyring, keys_directory=self.keys,
+                    repository_root=self.root, environ={}, token="fixture-token") as original:
+                self.assertEqual(earlier, original["receipt"]["producer"])
+                self.assertEqual("promoted-main", original["transportSource"]["kind"])
+        self.assertEqual(["promoted-main"], called)
 
     def test_csharp_original_handoff_publishes_only_after_context_and_pins_profile(self):
         stage = self.produce(self.ready,
@@ -463,7 +506,7 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
 
         @contextmanager
         def missing_original(*_args, **_kwargs):
-            raise ValueError("same-PR C# binary original is unavailable")
+            raise ValueError("C# binary original is unavailable")
             yield
 
         with (patch.object(workflow, "verified_csharp_original", side_effect=missing_original),
@@ -472,7 +515,7 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
               self.assertRaises(SystemExit) as failure):
             workflow.main(args)
         self.assertEqual(2, failure.exception.code)
-        self.assertIn("same-PR C# binary original is unavailable", errors.getvalue())
+        self.assertIn("C# binary original is unavailable", errors.getvalue())
         self.assertFalse(self.destination.exists())
         binary.assert_not_called()
 

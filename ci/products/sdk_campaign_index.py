@@ -11,9 +11,58 @@ from .index import (
     IndexEntrySource, SignedProductIndex, _verify_index_receipt,
     verify_release_product_index,
 )
+from .aggregate import validate_product_index
 from .inventory import sha256_bytes
 from .registry import PhaseInstanceId
-from .sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES, held_sdk_campaign_selection
+from .restore import verify_object
+from .sdk_campaign_selection import (
+    SDK_CAMPAIGN_INSTANCES, held_sdk_campaign_selection, verify_sdk_campaign_objects,
+)
+
+
+def verify_release_sdk_campaign_objects(index: dict, objects: Mapping[str, Path], *,
+                                        repository: str) -> dict[PhaseInstanceId, dict]:
+    """Bind a previously verified, release-signed promoted index to all 62 originals.
+
+    The caller must authenticate the index signature and object transport first.
+    Original development receipts remain unchanged; the release signature is the
+    separate admission authority. Stable SDK catalogs are not yet produced.
+    """
+    index = validate_product_index(index)
+    if (index["repository"] != repository or index["trustDomain"] != "release"
+            or index["context"]["kind"] != "promoted-main"):
+        raise ValueError("SDK original catalog requires release-signed promoted-main authority")
+    entries = {PhaseInstanceId(*(entry[field] for field in (
+        "product", "component", "phase", "target"))): entry for entry in index["entries"]}
+    if len(index["entries"]) != len(SDK_CAMPAIGN_INSTANCES) or set(entries) != SDK_CAMPAIGN_INSTANCES:
+        raise ValueError("SDK release catalog must index every exact SDK campaign phase")
+    if len({entry["productVersion"] for entry in index["entries"]}) != 1:
+        raise ValueError("SDK release catalog phases must have one SDK version")
+    if not isinstance(objects, Mapping) or set(objects) != {entry["buildKey"] for entry in entries.values()}:
+        raise ValueError("SDK release catalog lacks the exact indexed original objects")
+
+    sources, envelopes, archives = {}, {}, {}
+    for instance, entry in entries.items():
+        archive = Path(objects[entry["buildKey"]])
+        verified = verify_object(archive, build_key=entry["buildKey"],
+                                 receipt_sha256=entry["receiptSha256"])
+        envelope = {name: verified[name] for name in (
+            "receipt", "receiptBytes", "objectSha256")}
+        envelope["receiptSha256"] = entry["receiptSha256"]
+        receipt = envelope["receipt"]
+        if (receipt["trustDomain"] != "development"
+                or receipt["producer"]["repository"] != repository):
+            raise ValueError("SDK release catalog original has incompatible provenance or trust")
+        _verify_index_receipt(entry, envelope)
+        artifacts = [output for output in receipt["outputs"]
+                     if output["relativePath"] == entry["artifactName"]]
+        if len(artifacts) != 1 or artifacts[0]["sha256"] != entry["artifactSha256"]:
+            raise ValueError("SDK release catalog artifact differs from indexed original")
+        sources[instance] = IndexEntrySource(envelope["receiptBytes"], entry["artifactName"])
+        envelopes[instance] = envelope
+        archives[instance] = archive
+    verify_sdk_campaign_objects(sources, envelopes, archives)
+    return envelopes
 
 
 def verify_signed_sdk_campaign_originals(

@@ -110,7 +110,7 @@ def verified_lookup_only_same_pr_original(plan, discovery, state, *,
         keyring, keys_directory, repository_root, environ, token,
         sdk_validation_tooling=None, sdk_apple_validation_policy=None,
         sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
-    """Expose an unselected C# original only during its authenticated capture lifetime."""
+    """Expose an unselected C# original only during authenticated capture."""
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
     plan, discovery, state = Path(plan), Path(discovery), Path(state)
@@ -143,10 +143,14 @@ def verified_lookup_only_same_pr_original(plan, discovery, state, *,
             def capture(session):
                 if captured:
                     raise ValueError("Lookup-only C# original was captured twice")
-                found = session.capture("same-pr", elected, stage)
-                if found.envelope is None or found.transport_source is None:
-                    raise ValueError("Authenticated same-PR C# binary original is unavailable")
-                captured.append(found)
+                for source in ("promoted-main", "same-pr"):
+                    found = session.capture(source, elected, stage)
+                    if found.envelope is not None:
+                        if found.transport_source is None:
+                            raise ValueError("Authenticated C# binary original lacks transport provenance")
+                        captured.append(found)
+                        return
+                raise ValueError("Authenticated C# binary original is unavailable")
 
             verified = product_reuse._verified_product_state(
                 Path(plan), Path(discovery), Path(state), root, environ,
@@ -161,13 +165,16 @@ def verified_lookup_only_same_pr_original(plan, discovery, state, *,
             found = captured[0]
             receipt = found.envelope["receipt"]
             producer = receipt["producer"]
+            source = found.transport_source["kind"]
             if (receipt["buildKey"] != elected["buildKey"]
-                    or found.transport_source["kind"] != "same-pr"
-                    or producer["event"] != "pull_request"
+                    or source not in {"promoted-main", "same-pr"}
                     or producer["repository"] != verified.producer["repository"]
-                    or producer["pullRequest"] != verified.producer["pullRequest"]
+                    or (source == "same-pr" and (producer["event"] != "pull_request"
+                        or producer["pullRequest"] != verified.producer["pullRequest"]))
+                    or (source == "promoted-main" and producer["event"] not in
+                        {"pull_request", "push"})
                     or receipt["productVersion"] != inputs["selection"]["sdkVersion"]):
-                raise ValueError("Lookup-only C# original differs from the current PR or SDK version")
+                raise ValueError("Lookup-only C# original differs from its authenticated source or SDK version")
             root_key = private / "sdk-runtime-root.pub"
             root_key.write_bytes(git_regular_blob_bytes(root, verified.plan["validationCommit"],
                 "gradle/release/keys/sdk-runtime-root.pub", max_bytes=65_536))
@@ -274,7 +281,7 @@ def verified_selected_csharp_original(plan, discovery, state, *,
 
 @contextmanager
 def verified_csharp_original(plan, discovery, state, **kwargs):
-    """Use a selected carrier when present; otherwise require signed same-PR reuse."""
+    """Use a selected carrier, or a signed promoted/same-PR original."""
     root = Path(kwargs["repository_root"]).resolve(strict=True)
     verified = product_reuse._verified_product_state(
         Path(plan), Path(discovery), Path(state), root, kwargs["environ"],

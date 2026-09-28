@@ -1357,6 +1357,14 @@ class ProductReuseTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "release trust"):
             self.session(stable=[catalog])
 
+    def test_promoted_sdk_rejects_release_receipt_without_all_62_originals(self) -> None:
+        inputs, resolved = retained_product_closure(PYTHON_PACKAGE)
+        plan = plan_for(PYTHON_PACKAGE, inputs, resolved)
+        envelope, path = self.object_for_plan(plan, trust_domain="release")
+        catalog = self.catalog("promoted-main", [(envelope, path)])
+        with self.assertRaisesRegex(ReuseLookupError, "corrupt"):
+            self.session(promoted_main=catalog).lookup("promoted-main", plan)
+
     def test_release_attestation_authenticates_all_original_contract_phase_receipts(self) -> None:
         inputs = all_inputs(CONTRACT_METADATA)
         resolved, objects, payload, receipt, execution_closure = contract_execution_chain(self.root / "release-contract-chain", inputs)
