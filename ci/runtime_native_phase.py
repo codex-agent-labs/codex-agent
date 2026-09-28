@@ -22,7 +22,7 @@ from products.inventory import (
 from products.contract_projection import VerifiedContractProjection
 from products.plan import attach_runtime_binary_identity
 from products.registry import NATIVE_TARGETS, PHASE_INSTANCE_IDS, PhaseInstanceId, required_toolchain_profile
-from products.runtime_identity import verify_runtime_binary_plan
+from products.runtime_identity import validate_runtime_identity, verify_runtime_binary_plan
 from products.runtime_evidence import PRODUCT_RUNTIME_TARGETS, read_distribution_manifest
 from products.receipt import compute_build_key, validate_receipt_inputs
 
@@ -41,9 +41,12 @@ _HOSTS = {
 
 
 def _native_plan(plan: dict[str, Any]) -> dict[str, Any]:
-    value = require_exact_keys(plan, {
+    fields = {
         "schemaVersion", "product", "component", "phase", "target", "buildKey", "inputs",
-    }, "Native Runtime elected phase plan")
+    }
+    if type(plan) is dict and plan.get("phase") == "binary" and "runtimeBinaryIdentity" in plan:
+        fields.add("runtimeBinaryIdentity")
+    value = require_exact_keys(plan, fields, "Native Runtime elected phase plan")
     component, phase = value["component"], value["phase"]
     if (type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
             or value["product"] != "runtime" or component not in NATIVE_TARGETS
@@ -54,6 +57,13 @@ def _native_plan(plan: dict[str, Any]) -> dict[str, Any]:
     if instance not in PHASE_INSTANCE_IDS:
         raise ValueError("Native Runtime phase is not in the product registry")
     require_sha256(value["buildKey"], "Native Runtime elected build key")
+    if "runtimeBinaryIdentity" in value:
+        identity = validate_runtime_identity(value["runtimeBinaryIdentity"])
+        if (identity["target"] != component or identity["binaryBuildKey"] != value["buildKey"]
+                or identity["runtimeCompatibilityVersion"] != value["inputs"].get("versionIdentity")
+                or identity["toolchainProfile"] != {
+                    "id": component, "digest": value["inputs"].get("toolchainProfileDigest")}):
+            raise ValueError("Native Runtime binary identity differs from its elected plan")
     return value
 
 
@@ -95,8 +105,8 @@ def binary_plan(
     if value["phase"] != "binary":
         raise ValueError("Runtime binary identity requires a native binary phase")
     instance = PhaseInstanceId("runtime", value["component"], "binary", value["target"])
-    complete = attach_runtime_binary_identity(
-        repository_root, revision, instance, value, contract_projection)
+    complete = (value if "runtimeBinaryIdentity" in value else attach_runtime_binary_identity(
+        repository_root, revision, instance, value, contract_projection))
     verify_runtime_binary_plan(
         repository_root, revision, complete, verified_contract_manifest,
         expected_target=value["target"], expected_runtime_version=runtime_version,

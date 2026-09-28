@@ -270,6 +270,8 @@ class RuntimeNativeBinaryPlanTest(unittest.TestCase):
                                                expected_target=target, expected_runtime_version="0.2.4",
                                                expected_flags_digest=self.flags[target].digest)
                 complete = runtime_native_phase.binary_plan(plan, **arguments)
+                self.assertEqual(complete, runtime_native_phase.binary_plan(complete, **arguments))
+                self.assertEqual(runtime_native_phase.route(plan), runtime_native_phase.route(complete))
                 self.assertEqual(set(plan) | {"runtimeBinaryIdentity"}, set(complete))
                 self.assertEqual(original, canonical_json_bytes(plan))
                 self.assertEqual(plan, {key: complete[key] for key in plan})
