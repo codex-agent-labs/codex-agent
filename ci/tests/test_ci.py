@@ -643,6 +643,14 @@ class RunLaneContractTest(unittest.TestCase):
             package,
         )
         self.assertIn('python "$tool/ci/native_wrappers.py" package', package)
+        self.assertLess(package.index("python -m pip install build==1.3.0 setuptools==80.9.0 wheel==0.45.1"),
+                        package.index("test_package_only_process.py"))
+        self.assertLess(package.index("test_package_only_process.py"),
+                        package.index('python "$tool/ci/native_wrappers.py" package'))
+        self.assertEqual(2, package.count("-p test_package_only_process.py -v"))
+        self.assertLess(package.index("codex-agent-bindings/cpp/tools/tests"),
+                        package.index('python "$tool/ci/native_wrappers.py" package'))
+        self.assertNotIn("test_package_root_requirement.py", package)
         self.assertNotIn('--repository "$PWD"', package)
         self.assertIn('cp -R ci/products "$tool/ci/"', package)
         self.assertIn('test ! -e "$tool/codex-agent-runtime-desktop"', package)
