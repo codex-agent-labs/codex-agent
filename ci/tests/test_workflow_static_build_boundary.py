@@ -61,6 +61,30 @@ class WorkflowStaticBuildBoundaryTest(unittest.TestCase):
         self.assertLess(event_guards[1], execution)
         self.assertLess(remote_guards[1], execution)
 
+    def test_android_firebase_and_apple_are_guarded_before_job_creation(self):
+        for name, selector in (("android", "lane_android"),
+                               ("android-runtime-evidence", "android_evidence_required"),
+                               ("apple", "any_apple")):
+            with self.subTest(job=name):
+                match = re.search(
+                    rf"^  {re.escape(name)}:\n(?P<body>.*?)(?=^  [a-z0-9-]+:\n|\Z)",
+                    self.workflow, re.MULTILINE | re.DOTALL,
+                )
+                self.assertIsNotNone(match)
+                job = match.group("body")
+                condition = job.split("    needs:", 1)[0]
+                for guard in ("needs.plan.outputs.event_authorized == 'true'",
+                              "needs.plan.outputs.remote_build_authorized == 'true'",
+                              "needs.plan.outputs.validation_reused != 'true'",
+                              f"needs.plan.outputs.{selector} == 'true'"):
+                    self.assertIn(guard, condition)
+                self.assertLess(job.index("    if:"), job.index("    needs:"))
+                if name != "android":
+                    self.assertIn("    uses:", job)
+                    self.assertLess(job.index("    if:"), job.index("    uses:"))
+                else:
+                    self.assertLess(job.index("    if:"), job.index("setup-android@"))
+
 
 if __name__ == "__main__":
     unittest.main()
