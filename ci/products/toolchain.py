@@ -339,8 +339,14 @@ def _command(command: tuple[str, ...], root: Path) -> str:
         stderr=subprocess.STDOUT,
         text=True,
     )
-    if result.returncode:
-        raise ValueError(f"Toolchain observation command failed: {command[0]}")
+    if result.returncode and not (
+        Path(command[0]).name.lower() == "link.exe"
+        and command[1:] == ("/?",)
+        and result.returncode == 1100
+        and re.search(r"(?m)^Microsoft \(R\) Incremental Linker Version [^\n]+$", result.stdout)
+        and not re.search(r"(?i)(?:fatal error|error LNK\d+)", result.stdout)
+    ):
+        raise ValueError(f"Toolchain observation command failed ({result.returncode}): {command[0]}")
     return result.stdout.replace("\r", "")
 
 
@@ -564,7 +570,10 @@ def _supervisor_observation(
         if not linker_path.is_file():
             raise ValueError("MSVC linker is missing")
         compiler_version = _one_line(execute((str(compiler_path), "/Bv", "/?"), root), "MSVC version")
-        linker_version = _one_line(execute((str(linker_path), "/?"), root), "MSVC linker version")
+        linker_version = _match(
+            r"^Microsoft \(R\) Incremental Linker Version ([^\n]+)",
+            execute((str(linker_path), "/?"), root), "MSVC linker version",
+        )
         family = "msvc"
         target = "x86_64-pc-windows-msvc"
         platform_version = _identity(environment.get("VCToolsVersion", ""), "MSVC toolset version")

@@ -27,6 +27,7 @@ from ci.products.toolchain import (
     validate_verification_record,
     verify_capture,
     _konan_dependencies,
+    _command,
     _tree_digest,
     _supervisor_observation,
     _verification_record,
@@ -499,8 +500,28 @@ class ProductToolchainTest(unittest.TestCase):
             execute, lambda name: {"cl": str(compiler), "link": str(git_linker)}.get(name),
         )
         self.assertEqual(sha256_bytes(linker.read_bytes()), result["linkerBinarySha256"])
+        self.assertEqual("14.51.36231", result["linkerVersion"])
         self.assertIn((str(linker), "/?"), commands)
         self.assertNotIn((str(git_linker), "/?"), commands)
+
+    def test_msvc_linker_help_exit_is_narrowly_accepted(self) -> None:
+        output = "Microsoft (R) Incremental Linker Version 14.51.36231\nusage: LINK [options]\n"
+        with mock.patch("ci.products.toolchain.subprocess.run", return_value=subprocess.CompletedProcess(
+            (), 1100, output,
+        )):
+            self.assertEqual(output, _command(("C:/msvc/link.exe", "/?"), self.root))
+            with self.assertRaisesRegex(ValueError, "failed \\(1100\\)"):
+                _command(("C:/msvc/link.exe", "/help"), self.root)
+        with mock.patch("ci.products.toolchain.subprocess.run", return_value=subprocess.CompletedProcess(
+            (), 1104, output,
+        )):
+            with self.assertRaisesRegex(ValueError, "failed \\(1104\\)"):
+                _command(("C:/msvc/link.exe", "/?"), self.root)
+        with mock.patch("ci.products.toolchain.subprocess.run", return_value=subprocess.CompletedProcess(
+            (), 1100, output + "LINK : fatal error LNK1104: missing input\n",
+        )):
+            with self.assertRaisesRegex(ValueError, "failed \\(1100\\)"):
+                _command(("C:/msvc/link.exe", "/?"), self.root)
 
     def test_observer_rejects_unpinned_native_archive_before_invoking_konanc(self) -> None:
         with self.assertRaisesRegex(ValueError, "metadata lacks one exact checksum"):
