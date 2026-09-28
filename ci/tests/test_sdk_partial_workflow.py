@@ -33,7 +33,7 @@ class SdkPartialWorkflowTest(unittest.TestCase):
         self.assertLess(job.index("capture-runtime-state"), job.index("sdk_campaign_partial_catalog_caller"))
         self.assertIn("needs.sdk-completion.result == 'failure'", job)
         self.assertIn("product: sdk", job)
-        for wave in (3, 1, 2, 4, 5, 6, 7, 8, 9, 10):
+        for wave in (3, 1, 2, 19, 4, 5, 6, 7, 8, 9, 10):
             self.assertIn(f"sdk-collect-{wave}.outputs.wave_failed == 'true'", job)
         for name in ("sdk-core-binary-wave", "sdk-core-package-wave",
                      "sdk-core-validation-wave", "sdk-core-metadata-wave",
@@ -49,16 +49,17 @@ class SdkPartialWorkflowTest(unittest.TestCase):
     def test_saved_selector_forwards_only_exact_failed_original(self):
         script = re.search(r"(?ms)^          python3 - <<'PY'\n(.*?)^          PY$", self.job)
         self.assertIsNotNone(script)
-        with tempfile.TemporaryDirectory(prefix="sdk-partial-workflow-") as temporary:
-            output = Path(temporary) / "output"
-            needs = jobs(7)
-            needs.update({name: {"result": "skipped", "outputs": {}} for name in _CHILDREN})
-            with patch.dict(os.environ, {"RESULTS": json.dumps(needs),
-                                      "GITHUB_OUTPUT": str(output)}, clear=True):
-                exec(compile(textwrap.dedent(script[1]), "saved-sdk-partial-parent", "exec"), {})
-            self.assertEqual({"artifact_id": "107", "artifact_digest": "sha256:" + "a" * 64,
-                              "state_wave": "0", "sdk_state_wave": "7"},
-                             dict(line.split("=", 1) for line in output.read_text().splitlines()))
+        for wave in (19, 7):
+            with self.subTest(wave=wave), tempfile.TemporaryDirectory(prefix="sdk-partial-workflow-") as temporary:
+                output = Path(temporary) / "output"
+                needs = jobs(wave)
+                needs.update({name: {"result": "skipped", "outputs": {}} for name in _CHILDREN})
+                with patch.dict(os.environ, {"RESULTS": json.dumps(needs),
+                                          "GITHUB_OUTPUT": str(output)}, clear=True):
+                    exec(compile(textwrap.dedent(script[1]), "saved-sdk-partial-parent", "exec"), {})
+                self.assertEqual({"artifact_id": str(100 + wave), "artifact_digest": "sha256:" + "a" * 64,
+                                  "state_wave": "0", "sdk_state_wave": str(wave)},
+                                 dict(line.split("=", 1) for line in output.read_text().splitlines()))
 
     def test_saved_selector_recovers_exact_current_nested_collector(self):
         script = re.search(r"(?ms)^          python3 - <<'PY'\n(.*?)^          PY$", self.job)

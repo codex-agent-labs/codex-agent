@@ -147,6 +147,15 @@ class SdkPhase10ProtectedInputsTest(unittest.TestCase):
         self.assertEqual(self.keys_digest, sha256_bytes(canonical_json_bytes(
             regular_file_inventory(self.destination / "keys"))))
 
+    def test_csharp_binary_collection_wave_is_accepted_but_next_wave_is_not(self):
+        for wave in (18, 19):
+            with self.subTest(wave=wave):
+                document, _, _ = stage._control(canonical_json_bytes({
+                    **self.control, "sdkStateWave": wave}))
+                self.assertEqual(wave, document["sdkStateWave"])
+        with self.assertRaisesRegex(ValueError, "invalid exact SDK state wave"):
+            stage._control(canonical_json_bytes({**self.control, "sdkStateWave": 20}))
+
     def test_wrong_protected_control_source_checkout_or_plan_rejects(self):
         for changes, message in (
             ({"expected_control_sha256": sha256_bytes(b"wrong")}, "independent protected approval"),

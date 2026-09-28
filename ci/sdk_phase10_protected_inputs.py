@@ -94,7 +94,7 @@ def _control(raw):
     sdk_wave = document["sdkStateWave"]
     if (type(document["stateWave"]) is not int or document["stateWave"] != 0
             or (sdk_wave is not None and
-                (type(sdk_wave) is not int or sdk_wave not in range(1, 19)))):
+                (type(sdk_wave) is not int or sdk_wave not in range(1, 20)))):
         raise ValueError("SDK Phase-10 control has an invalid exact SDK state wave")
     original = validate_producer(document["originalProducer"])
     authority = validate_producer(document["authorityProducer"])

@@ -4927,7 +4927,7 @@ jobs:
 
   sdk-partial-catalog:
     name: sdk-partial-catalog
-    needs: [plan, contract-validation, sdk-completion, sdk-collect-3, sdk-collect-1, sdk-collect-2, sdk-collect-4, sdk-collect-5, sdk-collect-6, sdk-collect-7, sdk-collect-8, sdk-collect-9, sdk-collect-10, sdk-core-binary-wave, sdk-core-package-wave, sdk-core-validation-wave, sdk-core-metadata-wave, sdk-android-binary-result, sdk-android-package-result]
+    needs: [plan, contract-validation, sdk-completion, sdk-collect-3, sdk-collect-1, sdk-collect-2, sdk-collect-19, sdk-collect-4, sdk-collect-5, sdk-collect-6, sdk-collect-7, sdk-collect-8, sdk-collect-9, sdk-collect-10, sdk-core-binary-wave, sdk-core-package-wave, sdk-core-validation-wave, sdk-core-metadata-wave, sdk-android-binary-result, sdk-android-package-result]
     if: >-
       always() && github.event_name == 'pull_request' &&
       needs.plan.outputs.event_authorized == 'true' &&
@@ -4936,6 +4936,7 @@ jobs:
       (needs.sdk-collect-3.outputs.wave_failed == 'true' ||
        needs.sdk-collect-1.outputs.wave_failed == 'true' ||
        needs.sdk-collect-2.outputs.wave_failed == 'true' ||
+       needs.sdk-collect-19.outputs.wave_failed == 'true' ||
        needs.sdk-collect-4.outputs.wave_failed == 'true' ||
        needs.sdk-collect-5.outputs.wave_failed == 'true' ||
        needs.sdk-collect-6.outputs.wave_failed == 'true' ||
@@ -4978,7 +4979,7 @@ jobs:
           from ci.reuse import github_output
           needs = json.loads(os.environ['RESULTS'])
           top = any(needs[f'sdk-collect-{wave}']['outputs'].get('wave_failed') == 'true'
-                    for wave in (3, 1, 2, 4, 5, 6, 7, 8, 9, 10))
+                    for wave in (3, 1, 2, 19, 4, 5, 6, 7, 8, 9, 10))
           nested = any(needs[name]['result'] == 'failure' for name in (
               'sdk-core-binary-wave', 'sdk-core-package-wave', 'sdk-core-validation-wave',
               'sdk-core-metadata-wave', 'sdk-android-binary-result', 'sdk-android-package-result'))

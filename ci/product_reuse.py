@@ -5249,7 +5249,7 @@ def capture_runtime_resume_upload(
         raise ValueError("Runtime state wave must be an integer from zero through five")
     if sdk_state_wave is not None and (type(sdk_state_wave) is not int
             or sdk_state_wave not in range(1, 20) or state_wave != 0):
-        raise ValueError("SDK state wave must be one through eighteen, without a Runtime state wave")
+        raise ValueError("SDK state wave must be one through nineteen, without a Runtime state wave")
     require_sha256(artifact_sha256, "Runtime resume artifact digest")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     if destination.exists() or destination.is_symlink():

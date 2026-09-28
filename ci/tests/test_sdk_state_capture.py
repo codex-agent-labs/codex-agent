@@ -60,7 +60,7 @@ class SdkStateCaptureTest(unittest.TestCase):
             self.assertFalse(self.destination.exists())
 
     def test_invalid_or_mixed_scope_rejects_before_remote_observation(self):
-        for changes in ({"sdk_state_wave": True}, {"sdk_state_wave": 0}, {"sdk_state_wave": 19},
+        for changes in ({"sdk_state_wave": True}, {"sdk_state_wave": 0}, {"sdk_state_wave": 20},
                         {"sdk_state_wave": 1, "state_wave": 5}):
             with self.subTest(changes=changes), patch.object(product_reuse, "api_json") as query, \
                     self.assertRaisesRegex(ValueError, "SDK state wave"):
@@ -71,7 +71,7 @@ class SdkStateCaptureTest(unittest.TestCase):
             self.assertFalse(self.destination.exists())
 
     def test_additional_family_waves_require_their_exact_observed_collectors(self):
-        for wave in range(4, 19):
+        for wave in range(4, 20):
             self.job["name"] = f"product-validation / sdk-collect-{wave}"
             if wave in _COLLECTORS:
                 workflow, parent = _COLLECTORS[wave]

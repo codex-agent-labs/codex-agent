@@ -8,7 +8,7 @@ from .sdk_native_continuation import _job, _locator
 from .products.inventory import require_object
 
 
-_WAVES = (3, 1, 2, 4, 5, 6, 7, 8, 9, 10)
+_WAVES = (3, 1, 2, 19, 4, 5, 6, 7, 8, 9, 10)
 
 
 def select_failed_sdk_wave_state(needs):
