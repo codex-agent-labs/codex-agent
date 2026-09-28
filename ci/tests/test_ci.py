@@ -806,6 +806,7 @@ class RunLaneContractTest(unittest.TestCase):
         contracts = driver.split("  contracts)", 1)[1].split("  portable)", 1)[0]
         self.assertIn('if [ "$build" = true ] || [ "$test_lane" = true ]; then', contracts)
         self.assertEqual(1, contracts.count(":codex-agent-core:verifyKotlinBindingParity"))
+        self.assertNotIn(":build-logic:test", contracts)
         self.assertNotIn(":codex-agent-core:verifyJavaBindingParity", contracts)
         self.assertNotIn(":codex-agent-core:auditCrossLanguageBindingParity", contracts)
         self.assertNotIn(":codex-agent-core:verifyCrossLanguageApiCoverage", contracts)

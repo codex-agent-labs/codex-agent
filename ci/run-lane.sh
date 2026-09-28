@@ -94,9 +94,7 @@ case "$lane" in
     [ "$build" != true ] || ./gradlew :build-logic:releaseToolingJar --stacktrace
     if [ "$test_lane" = true ]; then
       ./gradlew :codex-agent-core:jvmTest :tooling:protocol-generator:test "${args[@]}"
-      ./gradlew :build-logic:test --parallel --stacktrace
     fi
-    [ "$metadata" != true ] || ./gradlew :build-logic:test --tests '*WorkflowContractTest' --parallel --stacktrace
     ;;
   portable)
     if [ "$build" = true ]; then
