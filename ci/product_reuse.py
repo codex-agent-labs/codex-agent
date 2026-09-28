@@ -14,9 +14,14 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any, Mapping
+
+if __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 
 from impact import validate_legacy_lane_projection, validate_remote_build_authorization
