@@ -62,6 +62,19 @@ class AndroidOriginalControlTest(unittest.TestCase):
             self.compose(outputs={**self.outputs,
                                   "validationReceiptSha256": "sha256:" + "z" * 64})
 
+    def test_retained_original_preserves_older_producer_without_weakening_fresh(self):
+        older = {**self.outputs, "validationRunId": 19, "validationRunAttempt": 1}
+        with self.assertRaisesRegex(ValueError, "selected campaign attempt"):
+            self.compose(outputs=older)
+        retained = compose(self.base, older, expected_run_id=29,
+                           expected_run_attempt=2, repository_root=self.repository,
+                           original_mode="retained")
+        self.assertEqual((19, 1), (retained["expectedOriginalRunId"],
+                                   retained["expectedOriginalRunAttempt"]))
+        with self.assertRaisesRegex(ValueError, "mode"):
+            compose(self.base, older, expected_run_id=29, expected_run_attempt=2,
+                    repository_root=self.repository, original_mode="unknown")
+
     def test_source_not_reconstructed_from_worker_or_retained_state(self):
         with self.assertRaises(ValueError):
             self.compose(base={**self.base, "packageReceipt": "relative/receipt.json"})

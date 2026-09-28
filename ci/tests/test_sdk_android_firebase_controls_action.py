@@ -56,6 +56,7 @@ class AndroidFirebaseControlsActionTest(unittest.TestCase):
             "VALIDATION_ARTIFACT_ID": "17",
             "VALIDATION_ARTIFACT_SHA256": "sha256:" + "e" * 64,
             "VALIDATION_RUN_ID": "29", "VALIDATION_RUN_ATTEMPT": "2",
+            "VALIDATION_ORIGINAL_MODE": "fresh",
             "GITHUB_RUN_ID": "29", "GITHUB_RUN_ATTEMPT": "2",
             "GITHUB_OUTPUT": str(output),
         }
@@ -103,6 +104,16 @@ class AndroidFirebaseControlsActionTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "authority must be outside"):
                 self.execute({**environment, "BASE_POLICY_SHA256": sha256_bytes(raw)})
             self.assertFalse(output.exists())
+
+    def test_retained_original_keeps_older_run_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            environment, _, _, output = self.fixture(Path(temporary).resolve())
+            self.execute({**environment, "VALIDATION_ORIGINAL_MODE": "retained",
+                          "VALIDATION_RUN_ID": "19", "VALIDATION_RUN_ATTEMPT": "1"})
+            control = Path(output.read_text().split("=", 1)[1].strip())
+            value = load_canonical_json_bytes(control.read_bytes())
+            self.assertEqual((19, 1), (value["expectedOriginalRunId"],
+                                       value["expectedOriginalRunAttempt"]))
 
     def test_does_not_treat_worker_upload_as_firebase_or_release_authority(self):
         for expected in ("base-policy-sha256:", "validation-artifact-id:",

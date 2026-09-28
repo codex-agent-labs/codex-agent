@@ -1,8 +1,10 @@
-"""Compose fresh Android metadata control from independent caller policy.
+"""Compose Android metadata control from independent caller policy.
 
-The successful validation worker outputs are locator/equality constraints, not
+The verified validation handoff outputs are locator/equality constraints, not
 authority over the Contract, S858, tooling, source, or original Firebase work.
-Those remain caller-owned and are replayed by the metadata reader.
+Those remain caller-owned and are replayed by the metadata reader. Retained
+mode permits an older producer run only; the reader still authenticates its
+exact receipt, official upload, and original Firebase evidence.
 """
 
 import argparse
@@ -35,7 +37,7 @@ _OID = re.compile(r"[0-9a-f]{40}")
 
 
 def compose(base, validation, *, expected_run_id, expected_run_attempt,
-            repository_root):
+            repository_root, original_mode="fresh"):
     """Return exact metadata original policy, never selecting inputs from state."""
     require_no_signing_secret(os.environ)
     repository = Path(repository_root).resolve(strict=True)
@@ -51,10 +53,13 @@ def compose(base, validation, *, expected_run_id, expected_run_attempt,
         require_sha256(validation[name], f"Successful Android {name}")
     for name in ("validationArtifactId", "validationRunId", "validationRunAttempt"):
         require_integer(validation[name], f"Successful Android {name}", 1)
-    if (validation["validationRunId"] != require_integer(
-            expected_run_id, "Current Android run ID", 1)
-            or validation["validationRunAttempt"] != require_integer(
-                expected_run_attempt, "Current Android run attempt", 1)):
+    if original_mode not in ("fresh", "retained"):
+        raise ValueError("Android validation original mode is invalid")
+    current_run_id = require_integer(expected_run_id, "Current Android run ID", 1)
+    current_attempt = require_integer(expected_run_attempt, "Current Android run attempt", 1)
+    if (original_mode == "fresh" and
+            (validation["validationRunId"] != current_run_id
+             or validation["validationRunAttempt"] != current_attempt)):
         raise ValueError("Android validation outputs differ from the selected campaign attempt")
     if base["toolingTrustDomain"] not in ("development", "release"):
         raise ValueError("Android original tooling trust domain is invalid")
@@ -103,6 +108,8 @@ def main(argv=None):
     parser.add_argument("--base-policy", type=Path, required=True)
     parser.add_argument("--destination", type=Path, required=True)
     parser.add_argument("--repository-root", type=Path, required=True)
+    parser.add_argument("--validation-original-mode", choices=("fresh", "retained"),
+                        default="fresh")
     for name in ("validation-receipt-sha256", "validation-artifact-id",
                  "validation-artifact-sha256", "validation-run-id",
                  "validation-run-attempt", "expected-run-id", "expected-run-attempt"):
@@ -123,7 +130,8 @@ def main(argv=None):
         }
         value = compose(base, validation, expected_run_id=int(args.expected_run_id),
                         expected_run_attempt=int(args.expected_run_attempt),
-                        repository_root=repository)
+                        repository_root=repository,
+                        original_mode=args.validation_original_mode)
         destination = Path(args.destination).absolute()
         if destination.exists() or destination.is_symlink() or destination.resolve(strict=False) != destination:
             raise ValueError("Android original control destination must be fresh and non-symbolic")

@@ -1,4 +1,4 @@
-"""Wave 18 reuses caller-authenticated wave 16 inputs and refuses missing Firebase authority."""
+"""Wave 18 reuses authenticated waves 16–17 and refuses missing Firebase authority."""
 
 from pathlib import Path
 import json
@@ -50,13 +50,9 @@ class AndroidMetadataChildWorkflowTest(unittest.TestCase):
         for required in ("remote_build_authorized == 'true'",
                          "inputs.protectedAndroidAuthority != ''",
                          "outputs.sdk_state_wave == '16'",
-                         "outputs.sdk_state_wave == '17'",
-                         "validation_receipt_sha256 != ''",
-                         "validation_artifact_id != ''",
-                         "validation_artifact_sha256 != ''",
-                         "validation_run_id != ''",
-                         "validation_run_attempt != ''"):
+                         "outputs.sdk_state_wave == '17'"):
             self.assertIn(required, worker)
+        self.assertNotIn("validation_receipt_sha256 != ''", worker.split("    strategy:", 1)[0])
         self.assertLess(worker.index("- id: authority"), worker.index("android-actions/setup-android"))
         self.assertLess(worker.index("- id: authority"), worker.index("sdk-android-metadata-worker"))
 
@@ -68,17 +64,29 @@ class AndroidMetadataChildWorkflowTest(unittest.TestCase):
                          "--sdk-inputs-artifact-id \"$SDK_INPUTS_ID\"",
                          "build/runtime-input-wave17",
                          "--family android-metadata",
+                         "ci.sdk_android_validation_handoff",
                          "sdk-android-firebase-controls",
                          "sdk-android-original-selection",
                          "sdk-android-metadata-worker"):
             self.assertIn(required, worker)
         ordered = ("- id: authority", "- id: package-state", "- id: policy",
-                   "- id: base", "- id: validation-state", "- id: control",
+                   "- id: base", "- id: validation-state", "- id: validation-handoff", "- id: control",
                    "- id: original", "- id: metadata")
         self.assertEqual(list(sorted(ordered, key=worker.index)), list(ordered))
         self.assertIn("mv build/runtime-input build/runtime-input-wave16", worker)
         self.assertIn("--expected-build-key \"$build_key\"", worker)
         self.assertNotIn("validation_build_key", worker)
+        handoff = worker.split("      - id: validation-handoff\n", 1)[1].split("      - id: control\n", 1)[0]
+        self.assertIn('test "$present" -eq 0 || test "$present" -eq 5', handoff)
+        self.assertIn('--expected-metadata-build-key "${{ matrix.buildKey }}"', handoff)
+        self.assertIn('--trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA"', handoff)
+        self.assertIn('--github-output "$GITHUB_OUTPUT"', handoff)
+        control = worker.split("      - id: control\n", 1)[1].split("      - id: original\n", 1)[0]
+        for name in ("validation-receipt-sha256", "validation-artifact-id",
+                     "validation-artifact-sha256", "validation-run-id",
+                     "validation-run-attempt", "validation-original-mode"):
+            self.assertIn("steps.validation-handoff.outputs." + name, control)
+        self.assertNotIn("fromJSON(inputs.validationWave).outputs.validation_", control)
 
     def test_collection_and_final_gate_cannot_upgrade_missing_authority(self):
         source = WORKFLOW.read_text()

@@ -1,5 +1,5 @@
 name: Prepare caller Android/Firebase original control
-description: Bind independently pinned original policy to successful current-run Android validation outputs; official replay happens later.
+description: Bind independently pinned original policy to a verified fresh or retained Android validation handoff; official replay happens later.
 inputs:
   base-policy:
     required: true
@@ -28,6 +28,9 @@ inputs:
   validation-run-attempt:
     required: true
     description: Successful validation worker producer run attempt.
+  validation-original-mode:
+    required: true
+    description: Verified handoff mode; retained permits an older original producer run.
 outputs:
   original-control:
     description: Fresh job-local control path; the official original reader must still authenticate it.
@@ -48,6 +51,7 @@ runs:
         VALIDATION_ARTIFACT_SHA256: ${{ inputs.validation-artifact-sha256 }}
         VALIDATION_RUN_ID: ${{ inputs.validation-run-id }}
         VALIDATION_RUN_ATTEMPT: ${{ inputs.validation-run-attempt }}
+        VALIDATION_ORIGINAL_MODE: ${{ inputs.validation-original-mode }}
       run: |
         python3 -B - <<'PY'
         import os
@@ -95,7 +99,8 @@ runs:
                 ('validation-run-attempt', 'VALIDATION_RUN_ATTEMPT')):
             arguments.extend(('--' + flag, os.environ[environment]))
         arguments.extend(('--expected-run-id', os.environ['GITHUB_RUN_ID'],
-                          '--expected-run-attempt', os.environ['GITHUB_RUN_ATTEMPT']))
+                          '--expected-run-attempt', os.environ['GITHUB_RUN_ATTEMPT'],
+                          '--validation-original-mode', os.environ['VALIDATION_ORIGINAL_MODE']))
         compose_control(arguments)
         if read_regular_file_bytes(source, reject_symlink_parents=True) != raw:
             raise ValueError('Android base policy changed during original control creation')

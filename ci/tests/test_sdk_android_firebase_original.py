@@ -134,6 +134,7 @@ class OriginalAndroidFirebaseValidationTest(unittest.TestCase):
                 return held
 
     def test_exact_official_nested_artifacts_are_held_with_full_reader(self):
+        self.expected_route = original._CHILD_ROUTES["validation"]
         value = self.call()
         self.assertEqual(self.producer, value["receipt"]["producer"])
         self.assertEqual(["reader-enter", "official-final", "official-protected",

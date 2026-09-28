@@ -20,7 +20,12 @@ class AndroidOriginalUploadLocatorTest(unittest.TestCase):
     phase = "validation"
     targets = ("android",)
     required_directories = ("inputs", "originals", "stage")
-    setUp = facade_fixture.FacadeCaptureTest.setUp
+    def setUp(self):
+        facade_fixture.FacadeCaptureTest.setUp(self)
+        workflow, job = locator._CHILD_ROUTES[self.phase]
+        self.jobs[0]["name"] = job
+        self.run["referenced_workflows"][0]["path"] = (
+            f"codex-agent-labs/codex-agent/{workflow}@{self.pin}")
     select = facade_fixture.FacadeCaptureTest.select
     archive = transport_fixture.RuntimeAggregateUploadTest.archive
     api = transport_fixture.RuntimeAggregateUploadTest.api
@@ -59,6 +64,16 @@ class AndroidOriginalUploadLocatorTest(unittest.TestCase):
         self.assertTrue(any("/actions/artifacts/701" in url for url in requested))
         self.assertFalse(any(url.endswith("/zip") for url in requested))
 
+    def test_observer_receives_exact_child_workflow_and_nested_job(self):
+        observer = locator.products._observe_ci_producer_jobs
+        with patch.object(locator.products, "_observe_ci_producer_jobs", wraps=observer) as observed:
+            self.call()
+        workflow, job = locator._CHILD_ROUTES[self.phase]
+        self.assertEqual({"android-" + self.phase: job}, observed.call_args.kwargs["jobs_by_phase"])
+        self.assertEqual({"android-" + self.phase: {"path": workflow, "sha": self.pin}},
+                         observed.call_args.kwargs["trusted_workflows_by_phase"])
+        self.assertNotIn("trusted_workflow_sha", observed.call_args.kwargs)
+
     def test_receipt_pin_phase_plan_and_signing_secret_fail_before_official_lookup(self):
         with self.assertRaisesRegex(ValueError, "independent caller selection"):
             self.call(expected_receipt_sha256="sha256:" + "0" * 64)
@@ -88,7 +103,7 @@ class AndroidOriginalUploadLocatorTest(unittest.TestCase):
 
     def test_job_runner_detail_window_and_ambiguity_fail_closed(self):
         original = deepcopy((self.jobs, self.artifact, self.run))
-        for case in ("runner", "job", "name", "expired", "run", "window", "detail", "workflow"):
+        for case in ("runner", "job", "name", "expired", "run", "window", "detail", "workflow", "workflow-path"):
             self.jobs, self.artifact, self.run = deepcopy(original)
             if case == "runner": self.jobs[0]["labels"] = ["wrong-runner"]
             elif case == "job": self.jobs[0]["conclusion"] = "failure"
@@ -97,7 +112,9 @@ class AndroidOriginalUploadLocatorTest(unittest.TestCase):
             elif case == "run": self.artifact["workflow_run"]["id"] = 99
             elif case == "window": self.artifact["created_at"] = "2026-09-11T10:30:01Z"
             elif case == "detail": self.artifact["archive_download_url"] += "-other"
-            else: self.run["referenced_workflows"][0]["sha"] = "0" * 40
+            elif case == "workflow": self.run["referenced_workflows"][0]["sha"] = "0" * 40
+            else: self.run["referenced_workflows"][0]["path"] = (
+                f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{self.pin}")
             with self.subTest(case=case), self.assertRaises(ValueError):
                 self.call()
         self.jobs, self.artifact, self.run = deepcopy(original)
@@ -107,13 +124,20 @@ class AndroidOriginalUploadLocatorTest(unittest.TestCase):
             self.call(detail={**self.artifact, "digest": "sha256:" + "0" * 64})
 
     def test_retained_locator_requires_selected_receipt_and_intact_carrier(self):
+        workflow, job = locator._CHILD_ROUTES[self.phase]
+        if self.phase == "metadata":
+            self.jobs[0]["name"] = facade._capture_route(self.receipt)[3]
+            self.run["referenced_workflows"][0]["path"] = (
+                f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{self.pin}")
         with patch.object(facade.products, "_validate_plan", return_value=self.plan), patch(
                 "reuse.api_request", side_effect=self.api):
             getattr(facade, f"capture_sdk_android_{self.phase}_upload")(
                 self.plan_path, self.output, **{self.phase + "_receipt_path": self.receipt_path},
                 artifact_id=701, artifact_sha256=self.artifact["digest"],
                 trusted_workflow_sha=self.pin, repository_root=self.root,
-                environ={}, token="synthetic-token")
+                environ={}, token="synthetic-token",
+                **({"trusted_workflow_path": workflow, "trusted_job_name": job}
+                   if self.phase == "validation" else {}))
         selected = sha256_bytes(self.receipt_bytes)
         authenticated = regular_file_inventory(self.output, allow_empty=True)
         self.assertEqual({"artifact_id": 701, "artifact_sha256": self.artifact["digest"]},

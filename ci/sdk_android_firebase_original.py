@@ -21,6 +21,7 @@ if __package__:
     from .sdk_android_evidence_capture import capture_android_evidence
     from .sdk_android_firebase_capture import capture_android_firebase_evidence
     from .sdk_android_original_validation import verified_original_android_validation
+    from .sdk_android_original_upload_locator import _CHILD_ROUTES
 else:
     from products.inventory import (
         canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
@@ -31,6 +32,7 @@ else:
     from sdk_android_evidence_capture import capture_android_evidence
     from sdk_android_firebase_capture import capture_android_firebase_evidence
     from sdk_android_original_validation import verified_original_android_validation
+    from sdk_android_original_upload_locator import _CHILD_ROUTES
 
 
 _OID = re.compile(r"[0-9a-f]{40}")
@@ -93,6 +95,8 @@ def verified_original_android_firebase_validation(
     require_no_signing_secret(environ)
     if (trusted_workflow_path is None) != (trusted_job_name is None):
         raise ValueError("Original Android validation workflow path and job must be pinned together")
+    if trusted_workflow_path is None:
+        trusted_workflow_path, trusted_job_name = _CHILD_ROUTES["validation"]
     pins = (trusted_workflow_sha, trusted_android_workflow_sha,
             trusted_source_commit, trusted_source_tree)
     if any(type(value) is not str or _OID.fullmatch(value) is None for value in pins):

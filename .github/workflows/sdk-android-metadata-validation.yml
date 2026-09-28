@@ -54,11 +54,6 @@ jobs:
       fromJSON(inputs.packageWave).outputs.sdk_state_wave == '16' &&
       fromJSON(inputs.validationWave).result == 'success' &&
       fromJSON(inputs.validationWave).outputs.sdk_state_wave == '17' &&
-      fromJSON(inputs.validationWave).outputs.validation_receipt_sha256 != '' &&
-      fromJSON(inputs.validationWave).outputs.validation_artifact_id != '' &&
-      fromJSON(inputs.validationWave).outputs.validation_artifact_sha256 != '' &&
-      fromJSON(inputs.validationWave).outputs.validation_run_id != '' &&
-      fromJSON(inputs.validationWave).outputs.validation_run_attempt != '' &&
       fromJSON(inputs.metadataPlan).result == 'success' &&
       fromJSON(inputs.metadataPlan).outputs.sdk_workers_required == 'true' &&
       inputs.protectedAndroidAuthority != ''
@@ -249,6 +244,43 @@ jobs:
             --family android-metadata --sdk-validation-tooling "$SDK_TOOLING" \
             --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
             ${policy[@]+"${policy[@]}"}
+      - id: validation-handoff
+        name: Recover the elected original Android validation upload
+        shell: bash
+        env:
+          FRESH_RECEIPT: ${{ fromJSON(inputs.validationWave).outputs.validation_receipt_sha256 }}
+          FRESH_ARTIFACT_ID: ${{ fromJSON(inputs.validationWave).outputs.validation_artifact_id }}
+          FRESH_ARTIFACT_SHA256: ${{ fromJSON(inputs.validationWave).outputs.validation_artifact_sha256 }}
+          FRESH_RUN_ID: ${{ fromJSON(inputs.validationWave).outputs.validation_run_id }}
+          FRESH_RUN_ATTEMPT: ${{ fromJSON(inputs.validationWave).outputs.validation_run_attempt }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          SDK_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
+          APPLE_POLICY: ${{ steps.tooling.outputs.apple-policy }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fresh=("$FRESH_RECEIPT" "$FRESH_ARTIFACT_ID" "$FRESH_ARTIFACT_SHA256" "$FRESH_RUN_ID" "$FRESH_RUN_ATTEMPT")
+          present=0
+          for value in "${fresh[@]}"; do if [ -n "$value" ]; then present=$((present + 1)); fi; done
+          test "$present" -eq 0 || test "$present" -eq 5
+          selected=()
+          if [ "$present" -eq 5 ]; then
+            selected+=(--expected-validation-receipt-sha256 "$FRESH_RECEIPT"
+              --expected-validation-artifact-id "$FRESH_ARTIFACT_ID"
+              --expected-validation-artifact-sha256 "$FRESH_ARTIFACT_SHA256"
+              --expected-validation-run-id "$FRESH_RUN_ID"
+              --expected-validation-run-attempt "$FRESH_RUN_ATTEMPT")
+          fi
+          if [ -n "$APPLE_POLICY" ]; then selected+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
+          python3 -B -m ci.sdk_android_validation_handoff \
+            --plan "${{ steps.validation-state.outputs.plan_path }}" \
+            --discovery-root "${{ steps.validation-state.outputs.discovery_root }}" \
+            --state-root "${{ steps.validation-state.outputs.state_root }}" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --expected-metadata-build-key "${{ matrix.buildKey }}" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --sdk-validation-tooling "$SDK_TOOLING" \
+            --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"}
       - id: control
         uses: ./.github/actions/sdk-android-firebase-controls
         with:
@@ -256,11 +288,12 @@ jobs:
           base-policy-sha256: ${{ steps.base.outputs.sha256 }}
           discovery-root: ${{ steps.validation-state.outputs.discovery_root }}
           state-root: ${{ steps.validation-state.outputs.state_root }}
-          validation-receipt-sha256: ${{ fromJSON(inputs.validationWave).outputs.validation_receipt_sha256 }}
-          validation-artifact-id: ${{ fromJSON(inputs.validationWave).outputs.validation_artifact_id }}
-          validation-artifact-sha256: ${{ fromJSON(inputs.validationWave).outputs.validation_artifact_sha256 }}
-          validation-run-id: ${{ fromJSON(inputs.validationWave).outputs.validation_run_id }}
-          validation-run-attempt: ${{ fromJSON(inputs.validationWave).outputs.validation_run_attempt }}
+          validation-receipt-sha256: ${{ steps.validation-handoff.outputs.validation-receipt-sha256 }}
+          validation-artifact-id: ${{ steps.validation-handoff.outputs.validation-artifact-id }}
+          validation-artifact-sha256: ${{ steps.validation-handoff.outputs.validation-artifact-sha256 }}
+          validation-run-id: ${{ steps.validation-handoff.outputs.validation-run-id }}
+          validation-run-attempt: ${{ steps.validation-handoff.outputs.validation-run-attempt }}
+          validation-original-mode: ${{ steps.validation-handoff.outputs.validation-original-mode }}
       - id: original
         uses: ./.github/actions/sdk-android-original-selection
         with:

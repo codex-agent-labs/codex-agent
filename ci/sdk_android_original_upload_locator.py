@@ -24,6 +24,12 @@ from sdk_facade_capture import _capture_route, verify_retained_sdk_phase_upload
 
 _LIMIT = 16 * 1024 * 1024
 _REPOSITORY = "codex-agent-labs/codex-agent"
+_CHILD_ROUTES = {
+    "validation": (".github/workflows/sdk-android-validation.yml",
+                   "product-validation / sdk-android-validation-result / sdk-android-validation-android"),
+    "metadata": (".github/workflows/sdk-android-metadata-validation.yml",
+                 "product-validation / sdk-android-metadata-result / sdk-android-metadata-android"),
+}
 
 
 def locate_sdk_android_validation_upload(plan_path, validation_receipt_path, *,
@@ -103,7 +109,8 @@ def _locate_sdk_android_upload(plan_path, receipt_path, *, phase,
         raise ValueError(f"Android {phase} receipt differs from independent caller selection")
     receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
     family = f"android-{phase}"
-    _, runner, _, job, name, _ = _capture_route(receipt, family=family)
+    _, runner, _, _, name, _ = _capture_route(receipt, family=family)
+    workflow_path, job = _CHILD_ROUTES[phase]
     producer = validate_producer(receipt["producer"], f"Original Android {phase} producer")
     if producer["repository"] != _REPOSITORY:
         raise ValueError("Android original producer differs from the fixed repository")
@@ -128,7 +135,8 @@ def _locate_sdk_android_upload(plan_path, receipt_path, *, phase,
         unchanged()
         observation = products._observe_ci_producer_jobs(
             {family: producer}, jobs_by_phase={family: job},
-            trusted_workflow_sha=trusted_workflow_sha, token=token)[0]
+            trusted_workflows_by_phase={family: {
+                "path": workflow_path, "sha": trusted_workflow_sha}}, token=token)[0]
         jobs = [value for value in observation["jobs"] if value.get("name") == job]
         if len(jobs) != 1:
             raise ValueError("Android original worker job is missing or ambiguous")
