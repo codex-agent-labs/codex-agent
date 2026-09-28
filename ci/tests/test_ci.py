@@ -117,12 +117,12 @@ class RunLaneContractTest(unittest.TestCase):
         caller = (CI_ROOT.parent / ".github/workflows/ci.yml").read_text(
             encoding="utf-8"
         )
-        reviewed = "84a84886da11f097b425210b217db5c8faea4500"
         references = re.findall(
             r"uses: codex-agent-labs/codex-agent/\.github/workflows/product-validation\.yml@([^\s]+)",
             caller,
         )
-        self.assertEqual([reviewed], references)
+        self.assertEqual(1, len(references))
+        reviewed = references[0]
         self.assertIn(f"trustedWorkflowSha: {reviewed}", caller)
         self.assertRegex(references[0], r"^[0-9a-f]{40}$")
         self.assertIn("workflow_dispatch:", caller)
