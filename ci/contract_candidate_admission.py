@@ -203,6 +203,13 @@ def admit_contract_candidate(selection: dict, trusted_repository: Path,
         )
         if trust is None:
             raise ValueError("Contract candidate has no source-pinned release trust")
+        landed_trust = transport._release_trust(
+            Path(landed_repository), "HEAD", root / "landed-policy",
+        )
+        if (landed_trust is None or
+                regular_file_inventory(trust.keyring.parent) !=
+                regular_file_inventory(landed_trust.keyring.parent)):
+            raise ValueError("Contract candidate landed keyring differs from Phase-10 trust")
         index, _ = verify_release_product_index(
             SignedProductIndex(extracted / "product-index.json", extracted / "product-index.sig"),
             keyring_path=trust.keyring, keys_directory=trust.keys,

@@ -205,13 +205,24 @@ class ContractCandidateAdmissionTest(unittest.TestCase):
             def forward(_source, destination, **_kwargs):
                 destination.mkdir()
                 return {"product": "contract"}
-            fake_trust = type("Trust", (), {"keyring": root / "keyring", "keys": root / "keys"})()
+            policies = {}
+            for name in ("source", "landed"):
+                policy = root / f"{name}-policy"
+                (policy / "keys").mkdir(parents=True)
+                (policy / "product-signing-keys.json").write_bytes(b"keyring\n")
+                (policy / "keys/key.pub").write_bytes(b"public key\n")
+                policies[name] = type("Trust", (), {
+                    "keyring": policy / "product-signing-keys.json",
+                    "keys": policy / "keys",
+                })()
+            def trust(repository, _revision, _destination):
+                return policies["source" if repository == root / "trusted" else "landed"]
             with patch.object(candidate, "_observe_catalog", return_value={"run": {}}), \
                  patch.object(candidate.transport, "_observe_ci_producer_jobs",
                               return_value=[{"run": {}, "jobs": []}]) as plan_observer, \
                  patch.object(candidate.transport, "_download_contract_ci_upload", side_effect=download), \
                  patch.object(candidate.transport, "_require_artifact_job_window"), \
-                 patch.object(candidate.transport, "_release_trust", return_value=fake_trust), \
+                 patch.object(candidate.transport, "_release_trust", side_effect=trust), \
                  patch.object(candidate, "verify_release_product_index", return_value=(index, b"index\n")), \
                  patch.object(candidate.transport, "stage_release_catalog"), \
                  patch.object(candidate, "capture_reusable_contract_phase10_output", side_effect=capture), \
@@ -242,6 +253,12 @@ class ContractCandidateAdmissionTest(unittest.TestCase):
                         selected, root / "trusted", root / "validation",
                         root / "landed", root / "switched", token="token", environ={})
                 self.assertFalse((root / "switched").exists())
+                (root / "landed-policy/keys/key.pub").write_bytes(b"different public key\n")
+                with self.assertRaisesRegex(ValueError, "landed keyring differs"):
+                    candidate.admit_contract_candidate(
+                        selected, root / "trusted", root / "validation",
+                        root / "landed", root / "wrong-landed-policy", token="token", environ={})
+                self.assertFalse((root / "wrong-landed-policy").exists())
 
 
 @unittest.skipUnless(shutil.which("gpg") and shutil.which("ssh-keygen"),
@@ -358,6 +375,7 @@ class ContractCandidateSignedChainTest(unittest.TestCase):
         plan["validationTree"] = fixture.producer["tree"]
         plan["headCommit"] = fixture.producer["commit"]
         validation_checkout = Path(__file__).resolve().parents[2]
+        landed_checkout = fixture.repository_root
         lanes, full, unknown = impact._legacy_lane_states(
             validation_checkout, plan["changedPaths"], force_full=plan["fullRequested"],
             remote_authorized=True,
@@ -412,7 +430,7 @@ class ContractCandidateSignedChainTest(unittest.TestCase):
                    return_value=fixture.producer["tree"]):
             accepted = candidate.admit_contract_candidate(
                 selected, fixture.repository_root, validation_checkout,
-                validation_checkout, destination, token="fixture-token", environ={})
+                landed_checkout, destination, token="fixture-token", environ={})
             self.assertEqual(pins["expected_payload_sha256"], accepted["candidate"]["payloadSha256"])
             self.assertEqual(regular_file_inventory(phase10.destination),
                              regular_file_inventory(destination))
@@ -423,7 +441,7 @@ class ContractCandidateSignedChainTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "independent S1048 pins"):
                 candidate.admit_contract_candidate(
                     altered, fixture.repository_root, validation_checkout,
-                    validation_checkout, root / "tampered-index", token="fixture-token", environ={})
+                    landed_checkout, root / "tampered-index", token="fixture-token", environ={})
             self.assertFalse((root / "tampered-index").exists())
             tampered_catalog = root / "tampered-catalog"
             shutil.copytree(catalog, tampered_catalog)
@@ -434,7 +452,7 @@ class ContractCandidateSignedChainTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "independent S1048 pins"):
                 candidate.admit_contract_candidate(
                     selected, fixture.repository_root, validation_checkout,
-                    validation_checkout, root / "tampered-upload", token="fixture-token", environ={})
+                    landed_checkout, root / "tampered-upload", token="fixture-token", environ={})
             self.assertFalse((root / "tampered-upload").exists())
             archives[30] = original_catalog_archive
             tampered_plan = root / "tampered-plan"
@@ -444,7 +462,7 @@ class ContractCandidateSignedChainTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "original plan differs from independent S1048 pin"):
                 candidate.admit_contract_candidate(
                     selected, fixture.repository_root, validation_checkout,
-                    validation_checkout, root / "tampered-plan-candidate",
+                    landed_checkout, root / "tampered-plan-candidate",
                     token="fixture-token", environ={})
             self.assertFalse((root / "tampered-plan-candidate").exists())
 
