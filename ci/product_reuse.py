@@ -93,6 +93,7 @@ from products.runtime_evidence import (
 )
 from products.restore import (
     OBJECT_ZIP_LIMITS,
+    PHASE_PLAN_KEYS,
     PHASE_RECEIPT_NAME,
     PHASE_SHARD_KEYS,
     PHASE_SHARD_NAME,
@@ -4332,7 +4333,7 @@ def execute_runtime_phase(
     if input_inventory != regular_file_inventory(destination / "inputs", allow_empty=True):
         raise ValueError("Runtime worker inputs changed during execution")
     return finalize_phase_object(
-        stage_root=stage, phase_plan=ready, producer=state.producer,
+        stage_root=stage, phase_plan={key: ready[key] for key in PHASE_PLAN_KEYS}, producer=state.producer,
         product_version=state.expected_fixed["versions"]["runtime-release"],
         trust_domain="development" if state.plan["event"] == "pull_request" else "release",
         destination=destination / "shard")
