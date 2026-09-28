@@ -28,6 +28,7 @@ class RuntimeToolchainCaptureDispatchTest(unittest.TestCase):
                       CAPTURE.read_text(encoding="utf-8"))
         self.assertIn("GIT_CONFIG_KEY_0: core.autocrlf", CAPTURE.read_text(encoding="utf-8"))
         self.assertIn("GIT_CONFIG_VALUE_0: 'false'", CAPTURE.read_text(encoding="utf-8"))
+        self.assertEqual(2, CAPTURE.read_text(encoding="utf-8").count("retention-days: 30"))
         self.assertIn('test -z "$(git status --porcelain --untracked-files=no)"',
                       CAPTURE.read_text(encoding="utf-8"))
         self.assertIn("  workflow_call:\n", CAPTURE.read_text(encoding="utf-8"))
