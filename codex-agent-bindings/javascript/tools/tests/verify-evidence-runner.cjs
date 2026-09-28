@@ -207,6 +207,19 @@ test('selected npm archive is checked before any compiler or SDK test process', 
   fs.rmSync(path.join(installed, 'index.mjs'));
   fs.symlinkSync(path.join(source, 'index.mjs'), path.join(installed, 'index.mjs'));
   assert.throws(() => verifySelectedPackage(root, archive), /not a regular file/);
+  fs.rmSync(path.join(installed, 'index.mjs'));
+  fs.writeFileSync(path.join(installed, 'index.mjs'), members['index.mjs']);
+  const namespace = path.dirname(installed);
+  const moved = path.join(root, 'moved-namespace');
+  fs.renameSync(namespace, moved);
+  fs.symlinkSync(moved, namespace, 'dir');
+  assert.throws(() => verifySelectedPackage(root, archive), /Installed npm directory is not real/);
+  fs.rmSync(namespace);
+  fs.renameSync(moved, namespace);
+  const modules = path.join(root, 'node_modules');
+  fs.renameSync(modules, moved);
+  fs.symlinkSync(moved, modules, 'dir');
+  assert.throws(() => verifySelectedPackage(root, archive), /Installed npm directory is not real/);
 });
 
 test('selected npm archive rejects a symlink member even when installed bytes match', async (context) => {

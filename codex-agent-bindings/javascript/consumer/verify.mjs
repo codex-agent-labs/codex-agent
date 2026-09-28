@@ -87,6 +87,12 @@ function verifySnapshot(cwd, archive, useVerified) {
       }
     }
   }
+  for (const directory of [path.join(cwd, 'node_modules'), path.dirname(packageRoot)]) {
+    const stat = fs.lstatSync(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error(`Installed npm directory is not real: ${directory}`);
+    }
+  }
   visit(packageRoot);
   if (installed.sort().join('\n') !== expected.sort().join('\n')) {
     throw new Error('Installed npm inventory differs from the selected archive');
