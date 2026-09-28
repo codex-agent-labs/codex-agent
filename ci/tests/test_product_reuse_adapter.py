@@ -372,6 +372,19 @@ class PriorFailedPrAttemptTest(unittest.TestCase):
                 self.plan, self.producer, "token", required_artifact_prefixes=(prefix,)))
         self.assertEqual(3, listing.call_count)
 
+    def test_native_recovery_treats_different_workflow_pin_as_cache_miss(self):
+        prior = {**self.run, "referenced_workflows": [{
+            "path": "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@" + "a" * 40,
+            "sha": "a" * 40,
+        }]}
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(product_reuse, "_prior_failed_pr_attempt", return_value=prior), \
+                mock.patch.object(product_reuse, "paginated_items") as artifacts:
+            self.assertEqual({}, product_reuse.capture_prior_failed_runtime_prefixes(
+                self.plan, self.producer, ("macos-x64",), Path(temporary) / "capture",
+                trusted_workflow_sha="b" * 40, token="token"))
+        artifacts.assert_not_called()
+
     def test_skips_nonfailed_or_other_pr_and_fails_closed_on_mismatched_exact_attempt(self):
         with mock.patch.object(product_reuse, "paginated_items", return_value=[
             {**self.run, "conclusion": "success"},

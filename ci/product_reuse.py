@@ -1009,6 +1009,14 @@ def capture_prior_failed_runtime_prefixes(
     prior = _prior_failed_pr_attempt(plan, producer, token, required_artifact_prefixes=prefixes)
     if prior is None:
         return {}
+    try:
+        _require_ci_workflow_reference(
+            prior,
+            f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{trusted_workflow_sha}",
+            trusted_workflow_sha,
+        )
+    except ValueError:
+        return {}  # A different reviewed workflow source is a cache miss, not original CI evidence.
     run_id = prior["id"]
     attempt = prior["run_attempt"]
     artifacts = paginated_items(
