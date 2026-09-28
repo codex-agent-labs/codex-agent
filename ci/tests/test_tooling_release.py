@@ -220,7 +220,7 @@ class ToolingReleaseTest(unittest.TestCase):
         self.run["referenced_workflows"] = [{
             "path": f"{REPOSITORY}/{path}@{WORKFLOW_PIN}", "sha": WORKFLOW_PIN,
         }]
-        self.jobs[0]["name"] = job
+        self.jobs[0]["name"] = job + " (contracts, true, true, true)"
         with mock.patch("reuse.api_request", side_effect=self.api()):
             self.attest(trusted_workflow_path=path, trusted_job_name=job)
         self.assertTrue((self.destination / "tooling-evidence").is_dir())
@@ -267,6 +267,8 @@ class ToolingReleaseTest(unittest.TestCase):
         cases = (
             {"archive": tampered, "artifact": tampered_artifact},
             {"jobs": [*self.jobs, dict(self.jobs[0], id=802)]},
+            {"jobs": [*self.jobs, dict(self.jobs[0], id=802,
+                                       name=self.jobs[0]["name"] + " (contracts, true, true, true)")]},
             {"run": {**self.run, "run_attempt": 1}},
         )
         self.environment.forbid_secret = True

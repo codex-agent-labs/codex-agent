@@ -417,6 +417,19 @@ def _require_ci_workflow_reference(run, workflow, sha):
         raise ValueError("Contract original CI attempt lacks the caller-pinned workflow")
 
 
+def _matching_ci_jobs(jobs, name):
+    matrix_name = re.compile(
+        re.escape(name) + r" \(contracts, (?:true|false), (?:true|false), (?:true|false)\)"
+    ) if name in {
+        "product-validation / product-contracts",
+        "product-validation / contract-validation / product-contracts",
+    } else None
+    return [job for job in jobs if job.get("name") == name or (
+        matrix_name is not None and type(job.get("name")) is str
+        and matrix_name.fullmatch(job["name"]) is not None
+    )]
+
+
 def _observe_ci_producer_jobs(
     producers, *, jobs_by_phase, token, trusted_workflow_sha=None,
     trusted_workflows_by_phase=None, allow_protected_dispatch=False,
@@ -491,7 +504,7 @@ def _observe_ci_producer_jobs(
         if producer["event"] == "workflow_dispatch" and dispatch_authorization_job is not None:
             names.add(dispatch_authorization_job)
         for name in sorted(names):
-            selected_jobs = [job for job in jobs if job.get("name") == name]
+            selected_jobs = _matching_ci_jobs(jobs, name)
             if len(selected_jobs) != 1:
                 raise ValueError("Contract original producer job is missing or ambiguous")
             job = selected_jobs[0]
@@ -506,7 +519,7 @@ def _observe_ci_producer_jobs(
 
 def _require_artifact_job_window(observation, job_name, artifact):
     """Bind an upload to its observed original attempt, never just its run."""
-    jobs = [job for job in observation["jobs"] if job.get("name") == job_name]
+    jobs = _matching_ci_jobs(observation["jobs"], job_name)
     if len(jobs) != 1:
         raise ValueError("Upload producer job is missing or ambiguous")
     job = jobs[0]
