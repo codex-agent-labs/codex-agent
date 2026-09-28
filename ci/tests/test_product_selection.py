@@ -192,6 +192,7 @@ class ProductSelectionTest(unittest.TestCase):
     def test_original_transport_and_signing_controls_do_not_change_payload_keys(self) -> None:
         paths = (
             "ci/contract_candidate_admission.py", "ci/runtime_candidate_transport.py",
+            "ci/runtime_candidate_join.py",
             "ci/sdk_candidate_admission.py", "ci/sdk_candidate_catalog.py",
             "ci/sdk_candidate_semantics.py",
             "ci/sdk_android_validation_handoff.py",

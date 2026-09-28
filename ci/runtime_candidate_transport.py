@@ -62,7 +62,7 @@ def validate_selection(value: dict) -> tuple[dict, dict]:
             or promoted["workflowPath"] != ".github/workflows/promote.yml"
             or original["repository"] != _REPOSITORY
             or original["workflowPath"] != ".github/workflows/ci.yml"
-            or original["event"] not in {"pull_request", "merge_group"}
+            or original["event"] != "merge_group"
             or record["repository"] != _REPOSITORY
             or record["workflowPath"] != ".github/workflows/ci.yml"
             or record["event"] != "workflow_dispatch"

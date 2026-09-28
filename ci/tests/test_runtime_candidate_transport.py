@@ -64,6 +64,11 @@ class RuntimeCandidateTransportTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pullRequest"):
             candidate.validate_selection(value)
         value = _selection()
+        value["phase10"]["originalProducer"]["event"] = "pull_request"
+        value["phase10"]["originalProducer"]["pullRequest"] = 31
+        with self.assertRaisesRegex(ValueError, "distinct promoted/Phase-10 originals"):
+            candidate.validate_selection(value)
+        value = _selection()
         value["catalog"]["artifactSha256"] = "not-a-digest"
         with self.assertRaisesRegex(ValueError, "sha256:"):
             candidate.validate_selection(value)

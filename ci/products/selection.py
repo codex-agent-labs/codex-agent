@@ -237,6 +237,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/contract_catalog_promotion.py",
     "ci/contract_candidate_admission.py",
     "ci/runtime_candidate_transport.py",
+    "ci/runtime_candidate_join.py",
     "ci/sdk_candidate_admission.py",
     "ci/sdk_candidate_catalog.py",
     "ci/sdk_candidate_semantics.py",
