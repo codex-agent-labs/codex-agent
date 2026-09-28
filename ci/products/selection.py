@@ -259,6 +259,8 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/sdk_core_original_selection.py",
     "ci/products/sdk_javascript_validation_phase.py",
     "ci/products/sdk_phase10_maven.py",
+    "ci/products/sdk_catalog_promotion.py",
+    "ci/sdk_catalog_promotion_caller.py",
     "ci/products/runtime_library_authorization.py",
     "ci/runtime_phase10_sidecar_caller.py",
     "ci/runtime_phase10_library_caller.py",
@@ -642,6 +644,8 @@ def _native_metadata_owners(path: str) -> set[PhaseInstanceId]:
 def _control_selection(path: str) -> set[PhaseInstanceId] | None:
     if path == "ci/products/gradle_bootstrap.py":
         return set(ALL_INSTANCES)
+    if path in {"ci/products/sdk_catalog_promotion.py", "ci/sdk_catalog_promotion_caller.py"}:
+        return set()  # Promoted index/transport is an external release envelope.
     if path in {
         "ci/contract_catalog_caller.py", "ci/contract_catalog_promotion.py",
         "ci/contract_equal_tree_original.py", "ci/contract_phase10_maven_caller.py",
@@ -873,6 +877,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         ".github/workflows/contract-phase10-output-record.yml": _from_phase("contract", "contract", "metadata"),
         ".github/workflows/contract-phase10-later-record.yml": _from_phase("contract", "contract", "metadata"),
         ".github/workflows/contract-promoted-catalog.yml": set(),
+        ".github/workflows/runtime-library-authorizations.yml": set(),
+        ".github/workflows/sdk-promoted-catalog.yml": set(),
         ".github/workflows/runtime-phase10-maven.yml": _from_phase("runtime", "runtime-aggregate", "metadata"),
         ".github/workflows/runtime-phase10-output-record.yml": _from_phase("runtime", "runtime-aggregate", "metadata"),
         ".github/workflows/sdk-core-binary-validation.yml": _from_phase("sdk", "sdk-core", "binary"),
@@ -934,6 +940,8 @@ def _is_control_only(path: str) -> bool:
                 ".github/workflows/contract-phase10-output-record.yml",
                 ".github/workflows/contract-phase10-later-record.yml",
                 ".github/workflows/contract-promoted-catalog.yml",
+                ".github/workflows/runtime-library-authorizations.yml",
+                ".github/workflows/sdk-promoted-catalog.yml",
                 ".github/workflows/sdk-failed-catalog-custody.yml",
                 ".github/workflows/sdk-phase10-later-authority.yml",
                 ".github/workflows/sdk-phase10-later-record.yml",
