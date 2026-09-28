@@ -83,6 +83,16 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         self.assertLess(planned.index("./.github/actions/capture-runtime-state"), planned.index("- id: preparation"))
         self.assertIn("sdk-family: native-package", planned)
         self.assertNotIn("setup-kmp", planned)
+
+        legacy = self.job("sdk-native-wrappers")
+        self.assertIn("needs: [workflow-lint, plan, sdk-plan, sdk-csharp-binary-result, sdk-native-prepare, sdk-inputs]", legacy)
+        self.assertIn("needs.sdk-csharp-binary-result.result == 'success'", legacy)
+        for field, output in (("stateArtifactId", "artifact_id"),
+                              ("stateArtifactSha256", "artifact_digest"),
+                              ("stateWave", "state_wave"),
+                              ("sdkStateWave", "sdk_state_wave")):
+            self.assertIn(f"{field}: ${{{{ needs.sdk-csharp-binary-result.outputs.{output} }}}}", legacy)
+            self.assertNotIn(f"{field}: ${{{{ needs.sdk-javascript.outputs.{output} }}}}", legacy)
         prepare = self.job("sdk-native-prepare")
         self.assertIn("name: sdk-native-prepare", prepare)
         self.assertNotIn("strategy:", prepare)

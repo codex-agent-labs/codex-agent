@@ -2041,8 +2041,10 @@ jobs:
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&
       needs.plan.outputs.native_wrappers == 'true' &&
+      needs.sdk-csharp-binary-result.result == 'success' &&
+      needs.sdk-csharp-binary-result.outputs.artifact_id != '' &&
       needs.sdk-native-prepare.result == 'success'
-    needs: [workflow-lint, plan, sdk-plan, sdk-javascript, sdk-native-prepare, sdk-inputs]
+    needs: [workflow-lint, plan, sdk-plan, sdk-csharp-binary-result, sdk-native-prepare, sdk-inputs]
     uses: ./.github/workflows/sdk-validation.yml
     with:
       planArtifact: ${{ needs.plan.outputs.plan_artifact }}
@@ -2050,10 +2052,10 @@ jobs:
       validationCommit: ${{ needs.plan.outputs.validation_commit }}
       validationTree: ${{ needs.plan.outputs.validation_tree }}
       trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
-      stateArtifactId: ${{ needs.sdk-javascript.outputs.artifact_id }}
-      stateArtifactSha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
-      stateWave: ${{ needs.sdk-javascript.outputs.state_wave }}
-      sdkStateWave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+      stateArtifactId: ${{ needs.sdk-csharp-binary-result.outputs.artifact_id }}
+      stateArtifactSha256: ${{ needs.sdk-csharp-binary-result.outputs.artifact_digest }}
+      stateWave: ${{ needs.sdk-csharp-binary-result.outputs.state_wave }}
+      sdkStateWave: ${{ needs.sdk-csharp-binary-result.outputs.sdk_state_wave }}
       preparationStateArtifactId: ${{ needs.sdk-native-prepare.outputs.preparation_state_id }}
       preparationStateArtifactSha256: ${{ needs.sdk-native-prepare.outputs.preparation_state_digest }}
       preparationStateWave: ${{ needs.sdk-native-prepare.outputs.preparation_state_wave }}
