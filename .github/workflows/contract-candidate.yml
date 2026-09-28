@@ -1,0 +1,100 @@
+name: Contract candidate
+
+on:
+  push:
+    tags:
+      - candidate/contract/v*-rc.*
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: contract-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    runs-on: ubuntu-24.04
+    environment: release-candidate
+    timeout-minutes: 30
+    steps:
+      - name: Require protected tag and independently approved S1048 selection
+        id: authority
+        shell: bash
+        env:
+          SELECTION_JSON: ${{ vars.CODEX_AGENT_CONTRACT_CANDIDATE_SELECTION_JSON }}
+          SELECTION_SHA256: ${{ vars.CODEX_AGENT_CONTRACT_CANDIDATE_SELECTION_SHA256 }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = tag
+          test "$GITHUB_REF_PROTECTED" = true
+          [[ "$GITHUB_REF_NAME" =~ ^candidate/contract/v([0-9]+\.[0-9]+\.[0-9]+)-rc\.([1-9][0-9]*)$ ]]
+          candidate_version="${BASH_REMATCH[1]}"
+          [[ "$SELECTION_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test -n "$SELECTION_JSON"
+          printf '%s' "$SELECTION_JSON" > "$RUNNER_TEMP/contract-candidate-selection.json"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/contract-candidate-selection.json" | cut -d ' ' -f 1)" = "$SELECTION_SHA256"
+          test "$(jq -er '.phase10.phase11Pins.expected_contract_version' "$RUNNER_TEMP/contract-candidate-selection.json")" = "$candidate_version"
+          source_sha=$(jq -er '.phase10.trustedSourceCommit' "$RUNNER_TEMP/contract-candidate-selection.json")
+          validation_sha=$(jq -er '.phase10.originalProducer.commit' "$RUNNER_TEMP/contract-candidate-selection.json")
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$validation_sha" =~ ^[0-9a-f]{40}$ ]]
+          {
+            printf 'selection_sha256=%s\n' "$SELECTION_SHA256"
+            printf 'source_sha=%s\n' "$source_sha"
+            printf 'validation_sha=%s\n' "$validation_sha"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check out the exact landed tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          path: landed-source
+      - name: Require the candidate commit on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C landed-source rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C landed-source rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")" = "$GITHUB_SHA"
+          git -C landed-source fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git -C landed-source merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          test -z "$(git -C landed-source status --porcelain --untracked-files=no)"
+      - name: Check out reviewed verifier at its independently pinned source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.authority.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: trusted-source
+      - name: Check out original validated Contract source as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.authority.outputs.validation_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: validation-source
+      - name: Authenticate official originals and forward unchanged Phase-10 bytes
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SELECTION_SHA256: ${{ steps.authority.outputs.selection_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/contract_candidate_admission.py \
+            --selection "$RUNNER_TEMP/contract-candidate-selection.json" \
+            --expected-selection-sha256 "$SELECTION_SHA256" \
+            --trusted-repository trusted-source \
+            --validation-repository validation-source \
+            --landed-repository landed-source \
+            --destination "$RUNNER_TEMP/contract-candidate"
+      - name: Retain only the verified unchanged candidate bytes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-contract-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/contract-candidate
+          if-no-files-found: error
+          include-hidden-files: true
+          overwrite: false
+          compression-level: 0
+          retention-days: 90

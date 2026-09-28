@@ -191,7 +191,8 @@ class ProductSelectionTest(unittest.TestCase):
 
     def test_original_transport_and_signing_controls_do_not_change_payload_keys(self) -> None:
         paths = (
-            "ci/contract_candidate_admission.py", "ci/sdk_android_validation_handoff.py",
+            "ci/contract_candidate_admission.py", "ci/sdk_candidate_admission.py",
+            "ci/sdk_android_validation_handoff.py",
             "ci/products/signing_isolation.py", "ci/runtime_preparation_capture.py",
             "ci/runtime_preparation_locator.py", "ci/runtime_prepared_aggregate.py",
             "ci/runtime_prepared_native.py", "ci/runtime_prepared_release.py",
@@ -327,6 +328,7 @@ class ProductSelectionTest(unittest.TestCase):
                 ("ci/contract_catalog_caller.py", contract_metadata),
                 ("ci/contract_catalog_promotion.py", contract_metadata),
                 (".github/workflows/contract-promoted-catalog.yml", set()),
+                (".github/workflows/contract-candidate.yml", set()),
                 (".github/workflows/runtime-promoted-catalog.yml", set()),
                 (".github/workflows/runtime-library-authorizations.yml", set()),
                 (".github/workflows/sdk-promoted-catalog.yml", set()),
