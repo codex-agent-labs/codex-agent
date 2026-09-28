@@ -1,6 +1,7 @@
 """Synthetic signed original closure, not hosted release authority."""
 
 from pathlib import Path
+import os
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -36,6 +37,27 @@ class RuntimeLibraryAuthorizationTest(unittest.TestCase):
                 self.assertEqual("0.2.7", claim["runtimeVersion"])
                 self.assertEqual(sha256_bytes(item["library"]), claim["runtimeLibrarySha256"])
                 self.assertTrue(item["fileName"])
+
+    def test_observation_token_rejected_before_handoff_or_signing(self):
+        with tempfile.TemporaryDirectory(prefix="runtime-library-token-negative-") as temporary:
+            destination = Path(temporary) / "unauthorized"
+            with patch.dict(os.environ, {"GITHUB_TOKEN": "observation-token"}), \
+                    patch.object(caller, "verified_runtime_aggregate_handoff") as gate, \
+                    patch.object(caller, "issue_root_delegation") as signer, \
+                    self.assertRaisesRegex(ValueError, "observation token"):
+                caller.produce_authenticated_runtime_libraries(
+                    self.source.carrier, destination,
+                    expected_metadata_receipt_sha256="sha256:" + "a" * 64,
+                    expected_build_key="sha256:" + "b" * 64,
+                    keyring=self.source.keyring, keys_directory=self.source.keys,
+                    root_public_key=Path(temporary) / "missing-root.pub",
+                    expected_root_fingerprint="sha256:" + "c" * 64,
+                    root_private_key=Path(temporary) / "missing-root-key",
+                    release_private_key=Path(temporary) / "missing-release-key",
+                )
+            gate.assert_not_called()
+            signer.assert_not_called()
+            self.assertFalse(destination.exists())
 
     def test_protected_caller_signs_exact_external_bytes_after_full_handoff(self):
         with tempfile.TemporaryDirectory(prefix="runtime-library-authorization-test-") as temporary:

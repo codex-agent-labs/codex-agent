@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -31,6 +32,12 @@ from products.sdk_runtime_root import (
 from products.signatures import load_keyring, require_active_release_key
 
 
+_OBSERVATION_TOKENS = frozenset({
+    "GITHUB_TOKEN", "GH_TOKEN", "GITHUB_API_TOKEN", "ACTIONS_RUNTIME_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+})
+
+
 def produce_authenticated_runtime_libraries(
     protected_output: Path,
     destination: Path,
@@ -45,6 +52,8 @@ def produce_authenticated_runtime_libraries(
     release_private_key: Path,
 ) -> dict:
     """Sign five exact library claims only inside the full signed handoff gate."""
+    if _OBSERVATION_TOKENS & set(os.environ):
+        raise ValueError("Runtime library signer must not receive an observation token")
     protected_output, destination = Path(protected_output), Path(destination)
     expected_metadata_receipt_sha256 = require_sha256(
         expected_metadata_receipt_sha256, "Original Runtime metadata receipt",
