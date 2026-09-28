@@ -10,6 +10,7 @@ pluginManagement {
 listOf(
     "codexAgent.authenticatedContractVersion",
     "codexAgent.authenticatedSdkComponent",
+    "codexAgent.authenticatedAndroidEvidenceSdkVersion",
 ).forEach { name ->
     require(!providers.gradleProperty(name).isPresent) {
         "$name is reserved for verified settings state"
@@ -61,13 +62,39 @@ if (providers.gradleProperty(appleExportBuildRootProperty).isPresent) {
 }
 val sdkBinaryRequest = rootProjectProperties["codexAgent.product"] == "sdk" &&
     rootProjectProperties["codexAgent.phase"] == "binary"
+val androidEvidenceProperties = listOf(
+    "codexAgent.androidEvidencePackageStage",
+    "codexAgent.androidEvidencePackageReceipt",
+    "codexAgent.androidEvidenceBinaryStage",
+    "codexAgent.androidEvidenceBinaryReceipt",
+    "codexAgent.androidEvidenceCompatibilityRequest",
+    "codexAgent.androidEvidenceBinaryContractEvidence",
+)
+val androidEvidenceRequest = androidEvidenceProperties.any(rootProjectProperties::containsKey)
 var authenticatedSdkContractRepository: java.nio.file.Path? = null
-if (sdkBinaryRequest) {
+var authenticatedAndroidEvidenceRepository: java.nio.file.Path? = null
+if (sdkBinaryRequest || androidEvidenceRequest) {
     require(gradle.startParameter.includedBuilds.isEmpty()) {
-        "SDK binary production rejects command-line composite build substitutions"
+        "Authenticated SDK inputs reject command-line composite build substitutions"
     }
-    val component = rootProjectProperties["codexAgent.component"]
-        ?: error("Missing mandatory explicit -P project property: codexAgent.component")
+    require(!sdkBinaryRequest || !androidEvidenceRequest) {
+        "Android evidence import and SDK binary production must run separately"
+    }
+    if (androidEvidenceRequest) {
+        require(androidEvidenceProperties.all(rootProjectProperties::containsKey) &&
+            gradle.startParameter.taskNames.isNotEmpty() &&
+            gradle.startParameter.taskNames.all {
+                it in setOf(
+                    ":tooling:android-runtime-evidence:assembleDebug",
+                    ":tooling:android-runtime-evidence:assembleDebugAndroidTest",
+                )
+            }) {
+            "Android evidence import requires complete inputs and only evidence APK tasks"
+        }
+    }
+    val component = if (androidEvidenceRequest) "android-evidence" else
+        rootProjectProperties["codexAgent.component"]
+            ?: error("Missing mandatory explicit -P project property: codexAgent.component")
     val requiredComponents = when (component) {
         "sdk-core" -> listOf(
             "common", "android", "ios-arm64", "ios-simulator-arm64", "jvm",
@@ -75,6 +102,7 @@ if (sdkBinaryRequest) {
             "node-wasm", "windows-x64",
         )
         "sdk-android" -> listOf("android")
+        "android-evidence" -> listOf("android")
         "sdk-ios" -> listOf("ios-arm64", "ios-simulator-arm64")
         "csharp" -> listOf("common")
         else -> error("Unsupported SDK binary component: $component")
@@ -171,8 +199,67 @@ if (sdkBinaryRequest) {
     authenticatedSdkContractRepository = verifiedContract.resolve("maven")
     gradle.beforeProject(org.gradle.api.Action<org.gradle.api.Project> {
         extensions.extraProperties.set("codexAgent.authenticatedContractVersion", contractVersion)
-        extensions.extraProperties.set("codexAgent.authenticatedSdkComponent", component)
+        if (sdkBinaryRequest) {
+            extensions.extraProperties.set("codexAgent.authenticatedSdkComponent", component)
+        }
     })
+    if (androidEvidenceRequest) {
+        val inputs = androidEvidenceProperties.associateWith { name ->
+            require(System.getProperty("org.gradle.project.$name") == null &&
+                System.getenv("ORG_GRADLE_PROJECT_$name") == null) {
+                "$name must be supplied only as an explicit -P project property"
+            }
+            val value = rootProjectProperties[name]?.takeIf(String::isNotBlank)
+                ?: error("Missing mandatory explicit -P project property: $name")
+            settingsDir.toPath().fileSystem.getPath(value).also { path ->
+                require(path.isAbsolute && path.normalize() == path) {
+                    "$name must be an absolute normalized path"
+                }
+            }
+        }
+        val verifiedAndroid = verifiedParent.resolve("android-evidence-${java.util.UUID.randomUUID()}")
+        val command = mutableListOf(
+            "python3", "-m", "ci.products.sdk_android_evidence_repository",
+            "--repository", repositoryRoot.toString(),
+            "--package-stage", inputs.getValue("codexAgent.androidEvidencePackageStage").toString(),
+            "--package-receipt", inputs.getValue("codexAgent.androidEvidencePackageReceipt").toString(),
+            "--binary-stage", inputs.getValue("codexAgent.androidEvidenceBinaryStage").toString(),
+            "--binary-receipt", inputs.getValue("codexAgent.androidEvidenceBinaryReceipt").toString(),
+            "--compatibility-request", inputs.getValue("codexAgent.androidEvidenceCompatibilityRequest").toString(),
+            "--binary-contract-evidence", inputs.getValue("codexAgent.androidEvidenceBinaryContractEvidence").toString(),
+            "--contract-payload", contractPayload.toString(),
+            "--contract-metadata-receipt", contractMetadataReceipt.toString(),
+            "--contract-attestation", contractAttestation.toString(),
+            "--contract-attestation-signature", contractAttestationSignature.toString(),
+            "--contract-public-key", contractPublicKey.toString(),
+            "--destination", verifiedAndroid.toString(),
+        )
+        val version = providers.exec {
+            workingDir(repositoryRoot.toFile())
+            setEnvironment(environment.toMutableMap().apply {
+                remove("PYTHONHOME")
+                remove("PYTHONINSPECT")
+                remove("PYTHONSTARTUP")
+                put("PYTHONPATH", repositoryRoot.toString())
+                put("PYTHONDONTWRITEBYTECODE", "1")
+                put("PYTHONNOUSERSITE", "1")
+                put("PYTHONSAFEPATH", "1")
+                put("LC_ALL", "C")
+                put("LANG", "C")
+            })
+            commandLine(command)
+        }.standardOutput.asText.get().trim()
+        val sdkVersion = java.nio.file.Files.readString(
+            repositoryRoot.resolve("gradle/release/versions/sdk.txt"), Charsets.US_ASCII,
+        ).removeSuffix("\n")
+        require(version == sdkVersion && sdkVersion.matches(semver)) {
+            "Android evidence package version differs from this SDK source"
+        }
+        authenticatedAndroidEvidenceRepository = verifiedAndroid
+        gradle.beforeProject(org.gradle.api.Action<org.gradle.api.Project> {
+            extensions.extraProperties.set("codexAgent.authenticatedAndroidEvidenceSdkVersion", version)
+        })
+    }
 }
 
 dependencyResolutionManagement {
@@ -186,7 +273,24 @@ dependencyResolutionManagement {
                         url = uri(authenticatedSdkContractRepository!!)
                     }
                 }
-                filter { includeGroup("io.github.codex-agent-labs") }
+                filter {
+                    if (androidEvidenceRequest) {
+                        includeModule("io.github.codex-agent-labs", "codex-agent-core")
+                    } else {
+                        includeGroup("io.github.codex-agent-labs")
+                    }
+                }
+            }
+            if (authenticatedAndroidEvidenceRepository != null) {
+                exclusiveContent {
+                    forRepository {
+                        maven {
+                            name = "AUTHENTICATED_SDK_ANDROID_EVIDENCE"
+                            url = uri(authenticatedAndroidEvidenceRepository!!)
+                        }
+                    }
+                    filter { includeModule("io.github.codex-agent-labs", "codex-agent-runtime-android") }
+                }
             }
             google { content { excludeGroup("io.github.codex-agent-labs") } }
             mavenCentral { content { excludeGroup("io.github.codex-agent-labs") } }
