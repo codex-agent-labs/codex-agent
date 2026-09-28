@@ -779,13 +779,18 @@ afterEvaluate {
 // KGP supplies main/sources through nested afterEvaluate callbacks. Capture only
 // after all of them finish; the metadata helper also attaches original usages then.
 gradle.projectsEvaluated {
+    val requestedComponent = providers.gradleProperty("codexAgent.component").orNull
+    val binaryPhase = providers.gradleProperty("codexAgent.phase").orNull == "binary"
     desktopRuntimeEvidenceTargets.forEach { (target, spec) ->
-        retainRuntimeAdapterPublication(spec.classifier.removePrefix("app-server-"),
-            target.replaceFirstChar(Char::uppercaseChar), target)
+        val component = spec.classifier.removePrefix("app-server-")
+        if (binaryPhase && requestedComponent == component) {
+            retainRuntimeAdapterPublication(component, target.replaceFirstChar(Char::uppercaseChar), target)
+        }
     }
     runtimeAdapterMetadataComponents.forEach { (component, title) ->
-        val publicationName = runtimeAdapterPublications.getValue(component)
-        retainRuntimeAdapterPublication(component, title, publicationName)
+        if (binaryPhase && requestedComponent == component) {
+            retainRuntimeAdapterPublication(component, title, runtimeAdapterPublications.getValue(component))
+        }
     }
 }
 

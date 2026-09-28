@@ -1007,8 +1007,9 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--konan-data-dir")
         command.add_argument("--supervisor-compiler")
         command.add_argument("--output", required=True)
-    observe.add_argument("--kotlin-plugin-jar")
-    observe.add_argument("--native-archive")
+    for command in (observe, verify):
+        command.add_argument("--kotlin-plugin-jar")
+        command.add_argument("--native-archive")
     verify.add_argument("--binary-plan", required=True)
     verify.add_argument("--verified-contract-manifest", required=True)
     verify.add_argument("--expected-runtime-version", required=True)

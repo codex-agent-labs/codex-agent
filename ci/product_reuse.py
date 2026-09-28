@@ -4126,6 +4126,20 @@ def _runtime_worker_command(wrapper, properties, environment, *, build_directory
     return command
 
 
+def _provision_runtime_native_toolchain(root, revision, component, destination, environment):
+    if environment.get("CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH") != "true":
+        return {}
+    runner_temp = Path(environment.get("RUNNER_TEMP", ""))
+    if not runner_temp.is_absolute() or not runner_temp.is_dir() or runner_temp.is_symlink():
+        raise ValueError("Native Runtime bootstrap requires a regular absolute runner temp directory")
+    from products.toolchain_capture_bootstrap import prepare
+
+    konan_home = Path(tempfile.mkdtemp(prefix="codex-runtime-konan-", dir=runner_temp))
+    environment["KONAN_DATA_DIR"] = str(konan_home)
+    paths = prepare(root, revision, component, destination / "toolchain-bootstrap", konan_home)
+    return {"codexAgent.kotlinPluginJar": paths["plugin"], "codexAgent.nativeArchive": paths["archive"]}
+
+
 def _runtime_worker_environment(root, producer, destination, environ):
     from products.gradle_bootstrap import require_preprovisioned_gradle
     environment = dict(environ)
@@ -4286,6 +4300,9 @@ def execute_runtime_phase(
             phase_plan=full_plan, contract_manifest=manifest, producer=state.producer,
             runtime_version=state.expected_fixed["versions"]["runtime-release"])
         properties["codexAgent.desktopSupervisorDirectory"] = str(captured / "original")
+    if needs_archive:
+        properties.update(_provision_runtime_native_toolchain(
+            root, state.producer["commit"], instance.component, destination, environment))
     input_inventory = regular_file_inventory(destination / "inputs", allow_empty=True)
     _runtime_worker_checkout(root, state.producer)
     if stage.exists() or stage.is_symlink():

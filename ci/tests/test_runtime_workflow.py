@@ -58,6 +58,8 @@ class RuntimeWorkflowTest(unittest.TestCase):
             self.assertNotIn(f"needs.runtime-workers-{wave}.result == 'success'", collector)
             self.assertIn(f"wave: '{wave}'", collector)
             self.assertIn('fail-fast: false', worker)
+            self.assertIn("GIT_CONFIG_KEY_0: core.autocrlf", worker)
+            self.assertIn("GIT_CONFIG_VALUE_0: 'false'", worker)
             self.assertIn("remote_build_authorized == 'true'", worker)
             self.assertIn("runtime_workers_required == 'true'", worker)
             self.assertIn("outputs.wave_failed != 'true'", worker)

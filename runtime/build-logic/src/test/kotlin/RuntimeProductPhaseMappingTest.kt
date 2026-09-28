@@ -161,6 +161,15 @@ class RuntimeProductPhaseMappingTest {
     }
 
     @Test
+    fun `only binary producers capture the selected host publication`() {
+        val capture = nodeBuild.substringAfter("gradle.projectsEvaluated {")
+        assertTrue("val requestedComponent = providers.gradleProperty(\"codexAgent.component\").orNull" in capture)
+        assertTrue("val binaryPhase = providers.gradleProperty(\"codexAgent.phase\").orNull == \"binary\"" in capture)
+        assertTrue("if (binaryPhase && requestedComponent == component)" in capture)
+        assertTrue("retainRuntimeAdapterPublication(component, target.replaceFirstChar" in capture)
+    }
+
+    @Test
     fun `adapter raw validation manifests retain their canonical evidence kinds`() {
         assertTrue("\"jvm-evidence\" to \"outputs/jvm-evidence\"" in runtimePlugin)
         val jvmValidation = jvmValidation()

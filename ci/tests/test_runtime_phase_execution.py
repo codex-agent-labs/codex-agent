@@ -450,6 +450,21 @@ class ProductWorkerCheckoutTest(unittest.TestCase):
                 adapter._runtime_worker_command(Path("/trusted/gradlew"), {},
                     {"CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH": "true"}, build_directory=".")
 
+    def test_native_worker_bootstraps_only_under_verified_fetch(self):
+        with tempfile.TemporaryDirectory(prefix="native-bootstrap-fixture-") as temporary:
+            root = Path(temporary)
+            environment = {"CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH": "true", "RUNNER_TEMP": temporary}
+            with mock.patch("products.toolchain_capture_bootstrap.prepare", return_value={
+                    "plugin": str(root / "plugin.jar"), "archive": str(root / "native.tar.gz")}) as prepare:
+                properties = adapter._provision_runtime_native_toolchain(
+                    root, "a" * 40, "macos-arm64", root / "worker", environment)
+            self.assertEqual({"codexAgent.kotlinPluginJar": str(root / "plugin.jar"),
+                              "codexAgent.nativeArchive": str(root / "native.tar.gz")}, properties)
+            self.assertTrue(Path(environment["KONAN_DATA_DIR"]).is_dir())
+            self.assertEqual("macos-arm64", prepare.call_args.args[2])
+            self.assertEqual({}, adapter._provision_runtime_native_toolchain(
+                root, "a" * 40, "macos-arm64", root / "offline-worker", {}))
+
     def test_shared_guard_rejects_untracked_sdk_sources_without_rejecting_user_notes(self):
         with tempfile.TemporaryDirectory(prefix="product-checkout-fixture-") as temporary:
             root = Path(temporary)

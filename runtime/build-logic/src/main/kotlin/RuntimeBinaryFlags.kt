@@ -272,6 +272,12 @@ fun Project.registerRuntimeProducerToolchainObserver(
             providers.gradleProperty("codexAgent.desktopSupervisorCompiler").orNull?.let {
                 command += listOf("--supervisor-compiler", it)
             }
+            providers.gradleProperty("codexAgent.kotlinPluginJar").orNull?.let {
+                command += listOf("--kotlin-plugin-jar", it)
+            }
+            providers.gradleProperty("codexAgent.nativeArchive").orNull?.let {
+                command += listOf("--native-archive", it)
+            }
             commandLine(command)
         }
     } else if (requestedRuntimeTarget in runtimeBinaryFlags) {
