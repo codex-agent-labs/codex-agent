@@ -7,6 +7,8 @@ official Phase-10 signed-index capture before composing a promoted catalog.
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
 from pathlib import Path
 import re
@@ -60,6 +62,17 @@ def _landed_commit(repository: Path) -> str:
             or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", lines[1]) is None):
         raise ValueError("SDK landed checkout is not the exact Git root and HEAD")
     return lines[1]
+
+
+def _require_promoted_caller(environment: dict[str, str], commit: str) -> None:
+    if (environment.get("GITHUB_EVENT_NAME") != "push"
+            or environment.get("GITHUB_REF") != "refs/heads/main"
+            or environment.get("GITHUB_REF_PROTECTED") != "true"
+            or environment.get("GITHUB_WORKFLOW_REF") != (
+                "codex-agent-labs/codex-agent/.github/workflows/promote.yml"
+                "@refs/heads/main")
+            or environment.get("GITHUB_SHA") != commit):
+        raise ValueError("SDK promoted signer requires the fixed protected-main promotion caller")
 
 
 def _require_phase10_signing_policy(keyring: Path, keys_directory: Path, pins: dict) -> None:
@@ -544,3 +557,108 @@ def sign_promoted_sdk_catalog(
             publish_regular_tree(promoted, destination,
                 expected_inventory=regular_file_inventory(promoted))
     return index
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Build-free protected workflow adapter; all authority remains pinned input."""
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument("mode", choices=("capture", "sign"))
+    for name in ("authority", "object-pins", "index-carrier-producer",
+                 "index-carrier-pins", "index-handoff-pins", "landed-repository",
+                 "destination"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    for name in ("expected-authority-sha256", "expected-object-pins-sha256",
+                 "expected-catalog-size", "catalog-workflow-sha"):
+        parser.add_argument("--" + name, required=True)
+    parser.add_argument("--catalog-capture", type=Path)
+    parser.add_argument("--index-carrier-capture", type=Path)
+    parser.add_argument("--expected-catalog-capture-inventory-sha256")
+    parser.add_argument("--expected-index-carrier-inventory-sha256")
+    parser.add_argument("--private-key", type=Path)
+    args = parser.parse_args(argv)
+    try:
+        def document(path: Path) -> dict:
+            value = load_canonical_json_bytes(read_regular_file_bytes(
+                path, max_bytes=1024 * 1024, reject_symlink_parents=True))
+            if type(value) is not dict:
+                raise ValueError("SDK protected input must be a canonical object")
+            return value
+
+        producer = document(args.index_carrier_producer)
+        carrier_pins = document(args.index_carrier_pins)
+        handoff = document(args.index_handoff_pins)
+        size = require_integer(int(args.expected_catalog_size), "SDK catalog size", 1)
+        if args.mode == "capture":
+            require_no_signing_secret(os.environ)
+            if any(value is not None for value in (
+                    args.catalog_capture, args.index_carrier_capture, args.private_key,
+                    args.expected_catalog_capture_inventory_sha256,
+                    args.expected_index_carrier_inventory_sha256)):
+                raise ValueError("SDK capture cannot accept signing-only inputs")
+            token = os.environ.get("GITHUB_TOKEN")
+            if not token:
+                raise ValueError("SDK capture requires an observation token")
+            destination = args.destination
+            if destination.exists() or destination.is_symlink():
+                raise ValueError("SDK capture root already exists")
+            destination.mkdir(parents=True)
+            catalog = capture_promotable_sdk_original_catalog(
+                args.authority, args.object_pins, destination / "catalog",
+                expected_authority_sha256=args.expected_authority_sha256,
+                expected_object_pins_sha256=args.expected_object_pins_sha256,
+                expected_signed_index_sha256=handoff["expected_index_sha256"],
+                expected_catalog_artifact_size=size,
+                trusted_workflow_sha=args.catalog_workflow_sha,
+                token=token, environ=os.environ)
+            index = capture_official_sdk_phase10_index(
+                producer, carrier_pins, destination / "index",
+                landed_repository=args.landed_repository, index_handoff_pins=handoff,
+                token=token, environ=os.environ)
+            result = {"catalog": catalog, "index": index}
+        else:
+            if (args.catalog_capture is None or args.index_carrier_capture is None
+                    or args.private_key is None
+                    or args.expected_catalog_capture_inventory_sha256 is None
+                    or args.expected_index_carrier_inventory_sha256 is None):
+                raise ValueError("SDK signer requires exact capture and private-key inputs")
+            commit = _landed_commit(args.landed_repository)
+            run_id = require_integer(int(os.environ["GITHUB_RUN_ID"]),
+                                     "SDK promoted run ID", 1)
+            attempt = require_integer(int(os.environ["GITHUB_RUN_ATTEMPT"]),
+                                      "SDK promoted run attempt", 1)
+            _require_promoted_caller(os.environ, commit)
+            tree = handoff["expected_validation_tree"]
+            signed_producer = {"repository": "codex-agent-labs/codex-agent",
+                "workflowPath": ".github/workflows/promote.yml", "event": "push",
+                "commit": commit, "tree": tree, "pullRequest": None,
+                "runId": run_id, "runAttempt": attempt}
+            context = {"kind": "promoted-main", "commit": commit, "tree": tree,
+                "promotionRunId": run_id, "promotionRunAttempt": attempt}
+            result = sign_promoted_sdk_catalog(
+                args.catalog_capture, args.index_carrier_capture,
+                args.authority, args.object_pins, args.landed_repository,
+                args.destination,
+                expected_catalog_capture_inventory_sha256=
+                    args.expected_catalog_capture_inventory_sha256,
+                expected_authority_sha256=args.expected_authority_sha256,
+                expected_object_pins_sha256=args.expected_object_pins_sha256,
+                expected_catalog_artifact_size=size,
+                trusted_workflow_sha=args.catalog_workflow_sha,
+                index_handoff_pins=handoff, index_carrier_producer=producer,
+                index_carrier_pins=carrier_pins,
+                expected_index_carrier_inventory_sha256=
+                    args.expected_index_carrier_inventory_sha256,
+                repository="codex-agent-labs/codex-agent", context=context,
+                producer=signed_producer,
+                keyring=args.index_carrier_capture /
+                    "phase10/replay-evidence/product-signing-keys.json",
+                keys_directory=args.index_carrier_capture / "phase10/replay-evidence/keys",
+                private_key=args.private_key, environ=os.environ)
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        parser.error(str(error))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

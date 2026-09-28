@@ -1,0 +1,319 @@
+name: SDK Promoted Catalog
+
+on:
+  workflow_call:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  capture:
+    name: sdk-promoted-catalog-capture
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: ubuntu-24.04
+    # Configure protection and independent S1048 vars before this uncalled child is wired.
+    environment: product-catalog-observation
+    outputs:
+      capture_id: ${{ steps.upload.outputs.artifact-id }}
+      capture_sha256: sha256:${{ steps.upload.outputs.artifact-digest }}
+      source_sha: ${{ steps.authority.outputs.source_sha }}
+      validated_tree: ${{ steps.authority.outputs.validated_tree }}
+    steps:
+      - name: Require independently approved SDK promotion control before checkout
+        id: authority
+        env:
+          CONTROL: ${{ vars.CODEX_AGENT_SDK_PROMOTION_CONTROL_JSON }}
+          CONTROL_SHA256: ${{ vars.CODEX_AGENT_SDK_PROMOTION_CONTROL_APPROVED_SHA256 }}
+          AUTHORITY: ${{ vars.CODEX_AGENT_SDK_PROMOTION_AUTHORITY_JSON }}
+          OBJECT_PINS: ${{ vars.CODEX_AGENT_SDK_PROMOTION_OBJECT_PINS_JSON }}
+          CARRIER_PRODUCER: ${{ vars.CODEX_AGENT_SDK_PROMOTION_CARRIER_PRODUCER_JSON }}
+          CARRIER_PINS: ${{ vars.CODEX_AGENT_SDK_PROMOTION_CARRIER_PINS_JSON }}
+          INDEX_HANDOFF_PINS: ${{ vars.CODEX_AGENT_SDK_PROMOTION_INDEX_HANDOFF_PINS_JSON }}
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          def approved(raw, expected, label):
+              if not raw or not re.fullmatch(r'sha256:[0-9a-f]{64}', expected):
+                  raise ValueError(label + ' is not independently approved')
+              data = (raw if raw.endswith('\n') else raw + '\n').encode()
+              if 'sha256:' + hashlib.sha256(data).hexdigest() != expected:
+                  raise ValueError(label + ' differs from protected approval')
+              def pairs(items):
+                  result = {}
+                  for key, value in items:
+                      if key in result:
+                          raise ValueError(label + ' has duplicate keys')
+                      result[key] = value
+                  return result
+              value = json.loads(data, object_pairs_hook=pairs)
+              if data != (json.dumps(value, sort_keys=True, separators=(',', ':'),
+                                     ensure_ascii=False) + '\n').encode():
+                  raise ValueError(label + ' is not canonical JSON')
+              return data, value
+
+          root = Path(os.environ['RUNNER_TEMP']) / 'sdk-promoted/inputs'
+          root.mkdir(parents=True)
+          control_bytes, control = approved(os.environ['CONTROL'],
+              os.environ['CONTROL_SHA256'], 'SDK promotion control')
+          fields = {'schemaVersion', 'trustedSourceCommit', 'validatedTree',
+              'authoritySha256', 'objectPinsSha256', 'carrierProducerSha256',
+              'carrierPinsSha256', 'indexHandoffPinsSha256',
+              'catalogCaptureInventorySha256', 'indexCarrierInventorySha256',
+              'catalogArtifactSize', 'catalogWorkflowSha'}
+          if (set(control) != fields or type(control['schemaVersion']) is not int
+                  or control['schemaVersion'] != 1
+                  or type(control['catalogArtifactSize']) is not int
+                  or control['catalogArtifactSize'] < 1):
+              raise ValueError('SDK promotion control has wrong schema')
+          for name in ('trustedSourceCommit', 'validatedTree', 'catalogWorkflowSha'):
+              if not re.fullmatch(r'[0-9a-f]{40}', control[name]):
+                  raise ValueError('SDK promotion ' + name + ' lacks exact Git identity')
+          for name in fields - {'schemaVersion', 'trustedSourceCommit', 'validatedTree',
+                               'catalogWorkflowSha', 'catalogArtifactSize'}:
+              if not re.fullmatch(r'sha256:[0-9a-f]{64}', control[name]):
+                  raise ValueError('SDK promotion ' + name + ' lacks exact digest')
+          (root / 'control.json').write_bytes(control_bytes)
+          for env, file, digest in (
+              ('AUTHORITY', 'authority.json', 'authoritySha256'),
+              ('OBJECT_PINS', 'object-pins.json', 'objectPinsSha256'),
+              ('CARRIER_PRODUCER', 'carrier-producer.json', 'carrierProducerSha256'),
+              ('CARRIER_PINS', 'carrier-pins.json', 'carrierPinsSha256'),
+              ('INDEX_HANDOFF_PINS', 'index-handoff-pins.json', 'indexHandoffPinsSha256')):
+              data, value = approved(os.environ[env], control[digest], file)
+              if type(value) is not dict:
+                  raise ValueError(file + ' must be a canonical object')
+              (root / file).write_bytes(data)
+          handoff = json.loads((root / 'index-handoff-pins.json').read_bytes())
+          if handoff.get('expected_validation_tree') != control['validatedTree']:
+              raise ValueError('SDK approved Phase-10 and landed trees differ')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('source_sha=' + control['trustedSourceCommit'] + '\n')
+              output.write('validated_tree=' + control['validatedTree'] + '\n')
+          PY
+      - name: Check out reviewed SDK verifier only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.authority.outputs.source_sha }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out exact landed tree as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ github.sha }}
+          path: landed-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind protected source and landed tree
+        env:
+          SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+          VALIDATED_TREE: ${{ steps.authority.outputs.validated_tree }}
+        run: |
+          set -euo pipefail
+          test "$(git -C trusted-source rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C landed-source rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C landed-source rev-parse 'HEAD^{tree}')" = "$VALIDATED_TREE"
+          test -z "$(git -C trusted-source status --porcelain --untracked-files=no)"
+          test -z "$(git -C landed-source status --porcelain --untracked-files=no)"
+      - name: Capture fixed official PR catalog and Phase-10 index admission without signing secrets
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}/trusted-source
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/sdk-promoted"
+          control="$root/inputs/control.json"
+          python3 -B -m ci.sdk_catalog_promotion_caller capture \
+            --authority "$root/inputs/authority.json" \
+            --object-pins "$root/inputs/object-pins.json" \
+            --index-carrier-producer "$root/inputs/carrier-producer.json" \
+            --index-carrier-pins "$root/inputs/carrier-pins.json" \
+            --index-handoff-pins "$root/inputs/index-handoff-pins.json" \
+            --landed-repository "$PWD/landed-source" --destination "$root/captures" \
+            --expected-authority-sha256 "$(jq -er '.authoritySha256' "$control")" \
+            --expected-object-pins-sha256 "$(jq -er '.objectPinsSha256' "$control")" \
+            --expected-catalog-size "$(jq -er '.catalogArtifactSize' "$control")" \
+            --catalog-workflow-sha "$(jq -er '.catalogWorkflowSha' "$control")"
+      - name: Verify independent capture inventories before transport
+        env:
+          PYTHONPATH: ${{ github.workspace }}/trusted-source
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          from pathlib import Path
+          import os
+          from ci.products.inventory import (
+              canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
+              regular_file_inventory, sha256_bytes,
+          )
+          root = Path(os.environ['RUNNER_TEMP']) / 'sdk-promoted'
+          control = load_canonical_json_bytes(read_regular_file_bytes(root / 'inputs/control.json'))
+          for name, pin in (('catalog', 'catalogCaptureInventorySha256'),
+                            ('index', 'indexCarrierInventorySha256')):
+              actual = sha256_bytes(canonical_json_bytes(regular_file_inventory(
+                  root / 'captures' / name)))
+              if actual != control[pin]:
+                  raise ValueError('SDK ' + name + ' capture differs from protected S1048 pin')
+          PY
+      - name: Retain exact official SDK captures and approved input bytes
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-sdk-promoted-captures-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-promoted
+          compression-level: 0
+          retention-days: 90
+
+  sign:
+    name: sdk-promoted-catalog-sign
+    needs: capture
+    if: needs.capture.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    steps:
+      - name: Require separate protected signing approval before checkout
+        id: authority
+        env:
+          CONTROL_SHA256: ${{ vars.CODEX_AGENT_SDK_PROMOTION_CONTROL_APPROVED_SHA256 }}
+          CAPTURE_ID: ${{ needs.capture.outputs.capture_id }}
+          CAPTURE_SHA256: ${{ needs.capture.outputs.capture_sha256 }}
+          SOURCE_SHA: ${{ needs.capture.outputs.source_sha }}
+          VALIDATED_TREE: ${{ needs.capture.outputs.validated_tree }}
+        run: |
+          set -euo pipefail
+          [[ "$CONTROL_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$CAPTURE_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$CAPTURE_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$VALIDATED_TREE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          {
+            printf 'control_sha256=%s\n' "$CONTROL_SHA256"
+            printf 'source_sha=%s\n' "$SOURCE_SHA"
+            printf 'validated_tree=%s\n' "$VALIDATED_TREE"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check out reviewed SDK signer only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.authority.outputs.source_sha }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out exact landed tree as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ github.sha }}
+          path: landed-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download exact same-run capture handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.capture.outputs.capture_id }}
+          path: ${{ runner.temp }}/sdk-promoted
+      - name: Verify protected control, source, landed tree, and capture inventories
+        env:
+          PYTHONPATH: ${{ github.workspace }}/trusted-source
+          CONTROL_SHA256: ${{ steps.authority.outputs.control_sha256 }}
+          SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+          VALIDATED_TREE: ${{ steps.authority.outputs.validated_tree }}
+        run: |
+          set -euo pipefail
+          test "$(git -C trusted-source rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C landed-source rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C landed-source rev-parse 'HEAD^{tree}')" = "$VALIDATED_TREE"
+          python3 -B - <<'PY'
+          from pathlib import Path
+          import os
+          from ci.products.inventory import (
+              canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
+              regular_file_inventory, sha256_bytes, sha256_file,
+          )
+          root = Path(os.environ['RUNNER_TEMP']) / 'sdk-promoted'
+          control_path = root / 'inputs/control.json'
+          inventory = regular_file_inventory(root)
+          paths = {row['relativePath'] for row in inventory}
+          expected_inputs = {'control.json', 'authority.json', 'object-pins.json',
+              'carrier-producer.json', 'carrier-pins.json', 'index-handoff-pins.json'}
+          catalog_paths = {row['relativePath'] for row in regular_file_inventory(
+              root / 'captures/catalog')}
+          index_paths = {row['relativePath'] for row in regular_file_inventory(
+              root / 'captures/index')}
+          if paths != ({'inputs/' + name for name in expected_inputs}
+                  | {'captures/catalog/' + name for name in catalog_paths}
+                  | {'captures/index/' + name for name in index_paths}):
+              raise ValueError('SDK downloaded capture handoff has unexpected files')
+          if sha256_file(control_path, reject_symlink_parents=True) != os.environ['CONTROL_SHA256']:
+              raise ValueError('SDK capture control differs from independent signing approval')
+          control = load_canonical_json_bytes(read_regular_file_bytes(control_path))
+          if (control['trustedSourceCommit'] != os.environ['SOURCE_SHA']
+                  or control['validatedTree'] != os.environ['VALIDATED_TREE']):
+              raise ValueError('SDK capture source or landed tree differs from approved control')
+          for name, pin in (('authority', 'authoritySha256'),
+                            ('object-pins', 'objectPinsSha256'),
+                            ('carrier-producer', 'carrierProducerSha256'),
+                            ('carrier-pins', 'carrierPinsSha256'),
+                            ('index-handoff-pins', 'indexHandoffPinsSha256')):
+              if sha256_file(root / 'inputs' / (name + '.json'),
+                             reject_symlink_parents=True) != control[pin]:
+                  raise ValueError('SDK captured ' + name + ' differs from protected approval')
+          for name, pin in (('catalog', 'catalogCaptureInventorySha256'),
+                            ('index', 'indexCarrierInventorySha256')):
+              if sha256_bytes(canonical_json_bytes(regular_file_inventory(
+                      root / 'captures' / name))) != control[pin]:
+                  raise ValueError('SDK captured ' + name + ' differs from protected approval')
+          PY
+      - name: Sign only exact approved SDK catalog without an observation token
+        env:
+          PYTHONPATH: ${{ github.workspace }}/trusted-source
+          RELEASE_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/sdk-promoted"
+          control="$root/inputs/control.json"
+          key_file="$(mktemp "$RUNNER_TEMP/sdk-promoted-key.XXXXXX")"
+          chmod 600 "$key_file"
+          trap 'rm -f "$key_file"' EXIT
+          test -n "$RELEASE_PRIVATE_KEY"
+          printf '%s' "$RELEASE_PRIVATE_KEY" > "$key_file"
+          unset RELEASE_PRIVATE_KEY CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY
+          python3 -B -m ci.sdk_catalog_promotion_caller sign \
+            --authority "$root/inputs/authority.json" \
+            --object-pins "$root/inputs/object-pins.json" \
+            --index-carrier-producer "$root/inputs/carrier-producer.json" \
+            --index-carrier-pins "$root/inputs/carrier-pins.json" \
+            --index-handoff-pins "$root/inputs/index-handoff-pins.json" \
+            --landed-repository "$PWD/landed-source" \
+            --catalog-capture "$root/captures/catalog" \
+            --index-carrier-capture "$root/captures/index" \
+            --destination "$RUNNER_TEMP/sdk-promoted-catalog" \
+            --expected-authority-sha256 "$(jq -er '.authoritySha256' "$control")" \
+            --expected-object-pins-sha256 "$(jq -er '.objectPinsSha256' "$control")" \
+            --expected-catalog-size "$(jq -er '.catalogArtifactSize' "$control")" \
+            --catalog-workflow-sha "$(jq -er '.catalogWorkflowSha' "$control")" \
+            --expected-catalog-capture-inventory-sha256 "$(jq -er '.catalogCaptureInventorySha256' "$control")" \
+            --expected-index-carrier-inventory-sha256 "$(jq -er '.indexCarrierInventorySha256' "$control")" \
+            --private-key "$key_file"
+      - name: Upload immutable release-signed SDK promoted catalog
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-promoted-sdk-catalog-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-promoted-catalog
+          compression-level: 0
+          retention-days: 90
