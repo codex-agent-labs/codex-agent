@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from ci.products.index import SignedProductIndex
-from ci.products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes, snapshot_regular_tree
+from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory, sha256_bytes, snapshot_regular_tree
 from ci.products.receipt import compute_build_key, output_inventory_digest, write_output_manifest
 from ci.products.registry import PhaseInstanceId
 from ci.products.restore import finalize_phase_object
@@ -30,20 +30,23 @@ class SdkPhase10MavenCampaignTest(unittest.TestCase):
             path.write_bytes(data)
         self.selections = {}
         self.shards = {}
-        self.original_producer = {**producer(), "workflowPath": ".github/workflows/ci.yml"}
-        self.validated_plan = {"repository": self.original_producer["repository"],
-            "validationCommit": self.original_producer["commit"],
-            "validationTree": self.original_producer["tree"], "event": "pull_request",
-            "pullRequest": self.original_producer["pullRequest"],
-            "remoteBuildAuthorized": True}
+        self.validated_plans = {}
         entries = []
         for instance in sorted(SDK_CAMPAIGN_INSTANCES):
             entry = {"product": instance.product, "component": instance.component,
                      "phase": instance.phase, "target": instance.target,
                      "productVersion": "0.8.0"}
             if instance in _PACKAGES:
+                number = len(self.shards) + 1
+                original = {**producer(), "workflowPath": ".github/workflows/ci.yml",
+                    "commit": str(number) * 40, "tree": str(number + 3) * 40,
+                    "runId": 100 + number}
                 root = self.root / instance.component
                 root.mkdir()
+                self.validated_plans[root] = {"repository": original["repository"],
+                    "validationCommit": original["commit"],
+                    "validationTree": original["tree"], "event": "pull_request",
+                    "pullRequest": original["pullRequest"], "remoteBuildAuthorized": True}
                 source = root / "source"
                 source.mkdir()
                 output = source / "outputs/maven/payload.jar"
@@ -60,7 +63,7 @@ class SdkPhase10MavenCampaignTest(unittest.TestCase):
                     phase_plan={"schemaVersion": 1, "product": "sdk",
                         "component": instance.component, "phase": "package",
                         "target": instance.target, "buildKey": build_key, "inputs": inputs},
-                    producer=self.original_producer, product_version="0.8.0",
+                    producer=original, product_version="0.8.0",
                     trust_domain="development", destination=shard)
                 raw = verified["receiptBytes"]
                 receipt = root / "receipt.json"
@@ -70,8 +73,8 @@ class SdkPhase10MavenCampaignTest(unittest.TestCase):
                 self.shards[instance] = shard
                 self.selections[instance] = {
                     "plan": str(plan), "repositoryRoot": str(root), "receipt": str(receipt),
-                    "receiptSha256": sha256_bytes(raw), "producer": self.original_producer,
-                    "producerSha256": sha256_bytes(canonical_json_bytes(self.original_producer)),
+                    "receiptSha256": sha256_bytes(raw), "producer": original,
+                    "producerSha256": sha256_bytes(canonical_json_bytes(original)),
                     "artifactId": len(self.shards),
                     "artifactSha256": sha256_bytes(instance.component.encode()),
                     "trustedWorkflowSha": "a" * 40,
@@ -92,13 +95,19 @@ class SdkPhase10MavenCampaignTest(unittest.TestCase):
         snapshot_regular_tree(self.shards[instance], Path(destination) / "original/shard")
         (Path(destination) / "worker.log").write_bytes(b"")
         return {"artifact": {"id": options["artifact_id"], "digest": options["artifact_sha256"]},
-                "captureProducer": self.original_producer}
+                "captureProducer": self.selections[instance]["producer"]}
+
+    def _validate_plan(self, path, root, *, expected_revision):
+        selection = next(row for row in self.selections.values() if row["plan"] == str(path))
+        self.assertEqual(Path(selection["repositoryRoot"]), Path(root))
+        self.assertEqual(selection["producer"]["commit"], expected_revision)
+        return self.validated_plans[Path(root)]
 
     def _run(self):
         with patch("ci.sdk_phase10_maven_campaign.verify_release_product_index",
                    return_value=(self.campaign, self.index.read_bytes())), \
              patch("ci.sdk_phase10_maven_campaign.product_reuse._validate_plan",
-                   return_value=self.validated_plan), \
+                   side_effect=self._validate_plan), \
              patch("ci.sdk_phase10_maven_campaign.capture_sdk_maven_upload", side_effect=self._capture), \
              patch("ci.sdk_phase10_maven_campaign.product_reuse.capture_sdk_ios_package_upload",
                    side_effect=self._capture):
@@ -113,8 +122,14 @@ class SdkPhase10MavenCampaignTest(unittest.TestCase):
                 selections=self.selections, token="observation-token")
 
     def test_exact_three_originals_join_signed_index_without_signing(self):
+        self.assertEqual(3, len({row["producer"]["commit"]
+            for row in self.selections.values()}))
         result = self._run()
         self.assertEqual(3, len(result["packages"]))
+        for instance, selection in self.selections.items():
+            self.assertEqual(selection["producer"],
+                load_canonical_json_bytes((self.root / "custody" / instance.component /
+                    "phase-receipt.json").read_bytes())["producer"])
         self.assertTrue((self.root / "custody/sdk-ios/stage/outputs/maven/payload.jar").is_file())
         self.assertTrue((self.root / "custody/custody.json").is_file())
         self.assertEqual(b"", (self.root / "custody/sdk-core/capture/worker.log").read_bytes())
@@ -144,7 +159,7 @@ class SdkPhase10MavenCampaignTest(unittest.TestCase):
         with patch("ci.sdk_phase10_maven_campaign.verify_release_product_index",
                    return_value=(self.campaign, self.index.read_bytes())), \
              patch("ci.sdk_phase10_maven_campaign.product_reuse._validate_plan",
-                   return_value=self.validated_plan), \
+                   side_effect=self._validate_plan), \
              patch("ci.sdk_phase10_maven_campaign.capture_sdk_maven_upload", side_effect=wrong_artifact), \
              patch("ci.sdk_phase10_maven_campaign.product_reuse.capture_sdk_ios_package_upload",
                    side_effect=wrong_artifact):
@@ -166,11 +181,20 @@ class SdkPhase10MavenCampaignTest(unittest.TestCase):
             self._run()
         self.assertFalse((self.root / "custody").exists())
 
-    def test_unrelated_authorized_plan_fails_before_observation(self):
-        self.validated_plan["validationCommit"] = "b" * 40
-        with self.assertRaisesRegex(ValueError, "original plan differs"):
-            self._run()
-        self.assertFalse((self.root / "custody").exists())
+    def test_wrong_per_package_original_plan_or_commit_fails_before_publication(self):
+        instance = sorted(_PACKAGES)[0]
+        selected = self.selections[instance]
+        validated = self.validated_plans[Path(selected["repositoryRoot"])]
+        for field in ("validationCommit", "validationTree"):
+            with self.subTest(field=field):
+                old = validated[field]
+                validated[field] = "f" * 40
+                try:
+                    with self.assertRaisesRegex(ValueError, "original plan differs"):
+                        self._run()
+                    self.assertFalse((self.root / "custody").exists())
+                finally:
+                    validated[field] = old
 
     def test_late_caller_approval_mutation_fails_before_publication(self):
         original = self._capture
@@ -183,7 +207,7 @@ class SdkPhase10MavenCampaignTest(unittest.TestCase):
         with patch("ci.sdk_phase10_maven_campaign.verify_release_product_index",
                    return_value=(self.campaign, self.index.read_bytes())), \
              patch("ci.sdk_phase10_maven_campaign.product_reuse._validate_plan",
-                   return_value=self.validated_plan), \
+                   side_effect=self._validate_plan), \
              patch("ci.sdk_phase10_maven_campaign.capture_sdk_maven_upload",
                    side_effect=mutate_after_capture), \
              patch("ci.sdk_phase10_maven_campaign.product_reuse.capture_sdk_ios_package_upload",
