@@ -315,7 +315,7 @@ class ProductSelectionTest(unittest.TestCase):
                 for instance in PHASE_INSTANCE_IDS:
                     self.assertEqual((), phase_inventory_paths([path], instance))
 
-    def test_protected_contract_and_sdk_custody_controls_do_not_change_product_bytes(self):
+    def test_protected_product_custody_controls_do_not_change_product_bytes(self):
         contract_metadata = {PhaseInstanceId("contract", "contract", "metadata", "common")}
         runtime_metadata = {PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")}
         sdk = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "sdk"}
@@ -327,6 +327,7 @@ class ProductSelectionTest(unittest.TestCase):
                 ("ci/contract_catalog_caller.py", contract_metadata),
                 ("ci/contract_catalog_promotion.py", contract_metadata),
                 (".github/workflows/contract-promoted-catalog.yml", set()),
+                (".github/workflows/runtime-promoted-catalog.yml", set()),
                 (".github/workflows/runtime-library-authorizations.yml", set()),
                 (".github/workflows/sdk-promoted-catalog.yml", set()),
                 ("ci/products/sdk_catalog_promotion.py", set()),
