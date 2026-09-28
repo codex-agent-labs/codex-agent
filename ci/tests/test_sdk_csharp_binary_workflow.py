@@ -9,9 +9,10 @@ from unittest.mock import patch
 
 from ci import sdk_csharp_binary_workflow as workflow
 from ci.tests.product_chain_support import output, write_receipt
-from products.inventory import canonical_json_bytes, snapshot_regular_tree, write_canonical_json
+from products.inventory import canonical_json_bytes, sha256_bytes, snapshot_regular_tree, write_canonical_json
 from products.receipt import write_output_manifest
 from products.restore import PHASE_PLAN_KEYS
+from products.sdk_dotnet_toolchain import load_sdk_dotnet_profile_bytes
 
 
 class CSharpBinaryWorkflowTest(unittest.TestCase):
@@ -308,6 +309,121 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
                     keys_directory=self.keys, repository_root=self.root,
                     environ={}, token="fixture-token"):
                 self.fail("Missing C# original was accepted")
+
+    def test_csharp_original_handoff_publishes_only_after_context_and_pins_profile(self):
+        stage = self.produce(self.ready,
+            compatibility_request=self.sdk / "sdk-compatibility-request.json")["stage"]
+        profile_bytes = (Path(__file__).resolve().parents[2] /
+            "gradle/release/toolchains/sdk/csharp.json").read_bytes()
+        profile_digest = load_sdk_dotnet_profile_bytes(profile_bytes).digest
+        original = {"stage": stage, "receiptBytes": canonical_json_bytes(self.records["metadata"]["receipt"]),
+            "plan": {**self.ready, "inputs": {**self.ready["inputs"],
+                "toolchainProfileDigest": profile_digest}},
+            "transportSource": {"kind": "same-pr"}, "revision": self.producer["commit"]}
+        context_exits = []
+
+        @contextmanager
+        def held(*_args, **_kwargs):
+            yield original
+            context_exits.append(True)
+
+        destination = self.root / "build/csharp-handoff"
+        with (patch.object(workflow, "verified_csharp_original", side_effect=held),
+              patch.object(workflow, "git_regular_blob_bytes", return_value=profile_bytes)):
+            result = workflow.stage_csharp_original(self.plan, self.discovery, self.state,
+                destination, repository_root=self.root, environ={})
+        self.assertEqual([True], context_exits)
+        self.assertEqual(destination / "csharp-binary", result["csharpBinary"])
+        self.assertEqual(profile_bytes, result["dotnetProfile"].read_bytes())
+        self.assertEqual(original["receiptBytes"], result["receipt"].read_bytes())
+        self.assertEqual({"CodexAgent.dll", "CodexAgent.pdb", "CodexAgent.xml",
+            "CodexAgent.deps.json", "sdk-compatibility.json", "sdk-runtime-root.pub"},
+            {path.name for path in result["csharpBinary"].iterdir()})
+
+        original["plan"]["inputs"]["toolchainProfileDigest"] = "sha256:" + "0" * 64
+        with (patch.object(workflow, "verified_csharp_original", side_effect=held),
+              patch.object(workflow, "git_regular_blob_bytes", return_value=profile_bytes),
+              self.assertRaisesRegex(ValueError, "pinned .NET toolchain")):
+            workflow.stage_csharp_original(self.plan, self.discovery, self.state,
+                self.root / "build/rejected-handoff", repository_root=self.root, environ={})
+        self.assertFalse((self.root / "build/rejected-handoff").exists())
+
+        original["plan"]["inputs"]["toolchainProfileDigest"] = profile_digest
+
+        @contextmanager
+        def rejected_after_use(*_args, **_kwargs):
+            yield original
+            raise ValueError("original context exit rejected")
+
+        with (patch.object(workflow, "verified_csharp_original", side_effect=rejected_after_use),
+              patch.object(workflow, "git_regular_blob_bytes", return_value=profile_bytes),
+              self.assertRaisesRegex(ValueError, "original context exit rejected")):
+            workflow.stage_csharp_original(self.plan, self.discovery, self.state,
+                self.root / "build/rejected-after-exit", repository_root=self.root, environ={})
+        self.assertFalse((self.root / "build/rejected-after-exit").exists())
+
+    def test_selected_csharp_original_uses_exact_carrier_and_keeps_cross_run_producer(self):
+        stage = self.produce(self.ready,
+            compatibility_request=self.sdk / "sdk-compatibility-request.json")["stage"]
+        manifest = workflow.verify_output_manifest_identity(stage, "sdk", "csharp", "binary",
+            "desktop", "0.8.0")
+        original_producer = {**self.producer, "commit": "d" * 40, "tree": "e" * 40,
+            "runId": 20, "runAttempt": 2}
+        receipt = write_receipt(self.root / "selected-csharp-receipt.json", product="sdk",
+            component="csharp", phase="binary", target="desktop", version="0.8.0",
+            version_identity="0.8.0", outputs=manifest["outputs"], upstream=[],
+            context={"producer": original_producer})
+        raw = canonical_json_bytes(receipt)
+        record = {"state": "retained", "buildKey": receipt["buildKey"], "receiptSha256": sha256_bytes(raw),
+            "objectSha256": "sha256:" + "f" * 64}
+        selected = SimpleNamespace(closure=(workflow._INSTANCE,),
+            sources={workflow._INSTANCE: self.root / "authenticated-object.zip"},
+            prior_by_instance={workflow._INSTANCE: record},
+            prior_ready_plans={},
+            prior_carrier_phases={workflow._INSTANCE: {"transportSource": None}},
+            producer=self.producer, plan={"validationCommit": self.producer["commit"]})
+
+        def restore(_archive, destination, **kwargs):
+            self.assertEqual({key: record[key] for key in ("buildKey", "receiptSha256", "objectSha256")},
+                {"buildKey": kwargs["build_key"],
+                "receiptSha256": kwargs["receipt_sha256"], "objectSha256": kwargs["object_sha256"]})
+            snapshot_regular_tree(stage, destination)
+            return {"receipt": receipt, "receiptBytes": raw}
+
+        with (patch.object(workflow.sdk_workflow, "verified_inputs", side_effect=self.verified),
+              patch.object(workflow.product_reuse, "_verified_product_state", return_value=selected),
+              patch.object(workflow, "restore_object", side_effect=restore),
+              patch.object(workflow, "git_regular_blob_bytes",
+                           return_value=(self.root / "gradle/release/keys/sdk-runtime-root.pub").read_bytes())):
+            with workflow.verified_selected_csharp_original(self.plan, self.discovery, self.state,
+                    sdk_inputs_artifact_id=10, sdk_inputs_artifact_sha256="sha256:" + "c" * 64,
+                    trusted_workflow_sha="sha256:" + "d" * 64, keyring=self.keyring,
+                    keys_directory=self.keys, repository_root=self.root,
+                    environ={}, token="fixture-token") as original:
+                captured_stage = original["stage"]
+                self.assertEqual(original_producer, original["receipt"]["producer"])
+                self.assertEqual(None, original["transportSource"])
+                self.assertTrue((captured_stage / "outputs/csharp/CodexAgent.dll").is_file())
+        self.assertFalse(captured_stage.exists())
+
+    def test_csharp_original_route_uses_selected_carrier_only_when_selected(self):
+        for selected in (True, False):
+            state = SimpleNamespace(closure=(workflow._INSTANCE,) if selected else ())
+
+            @contextmanager
+            def chosen(*_args, **_kwargs):
+                yield {"route": "selected" if selected else "same-pr"}
+
+            with (patch.object(workflow.product_reuse, "_verified_product_state", return_value=state),
+                  patch.object(workflow, "verified_selected_csharp_original",
+                               side_effect=chosen) as selected_route,
+                  patch.object(workflow, "verified_lookup_only_same_pr_original",
+                               side_effect=chosen) as lookup_route):
+                with workflow.verified_csharp_original(self.plan, self.discovery, self.state,
+                        repository_root=self.root, environ={}, trusted_workflow_sha="a" * 40) as original:
+                    self.assertEqual("selected" if selected else "same-pr", original["route"])
+            self.assertEqual(int(selected), selected_route.call_count)
+            self.assertEqual(int(not selected), lookup_route.call_count)
 
 
 if __name__ == "__main__":

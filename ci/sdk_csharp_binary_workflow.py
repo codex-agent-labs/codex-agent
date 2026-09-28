@@ -15,11 +15,12 @@ import sdk_workflow
 from products.contract_projection import verify_contract_component_projection
 from products.inventory import (
     canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes, publish_regular_tree,
-    read_regular_file_bytes, regular_file_inventory, sha256_file,
+    read_regular_file_bytes, regular_file_inventory, sha256_file, snapshot_regular_tree,
 )
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
 from products.registry import PhaseInstanceId
-from products.restore import PHASE_PLAN_KEYS, PHASE_RECEIPT_NAME, verify_phase_shard
+from products.restore import PHASE_PLAN_KEYS, PHASE_RECEIPT_NAME, restore_object, verify_phase_shard
+from products.sdk_dotnet_toolchain import load_sdk_dotnet_profile_bytes
 from products.sdk_inputs import COMPATIBILITY_NAME, REQUEST_NAME
 from products.sdk_native_metadata import _inventory
 from products.sdk_package import _require_capability_output_separate
@@ -179,7 +180,8 @@ def verified_lookup_only_same_pr_original(plan, discovery, state, *,
             try:
                 yield {"plan": elected, "stage": stage, "receipt": receipt,
                     "receiptBytes": receipt_bytes,
-                    "transportSource": found.transport_source}
+                    "transportSource": found.transport_source,
+                    "revision": verified.plan["validationCommit"]}
             finally:
                 if (regular_file_inventory(stage) != before
                         or canonical_json_bytes(receipt) != receipt_bytes
@@ -188,6 +190,144 @@ def verified_lookup_only_same_pr_original(plan, discovery, state, *,
                     raise ValueError("Lookup-only C# original changed during use")
                 controls_unchanged()
                 require_no_signing_secret(environ)
+
+
+@contextmanager
+def verified_selected_csharp_original(plan, discovery, state, *,
+        sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
+        keyring, keys_directory, repository_root, environ, token,
+        sdk_validation_tooling=None, sdk_apple_validation_policy=None,
+        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    """Hold the selected C# binary's exact carrier object, without rebuilding it."""
+    require_no_signing_secret(environ)
+    root = Path(repository_root).resolve(strict=True)
+    plan, discovery, state = Path(plan), Path(discovery), Path(state)
+    control_plan = read_regular_file_bytes(plan, max_bytes=_LIMIT, reject_symlink_parents=True)
+    controls = {path: regular_file_inventory(path, allow_empty=True)
+        for path in (discovery, state)}
+
+    def controls_unchanged():
+        if (read_regular_file_bytes(plan, max_bytes=_LIMIT, reject_symlink_parents=True) != control_plan
+                or any(regular_file_inventory(path, allow_empty=True) != inventory
+                       for path, inventory in controls.items())):
+            raise ValueError("Selected C# plan or state controls changed")
+
+    with tempfile.TemporaryDirectory(prefix="sdk-csharp-selected-", dir=root) as temporary:
+        private = Path(temporary).resolve()
+        stage = private / "stage"
+        with sdk_workflow.verified_inputs(plan, discovery, state,
+                artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
+                trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
+                keys_directory=keys_directory, repository_root=root, environ=environ,
+                token=token, sdk_validation_tooling=sdk_validation_tooling,
+                sdk_apple_validation_policy=sdk_apple_validation_policy,
+                sdk_facade_metadata_admission=sdk_facade_metadata_admission,
+                sdk_android_metadata_admission=sdk_android_metadata_admission) as inputs:
+            verified = product_reuse._verified_product_state(
+                plan, discovery, state, root, environ, sdk_validation_tooling,
+                sdk_original_workflow_sha=trusted_workflow_sha,
+                sdk_apple_validation_policy=sdk_apple_validation_policy,
+                sdk_facade_metadata_admission=sdk_facade_metadata_admission,
+                sdk_android_metadata_admission=sdk_android_metadata_admission)
+            controls_unchanged()
+            if _INSTANCE not in verified.closure or _INSTANCE not in verified.sources:
+                raise ValueError("Selected C# binary lacks an authenticated carrier original")
+            record = verified.prior_by_instance[_INSTANCE]
+            if record["state"] not in {"retained", "reused"}:
+                raise ValueError("Selected C# binary is not a completed original")
+            restored = restore_object(verified.sources[_INSTANCE], stage,
+                build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
+                object_sha256=record["objectSha256"])
+            receipt = restored["receipt"]
+            elected = {name: receipt[name] for name in PHASE_PLAN_KEYS}
+            producer = receipt["producer"]
+            if (product_reuse._identity(receipt) != _INSTANCE
+                    or elected["buildKey"] != record["buildKey"]
+                    or producer["event"] != "pull_request"
+                    or producer["repository"] != verified.producer["repository"]
+                    or producer["pullRequest"] != verified.producer["pullRequest"]
+                    or receipt["productVersion"] != inputs["selection"]["sdkVersion"]):
+                raise ValueError("Selected C# original differs from its PR or SDK version")
+            root_key = private / "sdk-runtime-root.pub"
+            root_key.write_bytes(git_regular_blob_bytes(root, verified.plan["validationCommit"],
+                "gradle/release/keys/sdk-runtime-root.pub", max_bytes=65_536))
+            verify_csharp_binary_stage(stage, receipt,
+                inputs["sdk"]["directory"] / COMPATIBILITY_NAME, root_key)
+            before = regular_file_inventory(stage)
+            receipt_bytes = restored["receiptBytes"]
+            elected_bytes = canonical_json_bytes(elected)
+            transport = verified.prior_carrier_phases[_INSTANCE]["transportSource"]
+            transport_bytes = canonical_json_bytes(transport)
+            try:
+                yield {"plan": elected, "stage": stage, "receipt": receipt,
+                    "receiptBytes": receipt_bytes, "transportSource": transport,
+                    "revision": verified.plan["validationCommit"]}
+            finally:
+                if (regular_file_inventory(stage) != before
+                        or canonical_json_bytes(receipt) != receipt_bytes
+                        or canonical_json_bytes(elected) != elected_bytes
+                        or canonical_json_bytes(transport) != transport_bytes):
+                    raise ValueError("Selected C# original changed during use")
+                controls_unchanged()
+                require_no_signing_secret(environ)
+
+
+@contextmanager
+def verified_csharp_original(plan, discovery, state, **kwargs):
+    """Use a selected carrier when present; otherwise require signed same-PR reuse."""
+    root = Path(kwargs["repository_root"]).resolve(strict=True)
+    verified = product_reuse._verified_product_state(
+        Path(plan), Path(discovery), Path(state), root, kwargs["environ"],
+        kwargs.get("sdk_validation_tooling"),
+        sdk_original_workflow_sha=kwargs["trusted_workflow_sha"],
+        sdk_apple_validation_policy=kwargs.get("sdk_apple_validation_policy"),
+        sdk_facade_metadata_admission=kwargs.get("sdk_facade_metadata_admission"),
+        sdk_android_metadata_admission=kwargs.get("sdk_android_metadata_admission"))
+    route = (verified_selected_csharp_original if _INSTANCE in verified.closure
+             else verified_lookup_only_same_pr_original)
+    with route(plan, discovery, state, **kwargs) as original:
+        yield original
+
+
+def stage_csharp_original(plan, discovery, state, destination, **kwargs):
+    """Publish only checked C# package inputs after their original context exits."""
+    require_no_signing_secret(kwargs["environ"])
+    root = Path(kwargs["repository_root"]).resolve(strict=True)
+    _, _, destination = product_reuse._product_materialization_paths(
+        root, discovery, state, destination)
+    if (root not in destination.parents or destination.resolve(strict=False) != destination
+            or destination.exists() or destination.is_symlink()):
+        raise ValueError("C# original handoff destination must be fresh inside checkout")
+    with tempfile.TemporaryDirectory(prefix="sdk-csharp-handoff-", dir=root) as temporary:
+        prepared = Path(temporary).resolve() / "handoff"
+        prepared.mkdir()
+        with verified_csharp_original(plan, discovery, state, **kwargs) as original:
+            source = original["stage"] / "outputs/csharp"
+            source_files = regular_file_inventory(source)
+            snapshot_regular_tree(source, prepared / "csharp-binary")
+            if regular_file_inventory(prepared / "csharp-binary") != source_files:
+                raise ValueError("C# original binary changed during handoff copy")
+            profile_bytes = git_regular_blob_bytes(root, original["revision"],
+                "gradle/release/toolchains/sdk/csharp.json", max_bytes=65_536)
+            profile = load_sdk_dotnet_profile_bytes(profile_bytes)
+            if profile.digest != original["plan"]["inputs"]["toolchainProfileDigest"]:
+                raise ValueError("C# original differs from its pinned .NET toolchain profile")
+            (prepared / "sdk-csharp-toolchain.json").write_bytes(profile_bytes)
+            evidence = prepared / "original"
+            evidence.mkdir()
+            (evidence / "phase-receipt.json").write_bytes(original["receiptBytes"])
+            (evidence / "phase-plan.json").write_bytes(canonical_json_bytes(original["plan"]))
+            (evidence / "transport-source.json").write_bytes(canonical_json_bytes(
+                original["transportSource"]))
+            handoff_inventory = regular_file_inventory(prepared)
+        if regular_file_inventory(prepared) != handoff_inventory:
+            raise ValueError("C# original handoff changed after verification")
+        publish_regular_tree(prepared, destination, expected_inventory=handoff_inventory)
+    return {"csharpBinary": destination / "csharp-binary",
+            "dotnetProfile": destination / "sdk-csharp-toolchain.json",
+            "receipt": destination / "original/phase-receipt.json",
+            "plan": destination / "original/phase-plan.json",
+            "transport": destination / "original/transport-source.json"}
 
 
 def execute(plan, discovery, state, destination, *, expected_build_key,
