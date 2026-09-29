@@ -345,7 +345,7 @@ class PriorFailedPrAttemptTest(unittest.TestCase):
         exact.assert_called_once_with(
             "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/90/attempts/2", "token")
 
-    def test_rerun_checks_only_immediately_preceding_attempt(self):
+    def test_rerun_without_artifact_filter_uses_immediate_attempt(self):
         self.producer = {"runId": 90, "runAttempt": 3}
         with mock.patch.object(product_reuse, "paginated_items") as listing, \
                 mock.patch.object(product_reuse, "api_json", return_value=self.run) as exact:
@@ -354,6 +354,18 @@ class PriorFailedPrAttemptTest(unittest.TestCase):
         listing.assert_not_called()
         exact.assert_called_once()
 
+    def test_rerun_recovers_earlier_attempt_when_latest_has_no_phase_upload(self):
+        self.producer = {"runId": 90, "runAttempt": 3}
+        earlier = {**self.run, "run_attempt": 1, "conclusion": "cancelled"}
+        prefix = "codex-agent-runtime-worker-macos-x64-binary-macos-x64-"
+        with mock.patch.object(product_reuse, "paginated_items", return_value=[
+            {"name": prefix + "key-tree-attempt-1", "expired": False},
+        ]) as listing, mock.patch.object(product_reuse, "api_json", side_effect=[self.run, earlier]) as exact:
+            self.assertEqual(earlier, product_reuse._prior_failed_pr_attempt(
+                self.plan, self.producer, "token", required_artifact_prefixes=(prefix,)))
+        listing.assert_called_once()
+        self.assertEqual(2, exact.call_count)
+
     def test_cancelled_attempt_is_eligible_for_exact_phase_admission(self):
         cancelled = {**self.run, "conclusion": "cancelled"}
         with mock.patch.object(product_reuse, "paginated_items", return_value=[cancelled]), \
@@ -361,16 +373,16 @@ class PriorFailedPrAttemptTest(unittest.TestCase):
             self.assertEqual(cancelled, product_reuse._prior_failed_pr_attempt(
                 self.plan, self.producer, "token"))
 
-    def test_native_recovery_skips_newer_run_without_current_attempt_upload(self):
+    def test_native_recovery_uses_earlier_attempt_in_newer_run(self):
         older = {**self.run, "id": 80, "conclusion": "cancelled"}
+        earlier = {**self.run, "run_attempt": 1, "conclusion": "cancelled"}
         prefix = "codex-agent-runtime-worker-macos-x64-binary-macos-x64-"
         with mock.patch.object(product_reuse, "paginated_items", side_effect=[
             [older, self.run], [{"name": prefix + "key-tree-attempt-1", "expired": False}],
-            [{"name": prefix + "key-tree-attempt-2", "expired": False}],
-        ]) as listing, mock.patch.object(product_reuse, "api_json", side_effect=[self.run, older]):
-            self.assertEqual(older, product_reuse._prior_failed_pr_attempt(
+        ]) as listing, mock.patch.object(product_reuse, "api_json", side_effect=[self.run, earlier]):
+            self.assertEqual(earlier, product_reuse._prior_failed_pr_attempt(
                 self.plan, self.producer, "token", required_artifact_prefixes=(prefix,)))
-        self.assertEqual(3, listing.call_count)
+        self.assertEqual(2, listing.call_count)
 
     def test_native_recovery_treats_different_workflow_pin_as_cache_miss(self):
         prior = {**self.run, "referenced_workflows": [{

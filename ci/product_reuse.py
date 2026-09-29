@@ -342,6 +342,7 @@ def _prior_failed_pr_attempt(
     current_run = require_integer(producer["runId"], "Current product run ID", 1)
     current_attempt = require_integer(producer["runAttempt"], "Current product run attempt", 1)
     prefix = f"{api}/repos/{repository}/actions/runs"
+    artifact_lists: dict[int, list[Any]] = {}
 
     def eligible(run: Mapping[str, Any], run_id: int, attempt: int) -> bool:
         return (
@@ -361,7 +362,10 @@ def _prior_failed_pr_attempt(
     def has_required_artifact(run_id: int, attempt: int) -> bool:
         if not required_artifact_prefixes:
             return True
-        artifacts = paginated_items(f"{prefix}/{run_id}/artifacts", "artifacts", token)
+        if run_id not in artifact_lists:
+            artifact_lists[run_id] = paginated_items(
+                f"{prefix}/{run_id}/artifacts", "artifacts", token)
+        artifacts = artifact_lists[run_id]
         return any(isinstance(artifact, dict) and artifact.get("expired") is False
                    and isinstance(artifact.get("name"), str)
                    and artifact["name"].startswith(required_artifact_prefixes)
@@ -369,12 +373,15 @@ def _prior_failed_pr_attempt(
                    for artifact in artifacts)
 
     if current_attempt > 1:
-        previous = api_json(f"{prefix}/{current_run}/attempts/{current_attempt - 1}", token)
-        if previous.get("conclusion") not in {"failure", "cancelled"}:
-            return None
-        if not eligible(previous, current_run, current_attempt - 1):
-            raise ValueError("Prior failed PR attempt differs from the current run")
-        return previous if has_required_artifact(current_run, current_attempt - 1) else None
+        for attempt in range(current_attempt - 1, 0, -1):
+            previous = api_json(f"{prefix}/{current_run}/attempts/{attempt}", token)
+            if previous.get("conclusion") not in {"failure", "cancelled"}:
+                continue
+            if not eligible(previous, current_run, attempt):
+                raise ValueError("Prior failed PR attempt differs from the current run")
+            if has_required_artifact(current_run, attempt):
+                return previous
+        return None
 
     runs = paginated_items(
         f"{api}/repos/{repository}/actions/workflows/ci.yml/runs?event=pull_request&status=completed",
@@ -386,13 +393,15 @@ def _prior_failed_pr_attempt(
     if not candidates:
         return None
     for selected in sorted(candidates, key=lambda run: run["id"], reverse=True):
-        attempt = require_integer(selected.get("run_attempt"), "Prior product run attempt", 1)
-        original = api_json(f"{prefix}/{selected['id']}/attempts/{attempt}", token)
-        if not eligible(original, selected["id"], attempt):
-            raise ValueError("Prior failed PR attempt differs from its official workflow listing")
-        if not has_required_artifact(selected["id"], attempt):
-            continue
-        return original
+        latest_attempt = require_integer(selected.get("run_attempt"), "Prior product run attempt", 1)
+        for attempt in range(latest_attempt, 0, -1):
+            original = api_json(f"{prefix}/{selected['id']}/attempts/{attempt}", token)
+            if original.get("conclusion") not in {"failure", "cancelled"}:
+                continue
+            if not eligible(original, selected["id"], attempt):
+                raise ValueError("Prior failed PR attempt differs from its official workflow listing")
+            if has_required_artifact(selected["id"], attempt):
+                return original
     return None
 
 
