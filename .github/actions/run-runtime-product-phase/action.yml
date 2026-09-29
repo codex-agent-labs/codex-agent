@@ -108,3 +108,28 @@ runs:
           --product runtime --component "$COMPONENT" --phase "$PHASE" --target "$TARGET" \
           --sdk-original-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
           --expected-build-key "$BUILD_KEY" --destination build/runtime-worker ${extra[@]+"${extra[@]}"}
+    - name: Retain failed imported native test reports
+      if: failure() && inputs.component == 'macos-arm64' && inputs.phase == 'validation'
+      shell: bash
+      run: |
+        reports=(codex-agent-runtime-desktop/build/test-results/testImportedMacosArm64CAbi/*.xml)
+        if [ -f "${reports[0]}" ]; then
+          mkdir -p build/runtime-worker/test-results
+          cp "${reports[@]}" build/runtime-worker/test-results/
+        fi
+    - name: Retain failed Windows producer observation
+      if: failure() && inputs.component == 'windows-x64' && inputs.phase == 'binary'
+      shell: bash
+      env:
+        REVISION: ${{ inputs.revision }}
+      run: |
+        paths=build/runtime-worker/toolchain-bootstrap/paths.json
+        if [ -f "$paths" ]; then
+          python3 -m ci.products.toolchain observe-producer \
+            --repository-root . --repository-revision "$REVISION" \
+            --profile-id windows-x64 --producer-role builder --target windows-x64 \
+            --konan-data-dir "$(jq -r .konanDataDir "$paths")" \
+            --kotlin-plugin-jar "$(jq -r .plugin "$paths")" \
+            --native-archive "$(jq -r .archive "$paths")" \
+            --output build/runtime-worker/toolchain-observation.json
+        fi
