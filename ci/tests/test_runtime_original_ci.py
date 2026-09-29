@@ -2,6 +2,7 @@
 import copy
 import json
 from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
@@ -103,7 +104,16 @@ class RuntimeOriginalCiTest(unittest.TestCase):
             result = adapter.capture_prior_failed_runtime_prefixes(
                 plan, {"runId": 100, "runAttempt": 1}, (TARGET,), destination,
                 trusted_workflow_sha=self.pin, token="not-a-real-token")
+            real_temp = self.root / "real-temp"
+            real_temp.mkdir()
+            linked_temp = self.root / "linked-temp"
+            linked_temp.symlink_to(real_temp, target_is_directory=True)
+            with mock.patch.object(tempfile, "tempdir", str(linked_temp)):
+                records = adapter._prior_failed_runtime_objects(
+                    destination, self.root, trusted_workflow_sha=self.pin,
+                    token="not-a-real-token")
         self.assertEqual({TARGET}, set(result))
+        self.assertEqual({"binary", "package"}, {record["phase"] for record in records})
         self.assertEqual({"binary", "package"}, set(result[TARGET]["artifacts"]))
         for phase in ("binary", "package"):
             self.assertEqual(self.receipts[phase].read_bytes(),

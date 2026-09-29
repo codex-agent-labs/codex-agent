@@ -1146,7 +1146,7 @@ def _prior_failed_runtime_objects(
             if trusted_workflow_sha is not None:
                 if not token:
                     raise ValueError("Prior failed Runtime recheck requires a token")
-                replay = Path(temporary) / member.name
+                replay = Path(temporary).resolve(strict=True) / member.name
                 capture_runtime_original_ci_phases(
                     receipts, replay, target=member.name,
                     trusted_workflow_sha=trusted_workflow_sha, token=token)
