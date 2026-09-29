@@ -23,10 +23,15 @@ class ImportedCAbiBootstrapTasksTest {
             Files.createSymbolicLink(dangling.toPath(), root.resolve("missing").toPath())
             for (output in listOf(link.resolve("new"), link.resolve("../new"), dangling,
                                   original.resolve("new"), original, root, sentinel.resolve("new"))) {
-                assertFailsWith<IllegalStateException> { requireAbsentImportedCAbiWorkspace(output, original) }
+                assertFailsWith<IllegalStateException> { requireVacantImportedCAbiWorkspace(output, original) }
                 assertEquals("preserve", sentinel.readText())
             }
-            requireAbsentImportedCAbiWorkspace(root.resolve("safe/new"), original)
+            val empty = root.resolve("empty").apply { mkdirs() }
+            requireVacantImportedCAbiWorkspace(empty, original)
+            empty.resolve("occupied").writeText("preserve")
+            assertFailsWith<IllegalStateException> { requireVacantImportedCAbiWorkspace(empty, original) }
+            assertEquals("preserve", empty.resolve("occupied").readText())
+            requireVacantImportedCAbiWorkspace(root.resolve("safe/new"), original)
             assertFalse(root.resolve("safe").exists())
         } finally {
             root.deleteRecursively()

@@ -14,7 +14,7 @@ import org.gradle.work.DisableCachingByDefault
 
 internal const val IMPORTED_C_ABI_TEST_TASK = "testImportedMacosArm64CAbi"
 
-internal fun requireAbsentImportedCAbiWorkspace(output: File, stage: File) {
+internal fun requireVacantImportedCAbiWorkspace(output: File, stage: File) {
     // Inspect lexical ancestors before normalization can erase a symbolic `link/..`.
     generateSequence(output.toPath().toAbsolutePath()) { it.parent }.forEach { path ->
         check(!Files.isSymbolicLink(path) &&
@@ -22,13 +22,15 @@ internal fun requireAbsentImportedCAbiWorkspace(output: File, stage: File) {
             "Imported C ABI workspace has an unsafe parent: $path"
         }
     }
-    check(!Files.exists(output.toPath(), LinkOption.NOFOLLOW_LINKS)) {
-        "Imported C ABI execution workspace already exists"
-    }
     val destination = output.toPath().toAbsolutePath().normalize()
     val original = stage.toPath().toAbsolutePath().normalize()
     check(!destination.startsWith(original) && !original.startsWith(destination)) {
         "Imported C ABI execution workspace overlaps its original stage"
+    }
+    if (Files.exists(output.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+        Files.newDirectoryStream(output.toPath()).use { entries ->
+            check(!entries.iterator().hasNext()) { "Imported C ABI execution workspace is not empty" }
+        }
     }
 }
 
@@ -76,7 +78,7 @@ abstract class PrepareImportedCAbiBootstrapTask : DefaultTask() {
             requireRegularRuntimeProductTree(runner.resolve("source/$source").toPath(), "Original C ABI $source sources")
         }
         val output = outputDirectory.get().asFile
-        requireAbsentImportedCAbiWorkspace(output, stage)
+        requireVacantImportedCAbiWorkspace(output, stage)
         val reference = stage.resolve("outputs/c-abi-reference")
         inspectAndStageCrossLanguageCAbiPackage(
             stage.resolve("outputs/c-abi/${crossLanguageCAbiArchiveFileName(compatibilityVersion.get(), "macosArm64")}"),
