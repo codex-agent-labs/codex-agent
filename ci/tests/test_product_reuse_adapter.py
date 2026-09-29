@@ -2951,6 +2951,16 @@ class ProductReuseAdapterTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             product_reuse._wave_control(request, "untrusted retained request")
 
+    def test_native_report_selector_accepts_receipt_bound_pretty_json(self) -> None:
+        stage = self.root.resolve() / "native-stage"
+        report = stage / "outputs/native/desktop-runtime-mingwX64.json"
+        report.parent.mkdir(parents=True)
+        report.write_text(json.dumps({"target": "mingwX64", "result": "success"}, indent=2) + "\n")
+        dependency = PhaseInstanceId("runtime", "windows-x64", "validation", "windows-x64")
+        metadata = PhaseInstanceId("runtime", "windows-x64", "metadata", "windows-x64")
+        receipt = {"outputs": [{"kind": "native", "relativePath": "outputs/native/desktop-runtime-mingwX64.json"}]}
+        self.assertEqual(report, product_reuse._runtime_report_output(metadata, dependency, stage, receipt))
+
     def test_outer_jvm_handoff_orders_five_reports_and_rejects_cross_pairing(self) -> None:
         root = self.root.resolve()
         metadata = PhaseInstanceId("runtime", "jvm", "metadata", "jvm")

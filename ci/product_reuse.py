@@ -2741,7 +2741,7 @@ def _runtime_report_output(
                 continue
             path = stage.joinpath(*PurePosixPath(output["relativePath"]).parts)
             try:
-                report = load_canonical_json_bytes(read_regular_file_bytes(
+                report = load_json_bytes(read_regular_file_bytes(
                     path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
                 ))
             except (OSError, ValueError):
