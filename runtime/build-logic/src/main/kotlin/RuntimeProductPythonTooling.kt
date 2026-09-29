@@ -8,6 +8,7 @@ import java.util.concurrent.TimeUnit
 private val runtimeProductPythonResources = listOf(
     "ci/products/__init__.py",
     "ci/products/inventory.py",
+    "ci/products/zip_central_directory.py",
     "ci/products/test_results.py",
     "ci/products/runtime_evidence.py",
     "ci/products/c_abi.py",

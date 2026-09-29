@@ -10,6 +10,15 @@ import kotlin.test.assertTrue
 
 class RuntimeProductPythonToolingTest {
     @Test
+    fun `packaged inventory can load its ZIP central directory verifier`() {
+        val output = runRuntimeProductPythonModule("runtime_evidence", emptyList(), resources("""
+            from ci.products.zip_central_directory import verify_zip64_end_record
+            print('packaged ZIP verifier')
+        """.trimIndent()))
+        assertEquals("packaged ZIP verifier\n", output)
+    }
+
+    @Test
     fun `existing packaged modules retain their entrypoints and strict allowlist`() {
         val catalog = runRuntimeProductPythonModule("c_abi", listOf("describe"))
         assertTrue("targets" in catalog)
