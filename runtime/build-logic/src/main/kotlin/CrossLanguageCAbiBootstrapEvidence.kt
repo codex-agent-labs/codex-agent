@@ -42,7 +42,7 @@ private const val C_ABI_FOUNDATION_C_SHA256 =
 private const val C_ABI_FOUNDATION_CPP_SHA256 =
     "8f2edc0bdecfe8f59da2343f5f5fee558fd374d8d6752050a420a08afbdc3cec"
 private const val C_ABI_LIFECYCLE_C_SHA256 =
-    "2e0a50a2de2fc42196b255ae14d37bef513c46967dc78ed1e231453a768ca6b3"
+    "f02124d323a7cbbbbb0f53d72994ae2ff2c7b62ed1da70b2edbc9a5599a3de7f"
 private const val C_ABI_LIFECYCLE_CPP_SHA256 =
     "a7d318067e28d812d16000736eecbec3d5febad3856d556c9fb1b2ba3c079b7a"
 private const val C_ABI_CONVERSATION_VALUES_C_SHA256 =
