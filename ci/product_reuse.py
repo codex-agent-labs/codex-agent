@@ -156,7 +156,7 @@ _CATALOG_ZIP_LIMITS = {
     "require_sorted": False,
     "max_archive_bytes": _CATALOG_LIMIT,
     "max_central_directory_bytes": 32 * 1024 * 1024,
-    "max_members": 8192,
+    "max_members": 16_384,
     "max_entry_bytes": OBJECT_ZIP_LIMITS["max_archive_bytes"],
     "max_total_bytes": _CATALOG_LIMIT,
     "max_compression_ratio": 200,
