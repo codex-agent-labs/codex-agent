@@ -611,7 +611,7 @@ int main(void) {
         INT32_C(1));
     CHECK(codex_agent_abi_is_compatible(CODEX_AGENT_ABI_VERSION_CURRENT) == INT32_C(1));
     CHECK(
-        codex_agent_abi_is_compatible(CODEX_AGENT_ABI_VERSION_ENCODE(1, 13, 0)) ==
+        codex_agent_abi_is_compatible(CODEX_AGENT_ABI_VERSION_ENCODE(1, 14, 0)) ==
         INT32_C(0));
     CHECK(codex_agent_context_create(&context) == CODEX_AGENT_STATUS_OK);
     CHECK(context != NULL);
