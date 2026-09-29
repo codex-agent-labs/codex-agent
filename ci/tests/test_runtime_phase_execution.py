@@ -456,11 +456,15 @@ class ProductWorkerCheckoutTest(unittest.TestCase):
             root = Path(temporary)
             environment = {"CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH": "true", "RUNNER_TEMP": temporary}
             with mock.patch("products.toolchain_capture_bootstrap.prepare", return_value={
-                    "plugin": str(root / "plugin.jar"), "archive": str(root / "native.tar.gz")}) as prepare:
+                    "plugin": str(root / "plugin.jar"), "archive": str(root / "native.tar.gz"),
+                    "compiler": str(root / "konan/compiler")}) as prepare:
                 properties = adapter._provision_runtime_native_toolchain(
                     root, "a" * 40, "macos-arm64", root / "worker", environment)
             self.assertEqual({"codexAgent.kotlinPluginJar": str(root / "plugin.jar"),
-                              "codexAgent.nativeArchive": str(root / "native.tar.gz")}, properties)
+                              "codexAgent.nativeArchive": str(root / "native.tar.gz"),
+                              "kotlin.native.home": str(root / "konan/compiler")}, properties)
+            self.assertIn("-Pkotlin.native.home=" + str(root / "konan/compiler"),
+                          adapter._runtime_worker_command(root / "gradlew", properties, environment))
             self.assertTrue(Path(environment["KONAN_DATA_DIR"]).is_dir())
             self.assertEqual("macos-arm64", prepare.call_args.args[2])
             self.assertEqual({}, adapter._provision_runtime_native_toolchain(

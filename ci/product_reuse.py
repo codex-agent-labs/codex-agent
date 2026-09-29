@@ -4188,7 +4188,8 @@ def _provision_runtime_native_toolchain(root, revision, component, destination, 
     konan_home = Path(tempfile.mkdtemp(prefix="codex-runtime-konan-", dir=runner_temp))
     environment["KONAN_DATA_DIR"] = str(konan_home)
     paths = prepare(root, revision, component, destination / "toolchain-bootstrap", konan_home)
-    return {"codexAgent.kotlinPluginJar": paths["plugin"], "codexAgent.nativeArchive": paths["archive"]}
+    return {"codexAgent.kotlinPluginJar": paths["plugin"], "codexAgent.nativeArchive": paths["archive"],
+            "kotlin.native.home": paths["compiler"]}
 
 
 def _allow_locked_runtime_node_fetch(instance, environment):
