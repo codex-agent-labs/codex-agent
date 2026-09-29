@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import io
 import json
 import os
@@ -302,6 +303,12 @@ class ContractOriginalCiCaptureTest(unittest.TestCase):
                 request.assert_not_called()
                 self.assertFalse(self.output.exists())
         transport.write_bytes(original)
+
+    def test_historical_pr_association_may_show_newer_head(self) -> None:
+        run = copy.deepcopy(self.run)
+        run["pull_requests"][0]["head"]["sha"] = "e" * 40
+        self.capture(run=run)
+        self.assertTrue(self.output.is_dir())
 
     def test_nested_destination_rejects_before_api_and_preserves_capture(self) -> None:
         before = regular_file_inventory(self.capture_root)

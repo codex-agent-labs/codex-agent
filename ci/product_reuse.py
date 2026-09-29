@@ -277,8 +277,15 @@ def _observe_tested_commit(
                 raise ValueError("Original CI attempt lacks exact pull-request base/head")
             identities.append(oid)
         parents = require_array(commit.get("parents"), "Tested merge parents")
-        if ([value.get("sha") if isinstance(value, dict) else None for value in parents] != identities
-                or run.get("head_sha") not in {identities[1], expected_commit}):
+        trigger_head = run.get("head_sha")
+        if not isinstance(trigger_head, str) or _OID.fullmatch(trigger_head) is None:
+            raise ValueError("Original CI attempt lacks exact triggering head")
+        # GitHub updates a historical run's pull_requests[].head.sha when the
+        # PR moves; run.head_sha retains the head that triggered this attempt.
+        original_head = trigger_head if trigger_head != expected_commit else identities[1]
+        if [value.get("sha") if isinstance(value, dict) else None for value in parents] != [
+            identities[0], original_head,
+        ]:
             raise ValueError("Tested merge does not bind the original CI pull-request base/head")
     elif (run.get("event") not in ({"merge_group", "workflow_dispatch"} if allow_dispatch else {"merge_group"})
           or run.get("head_sha") != expected_commit):
