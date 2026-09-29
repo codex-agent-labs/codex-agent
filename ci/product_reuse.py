@@ -1022,6 +1022,9 @@ def capture_prior_failed_runtime_prefixes(
     artifacts = paginated_items(
         f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{run_id}/artifacts",
         "artifacts", token)
+    jobs = paginated_items(
+        f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{run_id}/attempts/{attempt}/jobs",
+        "jobs", token)
     phases = ("binary", "package", "validation", "metadata")
     with tempfile.TemporaryDirectory(prefix="runtime-pr-recovery-") as temporary:
         prepared = Path(temporary).resolve()
@@ -1038,6 +1041,19 @@ def capture_prior_failed_runtime_prefixes(
                     raise ValueError("Prior Runtime phase upload is ambiguous")
                 if not matching:
                     break
+                name = f"product-validation / runtime-{target}-{phase}-{target}"
+                producers = _matching_ci_jobs(jobs, name)
+                if len(producers) != 1:
+                    raise ValueError("Prior Runtime phase producer job is missing or ambiguous")
+                job = producers[0]
+                require_integer(job.get("id"), "Prior Runtime phase job ID", 1)
+                if (job.get("run_id") != run_id or job.get("head_sha") != prior["head_sha"]
+                        or job.get("status") != "completed"):
+                    raise ValueError("Prior Runtime phase producer job differs from its selected attempt")
+                if job.get("conclusion") in {"failure", "cancelled", "skipped"}:
+                    break  # Failed jobs may upload partial phase directories for diagnostics.
+                if job.get("conclusion") != "success":
+                    raise ValueError("Prior Runtime phase producer job conclusion is invalid")
                 artifact = matching[0]
                 name = artifact["name"]
                 match = re.fullmatch(re.escape(prefix) + r"([0-9a-f]{64})-([0-9a-f]{40})" + re.escape(suffix), name)

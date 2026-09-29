@@ -110,6 +110,24 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 (destination / TARGET / "phases" / phase / "original/shard/phase-receipt.json").read_bytes())
         self.assertFalse((destination / TARGET / "phases/validation").exists())
 
+    def test_prior_failed_phase_upload_is_diagnostic_not_a_reusable_shard(self):
+        failed_run = {**self.run, "status": "completed", "conclusion": "failure"}
+        jobs = copy.deepcopy(self.jobs)
+        jobs[1]["conclusion"] = "failure"
+        listed = {phase: self.artifacts[phase] for phase in ("binary", "package")}
+        destination = self.root / "prior-capture"
+        plan = {"event": "pull_request", "pullRequest": 31,
+                "repository": fixture.REPOSITORY}
+        with mock.patch.object(adapter, "_prior_failed_pr_attempt", return_value=failed_run), \
+                mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
+                mock.patch("reuse.api_request", side_effect=self.api(run=failed_run, jobs=jobs,
+                                                            artifacts=listed)):
+            result = adapter.capture_prior_failed_runtime_prefixes(
+                plan, {"runId": 100, "runAttempt": 1}, (TARGET,), destination,
+                trusted_workflow_sha=self.pin, token="not-a-real-token")
+        self.assertEqual({"binary"}, set(result[TARGET]["artifacts"]))
+        self.assertFalse((destination / TARGET / "phases/package").exists())
+
     def test_prior_failed_attempt_rejects_tampered_phase_without_publishing(self):
         failed_run = {**self.run, "status": "completed", "conclusion": "failure"}
         malformed = copy.deepcopy(self.artifacts)
