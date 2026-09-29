@@ -7,7 +7,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from ci.products.inventory import canonical_json_bytes, load_canonical_json, regular_file_inventory, write_canonical_json
+from ci.products.inventory import canonical_json_bytes, load_canonical_json, regular_file_inventory
 from ci.products.receipt import write_output_manifest
 from ci.products.restore import PHASE_PLAN_KEYS
 from ci.products.restore import finalize_phase_object
@@ -146,7 +146,7 @@ class RuntimeLatePhaseRecoveryTest(unittest.TestCase):
         self.assertEqual([elected], inspected["readyPlans"])
         self.assertEqual(result, inspected["result"])
 
-    def test_prior_failed_attempt_prefix_replays_under_new_consumer(self):
+    def test_prior_failed_phases_replay_under_new_consumer(self):
         discovery = self.resume()
         state = discovery
         old_producer = {**self.producer, "runId": self.producer["runId"] - 1,
@@ -166,24 +166,43 @@ class RuntimeLatePhaseRecoveryTest(unittest.TestCase):
                                     [current], f"current-after-{phase}")
         validation = load_canonical_json(state / f"phase-plans/runtime-{TARGET}-validation-{TARGET}.json")
 
-        def captured(_plan, _producer, targets, destination, **_):
-            self.assertEqual((TARGET,), targets)
-            destination.mkdir()
-            write_canonical_json(destination / "selected-attempt.json", {
-                "runId": old_producer["runId"], "runAttempt": old_producer["runAttempt"],
-                "pullRequest": old_producer["pullRequest"]})
-            for phase, shard in originals.items():
-                shutil.copytree(shard, destination / TARGET / "phases" / phase / "original/shard")
-            return {TARGET: {"syntheticOriginalAdmission": True}}
+        calls = []
+
+        def captured(_plan, _producer, requested, destination, **_):
+            self.assertEqual(_producer, self.producer)
+            calls.append(requested)
+            retained = {}
+            for instance, key in requested.items():
+                shard = originals.get(instance.phase)
+                if shard is None:
+                    continue
+                self.assertEqual(key, load_canonical_json(shard / "phase-receipt.json")["buildKey"])
+                shutil.copytree(shard, destination / instance.component / instance.phase / instance.target /
+                                "phases" / instance.phase / "original/shard")
+                retained[instance] = {"syntheticOriginalAdmission": True}
+            return retained
+
+        official = {
+            "id": old_producer["runId"], "run_attempt": old_producer["runAttempt"],
+            "event": "pull_request", "path": ".github/workflows/ci.yml",
+            "status": "completed", "conclusion": "failure",
+            "pull_requests": [{"number": old_producer["pullRequest"]}],
+            "repository": {"full_name": old_producer["repository"], "fork": False},
+            "head_repository": {"full_name": old_producer["repository"], "fork": False},
+        }
 
         resumed = self.scratch / "new-attempt-resume"
         environment = {**self.environment, "GITHUB_TOKEN": "fixture-only"}
-        with self.control_seams(), mock.patch.object(adapter, "capture_prior_failed_runtime_prefixes",
-                                                     side_effect=captured):
+        with self.control_seams(), mock.patch.object(adapter, "_prior_failed_pr_attempts",
+                                                     return_value=(official,)), mock.patch.object(
+                                                         adapter, "capture_prior_failed_runtime_phases",
+                                                         side_effect=captured):
             adapter.resume_products(
                 self.plan_path, self.discovery, self.state, self.handoff,
                 resumed, self.scratch / "new-attempt-output", repository_root=self.repository,
                 environ=environment, sdk_original_workflow_sha="c" * 40)
+        self.assertEqual([BINARY, PACKAGE, VALIDATION],
+                         [next(iter(requested)) for requested in calls])
         result = load_canonical_json(resumed / "reuse-wave-result.json")
         states = {adapter._identity(row): row for row in result["phases"]}
         self.assertEqual("retained", states[BINARY]["state"])
@@ -202,22 +221,21 @@ class RuntimeLatePhaseRecoveryTest(unittest.TestCase):
                 object_sha256=record["objectSha256"])
             self.assertEqual((originals[phase] / "phase-receipt.json").read_bytes(), stored["receiptBytes"])
 
-        def recheck(_receipts, destination, **_):
-            shutil.copytree(resumed / "prior-failed-runtime" / TARGET, destination)
+        def recheck(receipts, destination, **_):
+            phase = next(iter(receipts))
+            shutil.copytree(resumed / "prior-failed-runtime" / TARGET / phase / TARGET, destination)
             return {}
 
-        with self.control_seams(), mock.patch.object(adapter, "_prior_failed_pr_attempt", return_value={
-            "id": old_producer["runId"] - 1, "run_attempt": old_producer["runAttempt"]}):
-            with self.assertRaisesRegex(ValueError, "official failed attempt"):
+        with self.control_seams(), mock.patch.object(adapter, "api_json", return_value={
+            **official, "id": old_producer["runId"] - 1}):
+            with self.assertRaisesRegex(ValueError, "official CI"):
                 adapter.inspect_products(
                     self.plan_path, resumed, repository_root=self.repository,
                     environ=environment, sdk_original_workflow_sha="c" * 40)
 
         with self.control_seams(), mock.patch.object(adapter, "capture_runtime_original_ci_phases",
                                                      side_effect=recheck), mock.patch.object(
-                                                         adapter, "_prior_failed_pr_attempt", return_value={
-                                                             "id": old_producer["runId"],
-                                                             "run_attempt": old_producer["runAttempt"]}):
+                                                         adapter, "api_json", return_value=official):
             inspected = adapter.inspect_products(
                 self.plan_path, resumed, repository_root=self.repository,
                 environ=environment, sdk_original_workflow_sha="c" * 40)

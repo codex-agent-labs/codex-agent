@@ -447,6 +447,9 @@ class ProductWorkerCheckoutTest(unittest.TestCase):
                 {"CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH": "true"})
             self.assertIn("--dependency-verification=strict", fetched)
             self.assertNotIn("--offline", fetched)
+            init_script = Path("/trusted/macos-arm64.init.gradle")
+            with_script = adapter._runtime_worker_command(Path("/trusted/gradlew"), {}, {}, init_script=init_script)
+            self.assertEqual(["-I", str(init_script)], with_script[1:3])
             with self.assertRaisesRegex(ValueError, "only supported for Runtime"):
                 adapter._runtime_worker_command(Path("/trusted/gradlew"), {},
                     {"CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH": "true"}, build_directory=".")
@@ -466,7 +469,12 @@ class ProductWorkerCheckoutTest(unittest.TestCase):
             self.assertIn("-Pkotlin.native.home=" + str(root / "konan/compiler"),
                           adapter._runtime_worker_command(root / "gradlew", properties, environment))
             self.assertTrue(Path(environment["KONAN_DATA_DIR"]).is_dir())
+            self.assertEqual("codex-runtime-konan-macos-arm64", Path(environment["KONAN_DATA_DIR"]).name)
             self.assertEqual("macos-arm64", prepare.call_args.args[2])
+            with self.assertRaises(FileExistsError):
+                adapter._provision_runtime_native_toolchain(
+                    root, "a" * 40, "macos-arm64", root / "second-worker",
+                    {"CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH": "true", "RUNNER_TEMP": temporary})
             self.assertEqual({}, adapter._provision_runtime_native_toolchain(
                 root, "a" * 40, "macos-arm64", root / "offline-worker", {}))
 

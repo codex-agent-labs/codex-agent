@@ -1267,6 +1267,16 @@ class ProductSelectionTest(unittest.TestCase):
             ),
         )
 
+    def test_macos_arm64_link_policy_changes_only_its_binary_key(self) -> None:
+        path = "codex-agent-runtime-desktop/src/macosArm64Main/gradle/deterministic-native-link.init.gradle"
+        result = classify_paths([path])
+        self.assertEqual({"macos-arm64", "runtime-aggregate"},
+                         {instance.component for instance in result.instances})
+        for target in NATIVE_TARGETS:
+            instance = PhaseInstanceId("runtime", target, "binary", target)
+            self.assertEqual((path,) if target == "macos-arm64" else (),
+                             phase_inventory_paths([path], instance))
+
     def test_runtime_binary_flags_authorities_select_exact_native_binary_lines(self) -> None:
         paths = tracked_product_paths()
         for path in (

@@ -60,6 +60,7 @@ from products.inventory import (
 from products.registry import (
     NATIVE_BINDINGS,
     NATIVE_TARGETS,
+    RUNTIME_COMPONENTS,
     SDK_FACADE_TARGETS,
     PHASE_INSTANCE_IDS,
     PhaseInstanceId,
@@ -329,13 +330,14 @@ def _same_pr_run(
     return {"run": run, "testedCommit": tested_commit}
 
 
-def _prior_failed_pr_attempt(
+def _prior_failed_pr_attempts(
     plan: Mapping[str, Any], producer: Mapping[str, Any], token: str,
     *, api: str = "https://api.github.com", required_artifact_prefixes: tuple[str, ...] = (),
-) -> dict[str, Any] | None:
-    """Select one prior interrupted PR attempt; its phase uploads still need admission."""
+    limit: int | None = None,
+) -> tuple[dict[str, Any], ...]:
+    """List prior interrupted PR attempts; their phase uploads still need admission."""
     if plan["event"] != "pull_request" or plan["pullRequest"] is None:
-        return None
+        return ()
     repository = plan["repository"]
     if repository != "codex-agent-labs/codex-agent":
         raise ValueError("Prior PR recovery requires the canonical repository")
@@ -372,6 +374,7 @@ def _prior_failed_pr_attempt(
                    and artifact["name"].endswith(f"-attempt-{attempt}")
                    for artifact in artifacts)
 
+    matches = []
     if current_attempt > 1:
         for attempt in range(current_attempt - 1, 0, -1):
             previous = api_json(f"{prefix}/{current_run}/attempts/{attempt}", token)
@@ -380,8 +383,9 @@ def _prior_failed_pr_attempt(
             if not eligible(previous, current_run, attempt):
                 raise ValueError("Prior failed PR attempt differs from the current run")
             if has_required_artifact(current_run, attempt):
-                return previous
-        return None
+                matches.append(previous)
+                if limit is not None and len(matches) == limit:
+                    return tuple(matches)
 
     runs = paginated_items(
         f"{api}/repos/{repository}/actions/workflows/ci.yml/runs?event=pull_request&status=completed",
@@ -390,8 +394,6 @@ def _prior_failed_pr_attempt(
                   and type(run.get("id")) is int and 0 < run["id"] < current_run
                   and run.get("conclusion") in {"failure", "cancelled"}
                   and run_matches_pr(run, plan["pullRequest"])]
-    if not candidates:
-        return None
     for selected in sorted(candidates, key=lambda run: run["id"], reverse=True):
         latest_attempt = require_integer(selected.get("run_attempt"), "Prior product run attempt", 1)
         for attempt in range(latest_attempt, 0, -1):
@@ -401,8 +403,21 @@ def _prior_failed_pr_attempt(
             if not eligible(original, selected["id"], attempt):
                 raise ValueError("Prior failed PR attempt differs from its official workflow listing")
             if has_required_artifact(selected["id"], attempt):
-                return original
-    return None
+                matches.append(original)
+                if limit is not None and len(matches) == limit:
+                    return tuple(matches)
+    return tuple(matches)
+
+
+def _prior_failed_pr_attempt(
+    plan: Mapping[str, Any], producer: Mapping[str, Any], token: str,
+    *, api: str = "https://api.github.com", required_artifact_prefixes: tuple[str, ...] = (),
+) -> dict[str, Any] | None:
+    """Retain the single-attempt selector for unrelated legacy callers."""
+    attempts = _prior_failed_pr_attempts(
+        plan, producer, token, api=api, required_artifact_prefixes=required_artifact_prefixes,
+        limit=1)
+    return attempts[0] if attempts else None
 
 
 def verify_contract_producer_runs(
@@ -860,6 +875,7 @@ def capture_runtime_original_ci_phases(
     trusted_workflow_sha: str, token: str,
     release_handoffs: tuple[Path, ...] = (), keyring: Path | None = None,
     keys_directory: Path | None = None,
+    original_instance: PhaseInstanceId | None = None,
 ) -> dict[str, Any]:
     """Bind original receipts to CI or retained release trust, never new signing."""
     if bool(release_handoffs) != (keyring is not None and keys_directory is not None) or \
@@ -867,11 +883,18 @@ def capture_runtime_original_ci_phases(
         raise ValueError("Retained Runtime handoffs require caller-owned keyring and keys only")
     all_phases = ("binary", "package", "validation", "metadata")
     phases = tuple(phase for phase in all_phases if phase in phase_receipts)
-    if not phases or phases != all_phases[:len(phases)] or release_handoffs and phases != all_phases:
-        raise ValueError("Original Runtime phases must be a nonempty successful prefix; release requires all four")
+    if not phases or release_handoffs and phases != all_phases:
+        raise ValueError("Original Runtime phases must be nonempty; release requires all four")
     require_exact_keys(phase_receipts, set(phases), "Original Runtime phase receipts")
-    if target not in NATIVE_TARGETS:
-        raise ValueError("Original Runtime capture requires a native target")
+    if target not in RUNTIME_COMPONENTS or release_handoffs and target not in NATIVE_TARGETS:
+        raise ValueError("Original Runtime capture requires a supported component")
+    instances = {phase: PhaseInstanceId("runtime", target, phase, target) for phase in phases}
+    if original_instance is not None:
+        if (len(phases) != 1 or original_instance.product != "runtime"
+                or original_instance.component != target or original_instance.phase != phases[0]
+                or original_instance not in PHASE_INSTANCE_IDS):
+            raise ValueError("Original Runtime phase override has the wrong identity")
+        instances[phases[0]] = original_instance
     destination = Path(destination)
     if destination.exists() or destination.is_symlink():
         raise ValueError("Original Runtime CI destination must not exist")
@@ -888,7 +911,7 @@ def capture_runtime_original_ci_phases(
             raise ValueError("Original Runtime CI destination overlaps an input")
         raw = read_regular_file_bytes(source, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
         receipt = validate_phase_receipt(load_canonical_json_bytes(raw))
-        if _identity(receipt) != PhaseInstanceId("runtime", target, phase, target):
+        if _identity(receipt) != instances[phase]:
             raise ValueError("Original Runtime receipt has the wrong phase identity")
         originals[phase], receipts[phase] = raw, receipt
     with tempfile.TemporaryDirectory(prefix="runtime-original-ci-") as temporary:
@@ -939,7 +962,8 @@ def capture_runtime_original_ci_phases(
         ci_phases = tuple(phase for phase in phases if phase not in releases)
         if ci_phases and (type(token) is not str or not token):
             raise ValueError("Original Runtime CI observation requires a token for uncovered phases")
-        jobs = {phase: f"product-validation / runtime-{target}-{phase}-{target}" for phase in ci_phases}
+        jobs = {phase: f"product-validation / runtime-{target}-{phase}-{instances[phase].target}"
+                for phase in ci_phases}
         observed = _observe_ci_producer_jobs(
             {phase: receipts[phase]["producer"] for phase in ci_phases}, jobs_by_phase=jobs,
             trusted_workflow_sha=trusted_workflow_sha, token=token)
@@ -953,7 +977,7 @@ def capture_runtime_original_ci_phases(
                 inventories[run_id] = paginated_items(
                     f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{run_id}/artifacts",
                     "artifacts", token)
-            name = (f"codex-agent-runtime-worker-{target}-{phase}-{target}-"
+            name = (f"codex-agent-runtime-worker-{target}-{phase}-{instances[phase].target}-"
                     f"{receipt['buildKey'].removeprefix('sha256:')}-{producer['tree']}-attempt-{producer['runAttempt']}")
             candidates = [item for item in inventories[run_id] if isinstance(item, dict) and item.get("name") == name]
             if len(candidates) != 1:
@@ -975,7 +999,7 @@ def capture_runtime_original_ci_phases(
             safe_extract(archive, retained / "original")
             if regular_file_inventory(retained / "original", allow_empty=True) != zipped:
                 raise ValueError("Original Runtime phase differs from its exact upload")
-            verified = verify_phase_shard(retained / "original/shard", PhaseInstanceId("runtime", target, phase, target))
+            verified = verify_phase_shard(retained / "original/shard", instances[phase])
             if verified["receiptBytes"] != originals[phase]:
                 raise ValueError("Original Runtime upload differs from the requested original receipt")
             artifacts[phase] = artifact
@@ -1010,102 +1034,128 @@ def capture_runtime_original_ci_phases(
     return evidence
 
 
-def capture_prior_failed_runtime_prefixes(
-    plan: Mapping[str, Any], producer: Mapping[str, Any], targets: tuple[str, ...],
-    destination: Path, *, trusted_workflow_sha: str, token: str,
-) -> dict[str, dict[str, Any]]:
-    """Recover only successful native phase prefixes from one prior failed PR attempt."""
-    if tuple(sorted(set(targets))) != targets or any(target not in NATIVE_TARGETS for target in targets):
-        raise ValueError("Prior Runtime targets must be sorted, unique native targets")
-    if destination.exists() or destination.is_symlink():
-        raise ValueError("Prior Runtime capture destination must not exist")
-    if not targets:
+def capture_prior_failed_runtime_phases(
+    plan: Mapping[str, Any], producer: Mapping[str, Any],
+    requested: Mapping[PhaseInstanceId, str], destination: Path,
+    *, trusted_workflow_sha: str, token: str,
+    attempts: tuple[dict[str, Any], ...] | None = None,
+    artifacts_by_run: dict[int, list[Any]] | None = None,
+    jobs_by_attempt: dict[tuple[int, int], list[Any]] | None = None,
+) -> dict[PhaseInstanceId, dict[str, Any]]:
+    """Recover exact-key successful native phases from independently authenticated PR attempts."""
+    if not requested:
         return {}
-    prefixes = tuple(f"codex-agent-runtime-worker-{target}-binary-{target}-" for target in targets)
-    prior = _prior_failed_pr_attempt(plan, producer, token, required_artifact_prefixes=prefixes)
-    if prior is None:
-        return {}
-    try:
-        _require_ci_workflow_reference(
-            prior,
-            f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{trusted_workflow_sha}",
-            trusted_workflow_sha,
-        )
-    except ValueError:
-        return {}  # A different reviewed workflow source is a cache miss, not original CI evidence.
-    run_id = prior["id"]
-    attempt = prior["run_attempt"]
-    artifacts = paginated_items(
-        f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{run_id}/artifacts",
-        "artifacts", token)
-    jobs = paginated_items(
-        f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{run_id}/attempts/{attempt}/jobs",
-        "jobs", token)
-    phases = ("binary", "package", "validation", "metadata")
+    if (plan["event"] != "pull_request" or plan["repository"] != "codex-agent-labs/codex-agent"
+            or plan["pullRequest"] is None):
+        raise ValueError("Prior Runtime recovery requires the canonical PR")
+    destination = Path(destination)
+    if destination.exists():
+        require_regular_directory(destination, "Prior Runtime capture destination")
+    elif destination.is_symlink():
+        raise ValueError("Prior Runtime capture destination is unsafe")
+    attempts = attempts if attempts is not None else _prior_failed_pr_attempts(plan, producer, token)
+    artifacts_by_run = artifacts_by_run if artifacts_by_run is not None else {}
+    jobs_by_attempt = jobs_by_attempt if jobs_by_attempt is not None else {}
+    current_run = require_integer(producer["runId"], "Current Runtime run ID", 1)
+    current_attempt = require_integer(producer["runAttempt"], "Current Runtime attempt", 1)
+    captured = {}
     with tempfile.TemporaryDirectory(prefix="runtime-pr-recovery-") as temporary:
-        prepared = Path(temporary).resolve()
-        captured = {}
-        for target in targets:
-            receipts = {}
-            for phase in phases:
-                prefix = f"codex-agent-runtime-worker-{target}-{phase}-{target}-"
+        scratch_root = Path(temporary).resolve()
+        for instance, build_key in sorted(requested.items()):
+            if (instance.product != "runtime" or instance.component not in RUNTIME_COMPONENTS
+                    or instance not in PHASE_INSTANCE_IDS):
+                raise ValueError("Prior Runtime recovery has an invalid phase identity")
+            require_sha256(build_key, "Prior Runtime exact build key")
+            output = destination / instance.component / instance.phase / instance.target
+            if output.exists() or output.is_symlink():
+                raise ValueError("Prior Runtime phase capture already exists")
+            prefix = (f"codex-agent-runtime-worker-{instance.component}-{instance.phase}-"
+                      f"{instance.target}-{build_key.removeprefix('sha256:')}-")
+            found = []
+            for prior in attempts:
+                run_id = require_integer(prior.get("id"), "Prior Runtime run ID", 1)
+                attempt = require_integer(prior.get("run_attempt"), "Prior Runtime attempt", 1)
+                if (run_id > current_run or run_id == current_run and attempt >= current_attempt
+                        or prior.get("event") != "pull_request"
+                        or prior.get("path") != ".github/workflows/ci.yml"
+                        or prior.get("status") != "completed"
+                        or prior.get("conclusion") not in {"failure", "cancelled"}
+                        or not run_matches_pr(prior, plan["pullRequest"])
+                        or any(not isinstance(prior.get(field), dict)
+                               or prior[field].get("full_name") != plan["repository"]
+                               or prior[field].get("fork") is not False
+                               for field in ("repository", "head_repository"))):
+                    raise ValueError("Prior Runtime candidate is not an earlier failed PR attempt")
+                try:
+                    _require_ci_workflow_reference(prior,
+                        f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{trusted_workflow_sha}",
+                        trusted_workflow_sha)
+                except ValueError:
+                    continue  # A different reviewed workflow is not an admitted original producer.
+                if run_id not in artifacts_by_run:
+                    artifacts_by_run[run_id] = paginated_items(
+                        f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{run_id}/artifacts",
+                        "artifacts", token)
                 suffix = f"-attempt-{attempt}"
-                matching = [value for value in artifacts if isinstance(value, dict)
+                matching = [value for value in artifacts_by_run[run_id] if isinstance(value, dict)
                             and isinstance(value.get("name"), str)
                             and value["name"].startswith(prefix) and value["name"].endswith(suffix)]
                 if len(matching) > 1:
-                    raise ValueError("Prior Runtime phase upload is ambiguous")
+                    raise ValueError("Prior Runtime exact-key phase upload is ambiguous")
                 if not matching:
-                    break
-                name = f"product-validation / runtime-{target}-{phase}-{target}"
-                producers = _matching_ci_jobs(jobs, name)
-                if len(producers) != 1:
-                    raise ValueError("Prior Runtime phase producer job is missing or ambiguous")
-                job = producers[0]
-                require_integer(job.get("id"), "Prior Runtime phase job ID", 1)
-                if (job.get("run_id") != run_id or job.get("head_sha") != prior["head_sha"]
-                        or job.get("status") != "completed"):
-                    raise ValueError("Prior Runtime phase producer job differs from its selected attempt")
-                if job.get("conclusion") in {"failure", "cancelled", "skipped"}:
-                    break  # Failed jobs may upload partial phase directories for diagnostics.
-                if job.get("conclusion") != "success":
-                    raise ValueError("Prior Runtime phase producer job conclusion is invalid")
+                    continue
                 artifact = matching[0]
-                name = artifact["name"]
-                match = re.fullmatch(re.escape(prefix) + r"([0-9a-f]{64})-([0-9a-f]{40})" + re.escape(suffix), name)
-                if match is None:
-                    raise ValueError("Prior Runtime phase upload name is malformed")
                 if artifact.get("expired") is True:
-                    break
+                    continue
                 if artifact.get("expired") is not False:
                     raise ValueError("Prior Runtime phase expiration state is malformed")
-                scratch = prepared / "scratch" / target / phase
+                key = (run_id, attempt)
+                if key not in jobs_by_attempt:
+                    jobs_by_attempt[key] = paginated_items(
+                        f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{run_id}/attempts/{attempt}/jobs",
+                        "jobs", token)
+                job_name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
+                jobs = _matching_ci_jobs(jobs_by_attempt[key], job_name)
+                if len(jobs) != 1:
+                    raise ValueError("Prior Runtime exact-key producer job is missing or ambiguous")
+                job = jobs[0]
+                require_integer(job.get("id"), "Prior Runtime phase job ID", 1)
+                if (job.get("run_id") != run_id or job.get("head_sha") != prior.get("head_sha")
+                        or job.get("status") != "completed"):
+                    raise ValueError("Prior Runtime phase producer differs from its selected attempt")
+                if job.get("conclusion") in {"failure", "cancelled", "skipped"}:
+                    continue  # Partial diagnostic uploads are never reusable.
+                if job.get("conclusion") != "success":
+                    raise ValueError("Prior Runtime phase producer conclusion is invalid")
+                name = artifact["name"]
+                match = re.fullmatch(re.escape(prefix) + r"([0-9a-f]{40})" + re.escape(suffix), name)
+                if match is None:
+                    raise ValueError("Prior Runtime exact-key phase upload name is malformed")
+                scratch = scratch_root / instance.component / instance.phase / instance.target / str(run_id) / str(attempt)
                 scratch.mkdir(parents=True)
                 archive = scratch / "transport.zip"
-                _download_contract_ci_upload(
-                    artifact.get("id"), artifact.get("digest"), name,
+                _download_contract_ci_upload(artifact.get("id"), artifact.get("digest"), name,
                     {"runId": run_id}, prior, token, destination=archive)
                 verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
                 safe_extract(archive, scratch / "original")
                 shard = scratch / "original/shard"
-                verified = verify_phase_shard(shard, PhaseInstanceId("runtime", target, phase, target))
+                verified = verify_phase_shard(shard, instance)
                 receipt = verified["receipt"]
                 original = receipt["producer"]
-                if (receipt["buildKey"].removeprefix("sha256:") != match[1]
-                        or original["tree"] != match[2]
+                if (receipt["buildKey"] != build_key or original["tree"] != match[1]
                         or original["runId"] != run_id or original["runAttempt"] != attempt
                         or original["pullRequest"] != plan["pullRequest"]):
                     raise ValueError("Prior Runtime shard differs from its selected attempt")
-                receipts[phase] = shard / PHASE_RECEIPT_NAME
-            if receipts:
-                captured[target] = capture_runtime_original_ci_phases(
-                    receipts, prepared / "captured" / target, target=target,
-                    trusted_workflow_sha=trusted_workflow_sha, token=token)
-        if captured:
-            write_canonical_json(prepared / "captured/selected-attempt.json", {
-                "runId": run_id, "runAttempt": attempt, "pullRequest": plan["pullRequest"]})
-            publish_regular_tree(prepared / "captured", destination)
-        return captured
+                found.append((receipt, shard / PHASE_RECEIPT_NAME))
+            if not found:
+                continue
+            if any(receipt["outputs"] != found[0][0]["outputs"] for receipt, _ in found[1:]):
+                raise ValueError("Prior Runtime exact build key has conflicting output inventories")
+            receipt_path = found[0][1]  # Newest authentic original producer remains unchanged.
+            captured[instance] = capture_runtime_original_ci_phases(
+                {instance.phase: receipt_path}, output, target=instance.component,
+                trusted_workflow_sha=trusted_workflow_sha, token=token, original_instance=instance)
+    return captured
 
 
 def _prior_failed_runtime_objects(
@@ -1117,80 +1167,77 @@ def _prior_failed_runtime_objects(
     if not capture_root.exists() and not capture_root.is_symlink():
         return []
     require_regular_directory(capture_root, "Prior failed Runtime captures")
-    selection = require_exact_keys(_canonical_control(
-        capture_root / "selected-attempt.json", "Prior failed Runtime selection"),
-        {"runId", "runAttempt", "pullRequest"}, "Prior failed Runtime selection")
-    run_id = require_integer(selection["runId"], "Prior failed Runtime run ID", 1)
-    attempt = require_integer(selection["runAttempt"], "Prior failed Runtime attempt", 1)
-    if plan is not None and consumer_producer is not None:
-        if not token:
-            raise ValueError("Prior failed Runtime selection recheck requires a token")
-        official = api_json(
-            f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run_id}/attempts/{attempt}",
-            token)
-        if (plan["repository"] != "codex-agent-labs/codex-agent"
-                or plan["event"] != "pull_request"
-                or run_id > consumer_producer["runId"]
-                or (run_id == consumer_producer["runId"]
-                    and attempt >= consumer_producer["runAttempt"])
-                or selection["pullRequest"] != plan["pullRequest"]
-                or official.get("id") != run_id or official.get("run_attempt") != attempt
-                or official.get("event") != "pull_request"
-                or official.get("path") != ".github/workflows/ci.yml"
-                or official.get("status") != "completed"
-                or official.get("conclusion") not in {"failure", "cancelled"}
-                or not run_matches_pr(official, plan["pullRequest"])
-                or any(not isinstance(official.get(field), dict)
-                       or official[field].get("full_name") != plan["repository"]
-                       or official[field].get("fork") is not False
-                       for field in ("repository", "head_repository"))):
-            raise ValueError("Prior failed Runtime selection differs from the official failed attempt")
-    targets = sorted(path for path in capture_root.iterdir() if path.name != "selected-attempt.json")
+    if (plan is None) != (consumer_producer is None):
+        raise ValueError("Prior Runtime recheck requires both plan and consumer producer")
+    if plan is not None and (not token or plan["repository"] != "codex-agent-labs/codex-agent"
+                             or plan["event"] != "pull_request"):
+        raise ValueError("Prior Runtime recheck requires the canonical PR and token")
+    targets = sorted(capture_root.iterdir())
     if not targets:
         raise ValueError("Prior failed Runtime capture is empty")
     records = []
     with tempfile.TemporaryDirectory(prefix="runtime-pr-recheck-") as temporary:
         for member in targets:
-            if member.name not in NATIVE_TARGETS:
-                raise ValueError("Prior failed Runtime capture has an unexpected target")
-            require_regular_directory(member, "Prior failed Runtime target")
-            phase_root = member / "phases"
-            require_regular_directory(phase_root, "Prior failed Runtime phases")
-            phases = tuple(phase for phase in ("binary", "package", "validation", "metadata")
-                           if (phase_root / phase).exists() or (phase_root / phase).is_symlink())
-            if not phases or phases != ("binary", "package", "validation", "metadata")[:len(phases)]:
-                raise ValueError("Prior failed Runtime capture lacks a contiguous phase prefix")
-            if {path.name for path in phase_root.iterdir()} != set(phases):
+            if member.name not in RUNTIME_COMPONENTS:
+                raise ValueError("Prior failed Runtime capture has an unexpected component")
+            require_regular_directory(member, "Prior failed Runtime component")
+            phases = tuple(sorted(path.name for path in member.iterdir()))
+            if not phases or any(phase not in ("binary", "package", "validation", "metadata")
+                                 for phase in phases):
                 raise ValueError("Prior failed Runtime capture has an unexpected phase")
-            receipts = {phase: phase_root / phase / "original/shard" / PHASE_RECEIPT_NAME
-                        for phase in phases}
-            if trusted_workflow_sha is not None:
-                if not token:
-                    raise ValueError("Prior failed Runtime recheck requires a token")
-                replay = Path(temporary).resolve(strict=True) / member.name
-                capture_runtime_original_ci_phases(
-                    receipts, replay, target=member.name,
-                    trusted_workflow_sha=trusted_workflow_sha, token=token)
-                if regular_file_inventory(replay) != regular_file_inventory(member):
-                    raise ValueError("Prior failed Runtime capture differs from original CI")
             for phase in phases:
-                instance = PhaseInstanceId("runtime", member.name, phase, member.name)
-                shard = phase_root / phase / "original/shard"
-                verified = verify_phase_shard(shard, instance)
-                receipt = verified["receipt"]
-                producer = receipt["producer"]
-                if (receipt["trustDomain"] != "development" or producer["event"] != "pull_request"
-                        or producer["runId"] != run_id or producer["runAttempt"] != attempt
-                        or producer["pullRequest"] != selection["pullRequest"]):
-                    raise ValueError("Prior failed Runtime receipt is not an original PR phase")
-                descriptor = _canonical_control(shard / PHASE_SHARD_NAME, "Prior failed Runtime shard")
-                records.append({
-                    **_identity_record(instance),
-                    "buildKey": descriptor["buildKey"],
-                    "receiptSha256": descriptor["receiptSha256"],
-                    "objectSha256": descriptor["objectSha256"],
-                    "objectPath": (shard / descriptor["objectPath"]).relative_to(artifact_root).as_posix(),
-                })
+                phase_root = member / phase
+                require_regular_directory(phase_root, "Prior failed Runtime phase")
+                for captured in sorted(phase_root.iterdir()):
+                    instance = PhaseInstanceId("runtime", member.name, phase, captured.name)
+                    if instance not in PHASE_INSTANCE_IDS:
+                        raise ValueError("Prior failed Runtime capture has an unexpected target")
+                    require_regular_directory(captured, "Prior failed Runtime target")
+                    shard = captured / "phases" / phase / "original/shard"
+                    verified = verify_phase_shard(shard, instance)
+                    receipt = verified["receipt"]
+                    producer = receipt["producer"]
+                    if (receipt["trustDomain"] != "development" or producer["event"] != "pull_request"
+                            or (plan is not None and producer["pullRequest"] != plan["pullRequest"])):
+                        raise ValueError("Prior failed Runtime receipt is not an original PR phase")
+                    if plan is not None:
+                        run_id = producer["runId"]
+                        attempt = producer["runAttempt"]
+                        if (run_id > consumer_producer["runId"] or
+                                run_id == consumer_producer["runId"] and attempt >= consumer_producer["runAttempt"]):
+                            raise ValueError("Prior failed Runtime producer is not earlier than its consumer")
+                        official = api_json(
+                            f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run_id}/attempts/{attempt}",
+                            token)
+                        if (official.get("id") != run_id or official.get("run_attempt") != attempt
+                                or official.get("event") != "pull_request"
+                                or official.get("path") != ".github/workflows/ci.yml"
+                                or official.get("status") != "completed"
+                                or official.get("conclusion") not in {"failure", "cancelled"}
+                                or not run_matches_pr(official, plan["pullRequest"])
+                                or any(not isinstance(official.get(field), dict)
+                                       or official[field].get("full_name") != plan["repository"]
+                                       or official[field].get("fork") is not False
+                                       for field in ("repository", "head_repository"))):
+                            raise ValueError("Prior failed Runtime producer differs from official CI")
+                    if trusted_workflow_sha is not None:
+                        if not token:
+                            raise ValueError("Prior failed Runtime recheck requires a token")
+                        replay = Path(temporary).resolve(strict=True) / member.name / phase / captured.name
+                        capture_runtime_original_ci_phases(
+                            {phase: shard / PHASE_RECEIPT_NAME}, replay, target=member.name,
+                            trusted_workflow_sha=trusted_workflow_sha, token=token,
+                            original_instance=instance)
+                        if regular_file_inventory(replay) != regular_file_inventory(captured):
+                            raise ValueError("Prior failed Runtime capture differs from original CI")
+                    descriptor = _canonical_control(shard / PHASE_SHARD_NAME, "Prior failed Runtime shard")
+                    records.append({
+                        **_identity_record(instance),
+                        "buildKey": descriptor["buildKey"],
+                        "receiptSha256": descriptor["receiptSha256"],
+                        "objectSha256": descriptor["objectSha256"],
+                        "objectPath": (shard / descriptor["objectPath"]).relative_to(artifact_root).as_posix(),
+                    })
     return records
 
 
@@ -4173,7 +4220,8 @@ def _runtime_worker_checkout(root, producer):
         raise ValueError(f"Runtime worker rejects untracked source or build policy: {untracked.splitlines()[:20]!r}")
 
 
-def _runtime_worker_command(wrapper, properties, environment, *, build_directory="runtime", platform_name=None):
+def _runtime_worker_command(wrapper, properties, environment, *, build_directory="runtime", platform_name=None,
+                            init_script=None):
     platform_name = os.name if platform_name is None else platform_name
     if platform_name not in {"posix", "nt"}:
         raise ValueError("Product worker requires an exact supported command platform")
@@ -4186,6 +4234,8 @@ def _runtime_worker_command(wrapper, properties, environment, *, build_directory
                "--no-daemon", "--configuration-cache",
                "--configuration-cache-problems=fail", "-p", build_directory, "ciProductPhase",
                *(f"-P{key}={value}" for key, value in sorted(properties.items()))]
+    if init_script is not None:
+        command[1:1] = ["-I", str(init_script)]
     if platform_name == "nt":
         java_home = environment.get("JAVA_HOME", "")
         if not ntpath.isabs(java_home):
@@ -4206,7 +4256,11 @@ def _provision_runtime_native_toolchain(root, revision, component, destination, 
         raise ValueError("Native Runtime bootstrap requires a regular absolute runner temp directory")
     from products.toolchain_capture_bootstrap import prepare
 
-    konan_home = Path(tempfile.mkdtemp(prefix="codex-runtime-konan-", dir=runner_temp))
+    if component == "macos-arm64":
+        konan_home = runner_temp / "codex-runtime-konan-macos-arm64"
+        konan_home.mkdir(mode=0o700)  # Fresh and stable: Kotlin/Native embeds this path in native output.
+    else:
+        konan_home = Path(tempfile.mkdtemp(prefix="codex-runtime-konan-", dir=runner_temp))
     environment["KONAN_DATA_DIR"] = str(konan_home)
     paths = prepare(root, revision, component, destination / "toolchain-bootstrap", konan_home)
     return {"codexAgent.kotlinPluginJar": paths["plugin"], "codexAgent.nativeArchive": paths["archive"],
@@ -4388,7 +4442,13 @@ def execute_runtime_phase(
     _runtime_worker_checkout(root, state.producer)
     if stage.exists() or stage.is_symlink():
         raise ValueError("Runtime worker output stage appeared before execution")
-    command = _runtime_worker_command(wrapper, properties, environment)
+    init_script = None
+    if instance == PhaseInstanceId("runtime", "macos-arm64", "binary", "macos-arm64"):
+        init_script = root / "codex-agent-runtime-desktop/src/macosArm64Main/gradle/deterministic-native-link.init.gradle"
+        if read_regular_file_bytes(init_script, reject_symlink_parents=True) != git_regular_blob_bytes(
+                root, state.producer["commit"], init_script.relative_to(root).as_posix(), max_bytes=64 * 1024):
+            raise ValueError("macOS Arm64 linker policy differs from its exact Git source")
+    command = _runtime_worker_command(wrapper, properties, environment, init_script=init_script)
     started = time.monotonic_ns()
     with (destination / "gradle.log").open("xb") as log:
         completed = subprocess.run(command, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT, check=False)
@@ -6266,15 +6326,25 @@ def resume_products(
             build_plan_consumer=retain,
             **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
         prior_records = []
-        missing_targets = tuple(sorted({phase["target"] for phase in reuse["phases"]
-            if phase["product"] == "runtime" and phase["component"] in NATIVE_TARGETS
-            and phase["state"] in {"build", "waiting"}}))
-        if missing_targets and environment.get("GITHUB_TOKEN") and sdk_original_workflow_sha:
-            captured = capture_prior_failed_runtime_prefixes(
-                plan, _consumer(plan, environment)["producer"], missing_targets,
-                prepared / "prior-failed-runtime", trusted_workflow_sha=sdk_original_workflow_sha,
-                token=environment["GITHUB_TOKEN"])
-            if captured:
+        if environment.get("GITHUB_TOKEN") and sdk_original_workflow_sha:
+            attempts = _prior_failed_pr_attempts(
+                plan, _consumer(plan, environment)["producer"], environment["GITHUB_TOKEN"])
+            artifacts_by_run, jobs_by_attempt, tried = {}, {}, set()
+            while attempts:
+                wanted = {_identity(phase): phase["buildKey"] for phase in reuse["phases"]
+                    if phase["product"] == "runtime" and phase["component"] in RUNTIME_COMPONENTS
+                    and phase["state"] == "build"
+                    and (_identity(phase), phase["buildKey"]) not in tried}
+                if not wanted:
+                    break
+                tried.update(wanted.items())
+                captured = capture_prior_failed_runtime_phases(
+                    plan, _consumer(plan, environment)["producer"], wanted,
+                    prepared / "prior-failed-runtime", trusted_workflow_sha=sdk_original_workflow_sha,
+                    token=environment["GITHUB_TOKEN"], attempts=attempts,
+                    artifacts_by_run=artifacts_by_run, jobs_by_attempt=jobs_by_attempt)
+                if not captured:
+                    break
                 prior_records = _prior_failed_runtime_objects(prepared / "prior-failed-runtime", prepared)
                 wave["availableObjects"] = sorted((*initial_objects, *prior_records), key=_identity)
                 ready_plans.clear()
@@ -6302,7 +6372,8 @@ def resume_products(
             if instance in originals:
                 carrier_phases.append(originals[instance])
             elif instance in elected_prior:
-                shard = prepared / "prior-failed-runtime" / instance.target / "phases" / instance.phase / "original/shard"
+                shard = (prepared / "prior-failed-runtime" / instance.component / instance.phase / instance.target /
+                         "phases" / instance.phase / "original/shard")
                 descriptor = _canonical_control(shard / PHASE_SHARD_NAME, "Prior failed Runtime shard")
                 receipt = verify_phase_shard(shard, instance)["receipt"]
                 carrier_phases.append({**by_id[instance], "state": "reused", "source": "phase-shard",

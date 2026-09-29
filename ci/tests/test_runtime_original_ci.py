@@ -9,6 +9,7 @@ from unittest import mock
 from ci.tests import test_contract_ci_originals as fixture
 from ci.tests.test_products import phase_receipt
 from products.inventory import publish_regular_tree as actual_publish_regular_tree
+from products.registry import PhaseInstanceId
 
 adapter = fixture.product_reuse
 TARGET = "linux-x64"
@@ -55,6 +56,79 @@ class RuntimeOriginalCiTest(unittest.TestCase):
             return adapter.capture_runtime_original_ci_phases(self.receipts, self.output,
                 target=TARGET, trusted_workflow_sha=self.pin, token="not-a-real-token")
 
+    def failed_run(self, run_id=71, attempt=2):
+        return {**self.run, "id": run_id, "run_attempt": attempt,
+                "status": "completed", "conclusion": "failure"}
+
+    def second_attempt_phase(self, phase, *, changed_output=False):
+        """Make one genuine shard from another producer without changing its build key."""
+        producer = {**self.producer, "runId": 72, "runAttempt": 3}
+        original = fixture.load_canonical_json_bytes(self.receipts[phase].read_bytes())
+        phase_plan = {key: original[key] for key in
+                      ("schemaVersion", "product", "component", "phase", "target", "buildKey", "inputs")}
+        stage = self.root / "runtime-stages" / phase
+        if changed_output:
+            from products.receipt import write_output_manifest
+            stage = self.root / "changed-runtime-stage" / phase
+            (stage / "outputs").mkdir(parents=True)
+            (stage / "outputs/value.bin").write_bytes(b"different product bytes\n")
+            write_output_manifest(stage, "runtime", TARGET, phase, TARGET, "0.2.0",
+                                  {"binary": "outputs"})
+        upload = self.root / "second-attempt" / phase
+        fixture.finalize_phase_object(stage_root=stage, phase_plan=phase_plan, producer=producer,
+            product_version="0.2.0", trust_domain="development", destination=upload / "shard")
+        raw = fixture.archive_tree(upload)
+        artifact = {**self.artifacts[phase], "id": 201 + fixture.PHASES.index(phase),
+                    "name": f"codex-agent-runtime-worker-{TARGET}-{phase}-{TARGET}-"
+                            f"{original['buildKey'][7:]}-{producer['tree']}-attempt-3",
+                    "digest": fixture.sha256_bytes(raw), "size_in_bytes": len(raw),
+                    "workflow_run": {"id": 72, "head_sha": self.run["head_sha"]}}
+        artifact["archive_download_url"] = (
+            f"https://api.github.com/repos/{fixture.REPOSITORY}/actions/artifacts/{artifact['id']}/zip")
+        job = {**self.jobs[fixture.PHASES.index(phase)], "id": 201 + fixture.PHASES.index(phase),
+               "run_id": 72}
+        return upload / "shard/phase-receipt.json", artifact, raw, job
+
+    def two_attempt_api(self, later_artifacts, later_jobs, later_archives, *, first_artifacts=None,
+                        first_jobs=None):
+        original_api = self.api(artifacts=self.artifacts if first_artifacts is None else first_artifacts,
+                                jobs=self.jobs if first_jobs is None else first_jobs,
+                                run=self.failed_run())
+        prefix = f"https://api.github.com/repos/{fixture.REPOSITORY}"
+        by_id = {artifact["id"]: artifact for artifact in later_artifacts.values()}
+        by_url = {later_artifacts[phase]["archive_download_url"]: raw
+                  for phase, raw in later_archives.items()}
+
+        def request(url, token):
+            self.assertEqual("not-a-real-token", token)
+            if url == prefix + "/actions/runs/72/attempts/3":
+                return json.dumps(self.failed_run(72, 3)).encode()
+            if url.startswith(prefix + "/actions/runs/72/attempts/3/jobs?"):
+                return json.dumps({"jobs": later_jobs}).encode()
+            if url.startswith(prefix + "/actions/runs/72/artifacts?"):
+                return json.dumps({"artifacts": list(later_artifacts.values())}).encode()
+            if url in by_url:
+                return by_url[url]
+            if url.startswith(prefix + "/actions/artifacts/"):
+                artifact_id = url.removeprefix(prefix + "/actions/artifacts/")
+                if artifact_id.isdigit() and int(artifact_id) in by_id:
+                    return json.dumps(by_id[int(artifact_id)]).encode()
+            return original_api(url, token)
+
+        return request
+
+    def download_two_attempt_fixture(self, later_artifacts, later_archives, *, first_archives=None):
+        raw_by_id = {artifact["id"]: later_archives[phase]
+                     for phase, artifact in later_artifacts.items()}
+        raw_by_id.update({artifact["id"]: (self.archives if first_archives is None else first_archives)[phase]
+                          for phase, artifact in self.artifacts.items()})
+
+        def download(artifact, token, destination, **_):
+            self.assertEqual("not-a-real-token", token)
+            Path(destination).write_bytes(raw_by_id[artifact["id"]])
+
+        return download
+
     def test_original_uploads_and_receipts_are_retained_exactly(self):
         before = {phase: path.read_bytes() for phase, path in self.receipts.items()}
         result = self.capture()
@@ -76,34 +150,39 @@ class RuntimeOriginalCiTest(unittest.TestCase):
             self.assertEqual(originals[phase],
                 (self.output / "phases" / phase / "original/shard/phase-receipt.json").read_bytes())
 
-    def test_failed_validation_keeps_only_authenticated_successful_prefix(self):
+    def test_ci_capture_accepts_independent_phases_but_release_requires_all_four(self):
         failed_run = {**self.run, "status": "completed", "conclusion": "failure"}
-        receipts = {phase: self.receipts[phase] for phase in ("binary", "package")}
+        receipts = {phase: self.receipts[phase] for phase in ("package", "validation")}
         with mock.patch("reuse.api_request", side_effect=self.api(run=failed_run)):
             result = adapter.capture_runtime_original_ci_phases(receipts, self.output,
                 target=TARGET, trusted_workflow_sha=self.pin, token="not-a-real-token")
-        self.assertEqual({"binary", "package"}, set(result["artifacts"]))
-        self.assertFalse((self.output / "phases/validation").exists())
+        self.assertEqual({"package", "validation"}, set(result["artifacts"]))
+        self.assertFalse((self.output / "phases/binary").exists())
+        self.assertFalse((self.output / "phases/metadata").exists())
         for phase, source in receipts.items():
             self.assertEqual(source.read_bytes(),
                 (self.output / "phases" / phase / "original/shard/phase-receipt.json").read_bytes())
-        with self.assertRaisesRegex(ValueError, "successful prefix"):
-            adapter.capture_runtime_original_ci_phases({"binary": self.receipts["binary"],
-                "validation": self.receipts["validation"]}, self.root / "invalid-prefix",
-                target=TARGET, trusted_workflow_sha=self.pin, token="not-a-real-token")
 
-    def test_prior_failed_attempt_discovers_and_authenticates_only_successful_prefix(self):
-        failed_run = {**self.run, "status": "completed", "conclusion": "failure"}
+        with self.assertRaisesRegex(ValueError, "release requires all four"):
+            adapter.capture_runtime_original_ci_phases(receipts, self.root / "incomplete-release",
+                target=TARGET, trusted_workflow_sha=self.pin, token="not-a-real-token",
+                release_handoffs=(self.root / "release-handoff",),
+                keyring=self.root / "keyring.json", keys_directory=self.root / "keys")
+
+    def test_prior_failed_attempt_discovers_and_authenticates_requested_phases(self):
+        failed_run = self.failed_run()
         listed = {phase: self.artifacts[phase] for phase in ("binary", "package")}
         plan = {"event": "pull_request", "pullRequest": 31,
                 "repository": fixture.REPOSITORY}
         destination = self.root / "prior-capture"
-        with mock.patch.object(adapter, "_prior_failed_pr_attempt", return_value=failed_run), \
-                mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
+        requested = {PhaseInstanceId("runtime", TARGET, phase, TARGET):
+                     fixture.load_canonical_json_bytes(self.receipts[phase].read_bytes())["buildKey"]
+                     for phase in ("binary", "package")}
+        with mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
                 mock.patch("reuse.api_request", side_effect=self.api(run=failed_run, artifacts=listed)):
-            result = adapter.capture_prior_failed_runtime_prefixes(
-                plan, {"runId": 100, "runAttempt": 1}, (TARGET,), destination,
-                trusted_workflow_sha=self.pin, token="not-a-real-token")
+            result = adapter.capture_prior_failed_runtime_phases(
+                plan, {"runId": 100, "runAttempt": 1}, requested, destination,
+                trusted_workflow_sha=self.pin, token="not-a-real-token", attempts=(failed_run,))
             real_temp = self.root / "real-temp"
             real_temp.mkdir()
             linked_temp = self.root / "linked-temp"
@@ -112,18 +191,15 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 records = adapter._prior_failed_runtime_objects(
                     destination, self.root, trusted_workflow_sha=self.pin,
                     token="not-a-real-token")
-        self.assertEqual({TARGET}, set(result))
+        self.assertEqual(set(requested), set(result))
         self.assertEqual({"binary", "package"}, {record["phase"] for record in records})
-        self.assertEqual({"binary", "package"}, set(result[TARGET]["artifacts"]))
         for phase in ("binary", "package"):
             self.assertEqual(self.receipts[phase].read_bytes(),
-                (destination / TARGET / "phases" / phase / "original/shard/phase-receipt.json").read_bytes())
-        self.assertFalse((destination / TARGET / "phases/validation").exists())
+                (destination / TARGET / phase / TARGET / "phases" / phase / "original/shard/phase-receipt.json").read_bytes())
+        self.assertFalse((destination / TARGET / "validation").exists())
         # Replay authenticates the pinned producer even if a later failed run
         # becomes the newest recovery candidate.
-        with mock.patch("reuse.api_request", side_effect=self.api(run=failed_run)), \
-                mock.patch.object(adapter, "_prior_failed_pr_attempt",
-                                  side_effect=AssertionError("must not re-elect")):
+        with mock.patch("reuse.api_request", side_effect=self.api(run=failed_run)):
             replayed = adapter._prior_failed_runtime_objects(
                 destination, self.root, trusted_workflow_sha=self.pin,
                 token="not-a-real-token", plan=plan,
@@ -136,39 +212,196 @@ class RuntimeOriginalCiTest(unittest.TestCase):
         self.assertEqual(replayed, same_run)
 
     def test_prior_failed_phase_upload_is_diagnostic_not_a_reusable_shard(self):
-        failed_run = {**self.run, "status": "completed", "conclusion": "failure"}
+        failed_run = self.failed_run()
         jobs = copy.deepcopy(self.jobs)
         jobs[1]["conclusion"] = "failure"
         listed = {phase: self.artifacts[phase] for phase in ("binary", "package")}
         destination = self.root / "prior-capture"
         plan = {"event": "pull_request", "pullRequest": 31,
                 "repository": fixture.REPOSITORY}
-        with mock.patch.object(adapter, "_prior_failed_pr_attempt", return_value=failed_run), \
-                mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
+        requested = {PhaseInstanceId("runtime", TARGET, phase, TARGET):
+                     fixture.load_canonical_json_bytes(self.receipts[phase].read_bytes())["buildKey"]
+                     for phase in ("binary", "package")}
+        with mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
                 mock.patch("reuse.api_request", side_effect=self.api(run=failed_run, jobs=jobs,
                                                             artifacts=listed)):
-            result = adapter.capture_prior_failed_runtime_prefixes(
-                plan, {"runId": 100, "runAttempt": 1}, (TARGET,), destination,
-                trusted_workflow_sha=self.pin, token="not-a-real-token")
-        self.assertEqual({"binary"}, set(result[TARGET]["artifacts"]))
-        self.assertFalse((destination / TARGET / "phases/package").exists())
+            result = adapter.capture_prior_failed_runtime_phases(
+                plan, {"runId": 100, "runAttempt": 1}, requested, destination,
+                trusted_workflow_sha=self.pin, token="not-a-real-token", attempts=(failed_run,))
+        self.assertEqual({PhaseInstanceId("runtime", TARGET, "binary", TARGET)}, set(result))
+        self.assertFalse((destination / TARGET / "package").exists())
 
     def test_prior_failed_attempt_rejects_tampered_phase_without_publishing(self):
-        failed_run = {**self.run, "status": "completed", "conclusion": "failure"}
+        failed_run = self.failed_run()
         malformed = copy.deepcopy(self.artifacts)
         malformed["binary"]["name"] = malformed["binary"]["name"].replace(
             self.producer["tree"], "0" * 40)
         destination = self.root / "prior-capture"
         plan = {"event": "pull_request", "pullRequest": 31,
                 "repository": fixture.REPOSITORY}
-        with mock.patch.object(adapter, "_prior_failed_pr_attempt", return_value=failed_run), \
-                mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
+        requested = {PhaseInstanceId("runtime", TARGET, "binary", TARGET):
+                     fixture.load_canonical_json_bytes(self.receipts["binary"].read_bytes())["buildKey"]}
+        with mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
                 mock.patch("reuse.api_request", side_effect=self.api(run=failed_run, artifacts=malformed,
                                                             details=malformed)), \
                 self.assertRaisesRegex(ValueError, "selected attempt"):
-            adapter.capture_prior_failed_runtime_prefixes(
-                plan, {"runId": 100, "runAttempt": 1}, (TARGET,), destination,
-                trusted_workflow_sha=self.pin, token="not-a-real-token")
+            adapter.capture_prior_failed_runtime_phases(
+                plan, {"runId": 100, "runAttempt": 1}, requested, destination,
+                trusted_workflow_sha=self.pin, token="not-a-real-token", attempts=(failed_run,))
+        self.assertFalse(destination.exists())
+
+    def test_prior_failed_phases_recover_independently_from_different_attempts(self):
+        _, later_validation, raw_validation, later_job = self.second_attempt_phase("validation")
+        requested = {
+            PhaseInstanceId("runtime", TARGET, phase, TARGET):
+                fixture.load_canonical_json_bytes(self.receipts[phase].read_bytes())["buildKey"]
+            for phase in ("package", "validation")
+        }
+        destination = self.root / "phase-wise-capture"
+        plan = {"event": "pull_request", "pullRequest": 31, "repository": fixture.REPOSITORY}
+        with mock.patch("reuse.api_request", side_effect=self.two_attempt_api(
+                {"validation": later_validation}, [later_job], {"validation": raw_validation},
+                first_artifacts={"package": self.artifacts["package"]})), \
+                mock.patch.object(adapter, "download_artifact_to_file", side_effect=
+                                  self.download_two_attempt_fixture(
+                                      {"validation": later_validation}, {"validation": raw_validation})):
+            adapter.capture_prior_failed_runtime_phases(
+                plan, {"runId": 100, "runAttempt": 1}, requested, destination,
+                trusted_workflow_sha=self.pin, token="not-a-real-token",
+                attempts=(self.failed_run(), self.failed_run(72, 3)))
+            records = adapter._prior_failed_runtime_objects(
+                destination, self.root, trusted_workflow_sha=self.pin,
+                token="not-a-real-token", plan=plan,
+                consumer_producer={"runId": 100, "runAttempt": 1})
+        self.assertEqual({"package", "validation"}, {record["phase"] for record in records})
+        for phase in ("package", "validation"):
+            retained = destination / TARGET / phase / TARGET / "phases" / phase / "original/shard/phase-receipt.json"
+            self.assertTrue(retained.is_file())
+        package = fixture.load_canonical_json_bytes(
+            (destination / TARGET / "package" / TARGET / "phases/package/original/shard/phase-receipt.json").read_bytes())
+        validation = fixture.load_canonical_json_bytes(
+            (destination / TARGET / "validation" / TARGET / "phases/validation/original/shard/phase-receipt.json").read_bytes())
+        self.assertEqual((71, 2), (package["producer"]["runId"], package["producer"]["runAttempt"]))
+        self.assertEqual((72, 3), (validation["producer"]["runId"], validation["producer"]["runAttempt"]))
+
+    def test_prior_failed_adapter_validation_target_is_captured_independently(self):
+        from products.receipt import compute_build_key, write_output_manifest
+
+        instance = PhaseInstanceId("runtime", "jvm", "validation", TARGET)
+        stage = self.root / "adapter-validation-stage"
+        (stage / "outputs").mkdir(parents=True)
+        (stage / "outputs/value.bin").write_bytes(b"jvm validation on linux x64\n")
+        write_output_manifest(stage, "runtime", "jvm", "validation", TARGET, "0.2.0",
+                              {"binary": "outputs"})
+        inputs = phase_receipt()["inputs"]
+        phase_plan = {"schemaVersion": 1, "product": "runtime", "component": "jvm",
+                      "phase": "validation", "target": TARGET, "inputs": inputs,
+                      "buildKey": compute_build_key(product="runtime", component="jvm",
+                          phase="validation", target=TARGET, inputs=inputs)}
+        upload = self.root / "adapter-validation-upload"
+        fixture.finalize_phase_object(stage_root=stage, phase_plan=phase_plan, producer=self.producer,
+            product_version="0.2.0", trust_domain="development", destination=upload / "shard")
+        raw = fixture.archive_tree(upload)
+        artifact = {**self.artifacts["validation"], "id": 501,
+                    "name": f"codex-agent-runtime-worker-jvm-validation-{TARGET}-"
+                            f"{phase_plan['buildKey'][7:]}-{self.producer['tree']}-attempt-2",
+                    "digest": fixture.sha256_bytes(raw), "size_in_bytes": len(raw)}
+        artifact["archive_download_url"] = (
+            f"https://api.github.com/repos/{fixture.REPOSITORY}/actions/artifacts/501/zip")
+        job = {**self.jobs[2], "id": 501,
+               "name": f"product-validation / runtime-jvm-validation-{TARGET}"}
+        original_api = self.api(run=self.failed_run())
+        prefix = f"https://api.github.com/repos/{fixture.REPOSITORY}"
+
+        def request(url, token):
+            if url.startswith(prefix + "/actions/runs/71/artifacts?"):
+                return json.dumps({"artifacts": [artifact]}).encode()
+            if url.startswith(prefix + "/actions/runs/71/attempts/2/jobs?"):
+                return json.dumps({"jobs": [job]}).encode()
+            if url == prefix + "/actions/artifacts/501":
+                return json.dumps(artifact).encode()
+            if url == artifact["archive_download_url"]:
+                return raw
+            return original_api(url, token)
+
+        def download(candidate, token, destination, **_):
+            self.assertEqual(501, candidate["id"])
+            Path(destination).write_bytes(raw)
+
+        plan = {"event": "pull_request", "pullRequest": 31, "repository": fixture.REPOSITORY}
+        destination = self.root / "adapter-phase-capture"
+        with mock.patch("reuse.api_request", side_effect=request), \
+                mock.patch.object(adapter, "download_artifact_to_file", side_effect=download):
+            captured = adapter.capture_prior_failed_runtime_phases(
+                plan, {"runId": 100, "runAttempt": 1}, {instance: phase_plan["buildKey"]}, destination,
+                trusted_workflow_sha=self.pin, token="not-a-real-token",
+                attempts=(self.failed_run(),))
+            records = adapter._prior_failed_runtime_objects(
+                destination, self.root, trusted_workflow_sha=self.pin,
+                token="not-a-real-token", plan=plan,
+                consumer_producer={"runId": 100, "runAttempt": 1})
+        self.assertEqual({instance}, set(captured))
+        self.assertEqual([(instance.component, instance.phase, instance.target)],
+                         [(record["component"], record["phase"], record["target"]) for record in records])
+        self.assertEqual((upload / "shard/phase-receipt.json").read_bytes(),
+            (destination / "jvm/validation" / TARGET / "phases/validation/original/shard/phase-receipt.json").read_bytes())
+
+    def test_prior_failed_phase_rejects_failed_or_partial_job_upload(self):
+        instance = PhaseInstanceId("runtime", TARGET, "package", TARGET)
+        requested = {instance: fixture.load_canonical_json_bytes(self.receipts["package"].read_bytes())["buildKey"]}
+        plan = {"event": "pull_request", "pullRequest": 31, "repository": fixture.REPOSITORY}
+        failed_jobs = copy.deepcopy(self.jobs)
+        failed_jobs[1]["conclusion"] = "failure"
+        destination = self.root / "failed-phase-capture"
+        with mock.patch("reuse.api_request", side_effect=self.two_attempt_api({}, [], {},
+                first_jobs=failed_jobs)), \
+                mock.patch.object(adapter, "download_artifact_to_file", side_effect=
+                                  self.download_two_attempt_fixture({}, {})):
+            result = adapter.capture_prior_failed_runtime_phases(
+                plan, {"runId": 100, "runAttempt": 1}, requested, destination,
+                trusted_workflow_sha=self.pin, token="not-a-real-token",
+                attempts=(self.failed_run(),))
+        self.assertFalse(result)
+        self.assertFalse(destination.exists())
+
+        # A success-labelled job with only a diagnostic upload cannot become
+        # a successful phase shard.
+        partial = self.root / "partial-upload"
+        partial.mkdir()
+        (partial / "gradle.log").write_text("phase failed\n", encoding="utf-8")
+        raw = fixture.archive_tree(partial)
+        artifact = {**self.artifacts["package"], "digest": fixture.sha256_bytes(raw),
+                    "size_in_bytes": len(raw)}
+        original_api = self.api(artifacts={"package": artifact}, details={"package": artifact},
+                                archives={**self.archives, "package": raw}, run=self.failed_run())
+        with mock.patch("reuse.api_request", side_effect=original_api), \
+                mock.patch.object(adapter, "download_artifact_to_file", side_effect=
+                                  self.download_two_attempt_fixture({}, {},
+                                      first_archives={**self.archives, "package": raw})), \
+                self.assertRaises(ValueError):
+            adapter.capture_prior_failed_runtime_phases(
+                plan, {"runId": 100, "runAttempt": 1}, requested, destination,
+                trusted_workflow_sha=self.pin, token="not-a-real-token",
+                attempts=(self.failed_run(),))
+        self.assertFalse(destination.exists())
+
+    def test_prior_failed_same_key_different_product_object_is_rejected(self):
+        _, second_artifact, second_raw, second_job = self.second_attempt_phase(
+            "package", changed_output=True)
+        instance = PhaseInstanceId("runtime", TARGET, "package", TARGET)
+        key = fixture.load_canonical_json_bytes(self.receipts["package"].read_bytes())["buildKey"]
+        destination = self.root / "conflicting-phase-capture"
+        plan = {"event": "pull_request", "pullRequest": 31, "repository": fixture.REPOSITORY}
+        with mock.patch("reuse.api_request", side_effect=self.two_attempt_api(
+                {"package": second_artifact}, [second_job], {"package": second_raw})), \
+                mock.patch.object(adapter, "download_artifact_to_file", side_effect=
+                                  self.download_two_attempt_fixture(
+                                      {"package": second_artifact}, {"package": second_raw})), \
+                self.assertRaisesRegex(ValueError, "conflict|different|same.key"):
+            adapter.capture_prior_failed_runtime_phases(
+                plan, {"runId": 100, "runAttempt": 1}, {instance: key}, destination,
+                trusted_workflow_sha=self.pin, token="not-a-real-token",
+                attempts=(self.failed_run(), self.failed_run(72, 3)))
         self.assertFalse(destination.exists())
 
     def test_late_original_shard_mutation_cannot_publish(self):

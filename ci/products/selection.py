@@ -1214,6 +1214,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
     for source_set, components in runtime_sources.items():
         if _is_prefix(path, f"codex-agent-runtime-desktop/src/{source_set}/"):
             return _runtime(components)
+    if _is_prefix(path, "codex-agent-runtime-desktop/src/macosArm64Main/gradle/"):
+        return _runtime(("macos-arm64",))
     if _is_prefix(path, "codex-agent-runtime-desktop/native/"):
         return _runtime(NATIVE_TARGETS)
     if path == "runtime/gradle/kotlin-js-store/package-lock.json":

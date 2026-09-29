@@ -366,6 +366,15 @@ class PriorFailedPrAttemptTest(unittest.TestCase):
         listing.assert_called_once()
         self.assertEqual(2, exact.call_count)
 
+    def test_phase_recovery_scans_older_runs_after_current_run_attempts(self):
+        self.producer = {"runId": 100, "runAttempt": 2}
+        same_run = {**self.run, "id": 100, "run_attempt": 1}
+        older_attempt = {**self.run, "run_attempt": 1}
+        with mock.patch.object(product_reuse, "paginated_items", return_value=[self.run]), \
+                mock.patch.object(product_reuse, "api_json", side_effect=[same_run, self.run, older_attempt]):
+            self.assertEqual((same_run, self.run, older_attempt), product_reuse._prior_failed_pr_attempts(
+                self.plan, self.producer, "token"))
+
     def test_cancelled_attempt_is_eligible_for_exact_phase_admission(self):
         cancelled = {**self.run, "conclusion": "cancelled"}
         with mock.patch.object(product_reuse, "paginated_items", return_value=[cancelled]), \
@@ -390,11 +399,12 @@ class PriorFailedPrAttemptTest(unittest.TestCase):
             "sha": "a" * 40,
         }]}
         with tempfile.TemporaryDirectory() as temporary, \
-                mock.patch.object(product_reuse, "_prior_failed_pr_attempt", return_value=prior), \
                 mock.patch.object(product_reuse, "paginated_items") as artifacts:
-            self.assertEqual({}, product_reuse.capture_prior_failed_runtime_prefixes(
-                self.plan, self.producer, ("macos-x64",), Path(temporary) / "capture",
-                trusted_workflow_sha="b" * 40, token="token"))
+            self.assertEqual({}, product_reuse.capture_prior_failed_runtime_phases(
+                self.plan, self.producer,
+                {PhaseInstanceId("runtime", "macos-x64", "binary", "macos-x64"): "sha256:" + "a" * 64},
+                Path(temporary) / "capture", trusted_workflow_sha="b" * 40,
+                token="token", attempts=(prior,)))
         artifacts.assert_not_called()
 
     def test_skips_nonfailed_or_other_pr_and_fails_closed_on_mismatched_exact_attempt(self):
