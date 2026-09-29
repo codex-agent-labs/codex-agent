@@ -211,6 +211,33 @@ class RuntimeOriginalCiTest(unittest.TestCase):
         self.assertEqual({"binary", "package"}, {record["phase"] for record in replayed})
         self.assertEqual(replayed, same_run)
 
+    def test_reviewed_original_workflow_survives_current_workflow_pin_rotation(self):
+        legacy = adapter._PRIOR_RUNTIME_WORKFLOW_SHA
+        current = "b4148a6320d3dfe8bfb556c6327937c6b304cf4c"
+        self.pin = legacy
+        self.run["referenced_workflows"] = [{
+            "path": f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@{legacy}",
+            "sha": legacy,
+        }]
+        failed_run = self.failed_run()
+        instance = PhaseInstanceId("runtime", TARGET, "binary", TARGET)
+        key = fixture.load_canonical_json_bytes(self.receipts["binary"].read_bytes())["buildKey"]
+        plan = {"event": "pull_request", "pullRequest": 31, "repository": fixture.REPOSITORY}
+        destination = self.root / "rotated-pin-capture"
+        with mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
+                mock.patch("reuse.api_request", side_effect=self.api(
+                    run=failed_run, artifacts={"binary": self.artifacts["binary"]})):
+            captured = adapter.capture_prior_failed_runtime_phases(
+                plan, {"runId": 100, "runAttempt": 1}, {instance: key}, destination,
+                trusted_workflow_sha=current, token="not-a-real-token", attempts=(failed_run,))
+            records = adapter._prior_failed_runtime_objects(
+                destination, self.root, trusted_workflow_sha=current, token="not-a-real-token",
+                plan=plan, consumer_producer={"runId": 100, "runAttempt": 1})
+        self.assertEqual({instance}, set(captured))
+        self.assertEqual(key, records[0]["buildKey"])
+        self.assertEqual(self.receipts["binary"].read_bytes(),
+                         (destination / TARGET / "binary" / TARGET / "phases/binary/original/shard/phase-receipt.json").read_bytes())
+
     def test_prior_failed_phase_upload_is_diagnostic_not_a_reusable_shard(self):
         failed_run = self.failed_run()
         jobs = copy.deepcopy(self.jobs)

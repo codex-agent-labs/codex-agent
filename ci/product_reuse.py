@@ -127,6 +127,7 @@ _PLAN_KEYS = {
     "remoteBuildAuthorizationReason", "androidEvidenceRequired", "fullRequested", "full",
     "unknownPaths", "changedPaths", "lanes",
 }
+_PRIOR_RUNTIME_WORKFLOW_SHA = "88f04b8d9b1d3cd7b362d7ea2e3924cf5de3e8b0"
 _IDENTITY_KEYS = ("product", "component", "phase", "target")
 _REUSE_RESULT_KEYS = {
     "schemaVersion", "result", "fullReuse", "phases", "matrices",
@@ -461,6 +462,18 @@ def _require_ci_workflow_reference(run, workflow, sha):
     if (len(selected) != 1 or selected[0].get("path") != workflow
             or selected[0].get("sha") != sha):
         raise ValueError("Contract original CI attempt lacks the caller-pinned workflow")
+
+
+def _runtime_prior_workflow_sha(run, current_sha):
+    # Prior genuine phases retain their original reviewed workflow authority after a pin rotation.
+    for sha in dict.fromkeys((current_sha, _PRIOR_RUNTIME_WORKFLOW_SHA)):
+        try:
+            _require_ci_workflow_reference(run,
+                f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{sha}", sha)
+            return sha
+        except ValueError:
+            continue
+    return None
 
 
 def _matching_ci_jobs(jobs, name):
@@ -1086,11 +1099,8 @@ def capture_prior_failed_runtime_phases(
                                or prior[field].get("fork") is not False
                                for field in ("repository", "head_repository"))):
                     raise ValueError("Prior Runtime candidate is not an earlier failed PR attempt")
-                try:
-                    _require_ci_workflow_reference(prior,
-                        f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{trusted_workflow_sha}",
-                        trusted_workflow_sha)
-                except ValueError:
+                original_workflow_sha = _runtime_prior_workflow_sha(prior, trusted_workflow_sha)
+                if original_workflow_sha is None:
                     continue  # A different reviewed workflow is not an admitted original producer.
                 if run_id not in artifacts_by_run:
                     artifacts_by_run[run_id] = paginated_items(
@@ -1146,15 +1156,15 @@ def capture_prior_failed_runtime_phases(
                         or original["runId"] != run_id or original["runAttempt"] != attempt
                         or original["pullRequest"] != plan["pullRequest"]):
                     raise ValueError("Prior Runtime shard differs from its selected attempt")
-                found.append((receipt, shard / PHASE_RECEIPT_NAME))
+                found.append((receipt, shard / PHASE_RECEIPT_NAME, original_workflow_sha))
             if not found:
                 continue
-            if any(receipt["outputs"] != found[0][0]["outputs"] for receipt, _ in found[1:]):
+            if any(receipt["outputs"] != found[0][0]["outputs"] for receipt, _, _ in found[1:]):
                 raise ValueError("Prior Runtime exact build key has conflicting output inventories")
-            receipt_path = found[0][1]  # Newest authentic original producer remains unchanged.
+            receipt_path, original_workflow_sha = found[0][1:]  # Preserve the chosen original producer.
             captured[instance] = capture_runtime_original_ci_phases(
                 {instance.phase: receipt_path}, output, target=instance.component,
-                trusted_workflow_sha=trusted_workflow_sha, token=token, original_instance=instance)
+                trusted_workflow_sha=original_workflow_sha, token=token, original_instance=instance)
     return captured
 
 
@@ -1223,10 +1233,14 @@ def _prior_failed_runtime_objects(
                     if trusted_workflow_sha is not None:
                         if not token:
                             raise ValueError("Prior failed Runtime recheck requires a token")
+                        original_workflow_sha = (trusted_workflow_sha if plan is None else
+                                                 _runtime_prior_workflow_sha(official, trusted_workflow_sha))
+                        if original_workflow_sha is None:
+                            raise ValueError("Prior failed Runtime producer lacks a reviewed workflow")
                         replay = Path(temporary).resolve(strict=True) / member.name / phase / captured.name
                         capture_runtime_original_ci_phases(
                             {phase: shard / PHASE_RECEIPT_NAME}, replay, target=member.name,
-                            trusted_workflow_sha=trusted_workflow_sha, token=token,
+                            trusted_workflow_sha=original_workflow_sha, token=token,
                             original_instance=instance)
                         if regular_file_inventory(replay) != regular_file_inventory(captured):
                             raise ValueError("Prior failed Runtime capture differs from original CI")
