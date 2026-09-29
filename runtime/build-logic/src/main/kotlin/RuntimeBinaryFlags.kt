@@ -227,6 +227,7 @@ fun Project.registerRuntimeProducerToolchainObserver(
         tasks.register<Exec>("verifyRuntimeProducerToolchain") {
             group = "verification"
             description = "Observes and verifies the actual Runtime binary producer before compilation."
+            if (!supervisorOnly) dependsOn("downloadKotlinNativeDistribution")
             val output = layout.buildDirectory.file(
                 "toolchain-verification/$requestedRuntimeTarget-$producerRole.json",
             )

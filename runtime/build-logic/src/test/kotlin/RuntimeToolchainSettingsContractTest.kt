@@ -21,6 +21,7 @@ class RuntimeToolchainSettingsContractTest {
             "System.getProperty(\"os.name\")",
             "System.getProperty(\"os.arch\")",
             "tasks.register<Exec>(\"verifyRuntimeProducerToolchain\")",
+            "if (!supervisorOnly) dependsOn(\"downloadKotlinNativeDistribution\")",
             "outputs.upToDateWhen { false }",
             "\"python3\", \"-m\", \"ci.products.toolchain\", \"verify-producer\"",
             "\"--repository-root\"",
