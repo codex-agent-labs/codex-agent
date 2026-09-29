@@ -1125,13 +1125,25 @@ def _prior_failed_runtime_objects(
     if plan is not None and consumer_producer is not None:
         if not token:
             raise ValueError("Prior failed Runtime selection recheck requires a token")
-        prefixes = tuple(f"codex-agent-runtime-worker-{target.name}-binary-{target.name}-"
-                         for target in capture_root.iterdir() if target.name in NATIVE_TARGETS)
-        official = _prior_failed_pr_attempt(plan, consumer_producer, token,
-                                            required_artifact_prefixes=prefixes)
-        if (official is None or official["id"] != run_id
-                or official["run_attempt"] != attempt
-                or selection["pullRequest"] != plan["pullRequest"]):
+        official = api_json(
+            f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run_id}/attempts/{attempt}",
+            token)
+        if (plan["repository"] != "codex-agent-labs/codex-agent"
+                or plan["event"] != "pull_request"
+                or run_id > consumer_producer["runId"]
+                or (run_id == consumer_producer["runId"]
+                    and attempt >= consumer_producer["runAttempt"])
+                or selection["pullRequest"] != plan["pullRequest"]
+                or official.get("id") != run_id or official.get("run_attempt") != attempt
+                or official.get("event") != "pull_request"
+                or official.get("path") != ".github/workflows/ci.yml"
+                or official.get("status") != "completed"
+                or official.get("conclusion") not in {"failure", "cancelled"}
+                or not run_matches_pr(official, plan["pullRequest"])
+                or any(not isinstance(official.get(field), dict)
+                       or official[field].get("full_name") != plan["repository"]
+                       or official[field].get("fork") is not False
+                       for field in ("repository", "head_repository"))):
             raise ValueError("Prior failed Runtime selection differs from the official failed attempt")
     targets = sorted(path for path in capture_root.iterdir() if path.name != "selected-attempt.json")
     if not targets:

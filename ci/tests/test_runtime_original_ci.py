@@ -119,6 +119,21 @@ class RuntimeOriginalCiTest(unittest.TestCase):
             self.assertEqual(self.receipts[phase].read_bytes(),
                 (destination / TARGET / "phases" / phase / "original/shard/phase-receipt.json").read_bytes())
         self.assertFalse((destination / TARGET / "phases/validation").exists())
+        # Replay authenticates the pinned producer even if a later failed run
+        # becomes the newest recovery candidate.
+        with mock.patch("reuse.api_request", side_effect=self.api(run=failed_run)), \
+                mock.patch.object(adapter, "_prior_failed_pr_attempt",
+                                  side_effect=AssertionError("must not re-elect")):
+            replayed = adapter._prior_failed_runtime_objects(
+                destination, self.root, trusted_workflow_sha=self.pin,
+                token="not-a-real-token", plan=plan,
+                consumer_producer={"runId": 100, "runAttempt": 1})
+            same_run = adapter._prior_failed_runtime_objects(
+                destination, self.root, trusted_workflow_sha=self.pin,
+                token="not-a-real-token", plan=plan,
+                consumer_producer={"runId": 71, "runAttempt": 3})
+        self.assertEqual({"binary", "package"}, {record["phase"] for record in replayed})
+        self.assertEqual(replayed, same_run)
 
     def test_prior_failed_phase_upload_is_diagnostic_not_a_reusable_shard(self):
         failed_run = {**self.run, "status": "completed", "conclusion": "failure"}
