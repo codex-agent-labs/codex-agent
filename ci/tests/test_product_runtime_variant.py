@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -132,9 +133,9 @@ def _receipt(phase: str, inputs: dict, outputs: list[dict], trust_domain: str) -
     return value
 
 
-def _write_zip(path: Path, members: dict[str, bytes]) -> None:
+def _write_zip(path: Path, members: dict[str, bytes], *, sort_members: bool = True) -> None:
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
-        for name, contents in sorted(members.items()):
+        for name, contents in (sorted(members.items()) if sort_members else members.items()):
             info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_STORED
             info.create_system = 3
@@ -226,7 +227,7 @@ class Fixture:
         _write_zip(self.app_server, {
             **classifier_payload,
             "codex-runtime-manifest.json": canonical_json_bytes(classifier_manifest),
-        })
+        }, sort_members=False)
         self.distribution_manifest = root / "codex-app-server-distributions.json"
         write_canonical_json(self.distribution_manifest, {
             "version": "0.149.0",
@@ -415,6 +416,20 @@ def _attestation_paths(payload: Path, directory: Path) -> tuple[Path, Path]:
 
 
 class RuntimeVariantProducerTest(unittest.TestCase):
+    def test_existing_noncanonical_validation_report_is_accepted_by_exact_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, signing)
+            report = load_canonical_json_bytes(fixture.validation.read_bytes())
+            fixture.validation.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            output = next(record for record in fixture.receipts["validation"]["outputs"]
+                          if record["relativePath"] == "outputs/native/validation.json")
+            output["bytes"] = fixture.validation.stat().st_size
+            output["sha256"] = sha256_file(fixture.validation)
+            fixture.rewrite_receipt("validation", fixture.receipts["validation"])
+            self.assertTrue(produce_runtime_variant(**fixture.arguments())["bundlePath"].is_file())
+
     def test_output_is_deterministic_and_preserves_inner_archives(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

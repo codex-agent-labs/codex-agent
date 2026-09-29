@@ -17,6 +17,7 @@ from .inventory import (
     _stat_identity,
     canonical_json_bytes,
     load_canonical_json_bytes,
+    load_json_bytes,
     read_regular_file_bytes,
     require_regular_directory,
     sha256_bytes,
@@ -97,12 +98,15 @@ def _phase_evidence(
     return result
 
 
-def _verified_zip_input(path: Path, label: str) -> tuple[bytes, dict[str, Any], list[dict[str, Any]]]:
+def _verified_zip_input(
+    path: Path, label: str, *, require_sorted: bool = True,
+) -> tuple[bytes, dict[str, Any], list[dict[str, Any]]]:
     records, _, identity = verified_zip_contents(
         Path(path),
         **RUNTIME_VARIANT_ZIP_LIMITS,
         retained_paths=(),
         max_retained_bytes=0,
+        require_sorted=require_sorted,
     )
     if not records:
         raise ValueError(f"{label} must contain at least one regular member")
@@ -262,7 +266,7 @@ def produce_runtime_variant(
         Path(c_abi_archive), "Runtime C ABI archive",
     )
     app_server_bytes, app_server_identity, app_server_members = _verified_zip_input(
-        Path(app_server_archive), "Runtime app-server archive",
+        Path(app_server_archive), "Runtime app-server archive", require_sorted=False,
     )
     if sum(
         member["relativePath"] == "include/codex_agent.h"
@@ -307,7 +311,7 @@ def produce_runtime_variant(
     if len(validation_outputs) != 1:
         raise ValueError("Runtime validation evidence is not the exact validation receipt output")
     validation_projection = derive_desktop_validation_projection(
-        load_canonical_json_bytes(validation_bytes),
+        load_json_bytes(validation_bytes),
         identity_envelope=identity,
         expected_commit=validation["producer"]["commit"],
         classifier_archive_sha256=app_server_identity["sha256"],
