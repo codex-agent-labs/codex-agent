@@ -428,7 +428,14 @@ class RuntimeVariantProducerTest(unittest.TestCase):
             output["bytes"] = fixture.validation.stat().st_size
             output["sha256"] = sha256_file(fixture.validation)
             fixture.rewrite_receipt("validation", fixture.receipts["validation"])
-            self.assertTrue(produce_runtime_variant(**fixture.arguments())["bundlePath"].is_file())
+            payload = produce_runtime_variant(**fixture.arguments())["bundlePath"]
+            self.assertTrue(payload.is_file())
+            metadata = _write_metadata_receipt(fixture, payload)
+            self.assertTrue(build_runtime_variant_attestation(
+                payload, fixture.receipt_paths["binary"], fixture.receipt_paths["package"],
+                fixture.receipt_paths["validation"], metadata, fixture.validation,
+                signing, private_key, public_key, root / "attestation",
+            ))
 
     def test_output_is_deterministic_and_preserves_inner_archives(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

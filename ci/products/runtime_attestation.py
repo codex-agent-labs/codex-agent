@@ -682,7 +682,7 @@ def _bound_inputs(
         if len(matching_validation) != 1:
             raise ValueError("Runtime validation evidence is not one exact validation output")
         validation_projection = derive_desktop_validation_projection(
-            load_canonical_json_bytes(validation_bytes),
+            load_json_bytes(validation_bytes),
             identity_envelope=identity,
             expected_commit=validation["producer"]["commit"],
             classifier_archive_sha256=roles["app-server-archive"]["sha256"],
