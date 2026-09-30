@@ -31,7 +31,7 @@ def capture_runtime_aggregate_original_ci(
     # no caller may select a job name, artifact name or verification callback.
     from product_reuse import (
         _CATALOG_ZIP_LIMITS, _download_contract_ci_upload, _observe_ci_producer_jobs,
-        paginated_items, safe_extract,
+        _runtime_prior_workflow_sha, api_json, paginated_items, safe_extract,
     )
 
     if type(token) is not str or not token:
@@ -65,9 +65,22 @@ def capture_runtime_aggregate_original_ci(
         originals[name], receipts[name], sources[name] = raw, receipt, source
         identities[name] = PhaseInstanceId("runtime", *identity)
     jobs = {name: f"product-validation / runtime-{name}" for name in receipts}
+    original_workflows, workflow_policies = {}, {}
+    for name, receipt in receipts.items():
+        producer = receipt["producer"]
+        identity = producer["runId"], producer["runAttempt"]
+        if identity not in original_workflows:
+            original_run = api_json(
+                f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/"
+                f"{identity[0]}/attempts/{identity[1]}", token)
+            original_workflows[identity] = _runtime_prior_workflow_sha(original_run, trusted_workflow_sha)
+        original_sha = original_workflows[identity]
+        if original_sha is None:
+            raise ValueError("Original Runtime aggregate phase lacks a reviewed producer workflow")
+        workflow_policies[name] = {"path": ".github/workflows/product-validation.yml", "sha": original_sha}
     observed = _observe_ci_producer_jobs(
         {name: receipt["producer"] for name, receipt in receipts.items()},
-        jobs_by_phase=jobs, trusted_workflow_sha=trusted_workflow_sha, token=token,
+        jobs_by_phase=jobs, trusted_workflows_by_phase=workflow_policies, token=token,
     )
     attempts = {(value["run"]["id"], value["run"]["run_attempt"]): value for value in observed}
     with tempfile.TemporaryDirectory(prefix="runtime-aggregate-original-ci-") as temporary:

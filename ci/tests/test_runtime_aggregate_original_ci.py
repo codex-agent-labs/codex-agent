@@ -135,7 +135,10 @@ class RuntimeAggregateOriginalCiTest(unittest.TestCase):
     def test_failed_job_wrong_attempt_workflow_window_digest_and_missing_upload_reject_atomically(self):
         def failed_job(): self.jobs[-1].update(conclusion="failure")
         def wrong_attempt(): self.runs[(71, 2)]["run_attempt"] = 3
-        def wrong_workflow(): self.runs[(71, 2)]["referenced_workflows"][0]["sha"] = "0" * 40
+        def wrong_workflow():
+            self.runs[(71, 2)]["referenced_workflows"][0].update(
+                path=f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@{'0' * 40}",
+                sha="0" * 40)
         def outside_window(): self.artifacts[AGGREGATE]["created_at"] = "2026-09-06T11:00:00Z"
         def changed_archive(): self.archives[AGGREGATE] = b"not the original upload"
         def missing_upload(): self.artifacts.pop(AGGREGATE)
@@ -184,7 +187,7 @@ class RuntimeAggregateOriginalCiTest(unittest.TestCase):
             self.capture()
         self.assertFalse(self.output.exists())
 
-    def test_mixed_original_run_attempts_do_not_change_receipt_identity(self):
+    def test_mixed_reviewed_workflows_and_original_attempts_preserve_receipt_identity(self):
         producer = {**self.base.producer, "runId": 72, "runAttempt": 3}
         upload = self.work / "later-original"
         fixture.finalize_phase_object(stage_root=self.stages[AGGREGATE], phase_plan=self.plans[AGGREGATE],
@@ -197,9 +200,18 @@ class RuntimeAggregateOriginalCiTest(unittest.TestCase):
                         size_in_bytes=len(raw), workflow_run={"id": 72, "head_sha": self.base.run["head_sha"]})
         self.jobs[-1]["run_id"] = 72
         self.runs[(72, 3)] = {**copy.deepcopy(self.base.run), "id": 72, "run_attempt": 3}
+        old_pin = "8a1c2a0c9a9ee1f3c5629d2d77278580f48a489c"
+        self.runs[(71, 2)]["referenced_workflows"][0].update(
+            path=f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@{old_pin}", sha=old_pin)
+        before = {name: path.read_bytes() for name, path in self.receipts.items()}
         with patch("reuse.api_request", side_effect=self.api):
             result = self.capture()
         self.assertEqual(2, len(result["observed"]))
+        self.assertEqual({old_pin, self.base.pin}, {
+            value["run"]["referenced_workflows"][0]["sha"] for value in result["observed"]})
+        for name, original in before.items():
+            self.assertEqual(original, (self.output / "phases" / name / "original/shard/phase-receipt.json").read_bytes())
+            self.assertEqual(original, self.receipts[name].read_bytes())
         self.assertEqual(self.receipts[AGGREGATE].read_bytes(),
                          (self.output / "phases" / AGGREGATE / "original/shard/phase-receipt.json").read_bytes())
 
