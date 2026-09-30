@@ -58,9 +58,10 @@ def _verify_original(root: Path, repository: Path):
     receipt = _json(lane / "lane-receipt.json")
     if type(plan) is not dict or require_integer(plan.get("schemaVersion"), "tooling plan schema", 1) != 1:
         raise ValueError("Unsupported original tooling plan")
-    # Strict parsing above rejects duplicate keys; the existing full lane gate owns semantics.
+    # Tooling proves its production action, not Contract tests. All original inventories
+    # remain bound below; the independent Contract receipts own product validation.
     receipt = validate_receipt(lane / "lane-receipt.json", plan_path, lane, "contracts",
-                               repository_root=repository)
+                               categories=("production",), repository_root=repository)
     producer = _original_producer(receipt)
     if str(run_git(repository, "rev-parse", f"{producer['commit']}^{{tree}}")).strip() != producer["tree"]:
         raise ValueError("Original tooling source commit/tree mismatch")

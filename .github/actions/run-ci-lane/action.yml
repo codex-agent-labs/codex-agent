@@ -23,6 +23,9 @@ inputs:
     default: none
   force-build:
     default: "false"
+  contract-tooling-only:
+    description: Build only release tooling when authenticated Contract phases are already available.
+    default: "false"
   reuse-only:
     description: Check and transport exact full or production reuse without executing the lane.
     default: "false"
@@ -62,9 +65,15 @@ runs:
         PRODUCER_IDENTITIES: ${{ inputs.producer-identities }}
         REUSE_DISABLED: ${{ inputs.reuse-disabled }}
         REUSE_ONLY: ${{ inputs.reuse-only }}
+        TOOLING_ONLY: ${{ inputs.contract-tooling-only }}
       shell: bash
       run: |
         printf 'PYTHONDONTWRITEBYTECODE=1\n' >> "$GITHUB_ENV"
+        if [ "$TOOLING_ONLY" = true ]; then
+          test "$LANE" = contracts
+          test "$REUSE_DISABLED" = true
+          test "$REUSE_ONLY" != true
+        fi
         if [ "$PREPARED_PRODUCTION" = true ]; then
           test "$LANE" = desktop-linux-arm64
           test "$REUSE_DISABLED" = true
@@ -370,7 +379,12 @@ runs:
         CI_VALIDATION_COMMIT: ${{ inputs.validation-commit }}
         CI_VALIDATION_TREE: ${{ inputs.validation-tree }}
       shell: bash
-      run: ci/run-lane.sh "${{ inputs.lane }}"
+      run: |
+        if [ "${{ inputs.contract-tooling-only }}" = true ]; then
+          ./gradlew :build-logic:releaseToolingJar --stacktrace
+        else
+          ci/run-lane.sh "${{ inputs.lane }}"
+        fi
     - id: portable-runtime-products
       name: Stage the exact portable Runtime binary and package products
       if: >-
@@ -407,7 +421,7 @@ runs:
     - id: contract-product
       name: Stage the exact Contract binary product
       if: >-
-        inputs.lane == 'contracts' && inputs.reuse-only != 'true' &&
+        inputs.lane == 'contracts' && inputs.contract-tooling-only != 'true' && inputs.reuse-only != 'true' &&
         steps.reuse.outputs.reused != 'true' && steps.production.outputs.reused != 'true' &&
         steps.production-execution.outcome == 'success'
       continue-on-error: true
@@ -521,7 +535,7 @@ runs:
           --stacktrace
     - id: execution
       if: >-
-        inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&
+        inputs.contract-tooling-only != 'true' && inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&
         steps.production-execution.outcome != 'failure' &&
         steps.portable-runtime-products.outcome != 'failure' &&
         (inputs.force-build == 'true' || steps.selection.outputs.test == 'true' ||
@@ -656,7 +670,9 @@ runs:
           restored=(--restored-production build/ci/reuse/production)
         fi
         forced=()
-        if [ "$PREPARED_PRODUCTION" = true ] && [ "${{ steps.selection.outputs.build }}" != true ]; then
+        if [ "${{ inputs.contract-tooling-only }}" = true ]; then
+          forced=(--production-only)
+        elif [ "$PREPARED_PRODUCTION" = true ] && [ "${{ steps.selection.outputs.build }}" != true ]; then
           forced=(--force-production)
         elif [ "${{ inputs.force-build }}" = true ] || {
           [ "${{ steps.selection.outputs.test }}" = true ] &&

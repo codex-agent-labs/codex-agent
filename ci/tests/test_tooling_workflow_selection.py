@@ -141,6 +141,26 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
         self.assertIn("needs: [contract-binary]", child)
         self.assertIn("uses: ./.github/workflows/contract-validation.yml", self.source)
 
+    def test_retained_contract_only_builds_tooling_and_never_claims_test_actions(self):
+        child = (WORKFLOW.parent / "contract-validation.yml").read_text()
+        job = child.split("\n  contract-binary:\n", 1)[1].split("\n  tooling-attestation:\n", 1)[0]
+        self.assertIn("contract_next_phase == 'binary' ||", job)
+        self.assertIn("contract-tooling-only: ${{ fromJSON(inputs.planOutputs).tooling_miss == 'true' && fromJSON(inputs.planOutputs).contract_next_phase != 'binary' }}", job)
+        action = (WORKFLOW.parents[1] / "actions/run-ci-lane/action.yml").read_text()
+        production = action.split("    - id: production-execution\n", 1)[1].split("    - id: portable-runtime-products\n", 1)[0]
+        script = production.split("      run: |\n", 1)[1]
+        script = textwrap.dedent(script).replace("${{ inputs.contract-tooling-only }}", "true")
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "calls"
+            gradle = Path(temporary) / "gradlew"
+            gradle.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "' + str(log) + '"\n')
+            gradle.chmod(0o755)
+            subprocess.run(["bash", "-e", "-c", script], cwd=temporary, check=True)
+            self.assertEqual(":build-logic:releaseToolingJar --stacktrace\n", log.read_text())
+        for step, end in (("contract-product", "contract-product-shard"), ("execution", "runtime-validation-handoff")):
+            self.assertIn("inputs.contract-tooling-only != 'true'", action.split("    - id: " + step + "\n", 1)[1].split("    - id: " + end + "\n", 1)[0])
+        self.assertIn('forced=(--production-only)', action)
+
 
 if __name__ == "__main__":
     unittest.main()

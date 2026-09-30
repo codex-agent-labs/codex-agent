@@ -19,6 +19,7 @@ class ToolingAttestationTest(GitFixture):
         from ci.products.selection import classify_paths, phase_inventory_paths
         for path in ("ci/products/tooling.py", "ci/products/tooling_local.py", "ci/tooling_release.py", "ci/tooling_capture.py", "ci/tooling_discovery.py"):
             self.assertEqual(set(PHASE_INSTANCE_IDS), set(classify_paths([path]).instances))
+        for path in ("ci/products/tooling.py", ".github/actions/run-ci-lane/action.yml", ".github/workflows/contract-validation.yml"):
             for instance in PHASE_INSTANCE_IDS:
                 self.assertEqual((), phase_inventory_paths([path], instance), (path, instance))
 
@@ -71,6 +72,20 @@ class ToolingAttestationTest(GitFixture):
         with self.assertRaises(ValueError):
             self.build()
         self.assertEqual(before, regular_file_inventory(self.evidence, allow_empty=True))
+
+    def test_tooling_only_receipt_proves_production_without_claiming_contract_tests(self):
+        path = self.lane / "lane-receipt.json"
+        receipt = json.loads(path.read_bytes())
+        receipt["toolchain"]["validationActions"] = "build"
+        path.write_text(json.dumps(receipt) + "\n")
+        original = path.read_bytes()
+        self.build()
+        with self.capture() as jar:
+            self.assertEqual((self.lane / JAR).read_bytes(), jar.read_bytes())
+        self.assertEqual(original, (self.evidence / "original/lane/lane-receipt.json").read_bytes())
+        from ci.receipt import validate_receipt
+        with self.assertRaisesRegex(ValueError, "action coverage mismatch"):
+            validate_receipt(path, self.plan_path, self.lane, "contracts", repository_root=self.root)
 
     def test_signature_payload_unknown_file_and_cross_key_tampering_fail_before_use(self):
         self.build()

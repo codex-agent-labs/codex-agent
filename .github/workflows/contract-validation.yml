@@ -52,7 +52,7 @@ permissions:
 jobs:
   contract-binary:
     name: product-contracts
-    if: fromJSON(inputs.planOutputs).event_authorized == 'true' && fromJSON(inputs.planOutputs).remote_build_authorized == 'true' && fromJSON(inputs.planOutputs).validation_reused != 'true' && fromJSON(inputs.planOutputs).contract_matrix != '{"include":[]}'
+    if: fromJSON(inputs.planOutputs).event_authorized == 'true' && fromJSON(inputs.planOutputs).remote_build_authorized == 'true' && fromJSON(inputs.planOutputs).validation_reused != 'true' && fromJSON(inputs.planOutputs).contract_matrix != '{"include":[]}' && (fromJSON(inputs.planOutputs).contract_next_phase == 'binary' || fromJSON(inputs.planOutputs).tooling_miss == 'true')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(fromJSON(inputs.planOutputs).contract_matrix) }}
@@ -66,6 +66,7 @@ jobs:
         with:
           lane: contracts
           force-build: ${{ fromJSON(inputs.planOutputs).tooling_miss == 'true' }}
+          contract-tooling-only: ${{ fromJSON(inputs.planOutputs).tooling_miss == 'true' && fromJSON(inputs.planOutputs).contract_next_phase != 'binary' }}
           reuse-disabled: ${{ fromJSON(inputs.planOutputs).tooling_miss == 'true' }}
           plan-artifact: ${{ fromJSON(inputs.planOutputs).plan_artifact }}
           validation-commit: ${{ fromJSON(inputs.planOutputs).validation_commit }}
