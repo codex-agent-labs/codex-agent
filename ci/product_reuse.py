@@ -412,10 +412,11 @@ def _prior_failed_pr_attempts(
                     return tuple(matches)
 
     runs = paginated_items(
-        f"{api}/repos/{repository}/actions/workflows/ci.yml/runs?event=pull_request&status=completed",
+        f"{prefix}?event=pull_request&status=completed",
         "workflow_runs", token)
     candidates = [run for run in runs if isinstance(run, dict)
                   and type(run.get("id")) is int and 0 < run["id"] < current_run
+                  and run.get("path") == ".github/workflows/ci.yml"
                   and run.get("conclusion") in {"failure", "cancelled"}
                   and run_matches_pr(run, plan["pullRequest"])]
     for selected in sorted(candidates, key=lambda run: run["id"], reverse=True):

@@ -337,11 +337,14 @@ class PriorFailedPrAttemptTest(unittest.TestCase):
 
     def test_selects_one_latest_failed_run_and_verifies_exact_attempt(self):
         older = {**self.run, "id": 80, "run_attempt": 1}
-        with mock.patch.object(product_reuse, "paginated_items", return_value=[older, self.run]) as listing, \
+        unrelated = {**self.run, "id": 95, "path": ".github/workflows/other.yml"}
+        with mock.patch.object(product_reuse, "paginated_items", return_value=[older, unrelated, self.run]) as listing, \
                 mock.patch.object(product_reuse, "api_json", return_value=self.run) as exact:
             self.assertEqual(self.run, product_reuse._prior_failed_pr_attempt(
                 self.plan, self.producer, "token"))
-        listing.assert_called_once()
+        listing.assert_called_once_with(
+            "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs?event=pull_request&status=completed",
+            "workflow_runs", "token")
         exact.assert_called_once_with(
             "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/90/attempts/2", "token")
 
