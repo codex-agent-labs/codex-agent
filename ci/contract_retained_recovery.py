@@ -211,8 +211,8 @@ def discover_retained_contract(
     destination.relative_to(artifact_root)
     if destination.exists() or destination.is_symlink():
         raise ValueError("Retained Contract discovery destination already exists")
-    # ponytail: bounded recent interrupted attempts; increase only for an observed older recovery need.
-    attempts = transport._prior_failed_pr_attempts(plan, consumer_producer, token, limit=12)
+    # Unexpired authenticated originals must not age out merely because orchestration was retried.
+    attempts = transport._prior_failed_pr_attempts(plan, consumer_producer, token)
     artifacts_by_run = {}
     for prior in attempts:
         pin = transport._runtime_prior_workflow_sha(prior, trusted_workflow_sha)

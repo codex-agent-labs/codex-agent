@@ -137,7 +137,7 @@ class ContractRetainedRecoveryTest(unittest.TestCase):
         self.assertFalse((self.source.root / "tampered").exists())
 
     def test_scan_pairs_official_uploads_and_forwards_reviewed_original_policy(self):
-        consumer = dict(self.source.producer, runId=72)
+        consumer = dict(self.source.producer, runId=self.source.producer["runId"] + 100)
         plan = {"repository": consumer["repository"], "event": "pull_request",
                 "remoteBuildAuthorized": True, "pullRequest": 31,
                 "validationCommit": consumer["commit"], "validationTree": consumer["tree"]}
@@ -174,8 +174,12 @@ class ContractRetainedRecoveryTest(unittest.TestCase):
                     (captured_root / "authenticated.json").relative_to(self.source.root).as_posix()}]}}
 
         output = self.source.root / "selected"
-        with mock.patch.object(recovery.transport, "_prior_failed_pr_attempts", return_value=(self.source.run,)), \
-                mock.patch.object(recovery.transport, "paginated_items", return_value=uploads), \
+        attempts = tuple(dict(self.source.run, id=self.source.run["id"] + number)
+                         for number in range(13, 0, -1)) + (self.source.run,)
+        with mock.patch.object(recovery.transport, "_prior_failed_pr_attempts",
+                side_effect=lambda *args, **kwargs: attempts[:kwargs.get("limit")]) as lookup, \
+                mock.patch.object(recovery.transport, "paginated_items", side_effect=lambda url, *args:
+                    uploads if f"/runs/{self.source.run['id']}/artifacts" in url else []), \
                 mock.patch.object(recovery.transport, "_download_contract_ci_upload", side_effect=download), \
                 mock.patch.object(recovery, "capture_retained_contract", side_effect=capture), \
                 mock.patch.object(recovery, "replay_retained_contract", side_effect=replay):
@@ -184,6 +188,7 @@ class ContractRetainedRecoveryTest(unittest.TestCase):
                 trusted_workflow_sha=self.source.pin, keyring=self.source.root / "keyring",
                 keys_directory=self.source.root / "keys", token="not-a-real-token")
         self.assertTrue(selected["result"]["fullReuse"])
+        self.assertNotIn("limit", lookup.call_args.kwargs)
         self.assertEqual(output / "carrier", selected["carrier"])
         selected_object = self.source.root / selected["request"]["availableObjects"][0]["objectPath"]
         self.assertTrue(selected_object.is_file())
