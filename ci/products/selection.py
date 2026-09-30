@@ -1221,6 +1221,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         return _runtime(("macos-arm64",))
     if _is_prefix(path, "codex-agent-runtime-desktop/src/macosX64Main/gradle/"):
         return _runtime(("macos-x64",))
+    if _is_prefix(path, "codex-agent-runtime-desktop/src/linuxX64Main/gradle/"):
+        return _runtime(("linux-x64",))
     if _is_prefix(path, "codex-agent-runtime-desktop/native/"):
         return _runtime(NATIVE_TARGETS)
     if path == "runtime/gradle/kotlin-js-store/package-lock.json":

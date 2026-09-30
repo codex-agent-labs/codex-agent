@@ -12,6 +12,22 @@ from ci.tests.test_runtime_supervisor_capture import product_reuse as worker
 
 
 class RuntimeWorkerArchiveTest(unittest.TestCase):
+    def test_linux_x64_bootstrap_uses_a_fresh_stable_home(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runner_temp = Path(temporary).resolve()
+            environment = {"RUNNER_TEMP": str(runner_temp), "CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH": "true"}
+            with mock.patch("products.toolchain_capture_bootstrap.prepare", return_value={
+                    "plugin": "plugin.jar", "archive": "native.tar.gz", "compiler": "compiler"}) as prepare:
+                worker._provision_runtime_native_toolchain(
+                    runner_temp, "c" * 40, "linux-x64", runner_temp / "worker", environment)
+                home = runner_temp / "codex-runtime-konan-linux-x64"
+                self.assertEqual(str(home), environment["KONAN_DATA_DIR"])
+                self.assertEqual(home, prepare.call_args.args[-1])
+                self.assertTrue(home.is_dir())
+                with self.assertRaises(FileExistsError):
+                    worker._provision_runtime_native_toolchain(
+                        runner_temp, "c" * 40, "linux-x64", runner_temp / "retry", environment)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="runtime-worker-archive-")
         self.addCleanup(temporary.cleanup)
@@ -22,7 +38,8 @@ class RuntimeWorkerArchiveTest(unittest.TestCase):
         self.archive.parent.mkdir()
         self.archive.write_bytes(b"synthetic pinned archive\x00\xff\n")
         self.linker_scripts = {}
-        for target, source_set in (("macos-arm64", "macosArm64Main"), ("macos-x64", "macosX64Main")):
+        for target, source_set in (("macos-arm64", "macosArm64Main"), ("macos-x64", "macosX64Main"),
+                                   ("linux-x64", "linuxX64Main")):
             relative = f"codex-agent-runtime-desktop/src/{source_set}/gradle/deterministic-native-link.init.gradle"
             path = self.root / relative
             path.parent.mkdir(parents=True)
@@ -150,6 +167,20 @@ class RuntimeWorkerArchiveTest(unittest.TestCase):
         self.assertEqual(str(self.linker_scripts["macos-x64"]), command[command.index("-I") + 1])
         self.git_bytes.assert_called_once_with(
             self.root, self.producer["commit"], self.linker_scripts["macos-x64"].relative_to(self.root).as_posix(),
+            max_bytes=64 * 1024,
+        )
+
+    def test_linux_x64_uses_its_exact_path_policy(self):
+        self.instance = worker.PhaseInstanceId("runtime", "linux-x64", "binary", "linux-x64")
+        self.ready.update(component="linux-x64", target="linux-x64")
+        self.state.prior_ready_plans = {self.instance: self.ready}
+        self.host.return_value = "linux-x64"
+        self.route.return_value = {"runnerOs": "Linux", "runnerArch": "X64", "supervisor": None}
+        self.assertEqual({"fixture": True}, self.execute())
+        command = self.process.call_args.args[0]
+        self.assertEqual(str(self.linker_scripts["linux-x64"]), command[command.index("-I") + 1])
+        self.git_bytes.assert_called_once_with(
+            self.root, self.producer["commit"], self.linker_scripts["linux-x64"].relative_to(self.root).as_posix(),
             max_bytes=64 * 1024,
         )
 

@@ -1305,6 +1305,17 @@ class ProductSelectionTest(unittest.TestCase):
             self.assertEqual((path,) if target == "macos-x64" else (),
                              phase_inventory_paths([path], instance))
 
+    def test_linux_x64_path_policy_changes_only_its_binary_key(self) -> None:
+        path = "codex-agent-runtime-desktop/src/linuxX64Main/gradle/deterministic-native-link.init.gradle"
+        self.assertEqual({"linux-x64", "runtime-aggregate"},
+                         {instance.component for instance in classify_paths([path]).instances})
+        for instance in PHASE_INSTANCE_IDS:
+            expected = (path,) if (instance.product, instance.component, instance.phase) == (
+                "runtime", "linux-x64", "binary") else ()
+            self.assertEqual(expected, phase_inventory_paths([path], instance), instance)
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((), phase_inventory_paths(["ci/product_reuse.py", "ci/products/selection.py"], instance))
+
     def test_runtime_binary_flags_authorities_select_exact_native_binary_lines(self) -> None:
         paths = tracked_product_paths()
         for path in (

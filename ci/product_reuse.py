@@ -4293,7 +4293,7 @@ def _provision_runtime_native_toolchain(root, revision, component, destination, 
         raise ValueError("Native Runtime bootstrap requires a regular absolute runner temp directory")
     from products.toolchain_capture_bootstrap import prepare
 
-    if component in {"macos-arm64", "macos-x64"}:
+    if component in {"macos-arm64", "macos-x64", "linux-x64"}:
         konan_home = runner_temp / f"codex-runtime-konan-{component}"
         konan_home.mkdir(mode=0o700)  # Fresh and stable: Kotlin/Native embeds this path in native output.
     else:
@@ -4480,8 +4480,9 @@ def execute_runtime_phase(
     if stage.exists() or stage.is_symlink():
         raise ValueError("Runtime worker output stage appeared before execution")
     init_script = None
-    if instance.component in {"macos-arm64", "macos-x64"} and instance.phase == "binary":
-        source_set = {"macos-arm64": "macosArm64Main", "macos-x64": "macosX64Main"}[instance.component]
+    if instance.component in {"macos-arm64", "macos-x64", "linux-x64"} and instance.phase == "binary":
+        source_set = {"macos-arm64": "macosArm64Main", "macos-x64": "macosX64Main",
+                      "linux-x64": "linuxX64Main"}[instance.component]
         init_script = root / f"codex-agent-runtime-desktop/src/{source_set}/gradle/deterministic-native-link.init.gradle"
         if read_regular_file_bytes(init_script, reject_symlink_parents=True) != git_regular_blob_bytes(
                 root, state.producer["commit"], init_script.relative_to(root).as_posix(), max_bytes=64 * 1024):
