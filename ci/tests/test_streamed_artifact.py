@@ -6,10 +6,12 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from reuse import download_artifact_to_file  # noqa: E402
+import product_reuse  # noqa: E402
 
 
 class StreamedArtifactTest(unittest.TestCase):
@@ -62,6 +64,33 @@ class StreamedArtifactTest(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             self.download()
         self.assertEqual(b"original", self.destination.read_bytes())
+
+    def test_transient_get_retries_preserve_transport_checks_and_auth(self):
+        for streamed in (False, True):
+            with self.subTest(streamed=streamed), mock.patch("product_reuse.time.sleep") as sleep, \
+                    mock.patch("reuse.urllib.request.build_opener") as builder:
+                opener = builder.return_value
+                opener.open.side_effect = [urllib.error.HTTPError(
+                    self.artifact["archive_download_url"], 502, "transient", {}, None), BytesIO(self.payload)]
+                if streamed:
+                    product_reuse.download_artifact_to_file(self.artifact, "token", self.destination, max_bytes=1024)
+                    self.assertEqual(self.payload, self.destination.read_bytes())
+                else:
+                    self.assertEqual(self.payload, product_reuse.download_artifact(self.artifact, "token"))
+                self.assertEqual(2, opener.open.call_count)
+                sleep.assert_called_once_with(1)
+                self.assertEqual("Bearer token", opener.open.call_args.args[0].get_header("Authorization"))
+
+    def test_permanent_or_exhausted_get_failure_is_not_admitted(self):
+        for code, attempts in ((403, 1), (502, 4)):
+            with self.subTest(code=code), mock.patch("product_reuse.time.sleep"), \
+                    mock.patch("reuse.urllib.request.build_opener") as builder:
+                builder.return_value.open.side_effect = urllib.error.HTTPError(
+                    self.artifact["archive_download_url"], code, "failed", {}, None)
+                with self.assertRaises(urllib.error.HTTPError):
+                    product_reuse.download_artifact_to_file(self.artifact, "token", self.destination, max_bytes=1024)
+                self.assertEqual(attempts, builder.return_value.open.call_count)
+                self.assertFalse(self.destination.exists())
 
 
 if __name__ == "__main__":

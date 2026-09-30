@@ -7,6 +7,7 @@ import argparse
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import wraps
 import os
 import ntpath
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -18,6 +19,7 @@ import sys
 import tempfile
 import time
 from typing import Any, Mapping
+import urllib.error
 
 if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -27,6 +29,27 @@ from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admis
 from impact import validate_legacy_lane_projection, validate_remote_build_authorization
 from receipt import safe_extract
 from reuse import api_json, download_artifact, download_artifact_to_file, github_output, paginated_items, run_matches_pr
+
+
+def _retry_github_get(operation):
+    """Retry transient recovery GETs; every attempt retains full authentication."""
+    @wraps(operation)
+    def retry(*args, **kwargs):
+        for attempt in range(4):
+            try:
+                return operation(*args, **kwargs)
+            except urllib.error.HTTPError as error:
+                if error.code not in {502, 503, 504} or attempt == 3:
+                    raise
+                error.close()
+                time.sleep(2 ** attempt)
+    return retry
+
+
+api_json = _retry_github_get(api_json)
+paginated_items = _retry_github_get(paginated_items)
+download_artifact = _retry_github_get(download_artifact)
+download_artifact_to_file = _retry_github_get(download_artifact_to_file)
 from products.aggregate import RUNTIME_EVIDENCE_TARGETS, RUNTIME_TARGETS, validate_product_index
 from products.contract_attestation import (
     validate_contract_attestation, verify_contract_attestation, verify_contract_execution_closure,
@@ -1193,6 +1216,30 @@ def capture_prior_failed_runtime_phases(
     return captured
 
 
+def _runtime_capture_identity(observation: Mapping[str, Any], instance: PhaseInstanceId) -> dict[str, Any]:
+    """Compare authenticated original identity, not mutable GitHub API snapshots."""
+    job_name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
+    observed = []
+    for attempt in observation["observed"]:
+        jobs = _matching_ci_jobs(attempt["jobs"], job_name)
+        if len(jobs) != 1:
+            raise ValueError("Prior Runtime observation lacks its exact original job")
+        run = attempt["run"]
+        observed.append({
+            "run": {field: run.get(field) for field in
+                    ("id", "run_attempt", "head_sha", "path", "event", "referenced_workflows")},
+            "repositories": {field: {key: run[field].get(key) for key in ("full_name", "fork")}
+                             for field in ("repository", "head_repository")},
+            "testedCommit": attempt["testedCommit"],
+            "job": {field: jobs[0].get(field) for field in
+                    ("id", "name", "run_id", "head_sha", "status", "conclusion", "started_at", "completed_at")},
+        })
+    return {**observation, "observed": observed,
+            "artifacts": {phase: {field: artifact.get(field) for field in
+                ("id", "name", "digest", "size_in_bytes", "created_at", "archive_download_url", "workflow_run")}
+                for phase, artifact in observation["artifacts"].items()}}
+
+
 def _prior_failed_runtime_objects(
     capture_root: Path, artifact_root: Path, *, trusted_workflow_sha: str | None = None,
     token: str | None = None, plan: Mapping[str, Any] | None = None,
@@ -1266,12 +1313,22 @@ def _prior_failed_runtime_objects(
                                                          "Prior Runtime original observation")
                         with tempfile.TemporaryDirectory(prefix="phase-", dir=temporary) as phase_temporary:
                             replay = Path(phase_temporary).resolve(strict=True) / "capture"
-                            capture_runtime_original_ci_phases(
+                            fresh_observation = capture_runtime_original_ci_phases(
                                 {phase: shard / PHASE_RECEIPT_NAME}, replay, target=member.name,
                                 trusted_workflow_sha=original_workflow_sha, token=token,
                                 original_instance=instance,
                                 recovery_projection="recoveryProjection" in observation)
-                            if regular_file_inventory(replay, allow_empty=True) != regular_file_inventory(captured, allow_empty=True):
+                            observation_path = "transport/original-ci-phases.json"
+                            replay_files = [record for record in regular_file_inventory(replay, allow_empty=True)
+                                            if record["relativePath"] != observation_path]
+                            original_files = [record for record in regular_file_inventory(captured, allow_empty=True)
+                                              if record["relativePath"] != observation_path]
+                            # Keep the original snapshot unchanged. Fresh original-job/
+                            # upload authentication above is mandatory; incidental run
+                            # and unrelated-job observations are not product identity.
+                            if (replay_files != original_files or
+                                    _runtime_capture_identity(fresh_observation, instance) !=
+                                    _runtime_capture_identity(observation, instance)):
                                 raise ValueError("Prior failed Runtime capture differs from original CI")
                     descriptor = _canonical_control(shard / PHASE_SHARD_NAME, "Prior failed Runtime shard")
                     records.append({

@@ -181,7 +181,8 @@ class RuntimeLatePhaseRecoveryTest(unittest.TestCase):
                                 "phases" / instance.phase / "original/shard")
                 observation = destination / instance.component / instance.phase / instance.target / "transport"
                 observation.mkdir()
-                (observation / "original-ci-phases.json").write_bytes(canonical_json_bytes({}))
+                (observation / "original-ci-phases.json").write_bytes(canonical_json_bytes(
+                    {"observed": [], "artifacts": {}}))
                 retained[instance] = {"syntheticOriginalAdmission": True}
             return retained
 
@@ -231,7 +232,7 @@ class RuntimeLatePhaseRecoveryTest(unittest.TestCase):
         def recheck(receipts, destination, **_):
             phase = next(iter(receipts))
             shutil.copytree(resumed / "prior-failed-runtime" / TARGET / phase / TARGET, destination)
-            return {}
+            return adapter._canonical_control(destination / "transport/original-ci-phases.json", "fixture")
 
         with self.control_seams(), mock.patch.object(adapter, "api_json", return_value={
             **official, "id": old_producer["runId"] - 1}):

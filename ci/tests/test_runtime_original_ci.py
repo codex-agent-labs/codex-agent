@@ -246,6 +246,26 @@ class RuntimeOriginalCiTest(unittest.TestCase):
             self.assertEqual(key, records[0]["buildKey"])
             self.assertEqual(self.receipts["binary"].read_bytes(),
                 (captured / "phases/binary/original/shard/phase-receipt.json").read_bytes())
+            observation_path = captured / "transport/original-ci-phases.json"
+            original_observation = observation_path.read_bytes()
+            changed_run = copy.deepcopy(run)
+            changed_run["pull_requests"][0]["head"]["sha"] = "a" * 40
+            changed_run["updated_at"] = "2026-09-30T13:00:00Z"
+            changed_jobs = copy.deepcopy(self.jobs)
+            changed_jobs.append({"name": "unrelated later job", "status": "completed"})
+            with mock.patch("reuse.api_request", side_effect=self.api(run=changed_run, jobs=changed_jobs)):
+                self.assertEqual(records, adapter._prior_failed_runtime_objects(destination, self.root,
+                    trusted_workflow_sha=self.pin, token="not-a-real-token", plan=plan,
+                    consumer_producer={"runId": 100, "runAttempt": 1}))
+            self.assertEqual(original_observation, observation_path.read_bytes())
+            tampered = copy.deepcopy(observation)
+            tampered["observed"][0]["jobs"][0]["id"] += 1
+            observation_path.write_bytes(fixture.canonical_json_bytes(tampered))
+            with self.assertRaisesRegex(ValueError, "differs from original CI"):
+                adapter._prior_failed_runtime_objects(destination, self.root,
+                    trusted_workflow_sha=self.pin, token="not-a-real-token", plan=plan,
+                    consumer_producer={"runId": 100, "runAttempt": 1})
+            observation_path.write_bytes(original_observation)
             proof.write_bytes(b"tampered proof")
             with self.assertRaisesRegex(ValueError, "differs from original CI"):
                 adapter._prior_failed_runtime_objects(destination, self.root,
