@@ -466,7 +466,8 @@ def _require_ci_workflow_reference(run, workflow, sha):
 
 def _runtime_prior_workflow_sha(run, current_sha):
     # Prior genuine phases retain their original reviewed workflow authority after a pin rotation.
-    for sha in dict.fromkeys((current_sha, _PRIOR_RUNTIME_WORKFLOW_SHA)):
+    for sha in dict.fromkeys((current_sha, _PRIOR_RUNTIME_WORKFLOW_SHA,
+                             "b4148a6320d3dfe8bfb556c6327937c6b304cf4c")):
         try:
             _require_ci_workflow_reference(run,
                 f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{sha}", sha)
@@ -1160,7 +1161,8 @@ def capture_prior_failed_runtime_phases(
             if not found:
                 continue
             if any(receipt["outputs"] != found[0][0]["outputs"] for receipt, _, _ in found[1:]):
-                raise ValueError("Prior Runtime exact build key has conflicting output inventories")
+                raise ValueError(f"Prior Runtime exact build key has conflicting output inventories: "
+                                 f"{instance} key={found[0][0]['buildKey']}")
             receipt_path, original_workflow_sha = found[0][1:]  # Preserve the chosen original producer.
             captured[instance] = capture_runtime_original_ci_phases(
                 {instance.phase: receipt_path}, output, target=instance.component,
@@ -2947,6 +2949,24 @@ def advance_contract(
     }
     if authorities is None:
         raise ValueError(unavailable or "Contract phase authority is unavailable")
+    if request["availableObjects"]:
+        from contract_retained_recovery import replay_retained_contract
+        with tempfile.TemporaryDirectory(prefix="contract-retained-recheck-", dir=root) as temporary:
+            private = Path(temporary).resolve()
+            trust = _release_trust(root, plan["validationCommit"], private)
+            if trust is None:
+                raise ValueError("Retained Contract replay requires tracked release trust")
+            current_request = {**request, "artifactRoot": str(discovery_root), "availableObjects": []}
+            rechecked = replay_retained_contract(
+                discovery_root / "retained-contract/capture", current_request, private / "carrier",
+                consumer=consumer, keyring=trust.keyring, keys_directory=trust.keys,
+                sdk_validation_tooling=sdk_validation_tooling,
+                sdk_apple_validation_policy=sdk_apple_validation_policy)
+            initial = _canonical_control(discovery_root / "contract-reuse-result.json", "Retained Contract result")
+            if (rechecked["request"]["availableObjects"] != request["availableObjects"]
+                    or rechecked["result"] != initial):
+                raise ValueError("Retained Contract request differs from its authenticated current replay")
+            expected_fixed["availableObjects"] = rechecked["request"]["availableObjects"]
     for field, expected in expected_fixed.items():
         if request[field] != expected:
             raise ValueError(f"Contract reuse request disagrees with current {field}")
@@ -2958,6 +2978,9 @@ def advance_contract(
     rebased_request = dict(request)
     rebased_request["artifactRoot"] = str(root)
     rebased_request["catalogs"] = _rebase_catalog_paths(request["catalogs"], discovery_root, root)
+    rebased_request["availableObjects"] = [{**record,
+        "objectPath": (discovery_root / record["objectPath"]).relative_to(root).as_posix(),
+    } for record in request["availableObjects"]]
     rebased_request.update(_rebase_native_request(request, discovery_root, root))
     replay_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
 
@@ -4270,8 +4293,8 @@ def _provision_runtime_native_toolchain(root, revision, component, destination, 
         raise ValueError("Native Runtime bootstrap requires a regular absolute runner temp directory")
     from products.toolchain_capture_bootstrap import prepare
 
-    if component == "macos-arm64":
-        konan_home = runner_temp / "codex-runtime-konan-macos-arm64"
+    if component in {"macos-arm64", "macos-x64"}:
+        konan_home = runner_temp / f"codex-runtime-konan-{component}"
         konan_home.mkdir(mode=0o700)  # Fresh and stable: Kotlin/Native embeds this path in native output.
     else:
         konan_home = Path(tempfile.mkdtemp(prefix="codex-runtime-konan-", dir=runner_temp))
@@ -4457,11 +4480,12 @@ def execute_runtime_phase(
     if stage.exists() or stage.is_symlink():
         raise ValueError("Runtime worker output stage appeared before execution")
     init_script = None
-    if instance == PhaseInstanceId("runtime", "macos-arm64", "binary", "macos-arm64"):
-        init_script = root / "codex-agent-runtime-desktop/src/macosArm64Main/gradle/deterministic-native-link.init.gradle"
+    if instance.component in {"macos-arm64", "macos-x64"} and instance.phase == "binary":
+        source_set = {"macos-arm64": "macosArm64Main", "macos-x64": "macosX64Main"}[instance.component]
+        init_script = root / f"codex-agent-runtime-desktop/src/{source_set}/gradle/deterministic-native-link.init.gradle"
         if read_regular_file_bytes(init_script, reject_symlink_parents=True) != git_regular_blob_bytes(
                 root, state.producer["commit"], init_script.relative_to(root).as_posix(), max_bytes=64 * 1024):
-            raise ValueError("macOS Arm64 linker policy differs from its exact Git source")
+            raise ValueError(f"{instance.component} linker policy differs from its exact Git source")
     command = _runtime_worker_command(wrapper, properties, environment, init_script=init_script)
     started = time.monotonic_ns()
     with (destination / "gradle.log").open("xb") as log:
@@ -4478,6 +4502,13 @@ def execute_runtime_phase(
         raise ValueError("Runtime worker private Python bytecode namespace was modified")
     if input_inventory != regular_file_inventory(destination / "inputs", allow_empty=True):
         raise ValueError("Runtime worker inputs changed during execution")
+    if instance.component in NATIVE_TARGETS and instance.phase == "validation":
+        from products.runtime_validation_projection import project_native_validation_stage
+        project_native_validation_stage(
+            stage, Path(properties["codexAgent.runtimePackageStage"]), destination / "raw-validation",
+            target=instance.component, version=state.expected_fixed["versions"]["runtime-release"],
+            producer=state.producer,
+        )
     return finalize_phase_object(
         stage_root=stage, phase_plan={key: ready[key] for key in PHASE_PLAN_KEYS}, producer=state.producer,
         product_version=state.expected_fixed["versions"]["runtime-release"],
@@ -6602,6 +6633,25 @@ def discover(
         )
         write_canonical_json(destination / "contract-reuse-result.json", contract_result)
         if contract_result["fullReuse"] is not True:
+            if (plan["event"] == "pull_request" and trust is not None
+                    and tooling_workflow_sha is not None and environment.get("GITHUB_TOKEN")):
+                from contract_retained_recovery import discover_retained_contract
+                recovered = discover_retained_contract(
+                    destination / "retained-contract", plan=plan,
+                    consumer_producer=_consumer(plan, environment)["producer"],
+                    contract_request=contract_request, trusted_workflow_sha=tooling_workflow_sha,
+                    keyring=trust.keyring, keys_directory=trust.keys, token=environment["GITHUB_TOKEN"],
+                    sdk_validation_tooling=sdk_validation_tooling,
+                    sdk_apple_validation_policy=sdk_apple_validation_policy)
+                if recovered is not None:
+                    publish_regular_tree(recovered["carrier"], destination / "carrier")
+                    write_canonical_json(destination / "contract-reuse-request.json", recovered["request"])
+                    write_canonical_json(destination / "contract-reuse-result.json", recovered["result"])
+                    write_canonical_json(destination / "reuse-wave-result.json", recovered["result"])
+                    write_canonical_json(destination / "producer.json", _consumer(plan, environment)["producer"])
+                    return _finish(destination, request, _result(
+                        requested, complete=False, reason="retained-contract-complete", reuse=recovered["result"],
+                    ), github_output_path, contract_reconciliation_required=True)
             if any(phase.get("state") == "reused" for phase in contract_result["phases"]):
                 _write_reused_carrier(
                     contract_result,

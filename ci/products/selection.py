@@ -360,6 +360,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/legacy_lanes.py",
     "ci/product_legacy.py",
     "ci/product_reuse.py",
+    "ci/contract_retained_recovery.py",
     "ci/runtime_native_phase.py",
     "ci/runtime_original_ci.py",
     "ci/runtime_aggregate_release.py",
@@ -1106,6 +1107,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         return _contract()
     if path == "ci/products/c_abi.py":
         return _runtime(NATIVE_TARGETS) | _bindings(NATIVE_BINDINGS)
+    if path == "ci/products/runtime_validation_projection.py":
+        return _runtime(NATIVE_TARGETS, "validation") | _bindings(NATIVE_BINDINGS)
     if path in {
         "ci/products/runtime_flags.py",
         "codex-agent-runtime-desktop/native/c-api/binary-flags.json",
@@ -1216,6 +1219,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             return _runtime(components)
     if _is_prefix(path, "codex-agent-runtime-desktop/src/macosArm64Main/gradle/"):
         return _runtime(("macos-arm64",))
+    if _is_prefix(path, "codex-agent-runtime-desktop/src/macosX64Main/gradle/"):
+        return _runtime(("macos-x64",))
     if _is_prefix(path, "codex-agent-runtime-desktop/native/"):
         return _runtime(NATIVE_TARGETS)
     if path == "runtime/gradle/kotlin-js-store/package-lock.json":
@@ -1529,7 +1534,8 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
                 "ci/products/runtime_maven.py", "ci/products/sdk_maven.py",
                 "ci/products/runtime_adapter_validation.py",
                 "ci/products/test_results.py", "ci/products/runtime_evidence.py",
-                "ci/products/runtime_variant.py", "ci/products/c_abi.py"}:
+                "ci/products/runtime_variant.py", "ci/products/c_abi.py",
+                "ci/products/runtime_validation_projection.py"}:
         # Both package planning and imported validation independently execute the full gate.
         direct.update(instance for instance in selected if instance.product == "sdk"
                       and instance.component in NATIVE_BINDINGS and instance.phase == "validation")

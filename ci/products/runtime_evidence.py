@@ -873,19 +873,23 @@ def derive_authenticated_runtime_validation_projection(
 
     report = reports[0]
     evidence_target = expected_report_targets[0]
-    _exact_keys(report, DESKTOP_KEYS, "Desktop Runtime validation evidence")
-    _check_common_report(
-        report,
-        schema=3,
-        target=evidence_target,
-        commit=expected_commits[evidence_target],
-        test_class=DESKTOP_RUNTIME_TEST_CLASS,
-        test_methods=DESKTOP_RUNTIME_TEST_METHODS,
-    )
-    if report["testTask"] not in {
-        desktop_test_task(evidence_target), imported_desktop_test_task(evidence_target),
-    }:
-        raise ValueError("Desktop Runtime validation evidence test task mismatch")
+    projected = type(report) is dict and report.get("schemaVersion") == 4
+    _exact_keys(report, DESKTOP_KEYS - {"candidateCommit", "testTask"} if projected else DESKTOP_KEYS,
+                "Desktop Runtime validation evidence")
+    if projected:
+        _check_common_adapter_fields(
+            report, schema=4, target=evidence_target, test_class=DESKTOP_RUNTIME_TEST_CLASS,
+            test_methods=DESKTOP_RUNTIME_TEST_METHODS,
+        )
+    else:
+        _check_common_report(
+            report, schema=3, target=evidence_target, commit=expected_commits[evidence_target],
+            test_class=DESKTOP_RUNTIME_TEST_CLASS, test_methods=DESKTOP_RUNTIME_TEST_METHODS,
+        )
+        if report["testTask"] not in {
+            desktop_test_task(evidence_target), imported_desktop_test_task(evidence_target),
+        }:
+            raise ValueError("Desktop Runtime validation evidence test task mismatch")
     for field in ("binarySha256", "supervisorSha256", "classifierArchiveSha256"):
         _hex(report[field], SHA256, f"Desktop Runtime validation evidence.{field}")
     return {

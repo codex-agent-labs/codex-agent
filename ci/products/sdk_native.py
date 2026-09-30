@@ -113,11 +113,18 @@ def verify_staged_native_sdk_inputs(
         expected.mkdir()
         captured_request = root / "request.json"
         captured_request.write_bytes(request_bytes)
+        arguments = load_sdk_compatibility_request(captured_request, request_directory=request.parent)
+        validation_receipts = {target: read_regular_file_bytes(
+            paths["validation"], max_bytes=_LIMIT, reject_symlink_parents=True)
+            for target, paths in arguments["variant_phase_receipts"].items()}
         compatibility = produce_sdk_compatibility(
-            **load_sdk_compatibility_request(captured_request, request_directory=request.parent),
+            **arguments,
             runtime_stage_root=runtime,
             output=expected / "sdk-compatibility.json",
         )
+        if any(data != read_regular_file_bytes(arguments["variant_phase_receipts"][target]["validation"],
+                max_bytes=_LIMIT, reject_symlink_parents=True) for target, data in validation_receipts.items()):
+            raise ValueError("Native SDK original validation receipts changed during authentication")
         compatibility_bytes = (expected / "sdk-compatibility.json").read_bytes()
         (expected / "sdk-runtime-root.pub").write_bytes(root_key_bytes)
         index_bytes = read_regular_file_bytes(staged / INDEX_NAME, max_bytes=_LIMIT)
@@ -142,10 +149,12 @@ def verify_staged_native_sdk_inputs(
             evidence = validation / "c-abi" / f"c-abi-package-{classifier}.json"
             evidence_bytes = read_regular_file_bytes(evidence, max_bytes=_LIMIT)
             original = load_json_bytes(evidence_bytes)
-            # These original producer fields are already bound to the exact
-            # signed validation receipt by produce_sdk_compatibility above.
-            report = portable_verify_c_abi_package_evidence(
-                target, version, original["producerCommit"], original["producerTree"],
+            from .runtime_validation_projection import verify_projected_c_abi_evidence
+            projected = original.get("schemaVersion") == 2
+            verifier = verify_projected_c_abi_evidence if projected else portable_verify_c_abi_package_evidence
+            producer = validate_phase_receipt(load_canonical_json_bytes(validation_receipts[classifier]))["producer"]
+            report = verifier(
+                target, version, producer["commit"], producer["tree"],
                 package / c_abi_archive_file_name(version, target), evidence,
                 reference / "include/codex_agent.h", reference / "legal/LICENSE",
                 reference / "legal/THIRD_PARTY_NOTICES.md",
@@ -162,14 +171,16 @@ def verify_staged_native_sdk_inputs(
                 "evidenceSha256": sha256_bytes(evidence_bytes).removeprefix("sha256:"),
                 "libraryPath": spec.library_path, "librarySha256": report["librarySha256"],
                 "manifestSha256": sha256_bytes((expected / classifier / C_ABI_PACKAGE_MANIFEST).read_bytes()).removeprefix("sha256:"),
-                "producerCommit": original["producerCommit"], "producerTree": original["producerTree"],
+                "producerCommit": producer["commit"], "producerTree": producer["tree"],
             })
         if index["targets"] != records:
             raise ValueError("Native SDK index differs from original verified Runtime evidence")
         if regular_file_inventory(staged, excluded_paths=(INDEX_NAME,)) != regular_file_inventory(expected):
             raise ValueError("Native SDK staged bytes differ from authenticated Runtime inputs")
     if (regular_file_inventory(source) != before or regular_file_inventory(runtime_source) != runtime_before
-            or read_regular_file_bytes(request, max_bytes=_LIMIT, reject_symlink_parents=True) != request_bytes):
+            or read_regular_file_bytes(request, max_bytes=_LIMIT, reject_symlink_parents=True) != request_bytes
+            or any(data != read_regular_file_bytes(arguments["variant_phase_receipts"][target]["validation"],
+                max_bytes=_LIMIT, reject_symlink_parents=True) for target, data in validation_receipts.items())):
         raise ValueError("Native SDK source inputs changed during verification")
     return index
 

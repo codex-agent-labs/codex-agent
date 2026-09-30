@@ -21,10 +21,23 @@ class RuntimeWorkerArchiveTest(unittest.TestCase):
         self.archive = self.root / "inputs/codex-app-server.zip"
         self.archive.parent.mkdir()
         self.archive.write_bytes(b"synthetic pinned archive\x00\xff\n")
+        self.linker_scripts = {}
+        for target, source_set in (("macos-arm64", "macosArm64Main"), ("macos-x64", "macosX64Main")):
+            relative = f"codex-agent-runtime-desktop/src/{source_set}/gradle/deterministic-native-link.init.gradle"
+            path = self.root / relative
+            path.parent.mkdir(parents=True)
+            path.write_bytes(f"// synthetic {target} linker policy\n".encode())
+            self.linker_scripts[target] = path
+        self.git_bytes = self.enterContext(mock.patch.object(
+            worker, "git_regular_blob_bytes",
+            side_effect=lambda root, revision, relative, **kwargs: (root / relative).read_bytes(),
+        ))
         self.instance = worker.PhaseInstanceId(
             "runtime", "macos-arm64", "binary", "macos-arm64",
         )
-        self.ready = {"buildKey": "sha256:" + "a" * 64}
+        self.ready = {"schemaVersion": 1, "product": "runtime", "component": "macos-arm64",
+                      "phase": "binary", "target": "macos-arm64", "inputs": {},
+                      "buildKey": "sha256:" + "a" * 64}
         self.producer = {"commit": "c" * 40}
         self.state = SimpleNamespace(
             prior_ready_plans={self.instance: self.ready},
@@ -119,6 +132,26 @@ class RuntimeWorkerArchiveTest(unittest.TestCase):
             self.process.call_args.args[0],
         )
         self.finalize.assert_called_once()
+        command = self.process.call_args.args[0]
+        self.assertEqual(str(self.linker_scripts["macos-arm64"]), command[command.index("-I") + 1])
+        self.git_bytes.assert_called_once_with(
+            self.root, self.producer["commit"], self.linker_scripts["macos-arm64"].relative_to(self.root).as_posix(),
+            max_bytes=64 * 1024,
+        )
+
+    def test_macos_x64_uses_its_exact_target_linker_policy(self):
+        self.instance = worker.PhaseInstanceId("runtime", "macos-x64", "binary", "macos-x64")
+        self.ready.update(component="macos-x64", target="macos-x64")
+        self.state.prior_ready_plans = {self.instance: self.ready}
+        self.host.return_value = "macos-x64"
+        self.route.return_value = {"runnerOs": "macOS", "runnerArch": "X64", "supervisor": None}
+        self.assertEqual({"fixture": True}, self.execute())
+        command = self.process.call_args.args[0]
+        self.assertEqual(str(self.linker_scripts["macos-x64"]), command[command.index("-I") + 1])
+        self.git_bytes.assert_called_once_with(
+            self.root, self.producer["commit"], self.linker_scripts["macos-x64"].relative_to(self.root).as_posix(),
+            max_bytes=64 * 1024,
+        )
 
     def test_captured_archive_is_part_of_the_immutable_worker_inputs(self):
         def mutate(*_arguments, **_keywords):

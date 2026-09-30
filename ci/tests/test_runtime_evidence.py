@@ -354,6 +354,23 @@ class RuntimeEvidenceTest(unittest.TestCase):
                 "linux-x64", [path], [receipt],
             )
 
+    def test_deterministic_native_report_retains_exact_receipt_binding(self) -> None:
+        path = self.fixture.write_desktop()[3]
+        raw_receipt = self._validation_receipt(
+            "linux-x64", "linux-x64", path, self.fixture.commits["linuxX64"],
+        )
+        expected = derive_authenticated_runtime_validation_projection("linux-x64", [path], [raw_receipt])
+        report = load_json(path)
+        report.pop("candidateCommit")
+        report.pop("testTask")
+        report["schemaVersion"] = 4
+        write_canonical_json(path, report)
+        receipt = self._validation_receipt("linux-x64", "linux-x64", path, "e" * 40)
+        self.assertEqual(expected, derive_authenticated_runtime_validation_projection(
+            "linux-x64", [path], [receipt]))
+        with self.assertRaisesRegex(ValueError, "exact receipt output"):
+            derive_authenticated_runtime_validation_projection("linux-x64", [path], [raw_receipt])
+
     def test_adapter_projection_is_exact_and_execution_identity_independent(self) -> None:
         projections = {}
         for component in ("jvm", "node-js", "node-wasm"):

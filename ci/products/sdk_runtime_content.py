@@ -344,7 +344,11 @@ def _verify_native_runtime_semantics(
     policy = {"mach-o": "macos.exports", "elf": "linux.map", "pe": "windows.def"}[spec.format]
     with tempfile.TemporaryDirectory(prefix="runtime-native-content-") as temporary:
         root = Path(temporary).resolve()
-        report = portable_verify_c_abi_package_evidence(
+        from .runtime_validation_projection import verify_projected_c_abi_evidence
+        verifier = (verify_projected_c_abi_evidence if load_json_bytes(read_regular_file_bytes(
+            c_abi_evidence, reject_symlink_parents=True)).get("schemaVersion") == 2
+            else portable_verify_c_abi_package_evidence)
+        report = verifier(
             spec.target, variant["runtimeCompatibilityVersion"], receipt["producer"]["commit"],
             receipt["producer"]["tree"], archive, c_abi_evidence,
             reference / "include/codex_agent.h", reference / "legal/LICENSE",

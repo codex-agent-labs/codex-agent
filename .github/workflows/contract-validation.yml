@@ -219,7 +219,6 @@ jobs:
       fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
       fromJSON(inputs.planOutputs).validation_reused != 'true' &&
       fromJSON(inputs.planOutputs).contract_reconciliation_required == 'true' &&
-      fromJSON(inputs.planOutputs).contract_next_phase != 'none' &&
       (fromJSON(inputs.planOutputs).contract_next_phase != 'binary' || needs.contract-binary.result == 'success')
     needs: [contract-binary, product-tooling]
     runs-on: ubuntu-24.04
@@ -233,6 +232,8 @@ jobs:
       attestation_inputs_id: ${{ steps.upload_attestation_inputs.outputs.artifact-id }}
       attestation_inputs_digest: sha256:${{ steps.upload_attestation_inputs.outputs.artifact-digest }}
       contract_version: ${{ steps.capture_attestation_inputs.outputs.contract_version }}
+      retained_handoff_id: ${{ steps.upload_retained_handoff.outputs.artifact-id }}
+      retained_handoff_digest: ${{ steps.upload_retained_handoff.outputs.artifact-digest && format('sha256:{0}', steps.upload_retained_handoff.outputs.artifact-digest) || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -309,6 +310,9 @@ jobs:
           state=build/ci/product-reuse
           next_phase=$INITIAL_NEXT_PHASE
           complete=false
+          if [ "$INITIAL_NEXT_PHASE" = none ]; then
+            complete=true
+          fi
           if [ "$INITIAL_NEXT_PHASE" = binary ]; then
             state=build/contract-state/after-binary
             next_phase=$RECONCILED_NEXT_PHASE
@@ -627,6 +631,19 @@ jobs:
           compression-level: 0
           retention-days: 90
 
+      - name: Preserve the independently authenticated retained release envelope
+        id: upload_retained_handoff
+        if: fromJSON(inputs.planOutputs).contract_next_phase == 'none'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-contract-forwarded-handoff-${{ fromJSON(inputs.planOutputs).validation_tree }}
+          path: build/ci/product-reuse/retained-contract/capture/release-upload/contract-input
+          compression-level: 0
+          retention-days: 90
+
   contract-attestation:
     name: contract-attestation
     if: >-
@@ -663,11 +680,30 @@ jobs:
           ARTIFACT_SHA256: ${{ needs.contract-continuation.outputs.attestation_inputs_digest }}
           CONTRACT_VERSION: ${{ needs.contract-continuation.outputs.contract_version }}
           VALIDATION_TREE: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+          RETAINED_HANDOFF_ID: ${{ needs.contract-continuation.outputs.retained_handoff_id }}
+          RETAINED_HANDOFF_SHA256: ${{ needs.contract-continuation.outputs.retained_handoff_digest }}
           GITHUB_TOKEN: ${{ github.token }}
           CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
         run: |
           set -euo pipefail
+          retained=()
+          if [ -n "$RETAINED_HANDOFF_ID" ]; then
+            producer=$(jq -cSn --arg repository "$GITHUB_REPOSITORY" \
+              --arg commit "$GITHUB_SHA" --arg tree "$VALIDATION_TREE" --arg event "$GITHUB_EVENT_NAME" \
+              --argjson runId "$GITHUB_RUN_ID" --argjson runAttempt "$GITHUB_RUN_ATTEMPT" \
+              --argjson pullRequest "$(jq '.number // null' "$GITHUB_EVENT_PATH")" \
+              '{repository:$repository,workflowPath:".github/workflows/ci.yml",commit:$commit,tree:$tree,event:$event,runId:$runId,runAttempt:$runAttempt,pullRequest:$pullRequest}')
+            python3 -B trusted-source/ci/contract_retained_recovery.py capture-forwarded-handoff \
+              --destination "$RUNNER_TEMP/contract-retained-handoff" \
+              --artifact-id "$RETAINED_HANDOFF_ID" --artifact-sha256 "$RETAINED_HANDOFF_SHA256" \
+              --transport-producer "$producer" --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+              --contract-version "$CONTRACT_VERSION" \
+              --keyring trusted-source/gradle/release/product-signing-keys.json \
+              --keys-directory trusted-source/gradle/release/keys
+            retained=(--release-handoff "$RUNNER_TEMP/contract-retained-handoff")
+          fi
           python3 -B trusted-source/ci/contract_release.py \
+            ${retained[@]+"${retained[@]}"} \
             --repository-root "$GITHUB_WORKSPACE/trusted-source" \
             --destination "$RUNNER_TEMP/contract-release-evidence" \
             --trusted-source-sha "$TRUSTED_SOURCE_SHA" \

@@ -134,10 +134,13 @@ def verify_runtime_stages(
                 stage / proof_path,
                 max_bytes=_JSON_LIMIT, reject_symlink_parents=True,
             ))
-            if (type(proof) is not dict
-                    or proof.get("producerCommit") != receipt["producer"]["commit"]
-                    or proof.get("producerTree") != receipt["producer"]["tree"]
-                    or proof.get("target") != spec.target):
+            if (type(proof) is not dict or proof.get("target") != spec.target
+                    or (proof.get("schemaVersion") == 1 and (
+                        proof.get("producerCommit") != receipt["producer"]["commit"]
+                        or proof.get("producerTree") != receipt["producer"]["tree"]))
+                    or (proof.get("schemaVersion") == 2 and (
+                        "producerCommit" in proof or "producerTree" in proof))
+                    or proof.get("schemaVersion") not in (1, 2)):
                 raise ValueError(f"Runtime C ABI evidence original producer mismatch: {target}")
 
 
@@ -150,19 +153,24 @@ def derive_desktop_validation_projection(
 ) -> dict[str, Any]:
     """Validate run evidence and remove only run/task provenance from reusable bytes."""
     identity = validate_runtime_identity(identity_envelope)
-    report = require_exact_keys(report_value, DESKTOP_KEYS, "Desktop Runtime validation evidence")
+    projected = type(report_value) is dict and report_value.get("schemaVersion") == 4
+    report = require_exact_keys(
+        report_value,
+        DESKTOP_KEYS - {"candidateCommit", "testTask"} if projected else DESKTOP_KEYS,
+        "Desktop Runtime validation evidence",
+    )
     evidence_target = _PRODUCT_TO_EVIDENCE_TARGET[identity["target"]]
     expected = RUNTIME_TARGETS[evidence_target]
     if (
-        require_integer(report["schemaVersion"], "Desktop evidence.schemaVersion", 1) != 3
-        or report["candidateCommit"] != expected_commit
+        require_integer(report["schemaVersion"], "Desktop evidence.schemaVersion", 1) != (4 if projected else 3)
+        or (not projected and report["candidateCommit"] != expected_commit)
         or report["target"] != evidence_target
         or report["classifier"] != expected.classifier
         or report["runnerOs"] != expected.runner_os
         or report["runnerArch"] != expected.runner_arch
-        or report["testTask"] not in {
+        or (not projected and report["testTask"] not in {
             desktop_test_task(evidence_target), imported_desktop_test_task(evidence_target),
-        }
+        })
         or report["testClass"] != DESKTOP_RUNTIME_TEST_CLASS
         or report["testMethods"] != list(DESKTOP_RUNTIME_TEST_METHODS)
         or require_integer(report["tests"], "Desktop evidence.tests", 0) !=

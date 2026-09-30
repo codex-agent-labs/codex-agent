@@ -59,6 +59,25 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_native_validation_projection_preserves_expensive_predecessor_keys(self) -> None:
+        changed = (
+            "ci/product_reuse.py", "ci/products/selection.py",
+            "ci/contract_retained_recovery.py", ".github/workflows/contract-validation.yml",
+            "ci/products/runtime_validation_projection.py", "ci/products/runtime_evidence.py",
+            "ci/products/runtime_attestation.py", "ci/products/sdk_native.py",
+            "ci/products/sdk_runtime_content.py",
+        )
+        for target in NATIVE_TARGETS:
+            for phase in ("binary", "package"):
+                instance = PhaseInstanceId("runtime", target, phase, target)
+                self.assertEqual((), phase_inventory_paths(changed, instance), instance)
+            validation = PhaseInstanceId("runtime", target, "validation", target)
+            self.assertIn("ci/products/runtime_validation_projection.py",
+                          phase_inventory_paths(changed, validation))
+        for phase in ("binary", "package", "validation", "metadata"):
+            self.assertEqual((), phase_inventory_paths(changed, PhaseInstanceId(
+                "contract", "contract", phase, "common")))
+
     def test_zip64_transport_preflight_does_not_invalidate_contract_binary(self) -> None:
         path = "ci/products/zip_central_directory.py"
         canonical = "ci/products/inventory.py"
@@ -1275,6 +1294,15 @@ class ProductSelectionTest(unittest.TestCase):
         for target in NATIVE_TARGETS:
             instance = PhaseInstanceId("runtime", target, "binary", target)
             self.assertEqual((path,) if target == "macos-arm64" else (),
+                             phase_inventory_paths([path], instance))
+
+    def test_macos_x64_link_policy_changes_only_its_binary_key(self) -> None:
+        path = "codex-agent-runtime-desktop/src/macosX64Main/gradle/deterministic-native-link.init.gradle"
+        self.assertEqual({"macos-x64", "runtime-aggregate"},
+                         {instance.component for instance in classify_paths([path]).instances})
+        for target in NATIVE_TARGETS:
+            instance = PhaseInstanceId("runtime", target, "binary", target)
+            self.assertEqual((path,) if target == "macos-x64" else (),
                              phase_inventory_paths([path], instance))
 
     def test_runtime_binary_flags_authorities_select_exact_native_binary_lines(self) -> None:

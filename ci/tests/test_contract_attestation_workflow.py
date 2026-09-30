@@ -24,6 +24,17 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
         cls.job = workflow_job(cls.workflow, "contract-attestation")
         cls.gate = workflow_job(cls.parent, "merge-gate")
 
+    def test_completed_retained_contract_forwards_an_independent_authenticated_envelope(self):
+        continuation = workflow_job(self.workflow, "contract-continuation")
+        self.assertNotIn("contract_next_phase != 'none'", continuation)
+        self.assertIn('if [ "$INITIAL_NEXT_PHASE" = none ]; then\n            complete=true', continuation)
+        self.assertIn("codex-agent-contract-forwarded-handoff-", continuation)
+        self.assertIn("retained-contract/capture/release-upload/contract-input", continuation)
+        self.assertIn("contract_retained_recovery.py capture-forwarded-handoff", self.job)
+        self.assertIn("--artifact-sha256 \"$RETAINED_HANDOFF_SHA256\"", self.job)
+        self.assertIn("producer=$(jq -cSn", self.job)
+        self.assertIn('retained=(--release-handoff "$RUNNER_TEMP/contract-retained-handoff")', self.job)
+
     def test_signer_is_authorized_before_allocating_a_runner(self):
         condition = re.search(r"^    if: (?P<value>.*?)(?=^    [a-z][a-z-]*:)",
                               self.job, re.MULTILINE | re.DOTALL)

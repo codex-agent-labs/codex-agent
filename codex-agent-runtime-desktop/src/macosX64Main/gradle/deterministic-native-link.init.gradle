@@ -6,10 +6,10 @@ gradle.beforeProject { project ->
     if (project.path == ':') return
     project.afterEvaluate {
         def home = System.getenv('KONAN_DATA_DIR')
-        if (!home) throw new GradleException('KONAN_DATA_DIR is required for macOS Arm64 linking')
-        [linkReleaseSharedMacosArm64: 'release', linkDebugTestMacosArm64: 'test'].each { name, suffix ->
+        if (!home) throw new GradleException('KONAN_DATA_DIR is required for macOS x64 linking')
+        [linkReleaseSharedMacosX64: 'release', linkDebugTestMacosX64: 'test'].each { name, suffix ->
             def task = project.tasks.findByName(name)
-            if (task == null) throw new GradleException("Missing macOS Arm64 link task: ${name}")
+            if (task == null) throw new GradleException("Missing macOS x64 link task: ${name}")
             task.toolOptions.freeCompilerArgs.add("-Xtemporary-files-dir=${home}/link-${suffix}")
         }
     }
