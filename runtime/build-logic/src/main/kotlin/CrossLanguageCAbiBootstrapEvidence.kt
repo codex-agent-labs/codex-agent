@@ -84,7 +84,7 @@ private const val C_ABI_INTEGRATION_STATE_VALUES_C_SHA256 =
 private const val C_ABI_AUTHENTICATION_CONFIGURATION_VALUES_C_SHA256 =
     "50180d9ac04350c6b6c82d43ce00b7b5ce633dc4ace0c58fab3d43e9ff287284"
 private const val C_ABI_ELICITATION_BEHAVIOR_VALUES_C_SHA256 =
-    "e48844079fc17e2adf7b26e45355b113755c2fe2db5b8b33cbe17f688747c938"
+    "7f4bf5e4da0d013f7cab37294c69d1aad5186e3669128c87a4f778485deb4650"
 private const val C_ABI_SEALED_BASE_PROPERTY_VALUES_C_SHA256 =
     "7a30143f76309f0e8e230ce6fbd5db940fafb262a09af2d758ed58e3a46c975a"
 private const val C_ABI_ROOT_VALUE_ACCESSORS_C_SHA256 =
@@ -94,9 +94,9 @@ private const val C_ABI_SERVICE_HANDLES_C_SHA256 =
 private const val C_ABI_SUSPEND_OPERATIONS_C_SHA256 =
     "ab542e0622a25feafaebb0756acff0be732b411407ebd0015046c0061d06bbb3"
 private const val C_ABI_STATE_FLOWS_C_SHA256 =
-    "d1f1f511049345664b26ae4e64e51f9e7d3372a055f26f39473712e6a8efd550"
+    "ab8078110e378d8ae0b60b01900cebae38efc2a2d019ecfada03df16f59b0b0a"
 private const val C_ABI_INTERACTION_IDENTITY_C_SHA256 =
-    "1343065e248a5128adbfa64f345dd2042ef7846e3f18f0485011dd75b2f09637"
+    "913f99f63e4569172cdb395d37166a1d47233fa8d48ac3c1f6dff2238d4467cb"
 
 private const val AGENT_PACKAGE = "io.github.codex_agent_labs.codexagent.agent/"
 private const val C_API_TEST_PACKAGE = "macosArm64Test.io.github.codex_agent_labs.codexagent.capi."
