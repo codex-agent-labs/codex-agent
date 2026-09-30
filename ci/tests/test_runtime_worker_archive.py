@@ -39,7 +39,7 @@ class RuntimeWorkerArchiveTest(unittest.TestCase):
         self.archive.write_bytes(b"synthetic pinned archive\x00\xff\n")
         self.linker_scripts = {}
         for target, source_set in (("macos-arm64", "macosArm64Main"), ("macos-x64", "macosX64Main"),
-                                   ("linux-x64", "linuxX64Main")):
+                                   ("linux-x64", "linuxX64Main"), ("windows-x64", "mingwMain")):
             relative = f"codex-agent-runtime-desktop/src/{source_set}/gradle/deterministic-native-link.init.gradle"
             path = self.root / relative
             path.parent.mkdir(parents=True)
@@ -187,6 +187,27 @@ class RuntimeWorkerArchiveTest(unittest.TestCase):
             self.root, self.producer["commit"], self.linker_scripts["linux-x64"].relative_to(self.root).as_posix(),
             max_bytes=64 * 1024,
         )
+
+    def test_windows_uses_its_exact_timestamp_policy_and_rejects_injected_flags(self):
+        self.instance = worker.PhaseInstanceId("runtime", "windows-x64", "binary", "windows-x64")
+        self.ready.update(component="windows-x64", target="windows-x64")
+        self.state.prior_ready_plans = {self.instance: self.ready}
+        self.host.return_value = "windows-x64"
+        self.route.return_value = {"runnerOs": "Windows", "runnerArch": "X64", "supervisor": None}
+        self.assertEqual({"fixture": True}, self.execute())
+        command = self.process.call_args.args[0]
+        self.assertEqual(str(self.linker_scripts["windows-x64"]), command[command.index("-I") + 1])
+        self.assertEqual("/Brepro", self.process.call_args.kwargs["env"]["LINK"])
+        self.git_bytes.assert_called_once_with(
+            self.root, self.producer["commit"], self.linker_scripts["windows-x64"].relative_to(self.root).as_posix(),
+            max_bytes=64 * 1024,
+        )
+        self.destination = self.root / "build/injected"
+        self.environment.return_value = ({"LINK": "/DEBUG"}, self.root / "gradlew")
+        self.process.reset_mock()
+        with self.assertRaisesRegex(ValueError, "rejects injected MSVC linker options"):
+            self.execute()
+        self.process.assert_not_called()
 
     def test_node_js_uses_its_exact_compiler_policy(self):
         self.instance = worker.PhaseInstanceId("runtime", "node-js", "binary", "node-js")

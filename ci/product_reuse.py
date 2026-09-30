@@ -4482,10 +4482,14 @@ def execute_runtime_phase(
     init_script = None
     if instance.component == "node-js" and instance.phase == "binary":
         init_script = root / "codex-agent-runtime-desktop/src/jsMain/gradle/deterministic-compiler.init.gradle"
-    elif instance.component in {"macos-arm64", "macos-x64", "linux-x64"} and instance.phase == "binary":
+    elif instance.component in {"macos-arm64", "macos-x64", "linux-x64", "windows-x64"} and instance.phase == "binary":
         source_set = {"macos-arm64": "macosArm64Main", "macos-x64": "macosX64Main",
-                      "linux-x64": "linuxX64Main"}[instance.component]
+                      "linux-x64": "linuxX64Main", "windows-x64": "mingwMain"}[instance.component]
         init_script = root / f"codex-agent-runtime-desktop/src/{source_set}/gradle/deterministic-native-link.init.gradle"
+        if instance.component == "windows-x64":
+            if environment.get("LINK") not in {None, "", "/Brepro"}:
+                raise ValueError("Windows worker rejects injected MSVC linker options")
+            environment["LINK"] = "/Brepro"
     if init_script is not None:
         if read_regular_file_bytes(init_script, reject_symlink_parents=True) != git_regular_blob_bytes(
                 root, state.producer["commit"], init_script.relative_to(root).as_posix(), max_bytes=64 * 1024):
