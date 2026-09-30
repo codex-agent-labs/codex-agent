@@ -45,6 +45,10 @@ class RuntimeWorkerArchiveTest(unittest.TestCase):
             path.parent.mkdir(parents=True)
             path.write_bytes(f"// synthetic {target} linker policy\n".encode())
             self.linker_scripts[target] = path
+        node_policy = self.root / "codex-agent-runtime-desktop/src/jsMain/gradle/deterministic-compiler.init.gradle"
+        node_policy.parent.mkdir(parents=True)
+        node_policy.write_bytes(b"// synthetic Node JS compiler policy\n")
+        self.linker_scripts["node-js"] = node_policy
         self.git_bytes = self.enterContext(mock.patch.object(
             worker, "git_regular_blob_bytes",
             side_effect=lambda root, revision, relative, **kwargs: (root / relative).read_bytes(),
@@ -181,6 +185,22 @@ class RuntimeWorkerArchiveTest(unittest.TestCase):
         self.assertEqual(str(self.linker_scripts["linux-x64"]), command[command.index("-I") + 1])
         self.git_bytes.assert_called_once_with(
             self.root, self.producer["commit"], self.linker_scripts["linux-x64"].relative_to(self.root).as_posix(),
+            max_bytes=64 * 1024,
+        )
+
+    def test_node_js_uses_its_exact_compiler_policy(self):
+        self.instance = worker.PhaseInstanceId("runtime", "node-js", "binary", "node-js")
+        self.ready.update(component="node-js", target="node-js")
+        self.state.prior_ready_plans = {self.instance: self.ready}
+        self.host.return_value = "linux-arm64"
+        with mock.patch("runtime_adapter_phase.route", return_value={
+                "runnerOs": "Linux", "runnerArch": "ARM64", "supervisor": None}), mock.patch(
+                "runtime_adapter_phase.preflight", return_value={}):
+            self.assertEqual({"fixture": True}, self.execute(archive=False))
+        command = self.process.call_args.args[0]
+        self.assertEqual(str(self.linker_scripts["node-js"]), command[command.index("-I") + 1])
+        self.git_bytes.assert_called_once_with(
+            self.root, self.producer["commit"], self.linker_scripts["node-js"].relative_to(self.root).as_posix(),
             max_bytes=64 * 1024,
         )
 

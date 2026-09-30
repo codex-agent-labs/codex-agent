@@ -1316,6 +1316,15 @@ class ProductSelectionTest(unittest.TestCase):
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((), phase_inventory_paths(["ci/product_reuse.py", "ci/products/selection.py"], instance))
 
+    def test_node_js_compiler_policy_changes_only_its_binary_key(self) -> None:
+        path = "codex-agent-runtime-desktop/src/jsMain/gradle/deterministic-compiler.init.gradle"
+        self.assertEqual({"node-js", "runtime-aggregate"},
+                         {instance.component for instance in classify_paths([path]).instances})
+        for instance in PHASE_INSTANCE_IDS:
+            expected = (path,) if (instance.product, instance.component, instance.phase) == (
+                "runtime", "node-js", "binary") else ()
+            self.assertEqual(expected, phase_inventory_paths([path], instance), instance)
+
     def test_runtime_binary_flags_authorities_select_exact_native_binary_lines(self) -> None:
         paths = tracked_product_paths()
         for path in (
