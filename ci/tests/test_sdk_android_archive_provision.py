@@ -31,6 +31,7 @@ class Response(io.BytesIO):
 
 class AndroidArchiveProvisionTest(unittest.TestCase):
     def setUp(self):
+        (ROOT / "build").mkdir(exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(prefix="android-archive-provider-", dir=ROOT / "build")
         self.addCleanup(self.temporary.cleanup)
         self.base = Path(self.temporary.name)

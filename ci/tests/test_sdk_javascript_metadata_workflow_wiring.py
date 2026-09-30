@@ -59,7 +59,7 @@ class SdkJavaScriptMetadataWorkflowWiringTest(unittest.TestCase):
         self.assertIn("('sdk', 'javascript', 'metadata', 'node')", action)
         self.assertIn("(rows[0]['runnerOs'], rows[0]['runnerArch']) != ('Linux', 'X64')", action)
         routing = (fixture.ROOT / "ci/sdk_workflow.py").read_text()
-        self.assertIn('if family in ("javascript-metadata", "core-package", "core-metadata",', routing)
+        self.assertIn('if family in ("csharp-binary", "javascript-metadata", "core-package", "core-metadata",', routing)
         self.assertIn('return {"runner": "ubuntu-24.04", "runnerOs": "Linux", "runnerArch": "X64"}', routing)
         self.assertIn("needs.sdk-javascript-metadata-plan.outputs.sdk_workers_required == 'true'", worker)
         self.assertEqual(1, worker.count("uses: ./.github/actions/sdk-javascript-metadata-worker"))

@@ -34,7 +34,7 @@ class RuntimeWorkerToolingActionTest(unittest.TestCase):
 
     def test_execution_forwards_exact_optional_policy_without_word_splitting(self):
         block = self.action.split("    - name: Execute the exact elected phase\n", 1)[1]
-        script = textwrap.dedent(block.split("      run: |\n", 1)[1])
+        script = textwrap.dedent(block.split("      run: |\n", 1)[1].split("\n    - ", 1)[0])
         self.assertIn("SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}", block)
         self.assertIn("SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}", block)
         self.assertIn('${extra[@]+"${extra[@]}"}', script)

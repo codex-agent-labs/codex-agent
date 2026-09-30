@@ -189,6 +189,10 @@ class RuntimeLatePhaseRecoveryTest(unittest.TestCase):
             "pull_requests": [{"number": old_producer["pullRequest"]}],
             "repository": {"full_name": old_producer["repository"], "fork": False},
             "head_repository": {"full_name": old_producer["repository"], "fork": False},
+            "referenced_workflows": [{
+                "path": "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@" + "c" * 40,
+                "sha": "c" * 40,
+            }],
         }
 
         resumed = self.scratch / "new-attempt-resume"

@@ -12,7 +12,8 @@ from ci.tests.test_product_native_chain import build_chain
 from ci import native_wrappers as wrappers
 
 
-@unittest.skipUnless(shutil.which("ssh-keygen"), "OpenSSH signing tool unavailable")
+@unittest.skipUnless(shutil.which("ssh-keygen") and shutil.which("dart"),
+                     "OpenSSH and Dart are required for this integration fixture")
 class DartPackageContentChainTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

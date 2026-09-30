@@ -1838,7 +1838,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
         cases = (
             ("schemaVersion", 2, "schemaVersion"),
             ("repository", "other/repository", "repository"),
-            ("availableObjects", [{}], "availableObjects"),
+            ("availableObjects", [{}], "Retained Contract replay requires tracked release trust"),
             ("unexpected", True, "fields are invalid"),
         )
         for field, value, message in cases:
@@ -1854,6 +1854,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
                     return_value=(fixture["authorities"], None),
                 ), mock.patch.object(
                     product_reuse, "_versions", return_value=VERSIONS,
+                ), mock.patch.object(
+                    product_reuse, "_release_trust", return_value=None,
                 ), self.assertRaisesRegex(ValueError, message):
                     product_reuse.advance_contract(
                         self.plan_path,

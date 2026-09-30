@@ -34,7 +34,7 @@ class ContractPhase10SidecarCallerTest(unittest.TestCase):
         self.fixture = fixture
         self.destination = fixture.root / "contract-sidecar-release"
         self.key = fixture.root / "publication-pgp-key.asc"
-        home = tempfile.TemporaryDirectory(prefix="ct-gpg-", dir="/private/tmp")
+        home = tempfile.TemporaryDirectory(prefix="ct-gpg-", dir="/tmp")
         self.addCleanup(home.cleanup)
         self.home = Path(home.name)
 

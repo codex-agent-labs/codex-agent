@@ -69,7 +69,7 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
             self.assertIn("needs.plan.outputs.event_authorized == 'true'", job)
             self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", job)
             self.assertIn("sdk-plan", job.split("    if:", 1)[0])
-            self.assertIn('java_home_variable="JAVA_HOME_17_${RUNNER_ARCH}"', job)
+            self.assertIn('source ci/select_caller_java.sh', job)
             self.assertIn("if [ \"$RUNNER_OS\" = Windows ]; then java_binary=java.exe; fi", job)
             self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", job)
             self.assertLess(job.index("- id: tooling"), job.index("sdk-validation-tooling:"))

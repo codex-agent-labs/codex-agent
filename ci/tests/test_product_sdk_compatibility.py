@@ -470,6 +470,7 @@ class SdkCompatibilityProducerTest(unittest.TestCase):
                 )
                 payload.parent.mkdir(parents=True)
                 payload.write_bytes(c_abi_evidence_bytes({
+                    "schemaVersion": 1,
                     "producerCommit": "a" * 40, "producerTree": "b" * 40, "target": "linuxX64",
                 }) if phase == "validation" else b"deterministic package fixture\n")
                 manifest = write_output_manifest(

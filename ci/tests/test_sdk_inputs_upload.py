@@ -271,14 +271,13 @@ class SdkInputsUploadTest(unittest.TestCase):
 
     def test_exact_observed_run_job_attempt_pin_and_upload_identity_required(self):
         baseline = deepcopy((self.run, self.jobs, self.artifact, self.commit))
-        cases = ("run", "attempt", "run-status", "job", "job-status", "job-run", "job-head",
+        cases = ("run", "attempt", "job", "job-status", "job-run", "job-head",
                  "duplicate-job", "missing-job", "pin", "commit-tree", "parents", "artifact-run",
                  "artifact-head", "name", "unqualified-name", "digest", "expired", "before", "after")
         for case in cases:
             self.run, self.jobs, self.artifact, self.commit = deepcopy(baseline)
             if case == "run": self.run["id"] = 72
             elif case == "attempt": self.run["run_attempt"] = 1
-            elif case == "run-status": self.run["status"] = "queued"
             elif case == "job": self.jobs[0]["name"] = "product-validation / runtime-aggregate-attestation"
             elif case == "job-status": self.jobs[0]["conclusion"] = "failure"
             elif case == "job-run": self.jobs[0]["run_id"] = 72
@@ -300,6 +299,14 @@ class SdkInputsUploadTest(unittest.TestCase):
                 self.call()
             self.assertFalse(self.output.exists())
         self.assertEqual(self.original_plan, self.plan_path.read_bytes())
+
+    def test_completed_original_uploader_survives_enclosing_run_status_regression(self):
+        self.source("current-runtime")
+        self.run["status"] = "queued"
+        result = self.call()
+        self.assertEqual(self.run, result["observed"][0]["run"])
+        self.assertEqual(self.producer, result["captureProducer"])
+        self.assertEqual(self.raw, (self.output / "transport.zip").read_bytes())
 
     def test_wrong_source_layout_and_observed_consumer_reject(self):
         for case in ("wrong-layout", "extra-root", "missing-root", "directory-is-file", "wrong-selection",

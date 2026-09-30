@@ -23,6 +23,7 @@ KEY = "sha256:" + "a" * 64
 class AndroidMavenWorkerActionTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        (ROOT / "build").mkdir(exist_ok=True)
         cls.action = ACTION.read_text()
         cls.shell = shutil.which("bash")
 

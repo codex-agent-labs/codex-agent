@@ -75,16 +75,17 @@ class RuntimeToolingWorkflowTest(unittest.TestCase):
                 (home / 'bin').mkdir(parents=True)
                 (home / 'bin' / binary).touch()
                 output = root / (platform + '.env')
-                env = {'RUNNER_OS': platform, 'RUNNER_ARCH': arch, 'JAVA_HOME_17_' + arch: str(home),
+                alias = 'JAVA_HOME_17_X64' if (platform, arch) == ('Linux', 'ARM64') else 'JAVA_HOME_17_' + arch
+                env = {'RUNNER_OS': platform, 'RUNNER_ARCH': arch, alias: str(home),
                        'GITHUB_ENV': str(output)}
                 with self.subTest(platform=platform):
                     result = subprocess.run([shutil.which('bash'), '-e', '-c', scripts[0]],
-                                            env=env, capture_output=True, text=True)
+                                            cwd=ROOT, env=env, capture_output=True, text=True)
                     self.assertEqual(0, result.returncode, result.stderr)
                     self.assertEqual('JAVA_HOME=' + str(home) + '\n', output.read_text())
             output = root / 'missing.env'
             result = subprocess.run([shutil.which('bash'), '-e', '-c', scripts[0]],
-                env={'RUNNER_OS': 'Linux', 'RUNNER_ARCH': 'ARM64', 'GITHUB_ENV': str(output)},
+                cwd=ROOT, env={'RUNNER_OS': 'Linux', 'RUNNER_ARCH': 'ARM64', 'GITHUB_ENV': str(output)},
                 capture_output=True, text=True)
             self.assertNotEqual(0, result.returncode)
             self.assertFalse(output.exists())

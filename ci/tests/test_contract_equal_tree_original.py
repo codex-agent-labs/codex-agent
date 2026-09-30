@@ -53,6 +53,8 @@ class ContractEqualTreeOriginalTest(unittest.TestCase):
         self.source_tree = self.git(self.trusted, "rev-parse", "HEAD^{tree}")
         self.candidate = self.root / "candidate"
         subprocess.run(["git", "clone", "-q", "--local", str(self.trusted), str(self.candidate)], check=True)
+        self.git(self.candidate, "config", "user.name", "Contract fixture")
+        self.git(self.candidate, "config", "user.email", "contract-fixture@example.invalid")
         self.final = self.git(self.candidate, "rev-parse", "HEAD")
         self.tree = self.git(self.candidate, "rev-parse", "HEAD^{tree}")
         self.tested = subprocess.run(

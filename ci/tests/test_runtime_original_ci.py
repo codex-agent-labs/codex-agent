@@ -238,6 +238,16 @@ class RuntimeOriginalCiTest(unittest.TestCase):
         self.assertEqual(self.receipts["binary"].read_bytes(),
                          (destination / TARGET / "binary" / TARGET / "phases/binary/original/shard/phase-receipt.json").read_bytes())
 
+    def test_current_genuine_producer_pin_survives_next_control_rotation(self):
+        original = "9be996a3269c324ad1beae37a06ff65219e69806"
+        run = {"referenced_workflows": [{
+            "path": f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@{original}",
+            "sha": original,
+        }]}
+        self.assertEqual(original, adapter._runtime_prior_workflow_sha(run, "e" * 40))
+        run["referenced_workflows"][0]["sha"] = "f" * 40
+        self.assertIsNone(adapter._runtime_prior_workflow_sha(run, "e" * 40))
+
     def test_prior_failed_phase_upload_is_diagnostic_not_a_reusable_shard(self):
         failed_run = self.failed_run()
         jobs = copy.deepcopy(self.jobs)

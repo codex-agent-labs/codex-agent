@@ -18,7 +18,9 @@ class RuntimeSupervisorWorkerTest(unittest.TestCase):
         (self.root / "discovery").mkdir()
         self.destination = self.root / "build/worker"
         self.instance = worker.PhaseInstanceId("runtime", "linux-arm64", "binary", "linux-arm64")
-        self.ready = {"buildKey": "sha256:" + "a" * 64, "runtimeBinaryIdentity": {"fixture": True}}
+        self.ready = {"schemaVersion": 1, "product": "runtime", "component": "linux-arm64",
+                      "phase": "binary", "target": "linux-arm64", "inputs": {},
+                      "buildKey": "sha256:" + "a" * 64, "runtimeBinaryIdentity": {"fixture": True}}
         self.producer = {"commit": "c" * 40}
         self.state = SimpleNamespace(prior_ready_plans={self.instance: self.ready},
                                      producer=self.producer, expected_fixed={"versions": {"runtime-release": "0.2.0"}},

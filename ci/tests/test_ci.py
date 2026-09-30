@@ -316,9 +316,9 @@ class RunLaneContractTest(unittest.TestCase):
             "fromJSON(inputs.planOutputs).remote_build_authorized == 'true'",
             "fromJSON(inputs.planOutputs).validation_reused != 'true'",
             "fromJSON(inputs.planOutputs).contract_reconciliation_required == 'true'",
-            "fromJSON(inputs.planOutputs).contract_next_phase != 'none'",
         ):
             self.assertIn(guard, job)
+        self.assertNotIn("fromJSON(inputs.planOutputs).contract_next_phase != 'none'", job)
         self.assertIn("needs: [contract-binary, product-tooling]", job)
         self.assertIn("fromJSON(inputs.planOutputs).contract_next_phase != 'binary' || needs.contract-binary.result == 'success'", job)
         self.assertNotIn("contains(needs.*.result", job)

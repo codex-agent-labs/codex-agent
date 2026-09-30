@@ -175,7 +175,7 @@ class SdkToolingLocatorTest(unittest.TestCase):
                     "transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}",
                     "trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}",
                     "trusted-workflow-path: .github/workflows/contract-validation.yml",
-                    "trusted-job-name: product-validation / contract-validation / product-contracts",
+                    "trusted-job-name: product-validation / contract-validation / tooling-attestation",
                     "policy-revision: ${{ needs.plan.outputs.validation_commit }}",
                 ):
                     self.assertIn(binding, capture)

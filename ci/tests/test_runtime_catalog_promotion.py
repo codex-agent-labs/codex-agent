@@ -226,7 +226,7 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
         self.destination.mkdir()
         sentinel = self.destination / "original"
         sentinel.write_bytes(b"preserve")
-        with self.assertRaisesRegex(ValueError, "must not exist"):
+        with self.assertRaisesRegex(ValueError, "already exists"):
             self.invoke()
         self.assertEqual(b"preserve", sentinel.read_bytes())
 
