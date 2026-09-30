@@ -300,14 +300,57 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                          (destination / TARGET / "binary" / TARGET / "phases/binary/original/shard/phase-receipt.json").read_bytes())
 
     def test_current_genuine_producer_pin_survives_next_control_rotation(self):
-        original = "9be996a3269c324ad1beae37a06ff65219e69806"
-        run = {"referenced_workflows": [{
-            "path": f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@{original}",
-            "sha": original,
-        }]}
-        self.assertEqual(original, adapter._runtime_prior_workflow_sha(run, "e" * 40))
-        run["referenced_workflows"][0]["sha"] = "f" * 40
-        self.assertIsNone(adapter._runtime_prior_workflow_sha(run, "e" * 40))
+        for original in ("9be996a3269c324ad1beae37a06ff65219e69806",
+                         "8a1c2a0c9a9ee1f3c5629d2d77278580f48a489c"):
+            with self.subTest(original=original):
+                run = {"referenced_workflows": [{
+                    "path": f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@{original}",
+                    "sha": original,
+                }]}
+                self.assertEqual(original, adapter._runtime_prior_workflow_sha(run, "e" * 40))
+                run["referenced_workflows"][0]["sha"] = "f" * 40
+                self.assertIsNone(adapter._runtime_prior_workflow_sha(run, "e" * 40))
+
+    def test_mixed_original_phase_workflows_are_independently_authenticated(self):
+        older = "9be996a3269c324ad1beae37a06ff65219e69806"
+        newer = "8a1c2a0c9a9ee1f3c5629d2d77278580f48a489c"
+        self.run["referenced_workflows"] = [{
+            "path": f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@{older}",
+            "sha": older,
+        }]
+        receipt, artifact, raw, job = self.second_attempt_phase("package")
+        original_api = self.two_attempt_api({"package": artifact}, [job], {"package": raw})
+        later_pin = newer
+
+        def request(url, token):
+            response = original_api(url, token)
+            if url.endswith("/actions/runs/72/attempts/3"):
+                run = json.loads(response)
+                run["referenced_workflows"] = [{
+                    "path": f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@{later_pin}",
+                    "sha": later_pin,
+                }]
+                return json.dumps(run).encode()
+            return response
+
+        receipts = {"binary": self.receipts["binary"], "package": receipt}
+        with mock.patch("reuse.api_request", side_effect=request), \
+                mock.patch.object(adapter, "download_artifact_to_file", side_effect=
+                    self.download_two_attempt_fixture({"package": artifact}, {"package": raw})):
+            result = adapter.capture_runtime_original_ci_phases(
+                receipts, self.output, target=TARGET, trusted_workflow_sha="e" * 40,
+                token="not-a-real-token")
+            self.assertEqual({71, 72}, {value["run"]["id"] for value in result["observed"]})
+            for phase, path in receipts.items():
+                self.assertEqual(path.read_bytes(),
+                    (self.output / f"phases/{phase}/original/shard/phase-receipt.json").read_bytes())
+            later_pin = "f" * 40
+            rejected = self.root / "unreviewed-workflow-capture"
+            with self.assertRaisesRegex(ValueError, "reviewed producer workflow"):
+                adapter.capture_runtime_original_ci_phases(
+                    receipts, rejected, target=TARGET, trusted_workflow_sha="e" * 40,
+                    token="not-a-real-token")
+            self.assertFalse(rejected.exists())
 
     def test_prior_failed_phase_upload_is_diagnostic_not_a_reusable_shard(self):
         failed_run = self.failed_run()

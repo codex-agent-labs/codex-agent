@@ -492,7 +492,8 @@ def _runtime_prior_workflow_sha(run, current_sha):
     # Prior genuine phases retain their original reviewed workflow authority after a pin rotation.
     for sha in dict.fromkeys((current_sha, _PRIOR_RUNTIME_WORKFLOW_SHA,
                              "b4148a6320d3dfe8bfb556c6327937c6b304cf4c",
-                             "9be996a3269c324ad1beae37a06ff65219e69806")):
+                             "9be996a3269c324ad1beae37a06ff65219e69806",
+                             "8a1c2a0c9a9ee1f3c5629d2d77278580f48a489c")):
         try:
             _require_ci_workflow_reference(run,
                 f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{sha}", sha)
@@ -1004,9 +1005,22 @@ def capture_runtime_original_ci_phases(
             raise ValueError("Original Runtime CI observation requires a token for uncovered phases")
         jobs = {phase: f"product-validation / runtime-{target}-{phase}-{instances[phase].target}"
                 for phase in ci_phases}
+        original_workflows, workflow_policies = {}, {}
+        for phase in ci_phases:
+            producer = receipts[phase]["producer"]
+            identity = producer["runId"], producer["runAttempt"]
+            if identity not in original_workflows:
+                original_run = api_json(
+                    f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/"
+                    f"{identity[0]}/attempts/{identity[1]}", token)
+                original_workflows[identity] = _runtime_prior_workflow_sha(original_run, trusted_workflow_sha)
+            original_sha = original_workflows[identity]
+            if original_sha is None:
+                raise ValueError("Original Runtime phase lacks a reviewed producer workflow")
+            workflow_policies[phase] = {"path": ".github/workflows/product-validation.yml", "sha": original_sha}
         observed = _observe_ci_producer_jobs(
             {phase: receipts[phase]["producer"] for phase in ci_phases}, jobs_by_phase=jobs,
-            trusted_workflow_sha=trusted_workflow_sha, token=token)
+            trusted_workflows_by_phase=workflow_policies, token=token)
         attempts = {(value["run"]["id"], value["run"]["run_attempt"]): value for value in observed}
         inventories, artifacts, phase_files, original_files = {}, {}, {}, {}
         for phase in ci_phases:
