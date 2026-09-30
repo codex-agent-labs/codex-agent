@@ -179,6 +179,9 @@ class RuntimeLatePhaseRecoveryTest(unittest.TestCase):
                 self.assertEqual(key, load_canonical_json(shard / "phase-receipt.json")["buildKey"])
                 shutil.copytree(shard, destination / instance.component / instance.phase / instance.target /
                                 "phases" / instance.phase / "original/shard")
+                observation = destination / instance.component / instance.phase / instance.target / "transport"
+                observation.mkdir()
+                (observation / "original-ci-phases.json").write_bytes(canonical_json_bytes({}))
                 retained[instance] = {"syntheticOriginalAdmission": True}
             return retained
 

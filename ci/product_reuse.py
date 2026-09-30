@@ -891,6 +891,7 @@ def capture_runtime_original_ci_phases(
     release_handoffs: tuple[Path, ...] = (), keyring: Path | None = None,
     keys_directory: Path | None = None,
     original_instance: PhaseInstanceId | None = None,
+    recovery_projection: bool = False,
 ) -> dict[str, Any]:
     """Bind original receipts to CI or retained release trust, never new signing."""
     if bool(release_handoffs) != (keyring is not None and keys_directory is not None) or \
@@ -983,7 +984,7 @@ def capture_runtime_original_ci_phases(
             {phase: receipts[phase]["producer"] for phase in ci_phases}, jobs_by_phase=jobs,
             trusted_workflow_sha=trusted_workflow_sha, token=token)
         attempts = {(value["run"]["id"], value["run"]["run_attempt"]): value for value in observed}
-        inventories, artifacts, phase_files = {}, {}, {}
+        inventories, artifacts, phase_files, original_files = {}, {}, {}, {}
         for phase in ci_phases:
             receipt = receipts[phase]
             producer = receipt["producer"]
@@ -1006,7 +1007,7 @@ def capture_runtime_original_ci_phases(
                           for value in (job.get("started_at"), artifact.get("created_at"), job.get("completed_at"))]
             if any(value.utcoffset() != timedelta(0) for value in timestamps) or not timestamps[0] <= timestamps[1] <= timestamps[2]:
                 raise ValueError("Original Runtime upload is outside its original job-attempt window")
-            retained = prepared / "phases" / phase
+            retained = (root / "original-uploads" if recovery_projection else prepared) / "phases" / phase
             retained.mkdir(parents=True)
             archive = retained / "transport.zip"
             archive.write_bytes(raw)
@@ -1017,16 +1018,33 @@ def capture_runtime_original_ci_phases(
             verified = verify_phase_shard(retained / "original/shard", instances[phase])
             if verified["receiptBytes"] != originals[phase]:
                 raise ValueError("Original Runtime upload differs from the requested original receipt")
+            if recovery_projection:
+                # Full original upload authentication precedes this transport-only
+                # projection. Receipts/objects/raw proof stay byte-identical;
+                # duplicated predecessor inputs and enclosing ZIP stay upstream.
+                original_files[phase] = zipped
+                projected = [record for record in zipped
+                             if not record["relativePath"].startswith("inputs/")]
+                projected_root = prepared / "phases" / phase / "original"
+                for record in projected:
+                    output = projected_root / record["relativePath"]
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(retained / "original" / record["relativePath"], output)
+                if regular_file_inventory(projected_root, allow_empty=True) != projected:
+                    raise ValueError("Original Runtime recovery projection changed during copy")
             artifacts[phase] = artifact
             phase_files[phase] = [
-                {"relativePath": f"phases/{phase}/transport.zip", "bytes": len(raw),
-                 "sha256": artifact["digest"]},
-                *({**record, "relativePath": f"phases/{phase}/original/{record['relativePath']}"} for record in zipped),
+                *([] if recovery_projection else [{"relativePath": f"phases/{phase}/transport.zip",
+                    "bytes": len(raw), "sha256": artifact["digest"]}]),
+                *({**record, "relativePath": f"phases/{phase}/original/{record['relativePath']}"}
+                  for record in (projected if recovery_projection else zipped)),
             ]
         evidence = {"target": target, "observed": observed, "artifacts": artifacts,
                     "receiptSha256s": {phase: sha256_bytes(raw) for phase, raw in originals.items()}}
         if release_handoffs:
             evidence["releaseAttestations"] = releases
+        if recovery_projection:
+            evidence["recoveryProjection"] = {"schemaVersion": 1, "originalFiles": original_files}
         write_canonical_json(prepared / "transport/original-ci-phases.json", evidence)
         evidence_bytes = canonical_json_bytes(evidence)
         expected_files = [
@@ -1167,7 +1185,11 @@ def capture_prior_failed_runtime_phases(
             receipt_path, original_workflow_sha = found[0][1:]  # Preserve the chosen original producer.
             captured[instance] = capture_runtime_original_ci_phases(
                 {instance.phase: receipt_path}, output, target=instance.component,
-                trusted_workflow_sha=original_workflow_sha, token=token, original_instance=instance)
+                trusted_workflow_sha=original_workflow_sha, token=token, original_instance=instance,
+                recovery_projection=True)
+            # Only this phase's independently verified candidate trees are scratch;
+            # keep original uploads upstream and the authenticated compact capture.
+            shutil.rmtree(scratch_root / instance.component / instance.phase / instance.target)
     return captured
 
 
@@ -1240,13 +1262,17 @@ def _prior_failed_runtime_objects(
                                                  _runtime_prior_workflow_sha(official, trusted_workflow_sha))
                         if original_workflow_sha is None:
                             raise ValueError("Prior failed Runtime producer lacks a reviewed workflow")
-                        replay = Path(temporary).resolve(strict=True) / member.name / phase / captured.name
-                        capture_runtime_original_ci_phases(
-                            {phase: shard / PHASE_RECEIPT_NAME}, replay, target=member.name,
-                            trusted_workflow_sha=original_workflow_sha, token=token,
-                            original_instance=instance)
-                        if regular_file_inventory(replay) != regular_file_inventory(captured):
-                            raise ValueError("Prior failed Runtime capture differs from original CI")
+                        observation = _canonical_control(captured / "transport/original-ci-phases.json",
+                                                         "Prior Runtime original observation")
+                        with tempfile.TemporaryDirectory(prefix="phase-", dir=temporary) as phase_temporary:
+                            replay = Path(phase_temporary).resolve(strict=True) / "capture"
+                            capture_runtime_original_ci_phases(
+                                {phase: shard / PHASE_RECEIPT_NAME}, replay, target=member.name,
+                                trusted_workflow_sha=original_workflow_sha, token=token,
+                                original_instance=instance,
+                                recovery_projection="recoveryProjection" in observation)
+                            if regular_file_inventory(replay, allow_empty=True) != regular_file_inventory(captured, allow_empty=True):
+                                raise ValueError("Prior failed Runtime capture differs from original CI")
                     descriptor = _canonical_control(shard / PHASE_SHARD_NAME, "Prior failed Runtime shard")
                     records.append({
                         **_identity_record(instance),

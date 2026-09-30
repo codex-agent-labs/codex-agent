@@ -211,6 +211,47 @@ class RuntimeOriginalCiTest(unittest.TestCase):
         self.assertEqual({"binary", "package"}, {record["phase"] for record in replayed})
         self.assertEqual(replayed, same_run)
 
+    def test_recovery_projection_omits_only_duplicates_and_reauthenticates_original(self):
+        upload = self.root / "runtime-uploads/binary"
+        (upload / "inputs").mkdir()
+        (upload / "inputs/predecessor.bin").write_bytes(b"duplicated authenticated predecessor")
+        (upload / "raw-validation").mkdir()
+        (upload / "raw-validation/proof.json").write_bytes(b"unique original proof")
+        raw = fixture.archive_tree(upload)
+        self.archives["binary"] = raw
+        self.artifacts["binary"].update(digest=fixture.sha256_bytes(raw), size_in_bytes=len(raw))
+        instance = PhaseInstanceId("runtime", TARGET, "binary", TARGET)
+        key = fixture.load_canonical_json_bytes(self.receipts["binary"].read_bytes())["buildKey"]
+        plan = {"event": "pull_request", "pullRequest": 31, "repository": fixture.REPOSITORY}
+        destination = self.root / "projected-recovery"
+        run = self.failed_run()
+        with mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
+                mock.patch("reuse.api_request", side_effect=self.api(run=run)):
+            adapter.capture_prior_failed_runtime_phases(plan, {"runId": 100, "runAttempt": 1},
+                {instance: key}, destination, trusted_workflow_sha=self.pin,
+                token="not-a-real-token", attempts=(run,))
+            captured = destination / TARGET / "binary" / TARGET
+            self.assertFalse((captured / "phases/binary/transport.zip").exists())
+            self.assertFalse((captured / "phases/binary/original/inputs").exists())
+            proof = captured / "phases/binary/original/raw-validation/proof.json"
+            self.assertEqual(b"unique original proof", proof.read_bytes())
+            observation = fixture.load_canonical_json_bytes(
+                (captured / "transport/original-ci-phases.json").read_bytes())
+            self.assertEqual(self.artifacts["binary"]["digest"], observation["artifacts"]["binary"]["digest"])
+            self.assertIn("inputs/predecessor.bin", {record["relativePath"] for record in
+                observation["recoveryProjection"]["originalFiles"]["binary"]})
+            records = adapter._prior_failed_runtime_objects(destination, self.root,
+                trusted_workflow_sha=self.pin, token="not-a-real-token", plan=plan,
+                consumer_producer={"runId": 100, "runAttempt": 1})
+            self.assertEqual(key, records[0]["buildKey"])
+            self.assertEqual(self.receipts["binary"].read_bytes(),
+                (captured / "phases/binary/original/shard/phase-receipt.json").read_bytes())
+            proof.write_bytes(b"tampered proof")
+            with self.assertRaisesRegex(ValueError, "differs from original CI"):
+                adapter._prior_failed_runtime_objects(destination, self.root,
+                    trusted_workflow_sha=self.pin, token="not-a-real-token", plan=plan,
+                    consumer_producer={"runId": 100, "runAttempt": 1})
+
     def test_reviewed_original_workflow_survives_current_workflow_pin_rotation(self):
         legacy = adapter._PRIOR_RUNTIME_WORKFLOW_SHA
         current = "b4148a6320d3dfe8bfb556c6327937c6b304cf4c"
