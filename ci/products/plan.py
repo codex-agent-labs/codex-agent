@@ -52,7 +52,6 @@ from .selection import phase_git_inventory
 from .runtime_flags import load_runtime_binary_flags_bytes
 from .runtime_identity import derive_runtime_identity_from_git
 from .toolchain import load_toolchain_profile_bytes
-from .sdk_dotnet_toolchain import load_sdk_dotnet_profile_bytes
 from .sdk_runtime_content import VerifiedNativeRuntimeProjection, verify_native_runtime_projection
 from .runtime_adapter_content import VerifiedAdapterRuntimeProjection
 from .sdk_validation import VerifiedSdkValidationProjection, sdk_validation_provider
@@ -161,6 +160,7 @@ def verified_phase_toolchain_digest(
     if type(revision) is not str or _GIT_OBJECT_ID.fullmatch(revision) is None:
         raise ValueError("Repository revision must be an exact lowercase Git object ID")
     if profile_id == "sdk-csharp":
+        from .sdk_dotnet_toolchain import load_sdk_dotnet_profile_bytes
         profile = load_sdk_dotnet_profile_bytes(git_regular_blob_bytes(
             root, revision, "gradle/release/toolchains/sdk/csharp.json", max_bytes=65_536,
         ))

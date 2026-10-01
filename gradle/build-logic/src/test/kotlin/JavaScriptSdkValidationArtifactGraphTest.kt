@@ -44,6 +44,8 @@ class JavaScriptSdkValidationArtifactGraphTest {
         try {
             val result = GradleRunner.create().withProjectDir(repository).withArguments(
                 "ciProductPhase", "--dry-run", "--offline", "--console=plain",
+                "-Pkotlin.daemon.jvmargs=-Xmx2g",
+                "--gradle-user-home", System.getenv("GRADLE_USER_HOME") ?: File(System.getProperty("user.home"), ".gradle").path,
                 "-PcodexAgent.product=sdk", "-PcodexAgent.component=javascript", "-PcodexAgent.phase=validation",
                 "-PcodexAgent.sdkPackageStageRoot=${fixture.absolutePath}",
                 "-PcodexAgent.contractBinaryStage=${fixture.absolutePath}",
@@ -76,6 +78,8 @@ class JavaScriptSdkValidationArtifactGraphTest {
     fun `validation missing its package fails before any product task executes`() {
         val result = GradleRunner.create().withProjectDir(repository).withArguments(
             "ciProductPhase", "--offline", "--console=plain",
+            "-Pkotlin.daemon.jvmargs=-Xmx2g",
+            "--gradle-user-home", System.getenv("GRADLE_USER_HOME") ?: File(System.getProperty("user.home"), ".gradle").path,
             "-PcodexAgent.product=sdk", "-PcodexAgent.component=javascript", "-PcodexAgent.phase=validation",
         ).buildAndFail()
         assertTrue("SDK JavaScript validation requires codexAgent.sdkPackageStageRoot" in result.output, result.output)

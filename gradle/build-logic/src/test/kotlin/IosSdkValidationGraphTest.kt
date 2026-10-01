@@ -83,6 +83,8 @@ class IosSdkValidationGraphTest {
                 })
                 .withArguments(
                     "ciProductPhase",
+                    "-Pkotlin.daemon.jvmargs=-Xmx2g",
+                    "--gradle-user-home", System.getenv("GRADLE_USER_HOME") ?: File(System.getProperty("user.home"), ".gradle").path,
                     "--dry-run", "--offline", "--no-configuration-cache", "--console=plain",
                     "-PcodexAgent.product=sdk", "-PcodexAgent.component=sdk-ios", "-PcodexAgent.phase=validation",
                     "-PcodexAgent.target=$target", "-PcodexAgent.iosValidationPackageStage=${originalPackage.path}",

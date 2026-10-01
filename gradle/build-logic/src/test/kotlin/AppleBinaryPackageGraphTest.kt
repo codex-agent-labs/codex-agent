@@ -56,6 +56,8 @@ class AppleBinaryPackageGraphTest {
                 .withEnvironment(System.getenv().filterKeys { it != "CODEX_AGENT_IMPORTED_SWIFT_ZIP" })
                 .withArguments(
                     "ciProductPhase", "--dry-run", "--offline", "--no-configuration-cache", "--console=plain",
+                    "-Pkotlin.daemon.jvmargs=-Xmx2g",
+                    "--gradle-user-home", System.getenv("GRADLE_USER_HOME") ?: File(System.getProperty("user.home"), ".gradle").path,
                     "-PcodexAgent.product=sdk", "-PcodexAgent.component=sdk-ios", "-PcodexAgent.phase=package",
                     "-PcodexAgent.iosPackageFromBinary=true", "-PcodexAgent.target=ios",
                     "-PcodexAgent.candidateCommit=${"1".repeat(40)}", "-PcodexAgent.candidateTree=$tree",

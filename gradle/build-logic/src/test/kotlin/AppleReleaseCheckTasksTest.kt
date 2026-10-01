@@ -143,6 +143,7 @@ class AppleReleaseCheckTasksTest {
                 "pythonExecutable.convention(\"python3\")",
                 "pythonExecutable.convention(\"python3\")",
                 "pythonExecutable.convention(\"python3\")",
+                "\"python3\", binaryScript.get().asFile.absolutePath, \"csharp-binary\"",
                 "\"python3\", packageScript.get().asFile.absolutePath, \"package\"",
             ),
             "MavenRepositoryTasks.kt" to listOf(

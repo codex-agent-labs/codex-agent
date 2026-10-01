@@ -8,6 +8,8 @@ import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 
 class SdkVerificationTaskGraphTest {
+    private val cachedGradleUserHome = System.getenv("GRADLE_USER_HOME")
+        ?: File(System.getProperty("user.home"), ".gradle").path
     @Test
     fun `unauthenticated SDK binary producers are absent and canonical entry fails before Core tasks`() {
         val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
@@ -16,6 +18,8 @@ class SdkVerificationTaskGraphTest {
             .withProjectDir(repository)
             .withArguments(
                 "writeSdkCoreBinaryOutputManifest", "--dry-run", "--offline",
+                "-Pkotlin.daemon.jvmargs=-Xmx2g",
+                "--gradle-user-home", cachedGradleUserHome,
                 "--no-configuration-cache", "--console=plain",
             )
             .buildAndFail()
@@ -26,6 +30,8 @@ class SdkVerificationTaskGraphTest {
             .withProjectDir(repository)
             .withArguments(
                 "writeSdkCoreBinaryOutputManifest",
+                "-Pkotlin.daemon.jvmargs=-Xmx2g",
+                "--gradle-user-home", cachedGradleUserHome,
                 "-PcodexAgent.authenticatedContractVersion=0.2.0",
                 "-PcodexAgent.authenticatedSdkComponent=sdk-core",
                 "--dry-run", "--offline", "--no-configuration-cache", "--console=plain",
@@ -38,6 +44,8 @@ class SdkVerificationTaskGraphTest {
             .withProjectDir(repository)
             .withArguments(
                 "ciProductPhase", "-PcodexAgent.product=sdk", "-PcodexAgent.component=sdk-core",
+                "-Pkotlin.daemon.jvmargs=-Xmx2g",
+                "--gradle-user-home", cachedGradleUserHome,
                 "-PcodexAgent.phase=binary", "--dry-run", "--offline",
                 "--no-configuration-cache", "--console=plain",
             )
@@ -68,6 +76,8 @@ class SdkVerificationTaskGraphTest {
                 .withProjectDir(repository)
                 .withArguments(
                     "help",
+                    "-Pkotlin.daemon.jvmargs=-Xmx2g",
+                    "--gradle-user-home", cachedGradleUserHome,
                     "--init-script", initScript.absolutePath,
                     "--offline",
                     "--no-configuration-cache",
@@ -330,6 +340,7 @@ class SdkVerificationTaskGraphTest {
         .withPluginClasspath()
         .withArguments(
             *tasks,
+            "--gradle-user-home", cachedGradleUserHome,
             "-PcodexAgent.sdkCanonicalApiReport=${root.resolve("canonical-api.json")}",
             "-PcodexAgent.sdkCanonicalCoverageReceipt=${root.resolve("canonical-coverage.json")}",
             "--configuration-cache",

@@ -21,7 +21,6 @@ from .plan import (
     _contract_projection_from_request, _native_runtime_projections_from_request,
     native_runtime_validation_dependencies, plan_phase, verified_phase_toolchain_digest,
 )
-from .sdk_dotnet_toolchain import load_sdk_dotnet_profile_bytes
 from .receipt import output_inventory_digest, validate_phase_receipt, verify_output_manifest_identity, write_output_manifest
 from .registry import (
     NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId, phase_instance_dependencies, required_contract_components,
@@ -184,6 +183,7 @@ def _verify_plan(repository: Path, receipt: dict[str, Any], versions: dict[str, 
     instance = _instance(receipt)
     toolchain_digest = NOT_APPLICABLE_TOOLCHAIN_DIGEST
     if instance.component == "csharp" and instance.phase in {"binary", "package"}:
+        from .sdk_dotnet_toolchain import load_sdk_dotnet_profile_bytes
         toolchain_digest = load_sdk_dotnet_profile_bytes(git_regular_blob_bytes(
             repository, commit, "gradle/release/toolchains/sdk/csharp.json", max_bytes=65_536,
         )).digest

@@ -15,6 +15,8 @@ import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 
 class ContractIsolationFixtureTest {
+    private val gradleUserHome = System.getenv("GRADLE_USER_HOME")
+        ?: File(System.getProperty("user.home"), ".gradle").absolutePath
     private val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
         .first { it.resolve("settings.gradle.kts").isFile && it.resolve("codex-agent-core").isDirectory }
 
@@ -54,6 +56,8 @@ class ContractIsolationFixtureTest {
                 .withProjectDir(fixture.resolve("gradle/build-logic"))
                 .withArguments(
                     "compileKotlin",
+                    "--gradle-user-home", gradleUserHome,
+                    "-Pkotlin.daemon.jvmargs=-Xmx2g",
                     "--offline",
                     "--configuration-cache",
                     "--configuration-cache-problems=fail",
@@ -143,6 +147,8 @@ class ContractIsolationFixtureTest {
                 .withProjectDir(fixture)
                 .withArguments(
                     "verifyContract",
+                    "--gradle-user-home", gradleUserHome,
+                    "-Pkotlin.daemon.jvmargs=-Xmx2g",
                     "--offline",
                     "--configuration-cache",
                     "--configuration-cache-problems=fail",
@@ -255,6 +261,8 @@ class ContractIsolationFixtureTest {
                 ).forEachIndexed { index, selector ->
                     val arguments = mutableListOf(
                         selector,
+                        "--gradle-user-home", gradleUserHome,
+                        "-Pkotlin.daemon.jvmargs=-Xmx2g",
                         "--offline",
                         "--continue",
                         "--configuration-cache",
@@ -301,6 +309,8 @@ class ContractIsolationFixtureTest {
                 .withProjectDir(fixture)
                 .withArguments(
                     "deleteLegacyContractDevelopmentKey",
+                    "--gradle-user-home", gradleUserHome,
+                    "-Pkotlin.daemon.jvmargs=-Xmx2g",
                     "--offline",
                     "--configuration-cache",
                     "--configuration-cache-problems=fail",

@@ -131,7 +131,8 @@ class AppleCanonicalPackageGraphTest {
             GradleRunner.create()
                 .withProjectDir(root)
                 .withPluginClasspath()
-                .withArguments("inspectSdkPackageTasks", "--offline", "--no-configuration-cache", "--console=plain")
+                .withArguments("inspectSdkPackageTasks", "--offline", "--no-configuration-cache", "--console=plain",
+                    "--gradle-user-home", System.getenv("GRADLE_USER_HOME") ?: File(System.getProperty("user.home"), ".gradle").path)
                 .build()
         } finally {
             root.deleteRecursively()
@@ -146,6 +147,8 @@ class AppleCanonicalPackageGraphTest {
     ): GradleRunner {
         val arguments = mutableListOf(
             "ciProductPhase", "--dry-run", "--offline", "--no-configuration-cache", "--console=plain",
+            "-Pkotlin.daemon.jvmargs=-Xmx2g",
+            "--gradle-user-home", System.getenv("GRADLE_USER_HOME") ?: File(System.getProperty("user.home"), ".gradle").path,
             "-PcodexAgent.product=sdk", "-PcodexAgent.component=sdk-ios", "-PcodexAgent.phase=package",
             "-PcodexAgent.candidateCommit=${"1".repeat(40)}",
             "-PcodexAgent.candidateTree=${"2".repeat(40)}",

@@ -31,7 +31,10 @@ class ReleaseWorkflowContractTest {
     fun `Runtime toolchain capture observes six producers without product work`() {
         val capture = workflows.getValue("runtime-toolchain-capture.yml")
         assertTrue("workflow_dispatch:" in capture)
-        assertFalse("workflow_call:" in capture)
+        assertTrue("workflow_call:" in capture)
+        assertEquals(2, capture.lineSequence().count {
+            "test \"${'$'}GITHUB_EVENT_NAME\" = workflow_dispatch" in it
+        })
         assertTrue("environment: product-attestation" in capture)
         assertEquals(2, capture.lineSequence().count {
             "test \"${'$'}GITHUB_REPOSITORY\" = codex-agent-labs/codex-agent" in it

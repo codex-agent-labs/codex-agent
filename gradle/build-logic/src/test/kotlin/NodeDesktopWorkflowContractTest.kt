@@ -19,17 +19,27 @@ class NodeDesktopWorkflowContractTest {
             "packageNodeWasmRuntimeEvidenceRunner",
         ).forEach { assertTrue(it in driver, it) }
         assertFalse("setup-sccache" in desktop)
-        assertEquals(3, Regex("(?m)^    strategy:$").findAll(desktop).count())
-        assertTrue("  native-wrapper-host-consumers:" in desktop)
+        assertEquals(1, Regex("(?m)^    strategy:$").findAll(desktop).count())
+        assertFalse("  native-wrapper-host-consumers:" in desktop)
+        val sdkValidation = workflows.getValue("product-validation.yml")
+            .substringAfter("\n  sdk-native-validation:").substringBefore("\n  sdk-collect-7:")
+        assertTrue("uses: ./.github/actions/sdk-native-validation-worker" in sdkValidation)
+        assertTrue("runs-on: ${'$'}{{ matrix.runner }}" in sdkValidation)
+        assertTrue("fail-fast: false" in sdkValidation)
     }
 
     @Test
-    fun `desktop lanes publish strict receipts and consumers import all classifiers`() {
+    fun `desktop lanes publish strict receipts and SDK consumers import authenticated Runtime inputs`() {
         val ci = workflows.getValue("product-validation.yml")
         val desktop = workflows.getValue("desktop-runtime-evidence.yml")
         assertTrue("uses: ./.github/actions/run-ci-lane" in desktop)
-        assertTrue("pattern: codex-agent-ci-desktop-*-" in ci)
-        assertTrue("DESKTOP_CLASSIFIERS=" in ci)
+        val sdkInputs = ci.substringAfter("\n  sdk-inputs:").substringBefore("\n  android:")
+        assertTrue("uses: ./.github/actions/capture-runtime-state" in sdkInputs)
+        assertTrue("artifact-sha256: ${'$'}{{ needs.runtime-continuation.outputs.artifact_digest }}" in sdkInputs)
+        assertTrue("--expected-build-key \"${'$'}AGGREGATE_KEY\"" in sdkInputs)
+        assertTrue("--expected-metadata-receipt-sha256 \"${'$'}AGGREGATE_RECEIPT\"" in sdkInputs)
+        assertTrue("--keyring \"${'$'}GITHUB_WORKSPACE/gradle/release/product-signing-keys.json\"" in sdkInputs)
+        assertFalse("DESKTOP_CLASSIFIERS=" in ci)
         assertTrue("-PcodexAgent.desktopClassifierDirectory" in driver)
         assertFalse("codex-agent-ci-runtime-evidence-" in desktop)
         assertFalse("codex-agent-ci-desktop-classifier-" in desktop)
@@ -76,7 +86,7 @@ class NodeDesktopWorkflowContractTest {
             Regex(Regex.escape(":codex-agent-runtime-desktop:wasmJsNodeTest")).findAll(nodeWasm).count(),
         )
         assertTrue(
-            "(matrix.lane == 'contracts' || contains(matrix.lane, 'node')) && '24.18.0'" in ci,
+            "contains(matrix.lane, 'node') && '24.18.0' || 'none'" in ci,
         )
     }
 
