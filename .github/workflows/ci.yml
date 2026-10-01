@@ -103,6 +103,7 @@ jobs:
           path: gradle/build-logic/build/test-results/test/*.xml
           if-no-files-found: error
           retention-days: 14
+          overwrite: false
 
   product-validation:
     if: github.event_name != 'workflow_dispatch' || inputs.purpose == 'validation'
