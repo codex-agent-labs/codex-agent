@@ -9,6 +9,24 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class WorkflowStaticBuildBoundaryTest(unittest.TestCase):
+    def test_focused_diagnostics_are_exact_source_and_unprivileged(self):
+        caller = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        match = re.search(r"^  build-logic-diagnostics:\n(.*?)(?=^  [a-z0-9-]+:\n)",
+                          caller, re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(match)
+        job = match.group(1)
+        self.assertIn("inputs.purpose == 'build-logic-diagnostics'", job)
+        for binding in ('test "$VALIDATION_COMMIT" = "$GITHUB_SHA"',
+                        "git rev-parse 'HEAD^{tree}'", 'persist-credentials: false'):
+            self.assertIn(binding, job)
+        for forbidden in ("secrets:", "environment:", "id-token:", "ciProductPhase", "verifyRuntime"):
+            self.assertNotIn(forbidden, job)
+        self.assertIn("--info --stacktrace", job)
+        self.assertIn("if: always()", job)
+        self.assertIn("build/test-results/test/*.xml", job)
+        self.assertEqual(6, job.count("--tests '"))
+        self.assertIn("inputs.purpose == 'build-logic-diagnostics' && 'Build logic diagnostics / complete'", caller)
+
     @classmethod
     def setUpClass(cls):
         cls.workflow = (ROOT / ".github/workflows/product-validation.yml").read_text(encoding="utf-8")

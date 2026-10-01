@@ -12,7 +12,7 @@ on:
         required: true
         type: choice
         default: validation
-        options: [validation, sdk-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars]
+        options: [validation, build-logic-diagnostics, sdk-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars]
       baseCommit:
         description: Exact base commit SHA
         required: false
@@ -59,6 +59,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  build-logic-diagnostics:
+    if: github.event_name == 'workflow_dispatch' && inputs.purpose == 'build-logic-diagnostics'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Bind diagnostics to the exact dispatched source
+        env:
+          VALIDATION_COMMIT: ${{ inputs.validationCommit }}
+          VALIDATION_TREE: ${{ inputs.validationTree }}
+        run: |
+          [[ "$VALIDATION_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$VALIDATION_TREE" =~ ^[0-9a-f]{40}$ ]]
+          test "$VALIDATION_COMMIT" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$VALIDATION_COMMIT"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$VALIDATION_TREE"
+      - run: sudo install -d -m 1777 /private/tmp
+      - uses: ./.github/actions/setup-kmp
+        with:
+          cache-read-only: "true"
+      - name: Capture nested offline fixture failures without product orchestration
+        run: >-
+          ./gradlew -p gradle/build-logic test
+          --tests '*AppleBinaryPackageGraphTest'
+          --tests '*AppleCanonicalPackageGraphTest'
+          --tests '*ContractIsolationFixtureTest'
+          --tests '*SdkVerificationTaskGraphTest'
+          --tests '*IosSdkValidationGraphTest'
+          --tests '*JavaScriptSdkValidationArtifactGraphTest'
+          -Pkotlin.daemon.jvmargs=-Xmx2g
+          --configuration-cache --configuration-cache-problems=fail --no-build-cache --info --stacktrace
+      - name: Preserve original nested exceptions even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: build-logic-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
+          path: gradle/build-logic/build/test-results/test/*.xml
+          if-no-files-found: error
+          retention-days: 14
+
   product-validation:
     if: github.event_name != 'workflow_dispatch' || inputs.purpose == 'validation'
     permissions:
@@ -144,9 +187,9 @@ jobs:
     secrets: inherit
 
   merge-gate:
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody' && 'SDK custody / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-toolchain-capture' && 'Runtime toolchain / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-phase10-record' && 'Runtime record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'contract-phase10-record' && 'Contract record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-authority' && 'SDK authority / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-record' && 'SDK record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-maven-sidecars' && 'SDK Maven sidecars / complete' || 'CI / merge-gate' }}
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.purpose == 'build-logic-diagnostics' && 'Build logic diagnostics / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody' && 'SDK custody / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-toolchain-capture' && 'Runtime toolchain / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-phase10-record' && 'Runtime record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'contract-phase10-record' && 'Contract record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-authority' && 'SDK authority / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-record' && 'SDK record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-maven-sidecars' && 'SDK Maven sidecars / complete' || 'CI / merge-gate' }}
     if: always()
-    needs: [product-validation, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars]
+    needs: [product-validation, build-logic-diagnostics, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars]
     runs-on: ubuntu-24.04
     steps:
       - name: Require exactly the selected trusted workflow
@@ -154,6 +197,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           PURPOSE: ${{ inputs.purpose }}
           PRODUCT_VALIDATION_RESULT: ${{ needs.product-validation.result }}
+          DIAGNOSTICS_RESULT: ${{ needs.build-logic-diagnostics.result }}
           SDK_CUSTODY_RESULT: ${{ needs.sdk-failed-catalog-custody.result }}
           TOOLCHAIN_CAPTURE_RESULT: ${{ needs.runtime-toolchain-capture.result }}
           RUNTIME_RECORD_RESULT: ${{ needs.runtime-phase10-record.result }}
@@ -182,13 +226,26 @@ jobs:
           SDK_MAVEN_INDEX_ID: ${{ needs.sdk-phase10-maven-sidecars.outputs.indexAdmissionArtifactId }}
           SDK_MAVEN_INDEX_SHA256: ${{ needs.sdk-phase10-maven-sidecars.outputs.indexAdmissionArtifactSha256 }}
         run: |
+          if [ "$PURPOSE" = build-logic-diagnostics ]; then
+            test "$EVENT" = workflow_dispatch
+            test "$PRODUCT_VALIDATION_RESULT" = skipped
+            test "$DIAGNOSTICS_RESULT" = success
+          else
+            test "$DIAGNOSTICS_RESULT" = skipped
+          fi
           if [ "$PURPOSE" != runtime-toolchain-capture ]; then
             test "$TOOLCHAIN_CAPTURE_RESULT" = skipped
           fi
           if [ "$PURPOSE" != sdk-phase10-maven-sidecars ]; then
             test "$SDK_MAVEN_RESULT" = skipped
           fi
-          if [ "$EVENT" = workflow_dispatch ] && [ "$PURPOSE" = sdk-catalog-custody ]; then
+          if [ "$EVENT" = workflow_dispatch ] && [ "$PURPOSE" = build-logic-diagnostics ]; then
+            test "$SDK_CUSTODY_RESULT" = skipped
+            test "$RUNTIME_RECORD_RESULT" = skipped
+            test "$CONTRACT_RECORD_RESULT" = skipped
+            test "$SDK_AUTHORITY_RESULT" = skipped
+            test "$SDK_RECORD_RESULT" = skipped
+          elif [ "$EVENT" = workflow_dispatch ] && [ "$PURPOSE" = sdk-catalog-custody ]; then
             test "$PRODUCT_VALIDATION_RESULT" = skipped
             test "$SDK_CUSTODY_RESULT" = success
             test "$RUNTIME_RECORD_RESULT" = skipped
