@@ -368,17 +368,9 @@ class ContractIsolationFixtureTest {
                     gradle.rootProject.tasks.register('provisionContractFixtureDependencies') {
                         doLast {
                             core.configurations.findAll { configuration ->
-                                configuration.canBeResolved && (
-                                    configuration.name.endsWith('CompileClasspath') ||
-                                    configuration.name.endsWith('RuntimeClasspath') ||
-                                    configuration.name.endsWith('CompileKlibraries') ||
-                                    configuration.name.endsWith('CompilationDependenciesMetadata') ||
-                                    configuration.name.endsWith('CompileDependenciesMetadata') ||
-                                    configuration.name.endsWith('ResolvableDependenciesMetadata') ||
-                                    configuration.name.endsWith('NpmAggregated') ||
-                                    configuration.name.startsWith('kotlinCompilerPluginClasspath') ||
-                                    configuration.name in ['kotlinCompilerClasspath', 'kotlinBuildToolsApiClasspath',
-                                        'kotlinKlibCommonizerClasspath', 'kotlinNativeBundleConfiguration'])
+                                // Commonized cinterop views require generated outputs, not downloadable modules.
+                                configuration.canBeResolved && configuration.attributes.getAttribute(
+                                    org.gradle.api.attributes.Usage.USAGE_ATTRIBUTE)?.name != 'kotlin-commonized-cinterop'
                             }.sort { it.name }.each { configuration -> configuration.resolve() }
                         }
                     }
