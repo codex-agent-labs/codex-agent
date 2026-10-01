@@ -32,7 +32,7 @@ class WorkflowStaticBuildBoundaryTest(unittest.TestCase):
 
     def test_workflow_lint_runs_only_the_guarded_standalone_build_logic_tests(self):
         command = (
-            "./gradlew -p gradle/build-logic test --configuration-cache "
+            "./gradlew -p gradle/build-logic test -Pkotlin.daemon.jvmargs=-Xmx2g --configuration-cache "
             "--configuration-cache-problems=fail --no-build-cache"
         )
         normalized = " ".join(self.job.split())
