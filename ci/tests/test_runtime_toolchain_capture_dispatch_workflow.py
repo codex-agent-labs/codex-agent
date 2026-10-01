@@ -42,6 +42,7 @@ class RuntimeToolchainCaptureDispatchTest(unittest.TestCase):
             "EVENT": "workflow_dispatch",
             "PURPOSE": "runtime-toolchain-capture",
             "PRODUCT_VALIDATION_RESULT": "skipped",
+            "DIAGNOSTICS_RESULT": "skipped",
             "SDK_CUSTODY_RESULT": "skipped",
             "RUNTIME_RECORD_RESULT": "skipped",
             "CONTRACT_RECORD_RESULT": "skipped",

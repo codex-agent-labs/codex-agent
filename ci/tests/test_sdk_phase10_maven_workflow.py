@@ -166,6 +166,7 @@ class SdkPhase10MavenWorkflowTest(unittest.TestCase):
         gate = caller.split("  merge-gate:\n", 1)[1]
         script = textwrap.dedent(gate.split("        run: |\n", 1)[1])
         env = {**os.environ, "EVENT": "workflow_dispatch", "PURPOSE": "sdk-phase10-maven-sidecars",
+               "DIAGNOSTICS_RESULT": "skipped",
                "PRODUCT_VALIDATION_RESULT": "skipped", "SDK_CUSTODY_RESULT": "skipped",
                "TOOLCHAIN_CAPTURE_RESULT": "skipped", "RUNTIME_RECORD_RESULT": "skipped",
                "CONTRACT_RECORD_RESULT": "skipped", "SDK_AUTHORITY_RESULT": "skipped",

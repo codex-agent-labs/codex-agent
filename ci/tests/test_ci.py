@@ -144,11 +144,12 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertIn("'SDK authority / complete' ||", gate)
         self.assertIn("'SDK Maven sidecars / complete' || 'CI / merge-gate'", gate)
         self.assertIn("if: always()", gate)
-        self.assertIn("needs: [product-validation, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars]", gate)
+        self.assertIn("needs: [product-validation, build-logic-diagnostics, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars]", gate)
         self.assertIn('test "$PRODUCT_VALIDATION_RESULT" = success', gate)
         self.assertIn('test "$SDK_CUSTODY_RESULT" = skipped', gate)
-        self.assertNotIn("actions/checkout@", caller)
-        self.assertNotIn("./gradlew", caller)
+        product_caller = caller.split("\n  product-validation:\n", 1)[1]
+        self.assertNotIn("actions/checkout@", product_caller)
+        self.assertNotIn("./gradlew", product_caller)
 
     def test_remote_product_jobs_are_guarded_before_materialization(self) -> None:
         workflow = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text(
@@ -244,8 +245,8 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertGreaterEqual(child.count("fromJSON(inputs.planOutputs).remote_build_authorized == 'true'"), 2)
 
         lint = job("workflow-lint")
-        self.assertEqual(2, lint.count(event_guard))
-        self.assertEqual(2, lint.count(planner_guard))
+        self.assertEqual(3, lint.count(event_guard))
+        self.assertEqual(3, lint.count(planner_guard))
         self.assertLess(lint.index(event_guard), lint.index("uses: ./.github/actions/setup-kmp"))
 
         self.assertLess(
