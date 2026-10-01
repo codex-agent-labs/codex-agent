@@ -9,7 +9,7 @@ from ci.tests.test_contract_attestation_workflow import workflow_job
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PIN = "934425fd39a73176c83b9476fbbf3eebd2e26e76"
+PIN = "53d2416afe90228369b7d1045ae47b8f67791e85"
 
 
 class RuntimeNativeAttestationWorkflowTest(unittest.TestCase):

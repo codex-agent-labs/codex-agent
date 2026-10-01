@@ -1294,7 +1294,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: 934425fd39a73176c83b9476fbbf3eebd2e26e76
+          ref: 53d2416afe90228369b7d1045ae47b8f67791e85
           path: trusted-source
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1312,7 +1312,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
-          source-sha: 934425fd39a73176c83b9476fbbf3eebd2e26e76
+          source-sha: 53d2416afe90228369b7d1045ae47b8f67791e85
           workflow-sha: ${{ inputs.trustedWorkflowSha }}
           candidate-root: ${{ github.workspace }}/candidate-source
           plan: ${{ runner.temp }}/runtime-preparation-plan/impact-plan.json
@@ -1361,7 +1361,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: 934425fd39a73176c83b9476fbbf3eebd2e26e76
+          ref: 53d2416afe90228369b7d1045ae47b8f67791e85
           path: trusted-source
           persist-credentials: false
       - name: Check out candidate as inventory data only
@@ -1391,7 +1391,7 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
       - name: Verify original selected bytes and preserve or establish detached release trust
         env:
-          TRUSTED_SOURCE_SHA: 934425fd39a73176c83b9476fbbf3eebd2e26e76
+          TRUSTED_SOURCE_SHA: 53d2416afe90228369b7d1045ae47b8f67791e85
           PREPARATION_ID: ${{ steps.preparation.outputs.artifact_id }}
           PREPARATION_SHA256: ${{ steps.preparation.outputs.artifact_sha256 }}
           TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
@@ -1717,7 +1717,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: 2788f97cba319fcfcb10223aefed06df646b008e
+          ref: 53d2416afe90228369b7d1045ae47b8f67791e85
           path: trusted-source
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1735,7 +1735,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
-          source-sha: 2788f97cba319fcfcb10223aefed06df646b008e
+          source-sha: 53d2416afe90228369b7d1045ae47b8f67791e85
           workflow-sha: ${{ inputs.trustedWorkflowSha }}
           candidate-root: ${{ github.workspace }}/candidate-source
           plan: ${{ runner.temp }}/runtime-preparation-plan/impact-plan.json
@@ -1785,7 +1785,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: 2788f97cba319fcfcb10223aefed06df646b008e
+          ref: 53d2416afe90228369b7d1045ae47b8f67791e85
           path: trusted-source
           persist-credentials: false
       - name: Check out candidate as inventory data only
@@ -1820,7 +1820,7 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
       - name: Authenticate completed originals and preserve or establish external aggregate trust
         env:
-          TRUSTED_SOURCE_SHA: 2788f97cba319fcfcb10223aefed06df646b008e
+          TRUSTED_SOURCE_SHA: 53d2416afe90228369b7d1045ae47b8f67791e85
           PREPARATION_ID: ${{ steps.preparation.outputs.artifact_id }}
           PREPARATION_SHA256: ${{ steps.preparation.outputs.artifact_sha256 }}
           TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
