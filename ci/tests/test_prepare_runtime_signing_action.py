@@ -71,6 +71,9 @@ class PrepareRuntimeSigningActionTest(unittest.TestCase):
             self.assertEqual(str(self.candidate), fields['--repository-root'])
             self.assertEqual(self.plan['validationCommit'], fields['--policy-revision'])
             self.assertEqual(str(self.java), fields['--java-executable'])
+            self.assertEqual('.github/workflows/contract-validation.yml', fields['--trusted-workflow-path'])
+            self.assertEqual('product-validation / contract-validation / tooling-attestation',
+                             fields['--trusted-job-name'])
             producer_path = Path(fields['--transport-producer'])
             self.assertEqual(canonical_json_bytes(self.producer), producer_path.read_bytes())
             self.policy = Path(fields['--destination']) / 'tooling-policy.json'

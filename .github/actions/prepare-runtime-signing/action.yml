@@ -121,7 +121,9 @@ runs:
                 '--destination', str(capture), '--repository-root', str(candidate),
                 '--transport-producer', str(producer_path), '--java-executable', str(java),
                 '--artifact-id', locator[0], '--artifact-sha256', locator[1],
-                '--trusted-workflow-sha', os.environ['WORKFLOW_SHA'], '--policy-revision', plan['validationCommit']],
+                '--trusted-workflow-sha', os.environ['WORKFLOW_SHA'], '--policy-revision', plan['validationCommit'],
+                '--trusted-workflow-path', '.github/workflows/contract-validation.yml',
+                '--trusted-job-name', 'product-validation / contract-validation / tooling-attestation'],
                 cwd=trusted, env=os.environ, check=True)
             policy = capture / 'tooling-policy.json'
             read_regular_file_bytes(policy, reject_symlink_parents=True)
