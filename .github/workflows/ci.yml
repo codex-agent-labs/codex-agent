@@ -115,6 +115,7 @@ jobs:
     uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@6dd15c192538a8e65d47a45224984e864c78e6c7
     with:
       trustedWorkflowSha: 6dd15c192538a8e65d47a45224984e864c78e6c7
+      runtimeRecoveryOnly: true
       baseCommit: ${{ inputs.baseCommit || '' }}
       validationCommit: ${{ inputs.validationCommit || '' }}
       validationTree: ${{ inputs.validationTree || '' }}
@@ -200,6 +201,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           PURPOSE: ${{ inputs.purpose }}
           PRODUCT_VALIDATION_RESULT: ${{ needs.product-validation.result }}
+          FULL_ACCEPTANCE_CURRENT: ${{ needs.product-validation.outputs.fullAcceptanceCurrent }}
           DIAGNOSTICS_RESULT: ${{ needs.build-logic-diagnostics.result }}
           SDK_CUSTODY_RESULT: ${{ needs.sdk-failed-catalog-custody.result }}
           TOOLCHAIN_CAPTURE_RESULT: ${{ needs.runtime-toolchain-capture.result }}
@@ -318,6 +320,7 @@ jobs:
           else
             test "$EVENT" != workflow_dispatch || test "$PURPOSE" = validation
             test "$PRODUCT_VALIDATION_RESULT" = success
+            test "$FULL_ACCEPTANCE_CURRENT" = true
             test "$SDK_CUSTODY_RESULT" = skipped
             test "$RUNTIME_RECORD_RESULT" = skipped
             test "$CONTRACT_RECORD_RESULT" = skipped

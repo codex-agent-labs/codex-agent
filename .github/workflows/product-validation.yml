@@ -7,6 +7,11 @@ on:
         description: Reviewed SHA matching the caller's literal reusable workflow pin
         required: true
         type: string
+      runtimeRecoveryOnly:
+        description: Authenticate historical acceptance and verify reviewed control changes; never satisfy final acceptance
+        required: false
+        default: false
+        type: boolean
       baseCommit:
         required: false
         type: string
@@ -16,6 +21,9 @@ on:
       validationTree:
         required: false
         type: string
+    outputs:
+      fullAcceptanceCurrent:
+        value: ${{ jobs.workflow-lint.outputs.full_acceptance_current }}
 
 permissions:
   actions: read
@@ -81,6 +89,8 @@ jobs:
     if: always()
     needs: plan
     runs-on: ubuntu-24.04
+    outputs:
+      full_acceptance_current: ${{ steps.acceptance-kind.outputs.full_acceptance_current }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -99,20 +109,58 @@ jobs:
         run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - run: '"$HOME/go/bin/actionlint"'
       - run: sudo install -d -m 1777 /private/tmp
-      - run: python3 -m unittest discover -s ci/tests -v
-      - if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true'
+      - if: inputs.runtimeRecoveryOnly
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ inputs.trustedWorkflowSha }}
+          path: recovery-reviewed-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Authenticate historical acceptance without claiming current full acceptance
+        if: inputs.runtimeRecoveryOnly
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+        run: >-
+          python3 -B recovery-reviewed-source/.github/actions/prepare-runtime-signing/recovery_acceptance.py
+          --repository-root "$GITHUB_WORKSPACE"
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA"
+          --github-output "$RUNNER_TEMP/runtime-recovery-acceptance"
+      - name: Verify reviewed recovery controls only
+        if: inputs.runtimeRecoveryOnly
+        working-directory: recovery-reviewed-source
+        run: >-
+          python3 -B -m unittest
+          ci.tests.test_runtime_recovery_acceptance
+          ci.tests.test_prepare_runtime_signing_action
+          ci.tests.test_tooling_capture
+          ci.tests.test_runtime_signing_workflow_isolation
+          ci.tests.test_product_selection -v
+      - if: '!inputs.runtimeRecoveryOnly'
+        run: python3 -m unittest discover -s ci/tests -v
+      - if: '!inputs.runtimeRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
         uses: ./.github/actions/setup-kmp
         with:
           cache-read-only: "true"
       - name: Provision declared plugins for offline build-logic fixtures
-        if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true'
+        if: '!inputs.runtimeRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
         run: ./gradlew help -Pkotlin.daemon.jvmargs=-Xmx2g --no-configuration-cache --stacktrace
       - name: Verify standalone build logic and isolated offline fixtures
-        if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true'
+        if: '!inputs.runtimeRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
         run: >-
           ./gradlew -p gradle/build-logic test
           -Pkotlin.daemon.jvmargs=-Xmx2g
           --configuration-cache --configuration-cache-problems=fail --no-build-cache
+      - id: acceptance-kind
+        env:
+          RECOVERY_ONLY: ${{ inputs.runtimeRecoveryOnly }}
+        run: |
+          if [ "$RECOVERY_ONLY" = true ]; then
+            echo 'full_acceptance_current=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'full_acceptance_current=true' >> "$GITHUB_OUTPUT"
+          fi
       - if: github.event_name == 'pull_request' && steps.actionlint-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -1297,7 +1345,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: 53d2416afe90228369b7d1045ae47b8f67791e85
+          ref: 1ff05773e873e64633a050b4cef33f37167c2f38
           path: trusted-source
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1315,7 +1363,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
-          source-sha: 53d2416afe90228369b7d1045ae47b8f67791e85
+          source-sha: 1ff05773e873e64633a050b4cef33f37167c2f38
           workflow-sha: ${{ inputs.trustedWorkflowSha }}
           candidate-root: ${{ github.workspace }}/candidate-source
           plan: ${{ runner.temp }}/runtime-preparation-plan/impact-plan.json
@@ -1720,7 +1768,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: 53d2416afe90228369b7d1045ae47b8f67791e85
+          ref: 1ff05773e873e64633a050b4cef33f37167c2f38
           path: trusted-source
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1738,7 +1786,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
-          source-sha: 53d2416afe90228369b7d1045ae47b8f67791e85
+          source-sha: 1ff05773e873e64633a050b4cef33f37167c2f38
           workflow-sha: ${{ inputs.trustedWorkflowSha }}
           candidate-root: ${{ github.workspace }}/candidate-source
           plan: ${{ runner.temp }}/runtime-preparation-plan/impact-plan.json
@@ -5203,6 +5251,7 @@ jobs:
     steps:
       - name: Require readiness and successful prerequisites
         env:
+          RECOVERY_ONLY: ${{ inputs.runtimeRecoveryOnly }}
           EVENT_AUTHORIZED: ${{ needs.plan.outputs.event_authorized }}
           MERGE_READY: ${{ needs.plan.outputs.merge_ready }}
           REMOTE_BUILD_AUTHORIZED: ${{ needs.plan.outputs.remote_build_authorized }}
@@ -5259,6 +5308,10 @@ jobs:
           SDK_PARITY_ARTIFACT_ID: ${{ needs.sdk-parity.outputs.artifact_id }}
           SDK_PARITY_ARTIFACT_DIGEST: ${{ needs.sdk-parity.outputs.artifact_digest }}
         run: |
+          if [ "$RECOVERY_ONLY" = true ]; then
+            echo 'Runtime recovery does not satisfy full-current-head acceptance.' >&2
+            exit 1
+          fi
           if [ "$EVENT_AUTHORIZED" != true ]; then
             echo 'The workflow-owned event gate did not authorize remote product CI.' >&2
             exit 1
