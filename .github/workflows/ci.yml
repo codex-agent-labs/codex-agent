@@ -82,6 +82,8 @@ jobs:
       - uses: ./.github/actions/setup-kmp
         with:
           cache-read-only: "true"
+      - name: Resolve declared plugin inputs before offline fixture checks
+        run: ./gradlew help -Pkotlin.daemon.jvmargs=-Xmx2g --no-configuration-cache --stacktrace
       - name: Capture nested offline fixture failures without product orchestration
         run: >-
           ./gradlew -p gradle/build-logic test

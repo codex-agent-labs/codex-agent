@@ -25,6 +25,8 @@ class WorkflowStaticBuildBoundaryTest(unittest.TestCase):
         self.assertIn("if: always()", job)
         self.assertIn("build/test-results/test/*.xml", job)
         self.assertEqual(6, job.count("--tests '"))
+        self.assertIn("run: ./gradlew help -Pkotlin.daemon.jvmargs=-Xmx2g", job)
+        self.assertLess(job.index("run: ./gradlew help"), job.index("--tests '"))
         self.assertIn("inputs.purpose == 'build-logic-diagnostics' && 'Build logic diagnostics / complete'", caller)
 
     @classmethod
