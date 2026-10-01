@@ -2991,6 +2991,14 @@ def _materialize_runtime_validation_handoffs(
     return records
 
 
+def _initial_runtime_validation_handoffs(closure, objects, object_root, destination, artifact_root):
+    phases = {_identity(record): record for record in objects}
+    sources = {instance: object_root / record["objectPath"] for instance, record in phases.items()}
+    return _materialize_runtime_validation_handoffs(
+        closure, phases, sources, destination, artifact_root,
+    )
+
+
 def advance_contract(
     plan_path: Path, discovery_root: Path, state_root: Path | None,
     shard_roots: list[Path], destination: Path,
@@ -3373,6 +3381,22 @@ def _verified_product_state(
         initial_objects = sorted((*initial_objects, *prior_records), key=_identity)
     elif prior_records:
         raise ValueError("Prior failed Runtime capture lacks its available object request")
+    with tempfile.TemporaryDirectory(prefix="codex-agent-initial-runtime-evidence-", dir=root) as temporary:
+        derived = Path(temporary).resolve() / "initial-runtime-validation-handoffs"
+        evidence = _initial_runtime_validation_handoffs(
+            closure, initial_objects, discovery_root, derived, root,
+        )
+        prefix = derived.relative_to(root).as_posix()
+        initial_evidence = [{**record, "reports": [
+            "initial-runtime-validation-handoffs/" + path.removeprefix(prefix + "/")
+            for path in record["reports"]
+        ]} for record in evidence]
+        retained = discovery_root / "initial-runtime-validation-handoffs"
+        if (derived.exists() or retained.exists() or retained.is_symlink()) and (
+            not derived.exists() or not retained.exists()
+            or regular_file_inventory(derived, allow_empty=True) != regular_file_inventory(retained, allow_empty=True)
+        ):
+            raise ValueError("Initial Runtime validation evidence differs from authenticated original objects")
     expected_fixed = {
         "schemaVersion": 1,
         "requestType": "reuse-wave",
@@ -3383,7 +3407,7 @@ def _verified_product_state(
         "requested": [_identity_record(instance) for instance in requested],
         "versions": versions,
         "phaseAuthorities": authorities,
-        "runtimeValidationEvidence": [],
+        "runtimeValidationEvidence": initial_evidence,
         "availableObjects": initial_objects,
     }
     if source is not None:
@@ -3406,6 +3430,9 @@ def _verified_product_state(
         **record,
         "objectPath": (discovery_root / record["objectPath"]).relative_to(root).as_posix(),
     } for record in initial_objects]
+    rebased_request["runtimeValidationEvidence"] = [{**record, "reports": [
+        (discovery_root / path).relative_to(root).as_posix() for path in record["reports"]
+    ]} for record in initial_evidence]
     rebased_request.update(_rebase_native_request(request, discovery_root, root))
 
     replay_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
@@ -6499,6 +6526,16 @@ def resume_products(
                     break
                 prior_records = _prior_failed_runtime_objects(prepared / "prior-failed-runtime", prepared)
                 wave["availableObjects"] = sorted((*initial_objects, *prior_records), key=_identity)
+                completed_evidence = {_identity(record) for record in wave["runtimeValidationEvidence"]}
+                wave["runtimeValidationEvidence"] = sorted([
+                    *wave["runtimeValidationEvidence"],
+                    *_initial_runtime_validation_handoffs(
+                        tuple(instance for instance in _dependency_closure(requested)
+                              if instance not in completed_evidence),
+                        wave["availableObjects"], prepared,
+                        prepared / "initial-runtime-validation-handoffs", prepared,
+                    ),
+                ], key=_identity)
                 ready_plans.clear()
                 reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling,
                     apple_policy=sdk_apple_validation_policy,
