@@ -56,7 +56,8 @@ class WorkflowStaticBuildBoundaryTest(unittest.TestCase):
             "--configuration-cache-problems=fail --no-build-cache"
         )
         normalized = " ".join(self.job.split())
-        self.assertEqual(1, self.job.count("./gradlew"))
+        self.assertEqual(2, self.job.count("./gradlew"))
+        self.assertIn("run: ./gradlew help -Pkotlin.daemon.jvmargs=-Xmx2g", self.job)
         self.assertEqual(1, normalized.count(command))
         self.assertNotIn("--dry-run", self.job)
         for forbidden in (
@@ -69,17 +70,21 @@ class WorkflowStaticBuildBoundaryTest(unittest.TestCase):
         event = "needs.plan.outputs.event_authorized == 'true'"
         remote = "needs.plan.outputs.remote_build_authorized == 'true'"
         setup = self.job.index("uses: ./.github/actions/setup-kmp")
-        execution = self.job.index("./gradlew")
+        provisioning = self.job.index("run: ./gradlew help")
+        execution = self.job.index("./gradlew -p gradle/build-logic test")
         event_guards = [match.start() for match in re.finditer(re.escape(event), self.job)]
         remote_guards = [match.start() for match in re.finditer(re.escape(remote), self.job)]
-        self.assertEqual(2, len(event_guards))
-        self.assertEqual(2, len(remote_guards))
+        self.assertEqual(3, len(event_guards))
+        self.assertEqual(3, len(remote_guards))
         self.assertLess(event_guards[0], setup)
         self.assertLess(remote_guards[0], setup)
         self.assertLess(setup, event_guards[1])
         self.assertLess(setup, remote_guards[1])
-        self.assertLess(event_guards[1], execution)
-        self.assertLess(remote_guards[1], execution)
+        self.assertLess(event_guards[1], provisioning)
+        self.assertLess(remote_guards[1], provisioning)
+        self.assertLess(provisioning, event_guards[2])
+        self.assertLess(event_guards[2], execution)
+        self.assertLess(remote_guards[2], execution)
 
     def test_android_firebase_and_apple_are_guarded_before_job_creation(self):
         for name, selector in (("android", "lane_android"),

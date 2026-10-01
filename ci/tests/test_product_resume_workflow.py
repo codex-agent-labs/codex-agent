@@ -19,12 +19,14 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         cls.job = workflow_job(cls.workflow, "product-resume")
         cls.gate = workflow_job(cls.workflow, "merge-gate")
 
-    def test_lint_compiler_heap_is_scoped_to_standalone_build_logic(self):
+    def test_lint_compiler_heap_is_scoped_to_fixture_provisioning_and_build_logic(self):
         lint = workflow_job(self.workflow, "workflow-lint")
         standalone = lint.split("      - name: Verify standalone build logic", 1)[1].split("\n      - ", 1)[0]
         self.assertIn("./gradlew -p gradle/build-logic test", standalone)
         self.assertIn("-Pkotlin.daemon.jvmargs=-Xmx2g", standalone)
-        self.assertEqual(1, self.workflow.count("-Pkotlin.daemon.jvmargs=-Xmx2g"))
+        self.assertEqual(2, self.workflow.count("-Pkotlin.daemon.jvmargs=-Xmx2g"))
+        self.assertEqual(2, lint.count("-Pkotlin.daemon.jvmargs=-Xmx2g"))
+        self.assertIn("./gradlew help -Pkotlin.daemon.jvmargs=-Xmx2g", lint)
         self.assertIn("--configuration-cache --configuration-cache-problems=fail --no-build-cache", standalone)
         self.assertIn("python3 -m unittest discover -s ci/tests -v", lint)
         self.assertNotRegex(standalone, r"ciProductPhase|verifyRepository|verifyRuntime|verifySdk")

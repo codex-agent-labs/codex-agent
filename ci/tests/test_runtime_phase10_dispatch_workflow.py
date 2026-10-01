@@ -16,7 +16,7 @@ class RuntimePhase10DispatchWorkflowTest(unittest.TestCase):
     def test_dispatch_pins_reviewed_child_and_skips_product_build(self):
         source = CI.read_text(encoding="utf-8")
         child = source.split("  runtime-phase10-record:\n", 1)[1].split("\n  merge-gate:", 1)[0]
-        self.assertIn("options: [validation, sdk-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars]", source)
+        self.assertIn("options: [validation, build-logic-diagnostics, sdk-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars]", source)
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-phase10-record'", child)
         match = re.search(r"uses: codex-agent-labs/codex-agent/\.github/workflows/"
                           r"runtime-phase10-output-record\.yml@([0-9a-f]{40})", child)
@@ -40,7 +40,7 @@ class RuntimePhase10DispatchWorkflowTest(unittest.TestCase):
 
     def test_merge_gate_requires_both_record_and_transport_uploads(self):
         gate = CI.read_text(encoding="utf-8").split("  merge-gate:\n", 1)[1]
-        self.assertIn("needs: [product-validation, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars]", gate)
+        self.assertIn("needs: [product-validation, build-logic-diagnostics, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars]", gate)
         self.assertIn('test "$PRODUCT_VALIDATION_RESULT" = skipped', gate)
         self.assertIn('test "$SDK_CUSTODY_RESULT" = skipped', gate)
         self.assertIn('test "$RUNTIME_RECORD_RESULT" = success', gate)

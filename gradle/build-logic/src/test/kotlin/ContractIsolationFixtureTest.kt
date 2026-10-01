@@ -134,6 +134,8 @@ class ContractIsolationFixtureTest {
             runGit(fixture, "commit", "-m", "fixture")
             assertTrue(runGit(fixture, "status", "--porcelain").isBlank())
 
+            provisionContractDependencies(fixture)
+
             val legacyPrivateKey =
                 fixture.resolve("build/contract-product/development-key/development-ed25519")
             legacyPrivateKey.parentFile.mkdirs()
@@ -352,6 +354,50 @@ class ContractIsolationFixtureTest {
         val target = fixture.resolve(path)
         target.parentFile.mkdirs()
         source.copyTo(target)
+    }
+
+    private fun provisionContractDependencies(fixture: File) {
+        val preparation = createTempDirectory("contract-fixture-dependencies").toFile()
+        try {
+            val init = preparation.resolve("dependencies.init.gradle")
+            init.writeText(
+                """
+                gradle.projectsEvaluated {
+                    if (gradle.rootProject.name != 'codex-agent-contract-isolation') return
+                    def core = gradle.rootProject.project(':codex-agent-core')
+                    gradle.rootProject.tasks.register('provisionContractFixtureDependencies') {
+                        doLast {
+                            core.configurations.findAll { configuration ->
+                                configuration.canBeResolved && (
+                                    configuration.name.endsWith('CompileClasspath') ||
+                                    configuration.name.endsWith('RuntimeClasspath') ||
+                                    configuration.name.endsWith('CompileKlibraries') ||
+                                    configuration.name.endsWith('CompilationDependenciesMetadata') ||
+                                    configuration.name.endsWith('CompileDependenciesMetadata') ||
+                                    configuration.name.endsWith('ResolvableDependenciesMetadata') ||
+                                    configuration.name.endsWith('NpmAggregated') ||
+                                    configuration.name.startsWith('kotlinCompilerPluginClasspath') ||
+                                    configuration.name in ['kotlinCompilerClasspath', 'kotlinBuildToolsApiClasspath',
+                                        'kotlinKlibCommonizerClasspath', 'kotlinNativeBundleConfiguration'])
+                            }.sort { it.name }.each { configuration -> configuration.resolve() }
+                        }
+                    }
+                }
+                """.trimIndent(),
+            )
+            // Populate only declared dependency files; the acceptance build below remains offline.
+            val result = GradleRunner.create().withProjectDir(fixture).withArguments(
+                "provisionContractFixtureDependencies", "--init-script", init.absolutePath,
+                "--gradle-user-home", gradleUserHome, "-Pkotlin.daemon.jvmargs=-Xmx2g",
+                "--no-configuration-cache", "--stacktrace",
+            ).build()
+            assertEquals(TaskOutcome.SUCCESS, result.task(":provisionContractFixtureDependencies")?.outcome)
+            assertFalse(result.tasks.any { it.path.startsWith(":codex-agent-core:") },
+                "Dependency preparation must not execute Contract product tasks: ${result.tasks.map { it.path }}")
+            assertTrue(runGit(fixture, "status", "--porcelain", "--untracked-files=no").isBlank())
+        } finally {
+            preparation.deleteRecursively()
+        }
     }
 
     private fun copyContractBuildLogic(fixture: File) {
