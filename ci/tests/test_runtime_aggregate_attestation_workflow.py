@@ -43,6 +43,17 @@ class RuntimeAggregateAttestationWorkflowTest(unittest.TestCase):
         self.assertEqual(1, command.count("ciProductPhase"))
         self.assertNotIn("--write-verification-metadata", command)
 
+    def test_aggregate_uses_host_supporting_all_native_cinterop_publications(self):
+        from ci.products.registry import PHASE_INSTANCE_IDS
+        from ci.products.selection import phase_inventory_paths
+
+        aggregate = workflow_job(self.source, "runtime-aggregate")
+        self.assertIn("    runs-on: macos-15\n", aggregate)
+        self.assertEqual(1, aggregate.count("Execute only the elected aggregate metadata phase"))
+        # Runner routing does not change product inputs or authorize predecessor rebuilds.
+        for path in (".github/workflows/product-validation.yml", __file__.removeprefix(str(ROOT) + "/")):
+            self.assertFalse(any(phase_inventory_paths((path,), phase) for phase in PHASE_INSTANCE_IDS))
+
     def test_authorized_completed_state_and_pinned_code_precede_signing(self):
         guards = self.job.split("    runs-on:", 1)[0]
         for guard in ("always()", "needs.plan.outputs.event_authorized == 'true'",

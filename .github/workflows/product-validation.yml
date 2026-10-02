@@ -1525,7 +1525,9 @@ jobs:
       needs.runtime-continuation.outputs.aggregate_required == 'true' &&
       (needs.runtime-native-attestation.result == 'success' ||
        (needs.runtime-native-attestation.result == 'skipped' && needs.runtime-continuation.outputs.retained_native_artifact_id != ''))
-    runs-on: ubuntu-24.04
+    # KGP exposes all five native publications with C interops only on macOS.
+    # Imported publication assembly still has no Runtime compiler/linker edges.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
