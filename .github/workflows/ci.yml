@@ -112,18 +112,10 @@ jobs:
       contents: read
       deployments: read
       id-token: write
-    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@81379aa2ae0b56aa7c510fbddb8c117bbff6e785
+    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@17c2e2deb6373d9a132a469215cbce091b309854
     with:
-      trustedWorkflowSha: 81379aa2ae0b56aa7c510fbddb8c117bbff6e785
+      trustedWorkflowSha: 17c2e2deb6373d9a132a469215cbce091b309854
       runtimeRecoveryOnly: true
-      runtimeNativeHandoffRecovery: >-
-        {"producer":{"commit":"dcc354fbab5c7907ac1dbe02075a626f39f566d8","event":"pull_request","pullRequest":31,"repository":"codex-agent-labs/codex-agent","runAttempt":1,"runId":36961162870,"tree":"02c0796662ab57e2c778dbc257576fbae52fb179","workflowPath":".github/workflows/ci.yml"},
-        "trustedWorkflowSha":"1be1c329dcb4b01144a5033daf531b4e1501cbbe","artifacts":[
-        {"target":"linux-x64","artifactId":11214686835,"artifactSha256":"sha256:ed537841183fe6b522a973487e70795e802e8bfbeaafc007a485ba7da965f370"},
-        {"target":"linux-arm64","artifactId":11215390844,"artifactSha256":"sha256:f6701b466fca221946d2a41e03641ed0746ff19f6b2bda7e0ae9471ff6bb0f3c"},
-        {"target":"macos-x64","artifactId":11214413817,"artifactSha256":"sha256:6ae920dafab3d65105f047061389201ee425906a3af4e745dd8834b70ef460fa"},
-        {"target":"macos-arm64","artifactId":11214604873,"artifactSha256":"sha256:4ab6b010104c3eeba96d35afbaa3466cbfecdf9a1c3af232aa3f9698a0076f16"},
-        {"target":"windows-x64","artifactId":11215345478,"artifactSha256":"sha256:8e18f2b2128ee4f87c4e80a2957fbb1e6e89a1e86896fe751d5cbecd13d72b09"}]}
       baseCommit: ${{ inputs.baseCommit || '' }}
       validationCommit: ${{ inputs.validationCommit || '' }}
       validationTree: ${{ inputs.validationTree || '' }}
