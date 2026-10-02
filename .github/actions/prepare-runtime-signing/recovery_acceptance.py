@@ -29,6 +29,13 @@ BASELINE_WORKFLOW = "6dd15c192538a8e65d47a45224984e864c78e6c7"
 BASELINE_JOB = 110550763407
 JOB_NAME = "product-validation / workflow-lint"
 CORRECTION_REVISION = "1ff05773e873e64633a050b4cef33f37167c2f38"
+# This correction changes metadata keys, never Contract/Runtime B/P/V inputs.
+PRODUCT_CORRECTION_REVISION = "ddf9f3f839b82e3de978437576da11bb0c0e1439"
+PRODUCT_CORRECTION_FILES = {
+    "ci/products/aggregate.py", "ci/products/runtime_aggregate.py",
+    "ci/products/runtime_adapter_content.py", "ci/products/adapter_runtime_inputs.py",
+    "ci/tests/test_product_runtime_aggregate.py", "ci/tests/test_product_runtime_integration.py",
+}
 CI = ".github/workflows/ci.yml"
 CORRECTED_FILES = {
     ".github/actions/prepare-runtime-signing/action.yml",
@@ -36,7 +43,7 @@ CORRECTED_FILES = {
 }
 HELPER = ".github/actions/prepare-runtime-signing/recovery_acceptance.py"
 NEW_FILES = {HELPER, "ci/tests/test_runtime_recovery_acceptance.py"}
-CONTROL_FILES = CORRECTED_FILES | NEW_FILES | {
+CONTROL_FILES = CORRECTED_FILES | PRODUCT_CORRECTION_FILES | NEW_FILES | {
     CI, ".github/workflows/product-validation.yml",
     "ci/runtime_preparation_capture.py", "ci/tests/test_runtime_preparation_capture.py",
     "ci/runtime_workflow.py", "ci/tests/test_runtime_workflow.py",
@@ -93,6 +100,10 @@ def _reviewed_scope(trusted, candidate, sha):
     if any(corrected.get(path, ())[:2] != ("100644", "blob")
            or reviewed.get(path) != corrected[path] for path in CORRECTED_FILES):
         raise ValueError("Recovery action or composition test differs from the reviewed correction")
+    product_corrected = _tree(trusted, PRODUCT_CORRECTION_REVISION)
+    if any(product_corrected.get(path, ())[:2] != ("100644", "blob")
+           or reviewed.get(path) != product_corrected[path] for path in PRODUCT_CORRECTION_FILES):
+        raise ValueError("Recovery metadata verifier differs from the fixed reviewed correction")
     current = _tree(candidate, "HEAD")
     if current.keys() != reviewed.keys() or any(
         current[path] != reviewed[path] for path in current if path != CI

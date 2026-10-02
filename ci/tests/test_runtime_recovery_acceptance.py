@@ -68,12 +68,17 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         }
         for name, contents in files.items():
             self.write(self.trusted, name, contents)
+        for name in recovery.PRODUCT_CORRECTION_FILES:
+            self.write(self.trusted, name, "original metadata verifier\n")
         self.base = self.commit(self.trusted, "baseline")
         self.producer = dict(recovery.BASELINE_PRODUCER,
             tree=self.git(self.trusted, "rev-parse", "HEAD^{tree}").strip())
         self.write(self.trusted, ".github/actions/prepare-runtime-signing/action.yml", "reviewed correction\n")
         self.write(self.trusted, "ci/tests/test_prepare_runtime_signing_action.py", "reviewed composition test\n")
         self.correction = self.commit(self.trusted, "fixed action")
+        for name in recovery.PRODUCT_CORRECTION_FILES:
+            self.write(self.trusted, name, "fixed reviewed metadata verifier\n")
+        self.product_correction = self.commit(self.trusted, "fixed metadata verifier")
         for name in recovery.NEW_FILES:
             self.write(self.trusted, name, "reviewed control\n")
         self.write(self.trusted, ".github/workflows/product-validation.yml", "name: reviewed recovery\n")
@@ -115,6 +120,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.tested = {"sha": self.producer["commit"], "tree": {"sha": self.producer["tree"]},
             "parents": [{"sha": "b" * 40}, {"sha": "d" * 40}]}
         for attribute, value in (("BASELINE_PRODUCER", self.producer), ("CORRECTION_REVISION", self.correction),
+                                 ("PRODUCT_CORRECTION_REVISION", self.product_correction),
                                  ("__file__", str(self.trusted / recovery.HELPER))):
             patcher = mock.patch.object(recovery, attribute, value)
             patcher.start()
@@ -177,7 +183,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
 
     def test_unreviewed_product_action_selector_and_caller_changes_are_rejected(self):
         for path in ("runtime/product.txt", ".github/actions/prepare-runtime-signing/action.yml",
-                     SELECTOR, recovery.CI):
+                     "ci/products/aggregate.py", SELECTOR, recovery.CI):
             with self.subTest(path=path):
                 original = (self.candidate / path).read_text()
                 self.change_candidate(path, original + "unreviewed\n")
@@ -187,7 +193,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
 
     def test_reviewed_revision_still_rejects_changed_product_correction_selector_and_mode(self):
         for path in ("runtime/product.txt", ".github/actions/prepare-runtime-signing/action.yml",
-                     SELECTOR, recovery.HELPER):
+                     "ci/products/aggregate.py", SELECTOR, recovery.HELPER):
             with self.subTest(path=path):
                 original = self.reviewed
                 self.git(self.trusted, "checkout", "--quiet", "--detach", original)
