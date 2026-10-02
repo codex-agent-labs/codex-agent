@@ -6,6 +6,7 @@ below only verify delegation to their existing separately tested authorities.
 
 from pathlib import Path
 from copy import deepcopy
+import json
 import sys
 import tempfile
 import unittest
@@ -283,10 +284,35 @@ class RuntimeWorkflowTest(unittest.TestCase):
         outputs = self.outputs()
         self.assertEqual({"native_attestation_matrix", "aggregate_state", "aggregate_key",
                           "aggregate_receipt_sha256", "aggregate_required", "aggregate_payload_complete",
-                          "sdk_handoff_required", "sdk_input_selection"}, set(outputs))
+                          "sdk_handoff_required", "sdk_input_selection", "native_receipt_sha256s"}, set(outputs))
+        self.assertEqual({target: {phase: phases[
+            workflow.PhaseInstanceId("runtime", target, phase, target)]["receiptSha256"]
+            for phase in ("binary", "package", "validation", "metadata")}
+            for target in workflow.NATIVE_TARGETS}, json.loads(outputs["native_receipt_sha256s"]))
         self.assertEqual("true", outputs["aggregate_required"])
         self.assertEqual("false", outputs["aggregate_payload_complete"])
         self.assertEqual("", outputs["aggregate_receipt_sha256"])
+
+    def test_native_recovery_cli_publishes_empty_matrix_only_after_capture(self):
+        import runtime_preparation_capture
+
+        arguments = ["recover-native-handoffs", "--plan", str(self.root / "plan"),
+            "--destination", str(self.root / "recovered"), "--github-output", str(self.output),
+            "--trusted-workflow-sha", PIN, "--recovery-json", '{"fixture":"original uploads"}',
+            "--selected-receipts-json", '{"fixture":"current replay"}']
+        with mock.patch.object(runtime_preparation_capture, "capture_runtime_native_release_handoffs",
+                               create=True) as capture:
+            self.assertEqual(0, workflow.main(arguments))
+        capture.assert_called_once_with(self.root / "plan", self.root / "recovered",
+            recovery={"fixture": "original uploads"}, selected_receipt_sha256s={"fixture": "current replay"},
+            trusted_workflow_sha=PIN, token=workflow.os.environ.get("GITHUB_TOKEN", ""))
+        self.assertEqual('{"include":[]}', self.outputs()["native_attestation_matrix"])
+        original = self.output.read_bytes()
+        with mock.patch.object(runtime_preparation_capture, "capture_runtime_native_release_handoffs",
+                               create=True, side_effect=ValueError("original upload rejected")), \
+                self.assertRaises(SystemExit):
+            workflow.main(arguments)
+        self.assertEqual(original, self.output.read_bytes())
 
     def test_final_route_completed_and_fully_reused_payloads_still_require_all_originals(self):
         for state in ("retained", "reused"):

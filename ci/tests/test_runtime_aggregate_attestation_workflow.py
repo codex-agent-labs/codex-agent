@@ -80,9 +80,11 @@ class RuntimeAggregateAttestationWorkflowTest(unittest.TestCase):
             "PREPARATION_ID": "72", "PREPARATION_SHA256": "sha256:" + "f" * 64}
         # The shell runs, but the only Python invocation is replaced before it can execute any code.
         script = 'python3() { printf "%s\\n" "$@"; }\n' + shell(self.signing_step)
-        for result, count in (("success", 5), ("skipped", 0), ("failure", None), ("cancelled", None), ("", None)):
-            with self.subTest(result=result):
-                run = subprocess.run(["bash", "-c", script], env={**environment, "NATIVE_RESULT": result},
+        for result, count, retained in (("success", 5, ""), ("skipped", 0, ""), ("failure", None, ""),
+                ("cancelled", None, ""), ("", None, ""), ("skipped", 5, "71"), ("failure", None, "71")):
+            with self.subTest(result=result, retained=retained):
+                run = subprocess.run(["bash", "-c", script], env={**environment, "NATIVE_RESULT": result,
+                                     "RETAINED_NATIVE_ID": retained},
                                      capture_output=True, text=True)
                 if count is None:
                     self.assertNotEqual(0, run.returncode)
@@ -99,8 +101,10 @@ class RuntimeAggregateAttestationWorkflowTest(unittest.TestCase):
                 self.assertEqual("/candidate workspace/trusted-source", arguments[arguments.index("--repository-root") + 1])
                 if count:
                     for target in ("macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64"):
-                        self.assertIn(f"{target}=/runner temp/runtime-aggregate-native-handoffs/"
-                            f"codex-agent-runtime-release-handoff-{target}-{'d' * 40}-attempt-2/runtime-input", arguments)
+                        expected = (f"{target}=/runner temp/runtime-aggregate-retained-native/{target}/runtime-input"
+                            if retained else f"{target}=/runner temp/runtime-aggregate-native-handoffs/"
+                                f"codex-agent-runtime-release-handoff-{target}-{'d' * 40}-attempt-2/runtime-input")
+                        self.assertIn(expected, arguments)
 
     def test_merge_gate_rejects_missing_or_failed_selected_aggregate_trust(self):
         self.assertIn("runtime-aggregate-attestation", self.gate.split("    runs-on:", 1)[0])

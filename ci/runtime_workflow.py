@@ -7,7 +7,7 @@ from pathlib import Path
 
 import product_reuse as products
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
-from products.inventory import canonical_json_bytes, require_sha256, snapshot_regular_tree
+from products.inventory import canonical_json_bytes, load_json_bytes, require_sha256, snapshot_regular_tree
 from products.registry import NATIVE_TARGETS, PhaseInstanceId
 from reuse import github_output
 
@@ -126,6 +126,10 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
         "aggregate_receipt_sha256": receipt or "",
         "aggregate_required": status == "ready",
         "aggregate_payload_complete": status == "completed",
+        "native_receipt_sha256s": canonical_json_bytes({target: {
+            phase: phases[PhaseInstanceId("runtime", target, phase, target)]["receiptSha256"]
+            for phase in ("binary", "package", "validation", "metadata")}
+            for target in NATIVE_TARGETS}).decode().strip(),
     })
     return value
 
@@ -281,6 +285,12 @@ def main(argv=None):
     trust.add_argument("--variant-handoff", action="append", required=True, metavar="TARGET=PATH")
     for name in ("destination", "keyring", "keys-directory"):
         trust.add_argument(f"--{name}", type=Path, required=True)
+    retained = commands.add_parser("recover-native-handoffs")
+    for name in ("plan", "destination", "github-output"):
+        retained.add_argument(f"--{name}", type=Path, required=True)
+    retained.add_argument("--trusted-workflow-sha", required=True)
+    retained.add_argument("--recovery-json", required=True)
+    retained.add_argument("--selected-receipts-json", required=True)
     args = parser.parse_args(argv)
     try:
         apple_policy = ({} if getattr(args, "sdk_apple_validation_policy", None) is None else {
@@ -317,6 +327,13 @@ def main(argv=None):
                         instance=PhaseInstanceId("runtime", *values[:3]) if all(values) else None,
                         expected_build_key=args.expected_build_key, token=os.environ.get("GITHUB_TOKEN", ""),
                         **tooling, **apple_policy, **admissions)
+        elif args.command == "recover-native-handoffs":
+            from runtime_preparation_capture import capture_runtime_native_release_handoffs
+            capture_runtime_native_release_handoffs(args.plan, args.destination,
+                recovery=load_json_bytes(args.recovery_json.encode("utf-8")),
+                selected_receipt_sha256s=load_json_bytes(args.selected_receipts_json.encode("utf-8")),
+                trusted_workflow_sha=args.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""))
+            github_output(args.github_output, {"native_attestation_matrix": '{"include":[]}'})
         elif args.command == "variant-trust":
             from products.runtime_variant_trust import stage_runtime_variant_trust
             handoffs = {}

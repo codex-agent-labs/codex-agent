@@ -1,14 +1,18 @@
 """Real CI transport parsers, mocked HTTP and plan/Git boundary; no signing proof."""
 
 from copy import deepcopy
+import io
+import json
 from pathlib import Path
 import unittest
+import zipfile
 from unittest.mock import patch
 
 from ci import runtime_preparation_capture as capture
 from ci.tests import test_runtime_aggregate_upload as fixtures
 from products.inventory import (canonical_json_bytes, publish_regular_tree as actual_publish_regular_tree,
     regular_file_inventory, write_canonical_json as actual_write_canonical_json)
+from products.inventory import sha256_bytes
 from products.registry import NATIVE_TARGETS
 
 
@@ -162,6 +166,111 @@ class RuntimePreparationCaptureTest(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "pinned inventory"):
             self.call()
         self.assertFalse(f.output.exists())
+
+
+class RuntimeNativeReleaseCaptureTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from ci.tests.test_runtime_aggregate_release import RuntimeAggregateReleaseTest
+        cls.signed = RuntimeAggregateReleaseTest
+        cls.signed.setUpClass()
+        cls.addClassCleanup(cls.signed.doClassCleanups)
+
+    def setUp(self):
+        self.f = fixtures.RuntimeAggregateUploadTest(methodName='runTest')
+        self.addCleanup(self.f.doCleanups)
+        self.f.setUp()
+        f = self.f
+        f.root = self.signed.repository
+        f.plan['validationCommit'] = self.signed.pin
+        self.output = f.root / 'build' / f.work.name
+        self.uploads, self.raw, self.selected = {}, {}, {}
+        self.original_files = {}
+        f.jobs = []
+        for index, target in enumerate(NATIVE_TARGETS):
+            files = {record['relativePath']: (self.signed.handoffs[target] / record['relativePath']).read_bytes()
+                     for record in regular_file_inventory(self.signed.handoffs[target])}
+            self.original_files[target] = files
+            self.selected[target] = {phase: sha256_bytes(files[f'receipts/{phase}.json'])
+                                    for phase in ('binary', 'package', 'validation', 'metadata')}
+            output = io.BytesIO()
+            with zipfile.ZipFile(output, 'w') as archive:
+                for path, raw in files.items():
+                    archive.writestr('runtime-input/' + path, raw)
+                archive.writestr('external-originals/not-a-product.bin', b'not forwarded')
+            artifact = deepcopy(f.artifact)
+            artifact.update(id=701 + index,
+                name=f"codex-agent-runtime-release-handoff-{target}-{f.producer['tree']}-attempt-2",
+                archive_download_url=f"https://api.github.com/repos/{f.producer['repository']}/actions/artifacts/{701 + index}/zip")
+            self.raw[701 + index] = output.getvalue()
+            artifact.update(digest=sha256_bytes(output.getvalue()), size_in_bytes=len(output.getvalue()))
+            self.uploads[701 + index] = artifact
+            f.jobs.append({'id': 81 + index, 'name': f'product-validation / runtime-native-attestation-{target}',
+                'run_id': 71, 'head_sha': 'f' * 40, 'status': 'completed', 'conclusion': 'success',
+                'started_at': '2026-09-11T10:00:00Z', 'completed_at': '2026-09-11T10:30:00Z'})
+        self.recovery = {'producer': f.producer, 'trustedWorkflowSha': f.pin,
+            'artifacts': [{'target': target, 'artifactId': 701 + index,
+                          'artifactSha256': self.uploads[701 + index]['digest']}
+                         for index, target in enumerate(NATIVE_TARGETS)]}
+
+    def call(self):
+        f = self.f
+        def api(url, token):
+            for artifact in self.uploads.values():
+                if url == artifact['archive_download_url'].removesuffix('/zip'):
+                    return json.dumps(artifact).encode()
+            return f.api(url, token)
+        def stream(artifact, token, destination, *, max_bytes):
+            self.assertEqual(capture.products._CATALOG_LIMIT, max_bytes)
+            Path(destination).write_bytes(self.raw[artifact['id']])
+        with patch.object(capture.products, '_validate_plan', return_value=f.plan), \
+                patch('reuse.api_request', side_effect=api), \
+                patch.object(capture.products, 'download_artifact_to_file', side_effect=stream):
+            return capture.capture_runtime_native_release_handoffs(f.plan_path, self.output,
+                recovery=self.recovery, selected_receipt_sha256s=self.selected,
+                trusted_workflow_sha=self.signed.pin, repository_root=f.root,
+                environ={'GITHUB_RUN_ID': '72', 'GITHUB_RUN_ATTEMPT': '1'}, token='synthetic-token')
+
+    def test_signed_originals_survive_failed_campaign_in_current_workspace(self):
+        self.f.run['conclusion'] = 'failure'
+        self.assertEqual(self.output, self.call())
+        self.assertEqual(46, len(regular_file_inventory(self.output)))
+        for target, files in self.original_files.items():
+            for path, raw in files.items():
+                self.assertEqual(raw, (self.output / target / 'runtime-input' / path).read_bytes())
+        transport = json.loads((self.output / 'transport.json').read_bytes())
+        self.assertEqual(self.f.producer, transport['producer'])
+        self.assertEqual(72, transport['captureProducer']['runId'])
+        self.assertEqual(self.f.pin, transport['trustedWorkflowSha'])
+
+    def test_missing_target_failed_job_wrong_source_or_current_receipt_reject(self):
+        baseline = deepcopy((self.recovery, self.selected, self.f.jobs, self.f.run))
+        for case in ('missing', 'duplicate', 'failed', 'source', 'receipt'):
+            self.recovery, self.selected, self.f.jobs, self.f.run = deepcopy(baseline)
+            if case == 'missing': self.recovery['artifacts'].pop()
+            elif case == 'duplicate': self.recovery['artifacts'][-1] = deepcopy(self.recovery['artifacts'][0])
+            elif case == 'failed': self.f.jobs[0]['conclusion'] = 'failure'
+            elif case == 'source': self.recovery['trustedWorkflowSha'] = 'd' * 40
+            else: self.selected[NATIVE_TARGETS[0]]['binary'] = 'sha256:' + 'd' * 64
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                self.call()
+            self.assertFalse(self.output.exists())
+
+    def test_outer_authenticated_upload_cannot_hide_tampered_signature(self):
+        record = self.recovery['artifacts'][0]
+        original = self.raw[record['artifactId']]
+        output = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(original)) as source, zipfile.ZipFile(output, 'w') as archive:
+            for entry in source.infolist():
+                raw = source.read(entry.filename)
+                if entry.filename.endswith('.attestation.sig'): raw = b'invalid signature\n'
+                archive.writestr(entry.filename, raw)
+        self.raw[record['artifactId']] = output.getvalue()
+        record['artifactSha256'] = sha256_bytes(output.getvalue())
+        self.uploads[record['artifactId']].update(digest=record['artifactSha256'], size_in_bytes=len(output.getvalue()))
+        with self.assertRaises(ValueError):
+            self.call()
+        self.assertFalse(self.output.exists())
 
 
 if __name__ == '__main__':
