@@ -52,13 +52,13 @@ def capture_runtime_signing_preparation(plan_path, destination, *, target, artif
         observed = products._observe_ci_producer_jobs({"preparation": producer},
             jobs_by_phase={"preparation": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
         name = f"codex-agent-runtime-signing-preparation-{target}-{producer['tree']}-attempt-{producer['runAttempt']}"
-        artifact, raw = products._download_contract_ci_upload(
-            artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
-        products._require_artifact_job_window(observed[0], job, artifact)
         prepared = private / "captured"
         prepared.mkdir()
         archive = prepared / "original-upload.zip"
-        archive.write_bytes(raw)
+        artifact, _ = products._download_contract_ci_upload(
+            artifact_id, artifact_sha256, name, producer, observed[0]["run"], token,
+            destination=archive)
+        products._require_artifact_job_window(observed[0], job, artifact)
         zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
                                              **products._CATALOG_ZIP_LIMITS)
         original = prepared / "original"
@@ -77,7 +77,7 @@ def capture_runtime_signing_preparation(plan_path, destination, *, target, artif
         write_canonical_json(prepared / "capture-transport.json", transport)
         transport_bytes = canonical_json_bytes(transport)
         expected_files = sorted([
-            {"relativePath": "original-upload.zip", "bytes": len(raw), "sha256": artifact_sha256},
+            {"relativePath": "original-upload.zip", "bytes": archive.stat().st_size, "sha256": artifact_sha256},
             {"relativePath": "capture-transport.json", "bytes": len(transport_bytes),
              "sha256": sha256_bytes(transport_bytes)},
             *({**record, "relativePath": f"original/{record['relativePath']}"} for record in zipped),

@@ -36,13 +36,28 @@ class RuntimePreparationCaptureTest(unittest.TestCase):
 
     def call(self, **changes):
         f = self.fixture
+        def stream(artifact, token, destination, *, max_bytes):
+            self.assertEqual(f.artifact, artifact)
+            self.assertEqual('synthetic-token', token)
+            self.assertEqual(capture.products._CATALOG_LIMIT, max_bytes)
+            Path(destination).write_bytes(f.raw)
         with patch.object(capture.products, '_validate_plan', return_value=f.plan), \
-                patch('reuse.api_request', side_effect=f.api):
+                patch('reuse.api_request', side_effect=f.api), \
+                patch.object(capture.products, 'download_artifact_to_file', side_effect=stream):
             return capture.capture_runtime_signing_preparation(f.plan_path, f.output, **{
                 'target': self.target, 'artifact_id': 701, 'artifact_sha256': f.artifact['digest'],
                 'trusted_workflow_sha': f.pin, 'repository_root': f.root,
                 'environ': {'GITHUB_RUN_ID': '71', 'GITHUB_RUN_ATTEMPT': '2'},
                 'token': 'synthetic-token', **changes})
+
+    def test_preparation_above_inline_limit_uses_verified_streaming(self):
+        f = self.fixture
+        with patch.object(capture.products, '_INLINE_UPLOAD_LIMIT', len(f.raw) - 1), \
+                patch.object(capture.products, 'download_artifact',
+                             side_effect=AssertionError('Preparation must not download into memory')) as inline:
+            self.call()
+        inline.assert_not_called()
+        self.assertEqual(f.raw, (f.output / 'original-upload.zip').read_bytes())
 
     def test_all_targets_preserve_exact_original_zip_and_empty_diagnostics(self):
         f = self.fixture
