@@ -112,9 +112,9 @@ jobs:
       contents: read
       deployments: read
       id-token: write
-    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@1be1c329dcb4b01144a5033daf531b4e1501cbbe
+    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@e814ecb8a6232db0241a8a426df44b960a79f72d
     with:
-      trustedWorkflowSha: 1be1c329dcb4b01144a5033daf531b4e1501cbbe
+      trustedWorkflowSha: e814ecb8a6232db0241a8a426df44b960a79f72d
       runtimeRecoveryOnly: true
       runtimeNativeHandoffRecovery: >-
         {"producer":{"commit":"dcc354fbab5c7907ac1dbe02075a626f39f566d8","event":"pull_request","pullRequest":31,"repository":"codex-agent-labs/codex-agent","runAttempt":1,"runId":36961162870,"tree":"02c0796662ab57e2c778dbc257576fbae52fb179","workflowPath":".github/workflows/ci.yml"},
