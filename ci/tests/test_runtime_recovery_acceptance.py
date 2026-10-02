@@ -52,6 +52,10 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
             SELECTOR: '[\n    "ci/runtime_candidate_transport.py",\n]\n',
             ".github/actions/prepare-runtime-signing/action.yml": "original action\n",
             "ci/tests/test_prepare_runtime_signing_action.py": "original test\n",
+            "ci/runtime_preparation_capture.py": "original inline capture\n",
+            "ci/tests/test_runtime_preparation_capture.py": "original capture test\n",
+            "ci/tests/test_runtime_native_attestation_workflow.py": "original native signer pin\n",
+            "ci/tests/test_runtime_aggregate_attestation_workflow.py": "original aggregate signer pin\n",
             "runtime/product.txt": "unchanged product\n",
         }
         for name, contents in files.items():
@@ -65,6 +69,10 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         for name in recovery.NEW_FILES:
             self.write(self.trusted, name, "reviewed control\n")
         self.write(self.trusted, ".github/workflows/product-validation.yml", "name: reviewed recovery\n")
+        for name in ("ci/runtime_preparation_capture.py", "ci/tests/test_runtime_preparation_capture.py",
+                     "ci/tests/test_runtime_native_attestation_workflow.py",
+                     "ci/tests/test_runtime_aggregate_attestation_workflow.py"):
+            self.write(self.trusted, name, "reviewed streaming control\n")
         self.reviewed = self.commit(self.trusted, "reviewed recovery")
         self.candidate = self.root / "candidate"
         self.git(self.root, "clone", "--quiet", "--local", str(self.trusted), str(self.candidate))

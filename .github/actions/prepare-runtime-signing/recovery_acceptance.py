@@ -36,7 +36,12 @@ CORRECTED_FILES = {
 }
 HELPER = ".github/actions/prepare-runtime-signing/recovery_acceptance.py"
 NEW_FILES = {HELPER, "ci/tests/test_runtime_recovery_acceptance.py"}
-CONTROL_FILES = CORRECTED_FILES | NEW_FILES | {CI, ".github/workflows/product-validation.yml"}
+CONTROL_FILES = CORRECTED_FILES | NEW_FILES | {
+    CI, ".github/workflows/product-validation.yml",
+    "ci/runtime_preparation_capture.py", "ci/tests/test_runtime_preparation_capture.py",
+    "ci/tests/test_runtime_native_attestation_workflow.py",
+    "ci/tests/test_runtime_aggregate_attestation_workflow.py",
+}
 
 
 def _tree(root, revision):

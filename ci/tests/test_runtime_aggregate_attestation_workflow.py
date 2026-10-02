@@ -10,7 +10,7 @@ from ci.tests.test_contract_attestation_workflow import workflow_job
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PIN = "53d2416afe90228369b7d1045ae47b8f67791e85"
+PIN = "18047734d4fe9bfed4f14c8d2a577450b7f05b8d"
 
 
 def shell(step):
