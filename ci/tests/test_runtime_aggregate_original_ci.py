@@ -17,6 +17,10 @@ from products.inventory import (
 )
 from products.receipt import compute_build_key, write_output_manifest
 from products.runtime_aggregate import _adapter_receipt_identities
+from products.runtime_aggregate_handoff import _verify_original_ci_proof, _verify_raw_original_ci
+from products.registry import PhaseInstanceId
+from products.signatures import generate_development_key, sign_manifest
+from products.inventory import regular_file_inventory
 
 
 AGGREGATE = "runtime-aggregate-metadata-aggregate"
@@ -131,6 +135,81 @@ class RuntimeAggregateOriginalCiTest(unittest.TestCase):
                     self.assertRaises((ValueError, OSError)):
                 self.capture(**changes)
         self.assertFalse(self.output.exists())
+
+    def test_compact_release_proof_is_signed_exactly_and_binds_all_originals(self):
+        private, public, signing = generate_development_key(self.work / "key")
+        signing["trustDomain"] = "release"
+        destinations = []
+
+        def stream(artifact, token, destination, *, max_bytes):
+            self.assertTrue(all(not path.exists() for path in destinations))
+            destinations.append(Path(destination))
+            raw = self.api(artifact["archive_download_url"], token)
+            self.assertLessEqual(len(raw), max_bytes)
+            Path(destination).write_bytes(raw)
+
+        with patch("reuse.api_request", side_effect=self.api), \
+                patch("product_reuse.download_artifact_to_file", side_effect=stream):
+            proof = self.capture(signing_metadata=signing)
+        self.assertEqual(26, len(destinations))
+        self.assertTrue(all(not path.exists() for path in destinations))
+        self.assertEqual(["transport/original-ci-phases.json"],
+                         [record["relativePath"] for record in regular_file_inventory(self.output)])
+        path = self.output / "transport/original-ci-phases.json"
+        signature = sign_manifest(path, private, signing)
+        receipts = {PhaseInstanceId("runtime", *identity): self.receipts["-".join(identity)].read_bytes()
+                    for identity in [*_adapter_receipt_identities(), ("runtime-aggregate", "metadata", "aggregate")]}
+
+        def verify():
+            return _verify_original_ci_proof(path, signature, public, signing, receipts, self.base.pin)
+
+        self.assertEqual(proof, verify())
+        signature_raw = signature.read_bytes()
+        path.write_bytes(path.read_bytes() + b" ")
+        with self.assertRaises(ValueError):
+            verify()
+        actual_write_canonical_json(path, proof)
+        signature.write_bytes(signature_raw[:-2] + b"x\n")
+        with self.assertRaises(ValueError):
+            verify()
+        signature.write_bytes(signature_raw)
+
+        def wrong_receipt(value): value["receiptSha256s"][AGGREGATE] = "sha256:" + "0" * 64
+        def wrong_artifact(value): value["artifacts"][AGGREGATE]["workflow_run"]["id"] += 1
+        def wrong_job(value): value["observed"][0]["jobs"][-1]["conclusion"] = "failure"
+        def wrong_commit(value): value["observed"][0]["testedCommit"]["tree"]["sha"] = "0" * 40
+        def wrong_window(value): value["artifacts"][AGGREGATE]["created_at"] = "2026-09-06T11:00:00Z"
+        for mutate in (wrong_receipt, wrong_artifact, wrong_job, wrong_commit, wrong_window):
+            value = copy.deepcopy(proof)
+            mutate(value)
+            actual_write_canonical_json(path, value)
+            signature.unlink()
+            sign_manifest(path, private, signing)
+            with self.subTest(mutation=mutate.__name__), self.assertRaises(ValueError):
+                verify()
+        actual_write_canonical_json(path, proof)
+        signature.unlink()
+        sign_manifest(path, private, signing)
+        with self.assertRaisesRegex(ValueError, "authenticated aggregate signer"):
+            _verify_original_ci_proof(path, signature, public, {**signing, "keyId": "other-key"}, receipts, self.base.pin)
+
+    def test_legacy_raw_proof_remains_fully_verified(self):
+        with patch("reuse.api_request", side_effect=self.api):
+            self.capture()
+        receipts = {PhaseInstanceId("runtime", *identity): self.receipts["-".join(identity)].read_bytes()
+                    for identity in [*_adapter_receipt_identities(), ("runtime-aggregate", "metadata", "aggregate")]}
+        def verify():
+            _verify_raw_original_ci(self.output.parent, self.output / "transport/original-ci-phases.json", receipts,
+                                    lambda path: None, lambda path, **kwargs: regular_file_inventory(path, **kwargs))
+        # The reader's historical layout is named original-evidence.
+        legacy = self.work / "original-evidence"
+        self.output.rename(legacy)
+        self.output = legacy
+        verify()
+        archive = legacy / "phases" / AGGREGATE / "transport.zip"
+        archive.write_bytes(archive.read_bytes() + b"altered\n")
+        with self.assertRaises(ValueError):
+            verify()
 
     def test_failed_job_wrong_attempt_workflow_window_digest_and_missing_upload_reject_atomically(self):
         def failed_job(): self.jobs[-1].update(conclusion="failure")

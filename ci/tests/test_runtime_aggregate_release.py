@@ -153,7 +153,12 @@ class RuntimeAggregateReleaseTest(unittest.TestCase):
         return {**arguments, **changes}
 
     def invoke(self, **changes):
-        return caller._attest_selected_runtime_aggregate(self.repository, self.output, **self.arguments(**changes))
+        def stream(artifact, token, destination, *, max_bytes):
+            raw = self.api(artifact["archive_download_url"], token)
+            self.assertLessEqual(len(raw), max_bytes)
+            Path(destination).write_bytes(raw)
+        with patch("product_reuse.download_artifact_to_file", side_effect=stream):
+            return caller._attest_selected_runtime_aggregate(self.repository, self.output, **self.arguments(**changes))
 
     def output_arguments(self):
         selected = self.output / "selected-inputs"
@@ -205,9 +210,8 @@ class RuntimeAggregateReleaseTest(unittest.TestCase):
         for target, inventory in handoffs.items():
             self.assertEqual(inventory, regular_file_inventory(self.output / "variant-inputs" / target))
             self.assertEqual(inventory, regular_file_inventory(self.handoffs[target]))
-        for name, raw in self.original_archives.items():
-            self.assertEqual(raw, (self.output / "original-evidence/phases" / name / "transport.zip").read_bytes())
-            self.assertEqual(b"", (self.output / "original-evidence/phases" / name / "original/empty-diagnostic.log").read_bytes())
+        self.assertEqual({"transport/original-ci-phases.json", "transport/original-ci-phases.sig"},
+                         {record["relativePath"] for record in regular_file_inventory(self.output / "original-evidence")})
         self.assertFalse(any(self.context["private_key"].read_bytes() in path.read_bytes()
                              for path in self.output.rglob("*") if path.is_file()))
 

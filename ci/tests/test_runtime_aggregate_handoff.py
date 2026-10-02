@@ -260,8 +260,8 @@ class RuntimeAggregateHandoffTest(unittest.TestCase):
         paths = [
             root / "runtime-stages/linux-x64/validation/outputs/c-abi-reference/include/codex_agent.h",
             next((root / "selected-inputs/predecessors/runtime-jvm-validation-linux-x64/stage/outputs/jvm-evidence").glob("*.json")),
-            root / "original-evidence/phases/runtime-aggregate-metadata-aggregate/transport.zip",
-            root / "original-evidence/phases/runtime-aggregate-metadata-aggregate/original/empty-diagnostic.log",
+            root / "original-evidence/transport/original-ci-phases.json",
+            root / "original-evidence/transport/original-ci-phases.sig",
         ]
         for path in paths:
             raw, mode = path.read_bytes(), path.stat().st_mode

@@ -36,7 +36,10 @@ from products.runtime_aggregate import (
 from products.runtime_attestation import read_runtime_variant_handoff
 from products.sdk_runtime_content import verify_native_runtime_presigning_content
 from products.signing_isolation import require_no_signing_secret
-from products.signatures import load_keyring, private_key_bytes, require_active_release_key
+from products.signatures import (
+    load_keyring, private_key_bytes, require_active_release_key,
+    sign_manifest, verify_manifest_signature,
+)
 
 
 _METADATA = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
@@ -249,8 +252,12 @@ def _attest_selected_runtime_aggregate(
             verify_native_runtime_presigning_content(target, prepared / "runtime-stages",
                 records["variant_phase_receipts"][target], records["variant_bundles"][target],
                 projection, contract_args["contract_payload"])
+        active, public_key = require_active_release_key(policy, trust.keys)
+        signing = {name: policy[name] for name in ("algorithm", "namespace", "trustDomain")}
+        signing.update(active)
         capture_runtime_aggregate_original_ci(aggregate["receiptPath"], records["adapter_receipts"],
-            prepared / "original-evidence", trusted_workflow_sha=trusted_workflow_sha, token=token)
+            prepared / "original-evidence", trusted_workflow_sha=trusted_workflow_sha, token=token,
+            signing_metadata=signing)
         arguments = {**records, **contract_args, **signatures,
                      "contract_keyring": trust.keyring, "contract_keys_directory": trust.keys,
                      "variant_keyring": trust.keyring, "variant_keys_directory": trust.keys}
@@ -265,30 +272,43 @@ def _attest_selected_runtime_aggregate(
 
         verify_runtime_aggregate_presigning_content(**arguments, required_trust_domain="release")
         unchanged()
-        active, public_key = require_active_release_key(policy, trust.keys)
         publication = {
             records["manifest"].name: read_regular_file_bytes(records["manifest"], reject_symlink_parents=True),
             "metadata-receipt.json": read_regular_file_bytes(aggregate["receiptPath"], reject_symlink_parents=True),
             "public-key.pub": read_regular_file_bytes(public_key, reject_symlink_parents=True),
         }
-        signing = {name: policy[name] for name in ("algorithm", "namespace", "trustDomain")}
-        signing.update(active)
         secret = environment.get("CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY")
         if type(secret) is not str or not secret:
             raise ValueError("Protected Runtime aggregate signing key is unavailable")
         private_key = root / "private-key"
         private_key.touch(mode=0o600, exist_ok=False)
         private_key.write_bytes(private_key_bytes(secret))
+        # Sign a private exact copy so unchanged() continues to cover every
+        # authenticated original and the proof until final publication.
+        proof = root / "original-ci-phases.json"
+        proof.write_bytes(read_regular_file_bytes(
+            prepared / "original-evidence/transport/original-ci-phases.json",
+            reject_symlink_parents=True))
+        proof_signature = sign_manifest(proof, private_key, signing)
+        verify_manifest_signature(proof, proof_signature, public_key, signing)
+        proof_signature_bytes = read_regular_file_bytes(proof_signature, reject_symlink_parents=True)
         attestation = build_runtime_aggregate_attestation(**arguments, signing_metadata=signing,
             private_key=private_key, public_key=public_key, output_directory=root / "signed",
             required_variant_trust_domain="release", keyring=trust.keyring, keys_directory=trust.keys)
         signed_files = regular_file_inventory(root / "signed")
         unchanged()
+        if (read_regular_file_bytes(proof, reject_symlink_parents=True) != read_regular_file_bytes(
+                prepared / "original-evidence/transport/original-ci-phases.json", reject_symlink_parents=True)
+                or read_regular_file_bytes(proof_signature, reject_symlink_parents=True) != proof_signature_bytes):
+            raise ValueError("Runtime aggregate original CI proof changed while signing")
+        (prepared / "original-evidence/transport/original-ci-phases.sig").write_bytes(proof_signature_bytes)
         snapshot_regular_tree(root / "signed", prepared / "aggregate-input")
         for name, raw in publication.items():
             (prepared / "aggregate-input" / name).write_bytes(raw)
         expected_files = [
             *baseline,
+            {"relativePath": "original-evidence/transport/original-ci-phases.sig",
+             "bytes": len(proof_signature_bytes), "sha256": sha256_bytes(proof_signature_bytes)},
             *({**record, "relativePath": f"aggregate-input/{record['relativePath']}"}
               for record in signed_files),
             *({"relativePath": f"aggregate-input/{name}", "bytes": len(raw),

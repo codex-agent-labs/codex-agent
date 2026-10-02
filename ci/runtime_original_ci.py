@@ -6,6 +6,7 @@ and full semantic verification remain separate protected-caller requirements.
 """
 
 from datetime import datetime, timedelta
+from contextlib import nullcontext
 from pathlib import Path
 import tempfile
 from typing import Any
@@ -20,11 +21,12 @@ from products.receipt import validate_phase_receipt
 from products.registry import PhaseInstanceId
 from products.restore import verify_phase_shard
 from products.runtime_aggregate import _adapter_receipt_identities
+from products.signatures import require_release_signing_metadata
 
 
 def capture_runtime_aggregate_original_ci(
     aggregate_receipt: Path, adapter_receipts: list[dict[str, Any]], destination: Path,
-    *, trusted_workflow_sha: str, token: str,
+    *, trusted_workflow_sha: str, token: str, signing_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Capture exact original attempts/uploads; never sign or admit semantics."""
     # Share the established observer, official downloader and safe extractor;
@@ -36,6 +38,7 @@ def capture_runtime_aggregate_original_ci(
 
     if type(token) is not str or not token:
         raise ValueError("Original Runtime aggregate CI capture requires an observation token")
+    signing = None if signing_metadata is None else require_release_signing_metadata(signing_metadata)
     inputs = []
     for value in require_array(adapter_receipts, "Runtime aggregate adapter receipt inputs"):
         record = require_exact_keys(value, {"component", "phase", "target", "receipt"},
@@ -101,38 +104,46 @@ def capture_runtime_aggregate_original_ci(
                 raise ValueError("Original Runtime aggregate upload is missing or ambiguous")
             observation = attempts[(run_id, producer["runAttempt"])]
             candidate = candidates[0]
-            artifact, raw = _download_contract_ci_upload(
-                candidate.get("id"), candidate.get("digest"), expected_name,
-                producer, observation["run"], token,
-            )
-            job = next(value for value in observation["jobs"] if value.get("name") == jobs[name])
-            timestamps = [datetime.fromisoformat(require_string(value, "Original Runtime upload timestamp").replace("Z", "+00:00"))
-                          for value in (job.get("started_at"), artifact.get("created_at"), job.get("completed_at"))]
-            if any(value.utcoffset() != timedelta(0) for value in timestamps) or not timestamps[0] <= timestamps[1] <= timestamps[2]:
-                raise ValueError("Original Runtime aggregate upload is outside its original job-attempt window")
-            retained = prepared / "phases" / name
-            retained.mkdir(parents=True)
-            archive = retained / "transport.zip"
-            archive.write_bytes(raw)
-            archive_files, _, _ = verified_zip_contents(
-                archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS,
-            )
-            safe_extract(archive, retained / "original")
-            if regular_file_inventory(retained / "original", allow_empty=True) != archive_files:
-                raise ValueError("Original Runtime aggregate extraction differs from verified upload")
-            verified = verify_phase_shard(retained / "original/shard", identities[name])
-            if verified["receiptBytes"] != originals[name]:
-                raise ValueError("Original Runtime aggregate upload differs from its requested original receipt")
-            expected_files.append({"relativePath": f"phases/{name}/transport.zip",
-                                   "bytes": len(raw), "sha256": sha256_bytes(raw)})
-            expected_files.extend({**record, "relativePath": f"phases/{name}/original/{record['relativePath']}"}
-                                  for record in archive_files)
+            # New release proofs retain immutable upload identities, not 26 raw
+            # archives plus their full extractions. Authenticate one at a time.
+            scratch = tempfile.TemporaryDirectory(prefix="original-phase-", dir=temporary) if signing else nullcontext(None)
+            with scratch as private:
+                retained = Path(private).resolve() if signing else prepared / "phases" / name
+                retained.mkdir(parents=True, exist_ok=signing is not None)
+                archive = retained / "transport.zip"
+                artifact, raw = _download_contract_ci_upload(
+                    candidate.get("id"), candidate.get("digest"), expected_name,
+                    producer, observation["run"], token,
+                    **({"destination": archive} if signing else {}),
+                )
+                job = next(value for value in observation["jobs"] if value.get("name") == jobs[name])
+                timestamps = [datetime.fromisoformat(require_string(value, "Original Runtime upload timestamp").replace("Z", "+00:00"))
+                              for value in (job.get("started_at"), artifact.get("created_at"), job.get("completed_at"))]
+                if any(value.utcoffset() != timedelta(0) for value in timestamps) or not timestamps[0] <= timestamps[1] <= timestamps[2]:
+                    raise ValueError("Original Runtime aggregate upload is outside its original job-attempt window")
+                if signing is None:
+                    archive.write_bytes(raw)
+                archive_files, _, archive_record = verified_zip_contents(
+                    archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS,
+                )
+                safe_extract(archive, retained / "original")
+                if regular_file_inventory(retained / "original", allow_empty=True) != archive_files:
+                    raise ValueError("Original Runtime aggregate extraction differs from verified upload")
+                verified = verify_phase_shard(retained / "original/shard", identities[name])
+                if verified["receiptBytes"] != originals[name]:
+                    raise ValueError("Original Runtime aggregate upload differs from its requested original receipt")
+                if signing is None:
+                    expected_files.append({**archive_record, "relativePath": f"phases/{name}/transport.zip"})
+                    expected_files.extend({**record, "relativePath": f"phases/{name}/original/{record['relativePath']}"}
+                                          for record in archive_files)
             artifacts[name] = artifact
         if any(read_regular_file_bytes(sources[name], max_bytes=16 * 1024 * 1024,
                                        reject_symlink_parents=True) != raw for name, raw in originals.items()):
             raise ValueError("Original Runtime aggregate receipts changed during capture")
         evidence = {"target": "aggregate", "observed": observed, "artifacts": artifacts,
                     "receiptSha256s": {name: sha256_bytes(raw) for name, raw in originals.items()}}
+        if signing is not None:
+            evidence["signing"] = signing
         write_canonical_json(prepared / "transport/original-ci-phases.json", evidence)
         evidence_bytes = canonical_json_bytes(evidence)
         expected_files.append({"relativePath": "transport/original-ci-phases.json",
