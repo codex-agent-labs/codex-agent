@@ -122,6 +122,7 @@ class RuntimeAggregateIntegrationTest(unittest.TestCase):
             },
         }
         contract_attestation = {
+            "metadataReceiptSha256": sha256_bytes(contract_receipt_path.read_bytes()),
             "payload": {
                 "fileName": "codex-agent-contract-0.2.0.zip",
                 "sha256": contract_receipt["outputs"][0]["sha256"],

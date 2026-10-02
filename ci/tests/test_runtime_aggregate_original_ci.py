@@ -136,6 +136,45 @@ class RuntimeAggregateOriginalCiTest(unittest.TestCase):
                 self.capture(**changes)
         self.assertFalse(self.output.exists())
 
+    def test_original_binary_uploads_retain_distinct_contract_handoff_once(self):
+        # Capture proof only; the shared semantic gate separately authenticates
+        # signatures/closure/content. No synthetic handoff is release admission.
+        raw_contract = b"synthetic historical Contract receipt\n"
+        digest = fixture.sha256_bytes(raw_contract)
+        for component in ("jvm", "node-js", "node-wasm"):
+            name = f"{component}-binary-{component}"
+            plan = copy.deepcopy(self.plans[name])
+            plan["inputs"]["upstreamArtifacts"] = [{
+                "product": "contract", "component": "contract", "phase": "metadata", "target": "common",
+                "buildKey": digest, "outputsDigest": digest,
+                "contractProjection": {"schemaVersion": 1, "receiptSha256": digest,
+                    "bundlePath": "outputs/codex-agent-contract-0.2.0.zip", "bundleSha256": digest,
+                    "manifestSha256": digest, "contractVersion": "0.2.0", "contractDigest": digest,
+                    "componentDigests": [{"component": component, "sha256": digest}]},
+            }]
+            plan["buildKey"] = compute_build_key(product="runtime", component=component,
+                phase="binary", target=component, inputs=plan["inputs"])
+            upload = self.work / name
+            fixture.finalize_phase_object(stage_root=self.stages[name], phase_plan=plan,
+                producer=self.base.producer, product_version="0.2.0", trust_domain="development",
+                destination=upload / "shard")
+            handoff = upload / "inputs/contract-input/execution-closure/receipts/metadata.json"
+            handoff.parent.mkdir(parents=True)
+            handoff.write_bytes(raw_contract)
+            self.receipts[name] = upload / "shard/phase-receipt.json"
+            for record in self.adapters:
+                if record["component"] == component and record["phase"] == "binary":
+                    record["receipt"] = self.receipts[name]
+            raw = fixture.archive_tree(upload)
+            self.archives[name] = raw
+            self.artifacts[name].update(digest=fixture.sha256_bytes(raw), size_in_bytes=len(raw),
+                name=f"codex-agent-runtime-worker-{name}-{plan['buildKey'][7:]}-{self.base.producer['tree']}-attempt-2")
+        with patch("reuse.api_request", side_effect=self.api):
+            self.capture(selected_contract_receipt_sha256="sha256:" + "0" * 64)
+        retained = self.output / "adapter-contracts"
+        self.assertEqual([digest[7:]], [path.name for path in retained.iterdir()])
+        self.assertEqual(raw_contract, (retained / digest[7:] / "execution-closure/receipts/metadata.json").read_bytes())
+
     def test_compact_release_proof_is_signed_exactly_and_binds_all_originals(self):
         private, public, signing = generate_development_key(self.work / "key")
         signing["trustDomain"] = "release"

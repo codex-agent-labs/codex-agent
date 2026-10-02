@@ -843,6 +843,7 @@ def verify_runtime_aggregate_artifacts(
     aggregate_keys_directory: Path | None = None,
     variant_keyring: Path | None = None,
     variant_keys_directory: Path | None = None,
+    adapter_contract_handoffs: dict[str, Path] | None = None,
 ) -> dict[str, Any]:
     """Verify one Runtime release without copying trust identity into payload bytes."""
     from .runtime_aggregate import (
@@ -889,15 +890,75 @@ def verify_runtime_aggregate_artifacts(
         aggregate, aggregate_receipt, contract, contract_receipt, contract_attestation_value,
         variant_manifests, variant_receipts, adapter_receipt_values,
         contract_metadata_receipt, adapter_report_files, runtime_maven_files, adapter_evidence,
+        adapter_contract_upstreams=_verified_adapter_contract_upstreams(
+            contract, contract_receipt, contract_attestation_value, adapter_receipt_values,
+            adapter_contract_handoffs, required_trust_domain=required_trust_domain,
+            keyring=contract_keyring, keys_directory=contract_keys_directory,
+        ),
     )
+
+
+def _verified_adapter_contract_upstreams(
+    contract, contract_receipt, attestation, adapter_receipts, handoffs, *,
+    required_trust_domain, keyring=None, keys_directory=None,
+):
+    """Authenticate original Contract closures without rewriting adapter receipts."""
+    handoffs = {} if handoffs is None else require_object(handoffs, "Adapter Contract handoffs")
+    selected_sha = attestation["metadataReceiptSha256"]
+    contexts = {selected_sha: (contract, contract_receipt, attestation)}
+    result, used = {}, set()
+    for receipt in adapter_receipts:
+        if receipt["phase"] != "binary":
+            continue
+        component = receipt["component"]
+        upstreams = receipt["inputs"]["upstreamArtifacts"]
+        if len(upstreams) != 1 or "contractProjection" not in upstreams[0]:
+            raise ValueError(f"Runtime {component} binary receipt Contract predecessor mismatch")
+        digest = require_sha256(upstreams[0]["contractProjection"].get("receiptSha256"),
+                                "Original adapter Contract receipt digest")
+        if digest != selected_sha:
+            used.add(digest)
+        if digest not in contexts:
+            directory = handoffs.get(digest)
+            if not isinstance(directory, Path):
+                raise ValueError("Missing authenticated original adapter Contract handoff")
+            stem = f"codex-agent-contract-{contract['contractVersion']}"
+            original = verify_contract_attestation(
+                directory / f"{stem}.zip", directory / "execution-closure/receipts/metadata.json",
+                directory / f"{stem}.attestation.json", directory / f"{stem}.attestation.sig",
+                directory / "public-key.pub", required_trust_domain=required_trust_domain,
+                keyring=keyring, keys_directory=keys_directory,
+            )
+            manifest, metadata, signed = original
+            if (signed["metadataReceiptSha256"] != digest or manifest != contract
+                    or signed["payload"] != attestation["payload"]
+                    or signed["manifestSha256"] != attestation["manifestSha256"]):
+                raise ValueError("Original adapter Contract differs from selected deterministic content")
+            contexts[digest] = original
+        manifest, metadata, signed = contexts[digest]
+        result[component] = {
+            **_repository_reference(metadata),
+            "contractProjection": {
+                "schemaVersion": 1, "receiptSha256": digest,
+                "bundlePath": f"outputs/{signed['payload']['fileName']}",
+                "bundleSha256": signed["payload"]["sha256"],
+                "manifestSha256": signed["manifestSha256"],
+                "contractVersion": manifest["contractVersion"], "contractDigest": manifest["contractDigest"],
+                "componentDigests": [{"component": component, "sha256": manifest["components"][component]["sha256"]}],
+            },
+        }
+    if set(handoffs) != used:
+        raise ValueError("Adapter Contract handoffs contain missing or unused original receipts")
+    return result
 
 
 def _verify_runtime_aggregate_semantics(
     aggregate, aggregate_receipt, contract, contract_receipt, contract_attestation_value,
     variant_manifests, variant_receipts, adapter_receipt_values,
     contract_metadata_receipt, adapter_report_files, runtime_maven_files, adapter_evidence,
+    *, adapter_contract_upstreams,
 ) -> dict[str, Any]:
-    """One unchanged semantic gate for signed and protected pre-sign callers.
+    """One semantic gate for signed and protected pre-sign callers.
 
     Callers establish exact original receipt/payload binding and authenticate
     Contract/variant inputs first. This helper grants no aggregate signature or
@@ -1017,11 +1078,6 @@ def _verify_runtime_aggregate_semantics(
     if type(adapter_report_files) is not dict or set(adapter_report_files) != set(RUNTIME_ADAPTERS):
         raise ValueError("Runtime adapter reports must contain exactly JVM, Node JS, and Node Wasm")
     receipt_map = adapter_receipt_map
-    contract_receipt_bytes = read_regular_file_bytes(
-        Path(contract_metadata_receipt), max_bytes=REPOSITORY_JSON_LIMIT,
-        reject_symlink_parents=True,
-    )
-
     def sorted_references(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return sorted(values, key=lambda value: (
             value["product"], value["component"], value["phase"],
@@ -1033,21 +1089,7 @@ def _verify_runtime_aggregate_semantics(
         binary_receipt = receipt_map[(component, "binary", component)]
         package_receipt = receipt_map[(component, "package", component)]
         metadata_receipt = receipt_map[(component, "metadata", component)]
-        component_digest = contract["components"][component]["sha256"]
-        expected_contract_projection = {
-            "schemaVersion": 1,
-            "receiptSha256": sha256_bytes(contract_receipt_bytes),
-            "bundlePath": f"outputs/{contract_attestation_value['payload']['fileName']}",
-            "bundleSha256": contract_attestation_value["payload"]["sha256"],
-            "manifestSha256": contract_attestation_value["manifestSha256"],
-            "contractVersion": contract["contractVersion"],
-            "contractDigest": contract["contractDigest"],
-            "componentDigests": [{"component": component, "sha256": component_digest}],
-        }
-        expected_contract_upstream = {
-            **_repository_reference(contract_receipt),
-            "contractProjection": expected_contract_projection,
-        }
+        expected_contract_upstream = adapter_contract_upstreams[component]
         if binary_receipt["inputs"]["upstreamArtifacts"] != [expected_contract_upstream]:
             raise ValueError(f"Runtime {component} binary receipt Contract predecessor mismatch")
         if package_receipt["inputs"]["upstreamArtifacts"] != [

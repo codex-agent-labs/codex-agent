@@ -152,12 +152,13 @@ class RuntimeAggregateReleaseTest(unittest.TestCase):
             token="not-a-real-token", variant_handoffs=self.handoffs)
         return {**arguments, **changes}
 
+    def stream(self, artifact, token, destination, *, max_bytes):
+        raw = self.api(artifact["archive_download_url"], token)
+        self.assertLessEqual(len(raw), max_bytes)
+        Path(destination).write_bytes(raw)
+
     def invoke(self, **changes):
-        def stream(artifact, token, destination, *, max_bytes):
-            raw = self.api(artifact["archive_download_url"], token)
-            self.assertLessEqual(len(raw), max_bytes)
-            Path(destination).write_bytes(raw)
-        with patch("product_reuse.download_artifact_to_file", side_effect=stream):
+        with patch("product_reuse.download_artifact_to_file", side_effect=self.stream):
             return caller._attest_selected_runtime_aggregate(self.repository, self.output, **self.arguments(**changes))
 
     def output_arguments(self):
@@ -487,6 +488,7 @@ class RuntimeAggregateReleaseTest(unittest.TestCase):
         with patch.object(caller, "capture_runtime_resume_upload", side_effect=capture) as captured, \
                 patch.object(caller, "materialize_runtime_attestation_inputs", side_effect=select) as selected, \
                 patch.object(caller, "materialize_runtime_aggregate_release_evidence", return_value=None), \
+                patch("product_reuse.download_artifact_to_file", side_effect=self.stream), \
                 patch("reuse.api_request", side_effect=self.api):
             caller.attest_runtime_aggregate_state_ci(self.repository, candidate, plan, self.output,
                 artifact_id=700, artifact_sha256="sha256:" + "a" * 64, state_wave=4, **args)

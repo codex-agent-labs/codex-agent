@@ -304,9 +304,14 @@ def _verify_captured(root, keyring, keys_directory):
     value = verify_runtime_aggregate_artifacts(manifest, aggregate_metadata_receipt=metadata,
         aggregate_attestation=attestation_path, aggregate_attestation_signature=signature, aggregate_public_key=public_key,
         **records, **contract_args, **signatures, required_trust_domain="release",
+        adapter_contract_handoffs=({f"sha256:{path.name}": path for path in
+            (root / "original-evidence/adapter-contracts").iterdir()}
+            if (root / "original-evidence/adapter-contracts").exists() else {}),
         contract_keyring=keyring, contract_keys_directory=keys_directory,
         variant_keyring=keyring, variant_keys_directory=keys_directory,
         aggregate_keyring=keyring, aggregate_keys_directory=keys_directory)
+    if (root / "original-evidence/adapter-contracts").exists():
+        tree(root / "original-evidence/adapter-contracts")
 
     # Signed compact proofs attest the original full-upload gates; legacy
     # carriers still require every original ZIP and exact extraction.

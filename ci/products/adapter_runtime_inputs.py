@@ -51,6 +51,7 @@ def load_adapter_runtime_evidence(root: Path) -> list[dict]:
     for record in records:
         arguments = decoded[record["receiptSha256"]]
         directories = {arguments[name] for name in _STAGES}
+        directories.update(arguments["aggregate_inputs"].get("adapter_contract_handoffs", {}).values())
         keys = _key_directories(arguments["aggregate_inputs"])
 
         def declared(value):
@@ -116,6 +117,7 @@ def stage_adapter_runtime_evidence(records, source_root: Path, destination: Path
         for original in originals:
             prefix = Path("originals") / original["receiptSha256"].removeprefix("sha256:")
             directories = {original[name] for name in ("adapterPackageStage", "nativePackageStage", "validationStage")}
+            directories.update(original["aggregateInputs"].get("adapter_contract_handoffs", {}).values())
             keys = _key_directories(original["aggregateInputs"])
 
             def capture(source):

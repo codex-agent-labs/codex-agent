@@ -822,6 +822,48 @@ class RuntimeAggregatePresigningContentTest(unittest.TestCase):
         self.assertEqual(expected, actual)
         self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
 
+    def test_distinct_original_contract_receipt_requires_its_signed_complete_handoff(self):
+        from ci.products.contract_attestation import build_contract_attestation, capture_contract_execution_closure
+        from ci.products.inventory import snapshot_regular_tree, sha256_file
+
+        with tempfile.TemporaryDirectory(prefix="aggregate-original-contract-") as temporary:
+            root = Path(temporary).resolve()
+            contract, context = self.chain["contract"], self.chain["context"]
+            original = root / "original"
+            snapshot_regular_tree(contract["attestation"].parent, original)
+            (original / contract["payload"].name).write_bytes(contract["payload"].read_bytes())
+            (original / "public-key.pub").write_bytes(context["public_key"].read_bytes())
+            metadata = load_canonical_json_bytes(contract["receipt"].read_bytes())
+            metadata["producer"] = {**metadata["producer"], "runId": 192}
+            metadata["inputs"]["flagsDigest"] = sha256_bytes(b"new metadata verification policy")
+            _rekey(metadata)
+            selected_receipt = root / "selected-metadata.json"
+            write_canonical_json(selected_receipt, metadata)
+            closure = root / "selected-closure"
+            capture_contract_execution_closure(contract["payload"], {
+                phase: selected_receipt if phase == "metadata" else
+                    contract["execution_closure"] / f"receipts/{phase}.json"
+                for phase in ("binary", "package", "validation", "metadata")
+            }, contract["execution_closure"] / "execution/contract-execution.zip", closure)
+            selected = root / "selected"
+            build_contract_attestation(contract["payload"], selected_receipt, context["signing"],
+                context["private_key"], context["public_key"], selected, execution_closure=closure)
+            changes = {
+                "contract_metadata_receipt": selected_receipt,
+                "contract_attestation": selected / contract["attestation"].name,
+                "contract_attestation_signature": selected / contract["signature"].name,
+            }
+            with self.assertRaisesRegex(ValueError, "Missing authenticated original"):
+                self.presign(**changes)
+            digest = sha256_file(contract["receipt"])
+            before = regular_file_inventory(root)
+            self.assertEqual(self.signed(), self.presign(**changes, adapter_contract_handoffs={digest: original}))
+            self.assertEqual(before, regular_file_inventory(root))
+            signature = original / contract["signature"].name
+            signature.write_bytes(signature.read_bytes() + b"invalid\n")
+            with self.assertRaises(ValueError):
+                self.presign(**changes, adapter_contract_handoffs={digest: original})
+
     def test_missing_aggregate_signature_never_grants_signed_admission(self):
         signature = self.chain["compatibility_args"]["runtime_attestation_signature"]
         hidden = signature.with_name(signature.name + ".hidden")

@@ -257,8 +257,12 @@ def _attest_selected_runtime_aggregate(
         signing.update(active)
         capture_runtime_aggregate_original_ci(aggregate["receiptPath"], records["adapter_receipts"],
             prepared / "original-evidence", trusted_workflow_sha=trusted_workflow_sha, token=token,
-            signing_metadata=signing)
+            signing_metadata=signing, selected_contract_receipt_sha256=sha256_file(contract["receiptPath"]))
+        historical_contracts = prepared / "original-evidence/adapter-contracts"
+        adapter_contract_handoffs = ({f"sha256:{path.name}": path for path in historical_contracts.iterdir()}
+                                    if historical_contracts.exists() else {})
         arguments = {**records, **contract_args, **signatures,
+                     "adapter_contract_handoffs": adapter_contract_handoffs,
                      "contract_keyring": trust.keyring, "contract_keys_directory": trust.keys,
                      "variant_keyring": trust.keyring, "variant_keys_directory": trust.keys}
         baseline = regular_file_inventory(prepared, allow_empty=True)

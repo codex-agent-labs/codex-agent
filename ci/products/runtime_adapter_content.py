@@ -42,7 +42,7 @@ def map_adapter_comparison_record(record, path):
         raise ValueError("Adapter comparison component/target mismatch")
     inputs = require_object(record["aggregateInputs"], "adapter aggregate inputs")
     required = _FILES | _MAPS | _NESTED | {"adapter_receipts", "runtime_maven_files", "required_trust_domain"}
-    if not required <= inputs.keys() or inputs.keys() - required - _TRUST:
+    if not required <= inputs.keys() or inputs.keys() - required - _TRUST - {"adapter_contract_handoffs"}:
         raise ValueError("Adapter comparison requires exact aggregate input fields")
     if inputs["required_trust_domain"] not in {"development", "release"}:
         raise ValueError("Adapter comparison trust domain is invalid")
@@ -59,6 +59,9 @@ def map_adapter_comparison_record(record, path):
                                      for member in require_array(inputs["runtime_maven_files"], "Runtime Maven files")]
     mapped["required_trust_domain"] = inputs["required_trust_domain"]
     mapped.update({name: None if inputs[name] is None else path(inputs[name]) for name in _TRUST if name in inputs})
+    if "adapter_contract_handoffs" in inputs:
+        mapped["adapter_contract_handoffs"] = {digest: path(directory) for digest, directory in
+            require_object(inputs["adapter_contract_handoffs"], "Adapter Contract handoffs").items()}
     return {**record, "aggregateInputs": mapped, **{name: path(record[name]) for name in _RECORD_PATHS}}
 
 
@@ -146,7 +149,7 @@ def verify_runtime_adapter_projection(
     if component not in RUNTIME_ADAPTERS or target not in RUNTIME_EVIDENCE_TARGETS:
         raise ValueError("Adapter comparison requires one exact adapter and native host")
     required = _FILES | _MAPS | _NESTED | {"adapter_receipts", "runtime_maven_files", "required_trust_domain"}
-    if type(aggregate_inputs) is not dict or not required <= set(aggregate_inputs) or set(aggregate_inputs) - required - _TRUST:
+    if type(aggregate_inputs) is not dict or not required <= set(aggregate_inputs) or set(aggregate_inputs) - required - _TRUST - {"adapter_contract_handoffs"}:
         raise ValueError("Adapter comparison requires the exact original aggregate input closure")
     with tempfile.TemporaryDirectory(prefix="runtime-adapter-content-") as temporary:
         root = Path(temporary).resolve()
@@ -185,6 +188,15 @@ def verify_runtime_adapter_projection(
         inputs["runtime_maven_files"] = [{**require_object(record, "Runtime Maven file"), "file": capture(record["file"])}
                                           for record in require_array(aggregate_inputs["runtime_maven_files"], "runtime_maven_files")]
         inputs["required_trust_domain"] = aggregate_inputs["required_trust_domain"]
+        historical_contract_inventories = {}
+        if "adapter_contract_handoffs" in aggregate_inputs:
+            inputs["adapter_contract_handoffs"] = {}
+            for digest, directory in require_object(aggregate_inputs["adapter_contract_handoffs"], "Adapter Contract handoffs").items():
+                require_sha256(digest, "Adapter Contract receipt digest")
+                historical_contract_inventories[directory] = regular_file_inventory(directory)
+                destination = root / "adapter-contracts" / digest[7:]
+                snapshot_regular_tree(directory, destination)
+                inputs["adapter_contract_handoffs"][digest] = destination
         for name in _TRUST:
             if aggregate_inputs.get(name) is not None:
                 if name.endswith("keys_directory"):
@@ -260,6 +272,8 @@ def verify_runtime_adapter_projection(
                 raise ValueError("Adapter original evidence changed during verification")
         if regular_file_inventory(closure, allow_empty=True) != closure_inventory:
             raise ValueError("Adapter original Contract closure changed during verification")
+        if any(regular_file_inventory(path) != inventory for path, inventory in historical_contract_inventories.items()):
+            raise ValueError("Adapter historical Contract handoff changed during verification")
         for name, path in (("adapter", adapter_package_stage), ("native", native_package_stage),
                            ("validation", validation_stage)):
             if regular_file_inventory(path) != stage_originals[name]:

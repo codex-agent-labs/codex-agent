@@ -16,6 +16,7 @@ from products.inventory import (
     read_regular_file_bytes, regular_file_inventory,
     require_array, require_exact_keys, require_regular_directory, require_string,
     sha256_bytes, verified_zip_contents, write_canonical_json,
+    snapshot_regular_tree,
 )
 from products.receipt import validate_phase_receipt
 from products.registry import PhaseInstanceId
@@ -27,6 +28,7 @@ from products.signatures import require_release_signing_metadata
 def capture_runtime_aggregate_original_ci(
     aggregate_receipt: Path, adapter_receipts: list[dict[str, Any]], destination: Path,
     *, trusted_workflow_sha: str, token: str, signing_metadata: dict[str, Any] | None = None,
+    selected_contract_receipt_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Capture exact original attempts/uploads; never sign or admit semantics."""
     # Share the established observer, official downloader and safe extractor;
@@ -132,6 +134,23 @@ def capture_runtime_aggregate_original_ci(
                 verified = verify_phase_shard(retained / "original/shard", identities[name])
                 if verified["receiptBytes"] != originals[name]:
                     raise ValueError("Original Runtime aggregate upload differs from its requested original receipt")
+                if selected_contract_receipt_sha256 is not None and receipt["phase"] == "binary":
+                    upstreams = receipt["inputs"]["upstreamArtifacts"]
+                    if len(upstreams) != 1 or "contractProjection" not in upstreams[0]:
+                        raise ValueError("Original adapter binary lacks its Contract predecessor")
+                    digest = upstreams[0]["contractProjection"]["receiptSha256"]
+                    if digest != selected_contract_receipt_sha256:
+                        from products.inventory import require_sha256
+                        require_sha256(digest, "Original adapter Contract receipt digest")
+                        handoff = retained / "original/inputs/contract-input"
+                        if sha256_bytes(read_regular_file_bytes(handoff / "execution-closure/receipts/metadata.json",
+                                max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)) != digest:
+                            raise ValueError("Original adapter upload changes its Contract receipt")
+                        target = prepared / "adapter-contracts" / digest[7:]
+                        if not target.exists():
+                            snapshot_regular_tree(handoff, target)
+                            expected_files.extend({**record, "relativePath": f"adapter-contracts/{digest[7:]}/{record['relativePath']}"}
+                                                  for record in regular_file_inventory(target))
                 if signing is None:
                     expected_files.append({**archive_record, "relativePath": f"phases/{name}/transport.zip"})
                     expected_files.extend({**record, "relativePath": f"phases/{name}/original/{record['relativePath']}"}

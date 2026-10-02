@@ -651,6 +651,7 @@ def verify_runtime_aggregate_presigning_content(
     contract_keys_directory: Path | None = None,
     variant_keyring: Path | None = None,
     variant_keys_directory: Path | None = None,
+    adapter_contract_handoffs: dict[str, Path] | None = None,
 ) -> dict[str, Any]:
     """Verify original aggregate semantics without its not-yet-created signature.
 
@@ -659,7 +660,7 @@ def verify_runtime_aggregate_presigning_content(
     original CI/release sources before signing-key access. This ordinary dict is
     not signed admission and never rebuilds or publishes product bytes.
     """
-    from .aggregate import _verify_runtime_aggregate_semantics
+    from .aggregate import _verify_runtime_aggregate_semantics, _verified_adapter_contract_upstreams
 
     contract, contract_receipt, contract_attestation_value = verify_contract_attestation(
         Path(contract_payload), Path(contract_metadata_receipt), Path(contract_attestation),
@@ -681,6 +682,11 @@ def verify_runtime_aggregate_presigning_content(
         aggregate, aggregate_receipt, contract, contract_receipt, contract_attestation_value,
         variants, receipts, adapter_values, contract_metadata_receipt,
         adapter_report_files, runtime_maven_files, adapter_evidence,
+        adapter_contract_upstreams=_verified_adapter_contract_upstreams(
+            contract, contract_receipt, contract_attestation_value, adapter_values,
+            adapter_contract_handoffs, required_trust_domain=required_trust_domain,
+            keyring=contract_keyring, keys_directory=contract_keys_directory,
+        ),
     )
 
 
@@ -714,6 +720,7 @@ def build_runtime_aggregate_attestation(
     contract_keys_directory: Path | None = None,
     variant_keyring: Path | None = None,
     variant_keys_directory: Path | None = None,
+    adapter_contract_handoffs: dict[str, Path] | None = None,
 ) -> dict[str, Any]:
     signing = validate_signing_metadata(signing_metadata)
     if signing["trustDomain"] == "release":
@@ -779,6 +786,7 @@ def build_runtime_aggregate_attestation(
             adapter_evidence=adapter_evidence, required_trust_domain=signing["trustDomain"],
             contract_keyring=contract_keyring, contract_keys_directory=contract_keys_directory,
             variant_keyring=variant_keyring, variant_keys_directory=variant_keys_directory,
+            adapter_contract_handoffs=adapter_contract_handoffs,
         )
         signature = sign_manifest(attestation_path, Path(private_key), signing)
         prepared_inventory = regular_file_inventory(prepared)
@@ -807,6 +815,7 @@ def build_runtime_aggregate_attestation(
             contract_keyring=contract_keyring,
             contract_keys_directory=contract_keys_directory,
             aggregate_keyring=keyring,
+            adapter_contract_handoffs=adapter_contract_handoffs,
             aggregate_keys_directory=keys_directory,
             variant_keyring=variant_keyring,
             variant_keys_directory=variant_keys_directory,
