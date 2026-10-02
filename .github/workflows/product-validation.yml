@@ -135,6 +135,7 @@ jobs:
           ci.tests.test_runtime_recovery_acceptance
           ci.tests.test_prepare_runtime_signing_action
           ci.tests.test_runtime_preparation_capture
+          ci.tests.test_runtime_prepared_release
           ci.tests.test_runtime_native_attestation_workflow
           ci.tests.test_runtime_aggregate_attestation_workflow
           ci.tests.test_tooling_capture
@@ -1415,7 +1416,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: 18047734d4fe9bfed4f14c8d2a577450b7f05b8d
+          ref: 61e1dcd238922b5e1924732dca2c18e35ecaa666
           path: trusted-source
           persist-credentials: false
       - name: Check out candidate as inventory data only
@@ -1445,7 +1446,7 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
       - name: Verify original selected bytes and preserve or establish detached release trust
         env:
-          TRUSTED_SOURCE_SHA: 18047734d4fe9bfed4f14c8d2a577450b7f05b8d
+          TRUSTED_SOURCE_SHA: 61e1dcd238922b5e1924732dca2c18e35ecaa666
           PREPARATION_ID: ${{ steps.preparation.outputs.artifact_id }}
           PREPARATION_SHA256: ${{ steps.preparation.outputs.artifact_sha256 }}
           TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
@@ -1839,7 +1840,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: 18047734d4fe9bfed4f14c8d2a577450b7f05b8d
+          ref: 61e1dcd238922b5e1924732dca2c18e35ecaa666
           path: trusted-source
           persist-credentials: false
       - name: Check out candidate as inventory data only
@@ -1874,7 +1875,7 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
       - name: Authenticate completed originals and preserve or establish external aggregate trust
         env:
-          TRUSTED_SOURCE_SHA: 18047734d4fe9bfed4f14c8d2a577450b7f05b8d
+          TRUSTED_SOURCE_SHA: 61e1dcd238922b5e1924732dca2c18e35ecaa666
           PREPARATION_ID: ${{ steps.preparation.outputs.artifact_id }}
           PREPARATION_SHA256: ${{ steps.preparation.outputs.artifact_sha256 }}
           TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
