@@ -23,7 +23,7 @@ from runtime_aggregate_release import _destination, _attest_selected_runtime_agg
 from products.inventory import (
     load_canonical_json_bytes, read_regular_file_bytes, regular_file_inventory,
     require_exact_keys, require_integer, require_sha256, publish_regular_tree,
-    sha256_bytes, snapshot_regular_tree,
+    sha256_bytes,
 )
 from products.registry import NATIVE_TARGETS
 from products.receipt import validate_producer
@@ -139,15 +139,8 @@ def attest_prepared_runtime_ci(
             unchanged()
             result = attest_runtime_variant_ci(trusted, result_path, target=target, **context, **arguments)
         expected_result_files = regular_file_inventory(result_path, allow_empty=True)
-        unchanged()
-        for source, name in ((prepared_capture, "preparation-transport"),
-                             (original_capture, "selected-state-transport")):
-            snapshot_regular_tree(source, result_path / name, allow_empty=True)
-            if regular_file_inventory(result_path / name, allow_empty=True) != baselines[source]:
-                raise ValueError("Prepared Runtime transport changed during evidence forwarding")
-            expected_result_files.extend({**record, "relativePath": f"{name}/{record['relativePath']}"}
-                                         for record in baselines[source])
-        expected_result_files.sort(key=lambda record: record["relativePath"])
+        # Original uploads remain external custody. The signing leaf already
+        # carries original phase evidence; publish its exact verified layout.
         unchanged()
         if regular_file_inventory(result_path, allow_empty=True) != expected_result_files:
             raise ValueError("Prepared Runtime result changed before publication")

@@ -132,6 +132,11 @@ class RuntimePreparedReleaseTest(unittest.TestCase):
         self.assertTrue(self.state_root.exists())
         self.assertFalse(self.output.exists())
         self.write(destination / 'caller.json', b'synthetic leaf result\n')
+        self.write(destination / 'original-evidence/original-receipt.bin', b'original leaf receipt\x00\xff')
+        if kwargs.get('release_handoff') is not None:
+            self.write(destination / 'retained-release/original-signature.bin',
+                       (kwargs['release_handoff'] / 'original-signature.bin').read_bytes())
+        self.leaf_inventory = regular_file_inventory(destination, allow_empty=True)
         if self.late_mutation == 'plan':
             self.plan.write_bytes(b'changed after signing\n')
         elif self.late_mutation == 'preparation':
@@ -157,10 +162,9 @@ class RuntimePreparedReleaseTest(unittest.TestCase):
         self.sign_native.assert_called_once()
         self.sign_aggregate.assert_not_called()
         self.assertEqual(b'synthetic leaf result\n', (self.output / 'caller.json').read_bytes())
-        self.assertEqual(b'original receipt\x00\xff', (self.output /
-            'selected-state-transport/original/product-resume-state/original-receipt.bin').read_bytes())
-        self.assertEqual(b'original selected receipt\x00\xff', (self.output /
-            'preparation-transport/original/selected-inputs/original-receipt.bin').read_bytes())
+        self.assertEqual(self.leaf_inventory, regular_file_inventory(self.output, allow_empty=True))
+        self.assertEqual(b'original leaf receipt\x00\xff',
+                         (self.output / 'original-evidence/original-receipt.bin').read_bytes())
         self.assertFalse(self.preparation_root.exists())
         self.assertFalse(self.state_root.exists())
         self.assertEqual(self.plan_raw, self.plan.read_bytes())
@@ -212,9 +216,10 @@ class RuntimePreparedReleaseTest(unittest.TestCase):
                 self.assertIs(self.originals, self.aggregate.call_args.kwargs['originals'])
                 self.native.assert_not_called()
                 self.sign_native.assert_not_called()
+                self.assertEqual(self.leaf_inventory, regular_file_inventory(self.output, allow_empty=True))
                 if retained:
                     self.assertEqual(b'opaque retained signature\n', (self.output /
-                        'preparation-transport/original/release-handoff/original-signature.bin').read_bytes())
+                        'retained-release/original-signature.bin').read_bytes())
 
     def test_reauthenticated_original_state_must_match_preparation_history(self):
         self.change_state = True
