@@ -40,6 +40,9 @@ CONTROL_FILES = CORRECTED_FILES | NEW_FILES | {
     CI, ".github/workflows/product-validation.yml",
     "ci/runtime_preparation_capture.py", "ci/tests/test_runtime_preparation_capture.py",
     "ci/runtime_prepared_release.py", "ci/tests/test_runtime_prepared_release.py",
+    "ci/runtime_original_ci.py", "ci/tests/test_runtime_aggregate_original_ci.py",
+    "ci/runtime_aggregate_release.py", "ci/tests/test_runtime_aggregate_release.py",
+    "ci/products/runtime_aggregate_handoff.py", "ci/tests/test_runtime_aggregate_handoff.py",
     "ci/tests/test_runtime_native_attestation_workflow.py",
     "ci/tests/test_runtime_aggregate_attestation_workflow.py",
 }

@@ -56,6 +56,12 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
             "ci/tests/test_runtime_preparation_capture.py": "original capture test\n",
             "ci/runtime_prepared_release.py": "original redundant forwarding\n",
             "ci/tests/test_runtime_prepared_release.py": "original forwarding test\n",
+            "ci/runtime_original_ci.py": "original raw provenance capture\n",
+            "ci/tests/test_runtime_aggregate_original_ci.py": "original provenance tests\n",
+            "ci/runtime_aggregate_release.py": "original aggregate signer\n",
+            "ci/tests/test_runtime_aggregate_release.py": "original aggregate signer tests\n",
+            "ci/products/runtime_aggregate_handoff.py": "original raw provenance reader\n",
+            "ci/tests/test_runtime_aggregate_handoff.py": "original aggregate reader tests\n",
             "ci/tests/test_runtime_native_attestation_workflow.py": "original native signer pin\n",
             "ci/tests/test_runtime_aggregate_attestation_workflow.py": "original aggregate signer pin\n",
             "runtime/product.txt": "unchanged product\n",
@@ -73,6 +79,9 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.write(self.trusted, ".github/workflows/product-validation.yml", "name: reviewed recovery\n")
         for name in ("ci/runtime_preparation_capture.py", "ci/tests/test_runtime_preparation_capture.py",
                      "ci/runtime_prepared_release.py", "ci/tests/test_runtime_prepared_release.py",
+                     "ci/runtime_original_ci.py", "ci/tests/test_runtime_aggregate_original_ci.py",
+                     "ci/runtime_aggregate_release.py", "ci/tests/test_runtime_aggregate_release.py",
+                     "ci/products/runtime_aggregate_handoff.py", "ci/tests/test_runtime_aggregate_handoff.py",
                      "ci/tests/test_runtime_native_attestation_workflow.py",
                      "ci/tests/test_runtime_aggregate_attestation_workflow.py"):
             self.write(self.trusted, name, "reviewed streaming control\n")
