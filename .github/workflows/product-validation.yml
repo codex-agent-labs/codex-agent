@@ -1562,6 +1562,7 @@ jobs:
         run: echo "key_hex=${BUILD_KEY#sha256:}" >> "$GITHUB_OUTPUT"
       - name: Execute only the elected aggregate metadata phase
         env:
+          CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH: 'true'
           GITHUB_TOKEN: ${{ github.token }}
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
           SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}

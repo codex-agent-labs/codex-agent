@@ -26,6 +26,23 @@ class RuntimeAggregateAttestationWorkflowTest(unittest.TestCase):
         cls.signing_step, = [step for step in cls.steps if "secrets." in step]
         cls.gate = workflow_job(cls.source, "merge-gate")
 
+    def test_aggregate_resolves_pinned_dependencies_without_relying_on_warm_cache(self):
+        from ci.product_reuse import _runtime_worker_command
+
+        aggregate = workflow_job(self.source, "runtime-aggregate")
+        execution, = [step for step in re.split(r"(?=^      - )", aggregate, flags=re.MULTILINE)
+                      if "name: Execute only the elected aggregate metadata phase" in step]
+        setting, = re.findall(r"^          CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH: '([^']+)'$",
+                             execution, flags=re.MULTILINE)
+        command = _runtime_worker_command(Path("/trusted/gradlew"),
+            {"codexAgent.product": "runtime", "codexAgent.component": "runtime-aggregate",
+             "codexAgent.phase": "metadata"}, {"CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH": setting},
+            platform_name="posix")
+        self.assertIn("--dependency-verification=strict", command)
+        self.assertNotIn("--offline", command)
+        self.assertEqual(1, command.count("ciProductPhase"))
+        self.assertNotIn("--write-verification-metadata", command)
+
     def test_authorized_completed_state_and_pinned_code_precede_signing(self):
         guards = self.job.split("    runs-on:", 1)[0]
         for guard in ("always()", "needs.plan.outputs.event_authorized == 'true'",
