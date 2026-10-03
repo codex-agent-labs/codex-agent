@@ -1,0 +1,264 @@
+"""Retain fixed Core/Android worker uploads, not content or host admission.
+
+Fixed job and runner-label metadata bind routing only: neither labels nor this
+transport record establish hardware, compiler, source-policy or content trust.
+The caller independently selects the exact original phase receipt; current
+environment/run values cannot replace its producer. Full original replay and
+host/toolchain admission remain separate, and no accepted family is registered.
+"""
+
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+if __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import product_reuse as products
+from products.inventory import (
+    canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
+    read_regular_file_bytes, regular_file_inventory, require_exact_keys, require_integer,
+    require_regular_directory, require_sha256, sha256_bytes, sha256_file,
+    verified_zip_contents, write_canonical_json,
+)
+from products.receipt import validate_phase_receipt
+from products.registry import PhaseInstanceId, SDK_FACADE_TARGETS
+from products.restore import verify_phase_shard
+from products.sdk_package import _require_capability_output_separate
+from products.signing_isolation import require_no_signing_secret
+from sdk_phase import route
+
+
+_LIMIT = 16 * 1024 * 1024
+_VALIDATION_WORKFLOW_PATH = ".github/workflows/sdk-core-validation.yml"
+_METADATA_WORKFLOW_PATH = ".github/workflows/sdk-core-metadata-validation.yml"
+
+
+def _read(path):
+    return read_regular_file_bytes(Path(path), max_bytes=_LIMIT, reject_symlink_parents=True)
+
+
+def capture_sdk_facade_validation_upload(
+    plan_path, destination, *, validation_receipt_path, artifact_id, artifact_sha256,
+    trusted_workflow_sha, repository_root=None, environ=None, token,
+):
+    """Capture only a selected original eleven-target validation route."""
+    return _capture_sdk_upload(plan_path, destination, family="facade-validation",
+        receipt_path=validation_receipt_path, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
+        trusted_workflow_sha=trusted_workflow_sha, repository_root=repository_root, environ=environ, token=token)
+
+
+def capture_sdk_facade_metadata_upload(
+    plan_path, destination, *, metadata_receipt_path, artifact_id, artifact_sha256,
+    trusted_workflow_sha, repository_root=None, environ=None, token,
+):
+    """Capture only the selected original common metadata route; grant no trust."""
+    return _capture_sdk_upload(plan_path, destination, family="facade-metadata",
+        receipt_path=metadata_receipt_path, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
+        trusted_workflow_sha=trusted_workflow_sha, repository_root=repository_root, environ=environ, token=token)
+
+
+def capture_sdk_android_validation_upload(
+    plan_path, destination, *, validation_receipt_path, artifact_id, artifact_sha256,
+    trusted_workflow_sha, repository_root=None, environ=None, token,
+    trusted_workflow_path=None, trusted_job_name=None,
+):
+    """Capture the exact Android validation upload; Firebase replay stays mandatory."""
+    return _capture_sdk_upload(plan_path, destination, family="android-validation",
+        receipt_path=validation_receipt_path, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
+        trusted_workflow_sha=trusted_workflow_sha, repository_root=repository_root, environ=environ, token=token,
+        trusted_workflow_path=trusted_workflow_path, trusted_job_name=trusted_job_name)
+
+
+def capture_sdk_android_metadata_upload(
+    plan_path, destination, *, metadata_receipt_path, artifact_id, artifact_sha256,
+    trusted_workflow_sha, repository_root=None, environ=None, token,
+):
+    """Preserve exact Android metadata originals; full replay remains mandatory."""
+    return _capture_sdk_upload(plan_path, destination, family="android-metadata",
+        receipt_path=metadata_receipt_path, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
+        trusted_workflow_sha=trusted_workflow_sha, repository_root=repository_root, environ=environ, token=token)
+
+
+def capture_sdk_maven_upload(
+    plan_path, destination, *, receipt_path, artifact_id, artifact_sha256,
+    trusted_workflow_sha, repository_root=None, environ=None, token,
+    trusted_workflow_path=None, trusted_job_name=None,
+):
+    """Capture only the four Core/Android binary/package routes."""
+    return _capture_sdk_upload(plan_path, destination, family="maven",
+        receipt_path=receipt_path, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
+        trusted_workflow_sha=trusted_workflow_sha, repository_root=repository_root, environ=environ, token=token,
+        trusted_workflow_path=trusted_workflow_path, trusted_job_name=trusted_job_name)
+
+
+def _capture_route(receipt, family=None):
+    identity = tuple(receipt[name] for name in ("product", "component", "phase", "target"))
+    _, component, phase, target = identity
+    if identity in {("sdk", "sdk-core", "validation", value) for value in SDK_FACADE_TARGETS}:
+        selected, runner, directories = "facade-validation", route(receipt)["runner"], ("shard", "worker", "context")
+    elif identity == ("sdk", "sdk-core", "metadata", "common"):
+        selected, runner, directories = "facade-metadata", "ubuntu-24.04", ("shard", "worker", "selection", "originals", "inputs")
+    elif identity == ("sdk", "sdk-android", "validation", "android"):
+        selected, runner, directories = "android-validation", "ubuntu-24.04", ("shard", "inputs", "originals", "stage")
+    elif identity == ("sdk", "sdk-android", "metadata", "android"):
+        selected, runner, directories = "android-metadata", "ubuntu-24.04", ("shard", "worker", "selection", "originals", "inputs")
+    elif identity in {("sdk", name, step, host) for name, host in
+            (("sdk-core", "common"), ("sdk-android", "android")) for step in ("binary", "package")}:
+        selected = "maven"
+        runner = "macos-26" if (component, phase) == ("sdk-core", "binary") else "ubuntu-24.04"
+        directories = ("shard", "worker", "selection", "inputs")
+        if phase == "package":
+            directories += ("sdk-inputs-original", "binary-contract-original", "binary-original")
+        elif component == "sdk-android":
+            directories += ("android-original",)
+    else:
+        raise ValueError("Unsupported selected SDK original upload identity")
+    if family is not None and family != selected:
+        raise ValueError("Selected SDK original receipt differs from the fixed capture route")
+    producer = receipt["producer"]
+    job = (f"product-validation / sdk-core-{phase}-wave / sdk-core-{phase}-{target}"
+           if selected in {"facade-validation", "facade-metadata"} else
+           f"product-validation / {component}-{phase}-{target}")
+    name = (f"codex-agent-sdk-worker-{component}-{phase}-{target}-"
+            f"{receipt['buildKey'].removeprefix('sha256:')}-{producer['tree']}-attempt-{producer['runAttempt']}")
+    return PhaseInstanceId(*identity), runner, directories, job, name, selected
+
+
+def verify_retained_sdk_phase_upload(capture, receipt_bytes):
+    """Check exact retained bytes inside an independently authenticated carrier.
+
+    Stored observations do not authenticate themselves. This read-only check
+    grants neither hosted trust nor semantic admission and never reissues bytes.
+    """
+    capture = Path(capture)
+    before = regular_file_inventory(capture, allow_empty=True)
+    receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+    instance, _, directories, _, name, _ = _capture_route(receipt)
+    transport = require_exact_keys(load_canonical_json_bytes(_read(capture / "capture-transport.json")),
+        {"artifact", "captureProducer", "observed", receipt["phase"] + "ReceiptSha256"}, "Retained SDK transport")
+    if (transport["captureProducer"] != receipt["producer"]
+            or transport[receipt["phase"] + "ReceiptSha256"] != sha256_bytes(receipt_bytes)):
+        raise ValueError("Retained SDK transport differs from the exact original receipt")
+    products._verify_retained_sdk_upload_archive(capture, transport["artifact"])
+    if transport["artifact"].get("name") != name:
+        raise ValueError("Retained SDK artifact differs from its original phase identity")
+    for directory in directories:
+        require_regular_directory(capture / "original" / directory, "Retained SDK original directory")
+    if verify_phase_shard(capture / "original/shard", instance)["receiptBytes"] != receipt_bytes:
+        raise ValueError("Retained SDK shard differs from its selected receipt")
+    if regular_file_inventory(capture, allow_empty=True) != before:
+        raise ValueError("Retained SDK upload changed during verification")
+
+
+def _capture_sdk_upload(
+    plan_path, destination, *, family, receipt_path, artifact_id, artifact_sha256,
+    trusted_workflow_sha, repository_root=None, environ=None, token,
+    trusted_workflow_path=None, trusted_job_name=None,
+):
+    """Preserve the complete original upload after exact receipt/CI comparison.
+
+    The authorized current plan permits capture, not relabeling a historical
+    producer. Context and retained execution are not interpreted as authority.
+    No callback, uploaded policy, synthesized receipt or semantic success token.
+    """
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    if (trusted_workflow_path is None) != (trusted_job_name is None):
+        raise ValueError("Core original workflow path and job must be pinned together")
+    if trusted_workflow_path is not None and family not in {"maven", "android-validation"}:
+        raise ValueError("Only Maven and Android validation originals accept a caller-selected child route")
+    require_integer(artifact_id, "Core worker artifact ID", 1)
+    require_sha256(artifact_sha256, "Core worker artifact digest")
+    if type(token) is not str or not token:
+        raise ValueError("Core worker capture requires an observation token")
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else Path(repository_root)).resolve(strict=True)
+    plan_path, receipt_path, destination = (Path(path).absolute() for path in
+        (plan_path, receipt_path, destination))
+
+    def output_safe():
+        _require_capability_output_separate(destination, [root, plan_path, receipt_path])
+        if destination.resolve(strict=False) != destination or destination.exists() or destination.is_symlink():
+            raise ValueError("Core worker capture destination must be fresh, normalized and non-symbolic")
+        for ancestor in destination.parents:
+            if ancestor.exists() or ancestor.is_symlink():
+                require_regular_directory(ancestor, "Core capture destination ancestry")
+
+    output_safe()
+    plan_bytes, receipt_bytes = _read(plan_path), _read(receipt_path)
+    receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+    instance, runner, directories, job, name, _ = _capture_route(receipt, family)
+    if trusted_job_name is not None:
+        job = trusted_job_name
+    phase, producer = receipt["phase"], receipt["producer"]
+    with tempfile.TemporaryDirectory(prefix="sdk-facade-upload-") as temporary:
+        prepared = Path(temporary).resolve() / "capture"
+        captured_plan = prepared / "plan/impact-plan.json"
+        captured_plan.parent.mkdir(parents=True)
+        captured_plan.write_bytes(plan_bytes)
+        plan = products._validate_plan(captured_plan, root)
+        if plan["remoteBuildAuthorized"] is not True or plan["event"] not in {"pull_request", "merge_group"}:
+            raise ValueError("Core worker capture requires an authorized PR or merge-group plan")
+        plan_value = canonical_json_bytes(plan)
+
+        def unchanged():
+            require_no_signing_secret(environment)
+            if (_read(plan_path) != plan_bytes or _read(receipt_path) != receipt_bytes
+                    or _read(captured_plan) != plan_bytes or canonical_json_bytes(receipt) != receipt_bytes
+                    or canonical_json_bytes(plan) != plan_value):
+                raise ValueError("Core capture original receipt or caller plan changed")
+
+        unchanged()
+        workflow_path = (_VALIDATION_WORKFLOW_PATH if family == "facade-validation" else
+                         _METADATA_WORKFLOW_PATH if family == "facade-metadata" else trusted_workflow_path)
+        workflow_policy = ({"trusted_workflow_sha": trusted_workflow_sha}
+            if workflow_path is None else {"trusted_workflows_by_phase": {family: {
+                "path": workflow_path, "sha": trusted_workflow_sha}}})
+        observed = products._observe_ci_producer_jobs({family: producer},
+            jobs_by_phase={family: job}, token=token, **workflow_policy)
+        jobs = [value for value in observed[0]["jobs"] if value.get("name") == job]
+        if len(jobs) != 1:
+            raise ValueError("Core original worker job is missing or ambiguous")
+        official_job = jobs[0]
+        labels = official_job.get("labels")
+        if (type(labels) is not list or any(type(label) is not str for label in labels)
+                or runner not in labels):
+            raise ValueError("Core original worker runner label differs from its fixed target route")
+        require_integer(official_job.get("runner_id"), "Core original worker runner ID", 1)
+        observed_bytes = canonical_json_bytes(observed)
+        unchanged()
+        artifact, raw = products._download_contract_ci_upload(
+            artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
+        products._require_artifact_job_window(observed[0], job, artifact)
+        archive = prepared / "transport.zip"
+        archive.write_bytes(raw)
+        zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
+                                            **products._CATALOG_ZIP_LIMITS)
+        original = prepared / "original"
+        products.safe_extract(archive, original)
+        if regular_file_inventory(original, allow_empty=True) != zipped:
+            raise ValueError("Core worker extraction differs from its exact original upload")
+        for directory in directories:
+            require_regular_directory(original / directory, "Core original upload retained directory")
+        verified = verify_phase_shard(original / "shard", instance)
+        if verified["receiptBytes"] != receipt_bytes or canonical_json_bytes(verified["receipt"]) != receipt_bytes:
+            raise ValueError("Core uploaded phase differs from the selected original receipt")
+        transport = {"artifact": artifact, "captureProducer": producer, "observed": observed,
+                     phase + "ReceiptSha256": sha256_bytes(receipt_bytes)}
+        transport_bytes = canonical_json_bytes(transport)
+        write_canonical_json(prepared / "capture-transport.json", transport)
+        prepared_inventory = regular_file_inventory(prepared, allow_empty=True)
+        unchanged()
+        if (sha256_file(archive) != artifact_sha256 or canonical_json_bytes(observed) != observed_bytes
+                or regular_file_inventory(original, allow_empty=True) != zipped
+                or _read(prepared / "capture-transport.json") != transport_bytes
+                or canonical_json_bytes(transport) != transport_bytes
+                or regular_file_inventory(prepared, allow_empty=True) != prepared_inventory):
+            raise ValueError("Core original upload or observation changed before publication")
+        output_safe()
+        publish_regular_tree(prepared, destination, allow_empty=True)
+        unchanged()
+        if regular_file_inventory(destination, allow_empty=True) != prepared_inventory:
+            raise ValueError("Core capture bytes changed during publication")
+    return transport

@@ -1,0 +1,171 @@
+name: Prepare elected native SDK sources once
+description: Replay an exact native consumer before setup and retain one preparation upload for independent SDK phases.
+inputs:
+  plan-id:
+    required: true
+    description: Exact original plan upload ID.
+  artifact-id:
+    required: true
+    description: Exact original preparation state upload ID.
+  artifact-sha256:
+    required: true
+    description: Exact original preparation state digest.
+  state-wave:
+    default: '0'
+    description: Original Runtime state wave.
+  sdk-state-wave:
+    default: ''
+    description: Original SDK state wave when applicable.
+  sdk-validation-tooling:
+    default: ''
+    description: Optional caller-owned local authenticated SDK tooling policy.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional caller-owned local Apple policy for replaying retained validation state.
+  sdk-inputs-id:
+    required: true
+    description: Exact authenticated SDK inputs upload ID.
+  sdk-inputs-sha256:
+    required: true
+    description: Exact SDK inputs upload digest.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  component:
+    required: true
+    description: One elected native consumer component supplying preparation identity.
+  preparation-phase:
+    default: 'package'
+    description: Exact elected native consumer phase supplying preparation identity.
+  preparation-target:
+    default: 'desktop'
+    description: Exact elected native consumer target; preparation itself runs on Linux X64.
+  build-key:
+    required: true
+    description: Exact elected preparation consumer key.
+  tree:
+    required: true
+    description: Exact tested source tree.
+outputs:
+  artifact-id:
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-sha256:
+    value: sha256:${{ steps.upload.outputs.artifact-digest }}
+  preparation-component:
+    value: ${{ inputs.component }}
+  preparation-phase:
+    value: ${{ inputs.preparation-phase }}
+  preparation-target:
+    value: ${{ inputs.preparation-target }}
+  preparation-build-key:
+    value: ${{ inputs.build-key }}
+  preparation-state-id:
+    value: ${{ inputs.artifact-id }}
+  preparation-state-sha256:
+    value: ${{ inputs.artifact-sha256 }}
+  preparation-state-wave:
+    value: ${{ inputs.state-wave }}
+  preparation-sdk-state-wave:
+    value: ${{ inputs.sdk-state-wave }}
+runs:
+  using: composite
+  steps:
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: sdk
+        sdk-family: ${{ format('native-{0}', inputs.preparation-phase) }}
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        state-wave: ${{ inputs.state-wave }}
+        sdk-state-wave: ${{ inputs.sdk-state-wave }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+    - id: identity
+      shell: bash
+      env:
+        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        COMPONENT: ${{ inputs.component }}
+        PREPARATION_PHASE: ${{ inputs.preparation-phase }}
+        PREPARATION_TARGET: ${{ inputs.preparation-target }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
+      run: |
+        python3 - <<'PY'
+        import json, os, re, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        from runtime_native_phase import _HOSTS
+        phase, target = os.environ['PREPARATION_PHASE'], os.environ['PREPARATION_TARGET']
+        if phase not in ('package', 'validation', 'metadata') or (target not in _HOSTS if phase == 'validation' else target != 'desktop'):
+            raise ValueError('Invalid native preparation consumer identity')
+        topology = _HOSTS[target][1:] if phase == 'validation' else ('Linux', 'X64')
+        key = os.environ['BUILD_KEY']
+        rows = [row for row in json.loads(os.environ['MATRIX'])['include']
+                if (row['product'], row['component'], row['phase'], row['target']) ==
+                   ('sdk', os.environ['COMPONENT'], phase, target)]
+        if (len(rows) != 1 or rows[0]['buildKey'] != key or not re.fullmatch(r'sha256:[0-9a-f]{64}', key)
+                or (rows[0]['runnerOs'], rows[0]['runnerArch']) != topology):
+            raise ValueError('Native preparation differs from the original replay election')
+        with open(os.environ['PLAN']) as plan:
+            if json.load(plan)['validationTree'] != os.environ['TREE']:
+                raise ValueError('Native preparation tree differs from the original plan')
+        PY
+    - uses: ./.github/actions/setup-kmp
+      with:
+        cache-read-only: 'true'
+        product-worker: 'true'
+    - id: execute
+      name: Prepare the five source and SDK trees once
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        COMPONENT: ${{ inputs.component }}
+        PREPARATION_PHASE: ${{ inputs.preparation-phase }}
+        PREPARATION_TARGET: ${{ inputs.preparation-target }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        selected=()
+        if [ -n "$SDK_VALIDATION_TOOLING" ]; then selected=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+        if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+        python3 -B -m ci.sdk_workflow native-prepare --plan "$PLAN" --discovery-root "$DISCOVERY" \
+          --state-root "$STATE" --destination "$GITHUB_WORKSPACE/build/sdk-native-prepare" \
+          --repository-root "$GITHUB_WORKSPACE" --component "$COMPONENT" --expected-build-key "$BUILD_KEY" \
+          --preparation-phase "$PREPARATION_PHASE" --preparation-target "$PREPARATION_TARGET" \
+          --artifact-id "$SDK_INPUTS_ID" --artifact-sha256 "$SDK_INPUTS_SHA256" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
+          --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" ${selected[@]+"${selected[@]}"}
+    - id: upload
+      if: success() && steps.execute.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-native-prepared-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/sdk-native-prepare/upload
+        if-no-files-found: error
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90
+    - if: always() && steps.identity.outcome == 'success' && steps.execute.outcome != 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-native-preparation-diagnostics-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/sdk-native-prepare/worker
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90

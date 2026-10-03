@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from impact import validate_legacy_lane_projection
 from receipt import INPUT_NAMES, parse_mapping, read_json, safe_extract, validate_receipt
 
 
@@ -68,7 +69,7 @@ def paginated_items(url: str, key: str, token: str) -> list[object]:
         page += 1
 
 
-def download_artifact(artifact: dict[str, object], token: str) -> bytes:
+def _artifact_transport_identity(artifact: dict[str, object]) -> tuple[str, str]:
     url = artifact.get("archive_download_url")
     digest = artifact.get("digest")
     if not isinstance(url, str) or not isinstance(digest, str):
@@ -78,10 +79,53 @@ def download_artifact(artifact: dict[str, object], token: str) -> bytes:
         character not in "0123456789abcdef" for character in expected
     ):
         raise ValueError("GitHub artifact transport digest is malformed")
+    return url, expected
+
+
+def download_artifact(artifact: dict[str, object], token: str) -> bytes:
+    url, expected = _artifact_transport_identity(artifact)
     archive = api_request(url, token)
     if hashlib.sha256(archive).hexdigest() != expected:
         raise ValueError("GitHub artifact transport digest mismatch")
     return archive
+
+
+def download_artifact_to_file(
+    artifact: dict[str, object], token: str, destination: Path, *, max_bytes: int,
+) -> None:
+    """Stream an exact GitHub transport into a new file with bounded memory."""
+    url, expected = _artifact_transport_identity(artifact)
+    size = artifact.get("size_in_bytes")
+    if (type(size) is not int or type(max_bytes) is not int
+            or size <= 0 or max_bytes <= 0 or size > max_bytes):
+        raise ValueError("GitHub artifact transport size is outside the fixed bound")
+    request = urllib.request.Request(url, headers={
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    })
+    destination = Path(destination)
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        opener = urllib.request.build_opener(OriginBoundRedirectHandler())
+        with os.fdopen(descriptor, "wb", closefd=False) as output, opener.open(request, timeout=60) as response:
+            digest = hashlib.sha256()
+            total = 0
+            while chunk := response.read(1024 * 1024):
+                total += len(chunk)
+                if total > size:
+                    raise ValueError("GitHub artifact transport exceeds its declared size")
+                output.write(chunk)
+                digest.update(chunk)
+            if total != size or digest.hexdigest() != expected:
+                raise ValueError("GitHub artifact transport digest or size mismatch")
+            output.flush()
+            os.fsync(descriptor)
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(descriptor)
 
 
 def github_output(path: Path | None, values: dict[str, object]) -> None:
@@ -177,13 +221,11 @@ def promoted_artifacts(
     return result
 
 
-def reissue_transport_receipt(
+def write_transport_provenance(
     root: Path,
     receipt: dict[str, object],
-    plan: dict[str, object],
-    lane: str,
     source_transport: str,
-) -> dict[str, object]:
+) -> str:
     provenance_path = root / "transport-provenance.json"
     previous = json.loads(provenance_path.read_text(encoding="utf-8")) if provenance_path.is_file() else None
     provenance = {
@@ -199,7 +241,18 @@ def reissue_transport_receipt(
         "previous": previous,
     }
     provenance_path.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    provenance_digest = hashlib.sha256(provenance_path.read_bytes()).hexdigest()
+    return hashlib.sha256(provenance_path.read_bytes()).hexdigest()
+
+
+def reissue_transport_receipt(
+    root: Path,
+    receipt: dict[str, object],
+    plan: dict[str, object],
+    lane: str,
+    source_transport: str,
+) -> dict[str, object]:
+    provenance_path = root / "transport-provenance.json"
+    provenance_digest = write_transport_provenance(root, receipt, source_transport)
     existing = next(
         (item for item in receipt["evidence"] if item["relativePath"] == provenance_path.name),
         None,
@@ -228,6 +281,7 @@ def reissue_transport_receipt(
 def restore(arguments: argparse.Namespace) -> dict[str, object]:
     plan_path = arguments.plan.resolve()
     plan = read_json(plan_path)
+    validate_legacy_lane_projection(plan, plan_path=plan_path)
     lane_state = plan.get("lanes", {}).get(arguments.lane)
     if not isinstance(lane_state, dict):
         raise ValueError(f"Impact plan does not contain lane {arguments.lane}")
@@ -290,6 +344,15 @@ def restore(arguments: argparse.Namespace) -> dict[str, object]:
                         toolchain=toolchain,
                         categories=categories,
                     )
+                    if any(
+                        item["kind"] == "c-abi-sdk"
+                        for collection in ("artifacts", "evidence")
+                        for item in receipt[collection]
+                    ) and (
+                        receipt["validationCommit"] != plan["validationCommit"]
+                        or receipt["validationTree"] != plan["validationTree"]
+                    ):
+                        continue
                     if not artifact.get("_promoted") and receipt["artifactName"] != artifact["name"]:
                         continue
                 except (OSError, ValueError, json.JSONDecodeError, KeyError):

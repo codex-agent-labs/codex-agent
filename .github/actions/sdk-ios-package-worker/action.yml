@@ -1,0 +1,236 @@
+name: Execute elected iOS SDK package
+description: Capture authenticated inputs before Apple setup, run the fixed package controller, and retain every result.
+inputs:
+  plan-id:
+    required: true
+    description: Exact original plan upload ID.
+  artifact-id:
+    required: true
+    description: Current predecessor state upload ID.
+  artifact-sha256:
+    required: true
+    description: Exact current predecessor state digest.
+  state-wave:
+    default: '0'
+    description: Current Runtime state wave.
+  sdk-state-wave:
+    default: ''
+    description: Current SDK state wave when applicable.
+  sdk-inputs-id:
+    required: true
+    description: Exact authenticated SDK inputs upload ID.
+  sdk-inputs-sha256:
+    required: true
+    description: Exact SDK inputs upload digest.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  component:
+    required: true
+    description: Exact elected iOS SDK component.
+  build-key:
+    required: true
+    description: Exact elected iOS package key.
+  tree:
+    required: true
+    description: Exact tested source tree.
+  developer-directory:
+    required: true
+    description: Explicit Xcode Developer directory used by package production and replay.
+  sdk-validation-tooling:
+    required: true
+    description: Caller-owned canonical six-field tooling policy file.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional caller-owned local Apple policy for replaying retained validation state.
+  policy-revision:
+    required: true
+    description: Exact Git revision authenticating the tooling policy inputs.
+runs:
+  using: composite
+  steps:
+    - id: policy
+      name: Pin caller tooling before state capture
+      shell: bash
+      env:
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+      run: |
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes
+        policy_path = Path(os.environ['SDK_VALIDATION_TOOLING'])
+        if not policy_path.is_absolute():
+            raise ValueError('iOS package tooling requires an explicit absolute path')
+        raw = read_regular_file_bytes(policy_path, reject_symlink_parents=True)
+        policy = require_exact_keys(load_canonical_json_bytes(raw),
+            {'evidence', 'publicKey', 'javaExecutable', 'requiredTrustDomain', 'keyring', 'keysDirectory'},
+            'Caller SDK tooling policy')
+        trust = policy['requiredTrustDomain']
+        if (trust not in ('development', 'release')
+                or (trust == 'release' and (policy['keyring'] is None or policy['keysDirectory'] is None))
+                or (trust == 'development' and (policy['keyring'] is not None or policy['keysDirectory'] is not None))):
+            raise ValueError('Caller tooling trust requires exact paired release policy or development trust')
+        for name in ('evidence', 'publicKey', 'javaExecutable', 'keyring', 'keysDirectory'):
+            value = policy[name]
+            if value is None and name in ('keyring', 'keysDirectory'):
+                continue
+            if type(value) is not str or not Path(value).is_absolute():
+                raise ValueError('Caller tooling fields must be explicit absolute paths')
+        apple_path = os.environ['SDK_APPLE_VALIDATION_POLICY']
+        apple_digest = ''
+        if apple_path:
+            if not Path(apple_path).is_absolute():
+                raise ValueError('Caller Apple policy must be an explicit absolute path')
+            apple_raw = read_regular_file_bytes(Path(apple_path), reject_symlink_parents=True)
+            from ci.products.sdk_apple_validation_admission import apple_validation_policy_arguments
+            apple_validation_policy_arguments(load_canonical_json_bytes(apple_raw))
+            apple_digest = sha256_bytes(apple_raw)
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('policy_sha256=' + sha256_bytes(raw) + '\n')
+            output.write('apple_policy_sha256=' + apple_digest + '\n')
+        PY
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: sdk
+        sdk-family: ios-package
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        state-wave: ${{ inputs.state-wave }}
+        sdk-state-wave: ${{ inputs.sdk-state-wave }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+    - id: identity
+      name: Require the exact iOS package election before Apple setup
+      shell: bash
+      env:
+        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
+        REQUIRED: ${{ steps.captured.outputs.sdk-workers-required }}
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        COMPONENT: ${{ inputs.component }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
+        APPLE_POLICY_SHA256: ${{ steps.policy.outputs.apple_policy_sha256 }}
+      run: |
+        python3 -B - <<'PY'
+        import json, os, re, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        from native_wrappers import host_classifier
+        from products.inventory import read_regular_file_bytes, sha256_bytes
+        if host_classifier() != 'macos-arm64':
+            raise ValueError('iOS SDK package must execute on the elected macOS ARM64 host')
+        if (sha256_bytes(read_regular_file_bytes(Path(os.environ['SDK_VALIDATION_TOOLING']), reject_symlink_parents=True))
+                != os.environ['POLICY_SHA256']):
+            raise ValueError('iOS package caller tooling changed during state capture')
+        apple_path = os.environ['SDK_APPLE_VALIDATION_POLICY']
+        apple_digest = (sha256_bytes(read_regular_file_bytes(Path(apple_path), reject_symlink_parents=True))
+                        if apple_path else '')
+        if apple_digest != os.environ['APPLE_POLICY_SHA256']:
+            raise ValueError('Caller Apple policy changed after pinning')
+        key, tree = os.environ['BUILD_KEY'], os.environ['TREE']
+        rows = json.loads(os.environ['MATRIX'])['include']
+        expected = ('sdk', 'sdk-ios', 'package', 'ios')
+        if (os.environ['COMPONENT'] != 'sdk-ios' or os.environ['REQUIRED'] != 'true' or len(rows) != 1
+                or tuple(rows[0].get(name) for name in ('product', 'component', 'phase', 'target')) != expected
+                or rows[0].get('buildKey') != key or (rows[0].get('runnerOs'), rows[0].get('runnerArch')) != ('macOS', 'ARM64')
+                or not re.fullmatch(r'sha256:[0-9a-f]{64}', key) or not re.fullmatch(r'[0-9a-f]{40}', tree)):
+            raise ValueError('iOS SDK package differs from its original replay election')
+        with open(os.environ['PLAN']) as plan:
+            if json.load(plan)['validationTree'] != tree:
+                raise ValueError('iOS SDK package tree differs from the original plan')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
+        PY
+    - uses: ./.github/actions/setup-kmp
+      with:
+        cache-read-only: 'true'
+        product-worker: 'true'
+        xcode-fingerprint: auto
+    - name: Execute exact iOS package inside all authenticated input lifetimes
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        DEVELOPER_DIR: ${{ inputs.developer-directory }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
+        APPLE_POLICY_SHA256: ${{ steps.policy.outputs.apple_policy_sha256 }}
+        POLICY_REVISION: ${{ inputs.policy-revision }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B - <<'PY'
+        import os, subprocess, sys
+        from pathlib import Path
+        root = Path(os.environ['GITHUB_WORKSPACE'])
+        sys.path.insert(0, str(root / 'ci'))
+        from products.inventory import load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes
+        policy_path = Path(os.environ['SDK_VALIDATION_TOOLING'])
+        apple_path = os.environ['SDK_APPLE_VALIDATION_POLICY']
+        apple_digest = (sha256_bytes(read_regular_file_bytes(Path(apple_path), reject_symlink_parents=True))
+                        if apple_path else '')
+        if apple_digest != os.environ['APPLE_POLICY_SHA256']:
+            raise ValueError('Caller Apple policy changed after pinning')
+        raw = read_regular_file_bytes(policy_path, reject_symlink_parents=True)
+        if sha256_bytes(raw) != os.environ['POLICY_SHA256']:
+            raise ValueError('iOS package caller tooling changed before execution')
+        policy = require_exact_keys(load_canonical_json_bytes(raw),
+            {'evidence', 'publicKey', 'javaExecutable', 'requiredTrustDomain', 'keyring', 'keysDirectory'},
+            'Caller SDK tooling policy')
+        trust = policy['requiredTrustDomain']
+        fields = {
+            '--plan': os.environ['PLAN'], '--discovery-root': os.environ['DISCOVERY'],
+            '--state-root': os.environ['STATE'], '--destination': str(root / 'build/sdk-ios-worker'),
+            '--repository-root': str(root), '--expected-build-key': os.environ['BUILD_KEY'],
+            '--sdk-inputs-artifact-id': os.environ['SDK_INPUTS_ID'],
+            '--sdk-inputs-artifact-sha256': os.environ['SDK_INPUTS_SHA256'],
+            '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
+            '--keyring': str(root / 'gradle/release/product-signing-keys.json'),
+            '--keys-directory': str(root / 'gradle/release/keys'),
+            '--developer-directory': os.environ['DEVELOPER_DIR'],
+            '--tooling-evidence': policy['evidence'], '--tooling-public-key': policy['publicKey'],
+            '--java-executable': policy['javaExecutable'], '--policy-revision': os.environ['POLICY_REVISION'],
+            '--required-trust-domain': trust,
+        }
+        if (trust not in ('development', 'release')
+                or (trust == 'release' and (policy['keyring'] is None or policy['keysDirectory'] is None))
+                or (trust == 'development' and (policy['keyring'] is not None or policy['keysDirectory'] is not None))):
+            raise ValueError('Caller tooling trust requires exact paired release policy or development trust')
+        if policy['keyring'] is not None:
+            fields['--tooling-keyring'] = policy['keyring']
+            fields['--tooling-keys-directory'] = policy['keysDirectory']
+        if apple_path:
+            fields['--sdk-apple-validation-policy'] = apple_path
+        for name in ('evidence', 'publicKey', 'javaExecutable', 'keyring', 'keysDirectory'):
+            value = policy[name]
+            if value is None and name in ('keyring', 'keysDirectory'):
+                continue
+            if type(value) is not str or not Path(value).is_absolute():
+                raise ValueError('Caller tooling fields must be explicit absolute paths')
+        command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'ios-package']
+        command += [part for flag, value in fields.items() for part in (flag, value)]
+        subprocess.run(command, cwd=root, check=True)
+        PY
+    - if: always() && steps.identity.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-worker-sdk-ios-package-ios-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/sdk-ios-worker
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90

@@ -1,0 +1,109 @@
+name: Prepare caller Android/Firebase original control
+description: Bind independently pinned original policy to a verified fresh or retained Android validation handoff; official replay happens later.
+inputs:
+  base-policy:
+    required: true
+    description: Independently provisioned canonical Android/Firebase source, Contract, S858, and tooling policy outside checkout and retained state.
+  base-policy-sha256:
+    required: true
+    description: Caller-pinned digest of the independent base policy, never taken from the SDK upload.
+  discovery-root:
+    required: true
+    description: Retained predecessor discovery root, excluded from caller authority.
+  state-root:
+    required: true
+    description: Retained predecessor state root, excluded from caller authority.
+  validation-receipt-sha256:
+    required: true
+    description: Successful Android validation worker receipt digest.
+  validation-artifact-id:
+    required: true
+    description: Successful official validation upload ID.
+  validation-artifact-sha256:
+    required: true
+    description: Successful official validation upload digest.
+  validation-run-id:
+    required: true
+    description: Successful validation worker producer run ID.
+  validation-run-attempt:
+    required: true
+    description: Successful validation worker producer run attempt.
+  validation-original-mode:
+    required: true
+    description: Verified handoff mode; retained permits an older original producer run.
+outputs:
+  original-control:
+    description: Fresh job-local control path; the official original reader must still authenticate it.
+    value: ${{ steps.prepare.outputs.original_control }}
+runs:
+  using: composite
+  steps:
+    - id: prepare
+      name: Pin independent controls and successful worker outputs
+      shell: bash
+      env:
+        BASE_POLICY: ${{ inputs.base-policy }}
+        BASE_POLICY_SHA256: ${{ inputs.base-policy-sha256 }}
+        DISCOVERY_ROOT: ${{ inputs.discovery-root }}
+        STATE_ROOT: ${{ inputs.state-root }}
+        VALIDATION_RECEIPT_SHA256: ${{ inputs.validation-receipt-sha256 }}
+        VALIDATION_ARTIFACT_ID: ${{ inputs.validation-artifact-id }}
+        VALIDATION_ARTIFACT_SHA256: ${{ inputs.validation-artifact-sha256 }}
+        VALIDATION_RUN_ID: ${{ inputs.validation-run-id }}
+        VALIDATION_RUN_ATTEMPT: ${{ inputs.validation-run-attempt }}
+        VALIDATION_ORIGINAL_MODE: ${{ inputs.validation-original-mode }}
+      run: |
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        import tempfile
+        from ci.products.inventory import (load_canonical_json_bytes, read_regular_file_bytes,
+            require_sha256, sha256_bytes)
+        from ci.products.signing_isolation import require_no_signing_secret
+        from ci.sdk_android_original_control import main as compose_control
+
+        require_no_signing_secret(os.environ)
+        root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        scratch = Path(os.environ['RUNNER_TEMP']).resolve(strict=True)
+        excluded = (root, Path(os.environ['DISCOVERY_ROOT']).resolve(strict=True),
+                    Path(os.environ['STATE_ROOT']).resolve(strict=True))
+        source = Path(os.environ['BASE_POLICY'])
+        if (not source.is_absolute() or source.resolve(strict=True) != source
+                or any(source == directory or directory in source.parents for directory in excluded)):
+            raise ValueError('Android base policy must be independently supplied outside checkout and retained state')
+        if any(scratch == directory or directory in scratch.parents for directory in excluded):
+            raise ValueError('Android control output must be outside checkout and retained state')
+        raw = read_regular_file_bytes(source, reject_symlink_parents=True)
+        require_sha256(os.environ['BASE_POLICY_SHA256'], 'Caller Android base policy digest')
+        if sha256_bytes(raw) != os.environ['BASE_POLICY_SHA256']:
+            raise ValueError('Android base policy differs from independently pinned digest')
+        base = load_canonical_json_bytes(raw)
+        for name in ('compatibilityRequest', 'binaryContractEvidence', 'toolingEvidence',
+                     'toolingPublicKey', 'javaExecutable', 'apkanalyzerExecutable',
+                     'toolingKeyring', 'toolingKeysDirectory'):
+            if base.get(name) is None:
+                continue
+            path = Path(base[name]) if type(base[name]) is str else None
+            if (path is None or not path.is_absolute() or path.resolve(strict=True) != path
+                    or any(path == directory or directory in path.parents for directory in excluded)):
+                raise ValueError('Android base policy authority must be outside checkout and retained state')
+        parent = Path(tempfile.mkdtemp(prefix='sdk-android-original-', dir=scratch)).resolve(strict=True)
+        destination = parent / 'original-control.json'
+        arguments = ['--base-policy', str(source), '--destination', str(destination),
+                     '--repository-root', str(root)]
+        for flag, environment in (
+                ('validation-receipt-sha256', 'VALIDATION_RECEIPT_SHA256'),
+                ('validation-artifact-id', 'VALIDATION_ARTIFACT_ID'),
+                ('validation-artifact-sha256', 'VALIDATION_ARTIFACT_SHA256'),
+                ('validation-run-id', 'VALIDATION_RUN_ID'),
+                ('validation-run-attempt', 'VALIDATION_RUN_ATTEMPT')):
+            arguments.extend(('--' + flag, os.environ[environment]))
+        arguments.extend(('--expected-run-id', os.environ['GITHUB_RUN_ID'],
+                          '--expected-run-attempt', os.environ['GITHUB_RUN_ATTEMPT'],
+                          '--validation-original-mode', os.environ['VALIDATION_ORIGINAL_MODE']))
+        compose_control(arguments)
+        if read_regular_file_bytes(source, reject_symlink_parents=True) != raw:
+            raise ValueError('Android base policy changed during original control creation')
+        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+            output.write('original_control=' + str(destination) + '\n')
+        PY

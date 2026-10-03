@@ -21,6 +21,22 @@ class AppServerRuntimeDistributionTest {
         assertFailsWith<IllegalArgumentException> {
             distribution.requireCompatible(
                 distribution.appServerVersion,
+                "0".repeat(40),
+                distribution.schemaSha256,
+                environment,
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            distribution.requireCompatible(
+                distribution.appServerVersion,
+                distribution.upstreamRevision,
+                "0".repeat(64),
+                environment,
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            distribution.requireCompatible(
+                distribution.appServerVersion,
                 distribution.upstreamRevision,
                 distribution.schemaSha256,
                 environment.copy(supportsStaticElf = false),

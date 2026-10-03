@@ -1,0 +1,306 @@
+name: SDK Android Validation
+
+on:
+  workflow_call:
+    inputs:
+      planOutputs:
+        required: true
+        type: string
+      sdkPlan:
+        required: true
+        type: string
+      sdkInputs:
+        required: true
+        type: string
+      packageWave:
+        required: true
+        type: string
+      validationPlan:
+        required: true
+        type: string
+      trustedWorkflowSha:
+        required: true
+        type: string
+      protectedAndroidAuthority:
+        required: true
+        type: string
+        description: Canonical source and Firebase workflow pins from a protected caller selector; empty means fresh validation is forbidden.
+    outputs:
+      artifact_id:
+        value: ${{ jobs.sdk-android-validation-result.outputs.artifact_id }}
+      artifact_digest:
+        value: ${{ jobs.sdk-android-validation-result.outputs.artifact_digest }}
+      state_wave:
+        value: ${{ jobs.sdk-android-validation-result.outputs.state_wave }}
+      sdk_state_wave:
+        value: ${{ jobs.sdk-android-validation-result.outputs.sdk_state_wave }}
+      validation_receipt_sha256:
+        value: ${{ jobs.sdk-android-validation-result.outputs.validation_receipt_sha256 }}
+      validation_artifact_id:
+        value: ${{ jobs.sdk-android-validation-result.outputs.validation_artifact_id }}
+      validation_artifact_sha256:
+        value: ${{ jobs.sdk-android-validation-result.outputs.validation_artifact_sha256 }}
+      validation_run_id:
+        value: ${{ jobs.sdk-android-validation-result.outputs.validation_run_id }}
+      validation_run_attempt:
+        value: ${{ jobs.sdk-android-validation-result.outputs.validation_run_attempt }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  sdk-android-validation:
+    name: sdk-android-validation-android
+    if: >-
+      always() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      fromJSON(inputs.sdkPlan).result == 'success' &&
+      fromJSON(inputs.sdkInputs).result == 'success' &&
+      fromJSON(inputs.packageWave).result == 'success' &&
+      fromJSON(inputs.packageWave).outputs.sdk_state_wave == '16' &&
+      fromJSON(inputs.validationPlan).result == 'success' &&
+      fromJSON(inputs.validationPlan).outputs.sdk_workers_required == 'true' &&
+      inputs.protectedAndroidAuthority != ''
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(fromJSON(inputs.validationPlan).outputs.sdk_matrix || '{"include":[]}') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    outputs:
+      validation_receipt_sha256: ${{ steps.validation.outputs.validation-receipt-sha256 }}
+      validation_artifact_id: ${{ steps.validation.outputs.validation-artifact-id }}
+      validation_artifact_sha256: ${{ steps.validation.outputs.validation-artifact-sha256 }}
+      validation_run_id: ${{ steps.validation.outputs.validation-run-id }}
+      validation_run_attempt: ${{ steps.validation.outputs.validation-run-attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - id: authority
+        name: Check protected Android source authority before platform setup
+        env:
+          AUTHORITY: ${{ inputs.protectedAndroidAuthority }}
+        run: |
+          python3 -I -B - <<'PY'
+          import json, os, re
+          raw = os.environ['AUTHORITY'].encode('utf-8')
+          def unique(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError('Duplicate protected Android authority field')
+                  result[key] = value
+              return result
+          value = json.loads(raw, object_pairs_hook=unique)
+          fields = {'schemaVersion', 'trustedAndroidWorkflowSha',
+                    'trustedSourceCommit', 'trustedSourceTree'}
+          if (type(value) is not dict or set(value) != fields or
+                  type(value['schemaVersion']) is not int or value['schemaVersion'] != 1 or
+                  (json.dumps(value, sort_keys=True, separators=(',', ':'),
+                              ensure_ascii=False, allow_nan=False) + '\n').encode('utf-8') != raw):
+              raise ValueError('Protected Android authority must be canonical schema 1')
+          for name in ('trustedAndroidWorkflowSha', 'trustedSourceCommit', 'trustedSourceTree'):
+              if type(value[name]) is not str or not re.fullmatch(r'[0-9a-f]{40}', value[name]):
+                  raise ValueError('Protected Android authority needs exact Git identities')
+          # Firebase executes helpers from protected main, not from the candidate checkout.
+          # The original evidence reader binds these separate identities to the official run.
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for name in ('trustedAndroidWorkflowSha', 'trustedSourceCommit', 'trustedSourceTree'):
+                  output.write(name + '=' + value[name] + '\n')
+          PY
+      - name: Select installed caller Java
+        run: |
+          set -euo pipefail
+          source ci/select_caller_java.sh
+          test -f "$selected_java_home/bin/java"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
+          policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+      - id: selected
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          product: sdk
+          sdk-family: android-validation
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          artifact-id: ${{ fromJSON(inputs.packageWave).outputs.artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.packageWave).outputs.artifact_digest }}
+          state-wave: ${{ fromJSON(inputs.packageWave).outputs.state_wave }}
+          sdk-state-wave: ${{ fromJSON(inputs.packageWave).outputs.sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+      - id: policy
+        name: Stage authenticated original Android inputs
+        env:
+          BUILD_KEY: ${{ matrix.buildKey }}
+          SDK_INPUTS_ID: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_id }}
+          SDK_INPUTS_SHA256: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_digest }}
+          TOOLING_POLICY: ${{ steps.tooling.outputs.tooling-policy }}
+          APPLE_POLICY: ${{ steps.tooling.outputs.apple-policy }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+        run: |
+          set -euo pipefail
+          policy=()
+          if [ -n "$APPLE_POLICY" ]; then policy+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
+          python3 -B -m ci.sdk_android_validation_policy \
+            --plan "${{ steps.selected.outputs.plan-path }}" \
+            --discovery-root "${{ steps.selected.outputs.discovery-root }}" \
+            --state-root "${{ steps.selected.outputs.state-root }}" \
+            --destination "$GITHUB_WORKSPACE/build/sdk-android-validation-policy" \
+            --expected-build-key "$BUILD_KEY" \
+            --sdk-inputs-artifact-id "$SDK_INPUTS_ID" \
+            --sdk-inputs-artifact-sha256 "$SDK_INPUTS_SHA256" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
+            --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" \
+            --sdk-validation-tooling "$TOOLING_POLICY" \
+            --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
+            ${policy[@]+"${policy[@]}"}
+      - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      - id: apkanalyzer
+        name: Select installed Android APK analyzer
+        run: |
+          set -euo pipefail
+          executable=$(command -v apkanalyzer)
+          test -f "$executable"
+          echo "executable=$(realpath "$executable")" >> "$GITHUB_OUTPUT"
+      - id: validation
+        uses: ./.github/actions/sdk-android-validation-worker
+        with:
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          artifact-id: ${{ fromJSON(inputs.packageWave).outputs.artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.packageWave).outputs.artifact_digest }}
+          state-wave: ${{ fromJSON(inputs.packageWave).outputs.state_wave }}
+          sdk-state-wave: ${{ fromJSON(inputs.packageWave).outputs.sdk_state_wave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-android-workflow-sha: ${{ steps.authority.outputs.trustedAndroidWorkflowSha }}
+          trusted-source-commit: ${{ steps.authority.outputs.trustedSourceCommit }}
+          trusted-source-tree: ${{ steps.authority.outputs.trustedSourceTree }}
+          policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          build-key: ${{ matrix.buildKey }}
+          tree: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+          package-stage: ${{ steps.policy.outputs.packageStage }}
+          package-receipt: ${{ steps.policy.outputs.packageReceipt }}
+          binary-stage: ${{ steps.policy.outputs.binaryStage }}
+          binary-receipt: ${{ steps.policy.outputs.binaryReceipt }}
+          compatibility-request: ${{ steps.policy.outputs.compatibilityRequest }}
+          binary-contract-evidence: ${{ steps.policy.outputs.binaryContractEvidence }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          apkanalyzer-executable: ${{ steps.apkanalyzer.outputs.executable }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+
+  sdk-collect-17:
+    needs: [sdk-android-validation]
+    if: >-
+      always() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      fromJSON(inputs.sdkPlan).result == 'success' &&
+      fromJSON(inputs.packageWave).result == 'success' &&
+      fromJSON(inputs.validationPlan).result == 'success' &&
+      fromJSON(inputs.validationPlan).outputs.sdk_workers_required == 'true' &&
+      inputs.protectedAndroidAuthority != ''
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
+      wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - name: Select installed caller Java
+        run: |
+          set -euo pipefail
+          source ci/select_caller_java.sh
+          test -f "$selected_java_home/bin/java"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
+          policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+      - id: collect
+        uses: ./.github/actions/collect-runtime-wave
+        with:
+          product: sdk
+          sdk-family: android-validation
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          artifact-id: ${{ fromJSON(inputs.packageWave).outputs.artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.packageWave).outputs.artifact_digest }}
+          state-wave: ${{ fromJSON(inputs.packageWave).outputs.state_wave }}
+          sdk-state-wave: ${{ fromJSON(inputs.packageWave).outputs.sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          wave: '17'
+          tree: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+          sdk-worker-workflow-path: .github/workflows/sdk-android-validation.yml
+          sdk-worker-job-name: product-validation / sdk-android-validation-result / sdk-android-validation-android
+
+  sdk-android-validation-result:
+    needs: [sdk-android-validation, sdk-collect-17]
+    if: >-
+      always() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      fromJSON(inputs.sdkPlan).result == 'success' &&
+      fromJSON(inputs.packageWave).result == 'success' &&
+      fromJSON(inputs.validationPlan).result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.result.outputs.artifact_id }}
+      artifact_digest: ${{ steps.result.outputs.artifact_digest }}
+      state_wave: ${{ steps.result.outputs.state_wave }}
+      sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
+      validation_receipt_sha256: ${{ steps.result.outcome == 'success' && needs.sdk-android-validation.result == 'success' && needs.sdk-android-validation.outputs.validation_receipt_sha256 || '' }}
+      validation_artifact_id: ${{ steps.result.outcome == 'success' && needs.sdk-android-validation.result == 'success' && needs.sdk-android-validation.outputs.validation_artifact_id || '' }}
+      validation_artifact_sha256: ${{ steps.result.outcome == 'success' && needs.sdk-android-validation.result == 'success' && needs.sdk-android-validation.outputs.validation_artifact_sha256 || '' }}
+      validation_run_id: ${{ steps.result.outcome == 'success' && needs.sdk-android-validation.result == 'success' && needs.sdk-android-validation.outputs.validation_run_id || '' }}
+      validation_run_attempt: ${{ steps.result.outcome == 'success' && needs.sdk-android-validation.result == 'success' && needs.sdk-android-validation.outputs.validation_run_attempt || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - id: result
+        name: Fail only after collecting Android validation results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          PACKAGE_WAVE: ${{ inputs.packageWave }}
+          VALIDATION_PLAN: ${{ inputs.validationPlan }}
+          PROTECTED_AUTHORITY: ${{ inputs.protectedAndroidAuthority }}
+        run: |
+          python3 -B - <<'PY'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_native_continuation import select_native_state
+          from ci.reuse import github_output
+          needs = json.loads(os.environ['RESULTS'])
+          needs['sdk-android-package-result'] = json.loads(os.environ['PACKAGE_WAVE'])
+          needs['sdk-android-validation-plan'] = json.loads(os.environ['VALIDATION_PLAN'])
+          if (needs['sdk-android-validation-plan']['outputs'].get('sdk_workers_required') == 'true'
+                  and not os.environ['PROTECTED_AUTHORITY']):
+              raise ValueError('Fresh Android validation lacks protected Firebase/source authority')
+          github_output(Path(os.environ['GITHUB_OUTPUT']),
+                        select_native_state(needs, stage='android-validation'))
+          PY

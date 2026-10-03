@@ -12,6 +12,23 @@ on:
       validationTree:
         required: true
         type: string
+    outputs:
+      native_tests_artifact_id:
+        value: ${{ jobs.native-tests.outputs.artifact_id }}
+      native_tests_artifact_digest:
+        value: ${{ jobs.native-tests.outputs.artifact_digest }}
+      rust_device_artifact_id:
+        value: ${{ jobs.rust-device.outputs.artifact_id }}
+      rust_device_artifact_digest:
+        value: ${{ jobs.rust-device.outputs.artifact_digest }}
+      rust_simulator_artifact_id:
+        value: ${{ jobs.rust-simulator.outputs.artifact_id }}
+      rust_simulator_artifact_digest:
+        value: ${{ jobs.rust-simulator.outputs.artifact_digest }}
+      swift_artifact_id:
+        value: ${{ jobs.swift-tests.outputs.artifact_id }}
+      swift_artifact_digest:
+        value: ${{ jobs.swift-tests.outputs.artifact_digest }}
 
 permissions:
   actions: read
@@ -76,6 +93,8 @@ jobs:
     timeout-minutes: 90
     outputs:
       artifact_name: ${{ steps.lane.outputs.artifact_name }}
+      artifact_id: ${{ steps.lane.outputs.artifact_id }}
+      artifact_digest: ${{ steps.lane.outputs.artifact_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -98,6 +117,8 @@ jobs:
     timeout-minutes: 120
     outputs:
       artifact_name: ${{ steps.lane.outputs.artifact_name }}
+      artifact_id: ${{ steps.lane.outputs.artifact_id }}
+      artifact_digest: ${{ steps.lane.outputs.artifact_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -120,6 +141,8 @@ jobs:
     timeout-minutes: 120
     outputs:
       artifact_name: ${{ steps.lane.outputs.artifact_name }}
+      artifact_id: ${{ steps.lane.outputs.artifact_id }}
+      artifact_digest: ${{ steps.lane.outputs.artifact_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -272,6 +295,8 @@ jobs:
     timeout-minutes: 90
     outputs:
       artifact_name: ${{ steps.lane.outputs.artifact_name }}
+      artifact_id: ${{ steps.lane.outputs.artifact_id }}
+      artifact_digest: ${{ steps.lane.outputs.artifact_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

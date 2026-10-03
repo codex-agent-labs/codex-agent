@@ -1,0 +1,472 @@
+name: Execute elected Core metadata phase
+description: Join the exact eleven original Core validations under an independent caller policy.
+inputs:
+  plan-id:
+    required: true
+    description: Original plan artifact ID.
+  artifact-id:
+    required: true
+    description: Predecessor SDK state artifact ID.
+  artifact-sha256:
+    required: true
+    description: Exact predecessor SDK state digest.
+  state-wave:
+    default: '0'
+    description: Exact preceding Runtime state wave when no SDK wave has run.
+  sdk-state-wave:
+    default: ''
+    description: Exact preceding SDK state wave when any earlier SDK wave ran.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  build-key:
+    required: true
+    description: Exact elected metadata phase key.
+  tree:
+    required: true
+    description: Exact tested source tree.
+  sdk-inputs-id:
+    required: true
+    description: Official original S858 upload ID.
+  sdk-inputs-sha256:
+    required: true
+    description: Exact original S858 upload digest.
+  sdk-validation-tooling:
+    required: true
+    description: Independently captured signed six-field validation tooling policy.
+  keyring:
+    required: true
+    description: Independently supplied release keyring path.
+  keys-directory:
+    required: true
+    description: Independently supplied release keys directory.
+  native-compiler-archive-ios-arm64:
+    required: true
+    description: Caller-owned Git-pinned iOS Arm64 Kotlin/Native archive.
+  native-compiler-archive-ios-simulator-arm64:
+    required: true
+    description: Caller-owned Git-pinned iOS Simulator Arm64 Kotlin/Native archive.
+  native-compiler-archive-linux-arm64:
+    required: true
+    description: Caller-owned Git-pinned Linux Arm64 Kotlin/Native archive.
+  native-compiler-archive-linux-x64:
+    required: true
+    description: Caller-owned Git-pinned Linux X64 Kotlin/Native archive.
+  native-compiler-archive-macos-arm64:
+    required: true
+    description: Caller-owned Git-pinned macOS Arm64 Kotlin/Native archive.
+  native-compiler-archive-macos-x64:
+    required: true
+    description: Caller-owned Git-pinned macOS X64 Kotlin/Native archive.
+  native-compiler-archive-windows-x64:
+    required: true
+    description: Caller-owned Git-pinned Windows X64 Kotlin/Native archive.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional independently supplied Apple replay policy.
+  sdk-android-metadata-policy:
+    default: ''
+    description: Optional independently supplied Android metadata replay policy.
+outputs:
+  sdk-facade-metadata-policy:
+    description: Runner-local raw eleven-validation policy generated from this job's authenticated predecessor capture.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.bootstrap.outputs.policy_path || '' }}
+  metadata-original-context:
+    description: Successful original Core metadata invocation context, captured by the caller before upload.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.execute.outputs.original_context != '' && steps.execute.outputs.original_context || '' }}
+  metadata-receipt-sha256:
+    description: Verified original metadata phase receipt digest, exposed only after successful execution and upload.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.execute.outputs.receipt_sha256 != '' && steps.execute.outputs.receipt_sha256 || '' }}
+  metadata-artifact-id:
+    description: Official original metadata upload ID, exposed only after successful execution and upload.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          steps.upload.outputs.artifact-id || '' }}
+  metadata-artifact-sha256:
+    description: Official original metadata upload digest, exposed only after successful execution and upload.
+    value: >-
+      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+          steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
+          format('sha256:{0}', steps.upload.outputs.artifact-digest) || '' }}
+  preparation-artifact-id:
+    description: Official unsigned Core context preparation upload ID after full original replay.
+    value: >-
+      ${{ steps.context-preparation.outcome == 'success' && steps.context-upload.outcome == 'success' &&
+          steps.context-upload.outputs.artifact-id != '' && steps.context-upload.outputs.artifact-digest != '' &&
+          steps.context-upload.outputs.artifact-id || '' }}
+  preparation-artifact-sha256:
+    description: Official unsigned Core context preparation upload digest after full original replay.
+    value: >-
+      ${{ steps.context-preparation.outcome == 'success' && steps.context-upload.outcome == 'success' &&
+          steps.context-upload.outputs.artifact-id != '' && steps.context-upload.outputs.artifact-digest != '' &&
+          format('sha256:{0}', steps.context-upload.outputs.artifact-digest) || '' }}
+runs:
+  using: composite
+  steps:
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: sdk
+        sdk-family: core-metadata
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        state-wave: ${{ inputs.state-wave }}
+        sdk-state-wave: ${{ inputs.sdk-state-wave }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+        sdk-android-metadata-policy: ${{ inputs.sdk-android-metadata-policy }}
+    - id: bootstrap
+      name: Construct raw eleven-validation policy from the captured predecessor
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        KEYRING: ${{ inputs.keyring }}
+        KEYS_DIRECTORY: ${{ inputs.keys-directory }}
+        IOS_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-ios-arm64 }}
+        IOS_SIMULATOR_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-ios-simulator-arm64 }}
+        LINUX_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-linux-arm64 }}
+        LINUX_X64_ARCHIVE: ${{ inputs.native-compiler-archive-linux-x64 }}
+        MACOS_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-macos-arm64 }}
+        MACOS_X64_ARCHIVE: ${{ inputs.native-compiler-archive-macos-x64 }}
+        WINDOWS_X64_ARCHIVE: ${{ inputs.native-compiler-archive-windows-x64 }}
+        APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        bootstrap_dir=$(mktemp -d "$RUNNER_TEMP/core-metadata-bootstrap.XXXXXXXX")
+        policy_path="$bootstrap_dir/policy.json"
+        options=()
+        if [ -n "$APPLE_POLICY" ]; then options+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
+        python3 -B -m ci.sdk_core_metadata_bootstrap \
+          --plan "$PLAN" --discovery "$DISCOVERY" --state "$STATE" \
+          --requests-root "$GITHUB_WORKSPACE/build/sdk-core-metadata-bootstrap-requests" \
+          --destination "$policy_path" --expected-build-key "$BUILD_KEY" \
+          --sdk-inputs-artifact-id "$SDK_INPUTS_ID" \
+          --sdk-inputs-artifact-sha256 "$SDK_INPUTS_SHA256" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --sdk-validation-tooling "$SDK_VALIDATION_TOOLING" \
+          --keyring "$KEYRING" --keys-directory "$KEYS_DIRECTORY" \
+          --repository-root "$GITHUB_WORKSPACE" \
+          --native-compiler-archive "ios-arm64=$IOS_ARM64_ARCHIVE" \
+          --native-compiler-archive "ios-simulator-arm64=$IOS_SIMULATOR_ARM64_ARCHIVE" \
+          --native-compiler-archive "linux-arm64=$LINUX_ARM64_ARCHIVE" \
+          --native-compiler-archive "linux-x64=$LINUX_X64_ARCHIVE" \
+          --native-compiler-archive "macos-arm64=$MACOS_ARM64_ARCHIVE" \
+          --native-compiler-archive "macos-x64=$MACOS_X64_ARCHIVE" \
+          --native-compiler-archive "windows-x64=$WINDOWS_X64_ARCHIVE" \
+          "${options[@]}"
+        printf 'policy_path=%s\n' "$policy_path" >> "$GITHUB_OUTPUT"
+    - id: policy
+      name: Hold independent eleven-target policy after bootstrap
+      shell: bash
+      env:
+        CORE_POLICY: ${{ steps.bootstrap.outputs.policy_path }}
+        APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        ANDROID_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
+      run: |
+        python3 -B - <<'PY'
+        import os, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        from products.inventory import canonical_json_bytes, sha256_bytes
+        from products.signing_isolation import require_no_signing_secret
+        from ci.sdk_policy_snapshot import snapshot_policy_closure
+        require_no_signing_secret(os.environ)
+        wave = os.environ['SDK_STATE_WAVE']
+        if wave and wave not in {str(value) for value in range(1, 14)}:
+            raise ValueError('Core metadata requires a predecessor before SDK wave 14')
+        root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        digests = {}
+        for name, kind in (('CORE_POLICY', 'core-metadata-bootstrap'),
+                           ('APPLE_POLICY', 'apple-validation'),
+                           ('ANDROID_POLICY', 'android-metadata')):
+            value = os.environ[name]
+            if name == 'CORE_POLICY' and not value:
+                raise ValueError('Core metadata requires independent eleven-target caller policy')
+            if not value:
+                continue
+            path = Path(value)
+            if not path.is_absolute() or path.resolve(strict=True) != path or path == root or root in path.parents:
+                raise ValueError('Core metadata caller policy must be external, absolute and non-symbolic')
+            digests[name] = snapshot_policy_closure(kind, path)
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('policy_sha256=' + sha256_bytes(canonical_json_bytes(digests)) + '\n')
+        PY
+    - id: identity
+      name: Require exact elected Core metadata row before setup
+      shell: bash
+      env:
+        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
+        REQUIRED: ${{ steps.captured.outputs.sdk-workers-required }}
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
+        CORE_POLICY: ${{ steps.bootstrap.outputs.policy_path }}
+        APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        ANDROID_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
+      run: |
+        python3 -B - <<'PY'
+        import json, os, re, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        from native_wrappers import host_classifier
+        from products.inventory import canonical_json_bytes, sha256_bytes
+        from products.signing_isolation import require_no_signing_secret
+        from ci.sdk_policy_snapshot import snapshot_policy_closure
+        require_no_signing_secret(os.environ)
+        digests = {name: snapshot_policy_closure(kind, Path(os.environ[name]))
+                   for name, kind in (('CORE_POLICY', 'core-metadata-bootstrap'),
+                                      ('APPLE_POLICY', 'apple-validation'),
+                                      ('ANDROID_POLICY', 'android-metadata')) if os.environ[name]}
+        if sha256_bytes(canonical_json_bytes(digests)) != os.environ['POLICY_SHA256']:
+            raise ValueError('Core metadata caller policy changed after bootstrap')
+        rows = json.loads(os.environ['MATRIX'])['include']
+        key, tree = os.environ['BUILD_KEY'], os.environ['TREE']
+        if (host_classifier() != 'linux-x64' or os.environ['REQUIRED'] != 'true'
+                or type(rows) is not list or len(rows) != 1 or type(rows[0]) is not dict
+                or tuple(rows[0].get(name) for name in ('product', 'component', 'phase', 'target')) !=
+                   ('sdk', 'sdk-core', 'metadata', 'common')
+                or tuple(rows[0].get(name) for name in ('runner', 'runnerOs', 'runnerArch')) !=
+                   ('ubuntu-24.04', 'Linux', 'X64')
+                or rows[0].get('buildKey') != key or not re.fullmatch(r'sha256:[0-9a-f]{64}', key)
+                or not re.fullmatch(r'[0-9a-f]{40}', tree)):
+            raise ValueError('Core metadata differs from its elected host, target or key')
+        with open(os.environ['PLAN']) as source:
+            if json.load(source)['validationTree'] != tree:
+                raise ValueError('Core metadata tree differs from the authenticated plan')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
+        PY
+    - uses: ./.github/actions/setup-kmp
+      with:
+        cache-read-only: 'true'
+        product-worker: 'true'
+    - id: execute
+      name: Execute exact Core metadata controller
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        CORE_POLICY: ${{ steps.bootstrap.outputs.policy_path }}
+        APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        ANDROID_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B - <<'PY'
+        import os, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        import product_reuse
+        from products.inventory import canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, require_sha256, sha256_bytes
+        from products.sdk_facade_metadata_admission import fresh_metadata_arguments
+        from products.signing_isolation import require_no_signing_secret
+        from sdk_facade_original_inputs import held_fresh_facade_metadata_policy
+        from sdk_facade_metadata_original import _context as original_metadata_context
+        from ci.sdk_policy_snapshot import snapshot_policy_closure
+        from sdk_facade_metadata_workflow import execute
+        from sdk_metadata_policy import metadata_admission_options
+        require_no_signing_secret(os.environ)
+        root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        policy_path = Path(os.environ['CORE_POLICY'])
+        raw = read_regular_file_bytes(policy_path, reject_symlink_parents=True)
+        optional_raw = {name: read_regular_file_bytes(Path(os.environ[name]),
+                        max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+                        for name in ('APPLE_POLICY', 'ANDROID_POLICY') if os.environ[name]}
+        def held_policy_digest():
+            digests = {name: snapshot_policy_closure(kind, Path(os.environ[name]))
+                       for name, kind in (('CORE_POLICY', 'core-metadata-bootstrap'),
+                                          ('APPLE_POLICY', 'apple-validation'),
+                                          ('ANDROID_POLICY', 'android-metadata')) if os.environ[name]}
+            return sha256_bytes(canonical_json_bytes(digests))
+        if held_policy_digest() != os.environ['POLICY_SHA256']:
+            raise ValueError('Core metadata caller policy changed before execution')
+        replay_policy = load_canonical_json_bytes(raw)
+        plan = Path(os.environ['PLAN'])
+        current = product_reuse._validate_plan(plan, root)
+        # The fresh metadata phase has no selected metadata receipt yet. Keep
+        # the reuse-only Core admission out of both state capture and replay;
+        # the controller joins and replays all eleven elected validations.
+        options = {'plan': plan, 'repository_root': root}
+        if os.environ['ANDROID_POLICY']:
+            options['sdk_android_metadata_policy'] = Path(os.environ['ANDROID_POLICY'])
+            options['expected_policy_bytes'] = {'sdk_android_metadata_policy': optional_raw['ANDROID_POLICY']}
+        apple = load_canonical_json_bytes(optional_raw['APPLE_POLICY']) if os.environ['APPLE_POLICY'] else None
+        if apple is not None and type(apple) is not dict:
+            raise ValueError('Caller Apple validation policy must be an object')
+        with metadata_admission_options(options) as admissions:
+            with held_fresh_facade_metadata_policy(plan, Path(os.environ['DISCOVERY']),
+                    Path(os.environ['STATE']), expected_build_key=os.environ['BUILD_KEY'],
+                    replay_policy=replay_policy, trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
+                    repository_root=root, environ=os.environ, token=os.environ['GITHUB_TOKEN'],
+                    sdk_apple_validation_policy=apple,
+                    sdk_android_metadata_admission=admissions.get('sdk_android_metadata_admission')) as descriptor_path:
+                if held_policy_digest() != os.environ['POLICY_SHA256'] or \
+                        read_regular_file_bytes(policy_path, reject_symlink_parents=True) != raw or \
+                        any(read_regular_file_bytes(Path(os.environ[name]), max_bytes=16 * 1024 * 1024,
+                                reject_symlink_parents=True) != pinned for name, pinned in optional_raw.items()):
+                    raise ValueError('Core metadata caller policy changed before held execution')
+                descriptor = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(
+                    descriptor_path, reject_symlink_parents=True)),
+                    {'evidenceRoot', 'records', 'policy'}, 'Fresh Core metadata descriptor')
+                if descriptor['records'] != []:
+                    raise ValueError('Fresh Core metadata must not claim a metadata receipt or reuse admission')
+                policy = fresh_metadata_arguments(descriptor['policy'])
+                if (policy['plan'] != plan or
+                        read_regular_file_bytes(policy['plan'], reject_symlink_parents=True) !=
+                        read_regular_file_bytes(plan, reject_symlink_parents=True)):
+                    raise ValueError('Fresh Core metadata policy differs from the current authenticated plan')
+                result = execute(plan=plan, discovery=Path(os.environ['DISCOVERY']), state=Path(os.environ['STATE']),
+                    destination=root / 'build/sdk-core-metadata-worker', expected_build_key=os.environ['BUILD_KEY'],
+                    validations=policy['validations'], contract_digest=policy['contract_digest'],
+                    component_digests=policy['component_digests'], repository_root=root, environ=os.environ,
+                    token=os.environ['GITHUB_TOKEN'], trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
+                    tooling_evidence=policy['tooling_evidence'], tooling_public_key=policy['tooling_public_key'],
+                    java_executable=policy['java_executable'], policy_revision=current['validationCommit'],
+                    required_trust_domain=policy['required_trust_domain'], tooling_keyring=policy['tooling_keyring'],
+                    tooling_keys_directory=policy['tooling_keys_directory'], sdk_apple_validation_policy=apple,
+                    **admissions)
+        if held_policy_digest() != os.environ['POLICY_SHA256']:
+            raise ValueError('Core metadata caller policy closure changed after original reader exit')
+        require_no_signing_secret(os.environ)
+        context = original_metadata_context(result['originalContext'])
+        receipt_sha256 = require_sha256(result['shard']['receiptSha256'], 'Core metadata phase receipt')
+        if context['repositoryRoot'] != str(root):
+            raise ValueError('Core metadata controller returned an invalid caller context')
+        value = canonical_json_bytes(context).decode('utf-8').strip()
+        if '\r' in value or '\n' in value:
+            raise ValueError('Core metadata context must fit one output line')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('original_context=' + value + '\n')
+            output.write('receipt_sha256=' + receipt_sha256 + '\n')
+        PY
+    - id: upload
+      if: always() && steps.identity.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-worker-sdk-core-metadata-common-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/sdk-core-metadata-worker
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90
+    - id: context-policy
+      name: Locate all original Core uploads for non-secret context preparation
+      if: >-
+        steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+        steps.execute.outputs.receipt_sha256 != '' && steps.execute.outputs.original_context != '' &&
+        steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != ''
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        BOOTSTRAP_POLICY: ${{ steps.bootstrap.outputs.policy_path }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        RECEIPT_SHA256: ${{ steps.execute.outputs.receipt_sha256 }}
+        METADATA_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        METADATA_ARTIFACT_SHA256: ${{ steps.upload.outputs.artifact-digest }}
+        ORIGINAL_CONTEXT: ${{ steps.execute.outputs.original_context }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        context_root=$(mktemp -d "$RUNNER_TEMP/core-context-caller.XXXXXXXX")
+        options=()
+        if [ -n "$APPLE_POLICY" ]; then
+          options+=(--sdk-apple-validation-policy "$APPLE_POLICY")
+        fi
+        python3 -B -m ci.sdk_core_metadata_context_policy \
+          --plan "$PLAN" --discovery "$DISCOVERY" --state "$STATE" \
+          --bootstrap-policy "$BOOTSTRAP_POLICY" \
+          --metadata-receipt "$GITHUB_WORKSPACE/build/sdk-core-metadata-worker/shard/phase-receipt.json" \
+          --destination "$context_root/policy" --expected-build-key "$BUILD_KEY" \
+          --expected-receipt-sha256 "$RECEIPT_SHA256" \
+          --metadata-artifact-id "$METADATA_ARTIFACT_ID" \
+          --metadata-artifact-sha256 "sha256:$METADATA_ARTIFACT_SHA256" \
+          --original-context "$ORIGINAL_CONTEXT" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --repository-root "$GITHUB_WORKSPACE" "${options[@]}"
+        printf 'policy=%s\n' "$context_root/policy/caller-policy.json" >> "$GITHUB_OUTPUT"
+    - id: context-preparation
+      name: Replay exact Core originals without signing authority
+      if: steps.context-policy.outcome == 'success'
+      shell: bash
+      env:
+        CALLER_POLICY: ${{ steps.context-policy.outputs.policy }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        KEYRING: ${{ inputs.keyring }}
+        KEYS_DIRECTORY: ${{ inputs.keys-directory }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        context_root=$(mktemp -d "$RUNNER_TEMP/core-context-prepared.XXXXXXXX")
+        python3 -B -m ci.sdk_core_metadata_context_preparation \
+          --caller-policy "$CALLER_POLICY" --destination "$context_root/prepared" \
+          --repository-root "$GITHUB_WORKSPACE" \
+          --signing-keyring "$KEYRING" --signing-keys-directory "$KEYS_DIRECTORY" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA"
+        printf 'prepared=%s\n' "$context_root/prepared" >> "$GITHUB_OUTPUT"
+    - id: context-upload
+      if: steps.context-preparation.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-core-context-preparation-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: ${{ steps.context-preparation.outputs.prepared }}
+        if-no-files-found: error
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90
+    - name: Require both successful original uploads
+      if: always() && steps.identity.outcome == 'success'
+      shell: bash
+      env:
+        PHASE_RESULT: ${{ steps.execute.outcome }}
+        PHASE_UPLOAD_RESULT: ${{ steps.upload.outcome }}
+        PHASE_RECEIPT: ${{ steps.execute.outputs.receipt_sha256 }}
+        PHASE_CONTEXT: ${{ steps.execute.outputs.original_context }}
+        PHASE_UPLOAD_ID: ${{ steps.upload.outputs.artifact-id }}
+        PHASE_UPLOAD_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        PREPARATION_RESULT: ${{ steps.context-preparation.outcome }}
+        PREPARATION_UPLOAD_RESULT: ${{ steps.context-upload.outcome }}
+        PREPARATION_UPLOAD_ID: ${{ steps.context-upload.outputs.artifact-id }}
+        PREPARATION_UPLOAD_DIGEST: ${{ steps.context-upload.outputs.artifact-digest }}
+      run: |
+        set -euo pipefail
+        test "$PHASE_RESULT" = success
+        test "$PHASE_UPLOAD_RESULT" = success
+        test -n "$PHASE_RECEIPT"
+        test -n "$PHASE_CONTEXT"
+        test -n "$PHASE_UPLOAD_ID"
+        test -n "$PHASE_UPLOAD_DIGEST"
+        test "$PREPARATION_RESULT" = success
+        test "$PREPARATION_UPLOAD_RESULT" = success
+        test -n "$PREPARATION_UPLOAD_ID"
+        test -n "$PREPARATION_UPLOAD_DIGEST"

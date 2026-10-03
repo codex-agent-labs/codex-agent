@@ -1,0 +1,150 @@
+name: Contract Phase-10 Maven Sidecars
+
+on:
+  workflow_call:
+    inputs:
+      planOutputs:
+        required: true
+        type: string
+      trustedWorkflowSha:
+        required: true
+        type: string
+      contractComplete:
+        required: true
+        type: string
+      contractInputsArtifactId:
+        required: true
+        type: string
+      contractInputsArtifactSha256:
+        required: true
+        type: string
+      contractVersion:
+        required: true
+        type: string
+      expectedPgpKeySha256:
+        required: true
+        type: string
+    outputs:
+      phase10OutputArtifactId:
+        value: ${{ jobs.sidecars.outputs.artifact_id }}
+      phase10OutputArtifactSha256:
+        value: ${{ jobs.sidecars.outputs.artifact_sha256 }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  sidecars:
+    name: contract-phase10-maven-sidecars
+    if: >-
+      fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      inputs.contractComplete == 'true' &&
+      github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_sha256: sha256:${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - name: Require protected Contract signer authority before checkout
+        id: authority
+        env:
+          PROTECTED_SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
+          PROTECTED_PGP_KEY: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY }}
+          PROTECTED_PGP_KEY_SHA256: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY_SHA256 }}
+          CALLER_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+          CALLER_PGP_KEY_SHA256: ${{ inputs.expectedPgpKeySha256 }}
+          CONTRACT_INPUTS_ID: ${{ inputs.contractInputsArtifactId }}
+          CONTRACT_INPUTS_SHA256: ${{ inputs.contractInputsArtifactSha256 }}
+          CONTRACT_VERSION: ${{ inputs.contractVersion }}
+        run: |
+          set -euo pipefail
+          [[ "$PROTECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$PROTECTED_PGP_KEY_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          test "$CALLER_SOURCE_SHA" = "$PROTECTED_SOURCE_SHA"
+          test "$CALLER_PGP_KEY_SHA256" = "$PROTECTED_PGP_KEY_SHA256"
+          [[ "$CONTRACT_INPUTS_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$CONTRACT_INPUTS_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$CONTRACT_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 1
+          test -n "$PROTECTED_PGP_KEY"
+          printf '%s' "$PROTECTED_PGP_KEY" > "$RUNNER_TEMP/contract-pgp-public.asc"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/contract-pgp-public.asc" | cut -d ' ' -f 1)" = "$PROTECTED_PGP_KEY_SHA256"
+          fingerprint=$(gpg --batch --with-colons --show-keys "$RUNNER_TEMP/contract-pgp-public.asc" | awk -F: '$1 == "pub" {pub++} $1 == "fpr" && pub == 1 && !fpr {fpr=$10} END {if (pub != 1 || !fpr) exit 1; print fpr}')
+          [[ "$fingerprint" =~ ^[0-9A-F]{40}$|^[0-9A-F]{64}$ ]] || exit 1
+          {
+            printf 'source_sha=%s\n' "$PROTECTED_SOURCE_SHA"
+            printf 'pgp_key_sha256=%s\n' "$PROTECTED_PGP_KEY_SHA256"
+            printf 'pgp_fingerprint=%s\n' "$fingerprint"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check out reviewed Contract verifier and signer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.authority.outputs.source_sha }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Authenticate original Contract bytes without signing keys
+        id: prepare
+        env:
+          TRUSTED_SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+          EXPECTED_PGP_KEY_SHA256: ${{ steps.authority.outputs.pgp_key_sha256 }}
+          CONTRACT_INPUTS_ID: ${{ inputs.contractInputsArtifactId }}
+          CONTRACT_INPUTS_SHA256: ${{ inputs.contractInputsArtifactSha256 }}
+          CONTRACT_VERSION: ${{ inputs.contractVersion }}
+          VALIDATION_TREE: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prepared=$(python3 -B trusted-source/ci/contract_phase10_maven_caller.py prepare \
+            --repository-root "$GITHUB_WORKSPACE/trusted-source" \
+            --destination "$RUNNER_TEMP/contract-phase10-maven-prepared" \
+            --trusted-source-sha "$TRUSTED_SOURCE_SHA" \
+            --trusted-workflow-sha "$TRUSTED_SOURCE_SHA" \
+            --artifact-id "$CONTRACT_INPUTS_ID" \
+            --artifact-sha256 "$CONTRACT_INPUTS_SHA256" \
+            --validation-tree "$VALIDATION_TREE" \
+            --contract-version "$CONTRACT_VERSION" \
+            --trusted-contract-workflow-path .github/workflows/contract-validation.yml \
+            --trusted-contract-binary-job 'product-validation / contract-validation / product-contracts' \
+            --trusted-contract-continuation-job 'product-validation / contract-validation / contract-continuation' \
+            --pgp-public-key "$RUNNER_TEMP/contract-pgp-public.asc" \
+            --expected-pgp-key-sha256 "$EXPECTED_PGP_KEY_SHA256")
+          preparation_sha=$(python3 -c 'import json,re,sys; value=json.load(sys.stdin)["preparationSha256"]; assert re.fullmatch(r"sha256:[0-9a-f]{64}", value); print(value)' <<< "$prepared")
+          printf 'sha256=%s\n' "$preparation_sha" >> "$GITHUB_OUTPUT"
+      - name: Sign pinned Contract bytes and create external Maven sidecars offline
+        env:
+          EXPECTED_PGP_KEY_SHA256: ${{ steps.authority.outputs.pgp_key_sha256 }}
+          PGP_FINGERPRINT: ${{ steps.authority.outputs.pgp_fingerprint }}
+          PREPARATION_SHA256: ${{ steps.prepare.outputs.sha256 }}
+          CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
+          SIGNING_IN_MEMORY_KEY: ${{ secrets.SIGNING_IN_MEMORY_KEY }}
+          SIGNING_IN_MEMORY_KEY_PASSWORD: ${{ secrets.SIGNING_IN_MEMORY_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY"
+          test -n "$SIGNING_IN_MEMORY_KEY"
+          test -n "$SIGNING_IN_MEMORY_KEY_PASSWORD"
+          mkdir -m 700 "$RUNNER_TEMP/contract-pgp-home"
+          printf '%s' "$SIGNING_IN_MEMORY_KEY" | gpg --homedir "$RUNNER_TEMP/contract-pgp-home" --batch --import
+          printf '%s' "$SIGNING_IN_MEMORY_KEY_PASSWORD" | \
+            python3 -B trusted-source/ci/contract_phase10_maven_caller.py sign \
+              --prepared "$RUNNER_TEMP/contract-phase10-maven-prepared" \
+              --destination "$RUNNER_TEMP/contract-phase10-maven" \
+              --expected-preparation-sha256 "$PREPARATION_SHA256" \
+              --expected-pgp-key-sha256 "$EXPECTED_PGP_KEY_SHA256" \
+              --signing-home "$RUNNER_TEMP/contract-pgp-home" \
+              --signing-fingerprint "$PGP_FINGERPRINT"
+      - name: Preserve exact original and external sidecar bytes
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-contract-phase10-maven-original-${{ fromJSON(inputs.planOutputs).validation_tree }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/contract-phase10-maven
+          compression-level: 0
+          retention-days: 90

@@ -1,0 +1,149 @@
+name: Attest prepared Apple SDK validation
+description: Capture the elected worker and preparation without secrets, then sign the exact prepared result from reviewed source.
+inputs:
+  plan-path:
+    required: true
+    description: Absolute original impact plan path.
+  candidate-root:
+    required: true
+    description: Absolute separate candidate checkout used only as authenticated data.
+  target:
+    required: true
+    description: Exact ios-arm64 or ios-simulator-arm64 validation target.
+  build-key:
+    required: true
+    description: Exact elected validation build key.
+  tree:
+    required: true
+    description: Exact current validation tree.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed producer workflow revision.
+  trusted-source-sha:
+    required: true
+    description: Reviewed executable source revision containing this action.
+  private-key:
+    required: true
+    description: Protected product signing key, exposed only to the fixed signing step.
+outputs:
+  artifact-id:
+    description: Protected Apple attestation upload ID.
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-sha256:
+    description: Protected Apple attestation upload digest.
+    value: sha256:${{ steps.upload.outputs.artifact-digest }}
+  receipt-sha256:
+    description: Exact selected original validation receipt digest.
+    value: ${{ steps.capture.outputs.receipt_sha256 }}
+runs:
+  using: composite
+  steps:
+    - id: capture
+      name: Capture elected validation worker without a signing secret
+      shell: bash
+      env:
+        PLAN_PATH: ${{ inputs.plan-path }}
+        CANDIDATE_ROOT: ${{ inputs.candidate-root }}
+        TARGET: ${{ inputs.target }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        VALIDATION_TREE: ${{ inputs.tree }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        TRUSTED_SOURCE_SHA: ${{ inputs.trusted-source-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_ACTION_PATH/../../.."
+        python3 -B - <<'PY'
+        import os, re, subprocess, sys, tempfile
+        from pathlib import Path
+        trusted = Path(os.environ['GITHUB_ACTION_PATH']).resolve(strict=True).parents[2]
+        sys.path.insert(0, str(trusted / 'ci'))
+        from products.inventory import read_regular_file_bytes, require_regular_directory, run_git
+        from products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        if (run_git(trusted, 'rev-parse', 'HEAD').strip() != os.environ['TRUSTED_SOURCE_SHA'] or
+                run_git(trusted, 'status', '--porcelain', '--untracked-files=no').strip()):
+            raise ValueError('Apple attestation executable checkout differs from its reviewed source')
+        candidate, plan, scratch = (Path(os.environ[name]) for name in
+                                    ('CANDIDATE_ROOT', 'PLAN_PATH', 'RUNNER_TEMP'))
+        if any(not path.is_absolute() or any(character in str(path) for character in '\r\n')
+               for path in (candidate, plan, scratch)):
+            raise ValueError('Apple attestation paths must be absolute and single-line')
+        candidate, scratch = candidate.resolve(strict=True), scratch.resolve(strict=True)
+        require_regular_directory(candidate, 'Candidate checkout')
+        require_regular_directory(scratch, 'Apple attestation scratch')
+        read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+        if any(left == right or left in right.parents or right in left.parents
+               for left, right in ((trusted, candidate), (trusted, scratch), (candidate, scratch))):
+            raise ValueError('Apple attestation trusted, candidate and scratch roots must be separate')
+        if re.fullmatch(r'[0-9a-f]{40}', os.environ['VALIDATION_TREE']) is None:
+            raise ValueError('Apple attestation tree must be a full lowercase Git identity')
+        parent = Path(tempfile.mkdtemp(prefix='sdk-apple-attestation-', dir=scratch)).resolve(strict=True)
+        capture, result = parent / 'worker-capture', parent / 'signed-result'
+        subprocess.run([sys.executable, '-B', str(trusted / 'ci/sdk_apple_worker_capture.py'),
+            '--plan', str(plan), '--candidate-root', str(candidate), '--destination', str(capture),
+            '--target', os.environ['TARGET'], '--expected-build-key', os.environ['BUILD_KEY'],
+            '--trusted-workflow-sha', os.environ['TRUSTED_WORKFLOW_SHA'],
+            '--github-output', os.environ['GITHUB_OUTPUT']], cwd=trusted, env=os.environ, check=True)
+        require_no_signing_secret(os.environ)
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('capture_path=' + str(capture) + '\n')
+            output.write('result_path=' + str(result) + '\n')
+        PY
+    - id: preparation
+      name: Locate exact non-secret Apple signing preparation
+      shell: bash
+      env:
+        PLAN_PATH: ${{ inputs.plan-path }}
+        CANDIDATE_ROOT: ${{ inputs.candidate-root }}
+        TARGET: ${{ inputs.target }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_ACTION_PATH/../../.."
+        python3 -B ci/sdk_apple_upload_locator.py preparation \
+          --plan "$PLAN_PATH" --candidate-root "$CANDIDATE_ROOT" --target "$TARGET" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT"
+    - id: sign
+      name: Sign the exact prepared Apple validation evidence
+      shell: bash
+      env:
+        PLAN_PATH: ${{ inputs.plan-path }}
+        CANDIDATE_ROOT: ${{ inputs.candidate-root }}
+        TARGET: ${{ inputs.target }}
+        VALIDATION_TREE: ${{ inputs.tree }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        TRUSTED_SOURCE_SHA: ${{ inputs.trusted-source-sha }}
+        VALIDATION_RECEIPT: ${{ steps.capture.outputs.receipt_path }}
+        RECEIPT_SHA256: ${{ steps.capture.outputs.receipt_sha256 }}
+        VALIDATION_ARTIFACT_ID: ${{ steps.capture.outputs.artifact_id }}
+        VALIDATION_ARTIFACT_SHA256: ${{ steps.capture.outputs.artifact_sha256 }}
+        PREPARATION_ARTIFACT_ID: ${{ steps.preparation.outputs.artifact_id }}
+        PREPARATION_ARTIFACT_SHA256: ${{ steps.preparation.outputs.artifact_sha256 }}
+        RESULT_PATH: ${{ steps.capture.outputs.result_path }}
+        GITHUB_TOKEN: ${{ github.token }}
+        CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ inputs.private-key }}
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_ACTION_PATH/../../.."
+        python3 -B ci/sdk_apple_release_cli.py sign \
+          --plan "$PLAN_PATH" --validation-receipt "$VALIDATION_RECEIPT" \
+          --destination "$RESULT_PATH" --repository-root "$PWD" --candidate-root "$CANDIDATE_ROOT" \
+          --target "$TARGET" --expected-receipt-sha256 "$RECEIPT_SHA256" \
+          --artifact-id "$VALIDATION_ARTIFACT_ID" --artifact-sha256 "$VALIDATION_ARTIFACT_SHA256" \
+          --preparation-artifact-id "$PREPARATION_ARTIFACT_ID" \
+          --preparation-artifact-sha256 "$PREPARATION_ARTIFACT_SHA256" \
+          --trusted-source-sha "$TRUSTED_SOURCE_SHA" --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --validation-tree "$VALIDATION_TREE"
+        printf 'receipt_hex=%s\n' "${RECEIPT_SHA256#sha256:}" >> "$GITHUB_OUTPUT"
+    - id: upload
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-apple-validation-evidence-${{ inputs.target }}-${{ steps.sign.outputs.receipt_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: ${{ steps.capture.outputs.result_path }}
+        if-no-files-found: error
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90

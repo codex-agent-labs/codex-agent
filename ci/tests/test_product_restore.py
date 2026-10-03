@@ -1,0 +1,640 @@
+from __future__ import annotations
+
+import copy
+import os
+from pathlib import Path
+import stat
+import tempfile
+import unittest
+from unittest import mock
+import warnings
+import zipfile
+
+import ci.products.restore as product_restore
+from ci.products.inventory import canonical_json_bytes, sha256_bytes, write_canonical_json
+from ci.products.receipt import compute_build_key, write_output_manifest
+from ci.products.registry import PhaseInstanceId
+from ci.products.restore import (
+    CacheObjectError,
+    finalize_phase_object,
+    native_cache_root,
+    object_relative_path,
+    restore_local_object,
+    restore_object,
+    store_local_object,
+    transport_relative_path,
+    validate_transport,
+    verify_carrier,
+    verify_object,
+    verify_phase_shard,
+    write_carrier,
+    write_transport,
+)
+
+
+DIGEST_A = sha256_bytes(b"a")
+DIGEST_B = sha256_bytes(b"b")
+OID_A = "a" * 40
+OID_B = "b" * 40
+
+
+class ProductRestoreTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name).resolve()
+        self.stage = self.root / "stage"
+        (self.stage / "outputs").mkdir(parents=True)
+        (self.stage / "outputs" / "artifact.bin").write_bytes(b"artifact")
+        self.manifest = write_output_manifest(
+            self.stage,
+            "sdk",
+            "sdk-core",
+            "package",
+            "common",
+            "0.2.0",
+            {"package": "outputs"},
+        )
+        inventory = [{"relativePath": "source.txt", "bytes": 1, "sha256": DIGEST_A}]
+        inputs = {
+            "inventory": inventory,
+            "phaseInputDigest": sha256_bytes(canonical_json_bytes(inventory)),
+            "versionIdentity": "0.2.0",
+            "upstreamArtifacts": [],
+            "toolchainProfileDigest": DIGEST_A,
+            "flagsDigest": DIGEST_B,
+            "outputSchemaVersion": 1,
+        }
+        self.receipt = {
+            "schemaVersion": 1,
+            "product": "sdk",
+            "component": "sdk-core",
+            "phase": "package",
+            "target": "common",
+            "productVersion": "0.2.0",
+            "buildKey": compute_build_key(
+                product="sdk",
+                component="sdk-core",
+                phase="package",
+                target="common",
+                inputs=inputs,
+            ),
+            "inputs": inputs,
+            "outputs": self.manifest["outputs"],
+            "producer": self.producer(),
+            "trustDomain": "development",
+            "result": "success",
+        }
+        self.receipt_path = self.root / "phase-receipt.json"
+        write_canonical_json(self.receipt_path, self.receipt)
+        self.receipt_bytes = self.receipt_path.read_bytes()
+        self.receipt_sha256 = sha256_bytes(self.receipt_bytes)
+        self.cache = self.root / "cache"
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    @staticmethod
+    def producer() -> dict[str, object]:
+        return {
+            "repository": "codex-agent-labs/codex-agent",
+            "workflowPath": ".github/workflows/ci.yml",
+            "commit": OID_A,
+            "tree": OID_B,
+            "event": "pull_request",
+            "runId": 12,
+            "runAttempt": 1,
+            "pullRequest": 31,
+        }
+
+    def store(self) -> dict[str, object]:
+        return store_local_object(self.stage, self.receipt_path, self.cache)
+
+    def test_object_zip_fsync_uses_writable_descriptor(self) -> None:
+        output = self.root / "object.zip"
+        original_open = os.open
+        modes = []
+
+        def record_open(path, flags, *args, **kwargs):
+            if Path(path) == output:
+                modes.append(flags)
+            return original_open(path, flags, *args, **kwargs)
+
+        with mock.patch.object(product_restore.os, "open", side_effect=record_open):
+            product_restore._write_object(self.stage, self.receipt_bytes, output)
+        self.assertEqual([os.O_WRONLY | getattr(os, "O_BINARY", 0)], modes)
+
+    def test_windows_no_replace_publication_renames_readonly_temp(self) -> None:
+        source = self.root / "candidate"
+        source.write_bytes(b"immutable")
+        target = self.root / "target"
+        rename = os.rename
+
+        def checked_rename(temporary: Path, destination: Path) -> None:
+            self.assertEqual(0, temporary.stat().st_mode & stat.S_IWUSR)
+            rename(temporary, destination)
+
+        with mock.patch.object(product_restore, "_is_windows", return_value=True), \
+                mock.patch.object(product_restore, "_windows_directory_path", return_value=self.root), \
+                mock.patch.object(product_restore.os, "rename", side_effect=checked_rename):
+            self.assertTrue(product_restore._publish_no_replace(source, target))
+        self.assertEqual(b"immutable", target.read_bytes())
+        self.assertEqual(0, target.stat().st_mode & stat.S_IWUSR)
+        self.assertEqual({"stage", "phase-receipt.json", "candidate", "target"},
+                         {path.name for path in self.root.iterdir() if path.name != "cache"})
+
+    def test_windows_no_replace_conflict_preserves_existing_and_cleans_temp(self) -> None:
+        source = self.root / "candidate"
+        source.write_bytes(b"new")
+        target = self.root / "target"
+        target.write_bytes(b"existing")
+        with mock.patch.object(product_restore, "_is_windows", return_value=True), \
+                mock.patch.object(product_restore, "_windows_directory_path", return_value=self.root), \
+                mock.patch.object(product_restore.os, "rename", side_effect=FileExistsError):
+            self.assertFalse(product_restore._publish_no_replace(source, target))
+        self.assertEqual(b"existing", target.read_bytes())
+        self.assertFalse(any(path.name.startswith(".target-") for path in self.root.iterdir()))
+
+    def test_oversized_stage_manifest_is_rejected_before_cache_store(self) -> None:
+        manifest = self.stage / "output-manifest.json"
+        with manifest.open("r+b") as output:
+            output.truncate(product_restore.PRODUCT_JSON_LIMIT + 1)
+        with self.assertRaisesRegex(ValueError, "too large"):
+            self.store()
+        self.assertFalse(self.cache.exists())
+
+    @staticmethod
+    def entries(path: Path) -> dict[str, bytes]:
+        with zipfile.ZipFile(path) as archive:
+            return {member.filename: archive.read(member) for member in archive.infolist()}
+
+    @staticmethod
+    def rewrite(
+        source: Path,
+        destination: Path,
+        *,
+        mutate: dict[str, bytes] | None = None,
+        remove: set[str] = frozenset(),
+        extra: dict[str, bytes] | None = None,
+        duplicate: str | None = None,
+        compression: int = zipfile.ZIP_STORED,
+    ) -> None:
+        entries = ProductRestoreTest.entries(source)
+        entries.update(mutate or {})
+        entries.update(extra or {})
+        with warnings.catch_warnings(), zipfile.ZipFile(destination, "w", compression=compression) as archive:
+            warnings.simplefilter("ignore")
+            for name, contents in sorted(entries.items()):
+                if name not in remove:
+                    archive.writestr(name, contents)
+                    if name == duplicate:
+                        archive.writestr(name, contents)
+
+    def remote_transport(self, source_kind: str = "stable", consumer_kind: str = "ci") -> dict[str, object]:
+        source: dict[str, object] = {
+            "kind": source_kind,
+            "indexSha256": DIGEST_A,
+            "artifactName": "outputs/product-object.zip",
+            "artifactSha256": DIGEST_B,
+        }
+        consumer: dict[str, object] = {"kind": "ci", "producer": self.producer()}
+        if consumer_kind == "local":
+            consumer = {
+                "kind": "local",
+                "repository": "codex-agent-labs/codex-agent",
+                "commit": OID_A,
+                "tree": OID_B,
+            }
+        return {
+            "schemaVersion": 1,
+            "buildKey": self.receipt["buildKey"],
+            "receiptSha256": self.receipt_sha256,
+            "objectSha256": DIGEST_A,
+            "source": source,
+            "consumer": consumer,
+        }
+
+    def test_native_roots_and_receipt_qualified_paths_are_exact(self) -> None:
+        home = Path("/users/test")
+        self.assertEqual(
+            Path("/override"),
+            native_cache_root(environ={"CODEX_AGENT_PRODUCT_CACHE": "/override"}, home=home),
+        )
+        self.assertEqual(
+            home / "Library/Caches/codex-agent/products",
+            native_cache_root(environ={}, platform="darwin", home=home),
+        )
+        self.assertEqual(
+            Path("/xdg/codex-agent/products"),
+            native_cache_root(environ={"XDG_CACHE_HOME": "/xdg"}, platform="linux", home=home),
+        )
+        self.assertEqual(
+            home / "AppData/Local/codex-agent/products",
+            native_cache_root(environ={}, platform="win32", home=home),
+        )
+        expected_object = (
+            f"v1/objects/sha256/{self.receipt['buildKey'][7:]}/{self.receipt_sha256[7:]}.zip"
+        )
+        self.assertEqual(expected_object, object_relative_path(self.receipt["buildKey"], self.receipt_sha256))
+        self.assertEqual(
+            f"v1/transports/sha256/{self.receipt['buildKey'][7:]}/{self.receipt_sha256[7:]}/{DIGEST_A[7:]}.json",
+            transport_relative_path(self.receipt["buildKey"], self.receipt_sha256, DIGEST_A),
+        )
+        for invalid in ("relative", ""):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                native_cache_root(environ={"CODEX_AGENT_PRODUCT_CACHE": invalid}, home=home)
+        with self.assertRaises(ValueError):
+            object_relative_path("bad", self.receipt_sha256)
+
+    def test_transport_unions_are_exact_and_do_not_rewrite_receipts(self) -> None:
+        for source in ("stable", "promoted-main", "same-pr"):
+            for consumer in ("ci", "local"):
+                with self.subTest(source=source, consumer=consumer):
+                    validate_transport(self.remote_transport(source, consumer))
+        local = self.remote_transport(consumer_kind="local")
+        local["source"] = {
+            "kind": "local",
+            "cacheRelativePath": object_relative_path(self.receipt["buildKey"], self.receipt_sha256),
+        }
+        validate_transport(local)
+        phase_shard = self.remote_transport()
+        phase_shard["source"] = {
+            "kind": "phase-shard",
+            "descriptorSha256": DIGEST_B,
+            "producer": self.producer(),
+        }
+        validate_transport(phase_shard)
+        result = write_transport(self.cache, local)
+        self.assertEqual("published", result["status"])
+        self.assertEqual(canonical_json_bytes(local), result["path"].read_bytes())
+        self.assertEqual(self.receipt_bytes, self.receipt_path.read_bytes())
+        self.assertEqual("existing", write_transport(self.cache, local)["status"])
+
+        invalid_values = []
+        extra = copy.deepcopy(local); extra["extra"] = True; invalid_values.append(extra)
+        wrong_path = copy.deepcopy(local); wrong_path["source"]["cacheRelativePath"] = "v1/objects/nope"; invalid_values.append(wrong_path)
+        fake_ci = copy.deepcopy(local); fake_ci["consumer"]["runId"] = 1; invalid_values.append(fake_ci)
+        bad_oid = copy.deepcopy(local); bad_oid["consumer"]["commit"] = "ABC"; invalid_values.append(bad_oid)
+        wrong_union = copy.deepcopy(local); wrong_union["source"]["artifactSha256"] = DIGEST_A; invalid_values.append(wrong_union)
+        bad_shard = copy.deepcopy(phase_shard); bad_shard["source"]["descriptorSha256"] = "bad"; invalid_values.append(bad_shard)
+        for invalid in invalid_values:
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                validate_transport(invalid)
+
+    def test_local_producer_shard_round_trip_never_claims_ci_or_release(self) -> None:
+        local = {**self.producer(), "event": "local", "workflowPath": None,
+                 "runId": None, "runAttempt": None, "pullRequest": None}
+        instance = PhaseInstanceId("sdk", "sdk-core", "package", "common")
+        plan = {key: self.receipt[key] for key in (
+            "schemaVersion", "product", "component", "phase", "target", "buildKey", "inputs",
+        )}
+        shard = self.root / "local-shard"
+        result = finalize_phase_object(
+            stage_root=self.stage, phase_plan=plan, producer=local,
+            product_version="0.2.0", trust_domain="development", destination=shard,
+        )
+        self.assertEqual(local, result["receipt"]["producer"])
+        self.assertEqual(self.receipt["outputs"], result["receipt"]["outputs"])
+        self.assertEqual(self.receipt["buildKey"], result["buildKey"])
+        self.assertEqual(result, verify_phase_shard(shard, instance))
+        restored = restore_object(
+            shard / result["objectPath"], self.root / "local-restored",
+            build_key=result["buildKey"], receipt_sha256=result["receiptSha256"],
+            object_sha256=result["objectSha256"],
+        )
+        self.assertEqual(result["receiptBytes"], restored["receiptBytes"])
+        self.assertEqual(result["receiptBytes"], (shard / "phase-receipt.json").read_bytes())
+        transport = self.remote_transport(consumer_kind="local")
+        transport["source"] = {"kind": "phase-shard", "descriptorSha256": DIGEST_B, "producer": local}
+        validate_transport(transport)
+        transport["consumer"] = {"kind": "ci", "producer": local}
+        with self.assertRaisesRegex(ValueError, "CI transport consumer"):
+            validate_transport(transport)
+        with self.assertRaisesRegex(ValueError, "development trust"):
+            finalize_phase_object(
+                stage_root=self.stage, phase_plan=plan, producer=local,
+                product_version="0.2.0", trust_domain="release", destination=self.root / "local-release",
+            )
+        self.assertFalse((self.root / "local-release").exists())
+
+    def test_object_round_trip_is_deterministic_and_preserves_receipt_bytes(self) -> None:
+        first = self.store()
+        self.assertEqual("published", first["status"])
+        archive = first["path"]
+        expected = [
+            "phase-receipt.json",
+            "stage/output-manifest.json",
+            "stage/outputs/artifact.bin",
+        ]
+        with zipfile.ZipFile(archive) as value:
+            self.assertEqual(expected, [member.filename for member in value.infolist()])
+            self.assertEqual(self.receipt_bytes, value.read("phase-receipt.json"))
+        verified = verify_object(
+            archive,
+            build_key=self.receipt["buildKey"],
+            receipt_sha256=self.receipt_sha256,
+            object_sha256=first["objectSha256"],
+        )
+        self.assertEqual(self.receipt_bytes, verified["receiptBytes"])
+        restored = self.root / "restored"
+        result = restore_object(
+            archive,
+            restored,
+            build_key=self.receipt["buildKey"],
+            receipt_sha256=self.receipt_sha256,
+            object_sha256=first["objectSha256"],
+        )
+        self.assertEqual(self.receipt_bytes, result["receiptBytes"])
+        self.assertEqual(b"artifact", (restored / "outputs/artifact.bin").read_bytes())
+        self.assertFalse((restored / "stage").exists())
+        self.assertFalse((restored / "phase-receipt.json").exists())
+        self.assertEqual("existing", self.store()["status"])
+
+    def test_real_ios_sizes_fit_but_archive_entry_and_total_limits_remain_enforced(self) -> None:
+        limits = product_restore.OBJECT_ZIP_LIMITS
+        self.assertEqual(8 * 1024**3, limits["max_archive_bytes"])
+        self.assertEqual(2 * 1024**3, limits["max_entry_bytes"])
+        self.assertEqual(8 * 1024**3, limits["max_total_bytes"])
+        self.assertLess(1_896_891_296, limits["max_entry_bytes"])
+        self.assertLess(5_009_133_052 + 2 * product_restore.PRODUCT_JSON_LIMIT,
+                        limits["max_archive_bytes"])
+        stored = self.store()
+        for limit in ("max_archive_bytes", "max_entry_bytes", "max_total_bytes"):
+            with self.subTest(limit=limit), mock.patch.dict(limits, {limit: 1}):
+                destination = self.root / limit
+                with self.assertRaises(CacheObjectError):
+                    restore_object(
+                        stored["path"], destination, build_key=self.receipt["buildKey"],
+                        receipt_sha256=self.receipt_sha256,
+                        object_sha256=stored["objectSha256"],
+                    )
+                self.assertFalse(destination.exists())
+
+    def test_carrier_preserves_exact_object_receipt_and_transport_bytes(self) -> None:
+        stored = self.store()
+        instance = PhaseInstanceId("sdk", "sdk-core", "package", "common")
+        source = self.remote_transport()["source"]
+        resolution = {
+            "schemaVersion": 1,
+            "result": "complete",
+            "fullReuse": True,
+            "phases": [{
+                "product": instance.product,
+                "component": instance.component,
+                "phase": instance.phase,
+                "target": instance.target,
+                "buildKey": self.receipt["buildKey"],
+                "state": "reused",
+                "source": "stable",
+                "transportSource": source,
+                "receiptSha256": self.receipt_sha256,
+                "objectSha256": stored["objectSha256"],
+                "misses": [],
+            }],
+            "matrices": {"contract": [], "runtime": [], "sdk": []},
+        }
+        carrier_root = self.root / "carrier"
+        consumer = self.remote_transport()["consumer"]
+        value = write_carrier(
+            carrier_root,
+            resolution,
+            (instance,),
+            {instance: stored["path"]},
+            consumer,
+        )
+        self.assertEqual(self.receipt_bytes, value["objects"][0]["receiptBytes"])
+        self.assertEqual(self.receipt_bytes, self.receipt_path.read_bytes())
+        self.assertEqual(
+            self.receipt_bytes,
+            verify_carrier(carrier_root, (instance,), consumer)["objects"][0]["receiptBytes"],
+        )
+        wrong_consumer = copy.deepcopy(consumer)
+        wrong_consumer["producer"]["runId"] = 13
+        with self.assertRaisesRegex(ValueError, "consumer"):
+            verify_carrier(carrier_root, (instance,), wrong_consumer)
+        (carrier_root / "extra").write_bytes(b"no")
+        with self.assertRaisesRegex(ValueError, "inventory"):
+            verify_carrier(carrier_root, (instance,), consumer)
+
+    def test_phase_finalizer_preserves_the_plan_receipt_and_exact_object_shard(self) -> None:
+        instance = PhaseInstanceId("sdk", "sdk-core", "package", "common")
+        plan = {
+            "schemaVersion": 1,
+            "product": instance.product,
+            "component": instance.component,
+            "phase": instance.phase,
+            "target": instance.target,
+            "buildKey": self.receipt["buildKey"],
+            "inputs": self.receipt["inputs"],
+        }
+        invalid_plan = copy.deepcopy(plan)
+        invalid_plan["buildKey"] = DIGEST_A
+        with self.assertRaisesRegex(ValueError, "Expected build key"):
+            finalize_phase_object(
+                stage_root=self.stage,
+                phase_plan=invalid_plan,
+                producer=self.producer(),
+                product_version="0.2.0",
+                trust_domain="development",
+                destination=self.root / "invalid-shard",
+            )
+        self.assertFalse((self.root / "invalid-shard").exists())
+
+        shard = self.root / "shard"
+        result = finalize_phase_object(
+            stage_root=self.stage,
+            phase_plan=plan,
+            producer=self.producer(),
+            product_version="0.2.0",
+            trust_domain="development",
+            destination=shard,
+        )
+        self.assertEqual(self.receipt_bytes, result["receiptBytes"])
+        self.assertEqual(result, verify_phase_shard(shard, instance))
+        self.assertEqual({
+            "phase-object.json",
+            "phase-receipt.json",
+            object_relative_path(result["buildKey"], result["receiptSha256"]),
+        }, {record["relativePath"] for record in product_restore.regular_file_inventory(shard)})
+
+        original_inventory = product_restore.regular_file_inventory
+
+        def mutate_then_inventory(root, *arguments, **keywords):
+            inventory = original_inventory(root, *arguments, **keywords)
+            (Path(root) / "phase-object.json").write_bytes(b"{}\n")
+            return inventory
+
+        with mock.patch.object(
+            product_restore,
+            "regular_file_inventory",
+            side_effect=mutate_then_inventory,
+        ), self.assertRaisesRegex(ValueError, "control files changed"):
+            verify_phase_shard(shard, instance)
+        write_canonical_json(shard / "phase-object.json", {
+            key: result[key] for key in product_restore.PHASE_SHARD_KEYS
+        })
+
+        (shard / "extra").write_bytes(b"no")
+        with self.assertRaisesRegex(ValueError, "inventory"):
+            verify_phase_shard(shard, instance)
+        with self.assertRaisesRegex(ValueError, "must not exist"):
+            finalize_phase_object(
+                stage_root=self.stage,
+                phase_plan=plan,
+                producer=self.producer(),
+                product_version="0.2.0",
+                trust_domain="development",
+                destination=shard,
+            )
+
+    def test_identity_and_allow_list_mutations_fail_before_materialization(self) -> None:
+        stored = self.store()
+        archive = stored["path"]
+        cases: dict[str, Path] = {}
+        extra = self.root / "extra.zip"; self.rewrite(archive, extra, extra={"stage/extra": b"x"}); cases["extra"] = extra
+        missing = self.root / "missing.zip"; self.rewrite(archive, missing, remove={"stage/outputs/artifact.bin"}); cases["missing"] = missing
+        wrong_output = self.root / "wrong-output.zip"; self.rewrite(archive, wrong_output, mutate={"stage/outputs/artifact.bin": b"wrong"}); cases["output"] = wrong_output
+        wrong_receipt = self.root / "wrong-receipt.zip"; self.rewrite(archive, wrong_receipt, mutate={"phase-receipt.json": self.receipt_bytes + b" "}); cases["receipt"] = wrong_receipt
+        duplicate = self.root / "duplicate.zip"; self.rewrite(archive, duplicate, duplicate="stage/outputs/artifact.bin"); cases["duplicate"] = duplicate
+        traversal = self.root / "traversal.zip"; self.rewrite(archive, traversal, extra={"../escape": b"x"}); cases["traversal"] = traversal
+        for name, invalid in cases.items():
+            destination = self.root / f"restore-{name}"
+            with self.subTest(name=name), self.assertRaises(CacheObjectError):
+                restore_object(
+                    invalid,
+                    destination,
+                    build_key=self.receipt["buildKey"],
+                    receipt_sha256=self.receipt_sha256,
+                )
+            self.assertFalse(destination.exists())
+        with self.assertRaises(CacheObjectError):
+            verify_object(
+                archive,
+                build_key=self.receipt["buildKey"],
+                receipt_sha256=self.receipt_sha256,
+                object_sha256=DIGEST_A,
+            )
+
+    def test_symlink_special_and_compression_bomb_members_are_rejected(self) -> None:
+        stored = self.store()
+        archive = stored["path"]
+        entries = self.entries(archive)
+        symlink = self.root / "symlink.zip"
+        with zipfile.ZipFile(symlink, "w") as value:
+            for name, contents in sorted(entries.items()):
+                info = zipfile.ZipInfo(name)
+                info.create_system = 3
+                info.external_attr = ((stat.S_IFLNK | 0o777) if name == "stage/outputs/artifact.bin" else (stat.S_IFREG | 0o644)) << 16
+                value.writestr(info, contents)
+        bomb = self.root / "bomb.zip"
+        self.rewrite(
+            archive,
+            bomb,
+            mutate={"stage/outputs/artifact.bin": b"x" * 100_000},
+            compression=zipfile.ZIP_DEFLATED,
+        )
+        for invalid in (symlink, bomb):
+            with self.subTest(invalid=invalid.name), self.assertRaises(CacheObjectError):
+                verify_object(
+                    invalid,
+                    build_key=self.receipt["buildKey"],
+                    receipt_sha256=self.receipt_sha256,
+                )
+
+    def test_corrupt_local_entry_is_a_repeatable_non_destructive_miss(self) -> None:
+        path = self.cache / object_relative_path(self.receipt["buildKey"], self.receipt_sha256)
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"not a zip")
+        before = path.stat()
+        destination = self.root / "corrupt-restore"
+        for _ in range(2):
+            result = restore_local_object(
+                self.cache,
+                self.receipt["buildKey"],
+                self.receipt_sha256,
+                destination,
+            )
+            self.assertEqual(("miss", "local-corrupt"), (result["status"], result["reason"]))
+            self.assertFalse(destination.exists())
+            self.assertEqual(b"not a zip", path.read_bytes())
+            self.assertEqual(before.st_ino, path.stat().st_ino)
+        self.assertEqual("local-corrupt", self.store()["status"])
+        self.assertEqual(b"not a zip", path.read_bytes())
+
+    def test_valid_different_immutable_object_is_a_hard_conflict(self) -> None:
+        stored = self.store()
+        path = stored["path"]
+        entries = self.entries(path)
+        path.unlink()
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for name, contents in sorted(entries.items()):
+                archive.writestr(name, contents)
+        occupied = path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            self.store()
+        self.assertEqual(occupied, path.read_bytes())
+
+    def test_symlinked_cache_parent_and_archive_mutation_are_rejected(self) -> None:
+        real_cache = self.root / "real-cache"
+        real_cache.mkdir()
+        linked_cache = self.root / "linked-cache"
+        try:
+            linked_cache.symlink_to(real_cache, target_is_directory=True)
+        except OSError:
+            return
+        with self.assertRaises(ValueError):
+            store_local_object(self.stage, self.receipt_path, linked_cache)
+
+        stored = self.store()
+        mutable = self.root / "mutable.zip"
+        mutable.write_bytes(stored["path"].read_bytes())
+        original = product_restore._open_safe_regular
+
+        def open_then_append(path: Path, label: str):
+            descriptor, metadata = original(path, label)
+            if Path(path) == mutable:
+                with mutable.open("ab") as output:
+                    output.write(b"changed")
+            return descriptor, metadata
+
+        with mock.patch.object(
+            product_restore,
+            "_open_safe_regular",
+            side_effect=open_then_append,
+        ), self.assertRaises(CacheObjectError):
+            verify_object(
+                mutable,
+                build_key=self.receipt["buildKey"],
+                receipt_sha256=self.receipt_sha256,
+            )
+
+    def test_local_missing_hit_and_existing_destination_are_distinct(self) -> None:
+        destination = self.root / "local-restore"
+        missing = restore_local_object(
+            self.cache,
+            self.receipt["buildKey"],
+            self.receipt_sha256,
+            destination,
+        )
+        self.assertEqual(("miss", "local-missing"), (missing["status"], missing["reason"]))
+        self.store()
+        hit = restore_local_object(
+            self.cache,
+            self.receipt["buildKey"],
+            self.receipt_sha256,
+            destination,
+        )
+        self.assertEqual(("hit", "local-hit"), (hit["status"], hit["reason"]))
+        sentinel = destination / "sentinel"
+        sentinel.write_bytes(b"keep")
+        with self.assertRaises(ValueError):
+            restore_local_object(
+                self.cache,
+                self.receipt["buildKey"],
+                self.receipt_sha256,
+                destination,
+            )
+        self.assertEqual(b"keep", sentinel.read_bytes())
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,358 @@
+name: Execute elected Core SDK validation
+description: Authenticate current-campaign Core originals and run the existing full target consumer replay.
+inputs:
+  plan-id:
+    required: true
+    description: Original plan upload ID.
+  artifact-id:
+    required: true
+    description: Current predecessor state upload ID.
+  artifact-sha256:
+    required: true
+    description: Exact predecessor state upload digest.
+  state-wave:
+    default: '0'
+    description: Current Runtime state wave.
+  sdk-state-wave:
+    default: ''
+    description: Current SDK state wave.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  target:
+    required: true
+    description: Elected Core consumer target.
+  build-key:
+    required: true
+    description: Exact elected target validation key.
+  tree:
+    required: true
+    description: Exact selected source tree.
+  sdk-inputs-id:
+    required: true
+    description: Official original S858 upload ID.
+  sdk-inputs-sha256:
+    required: true
+    description: Exact original S858 upload digest.
+  sdk-validation-tooling:
+    required: true
+    description: Independently captured signed six-field tooling policy.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional caller-owned Apple policy for predecessor replay.
+  sdk-facade-metadata-policy:
+    default: ''
+    description: Optional caller-owned Core metadata policy for predecessor replay.
+  sdk-android-metadata-policy:
+    default: ''
+    description: Optional caller-owned Android metadata policy for predecessor replay.
+  native-compiler-archive:
+    default: ''
+    description: Caller-owned reviewed native compiler archive; never selected from state.
+runs:
+  using: composite
+  steps:
+    - id: policy
+      name: Pin independent tooling, SDK upload and native archive before state capture
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+        SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        NATIVE_COMPILER_ARCHIVE: ${{ inputs.native-compiler-archive }}
+      run: |
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        from ci.products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
+            read_regular_file_bytes, regular_file_inventory, require_exact_keys,
+            require_sha256, sha256_bytes, sha256_file)
+        from ci.products.registry import SDK_FACADE_TARGETS
+        from ci.products.sdk_facade_validation_admission import _native_archive_path
+        from ci.products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        target = os.environ['TARGET']
+        if target not in SDK_FACADE_TARGETS:
+            raise ValueError('Core validation requires a registered target')
+        upload = os.environ['SDK_INPUTS_ID']
+        if not upload.isascii() or not upload.isdecimal() or int(upload) < 1:
+            raise ValueError('Core validation requires a positive official S858 upload ID')
+        require_sha256(os.environ['SDK_INPUTS_SHA256'], 'Original S858 upload digest')
+        archive = _native_archive_path(target, os.environ['NATIVE_COMPILER_ARCHIVE'] or None)
+        checkout = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        if archive is not None and archive.is_relative_to(checkout):
+            raise ValueError('Core native archive cannot be selected from captured checkout state')
+        def policy_path(name):
+            path = Path(os.environ[name])
+            if not path.is_absolute() or path.resolve(strict=True) != path or path.is_relative_to(checkout):
+                raise ValueError('Core validation caller policy must be external, absolute and non-symbolic: ' + name)
+            return path
+        controls = {}
+        for name in ('SDK_VALIDATION_TOOLING', 'SDK_APPLE_VALIDATION_POLICY',
+                     'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY'):
+            if os.environ[name]:
+                raw = read_regular_file_bytes(policy_path(name), reject_symlink_parents=True)
+                load_canonical_json_bytes(raw)
+                controls[name] = sha256_bytes(raw)
+        tooling = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(
+            policy_path('SDK_VALIDATION_TOOLING'), reject_symlink_parents=True)),
+            {'evidence', 'publicKey', 'javaExecutable', 'requiredTrustDomain', 'keyring', 'keysDirectory'},
+            'Core validation signed tooling')
+        if tooling['requiredTrustDomain'] != 'release' or any(tooling[name] is None for name in
+                ('evidence', 'publicKey', 'javaExecutable', 'keyring', 'keysDirectory')):
+            raise ValueError('Protected Core validation requires complete release tooling authority')
+        trees = {'toolingEvidence': Path(tooling['evidence']), 'toolingKeys': Path(tooling['keysDirectory'])}
+        files = {'toolingPublicKey': Path(tooling['publicKey']), 'toolingJava': Path(tooling['javaExecutable']),
+                 'toolingKeyring': Path(tooling['keyring'])}
+        if any(not path.is_absolute() or path.resolve(strict=True) != path
+               for path in (*trees.values(), *files.values())):
+            raise ValueError('Core validation tooling paths must be absolute and non-symbolic')
+        pins = {'controls': controls,
+                'trees': {name: regular_file_inventory(path) for name, path in trees.items()},
+                'files': {name: sha256_file(path, reject_symlink_parents=True) for name, path in files.items()},
+                'archive': sha256_file(archive, reject_symlink_parents=True) if archive is not None else None}
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('sha256=' + sha256_bytes(canonical_json_bytes(pins)) + '\n')
+        PY
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: sdk
+        sdk-family: core-validation
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        state-wave: ${{ inputs.state-wave }}
+        sdk-state-wave: ${{ inputs.sdk-state-wave }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+        sdk-facade-metadata-policy: ${{ inputs.sdk-facade-metadata-policy }}
+        sdk-android-metadata-policy: ${{ inputs.sdk-android-metadata-policy }}
+    - id: identity
+      name: Require exact target election and matching physical host before setup
+      shell: bash
+      env:
+        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
+        REQUIRED: ${{ steps.captured.outputs.sdk-workers-required }}
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
+        TARGET: ${{ inputs.target }}
+        POLICY_SHA256: ${{ steps.policy.outputs.sha256 }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        NATIVE_COMPILER_ARCHIVE: ${{ inputs.native-compiler-archive }}
+      run: |
+        python3 -B - <<'PY'
+        import json, os, re, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        from native_wrappers import host_classifier
+        from products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
+            read_regular_file_bytes, regular_file_inventory, sha256_bytes, sha256_file)
+        from products.sdk_facade_validation_admission import _native_archive_path
+        from products.signing_isolation import require_no_signing_secret
+        from sdk_phase import route
+        require_no_signing_secret(os.environ)
+        target, key, tree = (os.environ[name] for name in ('TARGET', 'BUILD_KEY', 'TREE'))
+        rows = json.loads(os.environ['MATRIX'])['include']
+        selected = [row for row in rows if type(row) is dict and
+            tuple(row.get(name) for name in ('product', 'component', 'phase', 'target')) ==
+                ('sdk', 'sdk-core', 'validation', target)] if type(rows) is list else []
+        if (os.environ['REQUIRED'] != 'true' or len(selected) != 1 or selected[0].get('buildKey') != key
+                or not re.fullmatch(r'sha256:[0-9a-f]{64}', key)
+                or not re.fullmatch(r'[0-9a-f]{40}', tree)):
+            raise ValueError('Core validation differs from its exact elected target or key')
+        row = selected[0]
+        expected = route(row)
+        expected_host = ('macos-arm64' if target.startswith('ios-') else
+            'linux-x64' if target == 'linux-arm64' else
+            target if target in ('macos-arm64', 'macos-x64', 'linux-x64', 'windows-x64') else 'linux-x64')
+        if (tuple(row.get(name) for name in ('runner', 'runnerOs', 'runnerArch')) !=
+                tuple(expected[name] for name in ('runner', 'runnerOs', 'runnerArch'))
+                or (os.environ['RUNNER_OS'], os.environ['RUNNER_ARCH']) !=
+                    (expected['runnerOs'], expected['runnerArch'])
+                or host_classifier() != expected_host):
+            raise ValueError('Core validation differs from its elected physical host')
+        plan = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
+        if plan['validationTree'] != tree or not re.fullmatch(r'[0-9a-f]{40}', plan['validationCommit']):
+            raise ValueError('Core validation source differs from its authenticated plan')
+        tooling = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['SDK_VALIDATION_TOOLING']),
+            reject_symlink_parents=True))
+        controls = {name: sha256_bytes(read_regular_file_bytes(Path(os.environ[name]), reject_symlink_parents=True))
+                    for name in ('SDK_VALIDATION_TOOLING', 'SDK_APPLE_VALIDATION_POLICY',
+                                 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY') if os.environ[name]}
+        trees = {'toolingEvidence': Path(tooling['evidence']), 'toolingKeys': Path(tooling['keysDirectory'])}
+        files = {'toolingPublicKey': Path(tooling['publicKey']), 'toolingJava': Path(tooling['javaExecutable']),
+                 'toolingKeyring': Path(tooling['keyring'])}
+        archive = _native_archive_path(target, os.environ['NATIVE_COMPILER_ARCHIVE'] or None)
+        pins = {'controls': controls,
+                'trees': {name: regular_file_inventory(path) for name, path in trees.items()},
+                'files': {name: sha256_file(path, reject_symlink_parents=True) for name, path in files.items()},
+                'archive': sha256_file(archive, reject_symlink_parents=True) if archive is not None else None}
+        if sha256_bytes(canonical_json_bytes(pins)) != os.environ['POLICY_SHA256']:
+            raise ValueError('Core validation caller authority changed during state capture')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
+            output.write('policy_revision=' + plan['validationCommit'] + '\n')
+        PY
+    - id: request
+      name: Materialize selected package, Contract and signed SDK inputs before setup
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        TARGET: ${{ inputs.target }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        NATIVE_COMPILER_ARCHIVE: ${{ inputs.native-compiler-archive }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        POLICY_SHA256: ${{ steps.policy.outputs.sha256 }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        from ci.products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
+            read_regular_file_bytes, regular_file_inventory, sha256_bytes, sha256_file)
+        from ci.products.sdk_facade_validation_admission import _native_archive_path
+        from ci.products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        controls = {name: sha256_bytes(read_regular_file_bytes(Path(os.environ[name]), reject_symlink_parents=True))
+                    for name in ('SDK_VALIDATION_TOOLING', 'SDK_APPLE_VALIDATION_POLICY',
+                                 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY') if os.environ[name]}
+        tooling = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['SDK_VALIDATION_TOOLING']),
+            reject_symlink_parents=True))
+        trees = {'toolingEvidence': Path(tooling['evidence']), 'toolingKeys': Path(tooling['keysDirectory'])}
+        files = {'toolingPublicKey': Path(tooling['publicKey']), 'toolingJava': Path(tooling['javaExecutable']),
+                 'toolingKeyring': Path(tooling['keyring'])}
+        archive = _native_archive_path(os.environ['TARGET'], os.environ['NATIVE_COMPILER_ARCHIVE'] or None)
+        pins = {'controls': controls,
+                'trees': {name: regular_file_inventory(path) for name, path in trees.items()},
+                'files': {name: sha256_file(path, reject_symlink_parents=True) for name, path in files.items()},
+                'archive': sha256_file(archive, reject_symlink_parents=True) if archive is not None else None}
+        if sha256_bytes(canonical_json_bytes(pins)) != os.environ['POLICY_SHA256']:
+            raise ValueError('Core validation caller authority changed before request preparation')
+        PY
+        optional=()
+        for pair in SDK_VALIDATION_TOOLING:--sdk-validation-tooling SDK_APPLE_VALIDATION_POLICY:--sdk-apple-validation-policy SDK_FACADE_METADATA_POLICY:--sdk-facade-metadata-policy SDK_ANDROID_METADATA_POLICY:--sdk-android-metadata-policy NATIVE_COMPILER_ARCHIVE:--native-compiler-archive; do
+          variable="${pair%%:*}"
+          flag="${pair#*:}"
+          if [ -n "${!variable}" ]; then optional+=("$flag" "${!variable}"); fi
+        done
+        python3 -B -m ci.sdk_core_validation_policy \
+          --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+          --destination "$GITHUB_WORKSPACE/build/sdk-core-validation-policy" \
+          --repository-root "$GITHUB_WORKSPACE" --target "$TARGET" \
+          --expected-build-key "$BUILD_KEY" \
+          --sdk-inputs-artifact-id "$SDK_INPUTS_ID" --sdk-inputs-artifact-sha256 "$SDK_INPUTS_SHA256" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
+          --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" \
+          ${optional[@]+"${optional[@]}"}
+    - uses: ./.github/actions/setup-kmp
+      with:
+        cache-read-only: 'true'
+        product-worker: 'true'
+    - if: inputs.target == 'android'
+      uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+    - id: execute
+      name: Run existing Core installed-consumer and complete original replay
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        TARGET: ${{ inputs.target }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        POLICY_REVISION: ${{ steps.identity.outputs.policy_revision }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        NATIVE_COMPILER_ARCHIVE: ${{ inputs.native-compiler-archive }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        POLICY_SHA256: ${{ steps.policy.outputs.sha256 }}
+      run: |
+        python3 -B - <<'PY'
+        import os, subprocess, sys
+        from pathlib import Path
+        from ci.products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
+            read_regular_file_bytes, regular_file_inventory, sha256_bytes, sha256_file)
+        from ci.products.sdk_facade_validation_admission import _native_archive_path
+        from ci.products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        controls = {name: sha256_bytes(read_regular_file_bytes(Path(os.environ[name]), reject_symlink_parents=True))
+                    for name in ('SDK_VALIDATION_TOOLING', 'SDK_APPLE_VALIDATION_POLICY',
+                                 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY') if os.environ[name]}
+        tooling = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['SDK_VALIDATION_TOOLING']),
+            reject_symlink_parents=True))
+        trees = {'toolingEvidence': Path(tooling['evidence']), 'toolingKeys': Path(tooling['keysDirectory'])}
+        files = {'toolingPublicKey': Path(tooling['publicKey']), 'toolingJava': Path(tooling['javaExecutable']),
+                 'toolingKeyring': Path(tooling['keyring'])}
+        archive = _native_archive_path(os.environ['TARGET'], os.environ['NATIVE_COMPILER_ARCHIVE'] or None)
+        pins = {'controls': controls,
+                'trees': {name: regular_file_inventory(path) for name, path in trees.items()},
+                'files': {name: sha256_file(path, reject_symlink_parents=True) for name, path in files.items()},
+                'archive': sha256_file(archive, reject_symlink_parents=True) if archive is not None else None}
+        if sha256_bytes(canonical_json_bytes(pins)) != os.environ['POLICY_SHA256']:
+            raise ValueError('Core validation caller authority changed before execution')
+        values = {
+            '--plan': os.environ['PLAN'], '--discovery-root': os.environ['DISCOVERY'],
+            '--state-root': os.environ['STATE'], '--destination': str(root / 'build/sdk-core-validation-worker'),
+            '--repository-root': str(root), '--target': os.environ['TARGET'],
+            '--expected-build-key': os.environ['BUILD_KEY'],
+            '--facade-request': str(root / 'build/sdk-core-validation-policy/facade-request.json'),
+            '--android-sdk-directory': os.environ.get('ANDROID_HOME', '') if os.environ['TARGET'] == 'android' else '',
+            '--tooling-evidence': tooling['evidence'], '--tooling-public-key': tooling['publicKey'],
+            '--java-executable': tooling['javaExecutable'], '--required-trust-domain': tooling['requiredTrustDomain'],
+            '--policy-revision': os.environ['POLICY_REVISION'],
+            '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
+        }
+        if os.environ['TARGET'] == 'android' and not values['--android-sdk-directory']:
+            raise ValueError('Core Android consumer requires the installed caller SDK path')
+        if (tooling['keyring'] is None) != (tooling['keysDirectory'] is None):
+            raise ValueError('Core tooling release keyring and directory must be paired')
+        if tooling['keyring'] is not None:
+            values['--tooling-keyring'] = tooling['keyring']
+            values['--tooling-keys-directory'] = tooling['keysDirectory']
+        if os.environ['TARGET'] == 'windows-x64':
+            java = Path(os.environ['JAVA_HOME']) / 'bin/java.exe'
+            values['--consumer-java-executable'] = str(java.resolve(strict=True))
+        for name, flag in (('SDK_APPLE_VALIDATION_POLICY', '--sdk-apple-validation-policy'),
+                           ('SDK_FACADE_METADATA_POLICY', '--sdk-facade-metadata-policy'),
+                           ('SDK_ANDROID_METADATA_POLICY', '--sdk-android-metadata-policy'),
+                           ('NATIVE_COMPILER_ARCHIVE', '--native-compiler-archive')):
+            if os.environ[name]:
+                values[flag] = os.environ[name]
+        command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'core-validation']
+        command.extend(part for flag, value in values.items() for part in (flag, value))
+        subprocess.run(command, cwd=root, check=True)
+        require_no_signing_secret(os.environ)
+        PY
+    - id: upload
+      if: always() && steps.identity.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-worker-sdk-core-validation-${{ inputs.target }}-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/sdk-core-validation-worker
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90

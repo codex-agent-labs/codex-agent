@@ -14,6 +14,38 @@ import kotlin.test.assertTrue
 
 class RuntimeLogPrivacyGuardTest {
     @Test
+    fun removesStaleDeleteTriggerBeforeClearingExistingLogs() {
+        BundledSQLiteDriver().open(":memory:").use { database ->
+            database.execSQL("CREATE TABLE logs (message TEXT)")
+            database.execSQL("INSERT INTO logs VALUES ('sensitive log')")
+            database.execSQL(
+                "CREATE TRIGGER codex_agent_drop_runtime_logs BEFORE DELETE ON logs " +
+                    "BEGIN SELECT RAISE(IGNORE); END",
+            )
+
+            installRuntimeLogPrivacyGuard(database)
+
+            assertEquals(0, database.longQuery("SELECT COUNT(*) FROM logs"))
+        }
+    }
+
+    @Test
+    fun replacesStaleSameNameTriggerBeforeAcceptingNewLogs() {
+        BundledSQLiteDriver().open(":memory:").use { database ->
+            database.execSQL("CREATE TABLE logs (message TEXT)")
+            database.execSQL(
+                "CREATE TRIGGER codex_agent_drop_runtime_logs BEFORE INSERT ON logs " +
+                    "BEGIN SELECT 1; END",
+            )
+
+            installRuntimeLogPrivacyGuard(database)
+
+            database.execSQL("INSERT INTO logs VALUES ('sensitive log')")
+            assertEquals(0, database.longQuery("SELECT COUNT(*) FROM logs"))
+        }
+    }
+
+    @Test
     fun deletesExistingLogsRejectsLaterInsertsAndEnablesSecureDeletion() {
         BundledSQLiteDriver().open(":memory:").use { database ->
             database.execSQL("CREATE TABLE logs (message TEXT)")

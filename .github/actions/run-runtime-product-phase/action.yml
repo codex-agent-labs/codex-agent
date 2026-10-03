@@ -1,0 +1,135 @@
+name: Run elected Runtime product phase
+description: Authenticate original inputs, provision tools, execute once and retain external diagnostics.
+inputs:
+  plan-id:
+    required: true
+    description: Original caller-owned plan artifact ID.
+  artifact-id:
+    required: true
+    description: Caller-owned predecessor state artifact ID.
+  artifact-sha256:
+    required: true
+    description: Caller-owned predecessor state digest.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  state-wave:
+    required: true
+    description: Fixed predecessor wave number.
+  component:
+    required: true
+    description: Elected Runtime component.
+  phase:
+    required: true
+    description: Elected phase.
+  target:
+    required: true
+    description: Elected target.
+  build-key:
+    required: true
+    description: Exact elected build key.
+  revision:
+    required: true
+    description: Exact tested commit.
+  sdk-validation-tooling:
+    default: ''
+    description: Caller-provisioned tooling policy path; never obtained from the captured state.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional caller-owned local Apple policy for replaying retained validation state.
+  supervisor-id:
+    default: ''
+    description: Original supervisor upload ID, only for Linux Arm64 binary.
+  supervisor-sha256:
+    default: ''
+    description: Original supervisor upload digest.
+runs:
+  using: composite
+  steps:
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+        state-wave: ${{ inputs.state-wave }}
+        component: ${{ inputs.component }}
+        phase: ${{ inputs.phase }}
+        target: ${{ inputs.target }}
+        build-key: ${{ inputs.build-key }}
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+    - if: runner.os == 'Windows' && inputs.component == 'windows-x64'
+      uses: ./.github/actions/setup-msvc
+    - uses: ./.github/actions/setup-kmp
+      with:
+        product-worker: 'true'
+        cache-read-only: 'true'
+        node-version: ${{ (inputs.component == 'node-js' || inputs.component == 'node-wasm') && (inputs.phase == 'binary' || inputs.phase == 'validation') && '24.18.0' || '' }}
+        xcode-fingerprint: ${{ runner.os == 'macOS' && 'auto' || 'none' }}
+    - id: archive
+      if: inputs.phase == 'binary' && contains(fromJSON('["macos-arm64","macos-x64","linux-arm64","linux-x64","windows-x64"]'), inputs.component)
+      uses: ./.github/actions/setup-runtime-archive
+      with:
+        phase-plan: ${{ steps.captured.outputs.phase-plan }}
+        revision: ${{ inputs.revision }}
+    - name: Execute the exact elected phase
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        COMPONENT: ${{ inputs.component }}
+        PHASE: ${{ inputs.phase }}
+        TARGET: ${{ inputs.target }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        ARCHIVE: ${{ steps.archive.outputs.archive }}
+        SUPERVISOR_ID: ${{ inputs.supervisor-id }}
+        SUPERVISOR_SHA256: ${{ inputs.supervisor-sha256 }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH: 'true'
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        extra=()
+        if [ -n "$ARCHIVE" ]; then extra+=(--app-server-archive "$ARCHIVE"); fi
+        if [ -n "$SDK_VALIDATION_TOOLING" ]; then extra+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+        if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then extra+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+        if [ "$COMPONENT" = linux-arm64 ] && [ "$PHASE" = binary ]; then
+          test -n "$SUPERVISOR_ID"
+          test -n "$SUPERVISOR_SHA256"
+          extra+=(--supervisor-artifact-id "$SUPERVISOR_ID" --supervisor-artifact-sha256 "$SUPERVISOR_SHA256" --supervisor-trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA")
+        fi
+        python3 -B ci/product_reuse.py execute-runtime-phase \
+          --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+          --product runtime --component "$COMPONENT" --phase "$PHASE" --target "$TARGET" \
+          --sdk-original-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --expected-build-key "$BUILD_KEY" --destination build/runtime-worker ${extra[@]+"${extra[@]}"}
+    - name: Retain failed imported native test reports
+      if: failure() && inputs.component == 'macos-arm64' && inputs.phase == 'validation'
+      shell: bash
+      run: |
+        reports=(codex-agent-runtime-desktop/build/test-results/testImportedMacosArm64CAbi/*.xml)
+        if [ -f "${reports[0]}" ]; then
+          mkdir -p build/runtime-worker/test-results
+          cp "${reports[@]}" build/runtime-worker/test-results/
+        fi
+    - name: Retain failed Windows producer observation
+      if: failure() && inputs.component == 'windows-x64' && inputs.phase == 'binary'
+      shell: bash
+      env:
+        REVISION: ${{ inputs.revision }}
+      run: |
+        paths=build/runtime-worker/toolchain-bootstrap/paths.json
+        if [ -f "$paths" ]; then
+          python3 -m ci.products.toolchain observe-producer \
+            --repository-root . --repository-revision "$REVISION" \
+            --profile-id windows-x64 --producer-role builder --target windows-x64 \
+            --konan-data-dir "$(jq -r .konanDataDir "$paths")" \
+            --kotlin-plugin-jar "$(jq -r .plugin "$paths")" \
+            --native-archive "$(jq -r .archive "$paths")" \
+            --output build/runtime-worker/toolchain-observation.json
+        fi

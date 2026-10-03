@@ -1,0 +1,565 @@
+name: SDK Validation
+
+on:
+  workflow_call:
+    inputs:
+      planArtifact:
+        required: true
+        type: string
+      planId:
+        required: true
+        type: string
+      trustedWorkflowSha:
+        required: true
+        type: string
+      validationCommit:
+        required: true
+        type: string
+      validationTree:
+        required: true
+        type: string
+      stateArtifactId:
+        required: true
+        type: string
+      stateArtifactSha256:
+        required: true
+        type: string
+      stateWave:
+        required: true
+        type: string
+      sdkStateWave:
+        required: true
+        type: string
+      preparationStateArtifactId:
+        required: true
+        type: string
+      preparationStateArtifactSha256:
+        required: true
+        type: string
+      preparationStateWave:
+        required: true
+        type: string
+      preparationSdkStateWave:
+        required: true
+        type: string
+      preparationComponent:
+        required: true
+        type: string
+      preparationPhase:
+        required: true
+        type: string
+      preparationTarget:
+        required: true
+        type: string
+      preparationBuildKey:
+        required: true
+        type: string
+      sdkPreparedArtifactId:
+        required: true
+        type: string
+      sdkPreparedArtifactSha256:
+        required: true
+        type: string
+      sdkInputsArtifactId:
+        required: true
+        type: string
+      sdkInputsArtifactSha256:
+        required: true
+        type: string
+      toolingRequired:
+        required: true
+        type: string
+      toolingArtifactId:
+        type: string
+      toolingArtifactSha256:
+        type: string
+      toolingTransportProducer:
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: ci-sdk-${{ inputs.validationTree }}
+  cancel-in-progress: true
+
+jobs:
+  native-wrapper-sdk-stage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ inputs.validationCommit }}
+      - name: Require one exact original preparation state
+        shell: bash
+        env:
+          STATE_ID: ${{ inputs.stateArtifactId }}
+          STATE_SHA: ${{ inputs.stateArtifactSha256 }}
+          STATE_WAVE: ${{ inputs.stateWave }}
+          SDK_STATE_WAVE: ${{ inputs.sdkStateWave }}
+          PREPARATION_STATE_ID: ${{ inputs.preparationStateArtifactId }}
+          PREPARATION_STATE_SHA: ${{ inputs.preparationStateArtifactSha256 }}
+          PREPARATION_STATE_WAVE: ${{ inputs.preparationStateWave }}
+          PREPARATION_SDK_STATE_WAVE: ${{ inputs.preparationSdkStateWave }}
+          TOOLING_REQUIRED: ${{ inputs.toolingRequired }}
+          TOOLING_ARTIFACT_ID: ${{ inputs.toolingArtifactId }}
+          TOOLING_ARTIFACT_SHA256: ${{ inputs.toolingArtifactSha256 }}
+          TOOLING_TRANSPORT_PRODUCER: ${{ inputs.toolingTransportProducer }}
+        run: |
+          set -euo pipefail
+          test -n "$STATE_ID" && test -n "$STATE_SHA" && test -n "$STATE_WAVE" && test -n "$SDK_STATE_WAVE"
+          test "$STATE_ID" = "$PREPARATION_STATE_ID"
+          test "$STATE_SHA" = "$PREPARATION_STATE_SHA"
+          test "$STATE_WAVE" = "$PREPARATION_STATE_WAVE"
+          test "$SDK_STATE_WAVE" = "$PREPARATION_SDK_STATE_WAVE"
+          case "$TOOLING_REQUIRED" in
+            true) test -n "$TOOLING_ARTIFACT_ID" && test -n "$TOOLING_ARTIFACT_SHA256" && test -n "$TOOLING_TRANSPORT_PRODUCER" ;;
+            false) test -z "$TOOLING_ARTIFACT_ID$TOOLING_ARTIFACT_SHA256$TOOLING_TRANSPORT_PRODUCER" ;;
+            *) exit 1 ;;
+          esac
+      - name: Select installed caller Java for SDK tooling
+        if: inputs.toolingRequired == 'true'
+        shell: bash
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: inputs.toolingRequired == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          plan-id: ${{ inputs.planId }}
+          artifact-id: ${{ inputs.toolingArtifactId }}
+          artifact-sha256: ${{ inputs.toolingArtifactSha256 }}
+          transport-producer: ${{ inputs.toolingTransportProducer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
+          policy-revision: ${{ inputs.validationCommit }}
+      - id: captured
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          product: sdk
+          sdk-family: ${{ format('native-{0}', inputs.preparationPhase) }}
+          plan-id: ${{ inputs.planId }}
+          artifact-id: ${{ inputs.stateArtifactId }}
+          artifact-sha256: ${{ inputs.stateArtifactSha256 }}
+          state-wave: ${{ inputs.stateWave }}
+          sdk-state-wave: ${{ inputs.sdkStateWave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+      - name: Authenticate and receive the five prepared SDKs
+        shell: bash
+        env:
+          PLAN: ${{ steps.captured.outputs.plan-path }}
+          DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+          STATE: ${{ steps.captured.outputs.state-root }}
+          PREPARATION_COMPONENT: ${{ inputs.preparationComponent }}
+          PREPARATION_PHASE: ${{ inputs.preparationPhase }}
+          PREPARATION_TARGET: ${{ inputs.preparationTarget }}
+          PREPARATION_BUILD_KEY: ${{ inputs.preparationBuildKey }}
+          PREPARED_ARTIFACT_ID: ${{ inputs.sdkPreparedArtifactId }}
+          PREPARED_ARTIFACT_SHA256: ${{ inputs.sdkPreparedArtifactSha256 }}
+          SDK_INPUTS_ARTIFACT_ID: ${{ inputs.sdkInputsArtifactId }}
+          SDK_INPUTS_ARTIFACT_SHA256: ${{ inputs.sdkInputsArtifactSha256 }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
+          SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          selected=()
+          if [ -n "$SDK_VALIDATION_TOOLING" ]; then selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+          python3 -B -m ci.sdk_native_prepared_receiver \
+            --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+            --preparation-state-root "$STATE" \
+            --destination "$PWD/build/sdk-native-prepared-receiver" \
+            --preparation-component "$PREPARATION_COMPONENT" \
+            --preparation-phase "$PREPARATION_PHASE" \
+            --preparation-target "$PREPARATION_TARGET" \
+            --preparation-build-key "$PREPARATION_BUILD_KEY" \
+            --prepared-artifact-id "$PREPARED_ARTIFACT_ID" \
+            --prepared-artifact-sha256 "$PREPARED_ARTIFACT_SHA256" \
+            --sdk-inputs-artifact-id "$SDK_INPUTS_ARTIFACT_ID" \
+            --sdk-inputs-artifact-sha256 "$SDK_INPUTS_ARTIFACT_SHA256" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --keyring "$PWD/gradle/release/product-signing-keys.json" \
+            --keys-directory "$PWD/gradle/release/keys" \
+            --repository-root "$PWD" ${selected[@]+"${selected[@]}"}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: true
+          include-hidden-files: true
+          name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}
+          path: build/sdk-native-prepared-receiver/upload
+          compression-level: 0
+          retention-days: 1
+
+  native-wrapper-language:
+    needs: native-wrapper-sdk-stage
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+          - language: csharp
+          - language: rust
+          - language: cpp
+          - language: dart
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.validationCommit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}
+          path: .
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        if: matrix.language == 'python'
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        if: matrix.language == 'csharp'
+        with:
+          dotnet-version: "8.0.419"
+      - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+        if: matrix.language == 'rust'
+        with:
+          components: rustfmt,clippy
+      - uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
+        if: matrix.language == 'dart'
+        with:
+          sdk: "3.6.0"
+      - name: Execute the wrapper behavior and parity suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk_root="$PWD/codex-agent-sdk/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}/linux-x64"
+          sdk="$sdk_root/lib/libcodex_agent.so"
+          binding="$PWD/codex-agent-bindings"
+          canonical_api="$PWD/build/ci/sdk-contract-evidence/canonical-api.json"
+          bootstrap="$PWD/build/ci/sdk-runtime-evidence/bootstrap-evidence.json"
+          export CODEX_AGENT_CANONICAL_API_REPORT="$canonical_api"
+          export CODEX_AGENT_C_ABI_BOOTSTRAP_EVIDENCE="$bootstrap"
+          export CODEX_AGENT_C_SDK_ROOT="$sdk_root"
+          evidence="build/native-wrapper-evidence/${{ matrix.language }}"
+          mkdir -p "$evidence"
+          case "${{ matrix.language }}" in
+            python)
+              CODEX_AGENT_LIBRARY="$sdk" python -m unittest discover -s "$binding/python/tests" -v
+              cp "$binding/python/build/cross-language-evidence"/{compiler-evidence.tsv,executed-tests.tsv} "$evidence/"
+              cp "$binding/python/tests/test_enum_parity.py" "$evidence/test-program"
+              ;;
+            csharp)
+              dotnet build "$binding/csharp/tests/CodexAgent.Tests/CodexAgent.Tests.csproj" \
+                --configuration Release -p:CodexAgentRealSdkPath="$sdk" \
+                -p:CodexAgentCanonicalApiReport="$canonical_api" \
+                -p:CodexAgentCAbiBootstrapEvidence="$bootstrap" \
+                -p:CodexAgentCSdkRoot="$sdk_root"
+              dotnet run --project "$binding/csharp/tests/CodexAgent.Tests/CodexAgent.Tests.csproj" \
+                --configuration Release --no-build -- --real-mcp-values "$sdk"
+              dotnet run --project "$binding/csharp/tests/CodexAgent.Tests/CodexAgent.Tests.csproj" \
+                --configuration Release --no-build
+              csharp="$binding/csharp/tests/CodexAgent.Tests/bin/Release/net8.0"
+              cp "$csharp/artifacts"/{compiler-evidence.tsv,executed-tests.tsv} "$evidence/"
+              cp "$csharp/CodexAgent.Tests.dll" "$evidence/test-program"
+              ;;
+            rust)
+              cargo fetch --manifest-path "$binding/rust/Cargo.toml" --locked
+              cargo fmt --manifest-path "$binding/rust/Cargo.toml" -- --check
+              cargo clippy --manifest-path "$binding/rust/Cargo.toml" --all-targets --locked --offline -- -D warnings
+              CODEX_AGENT_LIBRARY="$sdk" cargo test --manifest-path "$binding/rust/Cargo.toml" --all-targets --release --locked --offline
+              CODEX_AGENT_REAL_SDK="$sdk" cargo test --manifest-path "$binding/rust/Cargo.toml" \
+                --all-targets --release --locked --offline -- --ignored --test-threads=1
+              cp "$binding/rust/target/cross-language-evidence"/{compiler-evidence.tsv,executed-tests.tsv} "$evidence/"
+              cp "$binding/rust/tests/enum_parity.rs" "$evidence/test-program"
+              ;;
+            cpp)
+              cmake -S "$binding/cpp" -B build/native-wrapper-cpp-tests \
+                -DCodexAgent_C_SDK_ROOT="$sdk_root" \
+                -DCodexAgent_CANONICAL_API_REPORT="$canonical_api" \
+                -DCodexAgent_C_ABI_BOOTSTRAP_EVIDENCE="$bootstrap" \
+                -DCodexAgent_NATIVE_CLASSIFIER=linux-x64 -DCMAKE_BUILD_TYPE=Release \
+                -DCODEX_AGENT_CPP_BUILD_TESTS=ON
+              cmake --build build/native-wrapper-cpp-tests --config Release --parallel 2
+              ctest --test-dir build/native-wrapper-cpp-tests --build-config Release --output-on-failure -j2
+              cp build/native-wrapper-cpp-tests/parity/{compiler-evidence.tsv,executed-tests.tsv} "$evidence/"
+              cp build/native-wrapper-cpp-tests/tests/codex_agent_cpp_value_test "$evidence/test-program"
+              ;;
+            dart)
+              pushd "$binding/dart"
+              dart pub get --enforce-lockfile
+              dart format --output=none --set-exit-if-changed .
+              dart analyze
+              CODEX_AGENT_LIBRARY="$sdk" CODEX_AGENT_REAL_LIBRARY="$sdk" dart test
+              popd
+              cp "$binding/dart/build/parity"/{compiler-evidence.tsv,executed-tests.tsv} "$evidence/"
+              cp "$binding/dart/test/enum_parity_test.dart" "$evidence/test-program"
+              ;;
+          esac
+          expected_files=(compiler-evidence.tsv executed-tests.tsv test-program)
+          test -d "$evidence"
+          test ! -L "$evidence"
+          mapfile -t actual_files < <(find "$evidence" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+          test "${actual_files[*]}" = "${expected_files[*]}"
+          for file in "${expected_files[@]}"; do
+            test -f "$evidence/$file"
+            test -s "$evidence/$file"
+            test ! -L "$evidence/$file"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: true
+          include-hidden-files: true
+          name: codex-agent-native-wrapper-evidence-${{ matrix.language }}-${{ inputs.validationTree }}
+          path: build/native-wrapper-evidence
+          compression-level: 0
+          retention-days: 1
+
+  native-wrapper-package-validation:
+    needs: native-wrapper-sdk-stage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ inputs.validationCommit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}
+          path: .
+      - name: Select installed caller Java for SDK tooling
+        if: inputs.toolingRequired == 'true'
+        shell: bash
+        run: |
+          test -f "$JAVA_HOME_17_X64/bin/java"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: tooling
+        if: inputs.toolingRequired == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          plan-id: ${{ inputs.planId }}
+          artifact-id: ${{ inputs.toolingArtifactId }}
+          artifact-sha256: ${{ inputs.toolingArtifactSha256 }}
+          transport-producer: ${{ inputs.toolingTransportProducer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
+          policy-revision: ${{ inputs.validationCommit }}
+      - id: captured
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          product: sdk
+          sdk-family: ${{ format('native-{0}', inputs.preparationPhase) }}
+          plan-id: ${{ inputs.planId }}
+          artifact-id: ${{ inputs.stateArtifactId }}
+          artifact-sha256: ${{ inputs.stateArtifactSha256 }}
+          state-wave: ${{ inputs.stateWave }}
+          sdk-state-wave: ${{ inputs.sdkStateWave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+      - name: Authenticate the original C# binary for package-only assembly
+        shell: bash
+        env:
+          PLAN: ${{ steps.captured.outputs.plan-path }}
+          DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+          STATE: ${{ steps.captured.outputs.state-root }}
+          SDK_INPUTS_ARTIFACT_ID: ${{ inputs.sdkInputsArtifactId }}
+          SDK_INPUTS_ARTIFACT_SHA256: ${{ inputs.sdkInputsArtifactSha256 }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
+          SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          selected=()
+          if [ -n "$SDK_VALIDATION_TOOLING" ]; then selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+          python3 -B -m ci.sdk_csharp_binary_workflow stage-original \
+            --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+            --destination "$PWD/build/sdk-native-csharp-original" \
+            --sdk-inputs-artifact-id "$SDK_INPUTS_ARTIFACT_ID" \
+            --sdk-inputs-artifact-sha256 "$SDK_INPUTS_ARTIFACT_SHA256" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --keyring "$PWD/gradle/release/product-signing-keys.json" \
+            --keys-directory "$PWD/gradle/release/keys" \
+            --repository-root "$PWD" ${selected[@]+"${selected[@]}"}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.419"
+      - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+      - uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
+        with:
+          sdk: "3.13.2"
+      - run: python -m pip install build==1.3.0 setuptools==80.9.0 wheel==0.45.1
+      - name: Prove Python and C++ package-only paths need no compiler
+        run: |
+          python -m unittest discover -s codex-agent-bindings/python/tests -p test_package_only_process.py -v
+          python -m unittest discover -s codex-agent-bindings/cpp/tools/tests -p test_package_only_process.py -v
+      - name: Build and validate the exact reproducible release packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          release=build/native-wrapper-package-payload
+          cargo fetch \
+            --manifest-path codex-agent-sdk/build/native-wrapper-package-sources/rust/Cargo.toml \
+            --locked
+          tool=build/native-wrapper-package-tool
+          mkdir -p "$tool/ci"
+          cp ci/native_wrappers.py "$tool/ci/"
+          cp -R ci/products "$tool/ci/"
+          test ! -e "$tool/codex-agent-runtime-desktop"
+          python "$tool/ci/native_wrappers.py" package \
+            --sources "$PWD/codex-agent-sdk/build/native-wrapper-package-sources" \
+            --sdks "$PWD/codex-agent-sdk/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}" \
+            --csharp-binary "$PWD/build/sdk-native-csharp-original/csharp-binary" \
+            --dotnet-profile "$PWD/build/sdk-native-csharp-original/sdk-csharp-toolchain.json" \
+            --output "$PWD/$release/packages" \
+            --sdk-version-file "$PWD/gradle/release/versions/sdk.txt"
+          cp -R "codex-agent-sdk/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}" "$release/sdks"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: true
+          include-hidden-files: true
+          name: codex-agent-native-wrapper-package-validation-${{ inputs.validationTree }}
+          path: build/native-wrapper-package-payload
+          compression-level: 0
+          retention-days: 1
+
+  native-wrapper-release-assembly:
+    if: always()
+    needs: [native-wrapper-sdk-stage, native-wrapper-language, native-wrapper-package-validation]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Require every parallel native-wrapper validation
+        env:
+          SDK_STAGE_RESULT: ${{ needs.native-wrapper-sdk-stage.result }}
+          LANGUAGE_RESULT: ${{ needs.native-wrapper-language.result }}
+          PACKAGE_RESULT: ${{ needs.native-wrapper-package-validation.result }}
+        run: |
+          printf 'SDK stage: %s\nLanguage matrix: %s\nPackage validation: %s\n' \
+            "$SDK_STAGE_RESULT" "$LANGUAGE_RESULT" "$PACKAGE_RESULT"
+          test "$SDK_STAGE_RESULT" = success
+          test "$LANGUAGE_RESULT" = success
+          test "$PACKAGE_RESULT" = success
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-native-wrapper-package-validation-${{ inputs.validationTree }}
+          path: build/native-wrapper-release
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codex-agent-native-wrapper-evidence-*-${{ inputs.validationTree }}
+          path: build/native-wrapper-release/evidence
+          merge-multiple: true
+      - name: Require the exact per-language evidence inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=build/native-wrapper-release/evidence
+          expected_languages=(cpp csharp dart python rust)
+          expected_files=(compiler-evidence.tsv executed-tests.tsv test-program)
+          mapfile -t actual_languages < <(find "$root" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+          test "${actual_languages[*]}" = "${expected_languages[*]}"
+          for language in "${expected_languages[@]}"; do
+            directory="$root/$language"
+            test -d "$directory"
+            test ! -L "$directory"
+            mapfile -t actual_files < <(find "$directory" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+            test "${actual_files[*]}" = "${expected_files[*]}"
+            for file in "${expected_files[@]}"; do
+              test -f "$directory/$file"
+              test -s "$directory/$file"
+              test ! -L "$directory/$file"
+            done
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: true
+          name: codex-agent-native-wrapper-packages-${{ inputs.validationTree }}
+          path: build/native-wrapper-release
+          compression-level: 0
+          retention-days: 90
+
+  native-wrapper-host-consumers:
+    needs: native-wrapper-release-assembly
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - classifier: macos-arm64
+            runner: macos-26
+          - classifier: macos-x64
+            runner: macos-26-intel
+          - classifier: linux-arm64
+            runner: ubuntu-24.04-arm
+          - classifier: linux-x64
+            runner: ubuntu-24.04
+          - classifier: windows-x64
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      CI_VALIDATION_TREE: ${{ inputs.validationTree }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.validationCommit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.planArtifact }}
+          path: build/ci/plan
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-native-wrapper-packages-${{ inputs.validationTree }}
+          path: build/native-wrapper-release
+      - if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-msvc
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.419"
+      - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+        with:
+          toolchain: "1.95.0"
+      - uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
+        with:
+          sdk: "3.13.2"
+      - shell: bash
+        run: >-
+          python ci/native_wrappers.py consume
+          --repository "$PWD"
+          --packages "$PWD/build/native-wrapper-release/packages"
+          --sdks "$PWD/build/native-wrapper-release/sdks"
+          --plan "$PWD/build/ci/plan/impact-plan.json"
+          --output "$PWD/build/native-wrapper-host/${{ matrix.classifier }}"
+          --sdk-version-file "$PWD/gradle/release/versions/sdk.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: true
+          name: codex-agent-native-wrapper-host-${{ matrix.classifier }}-${{ inputs.validationTree }}
+          path: build/native-wrapper-host/${{ matrix.classifier }}
+          compression-level: 0
+          retention-days: 90

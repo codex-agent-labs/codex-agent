@@ -1,0 +1,891 @@
+import java.io.File
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+
+class ProductPhaseMappingContractTest {
+    private val contract = File("src/main/kotlin/codexagent.contract-product.gradle.kts").readText()
+    private val sdkProduct = File("src/main/kotlin/codexagent.sdk-product.gradle.kts").readText()
+    private val desktop = File("../../runtime/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts")
+        .readText()
+    private val runtimeBuild = File("../../runtime/build.gradle.kts").readText()
+    private val javascript = File("src/main/kotlin/codexagent.javascript-sdk.gradle.kts").readText()
+    private val nativeWrappers = File("src/main/kotlin/codexagent.native-wrapper-sdk.gradle.kts").readText()
+    private val node = File("../../codex-agent-runtime-desktop/build.gradle.kts").readText()
+    private val manifestTask = File("src/main/kotlin/ProductOutputManifestGradleTask.kt").readText()
+
+    @Test
+    fun Contract_phase_tasks_watch_only_the_Contract_Python_closure() {
+        val sources = between(contract, "val contractPythonSources = files(", "val contractMavenRepository =")
+        listOf("__init__.py", "__main__.py", "contract.py", "contract_model.py",
+            "inventory.py", "zip_central_directory.py", "receipt.py", "test_results.py").forEach { file ->
+            assertTrue("\"ci/products/$file\"" in sources, file)
+        }
+        assertEquals(8, Regex("\"ci/products/").findAll(sources).count())
+        assertEquals(10, Regex("producerSources.from\\(contractPythonSources\\)").findAll(contract).count())
+        assertFalse("producerSources.from(layout.projectDirectory.dir(\"ci/products\"))" in contract)
+    }
+
+    @Test
+    fun root_lifecycle_delegates_SDK_mapping_to_the_SDK_plugin() {
+        val mapping = between(contract, "val requestedProduct =", "val contractBundleDirectory =")
+        val sdkMapping = sdkProduct.substringAfter("tasks.register(\"sdkProductPhase\")")
+        val contractExpected = linkedMapOf(
+            Triple("contract", "contract", "binary") to "writeContractBinaryOutputManifest",
+            Triple("contract", "contract", "package") to "writeContractPackageOutputManifest",
+            Triple("contract", "contract", "validation") to "writeContractValidationOutputManifest",
+            Triple("contract", "contract", "metadata") to "writeContractMetadataOutputManifest",
+        )
+        val sdkExpected = linkedMapOf(
+            Triple("sdk", "sdk-core", "binary") to "writeSdkCoreBinaryOutputManifest",
+            Triple("sdk", "sdk-core", "package") to "writeSdkCorePackageOutputManifest",
+            Triple("sdk", "sdk-core", "validation") to "writeSdkCoreValidationOutputManifest",
+            Triple("sdk", "sdk-core", "metadata") to "writeSdkCoreMetadataOutputManifest",
+            Triple("sdk", "sdk-android", "binary") to "writeSdkAndroidBinaryOutputManifest",
+            Triple("sdk", "sdk-android", "package") to "writeSdkAndroidPackageOutputManifest",
+            Triple("sdk", "sdk-android", "metadata") to "writeSdkAndroidMetadataOutputManifest",
+            Triple("sdk", "sdk-ios", "binary") to "writeSdkIosBinaryOutputManifest",
+            Triple("sdk", "sdk-ios", "package") to "writeSdkIosPackageOutputManifest",
+            Triple("sdk", "sdk-ios", "validation") to "writeSdkIosValidationOutputManifest",
+            Triple("sdk", "sdk-ios", "metadata") to "writeSdkIosMetadataOutputManifest",
+            Triple("sdk", "javascript", "package") to
+                "writeJavaScriptSdkPackageOutputManifest",
+            Triple("sdk", "javascript", "validation") to
+                "writeJavaScriptSdkValidationOutputManifest",
+            Triple("sdk", "javascript", "metadata") to
+                "writeJavaScriptSdkMetadataOutputManifest",
+            Triple("sdk", "python", "package") to
+                "writePythonNativeWrapperSdkPackageOutputManifest",
+            Triple("sdk", "csharp", "binary") to
+                "writeCSharpNativeWrapperSdkBinaryOutputManifest",
+            Triple("sdk", "csharp", "package") to
+                "writeCSharpNativeWrapperSdkPackageOutputManifest",
+            Triple("sdk", "rust", "package") to
+                "writeRustNativeWrapperSdkPackageOutputManifest",
+            Triple("sdk", "cpp", "package") to
+                "writeCppNativeWrapperSdkPackageOutputManifest",
+            Triple("sdk", "dart", "package") to
+                "writeDartNativeWrapperSdkPackageOutputManifest",
+            Triple("sdk", "python", "validation") to "writePythonNativeWrapperSdkValidationOutputManifest",
+            Triple("sdk", "csharp", "validation") to "writeCSharpNativeWrapperSdkValidationOutputManifest",
+            Triple("sdk", "rust", "validation") to "writeRustNativeWrapperSdkValidationOutputManifest",
+            Triple("sdk", "cpp", "validation") to "writeCppNativeWrapperSdkValidationOutputManifest",
+            Triple("sdk", "dart", "validation") to "writeDartNativeWrapperSdkValidationOutputManifest",
+            Triple("sdk", "python", "metadata") to "writePythonNativeWrapperSdkMetadataOutputManifest",
+            Triple("sdk", "csharp", "metadata") to "writeCSharpNativeWrapperSdkMetadataOutputManifest",
+            Triple("sdk", "rust", "metadata") to "writeRustNativeWrapperSdkMetadataOutputManifest",
+            Triple("sdk", "cpp", "metadata") to "writeCppNativeWrapperSdkMetadataOutputManifest",
+            Triple("sdk", "dart", "metadata") to "writeDartNativeWrapperSdkMetadataOutputManifest",
+        )
+
+        assertEquals(contractExpected.size, Regex("""Triple\("""").findAll(mapping).count())
+        assertEquals(sdkExpected.size, Regex("""Triple\("""").findAll(sdkMapping).count())
+        (contractExpected.map { (selection, task) -> Triple(mapping, selection, task) } +
+            sdkExpected.map { (selection, task) -> Triple(sdkMapping, selection, task) })
+            .forEach { (owner, selection, task) ->
+            val key = "Triple(\"" + selection.first + "\", \"" + selection.second +
+                "\", \"" + selection.third + "\")"
+            assertTrue(key in owner, "Missing product phase selection: $key")
+            assertEquals(1, Regex(Regex.escape(task)).findAll(owner).count(), task)
+        }
+        assertEquals(1, Regex("""tasks\.register\("ciProductPhase"\)""").findAll(mapping).count())
+        assertEquals(1, Regex("""tasks\.register\("sdkProductPhase"\)""").findAll(sdkProduct).count())
+        assertTrue("requestedProduct.get()" in mapping)
+        assertTrue("requestedComponent.get()" in mapping)
+        assertTrue("requestedPhase.get()" in mapping)
+        assertTrue("tasks.named(\"sdkProductPhase\")" in mapping)
+        assertFalse("Triple(\"sdk\"" in mapping)
+        assertFalse(":codex-agent-sdk" in mapping)
+        assertTrue("check(requestedProduct.get() == \"sdk\")" in sdkMapping)
+        assertTrue("error(\"Unsupported product phase:" in mapping)
+        listOf("orNull", "orElse", "onlyIf", "enabled = false").forEach { fallback ->
+            assertFalse(fallback in mapping, fallback)
+        }
+        assertFalse("Triple(\"runtime\"" in mapping)
+        assertTrue("else -> error(\"Unsupported SDK product phase:" in sdkMapping)
+    }
+
+    @Test
+    fun Contract_package_consumes_only_an_imported_verified_binary_stage() {
+        val packagePhase = between(
+            contract,
+            "val importedContractBinaryStage =",
+            "val requestedProduct =",
+        )
+        assertTrue("codexAgent.contractBinaryStageRoot" in packagePhase)
+        assertTrue("tasks.register<SnapshotImportedProductStageTask>" in packagePhase)
+        assertTrue("tasks.register<VerifyImportedProductOutputManifestTask>" in packagePhase)
+        assertTrue("product.set(\"contract\")" in packagePhase)
+        assertTrue("component.set(\"contract\")" in packagePhase)
+        assertTrue("phase.set(\"binary\")" in packagePhase)
+        assertTrue("target.set(\"common\")" in packagePhase)
+        assertTrue("from(importedContractBinarySnapshot.map { it.dir(\"outputs\") })" in packagePhase)
+        assertTrue("writeContractPackageOutputManifest" in packagePhase)
+        for (forbidden in listOf(
+            "writeContractBinaryOutputManifest",
+            "stageContractBundleInputs",
+            "prepareContractInputs",
+            "assembleContractBundle",
+            "verifyContractBundle",
+            "contractPublicationTasks",
+            ":codex-agent-core:",
+        )) {
+            assertFalse(forbidden in packagePhase, forbidden)
+        }
+    }
+
+    @Test
+    fun Contract_validation_consumes_only_an_imported_package_and_authenticated_receipts() {
+        val validation = between(
+            contract,
+            "val importedContractPackageStage =",
+            "val requestedProduct =",
+        )
+        for (required in listOf(
+            "codexAgent.contractPackageStageRoot",
+            "codexAgent.contractPackageReceipt",
+            "codexAgent.contractPackageReceiptSha256",
+            "codexAgent.contractBinaryReceipt",
+            "codexAgent.contractBinaryReceiptSha256",
+            "tasks.register<SnapshotImportedProductStageTask>",
+            "tasks.register<VerifyImportedProductOutputManifestTask>",
+            "validate-package",
+            "writeContractValidationOutputManifest",
+        )) {
+            assertTrue(required in validation, required)
+        }
+        for (forbidden in listOf(
+            "writeContractBinaryOutputManifest",
+            "writeContractPackageOutputManifest",
+            "stageContractBundleInputs",
+            "prepareContractInputs",
+            "assembleContractBundle",
+            "verifyContractBundle",
+            "contractPublicationTasks",
+            ":codex-agent-core:",
+        )) {
+            assertFalse(forbidden in validation, forbidden)
+        }
+    }
+
+    @Test
+    fun Contract_metadata_consumes_only_an_imported_validation_stage_and_emits_content_only_payload() {
+        val metadata = between(
+            contract,
+            "val importedContractValidationStage =",
+            "val requestedProduct =",
+        )
+        for (required in listOf(
+            "codexAgent.contractValidationStageRoot",
+            "snapshotImportedContractValidationStage",
+            "verifyImportedContractValidationOutputManifest",
+            "stageContractMetadataPayload",
+            "assembleContractMetadataPayload",
+            "writeContractMetadataOutputManifest",
+            "ci.products.contract\", \"build",
+            "contract-bundle\" to \"outputs",
+        )) {
+            assertTrue(required in metadata, required)
+        }
+        for (forbidden in listOf(
+            "writeContractBinaryOutputManifest",
+            "writeContractPackageOutputManifest",
+            "writeContractValidationOutputManifest",
+            "stageContractBundleInputs",
+            "prepareContractInputs",
+            "contractPublicationTasks",
+            "private-key",
+            "public-key",
+            "signing-metadata",
+            "producer.json",
+            ":codex-agent-core:",
+        )) {
+            assertFalse(forbidden in metadata, forbidden)
+        }
+    }
+
+    @Test
+    fun standalone_Runtime_lifecycle_maps_the_exact_binary_package_and_validation_phases() {
+        val expected = linkedMapOf(
+            "macos-arm64" to "MacosArm64",
+            "macos-x64" to "MacosX64",
+            "linux-arm64" to "LinuxArm64",
+            "linux-x64" to "LinuxX64",
+            "windows-x64" to "MingwX64",
+            "jvm" to "Jvm",
+            "node-js" to "NodeJs",
+            "node-wasm" to "NodeWasm",
+        )
+        expected.forEach { (component, title) ->
+            listOf("binary", "package", "validation").forEach { phase ->
+                val task = "write${title}Runtime${phase.replaceFirstChar(Char::uppercase)}OutputManifest"
+                assertEquals(
+                    1,
+                    Regex.escape("(\"$component\" to \"$phase\") to \"$task\"")
+                        .toRegex().findAll(runtimeBuild).count(),
+                    "$component/$phase",
+                )
+            }
+        }
+        assertEquals(24, Regex("\\(\"[^\"]+\" to \"(?:binary|package|validation)\"\\) to")
+            .findAll(runtimeBuild).count())
+        assertTrue("check(requestedProduct.get() == \"runtime\")" in runtimeBuild)
+        assertTrue("check(target == component)" in runtimeBuild)
+        assertTrue("desktopRuntime.tasks.named(taskName)" in runtimeBuild)
+    }
+
+    @Test
+    fun every_mapped_stage_uses_the_one_output_manifest_task_type() {
+        assertTrue(
+            "val writeContractBinaryOutputManifest = tasks.register<WriteProductOutputManifestTask>(" in
+                contract,
+        )
+        val native = nativePhases()
+        assertEquals(
+            2,
+            Regex("registerRuntimeOutputManifest\\(").findAll(native).count(),
+        )
+        assertTrue(
+            "val writeJvmRuntimeBinaryOutputManifest = registerRuntimeOutputManifest(" in
+                desktop,
+        )
+        assertTrue(
+            "registerRuntimeOutputManifest(\n    \"writeJvmRuntimePackageOutputManifest\"" in
+                desktop,
+        )
+        assertTrue(
+            "registerRuntimeOutputManifest(\n    \"writeJvmRuntimeValidationOutputManifest\"" in
+                desktop,
+        )
+        assertTrue(
+            "registerRuntimeOutputManifest(\n        \"write\${targetTitle}RuntimeValidationOutputManifest\"" in
+                nativeValidation(),
+        )
+        listOf(
+            "writeNodeJsRuntimeBinaryOutputManifest",
+            "writeNodeWasmRuntimeBinaryOutputManifest",
+            "writeNodeJsRuntimePackageOutputManifest",
+            "writeNodeWasmRuntimePackageOutputManifest",
+        )
+            .forEach { task ->
+                assertTrue(
+                    Regex("registerRuntimeOutputManifest\\(\\s*\"${Regex.escape(task)}\"")
+                        .containsMatchIn(node),
+                    task,
+                )
+            }
+        assertTrue(
+            "registerRuntimeOutputManifest(\n        \"write\${title}RuntimeValidationOutputManifest\"" in
+                nodeValidation(),
+        )
+        assertTrue(
+            "tasks.register<WriteProductOutputManifestTask>(" +
+                "\"writeJavaScriptSdkPackageOutputManifest\")" in javascriptPackage(),
+        )
+        assertEquals(
+            5, // Maven package, C# binary, native package, validation, and metadata share the writer.
+            Regex("tasks\\.register<WriteProductOutputManifestTask>").findAll(nativeWrapperPackage()).count(),
+        )
+        assertEquals(1, Regex("abstract class WriteProductOutputManifestTask").findAll(manifestTask).count())
+    }
+
+    @Test
+    fun native_stages_declare_the_exact_raw_and_packaged_output_families() {
+        val native = nativePhases()
+        val binary = native.substringBefore("val packagePhaseRoot =")
+        val packages = native.substringAfter("val packagePhaseRoot =")
+        assertEquals(
+            mapOf(
+                "app-server" to "outputs/app-server",
+                "c-abi" to "outputs/c-abi",
+                "kmp-klib" to "outputs/kmp-klib",
+                "publication" to "outputs/publication",
+                "runtime-identity" to "outputs/identity",
+                "supervisor" to "outputs/supervisor",
+                "validation-runner" to "outputs/validation-runner",
+            ),
+            outputRoots(binary),
+        )
+        listOf("app-server", "c-abi", "kmp-klib", "supervisor", "validation-runner")
+            .forEach { root ->
+                assertTrue("into(\"$root" in binary, "Native binary stage does not populate $root")
+            }
+        assertEquals(
+            mapOf(
+                "app-server" to "outputs/app-server",
+                "c-abi" to "outputs/c-abi",
+                "c-abi-reference" to "outputs/c-abi-reference",
+                "validation-runner" to "outputs/validation-runner",
+            ),
+            outputRoots(packages),
+        )
+        listOf("app-server", "c-abi", "validation-runner").forEach { root ->
+            assertTrue("into(\"$root\")" in packages, "Native package stage does not populate $root")
+        }
+        assertTrue("into(\"c-abi-reference/" in packages)
+        assertTrue("desktopManifest.distributions.associate" in native)
+        assertTrue("cAbiTargetSpecs.getValue(target)" in native)
+    }
+
+    @Test
+    fun native_binary_stage_uses_the_requested_target_supervisor_and_imported_stages_are_snapshotted() {
+        val native = nativePhases()
+        val binary = native.substringBefore("val packagePhaseRoot =")
+        assertTrue("directory.resolve(target).resolve(distribution.supervisorExecutableName)" in binary)
+        assertTrue("if (!providers.gradleProperty(\"codexAgent.desktopSupervisorDirectory\").isPresent)" in binary)
+        assertTrue("dependsOn(compileDesktopProcessSupervisor)" in binary)
+        assertTrue("from(binarySupervisor) { into(\"supervisor\") }" in binary)
+        assertFalse("from(compileDesktopProcessSupervisor.flatMap { it.outputFile })" in binary)
+        assertTrue("registerRuntimeStageSnapshot(" in binary)
+        assertTrue("importedBinarySnapshotRoot," in binary)
+        assertTrue("packageBinaryStageRoot = if (importedRuntimeBinaryStage.isPresent)" in native)
+    }
+
+    @Test
+    fun JVM_and_Node_stages_declare_exact_adapter_and_required_validation_runners() {
+        val expected = mapOf(
+            "adapter" to "outputs/adapter",
+            "publication" to "outputs/publication",
+            "validation-runner" to "outputs/validation-runner",
+        )
+        val stages = listOf(
+            between(
+                desktop,
+                "val stageJvmRuntimeBinaryOutputs =",
+                "val jvmRuntimePackagePhaseRoot =",
+            ) to "writeJvmRuntimeBinaryOutputManifest",
+            between(
+                desktop,
+                "val stageJvmRuntimePackage =",
+                "check(desktopManifest.distributions",
+            ) to "writeJvmRuntimePackageOutputManifest",
+            between(node, "val stageNodeJsRuntimeBinaryOutputs =", "val nodeWasmRuntimeBinaryPhaseRoot =") to
+                "writeNodeJsRuntimeBinaryOutputManifest",
+            between(node, "val stageNodeWasmRuntimeBinaryOutputs =", "val nodeJsRuntimePackagePhaseRoot =") to
+                "writeNodeWasmRuntimeBinaryOutputManifest",
+            between(node, "val stageNodeJsRuntimePackage =", "val nodeWasmRuntimePackagePhaseRoot =") to
+                "writeNodeJsRuntimePackageOutputManifest",
+            between(node, "val stageNodeWasmRuntimePackage =", "mavenPublishing {") to
+                "writeNodeWasmRuntimePackageOutputManifest",
+        )
+        stages.forEach { (stage, task) ->
+            val actualExpected = if (task.startsWith("writeNodeJs")) {
+                expected + ("binding-test-runner" to "outputs/binding-test-runner")
+            } else expected
+            assertEquals(actualExpected, outputRoots(stage), task)
+            assertTrue("into(\"adapter\")" in stage, task)
+            assertTrue("into(\"validation-runner\")" in stage, task)
+            assertTrue("registerRuntimeOutputManifest(" in stage, task)
+        }
+    }
+
+    @Test
+    fun native_validation_stages_declare_exact_C_ABI_native_and_execution_evidence() {
+        val validation = nativeValidation()
+        assertEquals(
+            mapOf(
+                "c-abi" to "outputs/c-abi",
+                "c-abi-reference" to "outputs/c-abi-reference",
+                "native" to "outputs/native",
+                "execution" to "outputs/execution",
+            ),
+            outputRoots(validation),
+        )
+        listOf("c-abi", "c-abi-reference", "native").forEach { root ->
+            assertTrue("into(\"$root" in validation, "Native validation does not populate $root")
+        }
+        val outputManifest = between(
+            validation,
+            "registerRuntimeOutputManifest(",
+            ").configure {",
+        )
+        assertTrue("\"write\${targetTitle}RuntimeValidationOutputManifest\"" in outputManifest)
+        assertTrue("\n        \"validation\"," in outputManifest)
+        assertTrue("dependsOn(cAbiPackageEvidence, importedNativeEvidence)" in validation)
+
+        val handoff = nativeValidationHandoff()
+        val packageInputs = between(
+            handoff,
+            "cAbiPackageEvidence.configure {",
+            "val stageValidation =",
+        )
+        assertEquals(
+            2,
+            Regex("""validationPackageRoot\.zip\(validationCompatibilityVersion\)""")
+                .findAll(packageInputs).count(),
+        )
+        assertTrue("val validationCompatibilityVersion = validationPackageVersion.map(::runtimeCompatibilityVersion)" in handoff)
+        assertTrue(
+            "root.file(\"outputs/c-abi/\${cAbiArchiveFileName(version, distribution.target)}\")" in
+                packageInputs,
+        )
+        assertTrue(
+            "\"outputs/app-server/codex-agent-runtime-desktop-\$version-" +
+                "\${distribution.classifier}.zip\"," in packageInputs,
+        )
+        assertFalse("project.version" in packageInputs)
+    }
+
+    @Test
+    fun mapped_native_validation_derives_legacy_target_from_component_but_accepts_explicit_target() {
+        val targetRouting = between(
+            desktop,
+            "val requestedEvidenceTarget =",
+            "val cAbiConsumerSources =",
+        )
+        assertTrue(
+            "providers.gradleProperty(\"codexAgent.desktopEvidenceTarget\").orNull" in targetRouting,
+        )
+        assertTrue(
+            "requestedEvidenceTarget?.let { check(it in desktopRuntimeEvidenceTargets)" in targetRouting,
+        )
+        assertTrue(
+            "providers.gradleProperty(\"codexAgent.component\").orNull?.let { component ->" in targetRouting,
+        )
+        assertTrue("cAbiTargetSpecs.entries.singleOrNull" in targetRouting)
+        assertTrue(
+            "it.value.classifier.removePrefix(\"c-abi-\") == component" in targetRouting,
+        )
+        assertTrue(
+            "productPhaseEvidenceTarget = requestedEvidenceTarget ?: componentEvidenceTarget.orEmpty()" in
+                targetRouting,
+        )
+        val validationHandoff = nativeValidationHandoff()
+        assertTrue(
+            "registerRuntimeEvidenceTargetValidation(\n" +
+                "        \"validate\${targetTitle}DesktopEvidenceTarget\",\n" +
+                "        productPhaseEvidenceTarget,\n" +
+                "        distribution.target,\n" +
+                "    )" in validationHandoff,
+        )
+        assertTrue("dependsOn(validateEvidenceTarget)" in validationHandoff)
+    }
+
+    @Test
+    fun JVM_validation_verifies_both_packages_and_stages_only_JVM_evidence() {
+        val validation = jvmValidation()
+        assertEquals(
+            mapOf("jvm-evidence" to "outputs/jvm-evidence", "execution" to "outputs/execution",
+                "test-report" to "outputs/test-report"),
+            outputRoots(validation),
+        )
+        assertTrue("into(\"jvm-evidence\")" in validation)
+        assertTrue("from(importedJvmRuntimeEvidence.flatMap { it.executionFile })" in validation)
+        assertTrue("from(importedJvmRuntimeEvidence.flatMap { it.testReport })" in validation)
+        assertTrue(
+            "val jvmValidationPackageRoot = if (importedRuntimePackageStage.isPresent)" in validation,
+        )
+        assertTrue(
+            "val jvmValidationNativePackageRoot = if (importedRuntimeNativePackageStage.isPresent)" in
+                validation,
+        )
+        assertTrue("imported-runtime-native-package-stages/\$tree/jvm/\$component" in validation)
+        listOf(
+            "verifyImportedJvmRuntimePackageOutputManifest",
+            "verifyImportedJvmValidationNativePackageOutputManifest",
+        ).forEach { task ->
+            assertTrue(task in validation, task)
+        }
+        assertEquals(
+            2,
+            Regex("registerRuntimeOutputVerification\\(").findAll(validation).count(),
+        )
+        assertTrue("importedJvmPackageSnapshotRoot," in validation)
+        assertTrue("importedJvmNativePackageSnapshotRoot," in validation)
+        assertEquals(2, Regex("registerRuntimeStageSnapshot\\(").findAll(validation).count())
+        assertTrue(
+            "tasks.register<Delete>(\"invalidateJvmRuntimeValidationOutputs\")" in validation,
+        )
+        assertTrue("dependsOn(importedJvmRuntimeEvidence)" in validation)
+        assertTrue(
+            "tasks.register<RecordJvmRuntimeEvidenceTask>(" in validation &&
+                "\"executeImportedJvmRuntimeEvidence\"" in validation,
+        )
+        assertTrue(
+            "dependsOn(invalidateJvmRuntimeValidationOutputs, jvmPackagePrerequisite, " +
+                "jvmNativePackagePrerequisite)" in validation,
+        )
+    }
+
+    @Test
+    fun Node_validation_reuses_existing_executors_and_stages_evidence_and_report() {
+        val validation = nodeValidation()
+        assertEquals(
+            mapOf(
+                "node-evidence" to "outputs/node-evidence",
+                "test-report" to "outputs/test-report",
+                "execution" to "outputs/execution",
+            ),
+            outputRoots(validation),
+        )
+        listOf("node-evidence", "test-report", "execution").forEach { root ->
+            assertTrue("into(\"$root\")" in validation, root)
+        }
+        assertTrue("providers.gradleProperty(\"codexAgent.runtimePackageStage\")" in validation)
+        assertTrue(
+            "providers.gradleProperty(\"codexAgent.runtimeNativePackageStage\")" in validation,
+        )
+        assertTrue("val packageRoot = if (importedNodeRuntimePackageStage.isPresent)" in validation)
+        assertTrue(
+            "val nodeValidationNativePackageRoot = if (importedNodeRuntimeNativePackageStage.isPresent)" in
+                validation,
+        )
+        assertEquals(
+            2,
+            Regex("registerRuntimeOutputVerification\\(").findAll(validation).count(),
+        )
+        assertTrue("importedPackageSnapshotRoot," in validation)
+        assertTrue("importedNodeNativePackageSnapshotRoot," in validation)
+        assertTrue(
+            "tasks.register<Delete>(\"invalidate\${title}RuntimeValidationOutputs\")" in validation,
+        )
+        assertTrue("tasks.named<RecordNodeRuntimeEvidenceTask>(" in validation)
+        assertTrue(
+            "dependsOn(invalidate, packagePrerequisite, nativePackagePrerequisite)" in validation,
+        )
+        assertTrue("evidenceTask.flatMap { it.evidenceFile }" in validation)
+        assertTrue("evidenceTask.flatMap { it.testReport }" in validation)
+        assertTrue("evidenceTask.flatMap { it.executionFile }" in validation)
+        assertEquals(
+            2,
+            Regex("^registerNodeRuntimeValidation\\(", RegexOption.MULTILINE)
+                .findAll(validation).count(),
+        )
+        listOf("\"node-js\"", "\"node-wasm\"").forEach { component ->
+            assertTrue(component in validation, component)
+        }
+        assertTrue("imported-runtime-native-package-stages/\$it/\$component/\$nodeValidationComponent" in validation)
+        assertTrue("product-stage/runtime/\$component/validation/\$nodeValidationComponent" in validation)
+    }
+
+    @Test
+    fun JavaScript_package_consumes_verified_Contract_and_Runtime_artifacts_only() {
+        val imported = javascriptImportedHandoff()
+        assertEquals(
+            3,
+            Regex("tasks\\.register<VerifyImportedProductOutputManifestTask>")
+                .findAll(imported).count(),
+        )
+        val contractManifest = between(
+            imported,
+            "val verifyImportedNpmContractBinaryOutputManifest =",
+            "val verifyImportedNpmRuntimePackageOutputManifest =",
+        )
+        listOf(
+            "product.set(\"contract\")",
+            "component.set(\"contract\")",
+            "phase.set(\"binary\")",
+            "target.set(\"common\")",
+            "stageRoot.set(importedNpmContractSnapshotRoot)",
+        ).forEach { contract -> assertTrue(contract in contractManifest, contract) }
+
+        val runtimeManifest = between(
+            imported,
+            "val verifyImportedNpmRuntimePackageOutputManifest =",
+            "val verifyImportedNpmRuntimeValidationOutputManifest =",
+        )
+        val behaviorManifest = between(
+            imported,
+            "val verifyImportedNpmRuntimeValidationOutputManifest =",
+            "val generateJavaScriptEnumDeclarations =",
+        )
+        listOf(
+            "product.set(\"runtime\")",
+            "component.set(\"node-js\")",
+            "phase.set(\"package\")",
+            "target.set(\"node-js\")",
+            "stageRoot.set(importedNpmRuntimeSnapshotRoot)",
+        ).forEach { contract -> assertTrue(contract in runtimeManifest, contract) }
+        listOf(
+            "product.set(\"runtime\")",
+            "component.set(\"node-js\")",
+            "phase.set(\"validation\")",
+            "target.set(\"node-js-binding\")",
+            "stageRoot.set(importedNpmRuntimeValidationSnapshotRoot)",
+        ).forEach { contract -> assertTrue(contract in behaviorManifest, contract) }
+
+        assertTrue("it.file(\"outputs/evidence/canonical-api.json\")" in imported)
+        assertTrue("it.dir(\"outputs/adapter\")" in imported)
+        assertTrue("dependsOn(verifyImportedNpmContractBinaryOutputManifest)" in imported)
+        assertTrue("dependsOn(verifyImportedNpmRuntimePackageOutputManifest)" in imported)
+        assertTrue("verifyImportedNpmRuntimeValidationOutputManifest" in imported)
+        assertFalse(":codex-agent-core:" in imported)
+        assertFalse("jsProductionExecutableCompileSync" in imported)
+
+        val sdkPackage = javascriptPackage()
+        assertEquals(
+            mapOf(
+                "evidence" to "outputs/evidence",
+                "package" to "outputs/package",
+            ),
+            outputRoots(sdkPackage),
+        )
+        assertEquals(
+            1,
+            Regex("tasks\\.register<WriteProductOutputManifestTask>").findAll(sdkPackage).count(),
+        )
+        assertTrue("dependsOn(verifyNpmSdkCompatibilityArchive)" in sdkPackage)
+        assertTrue("from(npmArchiveFile) { into(\"package\") }" in sdkPackage)
+        assertTrue("from(npmSdkCompatibilityArchiveReport) { into(\"evidence\") }" in sdkPackage)
+        assertTrue("from(npmSdkCompatibility.flatMap { it.outputFile }) { into(\"evidence\") }" in sdkPackage)
+        assertTrue("codexAgent.sdkDefaultRuntimeVersion" in javascript)
+        assertFalse("codexAgent.runtimeVersion" in javascript)
+        assertTrue("dependsOn(verifyNpmDeclarationGolden, npmSdkCompatibility)" in javascript)
+        assertTrue("into(\"META-INF/codex-agent\")" in javascript)
+        assertTrue("tasks.register<VerifyNpmSdkCompatibilityArchiveTask>" in javascript)
+        assertTrue("dependsOn(packageNpm, npmSdkCompatibility)" in javascript)
+        assertTrue("sdkVersion.set(npmVersion)" in javascript)
+        val verifier = File("src/main/kotlin/SdkMavenPackageTask.kt").readText()
+        assertTrue("\"--version\", sdkVersion.get()," in verifier.substringAfter(
+            "abstract class VerifyNpmSdkCompatibilityArchiveTask",
+        ))
+        listOf(
+            "product.set(\"sdk\")",
+            "component.set(\"javascript\")",
+            "phase.set(\"package\")",
+            "target.set(\"node\")",
+        ).forEach { contract -> assertTrue(contract in sdkPackage, contract) }
+    }
+
+    @Test
+    fun native_wrapper_package_phases_emit_one_real_language_archive_inventory() {
+        val sdkPackage = nativeWrapperPackage()
+        assertTrue("tasks.register<PackageNativeWrapperSdkTask>(stageTaskName)" in sdkPackage)
+        assertTrue("this.language.set(language)" in sdkPackage)
+        assertTrue("\"evidence\" to \"outputs/evidence\"" in sdkPackage)
+        assertTrue("\"package\" to \"outputs/\$language\"" in sdkPackage)
+        assertTrue("include(\"sdk-compatibility.json\")" in sdkPackage)
+        assertFalse("include(\"codex-agent-native-wrapper-sdks.json\"" in sdkPackage)
+        assertFalse("\"package-source\" to" in sdkPackage)
+        assertFalse("\"runtime-sdks\" to" in sdkPackage)
+    }
+
+    @Test
+    fun native_metadata_consumes_original_five_host_artifacts_without_producer_edges() {
+        val metadata = between(nativeWrappers, "// Metadata consumes original artifacts only.", "val nativeWrapperReleaseDirectory =")
+        listOf(
+            "tasks.register<NativeWrapperMetadataContentTask>",
+            "codexAgent.sdkValidationStagesRoot", "codexAgent.sdkValidationReceiptsRoot",
+            "codexAgent.nativeWrapperStagedSdkRoot", "codexAgent.sdkPackageReceipt",
+            "packageStageDirectory.set(layout.dir(importedNativeWrapperSdkPackageStage))",
+            "runtimeStageDirectory.set(layout.dir(nativeWrapperRuntimeStageRoot))",
+            "compatibilityRequest.set(layout.file(nativeWrapperSdkCompatibilityRequest))",
+            "product-stage/sdk/\$language/metadata", "outputs/evidence/native-metadata.json",
+            "\"native-wrapper-metadata\" to \"outputs/evidence\"",
+            "phase.set(\"metadata\")", "target.set(\"desktop\")",
+            "productVersion.set(nativeWrapperSdkVersion)",
+            "sdkVersion.set(nativeWrapperSdkVersion)",
+            "expectedOutputPaths.set(listOf(\"outputs/evidence/native-metadata.json\"))",
+        ).forEach { assertTrue(it in metadata, it) }
+        assertEquals(1, Regex("dependsOn\\(").findAll(metadata).count())
+        assertTrue("dependsOn(content)" in metadata)
+        listOf("<Delete>", "<Sync>", "dependsOn(verify", "stageNativeWrapperCAbiSdks",
+            "nativeWrapperInstalledConsumerTasks", "nativeWrapperCapabilityEvidenceTasks",
+            "nativeWrapperPackageSourceTasks", "snapshotImportedNativeWrapperRuntimeStages",
+            "candidateCommit", "candidateTree", "private-key", "signing").forEach {
+            assertFalse(it in metadata, it)
+        }
+    }
+
+    @Test
+    fun SDK_Maven_package_phases_consume_only_imported_binary_artifacts() {
+        val sdkPackage = nativeWrapperPackage()
+        mapOf(
+            "sdk-core" to "codexAgent.sdkCoreBinaryStageRoot",
+            "sdk-android" to "codexAgent.sdkAndroidBinaryStageRoot",
+            "sdk-ios" to "codexAgent.sdkIosBinaryStageRoot",
+        ).forEach { (component, property) ->
+            assertTrue("\"$component\"" in sdkPackage, component)
+            assertTrue("\"$property\"" in sdkPackage, property)
+        }
+        assertTrue("tasks.register<SnapshotImportedProductStageTask>" in sdkPackage)
+        assertTrue("tasks.register<VerifyImportedProductOutputManifestTask>" in sdkPackage)
+        assertTrue("tasks.register<PackageSdkMavenArtifactsTask>" in sdkPackage)
+        assertTrue("binaryMavenRepository.set(snapshot.map { it.dir(\"outputs/maven\") })" in sdkPackage)
+        assertTrue("dependsOn(verify, generateNativeWrapperSdkCompatibility)" in sdkPackage)
+        assertTrue("tasks.register<Sync>(\"stage\${title}PackageEvidence\")" in sdkPackage)
+        assertTrue("from(generateNativeWrapperSdkCompatibility.flatMap { it.outputFile })" in sdkPackage)
+        assertTrue("tasks.register<Delete>(\"invalidate\${title}PackagePhase\")" in sdkPackage)
+        assertTrue("snapshotTask.configure { dependsOn(invalidate) }" in sdkPackage)
+        assertTrue("generateNativeWrapperSdkCompatibility.configure { mustRunAfter(invalidate) }" in sdkPackage)
+        assertEquals(
+            mapOf("evidence" to "outputs/evidence", "maven" to "outputs/maven"),
+            outputRoots(between(
+                sdkPackage,
+                "tasks.register<WriteProductOutputManifestTask>(\"write\${title}PackageOutputManifest\")",
+                "val stageNativeWrapperCAbiSdks =",
+            )),
+        )
+        assertFalse("compile" in between(
+            sdkPackage,
+            "val sdkMavenPackageSpecs =",
+            "val stageNativeWrapperCAbiSdks =",
+        ), "SDK Maven package phase reaches compilation")
+    }
+
+    @Test
+    fun SDK_Maven_binary_phases_publish_to_three_disjoint_raw_repositories() {
+        val binary = between(
+            sdkProduct,
+            "fun registerSdkBinaryPhase(",
+            "val requestedProduct =",
+        )
+        mapOf(
+            "sdk-core" to "SDK_CORE_BINARY_STAGING",
+            "sdk-android" to "SDK_ANDROID_BINARY_STAGING",
+            "sdk-ios" to "SDK_IOS_BINARY_STAGING",
+        ).forEach { (component, repository) ->
+            assertTrue("authenticatedSdkComponent == \"$component\"" in binary, component)
+            assertTrue("component = \"$component\"" in binary, component)
+            assertTrue("repositoryName = \"$repository\"" in binary, repository)
+        }
+        listOf(
+            "publishMavenPublicationToSDK_CORE_BINARY_STAGINGRepository",
+            "publishMavenPublicationToSDK_ANDROID_BINARY_STAGINGRepository",
+        ).forEach { assertTrue(it in binary, it) }
+        assertTrue("contractPublicationNames.map" in binary)
+        assertTrue("listOf(\"KotlinMultiplatform\", \"IosArm64\", \"IosSimulatorArm64\").map" in binary)
+        assertTrue("publish\${it}PublicationToSDK_CORE_BINARY_STAGINGRepository" in binary)
+        assertTrue("publish\${it}PublicationToSDK_IOS_BINARY_STAGINGRepository" in binary)
+        assertTrue("tasks.register<VerifySdkBinaryMavenRepositoryTask>" in binary)
+        assertTrue("producerSources.from(layout.projectDirectory.dir(\"ci/products\"))" in binary)
+        val mavenTasks = File("src/main/kotlin/MavenRepositoryTasks.kt").readText()
+        val freshVerification = mavenTasks.substringAfter("    fun verify() {").substringBefore("internal fun verifyMavenRepository")
+        assertTrue(freshVerification.indexOf("finalizeFreshSdkBinaryMavenRepository(") < freshVerification.indexOf("processes.exec"))
+        assertTrue("\"--verify-only\"" in freshVerification)
+        assertTrue(freshVerification.indexOf("processes.exec") < freshVerification.indexOf("        verifySdkBinaryMavenRepository("))
+        assertTrue("dependsOn(verify, appleFrameworks)" in binary)
+        assertTrue("val appleFrameworks = if (component == \"sdk-ios\")" in binary)
+        assertTrue("tasks.register<ImportCodexAgentFrameworkTask>" in binary)
+        assertTrue("dependsOn(reset, \":codex-agent-runtime-ios:linkReleaseFramework\$targetName\")" in binary)
+        assertTrue("Triple(\"IosArm64\", \"ios-arm64\", \"iphoneos\")" in binary)
+        assertTrue("Triple(\"IosSimulatorArm64\", \"ios-simulator-arm64\", \"iphonesimulator\")" in binary)
+        assertTrue("\"apple-binary\" to \"outputs/apple-binary\"" in binary)
+        assertFalse("exportCodexAgentIosVerifiedDistribution" in binary)
+        assertTrue("\"evidence\" to \"outputs/evidence\"" in binary)
+        assertTrue("} else null" in binary)
+        assertFalse("generateNativeWrapperSdkCompatibility" in binary)
+        assertFalse("runtimeVersion" in binary)
+    }
+
+    @Test
+    fun initial_product_phase_seam_contains_no_deferred_planner_cache_key_or_receipt_logic() {
+        val seam = listOf(
+            between(contract, "val writeContractBinaryOutputManifest =", "val contractBundleDirectory ="),
+            nativePhases(),
+            between(
+                desktop,
+                "val jvmRuntimeBinaryPhaseRoot =",
+                "check(desktopManifest.distributions",
+            ),
+            between(node, "val nodeJsRuntimeBinaryPhaseRoot =", "mavenPublishing {"),
+            nativeValidation(),
+            jvmValidation(),
+            nodeValidation(),
+            javascriptImportedHandoff(),
+            javascriptPackage(),
+            nativeWrapperPackage(),
+            manifestTask,
+        ).joinToString("\n")
+        listOf(
+            "buildKey",
+            "computeBuildKey",
+            "write-phase-receipt",
+            "PhaseReceipt",
+            "phaseReceipt",
+            "receiptFile",
+            "ci.products.plan",
+            "ci.products.restore",
+            "ProductPlan",
+            "ProductRegistry",
+            "productCache",
+            "cacheKey",
+            "artifactLookup",
+        ).forEach { forbidden ->
+            assertFalse(forbidden in seam, "Product phase seam introduced deferred logic: $forbidden")
+        }
+    }
+
+    private fun nativePhases(): String = between(
+        desktop,
+        "val runtimeNativeBinaryManifestTasks =",
+        "val cAbiArchiveFiles =",
+    )
+
+    private fun nativeValidation(): String = between(
+        desktop,
+        "val validationPhaseRoot =",
+        "val jvmValidationTarget =",
+    )
+
+    private fun nativeValidationHandoff(): String = between(
+        desktop,
+        "val productPhaseEvidenceTarget =",
+        "val jvmValidationTarget =",
+    )
+
+    private fun jvmValidation(): String = between(
+        desktop,
+        "val jvmValidationTarget =",
+        "pluginManager.withPlugin(\"maven-publish\")",
+    )
+
+    private fun nativeWrapperPackage(): String = between(
+        nativeWrappers,
+        "val nativeWrapperRuntimeStageRoot =",
+        "val nativeWrapperReleaseDirectory =",
+    )
+
+    private fun nodeValidation(): String = between(
+        node,
+        "val importedNodeRuntimePackageStage =",
+        "val nodeJsBindingValidationRoot =",
+    )
+
+    private fun javascriptImportedHandoff(): String = between(
+        javascript,
+        "val importedNpmContractBinaryStage =",
+        "inputs.file(npmGeneratedDeclaration)",
+    )
+
+    private fun javascriptPackage(): String = between(
+        javascript,
+        "val javascriptSdkPackagePhaseRoot =",
+        "val verifyNpmPackDryRun =",
+    )
+
+    private fun between(source: String, start: String, end: String): String {
+        assertTrue(start in source, "Missing source marker: $start")
+        val tail = source.substringAfter(start)
+        assertTrue(end in tail, "Missing source marker after $start: $end")
+        return tail.substringBefore(end)
+    }
+
+    private fun outputRoots(source: String): Map<String, String> {
+        val oldMarker = "outputRoots.set(mapOf("
+        val mapStart = if (oldMarker in source) {
+            source.indexOf(oldMarker) + oldMarker.length
+        } else {
+            val registration = source.indexOf("registerRuntimeOutputManifest(")
+            assertTrue(registration >= 0, "Missing Runtime output manifest registration")
+            val marker = source.indexOf("mapOf(", registration)
+            assertTrue(marker >= 0, "Missing Runtime outputRoots declaration")
+            marker + "mapOf(".length
+        }
+        var depth = 1
+        var end = mapStart
+        while (end < source.length && depth > 0) {
+            when (source[end]) {
+                '(' -> depth++
+                ')' -> depth--
+            }
+            end++
+        }
+        assertEquals(0, depth, "Unclosed outputRoots declaration")
+        val values = source.substring(mapStart, end - 1)
+        return Regex("\"([^\"]+)\" to \"([^\"]+)\"").findAll(values).associate { match ->
+            match.groupValues[1] to match.groupValues[2]
+        }
+    }
+}

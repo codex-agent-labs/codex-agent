@@ -1,0 +1,113 @@
+name: Populate the exact locked Dart dependency cache
+description: Warm an external cache from original Git manifests; offline validation and product admission remain separate.
+inputs:
+  revision:
+    required: true
+    description: Caller-selected exact candidate validation commit.
+outputs:
+  pub-cache:
+    description: Current-job external cache after successful locked dependency resolution.
+    value: ${{ steps.populate.outputs.pub_cache }}
+  diagnostics:
+    description: Exact external resolution manifests and raw diagnostics, retained even on process failure.
+    value: ${{ steps.populate.outputs.diagnostics }}
+runs:
+  using: composite
+  steps:
+    - name: Require exact candidate source before Dart setup
+      shell: bash
+      env:
+        REVISION: ${{ inputs.revision }}
+      run: |
+        python3 -B - <<'PY'
+        import os, re, sys
+        from pathlib import Path
+        repository = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        sys.path.insert(0, str(repository / 'ci'))
+        from product_reuse import _runtime_worker_checkout
+        from products.inventory import run_git
+        revision = os.environ['REVISION']
+        if re.fullmatch(r'[0-9a-f]{40}', revision) is None:
+            raise ValueError('Dart cache requires an exact caller Git revision')
+        _runtime_worker_checkout(repository, {'commit': revision, 'tree': run_git(repository, 'rev-parse', 'HEAD^{tree}').strip()})
+        PY
+    - uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
+      with:
+        sdk: '3.13.2'
+    - id: populate
+      name: Populate locked dependencies outside the checkout
+      shell: bash
+      env:
+        REVISION: ${{ inputs.revision }}
+      run: |
+        python3 -B - <<'PY'
+        import os, shutil, subprocess, sys, tempfile, time
+        from pathlib import Path
+        repository = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        sys.path.insert(0, str(repository / 'ci'))
+        from product_reuse import _runtime_worker_checkout, _runtime_worker_environment
+        from products.inventory import git_regular_blob_bytes, read_regular_file_bytes, run_git, write_canonical_json
+        revision = os.environ['REVISION']
+        producer = {'commit': revision, 'tree': run_git(repository, 'rev-parse', 'HEAD^{tree}').strip()}
+        _runtime_worker_checkout(repository, producer)
+        manifests = {}
+        for name in ('pubspec.yaml', 'pubspec.lock'):
+            relative = 'codex-agent-bindings/dart/' + name
+            raw = git_regular_blob_bytes(repository, revision, relative, max_bytes=1024 * 1024)
+            if read_regular_file_bytes(repository / relative, reject_symlink_parents=True) != raw:
+                raise ValueError('Dart dependency manifest differs from exact Git source')
+            manifests[name] = raw
+        temporary = Path(os.environ['RUNNER_TEMP'])
+        if not temporary.is_absolute():
+            raise ValueError('Dart cache scratch must be absolute')
+        temporary = temporary.resolve(strict=True)
+        if temporary.is_relative_to(repository) or repository.is_relative_to(temporary):
+            raise ValueError('Dart cache scratch must be separate from the checkout')
+        parent = Path(tempfile.mkdtemp(prefix='sdk-dart-cache-', dir=temporary)).resolve(strict=True)
+        diagnostics, cache = parent / 'diagnostics', parent / 'pub-cache'
+        project = diagnostics / 'resolution'
+        project.mkdir(parents=True)
+        cache.mkdir()
+        for name, raw in manifests.items():
+            (project / name).write_bytes(raw)
+        environment, _ = _runtime_worker_environment(repository, producer, parent, os.environ)
+        environment.update(PUB_CACHE=str(cache), PUB_HOSTED_URL='https://pub.dev')
+        resolved = shutil.which('dart', path=environment.get('PATH', ''))
+        if not resolved:
+            raise ValueError('Dart cache requires the installed pinned Dart executable')
+        executable = Path(resolved).resolve(strict=True)
+        executable_bytes = read_regular_file_bytes(executable, max_bytes=128 * 1024 * 1024, reject_symlink_parents=True)
+        bytecode = parent / 'python-bytecode'
+
+        def unchanged():
+            if bytecode.exists() or bytecode.is_symlink():
+                raise ValueError('Dart cache private bytecode namespace changed')
+            _runtime_worker_checkout(repository, producer)
+            if (read_regular_file_bytes(executable, reject_symlink_parents=True) != executable_bytes or
+                    any(read_regular_file_bytes(project / name, reject_symlink_parents=True) != raw or
+                        read_regular_file_bytes(repository / 'codex-agent-bindings/dart' / name, reject_symlink_parents=True) != raw
+                        for name, raw in manifests.items())):
+                raise ValueError('Dart cache source, lock or executable changed')
+
+        unchanged()
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('diagnostics=' + str(diagnostics) + '\n')
+        command = [str(executable), 'pub', 'get', '--enforce-lockfile']
+        started, status, launch_error = time.monotonic_ns(), None, None
+        try:
+            with (diagnostics / 'pub.log').open('xb') as log:
+                status = subprocess.run(command, cwd=project, env=environment, stdout=log,
+                    stderr=subprocess.STDOUT, check=False).returncode
+        except OSError as error:
+            launch_error = str(error)
+            raise
+        finally:
+            write_canonical_json(diagnostics / 'execution.json', {'schemaVersion': 1, 'command': command,
+                'workingDirectory': str(project), 'returnCode': status, 'launchError': launch_error,
+                'elapsedNs': time.monotonic_ns() - started})
+            unchanged()
+        if status != 0 or not any(cache.iterdir()):
+            raise ValueError('Locked Dart dependency cache population failed; see retained diagnostics')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('pub_cache=' + str(cache) + '\n')
+        PY

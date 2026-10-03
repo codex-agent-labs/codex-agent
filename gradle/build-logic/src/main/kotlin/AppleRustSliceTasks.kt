@@ -4,7 +4,6 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import javax.inject.Inject
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -80,6 +79,7 @@ abstract class ExportAppleRustSliceTask @Inject constructor(private val exec: Ex
     @get:Internal abstract val repositoryDirectory: DirectoryProperty
     @get:OutputFile abstract val exportedArchive: RegularFileProperty
     @get:OutputFile abstract val sliceProof: RegularFileProperty
+    @get:OutputFile abstract val toolchainEvidence: RegularFileProperty
 
     init { outputs.upToDateWhen { false } }
 
@@ -98,7 +98,28 @@ abstract class ExportAppleRustSliceTask @Inject constructor(private val exec: Ex
             rustCompilerIdentity.get(), appleToolchainIdentity.get(),
             xcodeVersionFile.get().asFile, swiftVersionFile.get().asFile,
         )
+        val observations = mapOf(
+            "rustCompilerIdentity" to rustCompilerIdentity.get(),
+            "appleToolchainIdentity" to appleToolchainIdentity.get(),
+            "xcodeVersion" to xcodeVersionFile.get().asFile.readText(UTF_8),
+            "swiftVersion" to swiftVersionFile.get().asFile.readText(UTF_8),
+        )
+        val expectedHashes = listOf(
+            identity.rustCompilerIdentitySha256, identity.appleToolchainIdentitySha256,
+            identity.xcodeVersionSha256, identity.swiftVersionSha256,
+        )
+        check(observations.values.map { it.byteInputStream(UTF_8).releaseDigest() } == expectedHashes) {
+            "Apple Rust toolchain observations changed during export"
+        }
         sliceProof.get().asFile.atomicWriteJson(buildAppleRustSliceProof(spec, destination, identity))
+        // Execution evidence stays beside the proof, outside the reusable archive.
+        toolchainEvidence.get().asFile.atomicWriteJson(buildJsonObject {
+            put("schemaVersion", JsonPrimitive(1))
+            put("candidateCommit", JsonPrimitive(commit))
+            put("candidateTree", JsonPrimitive(tree))
+            put("target", JsonPrimitive(spec.target))
+            observations.forEach { (name, value) -> put(name, JsonPrimitive(value)) }
+        })
     }
 }
 
@@ -244,15 +265,6 @@ abstract class ImportAppleRustEvidenceTask @Inject constructor(private val exec:
             }) } })
         })
     }
-}
-
-internal fun appleProofProducerIdentity(proof: JsonObject): Pair<String, String> {
-    val commit = proof.releaseString("candidateCommit")
-    val tree = proof.releaseString("candidateTree")
-    check(listOf(commit, tree).all { value ->
-        value.length == 40 && value.all { it in '0'..'9' || it in 'a'..'f' }
-    }) { "Apple proof producer Git identity is invalid" }
-    return commit to tree
 }
 
 internal fun verifyAppleEvidenceCheckout(

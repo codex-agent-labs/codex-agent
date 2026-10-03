@@ -2,6 +2,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -9,8 +10,235 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 
-internal const val PROMOTED_CANDIDATE_SCHEMA = 12
+internal const val PROMOTED_CANDIDATE_SCHEMA = 17
 internal const val RELEASE_TOOLING_FILE_NAME = "codex-agent-release-tooling.jar"
+
+internal fun aggregateReleaseSbomFileName(version: String) = "codex-agent-$version.cdx.json"
+
+internal fun buildAggregateReleaseSbom(
+    versions: ProductVersions,
+    releaseTag: String,
+    commit: String,
+    tree: String,
+    mavenInventory: File,
+    swiftArchive: File,
+    nativeWrapperPackages: List<File>,
+    desktopDistributionManifest: File,
+    desktopBundledLicense: File,
+    desktopBundledNotice: File,
+): JsonObject {
+    val version = versions.sdk
+    check(releaseTag == "v$version" && version.matches(Regex("[A-Za-z0-9._-]+"))) {
+        "Aggregate SBOM release identity is invalid"
+    }
+    check(listOf(commit, tree).all { it.matches(Regex("[0-9a-f]{40}")) }) {
+        "Aggregate SBOM Git identity is not immutable"
+    }
+    check(nativeWrapperPackages.isNotEmpty() &&
+        nativeWrapperPackages.map(File::getName).let { it.size == it.toSet().size } &&
+        nativeWrapperPackages.all { it.isFile && !Files.isSymbolicLink(it.toPath()) }) {
+        "Aggregate SBOM native-wrapper package inventory is invalid"
+    }
+    val maven = mavenInventory.readReleaseObject()
+    check(maven.keys == setOf(
+        "schemaVersion", "groupId", "contractVersion", "runtimeVersion", "sdkVersion",
+        "artifactIds", "primaryArtifactCount", "signaturesRequired", "files",
+    ) && maven.releaseInt("schemaVersion") == 4 &&
+        maven.releaseString("groupId") == CodexAgentBuild.MAVEN_GROUP &&
+        maven.releaseString("contractVersion") == versions.contract &&
+        maven.releaseString("runtimeVersion") == versions.runtime &&
+        maven.releaseString("sdkVersion") == versions.sdk &&
+        maven.releaseBoolean("signaturesRequired")) {
+        "Aggregate SBOM Maven inventory identity is invalid"
+    }
+    val groupPath = CodexAgentBuild.MAVEN_GROUP.replace('.', '/')
+    val artifactIds = expectedMavenPrimaryPaths(versions).mapTo(sortedSetOf()) { it.substringBefore('/') }
+    check(maven.releaseArray("artifactIds").map { (it as? JsonPrimitive)?.content } == artifactIds.toList()) {
+        "Aggregate SBOM Maven coordinate set is invalid"
+    }
+    val primaryPaths = expectedMavenPrimaryPaths(versions).mapTo(sortedSetOf()) { "$groupPath/$it" }
+    check(maven.releaseInt("primaryArtifactCount") == primaryPaths.size) {
+        "Aggregate SBOM Maven primary count is invalid"
+    }
+    val inventoryRecords = maven.releaseArray("files").map { value ->
+        (value as? JsonObject ?: error("Aggregate SBOM Maven inventory record is invalid")).also { record ->
+            check(record.keys == setOf("path", "bytes", "sha256") &&
+                record.releaseString("path").isSafeRelativePath() && record.releaseLong("bytes") > 0 &&
+                record.releaseString("sha256").matches(Regex("[0-9a-f]{64}"))) {
+                "Aggregate SBOM Maven inventory record is invalid"
+            }
+        }
+    }
+    val inventoryByPath = inventoryRecords.associateBy { it.releaseString("path") }
+    check(inventoryByPath.size == inventoryRecords.size) { "Aggregate SBOM Maven inventory has duplicate paths" }
+    val expectedInventoryPaths = primaryPaths.flatMapTo(sortedSetOf()) { path ->
+        listOf(path, "$path.asc", "$path.md5", "$path.sha1", "$path.sha256", "$path.sha512")
+    }
+    check(inventoryByPath.keys == expectedInventoryPaths) {
+        "Aggregate SBOM Maven inventory file set is invalid"
+    }
+
+    fun license(id: String) = buildJsonArray { add(buildJsonObject {
+        put("license", buildJsonObject { put("id", JsonPrimitive(id)) })
+    }) }
+    fun hashes(sha256: String) = buildJsonArray { add(buildJsonObject {
+        put("alg", JsonPrimitive("SHA-256")); put("content", JsonPrimitive(sha256))
+    }) }
+    fun distributionReference(url: String, sha256: String) = buildJsonObject {
+        put("type", JsonPrimitive("distribution")); put("url", JsonPrimitive(url))
+        put("hashes", hashes(sha256))
+    }
+    fun properties(values: List<Pair<String, String>>) = buildJsonArray {
+        values.sortedBy(Pair<String, String>::first).forEach { (name, value) -> add(buildJsonObject {
+            put("name", JsonPrimitive(name)); put("value", JsonPrimitive(value))
+        }) }
+    }
+
+    val representedPrimaries = mutableSetOf<String>()
+    val mavenComponents = artifactIds.map { artifactId ->
+        val artifactVersion = mavenArtifactVersion(artifactId, versions)
+        val ref = "pkg:maven/${CodexAgentBuild.MAVEN_GROUP}/$artifactId@$artifactVersion"
+        val paths = primaryPaths.filter { it.startsWith("$groupPath/$artifactId/$artifactVersion/") }.sorted()
+        check(paths.isNotEmpty() && paths.all(representedPrimaries::add)) {
+            "Aggregate SBOM Maven primary ownership is invalid for $artifactId"
+        }
+        buildJsonObject {
+            put("type", JsonPrimitive("library")); put("bom-ref", JsonPrimitive(ref))
+            put("group", JsonPrimitive(CodexAgentBuild.MAVEN_GROUP)); put("name", JsonPrimitive(artifactId))
+            put("version", JsonPrimitive(artifactVersion)); put("purl", JsonPrimitive(ref)); put("licenses", license("GPL-3.0-or-later"))
+            put("externalReferences", buildJsonArray { paths.forEach { path ->
+                add(distributionReference(
+                    "https://repo1.maven.org/maven2/$path",
+                    inventoryByPath.getValue(path).releaseString("sha256"),
+                ))
+            } })
+        }
+    }
+    check(representedPrimaries == primaryPaths) { "Aggregate SBOM Maven primary coverage is incomplete" }
+
+    val rootRef = "urn:codex-agent:release:$commit"
+    val swiftRef = "urn:codex-agent:swift:$version"
+    val swiftComponent = buildJsonObject {
+        put("type", JsonPrimitive("framework")); put("bom-ref", JsonPrimitive(swiftRef))
+        put("name", JsonPrimitive("CodexAgent")); put("version", JsonPrimitive(version))
+        put("hashes", hashes(swiftArchive.releaseDigest())); put("licenses", license("GPL-3.0-or-later"))
+        put("externalReferences", buildJsonArray { add(distributionReference(
+            "https://github.com/${CodexAgentBuild.REPOSITORY}/releases/download/$releaseTag/${swiftArchive.name}",
+            swiftArchive.releaseDigest(),
+        )) })
+    }
+    val nativeWrapperComponents = nativeWrapperPackages.sortedBy(File::getName).map { file ->
+        val digest = file.releaseDigest()
+        buildJsonObject {
+            put("type", JsonPrimitive("library"))
+            put("bom-ref", JsonPrimitive("urn:codex-agent:native-wrapper-package:$digest"))
+            put("name", JsonPrimitive(file.name))
+            put("version", JsonPrimitive(version))
+            put("hashes", hashes(digest))
+            put("licenses", license("GPL-3.0-or-later"))
+            put("externalReferences", buildJsonArray { add(distributionReference(
+                "https://github.com/${CodexAgentBuild.REPOSITORY}/releases/download/$releaseTag/${file.name}",
+                digest,
+            )) })
+        }
+    }
+    val desktopManifest = readDesktopCodexManifest(desktopDistributionManifest)
+    check(desktopManifest.distributions.map(DesktopCodexDistributionSpec::target).toSet() ==
+        desktopRuntimeEvidenceTargets.keys) { "Aggregate SBOM Desktop target set is invalid" }
+    val codexRef = "pkg:github/openai/codex@${desktopManifest.releaseTag}"
+    val codexComponent = buildJsonObject {
+        put("type", JsonPrimitive("application")); put("bom-ref", JsonPrimitive(codexRef))
+        put("group", JsonPrimitive("openai")); put("name", JsonPrimitive("codex"))
+        put("version", JsonPrimitive(desktopManifest.releaseTag)); put("purl", JsonPrimitive(codexRef))
+        put("licenses", license("Apache-2.0"))
+        put("externalReferences", buildJsonArray {
+            desktopManifest.distributions.sortedBy(DesktopCodexDistributionSpec::target).forEach { distribution ->
+                add(distributionReference(
+                    "https://github.com/openai/codex/releases/download/${desktopManifest.releaseTag}/${distribution.asset}",
+                    distribution.archiveSha256,
+                ))
+            }
+        })
+        put("properties", properties(
+            desktopManifest.distributions.map { distribution ->
+                "io.github.codex-agent-labs.release.binarySha256.${distribution.target}" to
+                    distribution.binarySha256
+            } + listOf(
+                "io.github.codex-agent-labs.release.bundledLicenseSha256" to desktopBundledLicense.releaseDigest(),
+                "io.github.codex-agent-labs.release.bundledNoticeSha256" to desktopBundledNotice.releaseDigest(),
+            ),
+        ))
+    }
+    val components = (mavenComponents + swiftComponent + nativeWrapperComponents + codexComponent)
+        .sortedBy { it.releaseString("bom-ref") }
+    val componentRefs = components.map { it.releaseString("bom-ref") }
+    check(componentRefs.size == componentRefs.toSet().size && rootRef !in componentRefs) {
+        "Aggregate SBOM component references are not unique"
+    }
+    return buildJsonObject {
+        put("${'$'}schema", JsonPrimitive("https://cyclonedx.org/schema/bom-1.7.schema.json"))
+        put("bomFormat", JsonPrimitive("CycloneDX")); put("specVersion", JsonPrimitive("1.7"))
+        put("version", JsonPrimitive(1))
+        put("metadata", buildJsonObject {
+            put("lifecycles", buildJsonArray { add(buildJsonObject { put("phase", JsonPrimitive("post-build")) }) })
+            put("component", buildJsonObject {
+                put("type", JsonPrimitive("library")); put("bom-ref", JsonPrimitive(rootRef))
+                put("group", JsonPrimitive(CodexAgentBuild.REPOSITORY.substringBefore('/')))
+                put("name", JsonPrimitive(CodexAgentBuild.REPOSITORY.substringAfter('/')))
+                put("version", JsonPrimitive(releaseTag))
+                put("purl", JsonPrimitive("pkg:github/${CodexAgentBuild.REPOSITORY}@$releaseTag"))
+                put("licenses", license("GPL-3.0-or-later"))
+                put("externalReferences", buildJsonArray { add(buildJsonObject {
+                    put("type", JsonPrimitive("vcs"))
+                    put("url", JsonPrimitive("https://github.com/${CodexAgentBuild.REPOSITORY}/tree/$commit"))
+                }) })
+            })
+            put("properties", properties(listOf(
+                "io.github.codex-agent-labs.release.candidateCommit" to commit,
+                "io.github.codex-agent-labs.release.candidateTree" to tree,
+                "io.github.codex-agent-labs.release.desktopManifestSha256" to desktopDistributionManifest.releaseDigest(),
+                "io.github.codex-agent-labs.release.mavenInventorySha256" to mavenInventory.releaseDigest(),
+                "io.github.codex-agent-labs.release.nativeWrapperPackageCount" to
+                    nativeWrapperPackages.size.toString(),
+                "io.github.codex-agent-labs.release.swiftArchiveSha256" to swiftArchive.releaseDigest(),
+            )))
+        })
+        put("components", JsonArray(components))
+        put("dependencies", buildJsonArray { add(buildJsonObject {
+            put("ref", JsonPrimitive(rootRef))
+            put("dependsOn", buildJsonArray { componentRefs.sorted().forEach { add(JsonPrimitive(it)) } })
+        }) })
+        put("compositions", buildJsonArray { add(buildJsonObject {
+            put("aggregate", JsonPrimitive("incomplete"))
+            put("assemblies", buildJsonArray { add(JsonPrimitive(rootRef)) })
+            put("dependencies", buildJsonArray { add(JsonPrimitive(rootRef)) })
+        }) })
+    }
+}
+
+internal fun verifyAggregateReleaseSbom(
+    sbom: File,
+    versions: ProductVersions,
+    releaseTag: String,
+    commit: String,
+    tree: String,
+    mavenInventory: File,
+    swiftArchive: File,
+    nativeWrapperPackages: List<File>,
+    desktopDistributionManifest: File,
+    desktopBundledLicense: File,
+    desktopBundledNotice: File,
+) {
+    val version = versions.sdk
+    check(sbom.name == aggregateReleaseSbomFileName(version)) { "Aggregate SBOM file name is invalid" }
+    val expected = buildAggregateReleaseSbom(
+        versions, releaseTag, commit, tree, mavenInventory, swiftArchive, nativeWrapperPackages,
+        desktopDistributionManifest,
+        desktopBundledLicense, desktopBundledNotice,
+    )
+    val expectedText = releaseJson.encodeToString(JsonElement.serializer(), expected) + "\n"
+    check(sbom.readText() == expectedText) { "Aggregate SBOM does not match the exact release inputs" }
+}
 
 private val promotedReceiptKeys = setOf(
     "schemaVersion", "repository", "finalCommit", "finalTree", "validatedCommit", "validatedTree",
@@ -35,30 +263,34 @@ private val promotedInputFiles = linkedMapOf(
 private val promotedSidecarSuffixes = listOf(".asc", ".md5", ".sha1", ".sha256", ".sha512")
 internal val promotedMavenArtifactOwnership = linkedMapOf(
     "common" to setOf(
-        "codex-agent-client", "codex-agent-client-jvm",
+        "codex-agent", "codex-agent-jvm", "codex-agent-bom", "codex-agent-core", "codex-agent-core-jvm",
     ),
     "android" to setOf(
-        "codex-agent-client-android", "codex-agent-runtime-android",
+        "codex-agent-android", "codex-agent-core-android", "codex-agent-runtime-android",
     ),
     "desktop" to setOf(
-        "codex-agent-client-linuxarm64", "codex-agent-client-linuxx64",
-        "codex-agent-client-macosarm64", "codex-agent-client-macosx64", "codex-agent-client-mingwx64",
+        "codex-agent-linuxarm64", "codex-agent-linuxx64",
+        "codex-agent-macosarm64", "codex-agent-macosx64", "codex-agent-mingwx64",
+        "codex-agent-core-linuxarm64", "codex-agent-core-linuxx64",
+        "codex-agent-core-macosarm64", "codex-agent-core-macosx64", "codex-agent-core-mingwx64",
         "codex-agent-runtime-desktop", "codex-agent-runtime-desktop-jvm",
         "codex-agent-runtime-desktop-linuxarm64", "codex-agent-runtime-desktop-linuxx64",
         "codex-agent-runtime-desktop-macosarm64", "codex-agent-runtime-desktop-macosx64",
         "codex-agent-runtime-desktop-mingwx64",
     ),
     "ios-device" to setOf(
-        "codex-agent-client-iosarm64", "codex-agent-runtime-ios", "codex-agent-runtime-ios-iosarm64",
+        "codex-agent-iosarm64", "codex-agent-core-iosarm64",
+        "codex-agent-runtime-ios", "codex-agent-runtime-ios-iosarm64",
     ),
     "ios-simulator" to setOf(
-        "codex-agent-client-iossimulatorarm64", "codex-agent-runtime-ios-iossimulatorarm64",
+        "codex-agent-iossimulatorarm64", "codex-agent-core-iossimulatorarm64",
+        "codex-agent-runtime-ios-iossimulatorarm64",
     ),
     "node-js" to setOf(
-        "codex-agent-client-js", "codex-agent-runtime-node", "codex-agent-runtime-node-js",
+        "codex-agent-js", "codex-agent-core-js", "codex-agent-runtime-desktop-js",
     ),
     "node-wasm" to setOf(
-        "codex-agent-client-wasm-js", "codex-agent-runtime-node-wasm-js",
+        "codex-agent-wasm-js", "codex-agent-core-wasm-js", "codex-agent-runtime-desktop-wasm-js",
     ),
 )
 internal val promotedCandidateLaneNames = setOf(
@@ -70,10 +302,10 @@ internal val promotedCandidateLaneNames = setOf(
     "consumer-desktop", "consumer-ios-device", "consumer-ios-simulator", "consumer-node-js",
     "consumer-node-wasm",
 )
-private val impactPlanKeys = setOf(
+internal val impactPlanKeys = setOf(
     "schemaVersion", "event", "repository", "pullRequest", "baseCommit", "headCommit",
-    "validationCommit", "validationTree", "mergeReady", "androidEvidenceRequired", "full",
-    "unknownPaths", "changedPaths", "lanes",
+    "validationCommit", "validationTree", "mergeReady", "remoteBuildAuthorized",
+    "remoteBuildAuthorizationReason", "androidEvidenceRequired", "full", "unknownPaths", "changedPaths", "lanes",
 )
 private val impactLaneKeys = setOf("build", "test", "metadata", "reuseAllowed", "reasons")
 private val aggregateReceiptKeys = setOf(
@@ -169,10 +401,15 @@ internal data class TransportProducerIdentity(
     val tree: String,
 )
 
+private data class PromotedNativeWrapperPackages(
+    val packages: List<File>,
+    val toolchains: List<File>,
+)
+
 internal data class PromotedCandidateInputs(
     val promotedArtifacts: File,
     val signedMavenRepository: File,
-    val version: String,
+    val versions: ProductVersions,
     val releaseTag: String,
     val commit: String,
     val tree: String,
@@ -194,7 +431,9 @@ internal data class PromotedCandidateInputs(
 )
 
 internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
-        val version = inputs.version
+        val versions = inputs.versions
+        val version = versions.sdk
+        val runtimeVersion = versions.runtime
         val commit = inputs.commit
         val tree = inputs.tree
         check(inputs.releaseTag == "v$version") { "Candidate release tag/version mismatch" }
@@ -211,10 +450,25 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
 
         val promotionRoot = inputs.promotedArtifacts
         val validationRoot = promotionRoot.resolve("codex-agent-promoted-validation-$commit")
-        val validationFiles = safeRegularFiles(validationRoot).associateBy { it.name }
-        check(validationFiles.keys == setOf("impact-plan.json", "validation-receipt.json", "promotion-receipt.json")) {
+        val validationEntries = safeRegularFiles(validationRoot)
+        check(validationEntries.all { it.parentFile.canonicalFile == validationRoot.canonicalFile }) {
+            "Promoted validation artifact files must be at its root"
+        }
+        val validationFiles = validationEntries.associateBy { it.name }
+        val expectedValidationFiles = setOf(
+            "impact-plan.json", "validation-receipt.json", "promotion-receipt.json",
+        ) + crossLanguageM11EvidenceFileNames
+        check(validationFiles.keys == expectedValidationFiles && validationEntries.size == expectedValidationFiles.size) {
             "Promoted validation artifact has a missing or unexpected file set"
         }
+        val crossLanguageM11Sources = crossLanguageM11EvidenceFileNames.associateWith(validationFiles::getValue)
+        verifyCompleteCrossLanguageM11Evidence(crossLanguageM11Sources)
+        val nativeWrapperPackages = copyPromotedNativeWrapperPackages(
+            promotionRoot,
+            commit,
+            crossLanguageM11Sources,
+            payload,
+        )
         val promotionReceipt = validationFiles.getValue("promotion-receipt.json").readReleaseObject()
         validatePromotionReceipt(
             promotionReceipt, commit, tree, inputs.promotionRunId, inputs.promotionRunAttempt,
@@ -228,12 +482,12 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
         }
         val releaseTooling = copyToPayload(declaredReleaseTooling, payload, RELEASE_TOOLING_FILE_NAME)
 
-        verifyCanonicalUnsignedPrimaryParity(lanes, inputs.signedMavenRepository, version)
+        verifyCanonicalUnsignedPrimaryParity(lanes, inputs.signedMavenRepository, versions)
         val signedRepository = inputs.signedMavenRepository
         val mavenInventory = payload.resolve("maven-inventory.json")
-        verifyMavenRepository(signedRepository, CodexAgentBuild.MAVEN_GROUP, version, true, mavenInventory)
-        verifyPromotedPublicationBytes(lanes, signedRepository, version)
-        verifyPromotedConsumers(lanes, version)
+        verifyMavenRepository(signedRepository, CodexAgentBuild.MAVEN_GROUP, versions, true, mavenInventory)
+        verifyPromotedPublicationBytes(lanes, signedRepository, versions)
+        verifyPromotedConsumers(lanes, versions)
 
         val centralInventory = payload.resolve("central-bundle.json")
         val centralBundles = buildCentralBundles(
@@ -284,6 +538,9 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
         val validationReceiptFile = copyToPayload(
             validationFiles.getValue("validation-receipt.json"), payload, "validation-receipt.json",
         )
+        val crossLanguageM11Files = crossLanguageM11Sources.toSortedMap().values.map { source ->
+            copyToPayload(source, payload, source.name)
+        }
 
         val policies = linkedMapOf(
             "approvals" to copyToPayload(inputs.approvals, payload),
@@ -300,10 +557,26 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
             policies.getValue("approvals"), policies.getValue("desktopDistributionManifest"),
             policies.getValue("desktopBundledLicense"), policies.getValue("desktopBundledNotice"),
         )
+        val sbom = payload.resolve(aggregateReleaseSbomFileName(version))
+        sbom.atomicWriteJson(buildAggregateReleaseSbom(
+            versions,
+            inputs.releaseTag,
+            commit,
+            tree,
+            mavenInventory,
+            swiftArchive,
+            nativeWrapperPackages.packages,
+            policies.getValue("desktopDistributionManifest"),
+            policies.getValue("desktopBundledLicense"),
+            policies.getValue("desktopBundledNotice"),
+        ))
 
         val manifest = buildJsonObject {
             put("schemaVersion", JsonPrimitive(PROMOTED_CANDIDATE_SCHEMA))
             put("version", JsonPrimitive(version))
+            put("contractVersion", JsonPrimitive(versions.contract))
+            put("runtimeVersion", JsonPrimitive(versions.runtime))
+            put("sdkVersion", JsonPrimitive(versions.sdk))
             put("releaseTag", JsonPrimitive(inputs.releaseTag))
             put("candidateCommit", JsonPrimitive(commit))
             put("candidateTree", JsonPrimitive(tree))
@@ -317,6 +590,10 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
                 put("centralBundles", buildJsonArray {
                     centralBundles.forEach { add(it.releaseRecord()) }
                 })
+                put("nativeWrapperPackages", buildJsonArray {
+                    nativeWrapperPackages.packages.forEach { add(it.releaseRecord()) }
+                })
+                put("sbom", sbom.releaseRecord())
             })
             put("evidence", buildJsonObject {
                 put("swiftPackageChecksum", swiftChecksum.releaseRecord())
@@ -325,6 +602,12 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
                 put("promotionReceipt", promotionReceiptFile.releaseRecord())
                 put("impactPlan", impactPlanFile.releaseRecord())
                 put("validationReceipt", validationReceiptFile.releaseRecord())
+                put("crossLanguageM11", buildJsonArray {
+                    crossLanguageM11Files.forEach { add(it.releaseRecord()) }
+                })
+                put("nativeWrapperPackageToolchains", buildJsonArray {
+                    nativeWrapperPackages.toolchains.forEach { add(it.releaseRecord()) }
+                })
                 put("promotedArtifactInventory", promotionInventory.releaseRecord())
                 put("privacyAudit", privacyAudit.releaseRecord())
                 put("releaseTooling", releaseTooling.releaseRecord())
@@ -354,8 +637,84 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
         verifyCandidateManifestStructure(manifest)
         payload.resolve("candidate-manifest.json").atomicWriteJson(manifest)
         verifyCandidatePayload(
-            payload.resolve("candidate-manifest.json"), payload, version, inputs.releaseTag, commit, policies,
+            payload.resolve("candidate-manifest.json"), payload, versions, inputs.releaseTag, commit, policies,
         )
+}
+
+internal fun nativeWrapperM11PackageArtifacts(
+    receipts: Map<CrossLanguageBinding, CrossLanguageBindingReceipt>,
+): Map<CrossLanguageBinding, Map<String, CrossLanguageBindingArtifactIdentity>> {
+    check(receipts.keys == nativeWrapperBindings.toSet()) {
+        "Native-wrapper M11 receipt language set is incomplete"
+    }
+    val result = nativeWrapperBindings.associateWith { language ->
+        val receipt = receipts.getValue(language)
+        check(receipt.phase == CrossLanguageBindingPhase.M11 && receipt.language == language) {
+            "Native-wrapper M11 receipt identity mismatch for ${language.id}"
+        }
+        val prefix = "${language.id}-package/"
+        receipt.artifacts.filter { it.id.startsWith(prefix) }.associateBy { artifact ->
+            artifact.id.removePrefix(prefix).also { relative ->
+                check(relative == File(relative).name) {
+                    "Native-wrapper M11 package layout is not flat: ${artifact.id}"
+                }
+            }
+        }.also { artifacts ->
+            check(artifacts.isNotEmpty()) { "Native-wrapper M11 package inventory is empty for ${language.id}" }
+        }
+    }
+    val names = result.values.flatMap { it.keys }
+    check(names.size == names.toSet().size) { "Native-wrapper M11 package file names are ambiguous" }
+    return result
+}
+
+internal fun verifyNativeWrapperPackageFiles(
+    packageRoot: File,
+    expected: Map<CrossLanguageBinding, Map<String, CrossLanguageBindingArtifactIdentity>>,
+): Map<CrossLanguageBinding, Map<String, File>> {
+    check(packageRoot.isDirectory && !Files.isSymbolicLink(packageRoot.toPath())) {
+        "Promoted native-wrapper package artifact is missing or unsafe"
+    }
+    val languageRoots = packageRoot.listFiles()?.toList().orEmpty()
+    check(languageRoots.map(File::getName).toSet() == nativeWrapperBindings.map { it.id }.toSet() &&
+        languageRoots.size == nativeWrapperBindings.size &&
+        languageRoots.all { it.isDirectory && !Files.isSymbolicLink(it.toPath()) }) {
+        "Promoted native-wrapper package language set is incomplete or unexpected"
+    }
+    return nativeWrapperBindings.associateWith { language ->
+        val actual = verifiedRegularFiles(packageRoot.resolve(language.id))
+        check(actual.keys.all { it == File(it).name } && actual.keys == expected.getValue(language).keys) {
+            "Promoted native-wrapper package inventory mismatch for ${language.id}"
+        }
+        actual.onEach { (name, source) ->
+            check(source.releaseDigest() == expected.getValue(language).getValue(name).sha256) {
+                "Promoted native-wrapper package hash mismatch: ${language.id}-package/$name"
+            }
+        }
+    }
+}
+
+private fun copyPromotedNativeWrapperPackages(
+    promotionRoot: File,
+    commit: String,
+    crossLanguageM11Sources: Map<String, File>,
+    payload: File,
+): PromotedNativeWrapperPackages {
+    val packageRoot = promotionRoot.resolve("codex-agent-promoted-native-wrapper-packages-$commit")
+    val receipts = nativeWrapperBindings.associateWith { language ->
+        readCrossLanguageBindingReceipt(crossLanguageM11Sources.getValue("${language.id}-parity.json"))
+    }
+    val expected = nativeWrapperM11PackageArtifacts(receipts)
+    val sources = verifyNativeWrapperPackageFiles(packageRoot, expected).values
+        .flatMap { it.toSortedMap().values }
+    val copied = sources.map { copyToPayload(it, payload) }
+    val (toolchains, packages) = copied.partition { it.name.endsWith("-package-toolchain.tsv") }
+    check(toolchains.map(File::getName).toSet() ==
+        nativeWrapperBindings.map { "codex-agent-${it.id}-package-toolchain.tsv" }.toSet() &&
+        packages.isNotEmpty()) {
+        "Promoted native-wrapper package/toolchain split is invalid"
+    }
+    return PromotedNativeWrapperPackages(packages.sortedBy(File::getName), toolchains.sortedBy(File::getName))
 }
 
 private fun copyPromotedRuntimeEvidence(
@@ -579,8 +938,9 @@ private fun validatePromotedLanes(
         plan.releaseString("repository") == CodexAgentBuild.REPOSITORY &&
         plan.releaseString("event") == "merge_group" && plan.releaseString("validationTree") == tree &&
         plan.releaseString("validationCommit") == promotion.releaseString("validatedCommit") &&
-        plan.releaseBoolean("mergeReady")) {
-        "A merge-ready impact plan is required for release promotion"
+        plan.releaseBoolean("mergeReady") && plan.releaseBoolean("remoteBuildAuthorized") &&
+        plan.releaseString("remoteBuildAuthorizationReason") == "merge-group") {
+        "An authorized merge-group impact plan is required for release promotion"
     }
     val planned = plan.releaseObject("lanes")
     check(planned.keys == promotedCandidateLaneNames && planned.values.all { value ->
@@ -608,6 +968,7 @@ private fun validatePromotedLanes(
 
     val expectedDirectories = promotionLanes.keys.mapTo(mutableSetOf()) { "codex-agent-promoted-$it-$commit" }
     expectedDirectories += "codex-agent-promoted-validation-$commit"
+    expectedDirectories += "codex-agent-promoted-native-wrapper-packages-$commit"
     val actualDirectories = root.listFiles().orEmpty().filter(File::isDirectory).mapTo(mutableSetOf(), File::getName)
     check(actualDirectories == expectedDirectories) { "Promoted artifact directory set mismatch" }
     return promotionLanes.mapValues { (lane, value) ->
@@ -697,7 +1058,7 @@ internal fun canonicalPromotedMavenOwners(
             "Duplicate canonical Maven ownership for $artifactId"
         }
     } }
-    val expectedArtifactIds = expectedMavenPrimaryPaths("VERSION").mapTo(sortedSetOf()) {
+    val expectedArtifactIds = expectedMavenPrimaryPaths(ProductVersions("C", "R", "S")).mapTo(sortedSetOf()) {
         it.substringBefore('/')
     }
     check(owners.keys == expectedArtifactIds) { "Canonical Maven artifact ownership set is incomplete" }
@@ -706,13 +1067,15 @@ internal fun canonicalPromotedMavenOwners(
 
 internal fun canonicalPromotedMavenPrimarySources(
     repositories: Map<String, File>,
-    version: String,
+    versions: ProductVersions,
     ownership: Map<String, Set<String>> = promotedMavenArtifactOwnership,
 ): Map<String, File> {
     val owners = canonicalPromotedMavenOwners(ownership)
     check(repositories.keys == ownership.keys) { "Promoted consumer Maven repository set is incomplete" }
     val groupPrefix = "${CodexAgentBuild.MAVEN_GROUP.replace('.', '/')}/"
+    val expectedPaths = expectedMavenPrimaryPaths(versions).mapTo(sortedSetOf()) { "$groupPrefix$it" }
     val sources = linkedMapOf<String, File>()
+    val duplicates = mutableListOf<Triple<String, String, File>>()
     repositories.forEach { (target, repository) -> safeRegularFiles(repository).forEach { file ->
         if (promotedSidecarSuffixes.any(file.name::endsWith)) return@forEach
         if (centralExclusion(file) != null) return@forEach
@@ -723,17 +1086,27 @@ internal fun canonicalPromotedMavenPrimarySources(
         val owner = owners[artifactId] ?: error("Canonical Maven owner is missing for $artifactId")
         if (target == owner) {
             check(sources.put(relative, file) == null) { "Duplicate canonical Maven ownership for $relative" }
+        } else {
+            check(relative in expectedPaths) { "Unexpected promoted $target Maven primary: $relative" }
+            duplicates += Triple(target, relative, file)
         }
     } }
-    val expectedPaths = expectedMavenPrimaryPaths(version).mapTo(sortedSetOf()) { "$groupPrefix$it" }
     check(sources.keys == expectedPaths) { "Canonical promoted Maven primary set is incomplete" }
+    val canonicalDigests = mutableMapOf<String, String>()
+    duplicates.forEach { (target, relative, duplicate) ->
+        val canonical = sources.getValue(relative)
+        check(duplicate.length() == canonical.length() &&
+            duplicate.releaseDigest() == canonicalDigests.getOrPut(relative) { canonical.releaseDigest() }) {
+            "Promoted $target Maven primary differs from its canonical owner: $relative"
+        }
+    }
     return sources
 }
 
 internal fun stageCanonicalPromotedMavenPrimaries(
     promotedArtifacts: File,
     commit: String,
-    version: String,
+    versions: ProductVersions,
     output: File,
 ) {
     check(commit.matches(Regex("[0-9a-f]{40}"))) { "Promoted Maven commit is not immutable" }
@@ -744,7 +1117,7 @@ internal fun stageCanonicalPromotedMavenPrimaries(
     val repositories = promotedMavenArtifactOwnership.keys.associateWith { target ->
         promotedArtifacts.resolve("codex-agent-promoted-consumer-$target-$commit/payload/maven")
     }
-    val sources = canonicalPromotedMavenPrimarySources(repositories, version)
+    val sources = canonicalPromotedMavenPrimarySources(repositories, versions)
     check(output.mkdirs() || output.isDirectory) { "Cannot create canonical Maven output: $output" }
     sources.toSortedMap().forEach { (relative, source) ->
         val destination = output.resolve(relative)
@@ -758,12 +1131,12 @@ internal fun stageCanonicalPromotedMavenPrimaries(
 private fun verifyCanonicalUnsignedPrimaryParity(
     lanes: Map<String, PromotedLane>,
     signed: File,
-    version: String,
+    versions: ProductVersions,
 ) {
     val repositories = promotedMavenArtifactOwnership.keys.associateWith { target ->
         lanes.getValue("consumer-$target").root.resolve("payload/maven")
     }
-    val canonicalRecords = canonicalPromotedMavenPrimarySources(repositories, version)
+    val canonicalRecords = canonicalPromotedMavenPrimarySources(repositories, versions)
         .mapValues { (_, file) -> file.releaseDigest() }
     val signedFiles = safeRegularFiles(signed)
     val signedRecords = signedFiles.associate { it.relativeTo(signed).invariantSeparatorsPath to it.releaseDigest() }
@@ -781,23 +1154,42 @@ private fun verifyCanonicalUnsignedPrimaryParity(
     }
 }
 
-private fun verifyPromotedPublicationBytes(lanes: Map<String, PromotedLane>, maven: File, version: String) {
+private fun verifyPromotedPublicationBytes(
+    lanes: Map<String, PromotedLane>,
+    maven: File,
+    versions: ProductVersions,
+) {
+    val sdkVersion = versions.sdk
+    val runtimeVersion = versions.runtime
     val android = lanes.getValue("android").one("aar")
     val mavenAndroid = maven.resolve(
-        "${CodexAgentBuild.MAVEN_GROUP.replace('.', '/')}/codex-agent-runtime-android/$version/" +
-            "codex-agent-runtime-android-$version.aar",
+        "${CodexAgentBuild.MAVEN_GROUP.replace('.', '/')}/codex-agent-runtime-android/$sdkVersion/" +
+            "codex-agent-runtime-android-$sdkVersion.aar",
     )
     check(android.releaseDigest() == mavenAndroid.releaseDigest()) {
         "Promoted Android AAR and Maven publication differ"
     }
-    val desktop = lanes.filterKeys { it.startsWith("desktop-") }.values.map { it.one("classifier") }
-    check(desktop.size == desktopRuntimeEvidenceTargets.size) { "Promoted desktop classifier set is incomplete" }
     val mavenDesktop = maven.resolve(
-        "${CodexAgentBuild.MAVEN_GROUP.replace('.', '/')}/codex-agent-runtime-desktop/$version",
+        "${CodexAgentBuild.MAVEN_GROUP.replace('.', '/')}/codex-agent-runtime-desktop/$runtimeVersion",
     )
-    desktop.forEach { classifier ->
-        check(classifier.releaseDigest() == mavenDesktop.resolve(classifier.name).releaseDigest()) {
-            "Promoted desktop classifier and Maven publication differ: ${classifier.name}"
+    check(promotedDesktopLanes.keys == desktopRuntimeEvidenceTargets.keys &&
+        promotedDesktopLanes.keys == crossLanguageCAbiTargetSpecs.keys) {
+        "Promoted desktop target ownership is inconsistent"
+    }
+    promotedDesktopLanes.forEach { (target, laneName) ->
+        val lane = lanes.getValue(laneName)
+        val classifier = lane.one("classifier")
+        val expectedClassifier =
+            "codex-agent-runtime-desktop-$runtimeVersion-${desktopRuntimeEvidenceTargets.getValue(target).classifier}.zip"
+        check(classifier.name == expectedClassifier &&
+            classifier.releaseDigest() == mavenDesktop.resolve(expectedClassifier).releaseDigest()) {
+            "Promoted desktop classifier and Maven publication differ: $expectedClassifier"
+        }
+        val cAbiSdk = lane.one("c-abi-sdk")
+        val expectedCAbiSdk = crossLanguageCAbiArchiveFileName(runtimeVersion, target)
+        check(cAbiSdk.name == expectedCAbiSdk &&
+            cAbiSdk.releaseDigest() == mavenDesktop.resolve(expectedCAbiSdk).releaseDigest()) {
+            "Promoted C ABI SDK and Maven publication differ: $expectedCAbiSdk"
         }
     }
 }
@@ -819,25 +1211,52 @@ private fun verifyPromotedSwiftMetadata(packageSwift: File, remoteConsumer: File
     check(remoteVersion == version) { "RemoteConsumer exact dependency version must equal $version" }
 }
 
-private fun verifyPromotedConsumers(lanes: Map<String, PromotedLane>, version: String) {
+internal fun verifyPromotedConsumerReport(
+    report: JsonObject,
+    laneName: String,
+    expectedSdkVersion: String,
+    expectedRuntimeVersion: String,
+): String {
+    check(report.keys == setOf(
+        "schemaVersion", "result", "sdkVersion", "runtimeVersion", "repository", "mavenGroup", "target", "tasks",
+    ) && report.releaseInt("schemaVersion") == 6 && report.releaseString("result") == "passed" &&
+        report.releaseString("sdkVersion") == expectedSdkVersion &&
+        report.releaseString("runtimeVersion") == expectedRuntimeVersion &&
+        report.releaseString("repository") == "CENTRAL_STAGING-only" &&
+        report.releaseString("mavenGroup") == CodexAgentBuild.MAVEN_GROUP) {
+        "Promoted $laneName consumer identity is invalid"
+    }
+    val target = report.releaseString("target")
+    val expectedTasks = stagedConsumerBuildTasks[target]
+        ?: error("Promoted $laneName consumer target is unsupported: $target")
+    val tasks = report.releaseArray("tasks").map { value ->
+        (value as? JsonPrimitive)?.takeIf(JsonPrimitive::isString)?.content
+            ?: error("Promoted $laneName consumer task is invalid")
+    }
+    check(tasks == expectedTasks) { "Promoted $laneName consumer task evidence is invalid" }
+    return target
+}
+
+private fun verifyPromotedConsumers(
+    lanes: Map<String, PromotedLane>,
+    versions: ProductVersions,
+) {
+    val sdkVersion = versions.sdk
+    val runtimeVersion = versions.runtime
     val targets = lanes.filterKeys { it.startsWith("consumer-") }.values.map { lane ->
         val report = lane.one("consumer-report").readReleaseObject()
-        val target = report.releaseString("target")
-        check(report.keys == setOf(
-            "schemaVersion", "result", "version", "repository", "mavenGroup", "target", "tasks",
-        ) && report.releaseInt("schemaVersion") == 5 && report.releaseString("result") == "passed" &&
-            report.releaseString("version") == version && report.releaseString("repository") == "CENTRAL_STAGING-only" &&
-            report.releaseString("mavenGroup") == CodexAgentBuild.MAVEN_GROUP &&
-            report.releaseArray("tasks").map { (it as? JsonPrimitive)?.content } ==
-            stagedConsumerBuildTasks.getValue(target)) {
-            "Promoted ${lane.name} consumer did not pass for $version"
-        }
+        val target = verifyPromotedConsumerReport(report, lane.name, sdkVersion, runtimeVersion)
         val repository = lane.root.resolve("payload/maven")
         val inventory = lane.one("maven-inventory").readReleaseObject()
-        check(inventory.keys == setOf("schemaVersion", "groupId", "version", "target", "files") &&
+        check(inventory.keys == setOf(
+            "schemaVersion", "groupId", "contractVersion", "runtimeVersion", "sdkVersion", "target", "files",
+        ) &&
             inventory.releaseInt("schemaVersion") == 1 &&
             inventory.releaseString("groupId") == CodexAgentBuild.MAVEN_GROUP &&
-            inventory.releaseString("version") == version && inventory.releaseString("target") == target) {
+            inventory.releaseString("contractVersion") == versions.contract &&
+            inventory.releaseString("runtimeVersion") == versions.runtime &&
+            inventory.releaseString("sdkVersion") == versions.sdk &&
+            inventory.releaseString("target") == target) {
             "Promoted $target Maven inventory identity is invalid"
         }
         val inventoryEntries = inventory.releaseArray("files")

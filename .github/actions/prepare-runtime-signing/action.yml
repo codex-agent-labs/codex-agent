@@ -1,0 +1,155 @@
+name: Prepare original Runtime signing inputs without secrets
+description: Use pinned source to capture caller tooling and prepare originals; never sign or execute candidate actions.
+inputs:
+  source-sha:
+    required: true
+    description: Reviewed executable source commit.
+  workflow-sha:
+    required: true
+    description: Reviewed producer workflow commit.
+  candidate-root:
+    required: true
+    description: Absolute separate candidate Git inventory checkout.
+  plan:
+    required: true
+    description: Absolute original impact plan path.
+  destination:
+    required: true
+    description: Fresh absolute preparation output outside both checkouts.
+  target:
+    required: true
+    description: Exact native target or aggregate.
+  build-key:
+    required: true
+    description: Exact elected original metadata key.
+  artifact-id:
+    required: true
+    description: Exact original state upload ID.
+  artifact-sha256:
+    required: true
+    description: Exact original state upload digest.
+  state-wave:
+    required: true
+    description: Exact Runtime predecessor state wave.
+  validation-tree:
+    required: true
+    description: Exact candidate validation tree.
+  tooling-artifact-id:
+    default: ''
+    description: Optional caller-selected tooling upload ID; requires the complete locator tuple.
+  tooling-artifact-sha256:
+    default: ''
+    description: Optional caller-selected tooling upload digest.
+  tooling-transport-producer:
+    default: ''
+    description: Optional caller-selected original tooling transport producer JSON.
+outputs:
+  preparation-path:
+    description: Current-job preparation output after successful non-secret verification.
+    value: ${{ steps.prepare.outputs.preparation_path }}
+runs:
+  using: composite
+  steps:
+    - id: prepare
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        WORKFLOW_SHA: ${{ inputs.workflow-sha }}
+        CANDIDATE_ROOT: ${{ inputs.candidate-root }}
+        ORIGINAL_PLAN: ${{ inputs.plan }}
+        DESTINATION: ${{ inputs.destination }}
+        TARGET: ${{ inputs.target }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        ARTIFACT_ID: ${{ inputs.artifact-id }}
+        ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
+        STATE_WAVE: ${{ inputs.state-wave }}
+        VALIDATION_TREE: ${{ inputs.validation-tree }}
+        TOOLING_ARTIFACT_ID: ${{ inputs.tooling-artifact-id }}
+        TOOLING_ARTIFACT_SHA256: ${{ inputs.tooling-artifact-sha256 }}
+        TOOLING_TRANSPORT_PRODUCER: ${{ inputs.tooling-transport-producer }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_ACTION_PATH/../../.."
+        python3 -B - <<'PY'
+        import os, subprocess, sys, tempfile
+        from pathlib import Path
+        trusted = Path(os.environ['GITHUB_ACTION_PATH']).resolve(strict=True).parents[2]
+        sys.path.insert(0, str(trusted / 'ci'))
+        from product_reuse import _validate_plan
+        from runtime_aggregate_release import _destination
+        from products.inventory import canonical_json_bytes, load_json_bytes, read_regular_file_bytes, run_git
+        from products.receipt import validate_producer
+        from products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        if (run_git(trusted, 'rev-parse', 'HEAD').strip() != os.environ['SOURCE_SHA'] or
+                run_git(trusted, 'status', '--porcelain', '--untracked-files=no').strip()):
+            raise ValueError('Preparation executable checkout differs from its reviewed source')
+        candidate, plan_path, destination = (Path(os.environ[name]) for name in
+                                            ('CANDIDATE_ROOT', 'ORIGINAL_PLAN', 'DESTINATION'))
+        if any(not path.is_absolute() for path in (candidate, plan_path, destination)):
+            raise ValueError('Preparation paths must be absolute')
+        candidate = candidate.resolve(strict=True)
+        if candidate == trusted or candidate in trusted.parents or trusted in candidate.parents:
+            raise ValueError('Preparation requires separate trusted and candidate checkouts')
+        _destination(destination, (trusted, candidate, plan_path))
+        plan_bytes = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+        plan = _validate_plan(plan_path, candidate)
+        if plan['validationTree'] != os.environ['VALIDATION_TREE']:
+            raise ValueError('Preparation tree differs from original plan')
+        locator = [os.environ[name] for name in
+                   ('TOOLING_ARTIFACT_ID', 'TOOLING_ARTIFACT_SHA256', 'TOOLING_TRANSPORT_PRODUCER')]
+        if any(locator) and not all(locator):
+            raise ValueError('Tooling capture requires the complete caller locator tuple')
+        optional = []
+        if all(locator):
+            scratch = Path(os.environ['RUNNER_TEMP'])
+            java_home = Path(os.environ['JAVA_HOME_17_' + os.environ['RUNNER_ARCH']])
+            if not scratch.is_absolute() or not java_home.is_absolute():
+                raise ValueError('Caller Java and preparation scratch must be absolute')
+            scratch = scratch.resolve(strict=True)
+            if any(scratch == path or scratch in path.parents or path in scratch.parents
+                   for path in (trusted, candidate)):
+                raise ValueError('Tooling scratch must be separate from both checkouts')
+            java = (java_home / 'bin' / ('java.exe' if os.name == 'nt' else 'java')).resolve(strict=True)
+            read_regular_file_bytes(java, max_bytes=128 * 1024 * 1024, reject_symlink_parents=True)
+            producer = validate_producer(load_json_bytes(locator[2].encode('utf-8')))
+            parent = Path(tempfile.mkdtemp(prefix='runtime-preparation-tooling-', dir=scratch)).resolve(strict=True)
+            producer_path, capture = parent / 'transport-producer.json', parent / 'capture'
+            producer_path.write_bytes(canonical_json_bytes(producer))
+            subprocess.run([sys.executable, '-B', str(trusted / 'ci/tooling_capture.py'),
+                '--destination', str(capture), '--repository-root', str(candidate),
+                '--transport-producer', str(producer_path), '--java-executable', str(java),
+                '--artifact-id', locator[0], '--artifact-sha256', locator[1],
+                '--trusted-workflow-sha', os.environ['WORKFLOW_SHA'], '--policy-revision', plan['validationCommit'],
+                '--trusted-workflow-path', '.github/workflows/contract-validation.yml',
+                '--trusted-job-name', 'product-validation / contract-validation / tooling-attestation'],
+                cwd=trusted, env=os.environ, check=True)
+            policy = capture / 'tooling-policy.json'
+            read_regular_file_bytes(policy, reject_symlink_parents=True)
+            require_no_signing_secret(os.environ)
+            apple_destination = parent / 'apple-policy'
+            subprocess.run([sys.executable, '-B', str(trusted / 'ci/sdk_apple_policy.py'),
+                '--plan', str(plan_path), '--tooling-policy', str(policy),
+                '--destination', str(apple_destination), '--repository-root', str(candidate)],
+                cwd=trusted, env=os.environ, check=True)
+            apple_policy = apple_destination / 'apple-validation-policy.json'
+            read_regular_file_bytes(apple_policy, reject_symlink_parents=True)
+            optional = ['--sdk-validation-tooling', str(policy), '--sdk-apple-validation-policy', str(apple_policy)]
+        require_no_signing_secret(os.environ)
+        if read_regular_file_bytes(plan_path, reject_symlink_parents=True) != plan_bytes:
+            raise ValueError('Original preparation plan changed before execution')
+        subprocess.run([sys.executable, '-B', str(trusted / 'ci/runtime_release.py'), '--prepare-only',
+            '--repository-root', str(trusted), '--candidate-root', str(candidate), '--plan', str(plan_path),
+            '--destination', str(destination), '--target', os.environ['TARGET'], '--expected-build-key', os.environ['BUILD_KEY'],
+            '--artifact-id', os.environ['ARTIFACT_ID'], '--artifact-sha256', os.environ['ARTIFACT_SHA256'],
+            '--state-wave', os.environ['STATE_WAVE'], '--trusted-source-sha', os.environ['SOURCE_SHA'],
+            '--trusted-workflow-sha', os.environ['WORKFLOW_SHA'], '--validation-tree', os.environ['VALIDATION_TREE'], *optional],
+            cwd=trusted, env=os.environ, check=True)
+        require_no_signing_secret(os.environ)
+        read_regular_file_bytes(destination / 'preparation.json', reject_symlink_parents=True)
+        if any(character in str(destination) for character in '\r\n'):
+            raise ValueError('Preparation output must occupy one output line')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('preparation_path=' + str(destination) + '\n')
+        PY

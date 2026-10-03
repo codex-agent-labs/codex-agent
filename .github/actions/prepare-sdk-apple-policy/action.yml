@@ -1,0 +1,48 @@
+name: Prepare caller Apple validation policy
+description: Create job-local public policy from the original plan and already authenticated tooling, without downloading or executing tooling.
+inputs:
+  plan-path:
+    required: true
+    description: Absolute path to the already downloaded original plan.
+  tooling-policy:
+    required: true
+    description: Absolute path to the current caller authenticated six-field tooling policy.
+outputs:
+  apple-policy:
+    description: External caller policy path, valid for this job only and never transported as authority.
+    value: ${{ steps.policy.outputs.policy_path }}
+runs:
+  using: composite
+  steps:
+    - id: policy
+      name: Construct external caller policy without a signing secret
+      shell: bash
+      env:
+        PLAN_PATH: ${{ inputs.plan-path }}
+        TOOLING_POLICY: ${{ inputs.tooling-policy }}
+      run: |
+        python3 -B - <<'PY'
+        import os, subprocess, sys, tempfile
+        from pathlib import Path
+        from ci.products.inventory import read_regular_file_bytes, require_regular_directory
+        from ci.products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        repository = Path(os.environ['GITHUB_WORKSPACE'])
+        scratch = Path(os.environ['RUNNER_TEMP'])
+        plan, tooling = Path(os.environ['PLAN_PATH']), Path(os.environ['TOOLING_POLICY'])
+        if any(not path.is_absolute() or any(character in str(path) for character in '\r\n')
+               for path in (repository, scratch, plan, tooling)):
+            raise ValueError('Apple policy inputs and scratch must be absolute single-line paths')
+        repository, scratch = repository.resolve(strict=True), scratch.resolve(strict=True)
+        require_regular_directory(repository, 'Caller checkout')
+        require_regular_directory(scratch, 'Caller scratch')
+        if scratch.is_relative_to(repository) or repository.is_relative_to(scratch):
+            raise ValueError('Apple policy scratch must be outside and separate from the checkout')
+        for path in (plan, tooling):
+            read_regular_file_bytes(path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+        parent = Path(tempfile.mkdtemp(prefix='sdk-apple-policy-', dir=scratch)).resolve(strict=True)
+        subprocess.run([sys.executable, '-B', '-m', 'ci.sdk_apple_policy',
+            '--plan', str(plan), '--tooling-policy', str(tooling),
+            '--destination', str(parent / 'policy'), '--repository-root', str(repository),
+            '--github-output', os.environ['GITHUB_OUTPUT']], cwd=repository, env=os.environ, check=True)
+        PY

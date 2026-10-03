@@ -1,0 +1,161 @@
+name: Runtime Phase-10 Maven Sidecars
+
+on:
+  workflow_call:
+    inputs:
+      planOutputs:
+        required: true
+        type: string
+      trustedWorkflowSha:
+        required: true
+        type: string
+      aggregateArtifactId:
+        required: true
+        type: string
+      aggregateArtifactSha256:
+        required: true
+        type: string
+      aggregateBuildKey:
+        required: true
+        type: string
+      metadataReceiptSha256:
+        required: true
+        type: string
+      expectedPgpKeySha256:
+        required: true
+        type: string
+    outputs:
+      sidecarArtifactId:
+        value: ${{ jobs.sidecars.outputs.artifact_id }}
+      sidecarArtifactSha256:
+        value: ${{ jobs.sidecars.outputs.artifact_sha256 }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  sidecars:
+    name: runtime-phase10-maven-sidecars
+    if: >-
+      fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_sha256: sha256:${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - name: Require protected source and public PGP authority before checkout
+        id: authority
+        env:
+          PROTECTED_SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
+          PROTECTED_PGP_KEY: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY }}
+          PROTECTED_PGP_KEY_SHA256: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY_SHA256 }}
+          CALLER_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+          CALLER_PGP_KEY_SHA256: ${{ inputs.expectedPgpKeySha256 }}
+          AGGREGATE_ID: ${{ inputs.aggregateArtifactId }}
+          AGGREGATE_SHA256: ${{ inputs.aggregateArtifactSha256 }}
+          AGGREGATE_BUILD_KEY: ${{ inputs.aggregateBuildKey }}
+          METADATA_RECEIPT_SHA256: ${{ inputs.metadataReceiptSha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$PROTECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$PROTECTED_PGP_KEY_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$AGGREGATE_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$AGGREGATE_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$AGGREGATE_BUILD_KEY" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$METADATA_RECEIPT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          test "$CALLER_SOURCE_SHA" = "$PROTECTED_SOURCE_SHA"
+          test "$CALLER_PGP_KEY_SHA256" = "$PROTECTED_PGP_KEY_SHA256"
+          test -n "$PROTECTED_PGP_KEY"
+          printf '%s' "$PROTECTED_PGP_KEY" > "$RUNNER_TEMP/runtime-pgp-public.asc"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/runtime-pgp-public.asc" | cut -d ' ' -f 1)" = "$PROTECTED_PGP_KEY_SHA256"
+          fingerprint=$(gpg --batch --with-colons --show-keys "$RUNNER_TEMP/runtime-pgp-public.asc" | awk -F: '$1 == "pub" {pub++} $1 == "fpr" && pub == 1 && !fpr {fpr=$10} END {if (pub != 1 || !fpr) exit 1; print fpr}')
+          [[ "$fingerprint" =~ ^[0-9A-F]{40}$|^[0-9A-F]{64}$ ]] || exit 1
+          {
+            printf 'source_sha=%s\n' "$PROTECTED_SOURCE_SHA"
+            printf 'pgp_key_sha256=%s\n' "$PROTECTED_PGP_KEY_SHA256"
+            printf 'pgp_fingerprint=%s\n' "$fingerprint"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check out reviewed Runtime verifier and signer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.authority.outputs.source_sha }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the exact validated tree as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          path: validation-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download the original plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          merge-multiple: true
+          path: plan
+      - name: Capture the official aggregate upload without signing keys
+        id: capture
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          AGGREGATE_BUILD_KEY: ${{ inputs.aggregateBuildKey }}
+          METADATA_RECEIPT_SHA256: ${{ inputs.metadataReceiptSha256 }}
+          EXPECTED_ARTIFACT_ID: ${{ inputs.aggregateArtifactId }}
+          EXPECTED_ARTIFACT_SHA256: ${{ inputs.aggregateArtifactSha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/runtime_phase10_upload_locator.py \
+            --plan plan/impact-plan.json \
+            --candidate-root validation-source \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --destination "$RUNNER_TEMP/runtime-phase10-capture" \
+            --expected-build-key "$AGGREGATE_BUILD_KEY" \
+            --expected-metadata-receipt-sha256 "$METADATA_RECEIPT_SHA256" \
+            --github-output "$GITHUB_OUTPUT"
+          test "$(sed -n 's/^artifact_id=//p' "$GITHUB_OUTPUT")" = "$EXPECTED_ARTIFACT_ID"
+          test "$(sed -n 's/^artifact_sha256=//p' "$GITHUB_OUTPUT")" = "$EXPECTED_ARTIFACT_SHA256"
+      - name: Sign only the captured original Maven primaries externally
+        env:
+          METADATA_RECEIPT_SHA256: ${{ inputs.metadataReceiptSha256 }}
+          AGGREGATE_BUILD_KEY: ${{ inputs.aggregateBuildKey }}
+          EXPECTED_PGP_KEY_SHA256: ${{ steps.authority.outputs.pgp_key_sha256 }}
+          PGP_FINGERPRINT: ${{ steps.authority.outputs.pgp_fingerprint }}
+          SIGNING_IN_MEMORY_KEY: ${{ secrets.SIGNING_IN_MEMORY_KEY }}
+          SIGNING_IN_MEMORY_KEY_PASSWORD: ${{ secrets.SIGNING_IN_MEMORY_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$SIGNING_IN_MEMORY_KEY"
+          test -n "$SIGNING_IN_MEMORY_KEY_PASSWORD"
+          mkdir -m 700 "$RUNNER_TEMP/runtime-pgp-home"
+          printf '%s' "$SIGNING_IN_MEMORY_KEY" | gpg --homedir "$RUNNER_TEMP/runtime-pgp-home" --batch --import
+          printf '%s' "$SIGNING_IN_MEMORY_KEY_PASSWORD" | \
+            python3 -B trusted-source/ci/runtime_phase10_sidecar_caller.py \
+              --protected-output "$RUNNER_TEMP/runtime-phase10-capture/original" \
+              --destination "$RUNNER_TEMP/runtime-phase10-sidecars" \
+              --expected-metadata-receipt-sha256 "$METADATA_RECEIPT_SHA256" \
+              --expected-build-key "$AGGREGATE_BUILD_KEY" \
+              --keyring trusted-source/gradle/release/product-signing-keys.json \
+              --keys-directory trusted-source/gradle/release/keys \
+              --pgp-public-key "$RUNNER_TEMP/runtime-pgp-public.asc" \
+              --expected-pgp-key-sha256 "$EXPECTED_PGP_KEY_SHA256" \
+              --signing-home "$RUNNER_TEMP/runtime-pgp-home" \
+              --signing-fingerprint "$PGP_FINGERPRINT"
+      - name: Preserve exact external Runtime Maven sidecars
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-runtime-phase10-maven-${{ fromJSON(inputs.planOutputs).validation_tree }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-phase10-sidecars
+          compression-level: 0
+          retention-days: 90

@@ -1,0 +1,297 @@
+name: Execute one elected native SDK metadata phase
+description: Replay original SDK inputs and five-host validation evidence with caller-owned tooling, then retain the admitted metadata result.
+inputs:
+  plan-id:
+    required: true
+    description: Exact original plan upload ID.
+  artifact-id:
+    required: true
+    description: Current predecessor state upload ID.
+  artifact-sha256:
+    required: true
+    description: Exact current predecessor state digest.
+  state-wave:
+    default: '0'
+    description: Current Runtime state wave.
+  sdk-state-wave:
+    default: ''
+    description: Current SDK state wave when applicable.
+  preparation-state-id:
+    required: true
+    description: Original preparation state upload ID, independently recaptured.
+  preparation-state-sha256:
+    required: true
+    description: Exact original preparation state digest.
+  preparation-state-wave:
+    default: '0'
+    description: Original preparation Runtime wave.
+  preparation-sdk-state-wave:
+    default: ''
+    description: Original preparation SDK wave when applicable.
+  preparation-component:
+    required: true
+    description: Original preparation's elected native consumer component.
+  preparation-phase:
+    default: package
+    description: Exact ready native package, validation or metadata anchor phase.
+  preparation-target:
+    default: desktop
+    description: Exact ready anchor target; native validation uses its host target.
+  preparation-build-key:
+    required: true
+    description: Exact original preparation consumer key.
+  prepared-artifact-id:
+    required: true
+    description: Original prepared source and staged SDK upload ID.
+  prepared-artifact-sha256:
+    required: true
+    description: Exact prepared upload digest.
+  sdk-inputs-id:
+    required: true
+    description: Exact authenticated SDK inputs upload ID.
+  sdk-inputs-sha256:
+    required: true
+    description: Exact SDK inputs upload digest.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  component:
+    required: true
+    description: Elected native metadata language.
+  build-key:
+    required: true
+    description: Exact current metadata key.
+  tree:
+    required: true
+    description: Exact tested source tree.
+  sdk-validation-tooling:
+    required: true
+    description: Explicit caller-owned canonical six-field tooling policy file; caller provisions its evidence, public key and Java before this action.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional caller-owned local Apple policy for replaying retained validation state.
+runs:
+  using: composite
+  steps:
+    - id: policy
+      name: Pin caller tooling policy before either original state capture
+      shell: bash
+      env:
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+      run: |
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes
+        path = Path(os.environ['SDK_VALIDATION_TOOLING'])
+        if not path.is_absolute():
+            raise ValueError('Caller tooling policy must be an explicit absolute path')
+        raw = read_regular_file_bytes(path, reject_symlink_parents=True)
+        policy = require_exact_keys(load_canonical_json_bytes(raw),
+            {'evidence', 'publicKey', 'javaExecutable', 'requiredTrustDomain', 'keyring', 'keysDirectory'},
+            'Caller SDK tooling policy')
+        trust = policy['requiredTrustDomain']
+        if (trust not in ('development', 'release')
+                or (trust == 'release' and (policy['keyring'] is None or policy['keysDirectory'] is None))
+                or (trust == 'development' and (policy['keyring'] is not None or policy['keysDirectory'] is not None))):
+            raise ValueError('Caller tooling trust requires exact paired release policy or development trust')
+        for name in ('evidence', 'publicKey', 'javaExecutable', 'keyring', 'keysDirectory'):
+            value = policy[name]
+            if value is None and name in ('keyring', 'keysDirectory'):
+                continue
+            if type(value) is not str or not Path(value).is_absolute():
+                raise ValueError('Caller tooling fields must be explicit absolute paths')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('sha256=' + sha256_bytes(raw) + '\n')
+        PY
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: sdk
+        sdk-family: native-metadata
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        state-wave: ${{ inputs.state-wave }}
+        sdk-state-wave: ${{ inputs.sdk-state-wave }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+    - id: preparation
+      name: Capture the original preparation state separately under caller tooling policy
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        ARTIFACT_ID: ${{ inputs.preparation-state-id }}
+        ARTIFACT_SHA256: ${{ inputs.preparation-state-sha256 }}
+        STATE_WAVE: ${{ inputs.preparation-state-wave }}
+        SDK_STATE_WAVE: ${{ inputs.preparation-sdk-state-wave }}
+        PREPARATION_PHASE: ${{ inputs.preparation-phase }}
+        PREPARATION_TARGET: ${{ inputs.preparation-target }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        phase="${PREPARATION_PHASE:-package}"
+        target="${PREPARATION_TARGET:-desktop}"
+        case "$phase:$target" in
+          package:desktop) family=native-package ;;
+          metadata:desktop) family=native-metadata ;;
+          validation:macos-arm64|validation:macos-x64|validation:linux-arm64|validation:linux-x64|validation:windows-x64)
+            family=native-validation ;;
+          *) echo 'Native preparation anchor phase and target are incompatible.' >&2; exit 1 ;;
+        esac
+        selected=()
+        if [ -n "$SDK_STATE_WAVE" ]; then selected=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
+        if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+        python3 -B -m ci.sdk_workflow capture --family "$family" --plan "$PLAN" \
+          --destination "$GITHUB_WORKSPACE/build/native-preparation-input" \
+          --repository-root "$GITHUB_WORKSPACE" --artifact-id "$ARTIFACT_ID" \
+          --artifact-sha256 "$ARTIFACT_SHA256" --state-wave "$STATE_WAVE" \
+          --sdk-validation-tooling "$SDK_VALIDATION_TOOLING" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"}
+    - id: identity
+      name: Require exact metadata and original preparation elections before setup
+      shell: bash
+      env:
+        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
+        PREPARATION_MATRIX: ${{ steps.preparation.outputs.sdk_matrix }}
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        COMPONENT: ${{ inputs.component }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        PREPARATION_COMPONENT: ${{ inputs.preparation-component }}
+        PREPARATION_PHASE: ${{ inputs.preparation-phase }}
+        PREPARATION_TARGET: ${{ inputs.preparation-target }}
+        PREPARATION_BUILD_KEY: ${{ inputs.preparation-build-key }}
+        TREE: ${{ inputs.tree }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        POLICY_SHA256: ${{ steps.policy.outputs.sha256 }}
+      run: |
+        python3 -B - <<'PY'
+        import json, os, re, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        from native_wrappers import host_classifier
+        from ci.products.inventory import read_regular_file_bytes, sha256_bytes
+        from ci.products.registry import NATIVE_BINDINGS, NATIVE_TARGETS
+        from ci.runtime_native_phase import _HOSTS
+        if host_classifier() != 'linux-x64':
+            raise ValueError('Native metadata must execute on the elected Linux X64 host')
+        if sha256_bytes(read_regular_file_bytes(Path(os.environ['SDK_VALIDATION_TOOLING']), reject_symlink_parents=True)) != os.environ['POLICY_SHA256']:
+            raise ValueError('Caller tooling policy changed during state capture')
+        for prefix, phase, target in (('', 'metadata', 'desktop'),
+                ('PREPARATION_', os.environ.get('PREPARATION_PHASE') or 'package',
+                 os.environ.get('PREPARATION_TARGET') or 'desktop')):
+            component, key = os.environ[prefix + 'COMPONENT'], os.environ[prefix + 'BUILD_KEY']
+            rows = [row for row in json.loads(os.environ[prefix + 'MATRIX'])['include']
+                    if (row['product'], row['component'], row['phase'], row['target']) ==
+                       ('sdk', component, phase, target)]
+            anchor = phase in ('package', 'metadata') and target == 'desktop' or \
+                     phase == 'validation' and target in NATIVE_TARGETS
+            route = _HOSTS[target if phase == 'validation' else 'linux-x64']
+            if (component not in NATIVE_BINDINGS or len(rows) != 1 or rows[0]['buildKey'] != key
+                    or not re.fullmatch(r'sha256:[0-9a-f]{64}', key)
+                    or not anchor or (rows[0]['runnerOs'], rows[0]['runnerArch']) != route[1:]):
+                raise ValueError('Native metadata or preparation differs from its original replay election')
+        with open(os.environ['PLAN']) as plan:
+            tree = os.environ['TREE']
+            if not re.fullmatch(r'[0-9a-f]{40}', tree) or json.load(plan)['validationTree'] != tree:
+                raise ValueError('Native metadata tree differs from the original plan')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('key_hex=' + os.environ['BUILD_KEY'].removeprefix('sha256:') + '\n')
+        PY
+    - uses: ./.github/actions/setup-kmp
+      with:
+        cache-read-only: 'true'
+        product-worker: 'true'
+    - id: execute
+      name: Execute existing artifact-only five-host metadata admission
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        PREPARATION_STATE: ${{ steps.preparation.outputs.state_root }}
+        COMPONENT: ${{ inputs.component }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        PREPARATION_COMPONENT: ${{ inputs.preparation-component }}
+        PREPARATION_PHASE: ${{ inputs.preparation-phase }}
+        PREPARATION_TARGET: ${{ inputs.preparation-target }}
+        PREPARATION_BUILD_KEY: ${{ inputs.preparation-build-key }}
+        PREPARED_ARTIFACT_ID: ${{ inputs.prepared-artifact-id }}
+        PREPARED_ARTIFACT_SHA256: ${{ inputs.prepared-artifact-sha256 }}
+        SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        POLICY_SHA256: ${{ steps.policy.outputs.sha256 }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B - <<'PY'
+        import os, subprocess, sys
+        from pathlib import Path
+        root = Path(os.environ['GITHUB_WORKSPACE'])
+        sys.path.insert(0, str(root / 'ci'))
+        from products.inventory import load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes
+        policy_path = Path(os.environ['SDK_VALIDATION_TOOLING'])
+        if not policy_path.is_absolute():
+            raise ValueError('Native metadata tooling policy must be an explicit absolute caller path')
+        raw = read_regular_file_bytes(policy_path, reject_symlink_parents=True)
+        if sha256_bytes(raw) != os.environ['POLICY_SHA256']:
+            raise ValueError('Caller tooling policy changed before metadata execution')
+        policy = require_exact_keys(load_canonical_json_bytes(raw),
+            {'evidence', 'publicKey', 'javaExecutable', 'requiredTrustDomain', 'keyring', 'keysDirectory'},
+            'Caller SDK tooling policy')
+        trust = policy['requiredTrustDomain']
+        if (trust not in ('development', 'release')
+                or (trust == 'release' and (policy['keyring'] is None or policy['keysDirectory'] is None))
+                or (trust == 'development' and (policy['keyring'] is not None or policy['keysDirectory'] is not None))):
+            raise ValueError('Caller tooling trust requires exact paired release policy or development trust')
+        fields = {
+            '--plan': os.environ['PLAN'], '--discovery-root': os.environ['DISCOVERY'],
+            '--state-root': os.environ['STATE'], '--preparation-state': os.environ['PREPARATION_STATE'],
+            '--destination': str(root / 'build/sdk-worker'), '--repository-root': str(root),
+            '--component': os.environ['COMPONENT'], '--expected-build-key': os.environ['BUILD_KEY'],
+            '--preparation-component': os.environ['PREPARATION_COMPONENT'],
+            '--preparation-build-key': os.environ['PREPARATION_BUILD_KEY'],
+            '--prepared-artifact-id': os.environ['PREPARED_ARTIFACT_ID'],
+            '--prepared-artifact-sha256': os.environ['PREPARED_ARTIFACT_SHA256'],
+            '--sdk-inputs-artifact-id': os.environ['SDK_INPUTS_ID'],
+            '--sdk-inputs-artifact-sha256': os.environ['SDK_INPUTS_SHA256'],
+            '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
+            '--keyring': str(root / 'gradle/release/product-signing-keys.json'),
+            '--keys-directory': str(root / 'gradle/release/keys'), '--required-trust-domain': trust,
+        }
+        preparation_phase = os.environ.get('PREPARATION_PHASE') or 'package'
+        if os.environ.get('SDK_APPLE_VALIDATION_POLICY'):
+            fields['--sdk-apple-validation-policy'] = os.environ['SDK_APPLE_VALIDATION_POLICY']
+        preparation_target = os.environ.get('PREPARATION_TARGET') or 'desktop'
+        if (preparation_phase, preparation_target) != ('package', 'desktop'):
+            fields['--preparation-phase'] = preparation_phase
+            fields['--preparation-target'] = preparation_target
+        for source, flag in (('evidence', '--tooling-evidence'), ('publicKey', '--tooling-public-key'),
+                             ('javaExecutable', '--java-executable'), ('keyring', '--tooling-keyring'),
+                             ('keysDirectory', '--tooling-keys-directory')):
+            value = policy[source]
+            if value is None and source in ('keyring', 'keysDirectory'):
+                continue
+            if type(value) is not str or not Path(value).is_absolute():
+                raise ValueError('Caller tooling fields must be explicit absolute paths')
+            fields[flag] = value
+        command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'native-metadata']
+        command += [part for flag, value in fields.items() for part in (flag, value)]
+        subprocess.run(command, cwd=root, check=True)
+        PY
+    - if: always() && steps.identity.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-worker-${{ inputs.component }}-metadata-desktop-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/sdk-worker
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90

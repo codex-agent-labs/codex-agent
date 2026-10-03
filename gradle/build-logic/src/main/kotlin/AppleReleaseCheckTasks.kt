@@ -31,7 +31,13 @@ internal fun verifyAppleToolchainOutput(
 ) {
     check(xcode.lineSequence().any { it == "Xcode $expectedXcodeVersion" }) { "Unexpected Xcode version" }
     check(xcode.lineSequence().any { it == "Build version $expectedXcodeBuild" }) { "Unexpected Xcode build" }
-    check("Apple Swift version $expectedSwiftVersion" in swift) { "Unexpected Swift version" }
+    require(expectedSwiftVersion.matches(Regex("[0-9]+(?:\\.[0-9]+)*"))) { "Invalid expected Swift version" }
+    val swiftBannerPrefix = "Apple Swift version "
+    val swiftBanners = swift.lineSequence().filter { it.startsWith(swiftBannerPrefix) }.toList()
+    val swiftVersion = swiftBanners.singleOrNull()?.let { banner ->
+        Regex("Apple Swift version ([0-9]+(?:\\.[0-9]+)*)(?:\\s+.*)?").matchEntire(banner)?.groupValues?.get(1)
+    }
+    check(swiftVersion == expectedSwiftVersion) { "Unexpected Swift version" }
 }
 
 internal fun parseDeploymentTargets(output: String): List<DeploymentTargetRecord> {
@@ -104,15 +110,4 @@ internal fun verifyAppleArtifactBudgets(metrics: AppleArtifactMetrics, policy: F
     check(metrics.sampleAppInstallBytes <= limits.releaseLong("sampleAppInstallMaximum")) {
         "Sample application exceeds its release budget"
     }
-}
-
-internal fun requireSuccessfulReleaseProcess(
-    command: List<String>,
-    exitCode: Int,
-    output: String,
-    errors: String,
-): String {
-    val details = listOf(output.trim(), errors.trim()).filter(String::isNotEmpty).joinToString("\n")
-    check(exitCode == 0) { "${command.joinToString(" ")} failed ($exitCode): $details" }
-    return output
 }

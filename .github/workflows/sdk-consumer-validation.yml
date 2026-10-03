@@ -1,0 +1,76 @@
+name: SDK Installed Consumer Validation
+
+on:
+  workflow_call:
+    inputs:
+      planArtifact:
+        required: true
+        type: string
+      validationCommit:
+        required: true
+        type: string
+      validationTree:
+        required: true
+        type: string
+      matrix:
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  consumers:
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.validationCommit }}
+      - if: matrix.lane == 'consumer-desktop' || matrix.lane == 'consumer-node-js' || matrix.lane == 'consumer-node-wasm'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codex-agent-ci-desktop-*-${{ inputs.validationTree }}
+          path: build/ci/desktop-lanes
+      - if: matrix.lane == 'consumer-desktop' || matrix.lane == 'consumer-node-js' || matrix.lane == 'consumer-node-wasm'
+        shell: bash
+        run: |
+          mkdir -p build/ci/desktop-classifiers
+          mapfile -t app_archives < <(find build/ci/desktop-lanes -type f -name '*-app-server-*.zip' -print)
+          mapfile -t c_abi_archives < <(find build/ci/desktop-lanes -type f -name '*-c-abi-*.zip' -print)
+          test "${#app_archives[@]}" -eq 5
+          test "${#c_abi_archives[@]}" -eq 5
+          cp "${app_archives[@]}" "${c_abi_archives[@]}" build/ci/desktop-classifiers/
+          test "$(find build/ci/desktop-classifiers -type f -name '*-app-server-*.zip' | wc -l | tr -d ' ')" -eq 5
+          test "$(find build/ci/desktop-classifiers -type f -name '*-c-abi-*.zip' | wc -l | tr -d ' ')" -eq 5
+          printf 'DESKTOP_CLASSIFIERS=%s/build/ci/desktop-classifiers\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+      - if: matrix.lane == 'consumer-android'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-ci-android-${{ inputs.validationTree }}
+          path: build/ci/android-lane
+      - if: matrix.lane == 'consumer-android'
+        shell: bash
+        run: |
+          aar=$(find build/ci/android-lane/payload -type f -name codex-agent-runtime-android-release.aar -print -quit)
+          evidence=$(find build/ci/android-lane/payload -type f -name android-runtime-evidence.json -print -quit)
+          test -n "$aar"
+          if [ -n "$evidence" ]; then
+            printf 'ANDROID_RELEASE_AAR=%s/%s\nANDROID_EVIDENCE=%s/%s\n' \
+              "$GITHUB_WORKSPACE" "$aar" "$GITHUB_WORKSPACE" "$(dirname "$evidence")" >> "$GITHUB_ENV"
+          fi
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: ${{ matrix.lane }}
+          plan-artifact: ${{ inputs.planArtifact }}
+          validation-commit: ${{ inputs.validationCommit }}
+          validation-tree: ${{ inputs.validationTree }}
+          build: ${{ matrix.build }}
+          test: ${{ matrix.test }}
+          metadata: ${{ matrix.metadata }}
+          node-version: ${{ contains(matrix.lane, 'node') && '24.18.0' || 'none' }}

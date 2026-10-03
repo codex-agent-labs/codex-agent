@@ -1,0 +1,203 @@
+name: Execute one elected native SDK package
+description: Replay current and original preparation state, consume the one prepared upload, and retain the package result.
+inputs:
+  plan-id:
+    required: true
+    description: Exact original plan upload ID.
+  artifact-id:
+    required: true
+    description: Current predecessor state upload ID.
+  artifact-sha256:
+    required: true
+    description: Current predecessor state digest.
+  state-wave:
+    default: '0'
+    description: Current Runtime state wave.
+  sdk-state-wave:
+    default: ''
+    description: Current SDK state wave when applicable.
+  preparation-state-id:
+    required: true
+    description: Original preparation state upload ID, independently recaptured.
+  preparation-state-sha256:
+    required: true
+    description: Exact original preparation state digest.
+  preparation-state-wave:
+    default: '0'
+    description: Original preparation Runtime wave.
+  preparation-sdk-state-wave:
+    default: ''
+    description: Original preparation SDK wave when applicable.
+  preparation-component:
+    required: true
+    description: Original preparation's elected native package component.
+  preparation-build-key:
+    required: true
+    description: Exact original preparation package key.
+  prepared-artifact-id:
+    required: true
+    description: The single prepared source and SDK upload ID.
+  prepared-artifact-sha256:
+    required: true
+    description: Exact prepared upload digest.
+  sdk-inputs-id:
+    required: true
+    description: Exact SDK inputs upload ID.
+  sdk-inputs-sha256:
+    required: true
+    description: Exact SDK inputs upload digest.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  component:
+    required: true
+    description: Elected native package language.
+  build-key:
+    required: true
+    description: Exact current package key.
+  tree:
+    required: true
+    description: Exact tested source tree.
+  sdk-validation-tooling:
+    default: ''
+    description: Optional current-job caller-owned tooling policy path, already authenticated and provisioned before capture. Never selected from worker or state uploads.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional caller-owned local Apple policy for replaying retained validation state.
+runs:
+  using: composite
+  steps:
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: sdk
+        sdk-family: native-package
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        state-wave: ${{ inputs.state-wave }}
+        sdk-state-wave: ${{ inputs.sdk-state-wave }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+    - id: preparation
+      name: Capture the original preparation state separately
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        ARTIFACT_ID: ${{ inputs.preparation-state-id }}
+        ARTIFACT_SHA256: ${{ inputs.preparation-state-sha256 }}
+        STATE_WAVE: ${{ inputs.preparation-state-wave }}
+        SDK_STATE_WAVE: ${{ inputs.preparation-sdk-state-wave }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        selected=()
+        if [ -n "$SDK_STATE_WAVE" ]; then selected=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
+        if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+        if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+        python3 -B -m ci.sdk_workflow capture --family native-package --plan "$PLAN" \
+          --destination "$GITHUB_WORKSPACE/build/native-preparation-input" \
+          --repository-root "$GITHUB_WORKSPACE" --artifact-id "$ARTIFACT_ID" \
+          --artifact-sha256 "$ARTIFACT_SHA256" --state-wave "$STATE_WAVE" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"}
+    - id: identity
+      shell: bash
+      env:
+        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
+        PREPARATION_MATRIX: ${{ steps.preparation.outputs.sdk_matrix }}
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        COMPONENT: ${{ inputs.component }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        PREPARATION_COMPONENT: ${{ inputs.preparation-component }}
+        PREPARATION_BUILD_KEY: ${{ inputs.preparation-build-key }}
+        TREE: ${{ inputs.tree }}
+      run: |
+        python3 - <<'PY'
+        import json, os, re
+        for prefix in ('', 'PREPARATION_'):
+            key = os.environ[prefix + 'BUILD_KEY']
+            rows = [row for row in json.loads(os.environ[prefix + 'MATRIX'])['include']
+                    if (row['product'], row['component'], row['phase'], row['target']) ==
+                       ('sdk', os.environ[prefix + 'COMPONENT'], 'package', 'desktop')]
+            if (len(rows) != 1 or rows[0]['buildKey'] != key or not re.fullmatch(r'sha256:[0-9a-f]{64}', key)
+                    or (rows[0]['runnerOs'], rows[0]['runnerArch']) != ('Linux', 'X64')):
+                raise ValueError('Native package or preparation differs from its original replay election')
+        with open(os.environ['PLAN']) as plan:
+            if json.load(plan)['validationTree'] != os.environ['TREE']:
+                raise ValueError('Native package tree differs from the original plan')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('key_hex=' + os.environ['BUILD_KEY'].removeprefix('sha256:') + '\n')
+        PY
+    - uses: ./.github/actions/setup-kmp
+      with:
+        cache-read-only: 'true'
+        product-worker: 'true'
+    - if: inputs.component == 'python'
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      with:
+        python-version: '3.11'
+    - if: inputs.component == 'python'
+      shell: bash
+      run: python -m pip install build==1.3.0 setuptools==80.9.0 wheel==0.45.1
+    - if: inputs.component == 'csharp'
+      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      with:
+        dotnet-version: '8.0.419'
+    - if: inputs.component == 'rust'
+      uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+    - if: inputs.component == 'rust'
+      name: Populate locked dependency cache for the existing offline package recipe
+      shell: bash
+      run: cargo fetch --manifest-path "$GITHUB_WORKSPACE/codex-agent-bindings/rust/Cargo.toml" --locked
+    - if: inputs.component == 'dart'
+      uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
+      with:
+        sdk: '3.13.2'
+    - name: Execute one imported-source package with full admission
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        PREPARATION_STATE: ${{ steps.preparation.outputs.state_root }}
+        COMPONENT: ${{ inputs.component }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        PREPARATION_COMPONENT: ${{ inputs.preparation-component }}
+        PREPARATION_BUILD_KEY: ${{ inputs.preparation-build-key }}
+        PREPARED_ARTIFACT_ID: ${{ inputs.prepared-artifact-id }}
+        PREPARED_ARTIFACT_SHA256: ${{ inputs.prepared-artifact-sha256 }}
+        SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        tooling=()
+        if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+        if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+        python3 -B -m ci.sdk_workflow native-package --plan "$PLAN" --discovery-root "$DISCOVERY" \
+          --state-root "$STATE" --preparation-state-root "$PREPARATION_STATE" \
+          --destination "$GITHUB_WORKSPACE/build/sdk-worker" --repository-root "$GITHUB_WORKSPACE" \
+          --component "$COMPONENT" --expected-build-key "$BUILD_KEY" \
+          --preparation-component "$PREPARATION_COMPONENT" --preparation-build-key "$PREPARATION_BUILD_KEY" \
+          --prepared-artifact-id "$PREPARED_ARTIFACT_ID" --prepared-artifact-sha256 "$PREPARED_ARTIFACT_SHA256" \
+          --sdk-inputs-artifact-id "$SDK_INPUTS_ID" --sdk-inputs-artifact-sha256 "$SDK_INPUTS_SHA256" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
+          --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" ${tooling[@]+"${tooling[@]}"}
+    - if: always() && steps.identity.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-worker-${{ inputs.component }}-package-desktop-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/sdk-worker
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90

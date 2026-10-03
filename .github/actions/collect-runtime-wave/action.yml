@@ -1,0 +1,179 @@
+name: Collect a Runtime product wave
+description: Preserve every original worker result, advance the same planner, and upload state before the final failure gate.
+inputs:
+  product:
+    default: runtime
+    description: Fixed runtime, sdk JavaScript, or sdk-ios-binary collection scope.
+  sdk-state-wave:
+    default: ''
+    description: Optional exact SDK predecessor state wave.
+  sdk-family:
+    default: ''
+    description: Optional exact SDK family projection selected by ci.sdk_workflow.
+  sdk-worker-workflow-path:
+    default: ''
+    description: Caller-pinned original Core worker child workflow path, paired with its job.
+  sdk-worker-job-name:
+    default: ''
+    description: Caller-pinned original Core worker child job, paired with its workflow path.
+  sdk-validation-tooling:
+    default: ''
+    description: Caller-provisioned tooling policy path, not retained-state authority.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Caller-provisioned Apple validation policy path, not retained-state authority.
+  sdk-facade-metadata-policy:
+    default: ''
+    description: Caller-provisioned Core metadata admission descriptor, not retained-state authority.
+  sdk-android-metadata-policy:
+    default: ''
+    description: Caller-provisioned Android metadata admission descriptor, not retained-state authority.
+  plan-id:
+    required: true
+    description: Original plan upload ID.
+  artifact-id:
+    required: true
+    description: Original predecessor state upload ID.
+  artifact-sha256:
+    required: true
+    description: Original predecessor state digest.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  state-wave:
+    required: true
+    description: Fixed predecessor wave.
+  wave:
+    required: true
+    description: Runtime waves one through five; SDK families use the exact wave assigned by ci.sdk_workflow.
+  tree:
+    required: true
+    description: Exact tested tree.
+outputs:
+  sdk-matrix:
+    value: ${{ steps.collect.outputs.sdk_matrix }}
+  sdk-workers-required:
+    value: ${{ steps.collect.outputs.sdk_workers_required }}
+  artifact-id:
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-sha256:
+    value: sha256:${{ steps.upload.outputs.artifact-digest }}
+  runtime-matrix:
+    value: ${{ steps.collect.outputs.runtime_matrix }}
+  runtime-workers-required:
+    value: ${{ steps.collect.outputs.runtime_workers_required }}
+  wave-failed:
+    value: ${{ steps.collect.outputs.wave_failed }}
+  full-reuse:
+    value: ${{ steps.collect.outputs.full_reuse }}
+  aggregate-payload-complete:
+    value: ${{ steps.collect.outputs.aggregate_payload_complete }}
+  aggregate-key:
+    value: ${{ steps.collect.outputs.aggregate_key }}
+  aggregate-receipt-sha256:
+    value: ${{ steps.collect.outputs.aggregate_receipt_sha256 }}
+runs:
+  using: composite
+  steps:
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: ${{ inputs.product }}
+        sdk-state-wave: ${{ inputs.sdk-state-wave }}
+        sdk-family: ${{ inputs.sdk-family }}
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+        sdk-facade-metadata-policy: ${{ inputs.sdk-facade-metadata-policy }}
+        sdk-android-metadata-policy: ${{ inputs.sdk-android-metadata-policy }}
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+        state-wave: ${{ inputs.state-wave }}
+    - id: collect
+      shell: bash
+      env:
+        INPUT_ROOT: ${{ steps.captured.outputs.input-root }}
+        WAVE: ${{ inputs.wave }}
+        STATE_WAVE: ${{ inputs.state-wave }}
+        PRODUCT: ${{ inputs.product }}
+        SDK_FAMILY: ${{ inputs.sdk-family }}
+        SDK_WORKER_WORKFLOW_PATH: ${{ inputs.sdk-worker-workflow-path }}
+        SDK_WORKER_JOB_NAME: ${{ inputs.sdk-worker-job-name }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        case "$PRODUCT" in
+          runtime) test -z "$SDK_FAMILY"; command=(python3 -B ci/runtime_workflow.py collect); state=(--state-wave "$STATE_WAVE") ;;
+          sdk)
+            command=(python3 -B -m ci.sdk_workflow collect); state=()
+            if [ -n "$SDK_FAMILY" ]; then
+              case "$SDK_FAMILY" in
+                csharp-binary|native-package|ios-package|javascript-metadata|native-validation|native-metadata|ios-validation|ios-metadata|core-binary|core-package|core-validation|core-metadata|android-binary|android-package|android-validation|android-metadata) state=(--family "$SDK_FAMILY") ;;
+                *) echo 'Unknown SDK family' >&2; exit 1 ;;
+              esac
+            fi ;;
+          sdk-ios-binary) test -z "$SDK_FAMILY"; command=(python3 -B -m ci.sdk_workflow collect); state=(--ios-binary) ;;
+          *) echo 'Unknown product collection scope' >&2; exit 1 ;;
+        esac
+        if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then
+          state+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
+        fi
+        if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
+          state+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
+        fi
+        if [ -n "${SDK_WORKER_WORKFLOW_PATH:-}" ] || [ -n "${SDK_WORKER_JOB_NAME:-}" ]; then
+          state+=(--sdk-worker-workflow-path "$SDK_WORKER_WORKFLOW_PATH" --sdk-worker-job-name "$SDK_WORKER_JOB_NAME")
+        fi
+        if [ -n "${SDK_FACADE_METADATA_POLICY:-}" ]; then
+          test "$PRODUCT" = sdk
+          state+=(--sdk-facade-metadata-policy "$SDK_FACADE_METADATA_POLICY")
+        fi
+        if [ -n "${SDK_ANDROID_METADATA_POLICY:-}" ]; then
+          test "$PRODUCT" = sdk
+          state+=(--sdk-android-metadata-policy "$SDK_ANDROID_METADATA_POLICY")
+        fi
+        "${command[@]}" --input-root "$INPUT_ROOT" \
+          --destination build/runtime-next --wave "$WAVE" ${state[@]+"${state[@]}"} \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT"
+    - id: upload
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-${{ inputs.product == 'sdk-ios-binary' && 'sdk' || inputs.product }}-wave-${{ inputs.wave }}-state-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/runtime-next/handoff
+        if-no-files-found: error
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90
+    - if: ${{ failure() }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-${{ inputs.product == 'sdk-ios-binary' && 'sdk' || inputs.product }}-wave-${{ inputs.wave }}-diagnostics-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: |
+          build/runtime-next
+          build/runtime-input/capture-transport.json
+          build/runtime-plan
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90
+    - if: ${{ success() }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-${{ inputs.product == 'sdk-ios-binary' && 'sdk' || inputs.product }}-wave-${{ inputs.wave }}-diagnostics-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: |
+          build/runtime-next/collection
+          build/runtime-input/capture-transport.json
+          build/runtime-plan
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90
