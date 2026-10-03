@@ -29,7 +29,7 @@ from .inventory import (
     canonical_json_bytes,
     load_canonical_json_bytes,
     read_regular_file_bytes,
-    regular_file_inventory,
+    regular_file_inventory as _uncached_file_inventory,
     require_array,
     require_boolean,
     require_exact_keys,
@@ -69,6 +69,7 @@ OBJECT_ZIP_LIMITS = {
 REMOTE_SOURCES = {"stable", "promoted-main", "same-pr"}
 CARRIER_NAME = "carrier.json"
 CARRIER_RESOLUTION_NAME = "resolution.json"
+CARRIER_REFERENCES_NAME = "object-references.json"
 CARRIER_RECORD_KEYS = {
     "product", "component", "phase", "target", "buildKey", "receiptSha256",
     "objectSha256", "transportSha256",
@@ -135,6 +136,36 @@ def bounded_verify(operation, values):
     with ThreadPoolExecutor(max_workers=min(4, len(values))) as executor:
         futures = [executor.submit(copy_context().run, operation, value) for value in values]
         return [future.result() for future in futures]
+
+
+def memoized_file_inventory(root, *, allow_empty=False, excluded_paths=()):
+    """Reuse byte scans under private custody; never memoize authentication.
+
+    Every phase/receipt/signature/provenance gate still checks these byte hashes
+    against its own exact immutable identity. No disk cache marker is accepted.
+    """
+    session = None if _is_windows() else _VERIFICATION_SESSION.get()
+    if session is None:
+        return _uncached_file_inventory(root, allow_empty=allow_empty, excluded_paths=excluded_paths)
+    excluded_paths = tuple(excluded_paths)
+    before = _stage_fingerprint(Path(root))
+    key = (before, allow_empty, excluded_paths)
+    with session["lock"]:
+        cached = session.setdefault("inventories", {}).get(key)
+    records = (deepcopy(cached) if cached is not None else
+               _uncached_file_inventory(root, allow_empty=allow_empty, excluded_paths=excluded_paths))
+    if _stage_fingerprint(Path(root)) != before:
+        raise ValueError("Verified byte inventory changed during reuse")
+    if cached is None:
+        with session["lock"]:
+            # ponytail: bound metadata too; larger trees keep the full scanner.
+            if session.get("inventoryMembers", 0) + len(before) <= 65_536:
+                session["inventories"][key] = deepcopy(records)
+                session["inventoryMembers"] = session.get("inventoryMembers", 0) + len(before)
+    return records
+
+
+regular_file_inventory = memoized_file_inventory
 
 
 def _open_safe_regular(path: Path, label: str) -> tuple[int, os.stat_result]:
@@ -361,6 +392,7 @@ def verify_carrier(
     root: Path,
     expected_instances: Any,
     consumer: Any,
+    *, object_root: Path | None = None,
 ) -> dict[str, Any]:
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
@@ -388,6 +420,17 @@ def verify_carrier(
         "consumer": consumer,
     })["consumer"]
     expected_paths = {CARRIER_NAME, CARRIER_RESOLUTION_NAME}
+    references = {}
+    if (root / CARRIER_REFERENCES_NAME).exists() or (root / CARRIER_REFERENCES_NAME).is_symlink():
+        if object_root is None:
+            raise ValueError("Referenced carrier requires a caller-owned object root")
+        references = require_exact_keys(load_canonical_json_bytes(_read_safe_regular(
+            root / CARRIER_REFERENCES_NAME, max_bytes=PRODUCT_JSON_LIMIT)),
+            {object_relative_path(record["buildKey"], record["receiptSha256"]) for record in records},
+            "Product carrier object references")
+        for path in references.values():
+            require_relative_path(path, "Product carrier original object path")
+        expected_paths.add(CARRIER_REFERENCES_NAME)
     def verify_member(pair):
         record, phase = pair
         for field in ("product", "component", "phase", "target", "buildKey", "receiptSha256", "objectSha256"):
@@ -397,8 +440,9 @@ def verify_carrier(
         transport_path = transport_relative_path(
             record["buildKey"], record["receiptSha256"], record["transportSha256"],
         )
+        source = (Path(object_root) / references[object_path]) if references else root / object_path
         object_value = verify_object(
-            root / object_path,
+            source,
             build_key=record["buildKey"],
             receipt_sha256=record["receiptSha256"],
             object_sha256=record["objectSha256"],
@@ -419,10 +463,12 @@ def verify_carrier(
             or transport["consumer"] != expected_consumer
         ):
             raise ValueError("Product carrier transport does not match its resolution or consumer")
-        return {**record, "receipt": object_value["receipt"], "receiptBytes": object_value["receiptBytes"]}
+        return {**record, "receipt": object_value["receipt"], "receiptBytes": object_value["receiptBytes"],
+                **({"originalObjectPath": references[object_path]} if references else {})}
     for record in records:
-        expected_paths.update((object_relative_path(record["buildKey"], record["receiptSha256"]),
-            transport_relative_path(record["buildKey"], record["receiptSha256"], record["transportSha256"])))
+        if not references:
+            expected_paths.add(object_relative_path(record["buildKey"], record["receiptSha256"]))
+        expected_paths.add(transport_relative_path(record["buildKey"], record["receiptSha256"], record["transportSha256"]))
     verified = bounded_verify(verify_member, zip(records, phases, strict=True))
     actual_paths = {record["relativePath"] for record in regular_file_inventory(root)}
     if actual_paths != expected_paths:
@@ -437,6 +483,7 @@ def write_carrier(
     expected_instances: Any,
     sources: Mapping[PhaseInstanceId, Path],
     consumer: Any,
+    *, object_root: Path | None = None,
 ) -> dict[str, Any]:
     destination = Path(destination)
     if destination.exists() or destination.is_symlink():
@@ -450,7 +497,7 @@ def write_carrier(
         root.mkdir()
         resolution_bytes = canonical_json_bytes(resolution_value)
         (root / CARRIER_RESOLUTION_NAME).write_bytes(resolution_bytes)
-        records = []
+        records, references = [], {}
         for instance, phase in zip(expected, phases, strict=True):
             with _verified_object_snapshot(
                 Path(sources[instance]),
@@ -459,9 +506,14 @@ def write_carrier(
                 object_sha256=phase["objectSha256"],
             ) as (snapshot, verification):
                 object_relative = object_relative_path(phase["buildKey"], phase["receiptSha256"])
-                object_target = root / object_relative
-                object_target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(snapshot, object_target)
+                if object_root is None:
+                    object_target = root / object_relative
+                    object_target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(snapshot, object_target)
+                else:
+                    references[object_relative] = require_relative_path(
+                        Path(sources[instance]).relative_to(object_root).as_posix(),
+                        "Product carrier original object path")
                 if _carrier_identity(verification["receipt"], "Product carrier source receipt") != instance:
                     raise ValueError("Product carrier source receipt identity is invalid")
             transport = validate_transport({
@@ -495,9 +547,11 @@ def write_carrier(
             "objects": records,
         })
         write_canonical_json(root / CARRIER_NAME, carrier)
-        verify_carrier(root, expected, consumer)
+        if object_root is not None:
+            write_canonical_json(root / CARRIER_REFERENCES_NAME, references)
+        verify_carrier(root, expected, consumer, object_root=object_root)
         snapshot_regular_tree(root, destination)
-    return verify_carrier(destination, expected, consumer)
+    return verify_carrier(destination, expected, consumer, object_root=object_root)
 
 
 @verification_scoped

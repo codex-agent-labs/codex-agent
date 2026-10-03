@@ -335,8 +335,8 @@ jobs:
           if-no-files-found: error
           overwrite: false
           include-hidden-files: true
-          name: codex-agent-product-carrier-${{ steps.impact.outputs.validation_tree }}
-          path: build/product-reuse/carrier
+          name: codex-agent-product-references-${{ steps.impact.outputs.validation_tree }}
+          path: build/ci/product-reuse/reuse-references.json
           compression-level: 0
           retention-days: 90
 
@@ -462,9 +462,9 @@ jobs:
       artifact_digest: sha256:${{ steps.upload_resume.outputs.artifact-digest }}
       full_reuse: ${{ steps.resume.outputs.full_reuse }}
       target_jobs_required: ${{ steps.resume.outputs.target_jobs_required }}
-      runtime_matrix: ${{ steps.runtime_matrix.outputs.runtime_matrix }}
-      runtime_workers_required: ${{ steps.runtime_matrix.outputs.runtime_workers_required }}
-      supervisor_key: ${{ steps.runtime_matrix.outputs.supervisor_key }}
+      runtime_matrix: ${{ steps.resume.outputs.runtime_matrix }}
+      runtime_workers_required: ${{ steps.resume.outputs.runtime_workers_required }}
+      supervisor_key: ${{ steps.resume.outputs.supervisor_key }}
       wave_failed: 'false'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -530,26 +530,12 @@ jobs:
           if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
           if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
           python3 ci/product_reuse.py resume-products \
+            --runtime-matrix \
             --plan build/product-resume-inputs/plan/impact-plan.json \
             --discovery-root build/product-resume-inputs/plan/product-reuse \
             --state-root build/product-resume-inputs/state \
             --contract-handoff build/product-resume-inputs/release/contract-input \
             --destination build/product-resume-state \
-            --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
-            --github-output "$GITHUB_OUTPUT" ${tooling[@]+"${tooling[@]}"}
-      - name: Elect Runtime workers from the verified resumed state
-        id: runtime_matrix
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
-          SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
-        run: |
-          tooling=()
-          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
-          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
-          python3 -B ci/runtime_workflow.py matrix \
-            --plan build/product-resume-inputs/plan/impact-plan.json \
-            --discovery-root build/product-resume-state --state-root build/product-resume-state \
             --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
             --github-output "$GITHUB_OUTPUT" ${tooling[@]+"${tooling[@]}"}
       - name: Preserve the resumed state and all original transport evidence
@@ -1243,16 +1229,16 @@ jobs:
       state_wave: ${{ steps.parent.outputs.state_wave }}
       artifact_id: ${{ steps.parent.outputs.artifact_id }}
       artifact_digest: ${{ steps.parent.outputs.artifact_digest }}
-      native_attestation_matrix: ${{ steps.retained.outputs.native_attestation_matrix || steps.route.outputs.native_attestation_matrix }}
+      native_attestation_matrix: ${{ steps.retained.outputs.native_attestation_matrix || steps.captured.outputs.native_attestation_matrix }}
       retained_native_artifact_id: ${{ steps.retained-upload.outputs.artifact-id }}
       retained_native_artifact_digest: ${{ steps.retained-upload.outputs.artifact-digest }}
-      aggregate_state: ${{ steps.route.outputs.aggregate_state }}
-      aggregate_key: ${{ steps.route.outputs.aggregate_key }}
-      aggregate_receipt_sha256: ${{ steps.route.outputs.aggregate_receipt_sha256 }}
-      aggregate_required: ${{ steps.route.outputs.aggregate_required }}
-      aggregate_payload_complete: ${{ steps.route.outputs.aggregate_payload_complete }}
-      sdk_handoff_required: ${{ steps.route.outputs.sdk_handoff_required }}
-      sdk_input_selection: ${{ steps.route.outputs.sdk_input_selection }}
+      aggregate_state: ${{ steps.captured.outputs.aggregate_state }}
+      aggregate_key: ${{ steps.captured.outputs.aggregate_key }}
+      aggregate_receipt_sha256: ${{ steps.captured.outputs.aggregate_receipt_sha256 }}
+      aggregate_required: ${{ steps.captured.outputs.aggregate_required }}
+      aggregate_payload_complete: ${{ steps.captured.outputs.aggregate_payload_complete }}
+      sdk_handoff_required: ${{ steps.captured.outputs.sdk_handoff_required }}
+      sdk_input_selection: ${{ steps.captured.outputs.sdk_input_selection }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1318,29 +1304,13 @@ jobs:
           artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           state-wave: ${{ steps.parent.outputs.state_wave }}
-      - name: Replay exact aggregate predecessors before routing
-        id: route
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
-          SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
-          PLAN: ${{ steps.captured.outputs.plan-path }}
-          DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
-          STATE: ${{ steps.captured.outputs.state-root }}
-        run: |
-          tooling=()
-          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
-          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
-          python3 -B ci/runtime_workflow.py continuation --if-selected ${tooling[@]+"${tooling[@]}"} \
-            --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
-            --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
-            --github-output "$GITHUB_OUTPUT"
+          continuation: selected
       - id: retained
-        if: steps.route.outputs.aggregate_required == 'true' && inputs.runtimeNativeHandoffRecovery != ''
+        if: steps.captured.outputs.aggregate_required == 'true' && inputs.runtimeNativeHandoffRecovery != ''
         env:
           GITHUB_TOKEN: ${{ github.token }}
           RECOVERY: ${{ inputs.runtimeNativeHandoffRecovery }}
-          SELECTED_RECEIPTS: ${{ steps.route.outputs.native_receipt_sha256s }}
+          SELECTED_RECEIPTS: ${{ steps.captured.outputs.native_receipt_sha256s }}
           PLAN: ${{ steps.captured.outputs.plan-path }}
           TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
         run: |
@@ -1709,9 +1679,9 @@ jobs:
       state_wave: ${{ steps.parent.outputs.state_wave }}
       artifact_id: ${{ steps.parent.outputs.artifact_id }}
       artifact_digest: ${{ steps.parent.outputs.artifact_digest }}
-      aggregate_key: ${{ steps.route.outputs.aggregate_key }}
-      aggregate_receipt_sha256: ${{ steps.route.outputs.aggregate_receipt_sha256 }}
-      aggregate_payload_complete: ${{ steps.route.outputs.aggregate_payload_complete }}
+      aggregate_key: ${{ steps.captured.outputs.aggregate_key }}
+      aggregate_receipt_sha256: ${{ steps.captured.outputs.aggregate_receipt_sha256 }}
+      aggregate_payload_complete: ${{ steps.captured.outputs.aggregate_payload_complete }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1786,23 +1756,7 @@ jobs:
           artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           state-wave: ${{ steps.parent.outputs.state_wave }}
-      - name: Replay the full completed aggregate closure
-        id: route
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
-          SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
-          PLAN: ${{ steps.captured.outputs.plan-path }}
-          DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
-          STATE: ${{ steps.captured.outputs.state-root }}
-        run: |
-          tooling=()
-          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
-          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
-          python3 -B ci/runtime_workflow.py continuation --require-completed ${tooling[@]+"${tooling[@]}"} \
-            --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
-            --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
-            --github-output "$GITHUB_OUTPUT"
+          continuation: completed
 
   runtime-signing-prepare-aggregate:
     name: runtime-signing-prepare-aggregate
@@ -2044,24 +1998,20 @@ jobs:
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - id: captured
-        uses: ./.github/actions/capture-runtime-state
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.runtime-continuation.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.runtime-continuation.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
-          state-wave: ${{ needs.runtime-continuation.outputs.state_wave }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          artifact-ids: ${{ needs.plan.outputs.plan_id }}
+          path: build/runtime-plan
+          merge-multiple: true
       - name: Stage SDK inputs from the independently verified selection
         id: staged
         env:
-          PLAN: ${{ steps.captured.outputs.plan-path }}
+          PLAN: ${{ github.workspace }}/build/runtime-plan/impact-plan.json
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
           SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
-          DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
-          STATE: ${{ steps.captured.outputs.state-root }}
+          STATE_ARTIFACT_ID: ${{ needs.runtime-continuation.outputs.artifact_id }}
+          STATE_ARTIFACT_SHA256: ${{ needs.runtime-continuation.outputs.artifact_digest }}
+          STATE_WAVE: ${{ needs.runtime-continuation.outputs.state_wave }}
           SDK_SOURCE: ${{ fromJSON(needs.runtime-continuation.outputs.sdk_input_selection).source }}
           ARTIFACT_ID: ${{ needs.runtime-aggregate-attestation.outputs.artifact_id }}
           ARTIFACT_SHA256: ${{ needs.runtime-aggregate-attestation.outputs.artifact_digest }}
@@ -2072,6 +2022,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          capture="$GITHUB_WORKSPACE/build/runtime-input"
+          discovery="$capture/original/product-resume-state"
+          state="$discovery"
+          if [ "$STATE_WAVE" != 0 ]; then state="$capture/original/runtime-state"; fi
           fresh=()
           tooling=()
           if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
@@ -2084,8 +2038,10 @@ jobs:
                 --expected-build-key "$AGGREGATE_KEY" --expected-metadata-receipt-sha256 "$AGGREGATE_RECEIPT") ;;
             *) echo 'Unknown replayed SDK input source' >&2; exit 1 ;;
           esac
-          python3 -B -m ci.sdk_workflow --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+          python3 -B -m ci.sdk_workflow --plan "$PLAN" --discovery-root "$discovery" --state-root "$state" \
             --destination "$destination" --repository-root "$GITHUB_WORKSPACE" \
+            --state-capture-root "$capture" --state-wave "$STATE_WAVE" \
+            --state-artifact-id "$STATE_ARTIFACT_ID" --state-artifact-sha256 "$STATE_ARTIFACT_SHA256" \
             --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
             --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
             --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" ${fresh[@]+"${fresh[@]}"} ${tooling[@]+"${tooling[@]}"}

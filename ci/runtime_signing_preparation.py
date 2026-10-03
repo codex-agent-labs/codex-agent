@@ -21,10 +21,12 @@ from products.inventory import (
     write_canonical_json,
 )
 from products.registry import NATIVE_TARGETS
+from products.restore import memoized_file_inventory as regular_file_inventory, verification_scoped
 from products.signing_isolation import require_no_signing_secret
 from products.sdk_apple_validation_admission import apple_validation_policy_arguments
 
 
+@verification_scoped
 def prepare_runtime_signing_inputs(
     repository_root: Path, candidate_root: Path, plan_path: Path, destination: Path, *,
     target: str, expected_build_key: str, artifact_id: int, artifact_sha256: str,
@@ -140,18 +142,27 @@ def prepare_runtime_signing_inputs(
             "selectionSha256": sha256_bytes(selection_bytes)}
         with tempfile.TemporaryDirectory(prefix="runtime-signing-prepared-") as result_temporary:
             prepared = Path(result_temporary).resolve() / "prepared"
-            copies = [(selected, "selected-inputs"), (capture, "selected-state-transport")]
+            copies = [(selected, "selected-inputs")]
             if retained is not None:
                 copies.append((retained, "release-handoff"))
             for source, name in copies:
                 snapshot_regular_tree(source, prepared / name, allow_empty=True)
                 if regular_file_inventory(prepared / name, allow_empty=True) != baselines[source]:
                     raise ValueError("Runtime signing preparation changed while copying original bytes")
+            # The protected consumer independently captures this exact immutable
+            # state already. Forward its qualified inventory, not another body.
+            reference = {"schemaVersion": 1, "stateArtifact": record["stateArtifact"],
+                "stateWave": state_wave, "producer": producer,
+                "inventory": regular_file_inventory(original, allow_empty=True)}
+            write_canonical_json(prepared / "selected-state-transport/reference.json", reference)
+            reference_bytes = canonical_json_bytes(reference)
             write_canonical_json(prepared / "preparation.json", record)
             record_bytes = canonical_json_bytes(record)
             expected_files = sorted([
                 *({**item, "relativePath": f"{name}/{item['relativePath']}"}
                   for source, name in copies for item in baselines[source]),
+                {"relativePath": "selected-state-transport/reference.json", "bytes": len(reference_bytes),
+                 "sha256": sha256_bytes(reference_bytes)},
                 {"relativePath": "preparation.json", "bytes": len(record_bytes),
                  "sha256": sha256_bytes(record_bytes)},
             ], key=lambda item: item["relativePath"])

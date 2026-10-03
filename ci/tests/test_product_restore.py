@@ -138,6 +138,26 @@ class ProductRestoreTest(unittest.TestCase):
             with self.assertRaises(CacheObjectError):
                 verify_object(stored["path"], **arguments)
 
+    def test_private_inventory_cache_checks_mutation_and_returns_detached_values(self):
+        with product_restore.verification_session(), mock.patch.object(
+                product_restore, "_uncached_file_inventory", wraps=product_restore._uncached_file_inventory) as scan:
+            before = product_restore.memoized_file_inventory(self.stage)
+            detached = product_restore.memoized_file_inventory(self.stage)
+            detached[0]["sha256"] = DIGEST_A
+            self.assertEqual(before, product_restore.memoized_file_inventory(self.stage))
+            self.assertEqual(1, scan.call_count)
+            leaf = self.stage / before[0]["relativePath"]
+            metadata = leaf.stat()
+            raw = leaf.read_bytes()
+            leaf.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+            os.utime(leaf, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+            self.assertNotEqual(before, product_restore.memoized_file_inventory(self.stage))
+            self.assertEqual(2, scan.call_count)
+            leaf.unlink()
+            leaf.symlink_to(self.receipt_path)
+            with self.assertRaises((ValueError, OSError)):
+                product_restore.memoized_file_inventory(self.stage)
+
     def test_object_zip_fsync_uses_writable_descriptor(self) -> None:
         output = self.root / "object.zip"
         original_open = os.open

@@ -93,7 +93,8 @@ class RuntimeWorkflowTest(unittest.TestCase):
             self.assertIn(guard, job)
         self.assertIn("source == 'released-default'", job)
         self.assertIn("runtime-aggregate-attestation.result == 'success'", job)
-        self.assertIn('./.github/actions/capture-runtime-state', job)
+        self.assertIn('--state-capture-root "$capture" --state-wave "$STATE_WAVE"', job)
+        self.assertIn('--state-artifact-id "$STATE_ARTIFACT_ID" --state-artifact-sha256 "$STATE_ARTIFACT_SHA256"', job)
         self.assertIn('python3 -B -m ci.sdk_workflow', job)
         self.assertIn('--expected-metadata-receipt-sha256 "$AGGREGATE_RECEIPT"', job)
         self.assertIn('overwrite: false', job)
@@ -469,6 +470,24 @@ class RuntimeWorkflowTest(unittest.TestCase):
                                   "matrix": value}, result)
                 for name, raw in self.base.items():
                     self.assertEqual(raw, (original / name).read_bytes())
+
+    def test_capture_continuation_routes_once_without_a_second_matrix_replay(self):
+        for mode in ("selected", "completed"):
+            destination = self.root / f"combined-{mode}"
+            with mock.patch.object(workflow.products, "capture_runtime_resume_upload", side_effect=self.captured), \
+                    mock.patch.object(workflow, "matrix", side_effect=AssertionError("duplicate matrix replay")), \
+                    mock.patch.object(workflow, "continuation", return_value={"aggregate": {"state": "completed"}}) as gate:
+                workflow.capture(self.root / "caller-plan", destination, self.output,
+                    artifact_id=101, artifact_sha256=KEY, trusted_workflow_sha=PIN,
+                    continuation_mode=mode, repository_root=self.root, environ=self.environment,
+                    token="synthetic-token")
+            gate.assert_called_once()
+            self.assertEqual(mode == "completed", gate.call_args.kwargs["require_completed"])
+            self.assertEqual(mode == "selected", gate.call_args.kwargs["if_selected"])
+        with self.assertRaisesRegex(ValueError, "unselected routing"):
+            workflow.capture(self.root / "caller-plan", self.root / "bad-combined", self.output,
+                artifact_id=101, artifact_sha256=KEY, trusted_workflow_sha=PIN,
+                continuation_mode="completed", instance=NODE, expected_build_key=KEY, token="synthetic-token")
 
     def test_aggregate_capture_requires_exact_ready_closure_not_native_worker_election(self):
         for index, (status, key) in enumerate((("ready", KEY), ("completed", KEY),

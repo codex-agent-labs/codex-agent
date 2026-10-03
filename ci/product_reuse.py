@@ -20,6 +20,7 @@ import tempfile
 import time
 from typing import Any, Mapping
 import urllib.error
+import zipfile
 
 if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -116,6 +117,7 @@ from products.runtime_evidence import (
     node_evidence_filename,
 )
 from products.restore import (
+    memoized_file_inventory as regular_file_inventory,
     verification_scoped,
     verification_session,
     OBJECT_ZIP_LIMITS,
@@ -219,6 +221,7 @@ class Catalog:
     sdk_apple_validation_evidence_root: Path | None = None
     sdk_maven_evidence_root: Path | None = None
     sdk_metadata_evidence_root: Path | None = None
+    immutable_upload: Mapping[str, Any] | None = None
 
 
 def _identity(value: Mapping[str, Any]) -> PhaseInstanceId:
@@ -624,6 +627,22 @@ def _download_contract_ci_upload(
     producer: Mapping[str, Any], observed_run: Mapping[str, Any], token: str,
     *, destination: Path | None = None, max_bytes: int | None = None,
 ) -> tuple[dict[str, Any], bytes | Path]:
+    artifact = _contract_ci_upload_metadata(artifact_id, artifact_sha256, expected_name,
+        producer, observed_run, token)
+    size = require_integer(artifact.get("size_in_bytes"), "Contract upload transport bytes", 1)
+    limit = _CATALOG_LIMIT if destination is not None else _INLINE_UPLOAD_LIMIT
+    if max_bytes is not None:
+        if type(max_bytes) is not int or max_bytes < 1:
+            raise ValueError("Contract upload transport limit must be positive")
+        limit = min(limit, max_bytes)
+    if size > limit:
+        raise ValueError("Contract uploaded artifact exceeds the transport limit")
+    return _reuse_contract_ci_upload(artifact, producer, observed_run, token,
+        destination=destination, limit=limit, artifact_sha256=artifact_sha256, size=size)
+
+
+def _contract_ci_upload_metadata(artifact_id, artifact_sha256, expected_name, producer, observed_run, token):
+    """Fresh source authentication, distinct from verifying selected body bytes."""
     require_integer(artifact_id, "Contract upload artifact ID", 1)
     require_sha256(artifact_sha256, "Contract upload artifact digest")
     repository = "codex-agent-labs/codex-agent"
@@ -640,13 +659,13 @@ def _download_contract_ci_upload(
             or transport.get("head_sha") != observed_run["head_sha"]):
         raise ValueError("Contract uploaded artifact differs from the caller-bound transport identity")
     size = require_integer(artifact.get("size_in_bytes"), "Contract upload transport bytes", 1)
-    limit = _CATALOG_LIMIT if destination is not None else _INLINE_UPLOAD_LIMIT
-    if max_bytes is not None:
-        if type(max_bytes) is not int or max_bytes < 1:
-            raise ValueError("Contract upload transport limit must be positive")
-        limit = min(limit, max_bytes)
-    if size > limit:
+    if size > _CATALOG_LIMIT:
         raise ValueError("Contract uploaded artifact exceeds the transport limit")
+    return artifact
+
+
+def _reuse_contract_ci_upload(artifact, producer, observed_run, token, *, destination, limit,
+                              artifact_sha256, size):
     # Metadata and original-job authentication are mandatory on every call.
     # Only fully hashed private bytes are reused; this is never an admission.
     with verification_session() as session:
@@ -956,6 +975,7 @@ def capture_runtime_original_ci_phases(
     keys_directory: Path | None = None,
     original_instance: PhaseInstanceId | None = None,
     recovery_projection: bool = False,
+    original_archives: Mapping[str, Path] | None = None,
 ) -> dict[str, Any]:
     """Bind original receipts to CI or retained release trust, never new signing."""
     if bool(release_handoffs) != (keyring is not None and keys_directory is not None) or \
@@ -1077,17 +1097,61 @@ def capture_runtime_original_ci_phases(
                 raise ValueError("Original Runtime upload is missing or ambiguous")
             attempt = attempts[(run_id, producer["runAttempt"])]
             candidate = candidates[0]
-            artifact, raw = _download_contract_ci_upload(
+            artifact = _contract_ci_upload_metadata(
                 candidate.get("id"), candidate.get("digest"), name, producer, attempt["run"], token)
             job = next(value for value in attempt["jobs"] if value.get("name") == jobs[phase])
             timestamps = [datetime.fromisoformat(require_string(value, "Original Runtime CI timestamp").replace("Z", "+00:00"))
                           for value in (job.get("started_at"), artifact.get("created_at"), job.get("completed_at"))]
             if any(value.utcoffset() != timedelta(0) for value in timestamps) or not timestamps[0] <= timestamps[1] <= timestamps[2]:
                 raise ValueError("Original Runtime upload is outside its original job-attempt window")
+            from products.restore import _is_windows, _stage_fingerprint
+            session = None
+            if recovery_projection and not _is_windows():
+                # The enclosing public operation owns this session. There is no
+                # serialized memo or external cache marker to accept as trust.
+                from products.restore import _VERIFICATION_SESSION
+                session = _VERIFICATION_SESSION.get()
+            cache_key = canonical_json_bytes({"receiptSha256": sha256_bytes(originals[phase]),
+                "workflow": workflow_policies[phase],
+                "origin": _runtime_capture_identity({"observed": [attempt], "artifacts": {phase: artifact}},
+                                                     instances[phase])})
+            memo = session.setdefault("originalCaptures", {}) if session is not None else {}
+            cached = memo.get(cache_key)
+            if cached is not None:
+                source, fingerprint, zipped_bytes, object_sha256 = cached
+                if _stage_fingerprint(source) != fingerprint:
+                    raise ValueError("Private verified original Runtime capture changed")
+                zipped = load_canonical_json_bytes(zipped_bytes)
+                projected = [record for record in zipped if not record["relativePath"].startswith("inputs/")]
+                projected_root = prepared / "phases" / phase / "original"
+                snapshot_regular_tree(source, projected_root, allow_empty=True)
+                if (_stage_fingerprint(source) != fingerprint
+                        or regular_file_inventory(projected_root, allow_empty=True) != projected
+                        or _canonical_control(projected_root / "shard" / PHASE_SHARD_NAME,
+                            "Reused original Runtime shard")["objectSha256"] != object_sha256):
+                    raise ValueError("Reused original Runtime capture differs from its immutable identity")
+                original_files[phase] = zipped
+                artifacts[phase] = artifact
+                phase_files[phase] = [{**record, "relativePath": f"phases/{phase}/original/{record['relativePath']}"}
+                                     for record in projected]
+                continue
             retained = (root / "original-uploads" if recovery_projection else prepared) / "phases" / phase
             retained.mkdir(parents=True)
             archive = retained / "transport.zip"
-            archive.write_bytes(raw)
+            if original_archives is not None and phase in original_archives:
+                # The candidate bytes are rehashed against this freshly observed
+                # official upload. Preserve the full authentication gate while
+                # avoiding its immediate second network download.
+                from runtime_reference_transport import _copy_exact
+                _copy_exact(original_archives[phase], archive, {"bytes": artifact["size_in_bytes"],
+                                                               "sha256": artifact["digest"]})
+            elif artifact["size_in_bytes"] > 64 * 1024 * 1024:
+                _reuse_contract_ci_upload(artifact, producer, attempt["run"], token, destination=archive,
+                    limit=_CATALOG_LIMIT, artifact_sha256=artifact["digest"], size=artifact["size_in_bytes"])
+            else:
+                _, raw = _reuse_contract_ci_upload(artifact, producer, attempt["run"], token, destination=None,
+                    limit=_INLINE_UPLOAD_LIMIT, artifact_sha256=artifact["digest"], size=artifact["size_in_bytes"])
+                archive.write_bytes(raw)
             zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
             safe_extract(archive, retained / "original")
             if regular_file_inventory(retained / "original", allow_empty=True) != zipped:
@@ -1109,10 +1173,21 @@ def capture_runtime_original_ci_phases(
                     shutil.copyfile(retained / "original" / record["relativePath"], output)
                 if regular_file_inventory(projected_root, allow_empty=True) != projected:
                     raise ValueError("Original Runtime recovery projection changed during copy")
+                if session is not None:
+                    size = sum(record["bytes"] for record in projected)
+                    zipped_bytes = canonical_json_bytes(zipped)
+                    if session["bytes"] + size + len(zipped_bytes) <= session["limit"]:
+                        private_copy = session["root"] / ("original-" + sha256_bytes(cache_key)[7:])
+                        snapshot_regular_tree(projected_root, private_copy, allow_empty=True)
+                        if regular_file_inventory(private_copy, allow_empty=True) != projected:
+                            raise ValueError("Private original Runtime capture differs from verified bytes")
+                        memo[cache_key] = (private_copy, _stage_fingerprint(private_copy),
+                            zipped_bytes, verified["objectSha256"])
+                        session["bytes"] += size + len(zipped_bytes)
             artifacts[phase] = artifact
             phase_files[phase] = [
                 *([] if recovery_projection else [{"relativePath": f"phases/{phase}/transport.zip",
-                    "bytes": len(raw), "sha256": artifact["digest"]}]),
+                    "bytes": archive.stat().st_size, "sha256": artifact["digest"]}]),
                 *({**record, "relativePath": f"phases/{phase}/original/{record['relativePath']}"}
                   for record in (projected if recovery_projection else zipped)),
             ]
@@ -1264,7 +1339,8 @@ def capture_prior_failed_runtime_phases(
             captured[instance] = capture_runtime_original_ci_phases(
                 {instance.phase: receipt_path}, output, target=instance.component,
                 trusted_workflow_sha=original_workflow_sha, token=token, original_instance=instance,
-                recovery_projection=True)
+                recovery_projection=True, original_archives={instance.phase:
+                    receipt_path.parent.parent.parent / "transport.zip"})
             # Only this phase's independently verified candidate trees are scratch;
             # keep original uploads upstream and the authenticated compact capture.
             shutil.rmtree(scratch_root / instance.component / instance.phase / instance.target)
@@ -1801,6 +1877,7 @@ def _read_catalog_directory(source, extracted, destination, release_trust, *, re
         apple_root,
         maven_root,
         metadata_root,
+        dict(artifact) if artifact is not None else None,
     )
 
 
@@ -2315,7 +2392,7 @@ def _validate_reuse_result(
 def _write_reused_carrier(
     result: Mapping[str, Any], requested: tuple[PhaseInstanceId, ...],
     catalogs: list[Catalog], destination: Path, consumer: Mapping[str, Any],
-    *, require_complete: bool, sdk_runtime_external: bool = False,
+    *, require_complete: bool, sdk_runtime_external: bool = False, object_root: Path | None = None,
 ) -> bool:
     result, selected_instances, selected_phases = _validate_reuse_result(
         result, requested, require_complete=require_complete, sdk_runtime_external=sdk_runtime_external,
@@ -2344,7 +2421,8 @@ def _write_reused_carrier(
         "phases": selected_phases,
         "matrices": {"contract": [], "runtime": [], "sdk": []},
     }
-    write_carrier(destination, normalized, selected_instances, sources, consumer)
+    write_carrier(destination, normalized, selected_instances, sources, consumer,
+                  **({"object_root": object_root} if object_root is not None else {}))
     return True
 
 
@@ -2353,10 +2431,50 @@ def _reverify_complete(
     catalogs: list[Catalog], destination: Path, consumer: Mapping[str, Any],
     *, sdk_runtime_external: bool = False,
 ) -> None:
-    _write_reused_carrier(
-        result, requested, catalogs, destination / "carrier", consumer, require_complete=True,
-        sdk_runtime_external=sdk_runtime_external,
-    )
+    # There is no product successor for a complete selection. Re-authentication
+    # remains in the planner; do not reconstruct product bytes merely to upload
+    # a second copy of the already immutable evidence.
+    _, selected, phases = _validate_reuse_result(
+        result, requested, require_complete=True, sdk_runtime_external=sdk_runtime_external)
+    references, indexes = [], {}
+    for instance, phase in zip(selected, phases, strict=True):
+        catalog = _catalog_for_phase(catalogs, phase)
+        original = catalog.objects.get(phase["buildKey"])
+        if original is None:
+            raise ValueError("Complete reuse lacks its original immutable object")
+        verified = verify_object(original, build_key=phase["buildKey"],
+            receipt_sha256=phase["receiptSha256"], object_sha256=phase["objectSha256"])
+        if _identity(verified["receipt"]) != instance:
+            raise ValueError("Complete reuse reference changes its original phase identity")
+        manifest = destination / catalog.request["manifest"]
+        indexes[catalog.index_sha256] = {"index": catalog.index,
+                                       "immutableUpload": catalog.immutable_upload}
+        references.append({**phase, "originalReceipt": verified["receipt"],
+            "indexSha256": catalog.index_sha256,
+            "objectPath": original.relative_to(manifest.parent).as_posix()})
+    # This record is a locator, never an admission or cached trust assertion.
+    write_canonical_json(destination / "reuse-references.json", {
+        "schemaVersion": 1, "consumer": consumer, "indexes": indexes, "phases": references})
+
+
+def _publish_discovery_handoff(destination: Path, handoff: Path) -> None:
+    result = _canonical_control(destination / "result.json", "Product discovery result")
+    if result["fullReuse"] is not True:
+        publish_regular_tree(destination, handoff, allow_empty=True)
+        return
+    if result["targetJobsRequired"] is not False or result["reason"] not in {"verified-full-reuse", "no-product-work"}:
+        raise ValueError("Complete discovery handoff has inconsistent successor selection")
+    # Only controls needed by the merge gate travel with the plan. Incomplete
+    # selections keep the existing complete input protocol for their consumers.
+    with tempfile.TemporaryDirectory(prefix="product-reference-handoff-") as temporary:
+        prepared = Path(temporary).resolve()
+        names = (("request.json", "result.json") if result["reason"] == "no-product-work" else
+                 ("request.json", "result.json", "reuse-wave-result.json", "reuse-references.json"))
+        for name in names:
+            raw = read_regular_file_bytes(destination / name, max_bytes=16 * 1024 * 1024,
+                                         reject_symlink_parents=True)
+            (prepared / name).write_bytes(raw)
+        publish_regular_tree(prepared, handoff)
 
 
 def _consumer(plan: Mapping[str, Any], environ: Mapping[str, str], *,
@@ -2908,7 +3026,7 @@ def _completed_contract_objects(plan, state, artifact_root, environment):
     contract = PhaseInstanceId("contract", "contract", "metadata", "common")
     result = _canonical_control(state / "contract-reuse-result.json", "Completed Contract result")
     _, selected, phases = _validate_reuse_result(result, (contract,), require_complete=True)
-    carrier = verify_carrier(state / "carrier", selected, _consumer(plan, environment))
+    carrier = verify_carrier(state / "carrier", selected, _consumer(plan, environment), object_root=state)
     phases_by_id = {_identity(phase): phase for phase in phases}
     sources = {}
     for record in carrier["objects"]:
@@ -2916,7 +3034,8 @@ def _completed_contract_objects(plan, state, artifact_root, environment):
         if any(record[field] != phases_by_id[instance][field]
                for field in ("buildKey", "receiptSha256", "objectSha256")):
             raise ValueError("Initial Contract object differs from completed state")
-        sources[instance] = state / "carrier" / object_relative_path(record["buildKey"], record["receiptSha256"])
+        sources[instance] = (state / record["originalObjectPath"] if "originalObjectPath" in record else
+            state / "carrier" / object_relative_path(record["buildKey"], record["receiptSha256"]))
     return _available_object_records(phases_by_id, sources, artifact_root), carrier["resolution"]["phases"]
 
 
@@ -3158,7 +3277,7 @@ def advance_contract(
     prior_carrier_phases: dict[PhaseInstanceId, dict[str, Any]] = {}
     carrier_root = state_root / ("carrier" if prior["fullReuse"] else "reused-carrier")
     if prior_materialized:
-        verified_carrier = verify_carrier(carrier_root, prior_materialized, consumer)
+        verified_carrier = verify_carrier(carrier_root, prior_materialized, consumer, object_root=state_root)
         prior_carrier_phases = {
             _identity(phase): phase for phase in verified_carrier["resolution"]["phases"]
         }
@@ -3170,9 +3289,8 @@ def advance_contract(
             raise ValueError("Prior Contract carrier disagrees with its reuse result")
         for record in verified_carrier["objects"]:
             instance = _identity(record)
-            sources[instance] = carrier_root / object_relative_path(
-                record["buildKey"], record["receiptSha256"],
-            )
+            sources[instance] = (state_root / record["originalObjectPath"] if "originalObjectPath" in record else
+                carrier_root / object_relative_path(record["buildKey"], record["receiptSha256"]))
     elif carrier_root.exists() or carrier_root.is_symlink():
         raise ValueError("Unexpected prior Contract carrier")
 
@@ -3501,7 +3619,7 @@ def _verified_product_state(
     carrier_name = "carrier" if prior["fullReuse"] else "reused-carrier"
     carrier_root = state_root / carrier_name
     if prior_materialized:
-        carrier = verify_carrier(carrier_root, prior_materialized, consumer)
+        carrier = verify_carrier(carrier_root, prior_materialized, consumer, object_root=state_root)
         prior_carrier_phases = {
             _identity(phase): phase for phase in carrier["resolution"]["phases"]
         }
@@ -3513,9 +3631,8 @@ def _verified_product_state(
             raise ValueError("Prior product carrier disagrees with its reuse result")
         for record in carrier["objects"]:
             instance = _identity(record)
-            sources[instance] = carrier_root / object_relative_path(
-                record["buildKey"], record["receiptSha256"],
-            )
+            sources[instance] = (state_root / record["originalObjectPath"] if "originalObjectPath" in record else
+                carrier_root / object_relative_path(record["buildKey"], record["receiptSha256"]))
     elif carrier_root.exists() or carrier_root.is_symlink():
         raise ValueError("Unexpected prior product carrier")
 
@@ -5538,7 +5655,7 @@ def materialize_contract(
         raise ValueError("Requested Contract phase is not materialized in the current state")
     carrier_name = "carrier" if result["fullReuse"] else "reused-carrier"
     carrier_root = state_root / carrier_name
-    carrier = verify_carrier(carrier_root, materialized, consumer)
+    carrier = verify_carrier(carrier_root, materialized, consumer, object_root=state_root)
     result_by_instance = {_identity(value): value for value in result["phases"]}
     carrier_by_instance = {_identity(value): value for value in carrier["objects"]}
     if any(
@@ -5548,9 +5665,8 @@ def materialize_contract(
     ):
         raise ValueError("Contract materialization carrier disagrees with its reuse result")
     record = next(value for value in carrier["objects"] if _identity(value) == requested)
-    object_path = carrier_root / object_relative_path(
-        record["buildKey"], record["receiptSha256"],
-    )
+    object_path = (state_root / record["originalObjectPath"] if "originalObjectPath" in record else
+        carrier_root / object_relative_path(record["buildKey"], record["receiptSha256"]))
     if not with_receipt:
         return restore_object(
             object_path,
@@ -5649,6 +5765,103 @@ def capture_runtime_supervisor_upload(
     return evidence
 
 
+def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destination, *,
+                                       trusted_workflow_sha, token, wanted):
+    """Resolve qualified bytes, not enclosing carriers, after fresh source auth.
+
+    The top-level reference envelope has passed its complete upload SHA gate.
+    Every inherited byte is hashed against that authenticated envelope, while
+    every original source retains its own exact job/attempt/window/workflow gate.
+    Product admission and original-phase authentication still run afterwards.
+    """
+    from runtime_reference_archive import open_reference_archive, copy_reference_member
+    from runtime_reference_transport import validate_references
+
+    wave = base["stateWave"]
+    job = "product-validation / product-resume" if wave == 0 else f"product-validation / runtime-collect-{wave}"
+    name = (f"codex-agent-product-resume-{producer['tree']}" if wave == 0 else
+            f"codex-agent-runtime-wave-{wave}-state-{producer['tree']}-attempt-{producer['runAttempt']}")
+    observed = _observe_ci_producer_jobs({"resume": producer}, jobs_by_phase={"resume": job},
+        trusted_workflow_sha=trusted_workflow_sha, token=token)
+    artifact = _contract_ci_upload_metadata(base["artifactId"], base["artifactSha256"], name,
+        producer, observed[0]["run"], token)
+    _require_artifact_job_window(observed[0], job, artifact)
+    plan_path = "product-resume-inputs/plan/impact-plan.json"
+    wanted = dict(wanted)
+    wanted[plan_path] = {"relativePath": plan_path, "bytes": len(plan_bytes), "sha256": sha256_bytes(plan_bytes)}
+    destination.mkdir(parents=True)
+    with open_reference_archive(artifact, token) as (archive, stream):
+        names = {entry.filename for entry in archive.infolist() if not entry.is_dir()}
+        roots = {"product-resume-inputs", "product-resume-state"} | ({"runtime-state"} if wave else set())
+        if any(path != "runtime-references.json" and path.split("/")[0] not in roots for path in names):
+            raise ValueError("Original Runtime reference archive has unexpected roots")
+        inherited, child = {}, None
+        if "runtime-references.json" in names:
+            entry = archive.getinfo("runtime-references.json")
+            if entry.file_size > 16 * 1024 * 1024:
+                raise ValueError("Original Runtime references exceed the control bound")
+            # Member hashes qualify payload bytes, not an ancestor's ancestry
+            # controls. Older envelopes pin only the whole archive: authenticate
+            # that archive before following any nested source mapping.
+            control_digest = base.get("referenceControlSha256")
+            if control_digest is not None:
+                raw_control = archive.read(entry)
+                if sha256_bytes(raw_control) != control_digest:
+                    raise ValueError("Original Runtime reference control differs from its authenticated digest")
+                references = validate_references(load_canonical_json_bytes(raw_control), wave)
+            else:
+                with tempfile.TemporaryDirectory(prefix="runtime-reference-control-") as temporary:
+                    authenticated_archive = Path(temporary).resolve() / "transport.zip"
+                    _reuse_contract_ci_upload(artifact, producer, observed[0]["run"], token,
+                        destination=authenticated_archive, limit=16 * 1024**3,
+                        artifact_sha256=base["artifactSha256"], size=artifact["size_in_bytes"])
+                    verified_zip_contents(authenticated_archive, retained_paths=(),
+                        allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+                    with zipfile.ZipFile(authenticated_archive) as authenticated:
+                        if ({entry.filename for entry in authenticated.infolist() if not entry.is_dir()} != names
+                                or authenticated.getinfo("runtime-references.json").file_size > 16 * 1024 * 1024):
+                            raise ValueError("Original Runtime reference control archive changed")
+                        references = validate_references(load_canonical_json_bytes(
+                            authenticated.read("runtime-references.json")), wave)
+            inventory = {record["relativePath"]: record for record in references["inventory"]}
+            mappings = {record["relativePath"]: record for record in references["references"]}
+            if names - {"runtime-references.json"} != set(inventory) - set(mappings):
+                raise ValueError("Original Runtime reference delta inventory differs from its declaration")
+            for path, record in wanted.items():
+                if inventory.get(path) != record:
+                    raise ValueError("Nested Runtime reference changes a qualified byte identity")
+                if path in mappings:
+                    source = mappings[path]["sourcePath"]
+                    inherited[source] = {**record, "relativePath": source}
+            if inherited:
+                with tempfile.TemporaryDirectory(prefix="runtime-reference-members-") as temporary:
+                    child_root = Path(temporary).resolve() / "members"
+                    child = _capture_runtime_reference_members(plan, plan_bytes, producer,
+                        references["base"], child_root, trusted_workflow_sha=trusted_workflow_sha,
+                        token=token, wanted=inherited)
+                    from runtime_reference_transport import _copy_exact
+                    for path, record in wanted.items():
+                        if path in mappings:
+                            _copy_exact(child_root / mappings[path]["sourcePath"], destination / path, record)
+        elif base.get("referenceControlSha256") is not None:
+            raise ValueError("Original Runtime reference source lacks its authenticated control")
+        for path, record in wanted.items():
+            if not (destination / path).exists():
+                copy_reference_member(archive, path, destination / path, record)
+        transport = {"artifact": artifact, "captureProducer": producer, "observed": observed,
+            "verification": "qualified-reference-members", "rangeBytes": stream.transferred,
+            "memberETag": stream.etag}
+        if "runtime-references.json" in names and base.get("referenceControlSha256") is None:
+            transport["authenticatedControlArchiveBytes"] = artifact["size_in_bytes"]
+        if wave:
+            transport["stateWave"] = wave
+        if child is not None:
+            transport["referenceBase"] = child
+    if read_regular_file_bytes(destination / plan_path, reject_symlink_parents=True) != plan_bytes:
+        raise ValueError("Original Runtime reference source changes the caller's validated plan")
+    return transport
+
+
 @verification_scoped
 def capture_runtime_resume_upload(
     plan_path: Path, destination: Path, *, artifact_id: int, artifact_sha256: str,
@@ -5716,26 +5929,23 @@ def capture_runtime_resume_upload(
             raise ValueError("Runtime resume extraction differs from its exact original archive")
         reference_path = original / "runtime-references.json"
         reference_transport = None
+        reference_control_digest = None
         if reference_path.exists() or reference_path.is_symlink():
             if sdk_state_wave is not None:
                 raise ValueError("Runtime reference transport cannot replace an SDK state upload")
             from runtime_reference_transport import validate_references, resolve_reference_handoff
             references = validate_references(_canonical_control(reference_path, "Runtime references"), state_wave)
+            reference_control_digest = sha256_file(reference_path)
             base = references["base"]
             if base["artifactId"] == artifact_id:
                 raise ValueError("Runtime reference upload cannot refer to itself")
             _require_artifact_job_window(observed[0], job_name, artifact)
-            reference_transport = capture_runtime_resume_upload(
-                captured_plan, private / "reference-base", artifact_id=base["artifactId"],
-                artifact_sha256=base["artifactSha256"], state_wave=base["stateWave"],
-                trusted_workflow_sha=trusted_workflow_sha, repository_root=root,
-                environ=environ, token=token, original_run_id=original_run_id,
-                original_run_attempt=original_run_attempt)
-            base_job = ("product-validation / product-resume" if base["stateWave"] == 0 else
-                        f"product-validation / runtime-collect-{base['stateWave']}")
-            _require_artifact_job_window(reference_transport["observed"][0], base_job,
-                                         reference_transport["artifact"])
-            zipped = resolve_reference_handoff(original, private / "reference-base/original", references,
+            wanted = {record["sourcePath"]: {"relativePath": record["sourcePath"],
+                "bytes": record["bytes"], "sha256": record["sha256"]} for record in references["references"]}
+            reference_transport = _capture_runtime_reference_members(plan, plan_bytes, producer,
+                base, private / "reference-base", trusted_workflow_sha=trusted_workflow_sha,
+                token=token, wanted=wanted)
+            zipped = resolve_reference_handoff(original, private / "reference-base", references,
                                                 state_wave=state_wave)
         expected_roots = {"product-resume-inputs", "product-resume-state"} | (
             {"runtime-state"} if state_wave or sdk_state_wave is not None else set())
@@ -5748,6 +5958,7 @@ def capture_runtime_resume_upload(
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed}
         if reference_transport is not None:
             transport["referenceBase"] = reference_transport
+            transport["referenceControlSha256"] = reference_control_digest
         if state_wave:
             transport["stateWave"] = state_wave
         if sdk_state_wave is not None:
@@ -6648,7 +6859,7 @@ def resume_products(
                       "phases": carrier_phases,
                       "matrices": {"contract": [], "runtime": [], "sdk": []}}
         write_carrier(prepared / ("carrier" if reuse["fullReuse"] else "reused-carrier"),
-                      normalized, selected, sources, _consumer(plan, environment))
+                      normalized, selected, sources, _consumer(plan, environment), object_root=prepared)
         _write_ready_plans(prepared, ready_plans)
         # This fixed logical root is the existing relocatable discovery protocol;
         # consumers rebase only relative transport paths to their private capture.
@@ -6884,6 +7095,7 @@ def discover(
                     destination / "reused-carrier",
                     _consumer(plan, environment),
                     require_complete=False,
+                    object_root=destination,
                 )
             _write_ready_plans(destination, contract_ready_plans)
             if contract_ready_plans:
@@ -6952,6 +7164,7 @@ def discover(
             _consumer(plan, environment),
             require_complete=False,
             sdk_runtime_external=source is not None,
+            object_root=destination,
         )
     return _finish(destination, request, _result(
         requested,
@@ -7002,6 +7215,8 @@ def parser() -> argparse.ArgumentParser:
     products_command.add_argument("--native-runtime-evidence", type=Path, action="append", default=[])
     products_command.add_argument("--adapter-runtime-evidence", type=Path, action="append", default=[])
     resume_command = commands.add_parser("resume-products")
+    resume_command.add_argument("--runtime-matrix", action="store_true",
+                                help="Elect Runtime work in the same private verification session")
     for name in ("plan", "discovery-root", "state-root", "contract-handoff", "destination", "github-output"):
         resume_command.add_argument(f"--{name}", type=Path, required=True)
     resume_command.add_argument("--sdk-validation-tooling", type=Path,
@@ -7160,7 +7375,7 @@ def main(argv: list[str] | None = None) -> int:
                              "tooling_workflow_sha": arguments.tooling_workflow_sha}
                             if arguments.tooling_java_executable is not None or arguments.tooling_workflow_sha is not None else {}))
                 if arguments.handoff is not None:
-                    publish_regular_tree(arguments.destination, arguments.handoff, allow_empty=True)
+                    _publish_discovery_handoff(arguments.destination, arguments.handoff)
             elif arguments.command == "advance-contract":
                 advance_contract(
                     arguments.plan,
@@ -7247,6 +7462,11 @@ def main(argv: list[str] | None = None) -> int:
                     arguments.contract_handoff, arguments.destination, arguments.github_output,
                     sdk_validation_tooling=tooling,
                     sdk_original_workflow_sha=arguments.sdk_original_workflow_sha, **apple_options)
+                if arguments.runtime_matrix:
+                    from runtime_workflow import matrix
+                    matrix(arguments.plan, arguments.destination, arguments.destination, arguments.github_output,
+                        sdk_validation_tooling=tooling,
+                        sdk_original_workflow_sha=arguments.sdk_original_workflow_sha, **apple_options)
             elif arguments.command == "execute-sdk-metadata":
                 execute_sdk_metadata(
                     arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,

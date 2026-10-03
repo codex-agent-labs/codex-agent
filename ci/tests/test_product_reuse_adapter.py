@@ -1833,6 +1833,55 @@ class ProductReuseAdapterTest(unittest.TestCase):
             (shard / "phase-receipt.json").read_bytes(),
             verified_carrier["objects"][0]["receiptBytes"],
         )
+        referenced = resolved_root / "referenced-carrier"
+        with mock.patch("products.restore.shutil.copyfile", side_effect=AssertionError("duplicated product object")):
+            product_reuse.write_carrier(referenced, verified_carrier["resolution"], (binary,),
+                {binary: shard / descriptor["objectPath"]}, consumer, object_root=resolved_root)
+        self.assertFalse(list(referenced.rglob("*.zip")))
+        with self.assertRaisesRegex(ValueError, "caller-owned object root"):
+            verify_carrier(referenced, (binary,), consumer)
+        qualified = verify_carrier(referenced, (binary,), consumer, object_root=resolved_root)
+        self.assertEqual(verified_carrier["objects"][0]["receiptBytes"], qualified["objects"][0]["receiptBytes"])
+        refs_path = referenced / "object-references.json"
+        refs_bytes = refs_path.read_bytes()
+        product_inventory.write_canonical_json(refs_path, {descriptor["objectPath"]: "../escape"})
+        with self.assertRaises(ValueError):
+            verify_carrier(referenced, (binary,), consumer, object_root=resolved_root)
+        refs_path.write_bytes(refs_bytes)
+        self.assertEqual((carrier / "carrier.json").read_bytes(), (referenced / "carrier.json").read_bytes())
+        self.assertEqual(qualified, verify_carrier(referenced, (binary,), consumer, object_root=resolved_root))
+        # Terminal full reuse must retain immutable locators, without invoking
+        # carrier reconstruction or forwarding discovery/product bodies.
+        from dataclasses import replace
+        terminal = resolved_root
+        catalog = replace(catalog, request={"manifest": "shard/product-index.json"})
+        original_bytes = (shard / descriptor["objectPath"]).read_bytes()
+        with mock.patch.object(product_reuse, "write_carrier", side_effect=AssertionError("reconstructed carrier")):
+            product_reuse._reverify_complete(result, (binary,), [catalog], terminal, consumer)
+        references = product_inventory.load_canonical_json_bytes((terminal / "reuse-references.json").read_bytes())
+        self.assertEqual([verified_shard["receipt"]], [row["originalReceipt"] for row in references["phases"]])
+        self.assertEqual(verified_carrier, verify_carrier(carrier, (binary,), consumer))
+        for name, value in (("request.json", {}), ("reuse-wave-result.json", result),
+                            ("result.json", {"fullReuse": True, "targetJobsRequired": False,
+                                             "reason": "verified-full-reuse"})):
+            product_inventory.write_canonical_json(terminal / name, value)
+        (terminal / "unused-product-body").write_bytes(b"must stay upstream")
+        handoff = resolved_root / "terminal-handoff"
+        product_reuse._publish_discovery_handoff(terminal, handoff)
+        self.assertEqual({"request.json", "result.json", "reuse-wave-result.json", "reuse-references.json"},
+                         {path.name for path in handoff.iterdir()})
+        self.assertEqual(original_bytes, (shard / descriptor["objectPath"]).read_bytes())
+
+    def test_no_product_work_publishes_only_discovery_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "source"
+            source.mkdir()
+            for name, value in (("request.json", {}), ("result.json", {
+                    "fullReuse": True, "targetJobsRequired": False, "reason": "no-product-work"})):
+                product_inventory.write_canonical_json(source / name, value)
+            product_reuse._publish_discovery_handoff(source, root / "handoff")
+            self.assertEqual({"request.json", "result.json"}, {p.name for p in (root / "handoff").iterdir()})
 
     def test_contract_advance_rejects_mutated_request_and_producer_controls(self) -> None:
         fixture = self.contract_advance_controls()
@@ -2270,6 +2319,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
             "--handoff", "handoff", "--github-output", "output",
         ]
         with mock.patch.object(product_reuse, "discover") as discover, \
+                mock.patch.object(product_reuse, "_canonical_control", return_value={"fullReuse": False}), \
                 mock.patch.object(product_reuse, "publish_regular_tree") as publish:
             self.assertEqual(0, product_reuse.main(arguments))
         discover.assert_called_once_with(Path("plan.json"), Path("discovery"), Path("output"),

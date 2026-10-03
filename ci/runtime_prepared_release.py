@@ -24,11 +24,14 @@ from products.inventory import (
     load_canonical_json_bytes, read_regular_file_bytes, regular_file_inventory,
     require_exact_keys, require_integer, require_sha256, publish_regular_tree,
     sha256_bytes,
+    require_sorted_unique_records, validate_file_record,
 )
 from products.registry import NATIVE_TARGETS
+from products.restore import memoized_file_inventory as regular_file_inventory, verification_scoped
 from products.receipt import validate_producer
 
 
+@verification_scoped
 def attest_prepared_runtime_ci(
     repository_root, candidate_root, plan_path, destination, *, target,
     expected_build_key, artifact_id, artifact_sha256, state_wave,
@@ -99,8 +102,30 @@ def attest_prepared_runtime_ci(
                 or type(record["stateArtifact"]["artifactId"]) is not int or record != expected):
             raise ValueError("Runtime preparation differs from exact caller-owned identities")
         original = original_capture / "original"
-        if regular_file_inventory(prepared / "selected-state-transport/original", allow_empty=True) != \
-                regular_file_inventory(original, allow_empty=True):
+        state_transport = prepared / "selected-state-transport"
+        if (state_transport / "reference.json").exists() or (state_transport / "reference.json").is_symlink():
+            if {item.name for item in state_transport.iterdir()} != {"reference.json"}:
+                raise ValueError("Prepared Runtime state reference has unexpected files")
+            reference = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(
+                state_transport / "reference.json", max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)),
+                {"schemaVersion", "stateArtifact", "stateWave", "producer", "inventory"}, "Prepared Runtime state reference")
+            require_exact_keys(reference["stateArtifact"], expected["stateArtifact"], "Prepared referenced state artifact")
+            require_integer(reference["stateArtifact"]["artifactId"], "Prepared referenced state artifact ID", 1)
+            require_sha256(reference["stateArtifact"]["artifactSha256"], "Prepared referenced state artifact digest")
+            validate_producer(reference["producer"], "Prepared referenced state producer")
+            if (type(reference["schemaVersion"]) is not int or reference["schemaVersion"] != 1
+                    or reference["stateArtifact"] != expected["stateArtifact"]
+                    or type(reference["stateWave"]) is not int or reference["stateWave"] != state_wave
+                    or reference["producer"] != producer):
+                raise ValueError("Prepared Runtime state reference changes its original identity")
+            prepared_inventory = require_sorted_unique_records(reference["inventory"], "Prepared Runtime state inventory")
+            if len(prepared_inventory) > 16_384:
+                raise ValueError("Prepared Runtime state inventory exceeds its fixed bound")
+            for item in prepared_inventory:
+                validate_file_record(item, "Prepared Runtime state file", with_kind=False, allow_empty=True)
+        else:
+            prepared_inventory = regular_file_inventory(state_transport / "original", allow_empty=True)
+        if prepared_inventory != regular_file_inventory(original, allow_empty=True):
             raise ValueError("Prepared Runtime original state differs from independent capture")
         baselines = {path: regular_file_inventory(path, allow_empty=True)
                      for path in (prepared_capture, original_capture, *handoffs.values())}

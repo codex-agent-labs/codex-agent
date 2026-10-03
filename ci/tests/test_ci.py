@@ -244,7 +244,8 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertGreaterEqual(child.count("fromJSON(inputs.planOutputs).event_authorized == 'true'"), 2)
         self.assertGreaterEqual(child.count("fromJSON(inputs.planOutputs).remote_build_authorized == 'true'"), 2)
 
-        lint = job("workflow-lint")
+        # YAML single-quoted conditions escape embedded quotes by doubling them.
+        lint = job("workflow-lint").replace("''", "'")
         self.assertEqual(3, lint.count(event_guard))
         self.assertEqual(3, lint.count(planner_guard))
         self.assertLess(lint.index(event_guard), lint.index("uses: ./.github/actions/setup-kmp"))
@@ -278,7 +279,7 @@ class RunLaneContractTest(unittest.TestCase):
             plan_job,
         )
         self.assertIn(
-            "name: codex-agent-product-carrier-${{ steps.impact.outputs.validation_tree }}",
+            "name: codex-agent-product-references-${{ steps.impact.outputs.validation_tree }}",
             plan_job,
         )
         self.assertIn(

@@ -21,6 +21,7 @@ from products.inventory import (
     regular_file_inventory, sha256_bytes, snapshot_regular_tree, publish_regular_tree,
 )
 from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId
+from products.restore import verification_scoped
 from products.sdk_apple_original_inputs import verified_apple_original_inputs
 from products.sdk_inputs import REQUEST_NAME
 from reuse import github_output
@@ -725,6 +726,7 @@ def _ios_binary_main(argv):
     return 0
 
 
+@verification_scoped
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "capture-transport":
@@ -793,12 +795,32 @@ def main(argv=None):
     else:
         parser.add_argument("--expected-metadata-receipt-sha256")
     parser.add_argument("--sdk-validation-tooling", type=Path)
+    parser.add_argument("--state-artifact-id", type=int)
+    parser.add_argument("--state-artifact-sha256")
+    parser.add_argument("--state-capture-root", type=Path)
+    parser.add_argument("--state-wave", type=int, default=0)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
     arguments = vars(parser.parse_args(argv))
     try:
         with metadata_admission_options(arguments) as admissions:
             plan, discovery, state, destination = (arguments.pop(name) for name in ("plan", "discovery_root", "state_root", "destination"))
+            state_locator = [arguments.pop(name) for name in ("state_artifact_id", "state_artifact_sha256", "state_capture_root")]
+            state_wave = arguments.pop("state_wave")
+            if any(value is not None for value in state_locator):
+                if worker or any(value is None for value in state_locator) or arguments["trusted_workflow_sha"] is None:
+                    raise ValueError("SDK input staging requires the complete caller-owned Runtime state locator")
+                identifier, digest, capture_root = state_locator
+                expected_discovery = capture_root / "original/product-resume-state"
+                expected_state = capture_root / ("original/runtime-state" if state_wave else "original/product-resume-state")
+                if discovery != expected_discovery or state != expected_state:
+                    raise ValueError("SDK input staging paths differ from the caller-selected Runtime capture")
+                product_reuse.capture_runtime_resume_upload(plan, capture_root,
+                    artifact_id=identifier, artifact_sha256=digest, state_wave=state_wave,
+                    trusted_workflow_sha=arguments["trusted_workflow_sha"], repository_root=arguments["repository_root"],
+                    environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+            elif state_wave:
+                raise ValueError("SDK input staging state wave requires its complete capture locator")
             action = prepare_native if native_prepare else execute_javascript if javascript else stage
             policy = arguments.pop("sdk_validation_tooling")
             if policy is not None:

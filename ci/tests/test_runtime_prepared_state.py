@@ -108,7 +108,8 @@ class RuntimePreparedStateTest(unittest.TestCase):
         before = regular_file_inventory(self.original, allow_empty=True)
         with patch.object(state, "verify_carrier", wraps=state.verify_carrier) as carrier:
             result = self.invoke()
-        carrier.assert_called_once_with(self.discovery / "carrier", self.closure, {"kind": "ci", "producer": self.producer})
+            carrier.assert_called_once_with(self.discovery / "carrier", self.closure,
+                {"kind": "ci", "producer": self.producer}, object_root=self.discovery)
         self.assertEqual(set(self.needed), set(result))
         self.assertNotIn(self.other, result)
         for identity, original in result.items():

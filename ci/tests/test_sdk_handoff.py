@@ -106,7 +106,7 @@ class SdkHandoffTest(unittest.TestCase):
         self.assertEqual(before, regular_file_inventory(self.output / "runtime-capture/original", allow_empty=True))
         self.assertEqual(before, regular_file_inventory(self.original, allow_empty=True))
         self.assertEqual(self.plan.read_bytes(), (self.output / "runtime-capture/plan/impact-plan.json").read_bytes())
-        self.assertEqual(b"synthetic captured upload\x00\xff", (self.output / "runtime-capture/transport.zip").read_bytes())
+        self.assertFalse((self.output / "runtime-capture/transport.zip").exists())
         self.assertEqual({"inventory": "explicitly mocked bridge result"}, result)
 
     def test_capture_or_full_bridge_failure_never_publishes(self):
@@ -115,6 +115,17 @@ class SdkHandoffTest(unittest.TestCase):
             with self.subTest(failure=failure), self.assertRaisesRegex(ValueError, "rejected"):
                 self.invoke(**{failure: ValueError("rejected")})
             self.assertFalse(self.output.exists())
+
+    def test_changed_forwarded_original_rejects_before_publication(self):
+        snapshot = caller.snapshot_regular_tree
+        def changed(source, destination, **kwargs):
+            snapshot(source, destination, **kwargs)
+            if destination.name == "original":
+                (destination / "raw.bin").write_bytes(b"changed forwarded original")
+        with patch.object(caller, "snapshot_regular_tree", side_effect=changed), \
+                self.assertRaisesRegex(ValueError, "changed before publication"):
+            self.invoke()
+        self.assertFalse(self.output.exists())
 
     def test_optional_contract_payload_digest_forwarded_only_to_full_bridge(self):
         self.options["expected_contract_payload_sha256"] = "sha256:" + "e" * 64

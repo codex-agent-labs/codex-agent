@@ -138,7 +138,10 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
 def capture(plan_path, destination, github_output_path, *, artifact_id, artifact_sha256,
             trusted_workflow_sha, state_wave=0, instance=None, expected_build_key=None,
             repository_root=None, environ=None, token, sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, continuation_mode=None):
+    if continuation_mode not in (None, "selected", "completed") or (
+            continuation_mode is not None and (instance is not None or expected_build_key is not None)):
+        raise ValueError("Runtime capture continuation requires an unselected routing invocation")
     tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
     if sdk_apple_validation_policy is not None:
         tooling["sdk_apple_validation_policy"] = sdk_apple_validation_policy
@@ -158,8 +161,12 @@ def capture(plan_path, destination, github_output_path, *, artifact_id, artifact
         "discovery_root": original / "product-resume-state",
         "state_root": original / ("runtime-state" if state_wave else "product-resume-state"),
     }
-    value = matrix(paths["plan_path"], paths["discovery_root"], paths["state_root"], github_output_path,
-                   repository_root=repository_root, environ=environ, **tooling)
+    value = (matrix(paths["plan_path"], paths["discovery_root"], paths["state_root"], github_output_path,
+                    repository_root=repository_root, environ=environ, **tooling)
+             if continuation_mode is None else
+             continuation(paths["plan_path"], paths["discovery_root"], paths["state_root"], github_output_path,
+                 repository_root=repository_root, environ=environ, if_selected=continuation_mode == "selected",
+                 require_completed=continuation_mode == "completed", **tooling))
     if (instance is None) != (expected_build_key is None):
         raise ValueError("Runtime worker identity and elected key must be supplied together")
     if instance is not None:
@@ -268,6 +275,7 @@ def main(argv=None):
     captured.add_argument("--artifact-sha256", required=True)
     captured.add_argument("--trusted-workflow-sha", required=True)
     captured.add_argument("--state-wave", type=int, default=0)
+    captured.add_argument("--continuation", choices=("selected", "completed"))
     captured.add_argument("--sdk-validation-tooling", type=Path)
     for name in ("component", "phase", "target", "expected-build-key"):
         captured.add_argument(f"--{name}")
@@ -336,6 +344,7 @@ def main(argv=None):
                         trusted_workflow_sha=args.trusted_workflow_sha, state_wave=args.state_wave,
                         instance=PhaseInstanceId("runtime", *values[:3]) if all(values) else None,
                         expected_build_key=args.expected_build_key, token=os.environ.get("GITHUB_TOKEN", ""),
+                        **({"continuation_mode": args.continuation} if args.continuation is not None else {}),
                         **tooling, **apple_policy, **admissions)
         elif args.command == "recover-native-handoffs":
             from runtime_preparation_capture import capture_runtime_native_release_handoffs

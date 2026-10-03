@@ -35,10 +35,15 @@ def validate_references(value, state_wave):
                                "Runtime references")
     if require_integer(value["schemaVersion"], "Runtime references schema", 1) != 1:
         raise ValueError("Unsupported Runtime references schema")
-    base = require_exact_keys(value["base"], {"artifactId", "artifactSha256", "stateWave"},
+    base_keys = {"artifactId", "artifactSha256", "stateWave"}
+    if isinstance(value["base"], dict) and "referenceControlSha256" in value["base"]:
+        base_keys.add("referenceControlSha256")
+    base = require_exact_keys(value["base"], base_keys,
                               "Runtime reference base")
     require_integer(base["artifactId"], "Runtime reference upload ID", 1)
     require_sha256(base["artifactSha256"], "Runtime reference upload digest")
+    if "referenceControlSha256" in base:
+        require_sha256(base["referenceControlSha256"], "Runtime reference control digest")
     wave = require_integer(base["stateWave"], "Runtime reference base wave")
     if type(state_wave) is not int or not 0 <= wave < state_wave <= 5:
         raise ValueError("Runtime reference must identify a strictly earlier Runtime wave")
@@ -96,6 +101,8 @@ def stage_reference_handoff(handoff, base_root, base_capture, destination, *, st
     artifact = transport["artifact"]
     base = {"artifactId": artifact["id"], "artifactSha256": artifact["digest"],
             "stateWave": transport.get("stateWave", 0)}
+    if "referenceControlSha256" in transport:
+        base["referenceControlSha256"] = transport["referenceControlSha256"]
     inventory = regular_file_inventory(handoff, allow_empty=True)
     original = regular_file_inventory(base_root, allow_empty=True)
     by_content = {}

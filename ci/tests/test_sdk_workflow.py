@@ -292,6 +292,37 @@ class SdkWorkflowTest(unittest.TestCase):
                 self.stage(**self.upload)
             self.assertFalse(self.destination.exists())
 
+    def test_cli_capture_and_stage_share_private_verification_and_reject_incomplete_locator(self):
+        import products.restore as restore
+        capture_root = self.repository / "capture"
+        discovery = capture_root / "original/product-resume-state"
+        state = capture_root / "original/runtime-state"
+        paths = {"plan": self.plan, "discovery-root": discovery, "state-root": state,
+                 "destination": self.destination, "keyring": self.arguments["keyring"],
+                 "keys-directory": self.arguments["keys_directory"], "repository-root": self.repository}
+        argv = [value for name, path in paths.items() for value in (f"--{name}", str(path))]
+        argv += ["--trusted-workflow-sha", self.upload["trusted_workflow_sha"],
+                 "--state-artifact-id", "7", "--state-artifact-sha256", self.upload["artifact_sha256"],
+                 "--state-capture-root", str(capture_root), "--state-wave", "4"]
+        contexts = []
+        def capture(*args, **kwargs):
+            contexts.append(restore._VERIFICATION_SESSION.get())
+            self.assertEqual(4, kwargs["state_wave"])
+            self.assertEqual(7, kwargs["artifact_id"])
+        def stage(*args, **kwargs):
+            contexts.append(restore._VERIFICATION_SESSION.get())
+        with patch.object(workflow.product_reuse, "capture_runtime_resume_upload", side_effect=capture) as captured, \
+                patch.object(workflow, "stage", side_effect=stage):
+            self.assertEqual(0, workflow.main(argv))
+            captured.assert_called_once()
+            self.assertIsNotNone(contexts[0])
+            self.assertIs(contexts[0], contexts[1])
+            captured.reset_mock()
+            for invalid in (argv[:-4], [*argv, "--state-root", str(self.state)]):
+                with self.assertRaises(SystemExit):
+                    workflow.main(invalid)
+                captured.assert_not_called()
+
     def test_cli_forwards_paths_upload_identity_and_environment_without_source_override(self):
         paths = {"plan": self.plan, "discovery-root": self.discovery, "state-root": self.state,
                  "destination": self.destination, "keyring": self.arguments["keyring"],

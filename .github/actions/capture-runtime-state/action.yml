@@ -19,6 +19,9 @@ inputs:
   state-wave:
     default: '0'
     description: Zero for initial resume; otherwise the fixed preceding wave.
+  continuation:
+    default: ''
+    description: Optional selected/completed Runtime continuation in the same verification process.
   sdk-state-wave:
     default: ''
     description: Optional exact SDK collection wave, mutually exclusive with Runtime state-wave.
@@ -50,6 +53,24 @@ inputs:
     default: ''
     description: Optional exact elected build key.
 outputs:
+  native_attestation_matrix:
+    value: ${{ steps.capture.outputs.native_attestation_matrix }}
+  native_receipt_sha256s:
+    value: ${{ steps.capture.outputs.native_receipt_sha256s }}
+  aggregate_state:
+    value: ${{ steps.capture.outputs.aggregate_state }}
+  aggregate_key:
+    value: ${{ steps.capture.outputs.aggregate_key }}
+  aggregate_receipt_sha256:
+    value: ${{ steps.capture.outputs.aggregate_receipt_sha256 }}
+  aggregate_required:
+    value: ${{ steps.capture.outputs.aggregate_required }}
+  aggregate_payload_complete:
+    value: ${{ steps.capture.outputs.aggregate_payload_complete }}
+  sdk_handoff_required:
+    value: ${{ steps.capture.outputs.sdk_handoff_required }}
+  sdk_input_selection:
+    value: ${{ steps.capture.outputs.sdk_input_selection }}
   sdk-matrix:
     value: ${{ steps.capture.outputs.sdk_matrix }}
   sdk-workers-required:
@@ -79,6 +100,7 @@ runs:
         ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         STATE_WAVE: ${{ inputs.state-wave }}
+        CONTINUATION: ${{ inputs.continuation }}
         STATE_PRODUCT: ${{ inputs.product }}
         SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
         SDK_FAMILY: ${{ inputs.sdk-family }}
@@ -117,6 +139,11 @@ runs:
         esac
         if [ -n "$COMPONENT$PHASE$TARGET$BUILD_KEY" ]; then
           selected=(--component "$COMPONENT" --phase "$PHASE" --target "$TARGET" --expected-build-key "$BUILD_KEY")
+        fi
+        if [ -n "$CONTINUATION" ]; then
+          test "$STATE_PRODUCT" = runtime
+          test -z "$COMPONENT$PHASE$TARGET$BUILD_KEY"
+          selected+=(--continuation "$CONTINUATION")
         fi
         if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then
           selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")

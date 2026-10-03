@@ -129,7 +129,11 @@ class RuntimeSigningPreparationTest(unittest.TestCase):
                     self.assertEqual(result, load_canonical_json_bytes((destination / "preparation.json").read_bytes()))
                     self.assertEqual({"preparation.json", "selected-inputs", "selected-state-transport"}
                         | ({"release-handoff"} if target == "aggregate" else set()), {p.name for p in destination.iterdir()})
-                    self.assertEqual(self.plan_raw, (destination / "selected-state-transport/original/product-resume-inputs/plan/impact-plan.json").read_bytes())
+                    reference = load_canonical_json_bytes((destination / "selected-state-transport/reference.json").read_bytes())
+                    self.assertEqual({"reference.json"}, {p.name for p in (destination / "selected-state-transport").iterdir()})
+                    self.assertEqual(result["stateArtifact"], reference["stateArtifact"])
+                    self.assertIn({"relativePath": "product-resume-inputs/plan/impact-plan.json",
+                        "bytes": len(self.plan_raw), "sha256": sha256_bytes(self.plan_raw)}, reference["inventory"])
                     self.assertEqual(b"", (destination / "selected-inputs/predecessors/empty-stderr.log").read_bytes())
                     self.assertEqual(b"original selected receipt\n", (destination / "selected-inputs/predecessors/phase-receipt.json").read_bytes())
                     self.assertNotIn("sdk_validation_tooling", self.capture.call_args.kwargs)

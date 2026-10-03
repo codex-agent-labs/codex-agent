@@ -234,6 +234,7 @@ _IOS_BINARY_BUILD_LOGIC = frozenset({
     "codexagent.ios-runtime.gradle.kts",
 })
 _CONTROL_ONLY_FILES = frozenset({
+    "ci/runtime_reference_archive.py",
     "ci/contract_catalog_caller.py",
     "ci/contract_catalog_promotion.py",
     "ci/contract_candidate_admission.py",

@@ -211,6 +211,25 @@ class RuntimeOriginalCiTest(unittest.TestCase):
         self.assertEqual({"binary", "package"}, {record["phase"] for record in replayed})
         self.assertEqual(replayed, same_run)
 
+    def test_completed_projection_reuse_keeps_fresh_origin_authentication_and_mutation_guards(self):
+        from products.restore import verification_session
+        with verification_session() as session, mock.patch('reuse.api_request', side_effect=self.api()) as api, \
+                mock.patch.object(adapter, 'safe_extract', wraps=adapter.safe_extract) as extract:
+            for number in range(2):
+                adapter.capture_runtime_original_ci_phases({'binary': self.receipts['binary']},
+                    self.root / f'memo-{number}', target=TARGET, trusted_workflow_sha=self.pin,
+                    token='not-a-real-token', recovery_projection=True)
+            self.assertEqual(1, extract.call_count)
+            artifact_url = self.artifacts['binary']['archive_download_url'].removesuffix('/zip')
+            self.assertEqual(2, sum(call.args[0] == artifact_url for call in api.call_args_list))
+            cached, *_ = next(iter(session['originalCaptures'].values()))
+            (cached / 'shard/phase-receipt.json').write_bytes(b'changed private receipt')
+            with self.assertRaisesRegex(ValueError, 'Private verified original Runtime capture changed'):
+                adapter.capture_runtime_original_ci_phases({'binary': self.receipts['binary']},
+                    self.root / 'memo-corrupt', target=TARGET, trusted_workflow_sha=self.pin,
+                    token='not-a-real-token', recovery_projection=True)
+            self.assertFalse((self.root / 'memo-corrupt').exists())
+
     def test_recovery_projection_omits_only_duplicates_and_reauthenticates_original(self):
         upload = self.root / "runtime-uploads/binary"
         (upload / "inputs").mkdir()

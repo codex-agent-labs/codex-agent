@@ -1,5 +1,7 @@
 """Reference custody is byte reuse, never receipt or provenance admission."""
 import copy
+import io
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -14,7 +16,90 @@ from runtime_reference_transport import (
 from products.inventory import regular_file_inventory, snapshot_regular_tree, write_canonical_json, sha256_bytes
 
 
+class RangeOpener:
+    def __init__(self, archives):
+        self.archives = archives
+        self.requests = []
+        self.etag = '"immutable-fixture"'
+
+    def open(self, request, timeout):
+        identifier = int(request.full_url.split('/')[-2])
+        raw = self.archives[identifier]
+        start, end = map(int, re.fullmatch(r'bytes=(\d+)-(\d+)', request.get_header('Range')).groups())
+        self.requests.append((identifier, start, end))
+        response = io.BytesIO(raw[start:end+1])
+        response.status = 206
+        response.headers = {'Content-Range': f'bytes {start}-{end}/{len(raw)}', 'ETag': self.etag}
+        return response
+
+
 class RuntimeReferenceTransportTest(unittest.TestCase):
+    def test_nested_reference_controls_are_digest_qualified_before_following(self):
+        fixture = resume_fixture.RuntimeResumeCaptureTest()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        from products.inventory import canonical_json_bytes
+        plan_path = 'product-resume-inputs/plan/impact-plan.json'
+        plan_bytes = fixture.contents[plan_path]
+        record = {'relativePath': plan_path, 'bytes': len(plan_bytes), 'sha256': sha256_bytes(plan_bytes)}
+        base_raw = archive(fixture.contents)
+        controls = {'schemaVersion': 1, 'base': {'artifactId': 101, 'artifactSha256': sha256_bytes(base_raw),
+                    'stateWave': 0}, 'inventory': [record],
+                    'references': [{**record, 'sourcePath': plan_path}]}
+        raw_control = canonical_json_bytes(controls)
+        nested_raw = archive({REFERENCE_NAME: raw_control})
+        altered = copy.deepcopy(controls)
+        altered['references'][0]['sourcePath'] = plan_path.replace('impact-plan', 'impact-blan')
+        changed_raw = archive({REFERENCE_NAME: canonical_json_bytes(altered)})
+        self.assertEqual(len(nested_raw), len(changed_raw))
+        artifacts = {101: {**fixture.artifact, 'digest': sha256_bytes(base_raw),
+                         'size_in_bytes': len(base_raw), 'created_at': '2026-01-01T01:01:00Z'},
+                     102: {**fixture.artifact, 'id': 102, 'digest': sha256_bytes(nested_raw),
+                         'size_in_bytes': len(nested_raw), 'created_at': '2026-01-01T01:01:00Z',
+                         'archive_download_url': fixture.artifact['archive_download_url'].replace('/101/', '/102/')}}
+        jobs = [{**fixture.job, 'name': name, 'started_at': '2026-01-01T01:00:00Z',
+                 'completed_at': '2026-01-01T01:02:00Z'} for name in
+                ('product-validation / runtime-collect-1', 'product-validation / product-resume')]
+        observed = [{'run': fixture.run, 'testedCommit': fixture.commit, 'jobs': jobs}]
+        base = {'artifactId': 102, 'artifactSha256': sha256_bytes(nested_raw), 'stateWave': 1,
+                'referenceControlSha256': sha256_bytes(raw_control)}
+        for changed in (False, True):
+            ranges = RangeOpener({101: base_raw, 102: changed_raw if changed else nested_raw})
+            with mock.patch.object(product_reuse, '_observe_ci_producer_jobs', return_value=observed), \
+                    mock.patch.object(product_reuse, '_contract_ci_upload_metadata',
+                                      side_effect=lambda identifier, *args: artifacts[identifier]), \
+                    mock.patch.object(product_reuse, '_reuse_contract_ci_upload',
+                                      side_effect=AssertionError('unnecessary full ancestor transfer')), \
+                    mock.patch('runtime_reference_archive.urllib.request.build_opener', return_value=ranges):
+                destination = fixture.root / f'nested-{changed}'
+                arguments = ({}, plan_bytes, fixture.producer, base, destination)
+                options = {'trusted_workflow_sha': fixture.pin, 'token': 'synthetic-token', 'wanted': {plan_path: record}}
+                if changed:
+                    with self.assertRaisesRegex(ValueError, 'authenticated digest'):
+                        product_reuse._capture_runtime_reference_members(*arguments, **options)
+                    self.assertFalse(any(identifier == 101 for identifier, *_ in ranges.requests))
+                else:
+                    product_reuse._capture_runtime_reference_members(*arguments, **options)
+                    self.assertEqual(plan_bytes, (destination / plan_path).read_bytes())
+
+    def test_range_reads_reject_changed_etags_and_unbounded_bodies(self):
+        from runtime_reference_archive import _Archive
+        raw = b'qualified bytes'
+        opener = RangeOpener({101: raw})
+        artifact = {'id': 101, 'digest': sha256_bytes(raw), 'size_in_bytes': len(raw),
+                    'archive_download_url': 'https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/101/zip'}
+        with mock.patch('runtime_reference_archive.urllib.request.build_opener', return_value=opener):
+            stream = _Archive(artifact, 'synthetic-token')
+            self.assertEqual(raw[:2], stream.read(2))
+            opener.etag = '"different-body"'
+            with self.assertRaisesRegex(ValueError, 'range identity'):
+                stream.read(2)
+            opener.etag = '"immutable-fixture"'
+            stream.seek(len(raw) - 2)
+            self.assertEqual(raw[-2:], stream.read())
+            with self.assertRaisesRegex(ValueError, 'bounded request'):
+                stream.read(33 * 1024**2)
+
     def test_private_upload_byte_reuse_keeps_fresh_authentication_and_provenance_binding(self):
         fixture = resume_fixture.RuntimeResumeCaptureTest()
         fixture.setUp()
@@ -49,7 +134,12 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
         (handoff / 'runtime-state').mkdir()
         (handoff / 'runtime-state/reuse-wave-result.json').write_bytes(b'untrusted phase state')
         capture = root / 'base-transport.json'
-        base_artifact = {**fixture.artifact, 'created_at': '2026-01-01T01:01:00Z'}
+        # A genuine source upload may contain a large unrelated body. Its source
+        # metadata/job must be authenticated, but that body must never transfer.
+        base_raw = archive({**fixture.contents,
+            'product-resume-state/unreferenced.bin': b'x' * (4 * 1024 * 1024)})
+        base_artifact = {**fixture.artifact, 'created_at': '2026-01-01T01:01:00Z',
+            'digest': sha256_bytes(base_raw), 'size_in_bytes': len(base_raw)}
         write_canonical_json(capture, {'artifact': base_artifact})
         delta = root / 'reference-delta'
         stage_reference_handoff(handoff, base, capture, delta, state_wave=1)
@@ -64,20 +154,24 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
                 ('product-validation / runtime-collect-1', 'product-validation / product-resume')]
 
         def run_capture(destination, original=base_artifact):
+            ranges = RangeOpener({101: base_raw})
             with mock.patch.object(product_reuse, 'api_json', side_effect=[
                     fixture.run, fixture.commit, artifact, fixture.run, fixture.commit, original]), \
                     mock.patch.object(product_reuse, 'paginated_items', side_effect=[[jobs[0]], [jobs[1]]]), \
                     mock.patch.object(product_reuse, 'download_artifact_to_file',
                         side_effect=lambda item, token, path, **kwargs:
-                        path.write_bytes(raw if item['id'] == 102 else fixture.raw)) as downloads:
+                        path.write_bytes(raw if item['id'] == 102 else base_raw)) as downloads, \
+                    mock.patch('runtime_reference_archive.urllib.request.build_opener', return_value=ranges):
                 result = product_reuse.capture_runtime_resume_upload(
                     fixture.plan_path, destination, artifact_id=102, artifact_sha256=artifact['digest'],
                     trusted_workflow_sha=fixture.pin, state_wave=1, repository_root=root,
                     environ=fixture.environment, token='synthetic-token')
-                return result, downloads.call_count
+                return result, downloads.call_count, ranges
         destination = root / 'build/reference-capture'
-        result, downloads = run_capture(destination)
-        self.assertEqual(2, downloads)
+        result, downloads, ranges = run_capture(destination)
+        self.assertEqual(1, downloads)  # Only the current delta; no ancestor ZIP.
+        self.assertLess(sum(end-start+1 for _, start, end in ranges.requests), len(base_raw) // 2)
+        self.assertEqual('qualified-reference-members', result['referenceBase']['verification'])
         self.assertEqual(base_artifact, result['referenceBase']['artifact'])
         self.assertEqual(regular_file_inventory(handoff, allow_empty=True),
                          regular_file_inventory(destination / 'original', allow_empty=True))

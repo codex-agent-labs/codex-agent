@@ -72,7 +72,7 @@ def restore_prepared_runtime_originals(plan, original_root, destination, *, prod
             or not set(needed).issubset(materialized)):
         raise ValueError("Prepared Runtime selection lacks its exact completed original metadata closure")
     carrier_root = state / ("carrier" if result["fullReuse"] else "reused-carrier")
-    carrier = verify_carrier(carrier_root, materialized, consumer)
+    carrier = verify_carrier(carrier_root, materialized, consumer, object_root=state)
     carrier_phases = {products._identity(value): value for value in carrier["resolution"]["phases"]}
     fields = (*products._IDENTITY_KEYS, "buildKey", "receiptSha256", "objectSha256")
     if any(any(carrier_phases[identity][field] != phases[identity][field] for field in fields)
@@ -93,7 +93,9 @@ def restore_prepared_runtime_originals(plan, original_root, destination, *, prod
             record = objects[identity]
             name = "-".join((identity.product, identity.component, identity.phase, identity.target))
             directory = prepared / name
-            original = restore_object(carrier_root / object_relative_path(record["buildKey"], record["receiptSha256"]),
+            source = (state / record["originalObjectPath"] if "originalObjectPath" in record else
+                carrier_root / object_relative_path(record["buildKey"], record["receiptSha256"]))
+            original = restore_object(source,
                 directory / "stage", build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
                 object_sha256=record["objectSha256"])
             if original["receiptBytes"] != record["receiptBytes"] or original["receipt"] != record["receipt"]:

@@ -5,6 +5,7 @@ fixtures are not authenticated products, actual CI observations or signatures.
 """
 
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -101,6 +102,15 @@ class RuntimePreparedReleaseTest(unittest.TestCase):
             self.write(self.prepared_root / 'release-handoff/original-signature.bin', b'opaque retained signature\n')
         self.write(destination / 'original-upload.zip', b'synthetic preparation ZIP transport seam\n')
         self.write(destination / 'capture-transport.json', canonical_json_bytes({'captureProducer': self.producer}))
+        if getattr(self, 'reference', False):
+            transport = self.prepared_root / 'selected-state-transport'
+            reference = {'schemaVersion': 1, 'stateArtifact': record['stateArtifact'],
+                'stateWave': record['stateWave'], 'producer': record['producer'],
+                'inventory': regular_file_inventory(transport / 'original', allow_empty=True)}
+            shutil.rmtree(transport)
+            if getattr(self, 'change_reference', None):
+                self.change_reference(reference)
+            self.write(transport / 'reference.json', canonical_json_bytes(reference))
         return {'captureProducer': self.producer}
 
     def capture_state(self, plan, destination, **kwargs):
@@ -168,6 +178,36 @@ class RuntimePreparedReleaseTest(unittest.TestCase):
         self.assertFalse(self.preparation_root.exists())
         self.assertFalse(self.state_root.exists())
         self.assertEqual(self.plan_raw, self.plan.read_bytes())
+
+    def test_referenced_state_still_requires_independent_original_capture_in_every_wave(self):
+        self.reference = True
+        for number, wave in enumerate((0, 4, 5)):
+            self.options['state_wave'] = wave
+            self.output = self.root / f'referenced-output-{wave}'
+            self.invoke()
+            self.assertEqual(number + 1, self.state.call_count)
+            self.assertEqual(self.leaf_inventory, regular_file_inventory(self.output, allow_empty=True))
+
+    def test_referenced_state_identity_and_inventory_changes_reject_before_signing(self):
+        self.reference = True
+        mutations = (lambda value: value.update(schemaVersion=True),
+            lambda value: value.update(stateWave=0),
+            lambda value: value['stateArtifact'].update(artifactId=99),
+            lambda value: value['producer'].update(runAttempt=1),
+            lambda value: value['inventory'][0].update(sha256='sha256:' + '9' * 64),
+            lambda value: value.update(extra=True))
+        for mutation in mutations:
+            self.change_reference = mutation
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.invoke()
+            self.sign_native.assert_not_called()
+            self.restore.assert_not_called()
+            self.assertFalse(self.output.exists())
+        self.change_reference = None
+        self.change_state = True
+        with self.assertRaises(ValueError):
+            self.invoke()
+        self.sign_native.assert_not_called()
 
     def test_record_field_mismatches_reject_before_signing(self):
         changes = {'target': 'aggregate', 'expectedBuildKey': 'sha256:' + '9' * 64, 'stateWave': 0,

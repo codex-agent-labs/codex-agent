@@ -24,9 +24,11 @@ from products.inventory import (
 from products.runtime_aggregate_handoff import _public_policy
 from products.sdk_package import _require_capability_output_separate
 from products.sdk_protected_runtime import stage_protected_runtime_sdk_inputs
+from products.restore import memoized_file_inventory as regular_file_inventory, verification_scoped
 from products.sdk_release_selection import read_sdk_release_selection, require_sdk_runtime_compatibility_policy
 
 
+@verification_scoped
 def capture_sdk_handoff(
     plan_path: Path, destination: Path, *, artifact_id: int, artifact_sha256: str,
     trusted_workflow_sha: str, expected_build_key: str, expected_metadata_receipt_sha256: str,
@@ -67,7 +69,7 @@ def capture_sdk_handoff(
         paths, policy_bytes = _public_policy(keyring, keys_directory, policy)
         policy_inventory = regular_file_inventory(policy)
         prepared = private / "output"
-        capture = prepared / "runtime-capture"
+        capture = private / "runtime-capture"
         product_reuse.capture_runtime_aggregate_release_upload(plan, capture,
             artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
             expected_build_key=expected_build_key, expected_metadata_receipt_sha256=expected_metadata_receipt_sha256,
@@ -84,11 +86,17 @@ def capture_sdk_handoff(
             selection_repository_root=selection, selection_revision=selection_revision,
             **({"expected_contract_payload_sha256": expected_contract_payload_sha256}
                if expected_contract_payload_sha256 is not None else {}))
-        # The complete original wrapper is already retained in runtime-capture;
-        # avoid duplicating its potentially large history in the final artifact.
+        # SDK consumers authenticate their own complete SDK upload and verify
+        # the raw signed Runtime carrier. They never use its enclosing ZIP.
+        for name in ("plan", "original"):
+            snapshot_regular_tree(capture / name, prepared / "runtime-capture" / name, allow_empty=True)
+        transport_bytes = read_regular_file_bytes(capture / "capture-transport.json", reject_symlink_parents=True)
+        (prepared / "runtime-capture/capture-transport.json").write_bytes(transport_bytes)
         sdk_inventory = regular_file_inventory(forwarded / "sdk-inputs")
         snapshot_regular_tree(forwarded / "sdk-inputs", prepared / "sdk-inputs")
         if (regular_file_inventory(capture, allow_empty=True) != capture_inventory
+                or regular_file_inventory(prepared / "runtime-capture", allow_empty=True)
+                   != [record for record in capture_inventory if record["relativePath"] != "transport.zip"]
                 or regular_file_inventory(forwarded / "sdk-inputs") != sdk_inventory
                 or regular_file_inventory(prepared / "sdk-inputs") != sdk_inventory
                 or read_regular_file_bytes(plan, reject_symlink_parents=True) != plan_bytes
