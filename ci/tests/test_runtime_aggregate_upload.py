@@ -135,6 +135,24 @@ class RuntimeAggregateUploadTest(unittest.TestCase):
             with self.subTest(case=case), self.assertRaises(ValueError): self.call()
             self.assertFalse(self.output.exists())
 
+    def test_retained_upload_keeps_exact_old_producer_and_authenticates_its_actual_attempt(self):
+        self.plan = {**self.plan, "validationCommit": "c" * 40, "validationTree": "d" * 40}
+        self.plan_path.write_bytes(canonical_json_bytes(self.plan))
+        result = self.call(original_producer=self.producer,
+            environ={"GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "1"})
+        self.assertEqual(self.producer, result["captureProducer"])
+        self.assertEqual(self.raw, (self.output / "transport.zip").read_bytes())
+        self.assertEqual(self.files["caller.json"], (self.output / "original/caller.json").read_bytes())
+        self.assertEqual(self.files["aggregate-input/metadata-receipt.json"],
+            (self.output / "original/aggregate-input/metadata-receipt.json").read_bytes())
+
+    def test_retained_producer_cannot_cross_pr_or_point_to_current_or_future_attempt(self):
+        for change in ({"pullRequest": 32}, {"runId": 100, "runAttempt": 1}, {"runId": 101}):
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "exact earlier original producer"):
+                self.call(original_producer={**self.producer, **change},
+                    environ={"GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "1"})
+            self.assertFalse(self.output.exists())
+
     def test_crosspaired_caller_receipt_key_unsafe_archive_and_changed_plan_reject(self):
         with self.assertRaisesRegex(ValueError, "aggregate key"):
             self.call(expected_build_key="sha256:" + "d" * 64)

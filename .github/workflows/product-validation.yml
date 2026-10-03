@@ -536,6 +536,7 @@ jobs:
             --state-root build/product-resume-inputs/state \
             --contract-handoff build/product-resume-inputs/release/contract-input \
             --destination build/product-resume-state \
+            --handoff build/product-resume-transport \
             --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
             --github-output "$GITHUB_OUTPUT" ${tooling[@]+"${tooling[@]}"}
       - name: Preserve the resumed state and all original transport evidence
@@ -546,9 +547,7 @@ jobs:
           overwrite: false
           include-hidden-files: true
           name: codex-agent-product-resume-${{ needs.plan.outputs.validation_tree }}
-          path: |
-            build/product-resume-inputs
-            build/product-resume-state
+          path: build/product-resume-transport
           compression-level: 0
           retention-days: 90
 

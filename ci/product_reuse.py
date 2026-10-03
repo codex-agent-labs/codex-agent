@@ -172,6 +172,7 @@ _WAVE_REQUEST_KEYS = {
 _NATIVE_REQUEST_KEYS = {"nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence"}
 _ADAPTER_REQUEST_KEY = "adapterRuntimeComparisonEvidence"
 _AGGREGATE_REQUEST_KEY = "runtimeAggregateReleaseEvidence"
+_RECOVERABLE_RUNTIME_COMPONENTS = (*RUNTIME_COMPONENTS, "runtime-aggregate")
 _SDK_REQUEST_KEYS = {"sdkValidationEvidence", "sdkAppleValidationEvidence", "sdkRuntimeSource"}
 _KEYRING_PATH = "gradle/release/product-signing-keys.json"
 _KEYS_ROOT = "gradle/release/keys"
@@ -986,7 +987,9 @@ def capture_runtime_original_ci_phases(
     if not phases or release_handoffs and phases != all_phases:
         raise ValueError("Original Runtime phases must be nonempty; release requires all four")
     require_exact_keys(phase_receipts, set(phases), "Original Runtime phase receipts")
-    if target not in RUNTIME_COMPONENTS or release_handoffs and target not in NATIVE_TARGETS:
+    if (target not in _RECOVERABLE_RUNTIME_COMPONENTS or release_handoffs and target not in NATIVE_TARGETS
+            or target == "runtime-aggregate" and original_instance != PhaseInstanceId(
+                "runtime", "runtime-aggregate", "metadata", "aggregate")):
         raise ValueError("Original Runtime capture requires a supported component")
     instances = {phase: PhaseInstanceId("runtime", target, phase, target) for phase in phases}
     if original_instance is not None:
@@ -1138,7 +1141,16 @@ def capture_runtime_original_ci_phases(
             retained = (root / "original-uploads" if recovery_projection else prepared) / "phases" / phase
             retained.mkdir(parents=True)
             archive = retained / "transport.zip"
-            if original_archives is not None and phase in original_archives:
+            candidate = None
+            if session is not None and original_archives is not None and phase in original_archives:
+                candidate_key = (str(original_archives[phase].resolve()), artifact["id"], artifact["digest"],
+                    sha256_bytes(originals[phase]), workflow_policies[phase]["sha"], canonical_json_bytes(producer))
+                candidate = session.setdefault("runtimeCandidates", {}).pop(candidate_key, None)
+            if candidate is not None:
+                original, fingerprint, zipped = candidate
+                if _stage_fingerprint(original.parent) != fingerprint:
+                    raise ValueError("Private verified Runtime upload candidate changed")
+            elif original_archives is not None and phase in original_archives:
                 # The candidate bytes are rehashed against this freshly observed
                 # official upload. Preserve the full authentication gate while
                 # avoiding its immediate second network download.
@@ -1152,11 +1164,13 @@ def capture_runtime_original_ci_phases(
                 _, raw = _reuse_contract_ci_upload(artifact, producer, attempt["run"], token, destination=None,
                     limit=_INLINE_UPLOAD_LIMIT, artifact_sha256=artifact["digest"], size=artifact["size_in_bytes"])
                 archive.write_bytes(raw)
-            zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
-            safe_extract(archive, retained / "original")
-            if regular_file_inventory(retained / "original", allow_empty=True) != zipped:
-                raise ValueError("Original Runtime phase differs from its exact upload")
-            verified = verify_phase_shard(retained / "original/shard", instances[phase])
+            if candidate is None:
+                zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+                original = retained / "original"
+                safe_extract(archive, original)
+                if regular_file_inventory(original, allow_empty=True) != zipped:
+                    raise ValueError("Original Runtime phase differs from its exact upload")
+            verified = verify_phase_shard(original / "shard", instances[phase])
             if verified["receiptBytes"] != originals[phase]:
                 raise ValueError("Original Runtime upload differs from the requested original receipt")
             if recovery_projection:
@@ -1170,9 +1184,11 @@ def capture_runtime_original_ci_phases(
                 for record in projected:
                     output = projected_root / record["relativePath"]
                     output.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(retained / "original" / record["relativePath"], output)
+                    shutil.copyfile(original / record["relativePath"], output)
                 if regular_file_inventory(projected_root, allow_empty=True) != projected:
                     raise ValueError("Original Runtime recovery projection changed during copy")
+                if candidate is not None and _stage_fingerprint(original.parent) != fingerprint:
+                    raise ValueError("Private verified Runtime upload candidate changed during projection")
                 if session is not None:
                     size = sum(record["bytes"] for record in projected)
                     zipped_bytes = canonical_json_bytes(zipped)
@@ -1248,7 +1264,7 @@ def capture_prior_failed_runtime_phases(
     with tempfile.TemporaryDirectory(prefix="runtime-pr-recovery-") as temporary:
         scratch_root = Path(temporary).resolve()
         for instance, build_key in sorted(requested.items()):
-            if (instance.product != "runtime" or instance.component not in RUNTIME_COMPONENTS
+            if (instance.product != "runtime" or instance.component not in _RECOVERABLE_RUNTIME_COMPONENTS
                     or instance not in PHASE_INSTANCE_IDS):
                 raise ValueError("Prior Runtime recovery has an invalid phase identity")
             require_sha256(build_key, "Prior Runtime exact build key")
@@ -1317,9 +1333,13 @@ def capture_prior_failed_runtime_phases(
                 scratch = scratch_root / instance.component / instance.phase / instance.target / str(run_id) / str(attempt)
                 scratch.mkdir(parents=True)
                 archive = scratch / "transport.zip"
-                _download_contract_ci_upload(artifact.get("id"), artifact.get("digest"), name,
+                artifact, _ = _download_contract_ci_upload(artifact.get("id"), artifact.get("digest"), name,
                     {"runId": run_id}, prior, token, destination=archive)
-                verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+                from products.restore import _stat_identity
+                archive_identity = _stat_identity(archive.stat())
+                zipped, _, archive_verified = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+                if archive_verified != {"bytes": artifact["size_in_bytes"], "sha256": artifact["digest"]}:
+                    raise ValueError("Original Runtime candidate archive differs from its authenticated upload")
                 safe_extract(archive, scratch / "original")
                 shard = scratch / "original/shard"
                 verified = verify_phase_shard(shard, instance)
@@ -1329,6 +1349,20 @@ def capture_prior_failed_runtime_phases(
                         or original["runId"] != run_id or original["runAttempt"] != attempt
                         or original["pullRequest"] != plan["pullRequest"]):
                     raise ValueError("Prior Runtime shard differs from its selected attempt")
+                from products.restore import _VERIFICATION_SESSION, _stage_fingerprint, _is_windows
+                session = None if _is_windows() else _VERIFICATION_SESSION.get()
+                if session is not None:
+                    candidates = session.setdefault("runtimeCandidates", {})
+                    # ponytail: immediate handoff only, bounded metadata; no
+                    # extra retained body or serialized verification assertion.
+                    if len(candidates) < 16 and sum(len(value[2]) for value in candidates.values()) + len(zipped) <= 65_536:
+                        if regular_file_inventory(scratch / "original", allow_empty=True) != zipped:
+                            raise ValueError("Original Runtime candidate extraction differs from its authenticated upload")
+                        if _stat_identity(archive.stat()) != archive_identity:
+                            raise ValueError("Original Runtime candidate archive changed during verification")
+                        candidate_key = (str(archive.resolve()), artifact["id"], artifact["digest"],
+                            sha256_bytes(verified["receiptBytes"]), original_workflow_sha, canonical_json_bytes(original))
+                        candidates[candidate_key] = (scratch / "original", _stage_fingerprint(scratch), zipped)
                 found.append((receipt, shard / PHASE_RECEIPT_NAME, original_workflow_sha))
             if not found:
                 continue
@@ -1344,6 +1378,12 @@ def capture_prior_failed_runtime_phases(
             # Only this phase's independently verified candidate trees are scratch;
             # keep original uploads upstream and the authenticated compact capture.
             shutil.rmtree(scratch_root / instance.component / instance.phase / instance.target)
+            if session is not None:
+                # Discard unchosen equivalent candidates with their scratch.
+                prefix = str(scratch_root / instance.component / instance.phase / instance.target) + os.sep
+                for key in tuple(session.get("runtimeCandidates", {})):
+                    if key[0].startswith(prefix):
+                        del session["runtimeCandidates"][key]
     return captured
 
 
@@ -1391,7 +1431,7 @@ def _prior_failed_runtime_objects(
     records = []
     with tempfile.TemporaryDirectory(prefix="runtime-pr-recheck-") as temporary:
         for member in targets:
-            if member.name not in RUNTIME_COMPONENTS:
+            if member.name not in _RECOVERABLE_RUNTIME_COMPONENTS:
                 raise ValueError("Prior failed Runtime capture has an unexpected component")
             require_regular_directory(member, "Prior failed Runtime component")
             phases = tuple(sorted(path.name for path in member.iterdir()))
@@ -5775,7 +5815,7 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
     Product admission and original-phase authentication still run afterwards.
     """
     from runtime_reference_archive import open_reference_archive, copy_reference_member
-    from runtime_reference_transport import validate_references
+    from runtime_reference_transport import validate_references, validate_original_references, ORIGINAL_REFERENCE_NAME
 
     wave = base["stateWave"]
     job = "product-validation / product-resume" if wave == 0 else f"product-validation / runtime-collect-{wave}"
@@ -5793,10 +5833,60 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
     with open_reference_archive(artifact, token) as (archive, stream):
         names = {entry.filename for entry in archive.infolist() if not entry.is_dir()}
         roots = {"product-resume-inputs", "product-resume-state"} | ({"runtime-state"} if wave else set())
-        if any(path != "runtime-references.json" and path.split("/")[0] not in roots for path in names):
+        if any(path not in {"runtime-references.json", ORIGINAL_REFERENCE_NAME}
+               and path.split("/")[0] not in roots for path in names):
             raise ValueError("Original Runtime reference archive has unexpected roots")
         inherited, child = {}, None
-        if "runtime-references.json" in names:
+        if ORIGINAL_REFERENCE_NAME in names:
+            if wave or "runtime-references.json" in names:
+                raise ValueError("Original member references require an initial Runtime ancestor")
+            entry = archive.getinfo(ORIGINAL_REFERENCE_NAME)
+            if entry.file_size > 16 * 1024**2:
+                raise ValueError("Original Runtime references exceed the control bound")
+            control_digest = base.get("referenceControlSha256")
+            if control_digest is None:
+                # Legacy callers may pin only the whole archive. Authenticate
+                # it before reading any ancestry locator, exactly as below.
+                with tempfile.TemporaryDirectory(prefix="runtime-original-reference-control-") as temporary:
+                    authenticated_archive = Path(temporary).resolve() / "transport.zip"
+                    _reuse_contract_ci_upload(artifact, producer, observed[0]["run"], token,
+                        destination=authenticated_archive, limit=16 * 1024**3,
+                        artifact_sha256=base["artifactSha256"], size=artifact["size_in_bytes"])
+                    verified_zip_contents(authenticated_archive, retained_paths=(),
+                        allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+                    with zipfile.ZipFile(authenticated_archive) as authenticated:
+                        if ({entry.filename for entry in authenticated.infolist() if not entry.is_dir()} != names
+                                or authenticated.getinfo(ORIGINAL_REFERENCE_NAME).file_size > 16 * 1024**2):
+                            raise ValueError("Original member reference control archive changed")
+                        raw_control = authenticated.read(ORIGINAL_REFERENCE_NAME)
+            else:
+                raw_control = archive.read(entry)
+                if sha256_bytes(raw_control) != control_digest:
+                    raise ValueError("Original member reference control differs from its authenticated digest")
+            references = validate_original_references(load_canonical_json_bytes(raw_control))
+            inventory = {row["relativePath"]: row for row in references["inventory"]}
+            mappings = {row["relativePath"]: row for row in references["references"]}
+            if names - {ORIGINAL_REFERENCE_NAME} != set(inventory) - set(mappings):
+                raise ValueError("Original member reference delta differs from its declaration")
+            remote = {}
+            for path, row in wanted.items():
+                if inventory.get(path) != row:
+                    raise ValueError("Original member reference changes a qualified byte identity")
+                mapping = mappings.get(path)
+                if mapping is None:
+                    copy_reference_member(archive, path, destination / path, row)
+                elif mapping["source"] is None:
+                    copy_reference_member(archive, mapping["sourcePath"], destination / path, row)
+                else:
+                    remote.setdefault(mapping["source"], []).append(mapping)
+            resolved = []
+            for source in references["sources"]:
+                if source["relativePath"] in remote:
+                    resolved.append(_capture_runtime_original_reference_members(plan, producer, source,
+                        remote[source["relativePath"]], destination,
+                        trusted_workflow_sha=trusted_workflow_sha, token=token))
+            child = {"originalReferenceSources": resolved}
+        elif "runtime-references.json" in names:
             entry = archive.getinfo("runtime-references.json")
             if entry.file_size > 16 * 1024 * 1024:
                 raise ValueError("Original Runtime references exceed the control bound")
@@ -5851,7 +5941,7 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed,
             "verification": "qualified-reference-members", "rangeBytes": stream.transferred,
             "memberETag": stream.etag}
-        if "runtime-references.json" in names and base.get("referenceControlSha256") is None:
+        if names & {"runtime-references.json", ORIGINAL_REFERENCE_NAME} and base.get("referenceControlSha256") is None:
             transport["authenticatedControlArchiveBytes"] = artifact["size_in_bytes"]
         if wave:
             transport["stateWave"] = wave
@@ -5860,6 +5950,91 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
     if read_regular_file_bytes(destination / plan_path, reject_symlink_parents=True) != plan_bytes:
         raise ValueError("Original Runtime reference source changes the caller's validated plan")
     return transport
+
+
+def _capture_runtime_original_reference_members(plan, producer, source, references, destination, *,
+                                               trusted_workflow_sha, token):
+    """Fresh original source gates plus member SHA qualified by the current upload.
+
+    This is the same custody protocol as Runtime wave references. It is never
+    phase admission: original-CI and signed-handoff verification still follow.
+    """
+    from runtime_reference_archive import open_reference_archive, copy_reference_member
+    receipt = source["receipt"]
+    original = receipt["producer"]
+    if (original["repository"] != plan["repository"] or original["event"] != plan["event"]
+            or original["pullRequest"] != producer["pullRequest"]
+            or (original["runId"], original["runAttempt"]) >= (producer["runId"], producer["runAttempt"])):
+        raise ValueError("Original member source is not an earlier producer for this consumer")
+    run = api_json(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
+                   f"{original['runId']}/attempts/{original['runAttempt']}", token)
+    workflow = _runtime_prior_workflow_sha(run, trusted_workflow_sha)
+    if workflow is None:
+        raise ValueError("Original member source lacks a reviewed original workflow")
+    if source["kind"] == "phase":
+        job = f"product-validation / runtime-{receipt['component']}-{receipt['phase']}-{receipt['target']}"
+        name = (f"codex-agent-runtime-worker-{receipt['component']}-{receipt['phase']}-{receipt['target']}-"
+                f"{receipt['buildKey'][7:]}-{original['tree']}-attempt-{original['runAttempt']}")
+    else:
+        job = "product-validation / runtime-aggregate-attestation"
+        name = f"codex-agent-runtime-aggregate-release-handoff-{original['tree']}-attempt-{original['runAttempt']}"
+    observed = _observe_ci_producer_jobs({"source": original}, jobs_by_phase={"source": job},
+        trusted_workflow_sha=workflow, token=token)
+    artifact = _contract_ci_upload_metadata(source["artifactId"], source["artifactSha256"], name,
+        original, observed[0]["run"], token)
+    _require_artifact_job_window(observed[0], job, artifact)
+    with open_reference_archive(artifact, token) as (archive, stream):
+        resolved = {}
+        for row in references:
+            source_path = row["sourcePath"]
+            target = destination / row["relativePath"]
+            if source_path in resolved:
+                from runtime_reference_transport import _copy_exact
+                _copy_exact(resolved[source_path], target, row)
+            else:
+                copy_reference_member(archive, source_path, target, row)
+                resolved[source_path] = target
+        return {"artifact": artifact, "captureProducer": original, "observed": observed,
+                "verification": "qualified-reference-members", "rangeBytes": stream.transferred,
+                "memberETag": stream.etag}
+
+
+def _publish_runtime_original_reference_handoff(inputs, state, destination):
+    from runtime_reference_transport import stage_original_reference_handoff
+    sources = []
+    prior = Path(state) / "prior-failed-runtime"
+    if prior.exists():
+        for observation_path in sorted(prior.glob("*/*/*/transport/original-ci-phases.json")):
+            captured = observation_path.parent.parent
+            component, phase, target = captured.relative_to(prior).parts
+            receipt = verify_phase_shard(captured / f"phases/{phase}/original/shard",
+                PhaseInstanceId("runtime", component, phase, target))["receipt"]
+            observation = _canonical_control(observation_path, "Original Runtime reference observation")
+            if "recoveryProjection" not in observation:
+                continue
+            artifact = observation["artifacts"][phase]
+            sources.append({"relativePath": "product-resume-state/" + captured.relative_to(state).as_posix()
+                            + f"/phases/{phase}/original", "kind": "phase", "receipt": receipt,
+                            "artifactId": artifact["id"], "artifactSha256": artifact["digest"]})
+    aggregate_observation = Path(state) / "recovered-runtime-aggregate-upload.json"
+    if aggregate_observation.exists():
+        observation = _canonical_control(aggregate_observation, "Original aggregate reference observation")
+        phase = next(row for row in _canonical_control(Path(state) / "reuse-wave-result.json",
+            "Original Runtime reference result")["phases"] if _identity(row) ==
+            PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"))
+        handoff = Path(state) / "runtime-aggregate-release-evidence/0/handoffs" / phase["receiptSha256"][7:]
+        receipt = validate_phase_receipt(_canonical_control(handoff / "aggregate-input/metadata-receipt.json",
+                                                            "Original aggregate reference receipt"))
+        if sha256_bytes(canonical_json_bytes(receipt)) != phase["receiptSha256"]:
+            raise ValueError("Original aggregate reference changes its selected receipt")
+        if receipt["producer"] != observation["captureProducer"]:
+            raise ValueError("Original aggregate reference changes its captured producer")
+        artifact = observation["artifact"]
+        sources.append({"relativePath": "product-resume-state/" + handoff.relative_to(state).as_posix(),
+                        "kind": "aggregate", "receipt": receipt,
+                        "artifactId": artifact["id"], "artifactSha256": artifact["digest"]})
+    return stage_original_reference_handoff({"product-resume-inputs": inputs,
+        "product-resume-state": state}, sources, destination)
 
 
 @verification_scoped
@@ -5930,6 +6105,20 @@ def capture_runtime_resume_upload(
         reference_path = original / "runtime-references.json"
         reference_transport = None
         reference_control_digest = None
+        original_reference_path = original / "runtime-original-references.json"
+        original_reference_transports = []
+        if original_reference_path.exists() or original_reference_path.is_symlink():
+            if state_wave or sdk_state_wave is not None or reference_path.exists():
+                raise ValueError("Original references require an initial Runtime resume upload")
+            from runtime_reference_transport import resolve_original_reference_handoff
+            reference_control_digest = sha256_file(original_reference_path)
+            _require_artifact_job_window(observed[0], job_name, artifact)
+            def capture_source(source, records, target):
+                original_reference_transports.append(_capture_runtime_original_reference_members(
+                    plan, producer, source, records, target,
+                    trusted_workflow_sha=trusted_workflow_sha, token=token))
+            zipped = resolve_original_reference_handoff(original,
+                _canonical_control(original_reference_path, "Runtime original references"), capture_source)
         if reference_path.exists() or reference_path.is_symlink():
             if sdk_state_wave is not None:
                 raise ValueError("Runtime reference transport cannot replace an SDK state upload")
@@ -5956,6 +6145,10 @@ def capture_runtime_resume_upload(
                 max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes:
             raise ValueError("Runtime resume upload plan differs from the validated original plan")
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed}
+        if original_reference_transports:
+            transport["originalReferenceSources"] = original_reference_transports
+        if reference_control_digest is not None:
+            transport["referenceControlSha256"] = reference_control_digest
         if reference_transport is not None:
             transport["referenceBase"] = reference_transport
             transport["referenceControlSha256"] = reference_control_digest
@@ -5981,7 +6174,8 @@ def capture_runtime_resume_upload(
 
 def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact_id, artifact_sha256,
         trusted_workflow_sha, expected_build_key, expected_metadata_receipt_sha256,
-        repository_root=None, environ=None, original_run_id=None, original_run_attempt=None, token):
+        repository_root=None, environ=None, original_run_id=None, original_run_attempt=None,
+        original_producer=None, token):
     """Capture a fixed protected job's exact upload, not its product admission.
 
     Original signature/content authentication remains in the existing full
@@ -6015,10 +6209,17 @@ def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact
         plan = _validate_plan(captured_plan, root)
         if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
             raise ValueError("Aggregate upload capture requires an authorized PR or merge-group plan")
-        producer = validate_producer(_consumer(
+        current = validate_producer(_consumer(
             plan, os.environ if environ is None else environ,
             original_run_id=original_run_id, original_run_attempt=original_run_attempt,
         )["producer"])
+        producer = current if original_producer is None else validate_producer(original_producer)
+        if original_producer is not None and (
+                original_run_id is not None or original_run_attempt is not None
+                or producer["repository"] != current["repository"] or producer["event"] != current["event"]
+                or producer["pullRequest"] != current["pullRequest"]
+                or (producer["runId"], producer["runAttempt"]) >= (current["runId"], current["runAttempt"])):
+            raise ValueError("Retained aggregate requires the exact earlier original producer of this plan's PR")
         job = "product-validation / runtime-aggregate-attestation"
         observed = _observe_ci_producer_jobs({"aggregate": producer}, jobs_by_phase={"aggregate": job},
             trusted_workflow_sha=trusted_workflow_sha, token=token)
@@ -6706,6 +6907,48 @@ def _capture_completed_contract_handoff(
     return evidence
 
 
+def _recover_prior_runtime_aggregate_release(plan_path, plan, phase, source, destination, *,
+        repository_root, environ, trusted_workflow_sha):
+    """Retain the original signed closure after fresh CI and full signature gates."""
+    original = verify_object(source, build_key=phase["buildKey"],
+        receipt_sha256=phase["receiptSha256"], object_sha256=phase["objectSha256"])["receipt"]["producer"]
+    current = _consumer(plan, environ)["producer"]
+    if (original["runId"], original["runAttempt"]) >= (current["runId"], current["runAttempt"]):
+        return []
+    token = environ["GITHUB_TOKEN"]
+    run = api_json(f"https://api.github.com/repos/{original['repository']}/actions/runs/"
+                   f"{original['runId']}/attempts/{original['runAttempt']}", token)
+    workflow = _runtime_prior_workflow_sha(run, trusted_workflow_sha)
+    if workflow is None:
+        raise ValueError("Retained aggregate source lacks its reviewed original workflow")
+    name = f"codex-agent-runtime-aggregate-release-handoff-{original['tree']}-attempt-{original['runAttempt']}"
+    uploads = paginated_items(f"https://api.github.com/repos/{original['repository']}/actions/runs/"
+                             f"{original['runId']}/artifacts", "artifacts", token)
+    matches = [item for item in uploads if item.get("name") == name]
+    if not matches:
+        return []
+    if len(matches) != 1:
+        raise ValueError("Retained aggregate release upload is ambiguous")
+    artifact = matches[0]
+    with tempfile.TemporaryDirectory(prefix="runtime-retained-aggregate-") as temporary:
+        private = Path(temporary).resolve()
+        transport = capture_runtime_aggregate_release_upload(plan_path, private / "capture",
+            artifact_id=artifact["id"], artifact_sha256=artifact["digest"], trusted_workflow_sha=workflow,
+            expected_build_key=phase["buildKey"], expected_metadata_receipt_sha256=phase["receiptSha256"],
+            original_producer=original, repository_root=repository_root, environ=environ, token=token)
+        trust = _release_trust(repository_root, plan["validationCommit"], private / "policy")
+        if trust is None:
+            raise ValueError("Retained aggregate requires caller-owned release verification policy")
+        records = stage_runtime_aggregate_release_evidence([
+            {"receiptSha256": phase["receiptSha256"], "handoffRoot": "original"}],
+            private / "capture", destination / "runtime-aggregate-release-evidence/0",
+            keyring=trust.keyring, keys_directory=trust.keys)
+        write_canonical_json(destination / "recovered-runtime-aggregate-upload.json", transport)
+    return rebase_runtime_aggregate_release_records(records,
+        destination / "runtime-aggregate-release-evidence/0", destination)
+
+
+@verification_scoped
 def resume_products(
     plan_path: Path, discovery_root: Path, state_root: Path, contract_handoff: Path,
     destination: Path, github_output_path: Path, *, repository_root: Path | None = None,
@@ -6795,7 +7038,7 @@ def resume_products(
             artifacts_by_run, jobs_by_attempt, tried = {}, {}, set()
             while attempts:
                 wanted = {_identity(phase): phase["buildKey"] for phase in reuse["phases"]
-                    if phase["product"] == "runtime" and phase["component"] in RUNTIME_COMPONENTS
+                    if phase["product"] == "runtime" and phase["component"] in _RECOVERABLE_RUNTIME_COMPONENTS
                     and phase["state"] == "build"
                     and (_identity(phase), phase["buildKey"]) not in tried}
                 if not wanted:
@@ -6840,6 +7083,26 @@ def resume_products(
             if instance not in sources:
                 phase = by_id[instance]
                 sources[instance] = remote_sources[(phase["source"], phase["transportSource"]["indexSha256"], phase["buildKey"])]
+        aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+        if (aggregate in elected_prior and not wave.get(_AGGREGATE_REQUEST_KEY)
+                and environment.get("GITHUB_TOKEN") and sdk_original_workflow_sha):
+            records = _recover_prior_runtime_aggregate_release(captured_plan, plan, by_id[aggregate],
+                sources[aggregate], prepared, repository_root=root, environ=environment,
+                trusted_workflow_sha=sdk_original_workflow_sha)
+            if records:
+                _merge_native_comparison_records(wave, records, key=_AGGREGATE_REQUEST_KEY)
+                ready_plans.clear()
+                reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling, apple_policy=sdk_apple_validation_policy,
+                    apple_package_origin=_apple_package_origin(captured_plan, root, sdk_original_workflow_sha, environment),
+                    build_plan_consumer=retain,
+                    **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
+                _, release_selected, phases = _validate_reuse_result(reuse, requested, require_complete=False,
+                    sdk_runtime_external=wave.get("sdkRuntimeSource") == "released-default")
+                release_by_id = {_identity(phase): phase for phase in phases}
+                if (release_selected != selected or any(any(release_by_id[identity][field] != by_id[identity][field]
+                        for field in ("buildKey", "receiptSha256", "objectSha256")) for identity in selected)):
+                    raise ValueError("Retained aggregate release changes the selected immutable phase closure")
+                by_id = release_by_id
         carrier_phases = []
         for instance in selected:
             if instance in originals:
@@ -7215,6 +7478,7 @@ def parser() -> argparse.ArgumentParser:
     products_command.add_argument("--native-runtime-evidence", type=Path, action="append", default=[])
     products_command.add_argument("--adapter-runtime-evidence", type=Path, action="append", default=[])
     resume_command = commands.add_parser("resume-products")
+    resume_command.add_argument("--handoff", type=Path)
     resume_command.add_argument("--runtime-matrix", action="store_true",
                                 help="Elect Runtime work in the same private verification session")
     for name in ("plan", "discovery-root", "state-root", "contract-handoff", "destination", "github-output"):
@@ -7467,6 +7731,9 @@ def main(argv: list[str] | None = None) -> int:
                     matrix(arguments.plan, arguments.destination, arguments.destination, arguments.github_output,
                         sdk_validation_tooling=tooling,
                         sdk_original_workflow_sha=arguments.sdk_original_workflow_sha, **apple_options)
+                if arguments.handoff is not None:
+                    _publish_runtime_original_reference_handoff(arguments.plan.parent.parent,
+                        arguments.destination, arguments.handoff)
             elif arguments.command == "execute-sdk-metadata":
                 execute_sdk_metadata(
                     arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,

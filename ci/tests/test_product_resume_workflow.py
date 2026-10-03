@@ -110,13 +110,14 @@ class ProductResumeWorkflowTest(unittest.TestCase):
             self.assertIn("SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}", step)
             self.assertIn('tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")', step)
 
-    def test_entire_inputs_and_resumed_state_are_uploaded_immutably(self):
+    def test_reference_handoff_for_original_inputs_and_state_is_uploaded_immutably(self):
         uploads = re.findall(r"uses: actions/upload-artifact@.*?(?=^      -|\Z)",
                              self.job, re.MULTILINE | re.DOTALL)
         self.assertEqual(1, len(uploads))
         for value in ("overwrite: false", "if-no-files-found: error", "include-hidden-files: true",
-                      "build/product-resume-inputs", "build/product-resume-state"):
+                      "path: build/product-resume-transport"):
             self.assertIn(value, uploads[0])
+        self.assertIn("--handoff build/product-resume-transport", self.job)
         self.assertNotIn("release/contract-input", uploads[0])
         header = self.job.split("    steps:", 1)[0]
         for name in ("artifact_id:", "artifact_digest:", "full_reuse:", "target_jobs_required:"):

@@ -34,6 +34,119 @@ class RangeOpener:
 
 
 class RuntimeReferenceTransportTest(unittest.TestCase):
+    def test_initial_resume_local_aliases_keep_exact_logical_inventory(self):
+        from runtime_reference_transport import (ORIGINAL_REFERENCE_NAME,
+            stage_original_reference_handoff, validate_original_references)
+        fixture = resume_fixture.RuntimeResumeCaptureTest()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.job.update(started_at='2026-01-01T01:00:00Z', completed_at='2026-01-01T01:02:00Z')
+        fixture.artifact['created_at'] = '2026-01-01T01:01:00Z'
+        roots = {name: fixture.root / 'build' / name for name in
+                 ('product-resume-inputs', 'product-resume-state')}
+        for path, raw in fixture.contents.items():
+            target = fixture.root / 'build' / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+        duplicate = roots['product-resume-state'] / 'duplicate-plan.json'
+        duplicate.write_bytes(fixture.plan_path.read_bytes())
+        destination = fixture.root / 'build/thin-initial'
+        value = stage_original_reference_handoff(roots, [], destination)
+        self.assertEqual(1, len(value['references']))
+        physical = {path.relative_to(destination).as_posix(): path.read_bytes()
+                    for path in destination.rglob('*') if path.is_file()}
+        self.assertIn(ORIGINAL_REFERENCE_NAME, physical)
+        result, _, _, _ = fixture.capture_members(fixture.root / 'build/captured-thin', physical)
+        self.assertEqual(fixture.producer, result['captureProducer'])
+        self.assertEqual(value['inventory'], regular_file_inventory(fixture.root / 'build/captured-thin/original',
+                                                                   allow_empty=True))
+        # Later wave envelopes must resolve this initial format as an ancestor,
+        # including aliases whose source path differs from the requested path.
+        raw = archive(physical)
+        artifact = {**fixture.artifact, 'digest': sha256_bytes(raw), 'size_in_bytes': len(raw)}
+        base = {'artifactId': artifact['id'], 'artifactSha256': artifact['digest'], 'stateWave': 0,
+                'referenceControlSha256': result['referenceControlSha256']}
+        wanted = {row['relativePath']: row for row in value['inventory']}
+        ranges = RangeOpener({artifact['id']: raw})
+        observation = [{'run': fixture.run, 'testedCommit': fixture.commit, 'jobs': [fixture.job]}]
+        resolved = fixture.root / 'build/ancestor-initial'
+        with mock.patch.object(product_reuse, '_observe_ci_producer_jobs', return_value=observation), \
+                mock.patch.object(product_reuse, '_contract_ci_upload_metadata', return_value=artifact), \
+                mock.patch.object(product_reuse, '_reuse_contract_ci_upload',
+                                  side_effect=AssertionError('unnecessary full initial archive transfer')), \
+                mock.patch('runtime_reference_archive.urllib.request.build_opener', return_value=ranges):
+            product_reuse._capture_runtime_reference_members({}, fixture.plan_path.read_bytes(),
+                fixture.producer, base, resolved, trusted_workflow_sha=fixture.pin,
+                token='not-a-real-token', wanted=wanted)
+        self.assertEqual(value['inventory'], regular_file_inventory(resolved, allow_empty=True))
+        changed = copy.deepcopy(value)
+        changed['references'][0]['sourcePath'] = changed['references'][0]['relativePath']
+        with self.assertRaisesRegex(ValueError, 'cyclic'):
+            validate_original_references(changed)
+
+    def test_initial_original_members_require_fresh_authentication_and_exact_hashes(self):
+        from ci.tests.test_runtime_original_ci import RuntimeOriginalCiTest, adapter, TARGET
+        from runtime_reference_transport import (stage_original_reference_handoff,
+            resolve_original_reference_handoff, validate_original_references)
+        from products.inventory import load_canonical_json_bytes
+        fixture = RuntimeOriginalCiTest()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        phase = 'binary'
+        receipt = load_canonical_json_bytes(fixture.receipts[phase].read_bytes())
+        prefix = f'product-resume-state/prior-failed-runtime/{TARGET}/{phase}/{TARGET}/phases/{phase}/original'
+        artifact = fixture.artifacts[phase]
+        source = {'relativePath': prefix, 'kind': 'phase', 'receipt': receipt,
+                  'artifactId': artifact['id'], 'artifactSha256': artifact['digest']}
+        roots = {name: fixture.root / 'thin-inputs' / name for name in
+                 ('product-resume-inputs', 'product-resume-state')}
+        roots['product-resume-inputs'].mkdir(parents=True)
+        (roots['product-resume-inputs'] / 'control.json').write_bytes(b'current qualified control\n')
+        snapshot_regular_tree(fixture.receipts[phase].parent.parent,
+                              fixture.root / 'thin-inputs' / prefix, allow_empty=True)
+        # The same immutable object may also appear inside a legacy discovery
+        # carrier. Keep its logical path while referring to the same original.
+        (roots['product-resume-inputs'] / 'duplicate-receipt.json').write_bytes(fixture.receipts[phase].read_bytes())
+        thin = fixture.root / 'thin-upload'
+        value = stage_original_reference_handoff(roots, [source], thin)
+        self.assertFalse(any(row['relativePath'].startswith(prefix + '/')
+                             for row in regular_file_inventory(thin)))
+        self.assertFalse((thin / 'product-resume-inputs/duplicate-receipt.json').exists())
+        consumer = {**fixture.producer, 'runId': fixture.producer['runId'] + 1}
+        plan = {'repository': fixture.producer['repository'], 'event': 'pull_request'}
+        for bad in ('none', 'digest', 'job', 'window'):
+            target = fixture.root / ('resolved-' + bad)
+            snapshot_regular_tree(thin, target, allow_empty=True)
+            changed = copy.deepcopy(value)
+            if bad == 'digest':
+                member = changed['references'][0]['sourcePath']
+                for row in changed['references']:
+                    if row['sourcePath'] == member:
+                        row['sha256'] = 'sha256:' + 'f' * 64
+                        next(item for item in changed['inventory'] if item['relativePath'] == row['relativePath'])['sha256'] = row['sha256']
+            jobs = copy.deepcopy(fixture.jobs)
+            artifacts = copy.deepcopy(fixture.artifacts)
+            if bad == 'job':
+                jobs[0]['conclusion'] = 'failure'
+            if bad == 'window':
+                artifacts[phase]['created_at'] = '2026-09-06T09:00:00Z'
+            ranges = RangeOpener({artifact['id']: fixture.archives[phase]})
+            def capture_source(locator, records, root):
+                return adapter._capture_runtime_original_reference_members(plan, consumer, locator,
+                    records, root, trusted_workflow_sha=fixture.pin, token='not-a-real-token')
+            with mock.patch('reuse.api_request', side_effect=fixture.api(jobs=jobs, artifacts=artifacts, details=artifacts)), \
+                    mock.patch('runtime_reference_archive.urllib.request.build_opener', return_value=ranges):
+                if bad == 'none':
+                    resolve_original_reference_handoff(target, changed, capture_source)
+                    self.assertEqual(value['inventory'], regular_file_inventory(target, allow_empty=True))
+                else:
+                    with self.assertRaises(ValueError):
+                        resolve_original_reference_handoff(target, changed, capture_source)
+        changed = copy.deepcopy(value)
+        changed['sources'][0]['relativePath'] += '-other'
+        with self.assertRaisesRegex(ValueError, 'registered destination'):
+            validate_original_references(changed)
+
     def test_nested_reference_controls_are_digest_qualified_before_following(self):
         fixture = resume_fixture.RuntimeResumeCaptureTest()
         fixture.setUp()

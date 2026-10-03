@@ -1,6 +1,7 @@
 """Original upload authentication with synthetic products; HTTP is the only mock."""
 import copy
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -245,10 +246,13 @@ class RuntimeOriginalCiTest(unittest.TestCase):
         destination = self.root / "projected-recovery"
         run = self.failed_run()
         with mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
-                mock.patch("reuse.api_request", side_effect=self.api(run=run)):
+                mock.patch("reuse.api_request", side_effect=self.api(run=run)), \
+                mock.patch.object(adapter, "safe_extract", wraps=adapter.safe_extract) as extract, \
+                mock.patch("runtime_reference_transport._copy_exact", side_effect=AssertionError("replayed whole upload")):
             adapter.capture_prior_failed_runtime_phases(plan, {"runId": 100, "runAttempt": 1},
                 {instance: key}, destination, trusted_workflow_sha=self.pin,
                 token="not-a-real-token", attempts=(run,))
+            self.assertEqual(1, extract.call_count)
             captured = destination / TARGET / "binary" / TARGET
             self.assertFalse((captured / "phases/binary/transport.zip").exists())
             self.assertFalse((captured / "phases/binary/original/inputs").exists())
@@ -290,6 +294,105 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 adapter._prior_failed_runtime_objects(destination, self.root,
                     trusted_workflow_sha=self.pin, token="not-a-real-token", plan=plan,
                     consumer_producer={"runId": 100, "runAttempt": 1})
+
+    def test_completed_candidate_mutation_rejects_after_fresh_origin_authentication(self):
+        from products.restore import verification_session
+        instance = PhaseInstanceId("runtime", TARGET, "binary", TARGET)
+        key = fixture.load_canonical_json_bytes(self.receipts["binary"].read_bytes())["buildKey"]
+        plan = {"event": "pull_request", "pullRequest": 31, "repository": fixture.REPOSITORY}
+        run = self.failed_run()
+        metadata_url = self.artifacts["binary"]["archive_download_url"].removesuffix("/zip")
+        for target in ("transport.zip", "original/shard/phase-receipt.json"):
+            destination = self.root / ("mutated-candidate-" + target.split("/")[-1])
+            original_api = self.api(run=run)
+            with verification_session() as session:
+                observations = []
+                def changed(url, *args, **kwargs):
+                    result = original_api(url, *args, **kwargs)
+                    if url == metadata_url:
+                        observations.append(url)
+                        candidates = session.get("runtimeCandidates", {})
+                        if candidates:
+                            original, *_ = next(iter(candidates.values()))
+                            path = original.parent / target
+                            before = path.stat()
+                            data = path.read_bytes()
+                            path.write_bytes(bytes([data[0] ^ 1]) + data[1:])
+                            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+                    return result
+                with mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
+                        mock.patch("reuse.api_request", side_effect=changed), \
+                        self.assertRaisesRegex(ValueError, "Private verified Runtime upload candidate changed"):
+                    adapter.capture_prior_failed_runtime_phases(plan, {"runId": 100, "runAttempt": 1},
+                        {instance: key}, destination, trusted_workflow_sha=self.pin,
+                        token="not-a-real-token", attempts=(run,))
+                self.assertGreaterEqual(len(observations), 2)
+                self.assertFalse((destination / TARGET / "binary" / TARGET).exists())
+
+    def test_candidate_zip_replacement_after_download_rejects_official_digest_mismatch(self):
+        upload = self.root / "runtime-uploads/binary"
+        (upload / "raw-validation").mkdir()
+        (upload / "raw-validation/proof.json").write_bytes(b"original proof")
+        raw = fixture.archive_tree(upload)
+        self.archives["binary"] = raw
+        self.artifacts["binary"].update(digest=fixture.sha256_bytes(raw), size_in_bytes=len(raw))
+        (upload / "raw-validation/proof.json").write_bytes(b"replaced proof")
+        forged = fixture.archive_tree(upload)
+        download = adapter._download_contract_ci_upload
+        def replaced(*args, **kwargs):
+            result = download(*args, **kwargs)
+            if kwargs.get("destination") is not None:
+                kwargs["destination"].write_bytes(forged)
+            return result
+        instance = PhaseInstanceId("runtime", TARGET, "binary", TARGET)
+        key = fixture.load_canonical_json_bytes(self.receipts["binary"].read_bytes())["buildKey"]
+        destination = self.root / "replaced-candidate"
+        run = self.failed_run()
+        with mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
+                mock.patch("reuse.api_request", side_effect=self.api(run=run)), \
+                mock.patch.object(adapter, "_download_contract_ci_upload", side_effect=replaced), \
+                self.assertRaisesRegex(ValueError, "candidate archive differs from its authenticated upload"):
+            adapter.capture_prior_failed_runtime_phases(
+                {"event": "pull_request", "pullRequest": 31, "repository": fixture.REPOSITORY},
+                {"runId": 100, "runAttempt": 1}, {instance: key}, destination,
+                trusted_workflow_sha=self.pin, token="not-a-real-token", attempts=(run,))
+        self.assertFalse((destination / TARGET / "binary" / TARGET).exists())
+
+    def test_prior_failed_completed_aggregate_is_recovered_without_re_election(self):
+        from products.receipt import compute_build_key, write_output_manifest
+        instance = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+        stage = self.root / "aggregate-stage"
+        (stage / "outputs").mkdir(parents=True)
+        (stage / "outputs/value.bin").write_bytes(b"synthetic immutable aggregate")
+        write_output_manifest(stage, "runtime", instance.component, instance.phase, instance.target,
+                              "0.2.0", {"metadata": "outputs"})
+        inputs = phase_receipt()["inputs"]
+        plan = {"schemaVersion": 1, **adapter._identity_record(instance), "inputs": inputs,
+                "buildKey": compute_build_key(**adapter._identity_record(instance), inputs=inputs)}
+        upload = self.root / "aggregate-upload"
+        verified = fixture.finalize_phase_object(stage_root=stage, phase_plan=plan, producer=self.producer,
+            product_version="0.2.0", trust_domain="development", destination=upload / "shard")
+        self.receipts["metadata"] = upload / "shard/phase-receipt.json"
+        raw = fixture.archive_tree(upload)
+        self.archives["metadata"] = raw
+        self.artifacts["metadata"].update(name=(
+            f"codex-agent-runtime-worker-runtime-aggregate-metadata-aggregate-{plan['buildKey'][7:]}-"
+            f"{self.producer['tree']}-attempt-2"), digest=fixture.sha256_bytes(raw), size_in_bytes=len(raw))
+        self.jobs[-1]["name"] = "product-validation / runtime-runtime-aggregate-metadata-aggregate"
+        destination = self.root / "aggregate-recovery"
+        run = self.failed_run()
+        with mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
+                mock.patch("reuse.api_request", side_effect=self.api(run=run)):
+            result = adapter.capture_prior_failed_runtime_phases(
+                {"event": "pull_request", "pullRequest": 31, "repository": fixture.REPOSITORY},
+                {"runId": 100, "runAttempt": 1}, {instance: plan["buildKey"]}, destination,
+                trusted_workflow_sha=self.pin, token="not-a-real-token", attempts=(run,))
+            records = adapter._prior_failed_runtime_objects(destination, self.root,
+                trusted_workflow_sha=self.pin, token="not-a-real-token")
+        self.assertEqual({instance}, set(result))
+        self.assertEqual(1, len(records))
+        for field in ("buildKey", "receiptSha256", "objectSha256"):
+            self.assertEqual(verified[field], records[0][field])
 
     def test_reviewed_original_workflow_survives_current_workflow_pin_rotation(self):
         legacy = adapter._PRIOR_RUNTIME_WORKFLOW_SHA

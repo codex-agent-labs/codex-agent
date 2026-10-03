@@ -20,6 +20,7 @@ from products.inventory import (
 )
 
 REFERENCE_NAME = "runtime-references.json"
+ORIGINAL_REFERENCE_NAME = "runtime-original-references.json"
 _ROOTS = {"product-resume-inputs", "product-resume-state", "runtime-state"}
 
 
@@ -141,4 +142,162 @@ def resolve_reference_handoff(original, base_root, value, *, state_wave):
     (Path(original) / REFERENCE_NAME).unlink()
     if regular_file_inventory(original, allow_empty=True) != value["inventory"]:
         raise ValueError("Resolved Runtime reference inventory differs from the frozen bytes")
+    return value["inventory"]
+
+
+def validate_original_references(value):
+    """Validate locators only; caller authenticates the enclosing upload first."""
+    from products.receipt import validate_phase_receipt
+    from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId
+    value = require_exact_keys(value, {"schemaVersion", "inventory", "sources", "references"},
+                               "Runtime original references")
+    if value["schemaVersion"] != 1 or type(value["schemaVersion"]) is not int:
+        raise ValueError("Unsupported Runtime original references schema")
+    inventory = require_sorted_unique_records(value["inventory"], "Original reference inventory")
+    if not inventory or len(inventory) > 16_384:
+        raise ValueError("Original reference inventory exceeds its fixed bound")
+    files = {}
+    for record in inventory:
+        validate_file_record(record, "Original reference file", with_kind=False, allow_empty=True)
+        if record["relativePath"].split("/")[0] not in {"product-resume-inputs", "product-resume-state"}:
+            raise ValueError("Original reference inventory has unexpected roots")
+        files[_path(record["relativePath"])] = record
+    if (sum(row["bytes"] for row in inventory) > 16 * 1024**3
+            or any(row["bytes"] > 8 * 1024**3 for row in inventory)):
+        raise ValueError("Original reference inventory exceeds the transport byte bounds")
+    sources = require_sorted_unique_records(value["sources"], "Original reference sources")
+    if len(sources) > 47:
+        raise ValueError("Original references exceed the registered Runtime source bound")
+    by_source = {}
+    for source in sources:
+        require_exact_keys(source, {"relativePath", "kind", "receipt", "artifactId", "artifactSha256"},
+                           "Original reference source")
+        receipt = validate_phase_receipt(source["receipt"])
+        instance = PhaseInstanceId(*(receipt[key] for key in ("product", "component", "phase", "target")))
+        if instance not in PHASE_INSTANCE_IDS or instance.product != "runtime":
+            raise ValueError("Original reference is not a registered Runtime phase")
+        if source["kind"] == "phase":
+            prefix = (f"product-resume-state/prior-failed-runtime/{instance.component}/{instance.phase}/"
+                      f"{instance.target}/phases/{instance.phase}/original")
+        elif source["kind"] == "aggregate" and instance == PhaseInstanceId(
+                "runtime", "runtime-aggregate", "metadata", "aggregate"):
+            from products.inventory import canonical_json_bytes, sha256_bytes
+            prefix = ("product-resume-state/runtime-aggregate-release-evidence/0/handoffs/"
+                      + sha256_bytes(canonical_json_bytes(receipt))[7:])
+        else:
+            raise ValueError("Original reference source kind differs from its phase")
+        if source["relativePath"] != prefix:
+            raise ValueError("Original reference source changes its registered destination")
+        require_integer(source["artifactId"], "Original reference upload ID", 1)
+        require_sha256(source["artifactSha256"], "Original reference upload SHA")
+        by_source[prefix] = source
+    references = require_sorted_unique_records(value["references"], "Original member references")
+    mappings = {row["relativePath"]: row for row in references}
+    targets = {row["relativePath"] for row in references}
+    if not references:
+        raise ValueError("Original reference transport has no references")
+    used = set()
+    for row in references:
+        require_exact_keys(row, {"relativePath", "source", "sourcePath", "bytes", "sha256"},
+                           "Original member reference")
+        target = _path(row["relativePath"])
+        if {key: row[key] for key in ("relativePath", "bytes", "sha256")} != files.get(target):
+            raise ValueError("Original member reference changes its qualified inventory")
+        source_path = require_relative_path(row["sourcePath"], "Original reference member")
+        if row["source"] is None:
+            source = files.get(_path(source_path))
+            if (source_path in targets or source is None
+                    or any(source[key] != row[key] for key in ("bytes", "sha256"))):
+                raise ValueError("Local reference is missing, cyclic or changes byte identity")
+        else:
+            prefix = _path(row["source"])
+            primary = prefix + "/" + source_path
+            primary_file = files.get(primary)
+            primary_reference = mappings.get(primary)
+            if (prefix not in by_source or primary_file is None or primary_reference is None
+                    or primary_reference.get("source") != prefix
+                    or primary_reference.get("sourcePath") != source_path
+                    or any(primary_file[key] != row[key] for key in ("bytes", "sha256"))):
+                raise ValueError("Original member reference changes its registered source path")
+            if by_source[prefix]["kind"] == "phase" and source_path.startswith("inputs/"):
+                raise ValueError("Original phase reference includes unretained predecessor inputs")
+            used.add(prefix)
+    if used != set(by_source):
+        raise ValueError("Original reference transport has unused source locators")
+    return value
+
+
+def stage_original_reference_handoff(roots, sources, destination):
+    """Keep one concrete copy of local bytes; leave immutable originals upstream."""
+    if set(roots) != {"product-resume-inputs", "product-resume-state"}:
+        raise ValueError("Initial original references require both original roots")
+    inventory, paths = [], {}
+    for name, root in roots.items():
+        if name not in {"product-resume-inputs", "product-resume-state"}:
+            raise ValueError("Initial original reference has unexpected roots")
+        for row in regular_file_inventory(root, allow_empty=True):
+            path = name + "/" + row["relativePath"]
+            inventory.append({**row, "relativePath": path})
+            paths[path] = Path(root) / row["relativePath"]
+    inventory.sort(key=lambda row: row["relativePath"])
+    upstream = {}
+    for row in inventory:
+        prefix = next((source["relativePath"] for source in sources
+                       if row["relativePath"].startswith(source["relativePath"] + "/")), None)
+        if prefix is not None:
+            upstream.setdefault((row["bytes"], row["sha256"]),
+                                (prefix, row["relativePath"][len(prefix) + 1:]))
+    references, concrete, contents, used = [], [], {}, set()
+    for row in inventory:
+        prefix = next((source["relativePath"] for source in sources
+                       if row["relativePath"].startswith(source["relativePath"] + "/")), None)
+        identity = row["bytes"], row["sha256"]
+        if prefix is not None:
+            references.append({**row, "source": prefix,
+                               "sourcePath": row["relativePath"][len(prefix) + 1:]})
+            used.add(prefix)
+        elif identity in upstream:
+            source, path = upstream[identity]
+            references.append({**row, "source": source, "sourcePath": path})
+            used.add(source)
+        elif identity in contents:
+            references.append({**row, "source": None, "sourcePath": contents[identity]})
+        else:
+            concrete.append(row)
+            contents[identity] = row["relativePath"]
+    value = validate_original_references({"schemaVersion": 1, "inventory": inventory,
+        "sources": sorted((source for source in sources if source["relativePath"] in used),
+                          key=lambda row: row["relativePath"]), "references": references})
+    with tempfile.TemporaryDirectory(prefix="runtime-original-reference-export-") as temporary:
+        prepared = Path(temporary).resolve() / "handoff"
+        prepared.mkdir()
+        for row in concrete:
+            _copy_exact(paths[row["relativePath"]], prepared / row["relativePath"], row)
+        write_canonical_json(prepared / ORIGINAL_REFERENCE_NAME, value)
+        after = sorted(({**row, "relativePath": name + "/" + row["relativePath"]}
+                        for name, root in roots.items()
+                        for row in regular_file_inventory(root, allow_empty=True)),
+                       key=lambda row: row["relativePath"])
+        if after != inventory:
+            raise ValueError("Original reference export inputs changed")
+        publish_regular_tree(prepared, destination, allow_empty=True)
+    return value
+
+
+def resolve_original_reference_handoff(original, value, capture_source):
+    """Resolve qualified members, then let existing admission replay authenticate phases."""
+    value = validate_original_references(value)
+    targets = {row["relativePath"] for row in value["references"]}
+    if regular_file_inventory(original, allow_empty=True, excluded_paths=(ORIGINAL_REFERENCE_NAME,)) != [
+            row for row in value["inventory"] if row["relativePath"] not in targets]:
+        raise ValueError("Original reference delta has missing, overlapping or unexpected files")
+    for source in value["sources"]:
+        capture_source(source, [row for row in value["references"] if row["source"] == source["relativePath"]],
+                       Path(original))
+    for row in value["references"]:
+        if row["source"] is None:
+            _copy_exact(Path(original) / row["sourcePath"], Path(original) / row["relativePath"], row)
+    if regular_file_inventory(original, allow_empty=True, excluded_paths=(ORIGINAL_REFERENCE_NAME,)) != value["inventory"]:
+        raise ValueError("Resolved original reference inventory differs from its frozen bytes")
+    (Path(original) / ORIGINAL_REFERENCE_NAME).unlink()
     return value["inventory"]
