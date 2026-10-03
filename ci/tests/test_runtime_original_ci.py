@@ -27,6 +27,13 @@ class RuntimeOriginalCiTest(unittest.TestCase):
         # Reuse the real original-CI run/attempt/commit/HTTP fixture, not a
         # mocked observer or shard verifier. No native execution is claimed.
         fixture.ContractOriginalCiCaptureTest.setUp(self)
+        # Persistent bytes and verifier-owned authority are separate, disposable
+        # roots in tests; no test reads or writes the user's machine authority.
+        for name, value in (("_authority_root", self.root / "authority"),
+                            ("native_cache_root", self.root / "persistent-cache")):
+            patch = mock.patch(f"products.verified_evidence.{name}", return_value=value)
+            patch.start()
+            self.addCleanup(patch.stop)
         self.receipts = {}
         self.jobs = []
         from products.receipt import compute_build_key, write_output_manifest
@@ -220,7 +227,7 @@ class RuntimeOriginalCiTest(unittest.TestCase):
         self.artifacts['binary'].update(digest=fixture.sha256_bytes(self.archives['binary']),
                                         size_in_bytes=len(self.archives['binary']))
         with verification_session() as session, mock.patch('reuse.api_request', side_effect=self.api()) as api, \
-                mock.patch.object(adapter, 'safe_extract', wraps=adapter.safe_extract) as extract:
+                mock.patch.object(adapter, '_extract_runtime_original_projection', wraps=adapter._extract_runtime_original_projection) as extract:
             # Existing verified objects leave room for bounded metadata, but no
             # duplicate original proof body. The previous body memo missed here.
             session['bytes'] = session['limit'] - 64 * 1024
@@ -268,10 +275,16 @@ class RuntimeOriginalCiTest(unittest.TestCase):
         plan = {"event": "pull_request", "pullRequest": 31, "repository": fixture.REPOSITORY}
         destination = self.root / "projected-recovery"
         run = self.failed_run()
+        from runtime_reference_transport import _copy_exact
+
+        def copy_projection(source, *args, **kwargs):
+            self.assertNotEqual("transport.zip", Path(source).name, "replayed whole upload")
+            return _copy_exact(source, *args, **kwargs)
+
         with mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
                 mock.patch("reuse.api_request", side_effect=self.api(run=run)), \
-                mock.patch.object(adapter, "safe_extract", wraps=adapter.safe_extract) as extract, \
-                mock.patch("runtime_reference_transport._copy_exact", side_effect=AssertionError("replayed whole upload")):
+                mock.patch.object(adapter, "_extract_runtime_original_projection", wraps=adapter._extract_runtime_original_projection) as extract, \
+                mock.patch("runtime_reference_transport._copy_exact", side_effect=copy_projection):
             adapter.capture_prior_failed_runtime_phases(plan, {"runId": 100, "runAttempt": 1},
                 {instance: key}, destination, trusted_workflow_sha=self.pin,
                 token="not-a-real-token", attempts=(run,))
@@ -672,22 +685,38 @@ class RuntimeOriginalCiTest(unittest.TestCase):
         self.assertFalse(destination.exists())
 
     def test_prior_failed_same_key_different_product_object_is_rejected(self):
-        _, second_artifact, second_raw, second_job = self.second_attempt_phase(
+        second_receipt, second_artifact, second_raw, second_job = self.second_attempt_phase(
             "package", changed_output=True)
         instance = PhaseInstanceId("runtime", TARGET, "package", TARGET)
         key = fixture.load_canonical_json_bytes(self.receipts["package"].read_bytes())["buildKey"]
         destination = self.root / "conflicting-phase-capture"
         plan = {"event": "pull_request", "pullRequest": 31, "repository": fixture.REPOSITORY}
-        with mock.patch("reuse.api_request", side_effect=self.two_attempt_api(
-                {"package": second_artifact}, [second_job], {"package": second_raw})), \
-                mock.patch.object(adapter, "download_artifact_to_file", side_effect=
-                                  self.download_two_attempt_fixture(
-                                      {"package": second_artifact}, {"package": second_raw})), \
-                self.assertRaisesRegex(ValueError, "conflict|different|same.key"):
-            adapter.capture_prior_failed_runtime_phases(
-                plan, {"runId": 100, "runAttempt": 1}, {instance: key}, destination,
-                trusted_workflow_sha=self.pin, token="not-a-real-token",
-                attempts=(self.failed_run(), self.failed_run(72, 3)))
+        warm = False
+        api = self.two_attempt_api({"package": second_artifact}, [second_job], {"package": second_raw})
+        download = self.download_two_attempt_fixture({"package": second_artifact}, {"package": second_raw})
+
+        def request(url, *args):
+            self.assertFalse(warm and url.endswith("/zip"), "warm body download")
+            return api(url, *args)
+
+        def transfer(*args, **kwargs):
+            self.assertFalse(warm, "warm body download")
+            return download(*args, **kwargs)
+
+        with mock.patch("reuse.api_request", side_effect=request), \
+                mock.patch.object(adapter, "download_artifact_to_file", side_effect=transfer):
+            for number, receipt in enumerate((self.receipts["package"], second_receipt)):
+                # Seed both complete genuine original verifications. Warm
+                # discovery must still scan both receipts and reject conflicts.
+                adapter.capture_runtime_original_ci_phases({"package": receipt}, self.root / f"seed-{number}",
+                    target=TARGET, trusted_workflow_sha=self.pin, token="not-a-real-token",
+                    recovery_projection=True)
+            warm = True
+            with self.assertRaisesRegex(ValueError, "conflict|different|same.key"):
+                adapter.capture_prior_failed_runtime_phases(
+                    plan, {"runId": 100, "runAttempt": 1}, {instance: key}, destination,
+                    trusted_workflow_sha=self.pin, token="not-a-real-token",
+                    attempts=(self.failed_run(), self.failed_run(72, 3)))
         self.assertFalse(destination.exists())
 
     def test_late_original_shard_mutation_cannot_publish(self):

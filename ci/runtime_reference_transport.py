@@ -71,14 +71,22 @@ def validate_references(value, state_wave):
     return value
 
 
-def _copy_exact(source, destination, record):
+def _copy_exact(source, destination, record, *, destination_directory=None):
     descriptor, before = _open_regular_file(source, "Runtime reference source", reject_symlink_parents=True)
     try:
         if before.st_size != record["bytes"]:
             raise ValueError("Runtime reference source size differs from its immutable identity")
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination_directory is None:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            output = destination.open("xb")
+        else:
+            # Cache publication holds the verified parent descriptor through
+            # creation and rename; caller-controlled parents cannot redirect it.
+            require_relative_path(destination.name, "Runtime reference destination member")
+            output = os.fdopen(os.open(destination.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                       0o600, dir_fd=destination_directory), "wb")
         digest = hashlib.sha256()
-        with os.fdopen(descriptor, "rb", closefd=False) as incoming, destination.open("xb") as outgoing:
+        with os.fdopen(descriptor, "rb", closefd=False) as incoming, output as outgoing:
             remaining = before.st_size
             while remaining:
                 chunk = incoming.read(min(1024 * 1024, remaining))

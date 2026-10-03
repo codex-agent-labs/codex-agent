@@ -968,6 +968,25 @@ def capture_contract_original_ci_phases(
     return evidence
 
 
+def _extract_runtime_original_projection(archive, zipped, destination):
+    """Full archive authentication is already complete; copy only consumed bytes."""
+    from products.inventory import _open_regular_file
+    from products.restore import _stat_identity
+    from runtime_reference_archive import copy_reference_member
+    descriptor, before = _open_regular_file(archive, "Authenticated original Runtime archive",
+                                            reject_symlink_parents=True)
+    projected = [row for row in zipped if not row["relativePath"].startswith("inputs/")]
+    try:
+        with os.fdopen(descriptor, "rb", closefd=False) as source, zipfile.ZipFile(source) as original:
+            for row in projected:
+                copy_reference_member(original, row["relativePath"], destination / row["relativePath"], row)
+        if (_stat_identity(before) != _stat_identity(os.fstat(descriptor))
+                or regular_file_inventory(destination, allow_empty=True) != projected):
+            raise ValueError("Original Runtime projection changed during extraction")
+    finally:
+        os.close(descriptor)
+
+
 @verification_scoped
 def capture_runtime_original_ci_phases(
     phase_receipts: Mapping[str, Path], destination: Path, *, target: str,
@@ -1109,6 +1128,8 @@ def capture_runtime_original_ci_phases(
                           for value in (job.get("started_at"), artifact.get("created_at"), job.get("completed_at"))]
             if any(value.utcoffset() != timedelta(0) for value in timestamps) or not timestamps[0] <= timestamps[1] <= timestamps[2]:
                 raise ValueError("Original Runtime upload is outside its original job-attempt window")
+            from products.verified_evidence import runtime_original_cache
+            persistent = runtime_original_cache() if recovery_projection else None
             from products.restore import _is_windows, _stage_fingerprint
             session = None
             if recovery_projection and not _is_windows():
@@ -1145,15 +1166,23 @@ def capture_runtime_original_ci_phases(
                 phase_files[phase] = [{**record, "relativePath": f"phases/{phase}/original/{record['relativePath']}"}
                                      for record in projected]
                 continue
+            locator = _runtime_original_locator(artifact, workflow_policies[phase]["sha"], instances[phase], job)
+            completed = persistent.read(locator) if persistent is not None else None
             retained = (root / "original-uploads" if recovery_projection else prepared) / "phases" / phase
             retained.mkdir(parents=True)
             archive = retained / "transport.zip"
             candidate = None
-            if session is not None and original_archives is not None and phase in original_archives:
+            if completed is None and session is not None and original_archives is not None and phase in original_archives:
                 candidate_key = (str(original_archives[phase].resolve()), artifact["id"], artifact["digest"],
                     sha256_bytes(originals[phase]), workflow_policies[phase]["sha"], canonical_json_bytes(producer))
                 candidate = session.setdefault("runtimeCandidates", {}).pop(candidate_key, None)
-            if candidate is not None:
+            if completed is not None:
+                if canonical_json_bytes(completed["receipt"]) != originals[phase]:
+                    raise ValueError("Cached original Runtime receipt/provenance differs from the requested original")
+                original = prepared / "phases" / phase / "original"
+                persistent.materialize(completed, original)
+                zipped = completed["originalFiles"]
+            elif candidate is not None:
                 original, fingerprint, zipped = candidate
                 if _stage_fingerprint(original.parent) != fingerprint:
                     raise ValueError("Private verified Runtime upload candidate changed")
@@ -1171,15 +1200,22 @@ def capture_runtime_original_ci_phases(
                 _, raw = _reuse_contract_ci_upload(artifact, producer, attempt["run"], token, destination=None,
                     limit=_INLINE_UPLOAD_LIMIT, artifact_sha256=artifact["digest"], size=artifact["size_in_bytes"])
                 archive.write_bytes(raw)
-            if candidate is None:
-                zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+            if candidate is None and completed is None:
+                zipped, _, archive_verified = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+                if archive_verified != {"bytes": artifact["size_in_bytes"], "sha256": artifact["digest"]}:
+                    raise ValueError("Original Runtime archive changed after full source authentication")
                 original = retained / "original"
-                safe_extract(archive, original)
-                if regular_file_inventory(original, allow_empty=True) != zipped:
-                    raise ValueError("Original Runtime phase differs from its exact upload")
+                if recovery_projection:
+                    _extract_runtime_original_projection(archive, zipped, original)
+                else:
+                    safe_extract(archive, original)
+                    if regular_file_inventory(original, allow_empty=True) != zipped:
+                        raise ValueError("Original Runtime phase differs from its exact upload")
             verified = verify_phase_shard(original / "shard", instances[phase])
             if verified["receiptBytes"] != originals[phase]:
                 raise ValueError("Original Runtime upload differs from the requested original receipt")
+            if completed is not None and verified["objectSha256"] != completed["objectSha256"]:
+                raise ValueError("Cached original Runtime object differs from completed verification")
             if recovery_projection:
                 # Full original upload authentication precedes this transport-only
                 # projection. Receipts/objects/raw proof stay byte-identical;
@@ -1188,12 +1224,15 @@ def capture_runtime_original_ci_phases(
                 projected = [record for record in zipped
                              if not record["relativePath"].startswith("inputs/")]
                 projected_root = prepared / "phases" / phase / "original"
-                for record in projected:
+                for record in ([] if completed is not None else projected):
                     output = projected_root / record["relativePath"]
                     output.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(original / record["relativePath"], output)
                 if regular_file_inventory(projected_root, allow_empty=True) != projected:
                     raise ValueError("Original Runtime recovery projection changed during copy")
+                if persistent is not None and completed is None:
+                    persistent.record_verified(locator, projected_root, zipped, verified["receipt"],
+                                               verified["objectSha256"])
                 if candidate is not None and _stage_fingerprint(original.parent) != fingerprint:
                     raise ValueError("Private verified Runtime upload candidate changed during projection")
                 if session is not None:
@@ -1253,6 +1292,15 @@ def capture_runtime_original_ci_phases(
                 session["bytes"] += len(zipped_bytes) + len(cache_key)
                 session["originalCaptureMembers"] = session.get("originalCaptureMembers", 0) + members
     return evidence
+
+
+def _runtime_original_locator(artifact, workflow_sha, instance, job):
+    """Fresh authenticated upload/workflow/job locator, before consulting cache."""
+    return {"instance": _identity_record(instance), "workflowSha": workflow_sha,
+            "artifact": {name: artifact.get(name) for name in
+                ("id", "name", "digest", "size_in_bytes", "created_at", "workflow_run")},
+            "job": {name: job.get(name) for name in
+                ("id", "name", "run_id", "head_sha", "status", "conclusion", "started_at", "completed_at")}}
 
 
 def _retarget_runtime_original_captures(source, destination):
@@ -1375,17 +1423,38 @@ def capture_prior_failed_runtime_phases(
                 scratch = scratch_root / instance.component / instance.phase / instance.target / str(run_id) / str(attempt)
                 scratch.mkdir(parents=True)
                 archive = scratch / "transport.zip"
-                artifact, _ = _download_contract_ci_upload(artifact.get("id"), artifact.get("digest"), name,
-                    {"runId": run_id}, prior, token, destination=archive)
+                artifact = _contract_ci_upload_metadata(artifact.get("id"), artifact.get("digest"), name,
+                    {"runId": run_id}, prior, token)
+                _require_artifact_job_window({"jobs": [job]}, job_name, artifact)
+                from products.verified_evidence import runtime_original_cache
+                persistent = runtime_original_cache()
+                locator = _runtime_original_locator(artifact, original_workflow_sha, instance, job)
+                completed = persistent.read(locator) if persistent is not None else None
                 from products.restore import _stat_identity
-                archive_identity = _stat_identity(archive.stat())
-                zipped, _, archive_verified = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
-                if archive_verified != {"bytes": artifact["size_in_bytes"], "sha256": artifact["digest"]}:
-                    raise ValueError("Original Runtime candidate archive differs from its authenticated upload")
-                safe_extract(archive, scratch / "original")
                 shard = scratch / "original/shard"
-                verified = verify_phase_shard(shard, instance)
-                receipt = verified["receipt"]
+                if completed is not None:
+                    # Discovery needs only the previously authenticated receipt
+                    # for collision comparison. Selected admission still reads
+                    # and verifies the exact object/proof through the full caller.
+                    member = next(row for row in completed["originalFiles"]
+                                  if row["relativePath"] == "shard/" + PHASE_RECEIPT_NAME)
+                    persistent.copy_member(completed, member["relativePath"], shard / PHASE_RECEIPT_NAME, member)
+                    receipt = validate_phase_receipt(_canonical_control(shard / PHASE_RECEIPT_NAME,
+                                                                        "Cached original discovery receipt"))
+                    if receipt != completed["receipt"] or _identity(receipt) != instance:
+                        raise ValueError("Cached original Runtime receipt differs from completed verification")
+                    zipped = completed["originalFiles"]
+                else:
+                    artifact, _ = _download_contract_ci_upload(artifact["id"], artifact["digest"], name,
+                        {"runId": run_id}, prior, token, destination=archive)
+                    _require_artifact_job_window({"jobs": [job]}, job_name, artifact)
+                    archive_identity = _stat_identity(archive.stat())
+                    zipped, _, archive_verified = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+                    if archive_verified != {"bytes": artifact["size_in_bytes"], "sha256": artifact["digest"]}:
+                        raise ValueError("Original Runtime candidate archive differs from its authenticated upload")
+                    _extract_runtime_original_projection(archive, zipped, scratch / "original")
+                    verified = verify_phase_shard(shard, instance)
+                    receipt = verified["receipt"]
                 original = receipt["producer"]
                 if (receipt["buildKey"] != build_key or original["tree"] != match[1]
                         or original["runId"] != run_id or original["runAttempt"] != attempt
@@ -1393,12 +1462,13 @@ def capture_prior_failed_runtime_phases(
                     raise ValueError("Prior Runtime shard differs from its selected attempt")
                 from products.restore import _VERIFICATION_SESSION, _stage_fingerprint, _is_windows
                 session = None if _is_windows() else _VERIFICATION_SESSION.get()
-                if session is not None:
+                if session is not None and completed is None:
                     candidates = session.setdefault("runtimeCandidates", {})
                     # ponytail: immediate handoff only, bounded metadata; no
                     # extra retained body or serialized verification assertion.
                     if len(candidates) < 16 and sum(len(value[2]) for value in candidates.values()) + len(zipped) <= 65_536:
-                        if regular_file_inventory(scratch / "original", allow_empty=True) != zipped:
+                        if regular_file_inventory(scratch / "original", allow_empty=True) != [
+                                row for row in zipped if not row["relativePath"].startswith("inputs/")]:
                             raise ValueError("Original Runtime candidate extraction differs from its authenticated upload")
                         if _stat_identity(archive.stat()) != archive_identity:
                             raise ValueError("Original Runtime candidate archive changed during verification")
@@ -6026,6 +6096,20 @@ def _capture_runtime_original_reference_members(plan, producer, source, referenc
     artifact = _contract_ci_upload_metadata(source["artifactId"], source["artifactSha256"], name,
         original, observed[0]["run"], token)
     _require_artifact_job_window(observed[0], job, artifact)
+    if source["kind"] == "phase":
+        from products.verified_evidence import runtime_original_cache
+        persistent = runtime_original_cache()
+        instance = _identity(receipt)
+        original_job = next(value for value in observed[0]["jobs"] if value.get("name") == job)
+        locator = _runtime_original_locator(artifact, workflow, instance, original_job)
+        completed = persistent.read(locator) if persistent is not None else None
+        if completed is not None:
+            if completed["receipt"] != receipt:
+                raise ValueError("Cached original member receipt/provenance differs from authenticated reference")
+            for row in references:
+                persistent.copy_member(completed, row["sourcePath"], destination / row["relativePath"], row)
+            return {"artifact": artifact, "captureProducer": original, "observed": observed,
+                    "verification": "qualified-reference-members", "rangeBytes": 0, "memberETag": None}
     with open_reference_archive(artifact, token) as (archive, stream):
         resolved = {}
         for row in references:
