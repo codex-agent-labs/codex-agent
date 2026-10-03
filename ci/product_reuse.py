@@ -1085,6 +1085,8 @@ def capture_runtime_original_ci_phases(
             trusted_workflows_by_phase=workflow_policies, token=token)
         attempts = {(value["run"]["id"], value["run"]["run_attempt"]): value for value in observed}
         inventories, artifacts, phase_files, original_files = {}, {}, {}, {}
+        completed_originals = []
+        pending_original_bytes = pending_original_members = 0
         for phase in ci_phases:
             receipt = receipts[phase]
             producer = receipt["producer"]
@@ -1120,6 +1122,11 @@ def capture_runtime_original_ci_phases(
                                                      instances[phase])})
             memo = session.setdefault("originalCaptures", {}) if session is not None else {}
             cached = memo.get(cache_key)
+            if cached is not None and not cached[0].exists() and not cached[0].is_symlink():
+                # A containing temporary operation may have ended. Missing
+                # custody is a cache miss; replaced existing custody fails below.
+                del memo[cache_key]
+                cached = None
             if cached is not None:
                 source, fingerprint, zipped_bytes, object_sha256 = cached
                 if _stage_fingerprint(source) != fingerprint:
@@ -1190,16 +1197,15 @@ def capture_runtime_original_ci_phases(
                 if candidate is not None and _stage_fingerprint(original.parent) != fingerprint:
                     raise ValueError("Private verified Runtime upload candidate changed during projection")
                 if session is not None:
-                    size = sum(record["bytes"] for record in projected)
                     zipped_bytes = canonical_json_bytes(zipped)
-                    if session["bytes"] + size + len(zipped_bytes) <= session["limit"]:
-                        private_copy = session["root"] / ("original-" + sha256_bytes(cache_key)[7:])
-                        snapshot_regular_tree(projected_root, private_copy, allow_empty=True)
-                        if regular_file_inventory(private_copy, allow_empty=True) != projected:
-                            raise ValueError("Private original Runtime capture differs from verified bytes")
-                        memo[cache_key] = (private_copy, _stage_fingerprint(private_copy),
-                            zipped_bytes, verified["objectSha256"])
-                        session["bytes"] += size + len(zipped_bytes)
+                    metadata_bytes = len(zipped_bytes) + len(cache_key)
+                    members = len(_stage_fingerprint(projected_root))
+                    if (session["bytes"] + pending_original_bytes + metadata_bytes <= session["limit"]
+                            and session.get("originalCaptureMembers", 0) + pending_original_members + members <= 65_536):
+                        completed_originals.append((cache_key, phase, zipped_bytes,
+                                                    verified["objectSha256"], members))
+                        pending_original_bytes += metadata_bytes
+                        pending_original_members += members
             artifacts[phase] = artifact
             phase_files[phase] = [
                 *([] if recovery_projection else [{"relativePath": f"phases/{phase}/transport.zip",
@@ -1232,7 +1238,43 @@ def capture_runtime_original_ci_phases(
                 or regular_file_inventory(prepared, allow_empty=True) != expected_files):
             raise ValueError("Original Runtime capture changed before publication")
         publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected_files)
+        if completed_originals:
+            for cache_key, phase, zipped_bytes, object_sha, members in completed_originals:
+                # ponytail: cache metadata over verified published custody, not
+                # another multi-GB copy. Every hit still authenticates original CI.
+                source = destination / "phases" / phase / "original"
+                fingerprint = _stage_fingerprint(source)
+                projected = [row for row in load_canonical_json_bytes(zipped_bytes)
+                             if not row["relativePath"].startswith("inputs/")]
+                if (regular_file_inventory(source, allow_empty=True) != projected
+                        or _stage_fingerprint(source) != fingerprint):
+                    raise ValueError("Published original Runtime custody changed before verification caching")
+                memo[cache_key] = (source, fingerprint, zipped_bytes, object_sha)
+                session["bytes"] += len(zipped_bytes) + len(cache_key)
+                session["originalCaptureMembers"] = session.get("originalCaptureMembers", 0) + members
     return evidence
+
+
+def _retarget_runtime_original_captures(source, destination):
+    """Move private verification metadata only after an exact custody copy."""
+    from products.restore import _VERIFICATION_SESSION, _stage_fingerprint
+    session = _VERIFICATION_SESSION.get()
+    if session is None:
+        return
+    source, destination = Path(source).resolve(), Path(destination).resolve()
+    memo = session.get("originalCaptures", {})
+    for key, (path, fingerprint, zipped_bytes, object_sha) in tuple(memo.items()):
+        if not path.is_relative_to(source):
+            continue
+        target = destination / path.relative_to(source)
+        target_fingerprint = _stage_fingerprint(target)
+        if (_stage_fingerprint(path) != fingerprint
+                or regular_file_inventory(path, allow_empty=True) !=
+                   regular_file_inventory(target, allow_empty=True)
+                or _stage_fingerprint(path) != fingerprint
+                or _stage_fingerprint(target) != target_fingerprint):
+            raise ValueError("Private original Runtime custody changed during publication")
+        memo[key] = (target, target_fingerprint, zipped_bytes, object_sha)
 
 
 @verification_scoped
@@ -1501,6 +1543,7 @@ def _prior_failed_runtime_objects(
                                     _runtime_capture_identity(fresh_observation, instance) !=
                                     _runtime_capture_identity(observation, instance)):
                                 raise ValueError("Prior failed Runtime capture differs from original CI")
+                            _retarget_runtime_original_captures(replay, captured)
                     descriptor = _canonical_control(shard / PHASE_SHARD_NAME, "Prior failed Runtime shard")
                     records.append({
                         **_identity_record(instance),
@@ -7136,6 +7179,7 @@ def resume_products(
         write_canonical_json(prepared / "result.json", result)
         publish_regular_tree(prepared, destination, allow_empty=True,
                              expected_inventory=regular_file_inventory(prepared, allow_empty=True))
+        _retarget_runtime_original_captures(prepared, destination)
     github_output(github_output_path, {"full_reuse": result["fullReuse"],
         "target_jobs_required": result["targetJobsRequired"], "product_reuse_reason": result["reason"]})
     return result

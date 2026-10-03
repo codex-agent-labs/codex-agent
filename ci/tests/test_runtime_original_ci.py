@@ -214,8 +214,16 @@ class RuntimeOriginalCiTest(unittest.TestCase):
 
     def test_completed_projection_reuse_keeps_fresh_origin_authentication_and_mutation_guards(self):
         from products.restore import verification_session
+        upload = self.root / 'runtime-uploads/binary'
+        (upload / 'raw-proof.bin').write_bytes(b'opaque original proof\n' * 65_536)
+        self.archives['binary'] = fixture.archive_tree(upload)
+        self.artifacts['binary'].update(digest=fixture.sha256_bytes(self.archives['binary']),
+                                        size_in_bytes=len(self.archives['binary']))
         with verification_session() as session, mock.patch('reuse.api_request', side_effect=self.api()) as api, \
                 mock.patch.object(adapter, 'safe_extract', wraps=adapter.safe_extract) as extract:
+            # Existing verified objects leave room for bounded metadata, but no
+            # duplicate original proof body. The previous body memo missed here.
+            session['bytes'] = session['limit'] - 64 * 1024
             for number in range(2):
                 adapter.capture_runtime_original_ci_phases({'binary': self.receipts['binary']},
                     self.root / f'memo-{number}', target=TARGET, trusted_workflow_sha=self.pin,
@@ -224,6 +232,21 @@ class RuntimeOriginalCiTest(unittest.TestCase):
             artifact_url = self.artifacts['binary']['archive_download_url'].removesuffix('/zip')
             self.assertEqual(2, sum(call.args[0] == artifact_url for call in api.call_args_list))
             cached, *_ = next(iter(session['originalCaptures'].values()))
+            self.assertEqual(self.root / 'memo-0/phases/binary/original', cached)
+            self.assertFalse(any(session['root'].glob('original-*')))
+            # Publication preserves exact bytes and retargets only this private
+            # invocation's metadata; no second product/proof body is retained.
+            relocated = self.root / 'relocated'
+            actual_publish_regular_tree(self.root / 'memo-0', relocated, allow_empty=True)
+            adapter._retarget_runtime_original_captures(self.root / 'memo-0', relocated)
+            import shutil
+            shutil.rmtree(self.root / 'memo-0')
+            adapter.capture_runtime_original_ci_phases({'binary': self.receipts['binary']},
+                self.root / 'memo-relocated', target=TARGET, trusted_workflow_sha=self.pin,
+                token='not-a-real-token', recovery_projection=True)
+            self.assertEqual(1, extract.call_count)
+            cached, *_ = next(iter(session['originalCaptures'].values()))
+            self.assertEqual(relocated / 'phases/binary/original', cached)
             (cached / 'shard/phase-receipt.json').write_bytes(b'changed private receipt')
             with self.assertRaisesRegex(ValueError, 'Private verified original Runtime capture changed'):
                 adapter.capture_runtime_original_ci_phases({'binary': self.receipts['binary']},
