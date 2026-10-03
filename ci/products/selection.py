@@ -366,6 +366,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/runtime_aggregate_release.py",
     "ci/runtime_supervisor.py",
     "ci/runtime_workflow.py",
+    "ci/runtime_reference_transport.py",
     "ci/sdk_phase.py",
     "ci/sdk_completion.py",
     "ci/sdk_completion_state.py",

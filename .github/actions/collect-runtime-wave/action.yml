@@ -141,11 +141,19 @@ runs:
         "${command[@]}" --input-root "$INPUT_ROOT" \
           --destination build/runtime-next --wave "$WAVE" ${state[@]+"${state[@]}"} \
           --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT"
+        # Pinned native/aggregate signers consume waves 4/5 as full envelopes.
+        # Earlier waves can reference their authenticated immutable predecessors.
+        if [ "$PRODUCT" = runtime ] && [ "$WAVE" -le 3 ]; then
+          python3 -B ci/runtime_workflow.py export-references \
+            --handoff build/runtime-next/handoff --base-root "$INPUT_ROOT" \
+            --base-capture "${INPUT_ROOT%/original}/capture-transport.json" \
+            --destination build/runtime-reference-handoff --state-wave "$WAVE"
+        fi
     - id: upload
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-${{ inputs.product == 'sdk-ios-binary' && 'sdk' || inputs.product }}-wave-${{ inputs.wave }}-state-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
-        path: build/runtime-next/handoff
+        path: ${{ inputs.product == 'runtime' && (inputs.wave == '1' || inputs.wave == '2' || inputs.wave == '3') && 'build/runtime-reference-handoff' || 'build/runtime-next/handoff' }}
         if-no-files-found: error
         overwrite: false
         include-hidden-files: true

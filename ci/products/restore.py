@@ -3,6 +3,10 @@ from __future__ import annotations
 import argparse
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar, copy_context
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+from functools import wraps
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
@@ -11,6 +15,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import threading
 from typing import Any
 import zipfile
 
@@ -85,6 +90,51 @@ PHASE_SHARD_KEYS = {
 
 class CacheObjectError(ValueError):
     """An occupied cache object is malformed or does not match its qualified identity."""
+
+
+_VERIFICATION_SESSION = ContextVar("product_verification_session", default=None)
+_VERIFICATION_CACHE_BYTES = 4 * 1024 * 1024 * 1024
+
+
+@contextmanager
+def verification_session():
+    """Private process custody, never a serialized assertion of trust.
+
+    Only completed byte verification is memoized. Receipt SHA binds the exact
+    original producer; all signature, policy and original-CI admission remains
+    with the existing caller. Mutable source files are checked on every hit.
+    """
+    current = _VERIFICATION_SESSION.get()
+    if current is not None:
+        yield current
+        return
+    with tempfile.TemporaryDirectory(prefix="codex-agent-verified-objects-") as temporary:
+        session = {"root": Path(temporary).resolve(), "objects": {}, "bytes": 0,
+                   "stages": {}, "uploads": {}, "uploadBytes": 0, "limit": _VERIFICATION_CACHE_BYTES,
+                   "lock": threading.RLock(), "hits": 0, "misses": 0}
+        token = _VERIFICATION_SESSION.set(session)
+        try:
+            yield session
+        finally:
+            _VERIFICATION_SESSION.reset(token)
+
+
+def verification_scoped(operation):
+    @wraps(operation)
+    def scoped(*args, **kwargs):
+        with verification_session():
+            return operation(*args, **kwargs)
+    return scoped
+
+
+def bounded_verify(operation, values):
+    """Independent scans only; preserve order and propagate every failure."""
+    values = tuple(values)
+    if len(values) < 2:
+        return [operation(value) for value in values]
+    with ThreadPoolExecutor(max_workers=min(4, len(values))) as executor:
+        futures = [executor.submit(copy_context().run, operation, value) for value in values]
+        return [future.result() for future in futures]
 
 
 def _open_safe_regular(path: Path, label: str) -> tuple[int, os.stat_result]:
@@ -306,6 +356,7 @@ def _carrier_expected_instances(values: Any) -> tuple[PhaseInstanceId, ...]:
     return instances
 
 
+@verification_scoped
 def verify_carrier(
     root: Path,
     expected_instances: Any,
@@ -337,8 +388,8 @@ def verify_carrier(
         "consumer": consumer,
     })["consumer"]
     expected_paths = {CARRIER_NAME, CARRIER_RESOLUTION_NAME}
-    verified = []
-    for record, phase in zip(records, phases, strict=True):
+    def verify_member(pair):
+        record, phase = pair
         for field in ("product", "component", "phase", "target", "buildKey", "receiptSha256", "objectSha256"):
             if record[field] != phase[field]:
                 raise ValueError("Product carrier object and resolution phase disagree")
@@ -346,7 +397,6 @@ def verify_carrier(
         transport_path = transport_relative_path(
             record["buildKey"], record["receiptSha256"], record["transportSha256"],
         )
-        expected_paths.update((object_path, transport_path))
         object_value = verify_object(
             root / object_path,
             build_key=record["buildKey"],
@@ -369,13 +419,18 @@ def verify_carrier(
             or transport["consumer"] != expected_consumer
         ):
             raise ValueError("Product carrier transport does not match its resolution or consumer")
-        verified.append({**record, "receipt": object_value["receipt"], "receiptBytes": object_value["receiptBytes"]})
+        return {**record, "receipt": object_value["receipt"], "receiptBytes": object_value["receiptBytes"]}
+    for record in records:
+        expected_paths.update((object_relative_path(record["buildKey"], record["receiptSha256"]),
+            transport_relative_path(record["buildKey"], record["receiptSha256"], record["transportSha256"])))
+    verified = bounded_verify(verify_member, zip(records, phases, strict=True))
     actual_paths = {record["relativePath"] for record in regular_file_inventory(root)}
     if actual_paths != expected_paths:
         raise ValueError("Product carrier file inventory is incomplete or unexpected")
     return {"carrier": carrier, "resolution": resolution, "objects": verified}
 
 
+@verification_scoped
 def write_carrier(
     destination: Path,
     resolution: Any,
@@ -445,6 +500,7 @@ def write_carrier(
     return verify_carrier(destination, expected, consumer)
 
 
+@verification_scoped
 def verify_phase_shard(root: Path, expected_instance: PhaseInstanceId) -> dict[str, Any]:
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
@@ -697,6 +753,39 @@ def _verified_object_snapshot(
     receipt_sha256: Any,
     object_sha256: Any | None,
 ) -> Iterator[tuple[Path, dict[str, Any]]]:
+    session = None if _is_windows() else _VERIFICATION_SESSION.get()
+    # A missing transport digest cannot identify an immutable object in advance.
+    if session is not None and object_sha256 is not None:
+        key = (require_sha256(build_key, "expected build key"),
+               require_sha256(receipt_sha256, "expected receipt SHA-256"),
+               require_sha256(object_sha256, "expected object SHA-256"))
+        try:
+            descriptor, before = _open_safe_regular(Path(archive), "Product cache object")
+            try:
+                identity = _stat_identity(before)
+                source_key = (str(Path(archive).absolute()), identity, key)
+                with session["lock"]:
+                    cached = session["objects"].get(source_key)
+                if cached is not None:
+                    snapshot, verification, snapshot_identity = cached
+                    private_descriptor, private_stat = _open_safe_regular(snapshot, "Verified object snapshot")
+                    os.close(private_descriptor)
+                    if (_stat_identity(private_stat) != snapshot_identity
+                            or _stat_identity(os.fstat(descriptor)) != identity):
+                        raise CacheObjectError("Verified object custody changed")
+                    session["hits"] += 1
+                    yield snapshot, deepcopy(verification)
+                    if _stat_identity(os.fstat(descriptor)) != identity:
+                        raise CacheObjectError("Product cache object changed during cached verification")
+                    private_descriptor, private_stat = _open_safe_regular(snapshot, "Verified object snapshot")
+                    os.close(private_descriptor)
+                    if _stat_identity(private_stat) != snapshot_identity:
+                        raise CacheObjectError("Verified object custody changed during reuse")
+                    return
+            finally:
+                os.close(descriptor)
+        except (OSError, ValueError) as error:
+            raise CacheObjectError(str(error)) from error
     with tempfile.TemporaryDirectory(prefix="codex-agent-product-object-") as temporary:
         snapshot = Path(temporary).resolve() / "object.zip"
         try:
@@ -710,6 +799,18 @@ def _verified_object_snapshot(
             )
         except (OSError, ValueError, zipfile.BadZipFile) as error:
             raise CacheObjectError(str(error)) from error
+        if session is not None and object_sha256 is not None:
+            session["misses"] += 1
+            # ponytail: bounded private custody; larger closures verify uncached.
+            with session["lock"]:
+                if session["bytes"] + identity["bytes"] <= _VERIFICATION_CACHE_BYTES:
+                    retained = session["root"] / (secrets.token_hex(16) + ".zip")
+                    shutil.move(snapshot, retained)
+                    retained.chmod(0o400)
+                    session["bytes"] += identity["bytes"]
+                    session["objects"][source_key] = (
+                        retained, deepcopy(verification), _stat_identity(retained.stat()))
+                    snapshot = retained
         yield snapshot, verification
 
 
@@ -790,13 +891,53 @@ def restore_object(
         prefix="codex-agent-product-stage-",
     ) as temporary:
         stage = Path(temporary).resolve() / "stage"
-        _extract_verified_stage(snapshot, verification, stage)
+        session = None if _is_windows() else _VERIFICATION_SESSION.get()
+        key = (verification["objectSha256"], receipt_sha256,
+               canonical_json_bytes(verification["receipt"]["producer"]))
+        cached = None if session is None else session["stages"].get(key)
+        if cached is not None:
+            stage, fingerprint = cached
+            if _stage_fingerprint(stage) != fingerprint:
+                raise CacheObjectError("Verified stage custody changed")
+        else:
+            _extract_verified_stage(snapshot, verification, stage)
+            size = sum(record["bytes"] for record in verification["manifest"]["outputs"])
+            if session is not None:
+                with session["lock"]:
+                    if session["bytes"] + size <= _VERIFICATION_CACHE_BYTES:
+                        retained = session["root"] / secrets.token_hex(16)
+                        shutil.move(stage, retained)
+                        stage = retained
+                        fingerprint = _stage_fingerprint(stage)
+                        session["stages"][key] = (stage, fingerprint)
+                        session["bytes"] += size
         snapshot_regular_tree(stage, destination)
+        if cached is not None and _stage_fingerprint(stage) != fingerprint:
+            raise CacheObjectError("Verified stage changed during restore")
         return {
             "receipt": verification["receipt"],
             "receiptBytes": verification["receiptBytes"],
             "objectSha256": verification["objectSha256"],
         }
+
+
+def _stage_fingerprint(root):
+    """Guard private, already-verified extraction custody without rehashing it."""
+    result = []
+    for current, directories, files in os.walk(root, followlinks=False):
+        directories.sort()
+        for path in (Path(current), *(Path(current) / name for name in sorted(directories))):
+            descriptor = _open_directory(path, "Verified stage directory")
+            try:
+                result.append((str(path), _stat_identity(os.fstat(descriptor))))
+            finally:
+                os.close(descriptor)
+        for name in sorted(files):
+            path = Path(current) / name
+            descriptor, metadata = _open_safe_regular(path, "Verified stage file")
+            os.close(descriptor)
+            result.append((str(path), _stat_identity(metadata)))
+    return tuple(result)
 
 
 def _write_object(stage: Path, receipt_bytes: bytes, output: Path) -> None:

@@ -116,6 +116,8 @@ from products.runtime_evidence import (
     node_evidence_filename,
 )
 from products.restore import (
+    verification_scoped,
+    verification_session,
     OBJECT_ZIP_LIMITS,
     PHASE_PLAN_KEYS,
     PHASE_RECEIPT_NAME,
@@ -616,6 +618,7 @@ def _require_artifact_job_window(observation, job_name, artifact):
         raise ValueError("Upload is outside its original job-attempt window")
 
 
+@verification_scoped
 def _download_contract_ci_upload(
     artifact_id: int, artifact_sha256: str, expected_name: str,
     producer: Mapping[str, Any], observed_run: Mapping[str, Any], token: str,
@@ -644,6 +647,40 @@ def _download_contract_ci_upload(
         limit = min(limit, max_bytes)
     if size > limit:
         raise ValueError("Contract uploaded artifact exceeds the transport limit")
+    # Metadata and original-job authentication are mandatory on every call.
+    # Only fully hashed private bytes are reused; this is never an admission.
+    with verification_session() as session:
+        provenance = canonical_json_bytes({
+            "producer": dict(producer),
+            "run": {name: observed_run.get(name) for name in
+                    ("id", "run_attempt", "head_sha", "path", "event", "referenced_workflows")},
+            "artifact": {name: artifact.get(name) for name in
+                         ("id", "name", "digest", "size_in_bytes", "created_at", "workflow_run")},
+        })
+        cached = session["uploads"].get(provenance)
+        if cached is not None:
+            raw = cached
+            if destination is not None:
+                # Exact immutable bytes; no re-download or mutable disk marker.
+                with destination.open("xb") as output:
+                    output.write(raw)
+                if sha256_file(destination) != artifact_sha256:
+                    raise ValueError("Cached Contract upload copy differs from its immutable identity")
+                return artifact, destination
+            return artifact, raw
+        result = _download_contract_ci_upload_bytes(artifact, token, destination, limit, artifact_sha256, size)
+        # ponytail: small immutable uploads only; larger transport stays streamed.
+        if destination is None and type(result[1]) is bytes and size <= 64 * 1024 * 1024:
+            with session["lock"]:
+                if (session["bytes"] + size <= session["limit"]
+                        and session["uploadBytes"] + size <= 256 * 1024 * 1024):
+                    session["uploads"][provenance] = result[1]
+                    session["bytes"] += size
+                    session["uploadBytes"] += size
+        return result
+
+
+def _download_contract_ci_upload_bytes(artifact, token, destination, limit, artifact_sha256, size):
     if destination is not None:
         download_artifact_to_file(artifact, token, destination, max_bytes=limit)
         if destination.stat().st_size != size or sha256_file(destination) != artifact_sha256:
@@ -745,6 +782,7 @@ def capture_contract_ci_artifact(
     return evidence
 
 
+@verification_scoped
 def capture_contract_original_ci_phases(
     capture_root: Path, destination: Path, *, contract_version: str,
     trusted_workflow_sha: str, token: str,
@@ -910,6 +948,7 @@ def capture_contract_original_ci_phases(
     return evidence
 
 
+@verification_scoped
 def capture_runtime_original_ci_phases(
     phase_receipts: Mapping[str, Path], destination: Path, *, target: str,
     trusted_workflow_sha: str, token: str,
@@ -1105,6 +1144,7 @@ def capture_runtime_original_ci_phases(
     return evidence
 
 
+@verification_scoped
 def capture_prior_failed_runtime_phases(
     plan: Mapping[str, Any], producer: Mapping[str, Any],
     requested: Mapping[PhaseInstanceId, str], destination: Path,
@@ -3308,6 +3348,7 @@ class _VerifiedProductState:
     prior_ready_plans: dict[PhaseInstanceId, dict[str, Any]]
 
 
+@verification_scoped
 def _verified_product_state(
     plan_path: Path, discovery_root: Path, state_root: Path, root: Path,
     environment: Mapping[str, str], sdk_validation_tooling: Mapping[str, Any] | None,
@@ -3572,6 +3613,7 @@ def _sdk_input_selection(state, root):
             "consumers": sorted(consumers, key=lambda value: tuple(value[field] for field in _IDENTITY_KEYS))}
 
 
+@verification_scoped
 def inspect_products(
     plan_path: Path, discovery_root: Path, state_root: Path | None = None, *,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
@@ -3821,6 +3863,7 @@ def _materialize_product_predecessors(state, instance, destination, expected_bui
     return ready
 
 
+@verification_scoped
 def materialize_product_predecessors(
     plan_path: Path, discovery_root: Path, state_root: Path | None,
     instance: PhaseInstanceId, destination: Path, *, expected_build_key: str,
@@ -3848,6 +3891,7 @@ def materialize_product_predecessors(
                                                 sdk_runtime_originals=originals)
 
 
+@verification_scoped
 def materialize_sdk_default_inputs(
     plan_path, discovery_root, state_root, destination, *, keyring, keys_directory,
     repository_root=None, environ=None, sdk_validation_tooling=None,
@@ -3943,6 +3987,7 @@ def materialize_sdk_default_inputs(
     return selection
 
 
+@verification_scoped
 def materialize_runtime_aggregate_release_evidence(
     plan_path, discovery_root, state_root, destination, *, expected_build_key,
     keyring, keys_directory, repository_root=None, environ=None, sdk_validation_tooling=None,
@@ -3997,6 +4042,7 @@ def prepare_runtime_phase(
     return _prepare_runtime_phase(state, instance, destination, expected_build_key, root)[0]
 
 
+@verification_scoped
 def materialize_runtime_attestation_inputs(
     plan_path: Path, discovery_root: Path, state_root: Path | None,
     destination: Path, *, target: str, expected_build_key: str,
@@ -5088,6 +5134,7 @@ def collect_runtime_workers(
     return result
 
 
+@verification_scoped
 def advance_products(
     plan_path: Path, discovery_root: Path, state_root: Path | None,
     shard_roots: list[Path], destination: Path,
@@ -5602,6 +5649,7 @@ def capture_runtime_supervisor_upload(
     return evidence
 
 
+@verification_scoped
 def capture_runtime_resume_upload(
     plan_path: Path, destination: Path, *, artifact_id: int, artifact_sha256: str,
     trusted_workflow_sha: str, repository_root: Path | None = None,
@@ -5666,6 +5714,29 @@ def capture_runtime_resume_upload(
         safe_extract(archive, original)
         if regular_file_inventory(original, allow_empty=True) != zipped:
             raise ValueError("Runtime resume extraction differs from its exact original archive")
+        reference_path = original / "runtime-references.json"
+        reference_transport = None
+        if reference_path.exists() or reference_path.is_symlink():
+            if sdk_state_wave is not None:
+                raise ValueError("Runtime reference transport cannot replace an SDK state upload")
+            from runtime_reference_transport import validate_references, resolve_reference_handoff
+            references = validate_references(_canonical_control(reference_path, "Runtime references"), state_wave)
+            base = references["base"]
+            if base["artifactId"] == artifact_id:
+                raise ValueError("Runtime reference upload cannot refer to itself")
+            _require_artifact_job_window(observed[0], job_name, artifact)
+            reference_transport = capture_runtime_resume_upload(
+                captured_plan, private / "reference-base", artifact_id=base["artifactId"],
+                artifact_sha256=base["artifactSha256"], state_wave=base["stateWave"],
+                trusted_workflow_sha=trusted_workflow_sha, repository_root=root,
+                environ=environ, token=token, original_run_id=original_run_id,
+                original_run_attempt=original_run_attempt)
+            base_job = ("product-validation / product-resume" if base["stateWave"] == 0 else
+                        f"product-validation / runtime-collect-{base['stateWave']}")
+            _require_artifact_job_window(reference_transport["observed"][0], base_job,
+                                         reference_transport["artifact"])
+            zipped = resolve_reference_handoff(original, private / "reference-base/original", references,
+                                                state_wave=state_wave)
         expected_roots = {"product-resume-inputs", "product-resume-state"} | (
             {"runtime-state"} if state_wave or sdk_state_wave is not None else set())
         if ({member.name for member in original.iterdir()} != expected_roots
@@ -5675,6 +5746,8 @@ def capture_runtime_resume_upload(
                 max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes:
             raise ValueError("Runtime resume upload plan differs from the validated original plan")
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed}
+        if reference_transport is not None:
+            transport["referenceBase"] = reference_transport
         if state_wave:
             transport["stateWave"] = state_wave
         if sdk_state_wave is not None:
@@ -7053,6 +7126,7 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
+@verification_scoped
 def main(argv: list[str] | None = None) -> int:
     arguments = parser().parse_args(argv)
     try:

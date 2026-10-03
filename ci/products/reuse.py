@@ -74,6 +74,8 @@ from .registry import (
 )
 from .restore import (
     CacheObjectError,
+    bounded_verify,
+    verification_scoped,
     object_relative_path,
     restore_local_object,
     restore_object,
@@ -1092,6 +1094,7 @@ def _native_comparison_provider(root, value, *, keyring=None, keys_directory=Non
     return verify if records else None
 
 
+@verification_scoped
 def plan_reuse_wave(
     value: Any,
     *,
@@ -1371,8 +1374,8 @@ def plan_reuse_wave(
             sdk_runtime_options = {"sdk_runtime_receipts": sdk_envelopes,
                                    "sdk_default_runtime_version": selected["envelope"]["receipt"]["productVersion"]}
             sdk_native_evidence = selected["handoff"]["nativeRuntimeEvidence"]
-        available = []
-        for instance, build_key, receipt_sha256, object_sha256, object_path in decoded_objects:
+        def verify_available(record):
+            instance, build_key, receipt_sha256, object_sha256, object_path = record
             verified = verify_object(
                 object_path,
                 build_key=build_key,
@@ -1388,7 +1391,11 @@ def plan_reuse_wave(
                 "receiptSha256": receipt_sha256,
                 "objectSha256": object_sha256,
             }
-            available.append(envelope)
+            return envelope
+
+        available = bounded_verify(verify_available, decoded_objects)
+        for record, envelope in zip(decoded_objects, available, strict=True):
+            instance, _, _, _, object_path = record
             if instance.product == "contract" and instance.phase in {"binary", "metadata"}:
                 session.register_contract_stage(object_path, envelope)
 

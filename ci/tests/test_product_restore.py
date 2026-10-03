@@ -109,6 +109,35 @@ class ProductRestoreTest(unittest.TestCase):
     def store(self) -> dict[str, object]:
         return store_local_object(self.stage, self.receipt_path, self.cache)
 
+    def test_private_verification_reuses_exact_bytes_and_extraction_without_trust_shortcuts(self):
+        stored = self.store()
+        arguments = {"build_key": stored["buildKey"], "receipt_sha256": stored["receiptSha256"],
+                     "object_sha256": stored["objectSha256"]}
+        with product_restore.verification_session() as session, mock.patch.object(
+                product_restore, "_verify_snapshot", wraps=product_restore._verify_snapshot) as scan, \
+                mock.patch.object(product_restore, "_extract_verified_stage",
+                                  wraps=product_restore._extract_verified_stage) as extract:
+            first = verify_object(stored["path"], **arguments)
+            first["receipt"]["producer"]["runId"] = 999
+            self.assertEqual(self.receipt, verify_object(stored["path"], **arguments)["receipt"])
+            for number in range(2):
+                restored = restore_object(stored["path"], self.root / f"restored-{number}", **arguments)
+                self.assertEqual(self.receipt_bytes, restored["receiptBytes"])
+            self.assertEqual(1, scan.call_count)
+            self.assertEqual(1, extract.call_count)
+            self.assertGreater(session["hits"], 0)
+            with self.assertRaises(CacheObjectError):
+                verify_object(stored["path"], **{**arguments, "receipt_sha256": DIGEST_A})
+            with self.assertRaises(CacheObjectError):
+                verify_object(stored["path"], **{**arguments, "object_sha256": DIGEST_B})
+            before = stored["path"].stat()
+            stored["path"].chmod(0o600)
+            with stored["path"].open("r+b") as stream:
+                stream.write(b"BAD!")
+            os.utime(stored["path"], ns=(before.st_atime_ns, before.st_mtime_ns))
+            with self.assertRaises(CacheObjectError):
+                verify_object(stored["path"], **arguments)
+
     def test_object_zip_fsync_uses_writable_descriptor(self) -> None:
         output = self.root / "object.zip"
         original_open = os.open

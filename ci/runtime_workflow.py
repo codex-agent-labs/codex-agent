@@ -9,6 +9,7 @@ import product_reuse as products
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from products.inventory import canonical_json_bytes, load_json_bytes, require_sha256, snapshot_regular_tree
 from products.registry import NATIVE_TARGETS, PhaseInstanceId
+from products.restore import verification_scoped
 from reuse import github_output
 
 
@@ -246,6 +247,7 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     return advanced
 
 
+@verification_scoped
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -291,12 +293,20 @@ def main(argv=None):
     retained.add_argument("--trusted-workflow-sha", required=True)
     retained.add_argument("--recovery-json", required=True)
     retained.add_argument("--selected-receipts-json", required=True)
+    referenced = commands.add_parser("export-references")
+    for name in ("handoff", "base-root", "base-capture", "destination"):
+        referenced.add_argument(f"--{name}", type=Path, required=True)
+    referenced.add_argument("--state-wave", type=int, required=True)
     args = parser.parse_args(argv)
     try:
         apple_policy = ({} if getattr(args, "sdk_apple_validation_policy", None) is None else {
             "sdk_apple_validation_policy": products._canonical_control(
                 args.sdk_apple_validation_policy, "Caller Apple validation policy")})
-        if args.command == "matrix":
+        if args.command == "export-references":
+            from runtime_reference_transport import stage_reference_handoff
+            stage_reference_handoff(args.handoff, args.base_root, args.base_capture,
+                                    args.destination, state_wave=args.state_wave)
+        elif args.command == "matrix":
             tooling = ({} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
                 products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")})
             with metadata_admission_options(args) as admissions:
