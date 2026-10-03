@@ -1,4 +1,4 @@
-"""Recover complete Contract phases from authenticated uploads without an index."""
+"""Recover current-key Contract phases from authenticated uploads without an index."""
 
 from pathlib import Path
 import argparse
@@ -139,6 +139,7 @@ def replay_retained_contract(
     captured_root: Path, contract_request: dict, destination: Path, *,
     consumer: dict, keyring: Path, keys_directory: Path,
     sdk_validation_tooling=None, sdk_apple_validation_policy=None,
+    allow_partial: bool = False,
 ) -> dict:
     """Recompute current keys against just-authenticated captured originals.
 
@@ -180,24 +181,47 @@ def replay_retained_contract(
     request["availableObjects"] = records
     result = transport._plan_with_sdk_tooling(
         request, sdk_validation_tooling, apple_policy=sdk_apple_validation_policy)
-    if (result["fullReuse"] is not True or result["matrices"] != {"contract": [], "runtime": [], "sdk": []}
-            or len(result["phases"]) != len(instances)
-            or any(transport._identity(value) not in instances or value["state"] != "retained"
-                   for value in result["phases"])):
+    retained = [phase for phase in result["phases"] if phase["state"] == "retained"]
+    retained_instances = tuple(transport._identity(phase) for phase in retained)
+    retained_phases = {instance.phase for instance in retained_instances}
+    prefix = set(PHASES[:len(retained_instances)])
+    if (len(result["phases"]) != len(instances) or not retained
+            or retained_phases != prefix
+            or any(transport._identity(value) not in instances for value in result["phases"])
+            or any(value["state"] not in {"retained", "build", "waiting"} for value in result["phases"])
+            or (not allow_partial and (result["fullReuse"] is not True
+                or result["matrices"] != {"contract": [], "runtime": [], "sdk": []}
+                or len(retained) != len(instances)))):
         raise ValueError("Authenticated Contract originals do not match the current computed phase keys")
-    for phase in result["phases"]:
+    # Exclude stale suffix objects from the saved request. Continuation replay
+    # must see only the original phases actually admitted by current keys.
+    request["availableObjects"] = [record for record in records
+                                   if transport._identity(record) in retained_instances]
+    ready_plans = {}
+    if len(retained) != len(instances):
+        result = transport._plan_with_sdk_tooling(
+            request, sdk_validation_tooling, apple_policy=sdk_apple_validation_policy,
+            build_plan_consumer=lambda instance, value: ready_plans.setdefault(instance, value))
+        retained = [phase for phase in result["phases"] if phase["state"] == "retained"]
+        if tuple(transport._identity(phase) for phase in retained) != retained_instances:
+            raise ValueError("Current Contract replay changed its authenticated retained prefix")
+    for phase in retained:
         original = verified[phase["phase"]]
         if any(phase[field] != original[field] for field in ("buildKey", "receiptSha256", "objectSha256")):
             raise ValueError("Current Contract replay selected a different original object")
-    normalized = {**result, "phases": [{**phase, "state": "reused", "source": "phase-shard",
+    normalized = {**result, "result": "complete", "fullReuse": True,
+        "matrices": {"contract": [], "runtime": [], "sdk": []},
+        "phases": [{**phase, "state": "reused", "source": "phase-shard",
         "transportSource": {"kind": "phase-shard", "descriptorSha256": sha256_bytes(read_regular_file_bytes(
             originals / "original-phases" / phase["phase"] / transport.PHASE_SHARD_NAME,
             reject_symlink_parents=True)), "producer": verified[phase["phase"]]["receipt"]["producer"]}}
-        for phase in result["phases"]]}
+        for phase in retained]}
     # Carrier schemas deliberately exclude invocation-only planner fields.
     resolution = {key: normalized[key] for key in ("schemaVersion", "result", "fullReuse", "phases", "matrices")}
-    write_carrier(destination, resolution, instances, sources, consumer)
-    return {"request": request, "result": result, "resolution": resolution}
+    write_carrier(destination, resolution, retained_instances,
+                  {instance: sources[instance] for instance in retained_instances}, consumer)
+    return {"request": request, "result": result, "resolution": resolution,
+            "readyPlans": ready_plans}
 
 
 def discover_retained_contract(
@@ -205,7 +229,7 @@ def discover_retained_contract(
     trusted_workflow_sha: str, keyring: Path, keys_directory: Path, token: str,
     sdk_validation_tooling=None, sdk_apple_validation_policy=None,
 ) -> dict | None:
-    """Select a complete prior PR closure, then authenticate and replay its keys."""
+    """Authenticate a prior signed closure and retain its current-key prefix."""
     artifact_root = Path(contract_request["artifactRoot"]).resolve(strict=True)
     destination = Path(destination).absolute()
     destination.relative_to(artifact_root)
@@ -268,7 +292,8 @@ def discover_retained_contract(
                         consumer={"kind": "ci", "producer": consumer_producer},
                         keyring=keyring, keys_directory=keys_directory,
                         sdk_validation_tooling=sdk_validation_tooling,
-                        sdk_apple_validation_policy=sdk_apple_validation_policy)
+                        sdk_apple_validation_policy=sdk_apple_validation_policy,
+                        allow_partial=True)
                 except ValueError as error:
                     if str(error) != "Authenticated Contract originals do not match the current computed phase keys":
                         raise

@@ -45,6 +45,9 @@ HELPER = ".github/actions/prepare-runtime-signing/recovery_acceptance.py"
 NEW_FILES = {HELPER, "ci/tests/test_runtime_recovery_acceptance.py"}
 CONTROL_FILES = CORRECTED_FILES | PRODUCT_CORRECTION_FILES | NEW_FILES | {
     CI, ".github/workflows/product-validation.yml",
+    ".github/workflows/contract-validation.yml",
+    "ci/product_reuse.py", "ci/contract_retained_recovery.py",
+    "ci/tests/test_contract_retained_recovery.py", "ci/tests/test_contract_attestation_workflow.py",
     "ci/runtime_preparation_capture.py", "ci/tests/test_runtime_preparation_capture.py",
     "ci/runtime_workflow.py", "ci/tests/test_runtime_workflow.py",
     "ci/runtime_prepared_release.py", "ci/tests/test_runtime_prepared_release.py",

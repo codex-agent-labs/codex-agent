@@ -634,7 +634,7 @@ jobs:
 
       - name: Preserve the independently authenticated retained release envelope
         id: upload_retained_handoff
-        if: fromJSON(inputs.planOutputs).contract_next_phase == 'none'
+        if: hashFiles('build/ci/product-reuse/retained-contract/capture/release-upload/contract-input/execution-closure/contract-execution-closure.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error

@@ -3068,7 +3068,7 @@ def advance_contract(
                 discovery_root / "retained-contract/capture", current_request, private / "carrier",
                 consumer=consumer, keyring=trust.keyring, keys_directory=trust.keys,
                 sdk_validation_tooling=sdk_validation_tooling,
-                sdk_apple_validation_policy=sdk_apple_validation_policy)
+                sdk_apple_validation_policy=sdk_apple_validation_policy, allow_partial=True)
             initial = _canonical_control(discovery_root / "contract-reuse-result.json", "Retained Contract result")
             if (rechecked["request"]["availableObjects"] != request["availableObjects"]
                     or rechecked["result"] != initial):
@@ -6788,14 +6788,21 @@ def discover(
                     sdk_validation_tooling=sdk_validation_tooling,
                     sdk_apple_validation_policy=sdk_apple_validation_policy)
                 if recovered is not None:
-                    publish_regular_tree(recovered["carrier"], destination / "carrier")
+                    complete = recovered["result"]["fullReuse"]
+                    publish_regular_tree(recovered["carrier"], destination / (
+                        "carrier" if complete else "reused-carrier"))
                     write_canonical_json(destination / "contract-reuse-request.json", recovered["request"])
                     write_canonical_json(destination / "contract-reuse-result.json", recovered["result"])
                     write_canonical_json(destination / "reuse-wave-result.json", recovered["result"])
                     write_canonical_json(destination / "producer.json", _consumer(plan, environment)["producer"])
+                    ready = recovered["readyPlans"]
+                    _write_ready_plans(destination, ready)
                     return _finish(destination, request, _result(
-                        requested, complete=False, reason="retained-contract-complete", reuse=recovered["result"],
-                    ), github_output_path, contract_reconciliation_required=True)
+                        requested, complete=False, reason=(
+                            "retained-contract-complete" if complete else "retained-contract-prefix"),
+                        reuse=recovered["result"],
+                    ), github_output_path, contract_reconciliation_required=True,
+                        contract_next_phase=_contract_ready_phase(ready))
             if any(phase.get("state") == "reused" for phase in contract_result["phases"]):
                 _write_reused_carrier(
                     contract_result,

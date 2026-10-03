@@ -57,6 +57,12 @@ class ContractRetainedRecoveryTest(unittest.TestCase):
         builder = planner_fixture.ProductReuseTest()
         builder.root = self.source.root
         repository, revision = builder.reuse_wave_repository()
+        metadata_input = repository / "ci/products/aggregate.py"
+        metadata_input.parent.mkdir(parents=True)
+        metadata_input.write_bytes(b"# a\n")
+        subprocess.run(("git", "add", "ci/products/aggregate.py"), cwd=repository, check=True)
+        subprocess.run(("git", "commit", "-qm", "metadata authority"), cwd=repository, check=True)
+        revision = subprocess.check_output(("git", "rev-parse", "HEAD"), cwd=repository, text=True).strip()
         instances = tuple(sorted(fixture.PhaseInstanceId("contract", "contract", phase, "common")
                                  for phase in recovery.PHASES))
         inputs = {planner_fixture.PhaseInstanceId(instance.product, instance.component, instance.phase, instance.target): {
@@ -130,11 +136,77 @@ class ContractRetainedRecoveryTest(unittest.TestCase):
                 repository / "outputs.txt", repository_root=repository,
                 environ={"GITHUB_RUN_ID": "72", "GITHUB_RUN_ATTEMPT": str(current_consumer["producer"]["runAttempt"])})
         self.assertTrue(advanced["fullReuse"])
+        # One byte of metadata policy changes; B/P/V remain authenticated originals.
+        metadata_input.write_bytes(b"# b\n")
+        subprocess.run(("git", "add", "ci/products/aggregate.py"), cwd=repository, check=True)
+        subprocess.run(("git", "commit", "-qm", "metadata-only correction"), cwd=repository, check=True)
+        new_revision = subprocess.check_output(("git", "rev-parse", "HEAD"), cwd=repository, text=True).strip()
+        partial_request = {**request, "repositoryRevision": new_revision}
+        partial = recovery.replay_retained_contract(
+            captured, partial_request, self.source.root / "partial", consumer=consumer,
+            allow_partial=True, **trust)
+        selected = tuple(instance for instance in instances if instance.phase != "metadata")
+        partial_carrier = recovery.transport.verify_carrier(self.source.root / "partial", selected, consumer)
+        self.assertFalse(partial["result"]["fullReuse"])
+        self.assertEqual("build-required", partial["result"]["result"])
+        self.assertEqual({"binary", "package", "validation"},
+                         {item["phase"] for item in partial["request"]["availableObjects"]})
+        self.assertEqual({phase: (chain / f"{phase}-receipt.json").read_bytes()
+                          for phase in ("binary", "package", "validation")},
+                         {item["phase"]: item["receiptBytes"] for item in partial_carrier["objects"]})
+        metadata_instance = next(instance for instance in instances if instance.phase == "metadata")
+        self.assertEqual({metadata_instance}, set(partial["readyPlans"]))
+        old_key = fixture.load_canonical_json_bytes(metadata_receipt.read_bytes())["buildKey"]
+        self.assertNotEqual(old_key, partial["readyPlans"][metadata_instance]["buildKey"])
+        with self.assertRaisesRegex(ValueError, "current computed phase keys"):
+            recovery.replay_retained_contract(captured, partial_request, self.source.root / "strict-miss",
+                                             consumer=consumer, **trust)
+        self.assertFalse((self.source.root / "strict-miss").exists())
+        # Advance the actual partial carrier with only its newly elected M shard.
+        discovery.rename(repository / "build/full-product-reuse")
+        partial_discovery = discovery
+        shutil.copytree(captured, partial_discovery / "retained-contract/capture")
+        partial_consumer = {"kind": "ci", "producer": dict(current_consumer["producer"],
+            commit=new_revision,
+            tree=subprocess.check_output(("git", "rev-parse", "HEAD^{tree}"), cwd=repository, text=True).strip())}
+        current_partial = recovery.replay_retained_contract(
+            partial_discovery / "retained-contract/capture",
+            {**partial_request, "artifactRoot": str(partial_discovery)},
+            partial_discovery / "reused-carrier", consumer=partial_consumer, allow_partial=True, **trust)
+        for name, document in (("contract-reuse-request.json", current_partial["request"]),
+                               ("contract-reuse-result.json", current_partial["result"]),
+                               ("producer.json", partial_consumer["producer"])):
+            fixture.product_reuse.write_canonical_json(partial_discovery / name, document)
+        metadata_shard = repository / "build/new-metadata-shard"
+        # Metadata output is already deterministic: no compiler/package rebuild.
+        fixture.finalize_phase_object(
+            stage_root=chain / "metadata", phase_plan=current_partial["readyPlans"][metadata_instance],
+            producer=partial_consumer["producer"], product_version=request["versions"]["contract"],
+            trust_domain="development", destination=metadata_shard)
+        partial_plan = {**plan, "validationCommit": new_revision,
+                        "validationTree": partial_consumer["producer"]["tree"]}
+        advanced_root = repository / "build/after-partial"
+        with mock.patch.object(recovery.transport, "_validate_plan", return_value=partial_plan), \
+                mock.patch.object(recovery.transport, "_versions", return_value=request["versions"]), \
+                mock.patch.object(recovery.transport, "_release_trust", return_value=release_trust):
+            advanced_partial = recovery.transport.advance_contract(
+                repository / "plan.json", partial_discovery, None, [metadata_shard], advanced_root,
+                repository / "partial-outputs.txt", repository_root=repository,
+                environ={"GITHUB_RUN_ID": "72", "GITHUB_RUN_ATTEMPT": str(partial_consumer["producer"]["runAttempt"])})
+        self.assertTrue(advanced_partial["fullReuse"])
+        complete_carrier = recovery.transport.verify_carrier(advanced_root / "carrier", instances, partial_consumer)
+        self.assertEqual({item["phase"]: item["receiptBytes"] for item in partial_carrier["objects"]},
+                         {item["phase"]: item["receiptBytes"] for item in complete_carrier["objects"]
+                          if item["phase"] != "metadata"})
         signature = handoff / f"codex-agent-contract-{planner_fixture.VERSIONS['contract']}.attestation.sig"
         signature.write_bytes(b"tampered signature\n")
         with self.assertRaises(ValueError):
             recovery.replay_retained_contract(captured, request, self.source.root / "tampered", consumer=consumer, **trust)
         self.assertFalse((self.source.root / "tampered").exists())
+        with self.assertRaises(ValueError):
+            recovery.replay_retained_contract(captured, partial_request, self.source.root / "tampered-partial",
+                                             consumer=consumer, allow_partial=True, **trust)
+        self.assertFalse((self.source.root / "tampered-partial").exists())
 
     def test_scan_pairs_official_uploads_and_forwards_reviewed_original_policy(self):
         consumer = dict(self.source.producer, runId=self.source.producer["runId"] + 100)
@@ -167,6 +239,7 @@ class ContractRetainedRecoveryTest(unittest.TestCase):
 
         def replay(captured_root, supplied_request, destination, **kwargs):
             self.assertEqual(request, supplied_request)
+            self.assertTrue(kwargs["allow_partial"])
             destination.mkdir()
             (destination / "carrier.json").write_bytes(b"{}\n")
             return {"result": {"fullReuse": True}, "resolution": {}, "request": {
