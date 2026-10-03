@@ -26,6 +26,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
     def test_scoped_recovery_cannot_pass_the_final_merge_gate(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / '.github/workflows/product-validation.yml').read_text()
+        self.assertIn("!inputs.runtimeRecoveryOnly", workflow_job(workflow, "consumers"))
         gate = workflow_job(workflow, 'merge-gate')
         step = re.split(r'(?=^      - )', gate, flags=re.MULTILINE)[1]
         result = subprocess.run(['bash', '-c', shell(step)],
