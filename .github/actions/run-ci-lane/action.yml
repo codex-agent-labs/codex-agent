@@ -32,6 +32,9 @@ inputs:
   reuse-disabled:
     description: Execute from already transported inputs without another remote reuse lookup.
     default: "false"
+  sdk-prerequisite-reuse:
+    description: Share authenticated negative lookup results for the three SDK Apple prerequisites.
+    default: "false"
   producer-identities:
     description: Optional directory containing exact auxiliary producer identity manifests.
     default: ""
@@ -207,6 +210,7 @@ runs:
         --github-output "$GITHUB_OUTPUT"
     - id: reuse
       env:
+        SDK_PREREQUISITE_REUSE: ${{ inputs.sdk-prerequisite-reuse }}
         ARM_PRODUCER_IDENTITY: ${{ steps.producer-identities.outputs.arm_digest }}
         DISABLE_REUSE: ${{ inputs.reuse-disabled }}
         GITHUB_TOKEN: ${{ github.token }}
@@ -240,7 +244,12 @@ runs:
             --toolchain "producerLinuxX64CrossBuilder=$X64_PRODUCER_IDENTITY"
           )
         fi
-        python3 ci/reuse.py --plan build/ci/impact-plan.json --lane "$LANE" \
+        lookup=(python3 ci/reuse.py)
+        if [ "$SDK_PREREQUISITE_REUSE" = true ]; then
+          lookup=(python3 .github/actions/run-ci-lane/sdk_prerequisite_reuse.py
+            --production-destination build/ci/reuse/production)
+        fi
+        "${lookup[@]}" --plan build/ci/impact-plan.json --lane "$LANE" \
           --destination build/ci/reuse/full --mode full --github-output "$GITHUB_OUTPUT" \
           --runner "os=$RUNNER_OS" --runner "arch=$RUNNER_ARCH" --runner "image=$RUNNER_IMAGE" \
           --runner "imageVersion=$RUNNER_IMAGE_VERSION" \
@@ -260,6 +269,12 @@ runs:
     - id: production
       if: steps.reuse.outputs.reused != 'true'
       env:
+        COMBINED_COMPLETE: ${{ steps.reuse.outputs.production_discovery_complete }}
+        COMBINED_REUSED: ${{ steps.reuse.outputs.production_reused }}
+        COMBINED_REASON: ${{ steps.reuse.outputs.production_reason }}
+        COMBINED_NAME: ${{ steps.reuse.outputs.production_artifact_name }}
+        COMBINED_RUN_ID: ${{ steps.reuse.outputs.production_source_run_id }}
+        COMBINED_RUN_ATTEMPT: ${{ steps.reuse.outputs.production_source_run_attempt }}
         ARM_PRODUCER_IDENTITY: ${{ steps.producer-identities.outputs.arm_digest }}
         DISABLE_REUSE: ${{ inputs.reuse-disabled }}
         GITHUB_TOKEN: ${{ github.token }}
@@ -287,6 +302,11 @@ runs:
         fi
         if [ "$DISABLE_REUSE" = true ]; then
           printf 'reused=false\nmode=production\nreason=disabled\n' >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if [ "$COMBINED_COMPLETE" = true ]; then
+          printf 'reused=%s\nmode=production\nreason=%s\nartifact_name=%s\nsource_run_id=%s\nsource_run_attempt=%s\n' \
+            "$COMBINED_REUSED" "$COMBINED_REASON" "$COMBINED_NAME" "$COMBINED_RUN_ID" "$COMBINED_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
           exit 0
         fi
         producer_toolchain=()

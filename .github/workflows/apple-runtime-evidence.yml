@@ -113,6 +113,7 @@ jobs:
         uses: ./.github/actions/run-ci-lane
         with:
           lane: ios-native-tests
+          sdk-prerequisite-reuse: ${{ inputs.sdkBinaryOnly }}
           plan-artifact: ${{ inputs.planArtifact }}
           validation-commit: ${{ inputs.validationCommit }}
           validation-tree: ${{ inputs.validationTree }}
@@ -137,6 +138,7 @@ jobs:
         uses: ./.github/actions/run-ci-lane
         with:
           lane: ios-rust-device
+          sdk-prerequisite-reuse: ${{ inputs.sdkBinaryOnly }}
           plan-artifact: ${{ inputs.planArtifact }}
           validation-commit: ${{ inputs.validationCommit }}
           validation-tree: ${{ inputs.validationTree }}
@@ -161,6 +163,7 @@ jobs:
         uses: ./.github/actions/run-ci-lane
         with:
           lane: ios-rust-simulator
+          sdk-prerequisite-reuse: ${{ inputs.sdkBinaryOnly }}
           plan-artifact: ${{ inputs.planArtifact }}
           validation-commit: ${{ inputs.validationCommit }}
           validation-tree: ${{ inputs.validationTree }}

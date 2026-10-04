@@ -64,6 +64,8 @@ REUSE_FIXED_FILES = REUSE_NEW_FILES | {
 }
 REUSE_FIXED_FILES -= REFERENCE_TRANSPORT_FILES
 SDK_CONTROL_FILES = {
+    ".github/actions/run-ci-lane/action.yml", ".github/actions/run-ci-lane/sdk_prerequisite_reuse.py",
+    "ci/tests/test_sdk_prerequisite_reuse.py",
     ".github/workflows/apple-runtime-evidence.yml", "ci/sdk_handoff.py", "ci/sdk_workflow.py",
     "ci/tests/test_runtime_original_ci.py", "ci/tests/test_sdk_handoff.py",
     "ci/tests/test_sdk_workflow.py", "ci/tests/test_sdk_ios_binary_worker_wiring.py",
@@ -81,6 +83,7 @@ SDK_CONTROL_FILES = {
     "gradle/build-logic/src/test/kotlin/CrossLanguageJavaBindingTasksTest.kt",
 }
 NEW_FILES |= REUSE_NEW_FILES
+NEW_FILES |= {".github/actions/run-ci-lane/sdk_prerequisite_reuse.py", "ci/tests/test_sdk_prerequisite_reuse.py"}
 NEW_FILES.add("ci/tests/test_reference_archive_download.py")
 NEW_FILES.add("gradle/build-logic/src/test/kotlin/CrossLanguageJavaBindingTasksTest.kt")
 CONTROL_FILES = CORRECTED_FILES | PRODUCT_CORRECTION_FILES | NEW_FILES | {
