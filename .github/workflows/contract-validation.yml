@@ -648,7 +648,7 @@ jobs:
   contract-attestation:
     name: contract-attestation
     if: >-
-      fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      always() && !cancelled() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
       fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
       fromJSON(inputs.planOutputs).validation_reused != 'true' &&
       github.event_name != 'workflow_dispatch' &&

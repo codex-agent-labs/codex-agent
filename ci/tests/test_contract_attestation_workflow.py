@@ -152,6 +152,10 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
         self.assertTrue(consumed <= declared, consumed - declared)
         self.assertIn("needs: [plan]", workflow_job(self.parent, "contract-validation"))
         self.assertIn("always() && !cancelled() && needs.plan.result == 'success'", workflow_job(self.parent, "contract-validation"))
+        forward = workflow_job(self.workflow, 'contract-attestation')
+        self.assertIn('always() && !cancelled()', forward)
+        self.assertIn("needs.contract-continuation.result == 'success'", forward)
+        self.assertIn("needs.contract-continuation.outputs.contract_complete == 'true'", forward)
         for name, predecessors in (
             ("tooling-attestation", "needs: [contract-binary]"),
             ("product-tooling", "needs: [tooling-attestation]"),
