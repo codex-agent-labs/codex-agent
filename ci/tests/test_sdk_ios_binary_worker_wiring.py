@@ -182,6 +182,15 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
         self.assertIn('test "$AGGREGATE_PAYLOAD_COMPLETE" = true', self.job('runtime-continuation'))
 
     def test_sdk_recovery_preserves_original_handoff_and_separates_replay_authority(self):
+        caller = (ROOT / '.github/workflows/ci.yml').read_text()
+        locator = json.loads(re.search(r"^      runtimeAggregateHandoffRecovery: '([^']+)'$", caller, re.MULTILINE)[1])
+        self.assertEqual({'artifactId', 'artifactSha256', 'originalProducer', 'trustedWorkflowSha'}, set(locator))
+        self.assertEqual(11271945915, locator['artifactId'])
+        self.assertEqual('sha256:79e7b75470ab73b2ce3b14304bde1efa9da738956a14117e611754914db3529b', locator['artifactSha256'])
+        self.assertEqual('cec458a479c0556d39aa6a75b18311500ce66d71', locator['trustedWorkflowSha'])
+        self.assertEqual((37081083913, 1, 'db38c174a2db6f02ff6b6e2091e809681d83a4d9',
+                          '9e500ae9373416a16f09fb4a264cd0c9c22513e8'),
+                         tuple(locator['originalProducer'][field] for field in ('runId', 'runAttempt', 'commit', 'tree')))
         inputs = self.job('sdk-inputs')
         for value in ('needs.runtime-aggregate-continuation.outputs.aggregate_key',
                       'needs.runtime-aggregate-continuation.outputs.aggregate_receipt_sha256',
