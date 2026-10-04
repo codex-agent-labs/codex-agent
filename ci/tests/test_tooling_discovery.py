@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import textwrap
 import unittest
 from unittest import mock
 
@@ -21,6 +22,47 @@ WORKFLOW_PIN = "c" * 40
 
 @unittest.skipUnless(shutil.which("ssh-keygen"), "OpenSSH signing tool unavailable")
 class ToolingDiscoveryTest(unittest.TestCase):
+    def test_shared_capture_action_passes_original_authority_and_current_policy(self):
+        prior = '084542245fba5fca34be4ad52e8113ac3f701f16'
+        run = copy.deepcopy(self.fixture.run)
+        run['referenced_workflows'] = [
+            {'path': f'codex-agent-labs/codex-agent/.github/workflows/{name}@{prior}', 'sha': prior}
+            for name in ('product-validation.yml', 'contract-validation.yml')]
+        action = (Path(__file__).resolve().parents[2] /
+                  '.github/actions/capture-sdk-tooling/action.yml').read_text()
+        code = textwrap.dedent(action.split("python3 -B - <<'PY'\n", 1)[1].split('\n        PY', 1)[0])
+        java_home = self.root / 'java-home'
+        (java_home / 'bin').mkdir(parents=True)
+        (java_home / 'bin/java').write_bytes(self.fixture.java.read_bytes())
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        env = {'GITHUB_WORKSPACE': str(self.fixture.source.repository), 'JAVA_HOME': str(java_home),
+               'RUNNER_TEMP': str(scratch), 'TRANSPORT_PRODUCER': json.dumps(self.fixture.producer),
+               'TRUSTED_WORKFLOW_SHA': WORKFLOW_PIN,
+               'TRUSTED_WORKFLOW_PATH': '.github/workflows/contract-validation.yml',
+               'TRUSTED_JOB_NAME': 'product-validation / contract-validation / tooling-attestation',
+               'POLICY_REVISION': self.fixture.source.source_sha, 'ARTIFACT_ID': '901',
+               'ARTIFACT_SHA256': sha256_bytes(self.fixture.raw), 'GITHUB_TOKEN': TOKEN,
+               'GITHUB_OUTPUT': str(self.root / 'action-output'), 'PLAN_ID': ''}
+
+        def capture(argv, **kwargs):
+            self.assertEqual(prior, argv[argv.index('--trusted-workflow-sha') + 1])
+            self.assertEqual(env['POLICY_REVISION'], argv[argv.index('--policy-revision') + 1])
+            self.assertEqual(env['TRUSTED_JOB_NAME'], argv[argv.index('--trusted-job-name') + 1])
+            destination = Path(argv[argv.index('--destination') + 1])
+            destination.mkdir()
+            (destination / 'tooling-policy.json').write_bytes(b'composition fixture; not authenticated evidence\n')
+
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(tooling_discovery, 'api_json', return_value=run), \
+                mock.patch('subprocess.run', side_effect=capture) as invoked:
+            exec(compile(code, 'capture-sdk-tooling/action.yml', 'exec'), {})
+            invoked.assert_called_once()
+            run['referenced_workflows'][1]['sha'] = WORKFLOW_PIN
+            with self.assertRaises(ValueError):
+                exec(compile(code, 'capture-sdk-tooling/action.yml', 'exec'), {})
+            invoked.assert_called_once()
+
     def test_original_nested_workflow_survives_pin_rotation_and_rejects_mismatch(self):
         prior = '084542245fba5fca34be4ad52e8113ac3f701f16'
         run = copy.deepcopy(self.fixture.run)

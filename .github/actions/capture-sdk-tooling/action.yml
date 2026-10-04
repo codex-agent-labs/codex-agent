@@ -56,6 +56,7 @@ runs:
         import os, subprocess, sys, tempfile
         from pathlib import Path
         from ci.products.inventory import canonical_json_bytes, load_json_bytes, read_regular_file_bytes
+        from ci.tooling_discovery import _original_tooling_workflow
         repository = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
         java_home = Path(os.environ['JAVA_HOME'])
         scratch_root = Path(os.environ['RUNNER_TEMP'])
@@ -76,11 +77,22 @@ runs:
             '--trusted-workflow-path', os.environ['TRUSTED_WORKFLOW_PATH'],
             '--trusted-job-name', os.environ['TRUSTED_JOB_NAME'],
         ] if os.environ['TRUSTED_WORKFLOW_PATH'] else [])
+        original_sha = os.environ['TRUSTED_WORKFLOW_SHA']
+        if (os.environ['TRUSTED_WORKFLOW_PATH'], os.environ['TRUSTED_JOB_NAME']) in (
+            ('', ''), ('.github/workflows/contract-validation.yml',
+                       'product-validation / contract-validation / tooling-attestation'),
+        ):
+            original = _original_tooling_workflow(producer, original_sha, os.environ['GITHUB_TOKEN'])
+            original_sha = original['trusted_workflow_sha']
+            workflow_policy = ([
+                '--trusted-workflow-path', original['trusted_workflow_path'],
+                '--trusted-job-name', original['trusted_job_name'],
+            ] if 'trusted_workflow_path' in original else [])
         subprocess.run([sys.executable, '-B', '-m', 'ci.tooling_capture',
             '--destination', str(destination), '--repository-root', str(repository),
             '--transport-producer', str(producer_path), '--java-executable', str(java),
             '--artifact-id', os.environ['ARTIFACT_ID'], '--artifact-sha256', os.environ['ARTIFACT_SHA256'],
-            '--trusted-workflow-sha', os.environ['TRUSTED_WORKFLOW_SHA'], '--policy-revision', os.environ['POLICY_REVISION'],
+            '--trusted-workflow-sha', original_sha, '--policy-revision', os.environ['POLICY_REVISION'],
             *workflow_policy],
             cwd=repository, env=os.environ, check=True)
         policy = destination / 'tooling-policy.json'

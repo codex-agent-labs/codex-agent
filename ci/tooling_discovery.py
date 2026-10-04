@@ -28,6 +28,9 @@ _NAME = re.compile(r"codex-agent-release-tooling-([0-9a-f]{40})-attempt-([1-9][0
 
 
 def _original_tooling_workflow(producer, current_sha, token):
+    producer = validate_producer(producer, 'Original tooling producer hint')
+    if not isinstance(current_sha, str) or re.fullmatch(r'[0-9a-f]{40}', current_sha) is None:
+        raise ValueError('Tooling workflow requires a pinned current SHA')
     run = api_json(f"{_API}/runs/{producer['runId']}/attempts/{producer['runAttempt']}", token)
     pin = _runtime_prior_workflow_sha(run, current_sha)
     if pin is None:

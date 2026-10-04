@@ -68,6 +68,7 @@ SDK_CONTROL_FILES = {
     "ci/tests/test_runtime_original_ci.py", "ci/tests/test_sdk_handoff.py",
     "ci/tests/test_sdk_workflow.py", "ci/tests/test_sdk_ios_binary_worker_wiring.py",
     "ci/tooling_discovery.py", "ci/tests/test_tooling_discovery.py",
+    ".github/actions/capture-sdk-tooling/action.yml",
     "ci/tests/test_product_resume_workflow.py",
     ".github/workflows/sdk-binding-parity.yml",
     "gradle/build-logic/src/main/kotlin/CrossLanguageJavaBindingTasks.kt",
