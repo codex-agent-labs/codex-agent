@@ -2091,7 +2091,7 @@ jobs:
           fresh=()
           tooling=()
           if [ "$SDK_RECOVERY_ONLY" = true ] && [ "$SDK_SOURCE" = current-runtime ]; then
-            printf '%s' "$ORIGINAL_RUNTIME_HANDOFF" > "$RUNNER_TEMP/runtime-original-locator.json"
+            printf '%s\n' "$ORIGINAL_RUNTIME_HANDOFF" > "$RUNNER_TEMP/runtime-original-locator.json"
             python3 - <<'PY'
           import os
           from pathlib import Path

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import tempfile
 import textwrap
 import unittest
@@ -202,6 +203,17 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
                           '9e500ae9373416a16f09fb4a264cd0c9c22513e8'),
                          tuple(locator['originalProducer'][field] for field in ('runId', 'runAttempt', 'commit', 'tree')))
         inputs = self.job('sdk-inputs')
+        # Execute the real writer/strict reader with the preserved caller locator.
+        block = inputs.split('          if [ "$SDK_RECOVERY_ONLY" = true ] && [ "$SDK_SOURCE" = current-runtime ]; then\n', 1)[1].split('          fi\n', 1)[0]
+        with tempfile.TemporaryDirectory(prefix="sdk-original-locator-") as temporary:
+            environment = dict(os.environ, RUNNER_TEMP=str(Path(temporary).resolve()),
+                               ORIGINAL_RUNTIME_HANDOFF=re.search(r"^      runtimeAggregateHandoffRecovery: '([^']+)'$", caller, re.MULTILINE)[1])
+            result = subprocess.run(["bash", "-e", "-u", "-o", "pipefail", "-c", textwrap.dedent(block)],
+                                    cwd=ROOT, env=environment, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            from ci.products.inventory import load_canonical_json_bytes
+            self.assertEqual(locator, load_canonical_json_bytes((Path(temporary) / 'runtime-original-locator.json').read_bytes()))
+            self.assertEqual(locator['originalProducer'], load_canonical_json_bytes((Path(temporary) / 'runtime-original-producer.json').read_bytes()))
         for value in ('needs.runtime-aggregate-continuation.outputs.aggregate_key',
                       'needs.runtime-aggregate-continuation.outputs.aggregate_receipt_sha256',
                       '--runtime-original-producer', '--runtime-original-workflow-sha',
