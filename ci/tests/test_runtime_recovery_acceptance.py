@@ -84,7 +84,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         for name in recovery.PRODUCT_CORRECTION_FILES:
             self.write(self.trusted, name, "fixed reviewed metadata verifier\n")
         self.product_correction = self.commit(self.trusted, "fixed metadata verifier")
-        for name in recovery.REUSE_FIXED_FILES:
+        for name in recovery.REUSE_FIXED_FILES | (recovery.REFERENCE_TRANSPORT_FILES & recovery.REUSE_NEW_FILES):
             self.write(self.trusted, name, "fixed reviewed reuse control\n")
         self.reuse_correction = self.commit(self.trusted, "fixed reuse controls")
         for name in recovery.NEW_FILES - recovery.REUSE_NEW_FILES:
@@ -130,6 +130,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         for attribute, value in (("BASELINE_PRODUCER", self.producer), ("CORRECTION_REVISION", self.correction),
                                  ("PRODUCT_CORRECTION_REVISION", self.product_correction),
                                  ("REUSE_CONTROL_REVISION", self.reuse_correction),
+                                 ("REFERENCE_TRANSPORT_REVISION", self.reviewed),
                                  ("__file__", str(self.trusted / recovery.HELPER))):
             patcher = mock.patch.object(recovery, attribute, value)
             patcher.start()
@@ -202,7 +203,9 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
 
     def test_reviewed_revision_still_rejects_changed_product_correction_selector_and_mode(self):
         for path in ("runtime/product.txt", ".github/actions/prepare-runtime-signing/action.yml",
-                     "ci/products/aggregate.py", "ci/products/verified_evidence.py", SELECTOR, recovery.HELPER):
+                     "ci/products/aggregate.py", "ci/products/verified_evidence.py",
+                     "ci/runtime_reference_archive.py", "ci/tests/test_reference_archive_download.py",
+                     SELECTOR, recovery.HELPER):
             with self.subTest(path=path):
                 original = self.reviewed
                 self.git(self.trusted, "checkout", "--quiet", "--detach", original)

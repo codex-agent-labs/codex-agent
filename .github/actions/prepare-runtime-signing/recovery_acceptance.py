@@ -45,6 +45,9 @@ HELPER = ".github/actions/prepare-runtime-signing/recovery_acceptance.py"
 NEW_FILES = {HELPER, "ci/tests/test_runtime_recovery_acceptance.py"}
 # The completed reuse controls keep their independently reviewed immutable bytes.
 REUSE_CONTROL_REVISION = "b95e95744924e84155330ac911f1078ced79ad6f"
+# Only the per-open download transport is corrected; phase trust stays at B95.
+REFERENCE_TRANSPORT_REVISION = "7fa71dc38f1e5107a7bdd53ae7f3fe4128fb247b"
+REFERENCE_TRANSPORT_FILES = {"ci/runtime_reference_archive.py", "ci/tests/test_reference_archive_download.py"}
 REUSE_NEW_FILES = {
     "ci/products/verified_evidence.py", "ci/runtime_reference_archive.py",
     "ci/runtime_reference_transport.py", "ci/tests/test_persistent_runtime_evidence.py",
@@ -59,10 +62,12 @@ REUSE_FIXED_FILES = REUSE_NEW_FILES | {
     "ci/tests/test_runtime_aggregate_upload.py", "ci/tests/test_runtime_prepared_state.py",
     "ci/tests/test_runtime_signing_preparation.py",
 }
+REUSE_FIXED_FILES -= REFERENCE_TRANSPORT_FILES
 SDK_CONTROL_FILES = {
     ".github/workflows/apple-runtime-evidence.yml", "ci/sdk_handoff.py", "ci/sdk_workflow.py",
     "ci/tests/test_runtime_original_ci.py", "ci/tests/test_sdk_handoff.py",
     "ci/tests/test_sdk_workflow.py", "ci/tests/test_sdk_ios_binary_worker_wiring.py",
+    "ci/tooling_discovery.py", "ci/tests/test_tooling_discovery.py",
     "ci/tests/test_product_resume_workflow.py",
     ".github/workflows/sdk-binding-parity.yml",
     "gradle/build-logic/src/main/kotlin/CrossLanguageJavaBindingTasks.kt",
@@ -75,6 +80,7 @@ SDK_CONTROL_FILES = {
     "gradle/build-logic/src/test/kotlin/CrossLanguageJavaBindingTasksTest.kt",
 }
 NEW_FILES |= REUSE_NEW_FILES
+NEW_FILES.add("ci/tests/test_reference_archive_download.py")
 NEW_FILES.add("gradle/build-logic/src/test/kotlin/CrossLanguageJavaBindingTasksTest.kt")
 CONTROL_FILES = CORRECTED_FILES | PRODUCT_CORRECTION_FILES | NEW_FILES | {
     CI, ".github/workflows/product-validation.yml",
@@ -90,7 +96,7 @@ CONTROL_FILES = CORRECTED_FILES | PRODUCT_CORRECTION_FILES | NEW_FILES | {
     "ci/tests/test_runtime_native_attestation_workflow.py",
     "ci/tests/test_runtime_aggregate_attestation_workflow.py",
 }
-CONTROL_FILES |= REUSE_FIXED_FILES | SDK_CONTROL_FILES
+CONTROL_FILES |= REUSE_FIXED_FILES | SDK_CONTROL_FILES | REFERENCE_TRANSPORT_FILES
 
 
 def _tree(root, revision):
@@ -145,6 +151,10 @@ def _reviewed_scope(trusted, candidate, sha):
     if any(reuse_reviewed.get(path, ())[:2] != ("100644", "blob")
            or reviewed.get(path) != reuse_reviewed[path] for path in REUSE_FIXED_FILES):
         raise ValueError("Completed reuse controls differ from their fixed reviewed checkpoint")
+    transport_reviewed = _tree(trusted, REFERENCE_TRANSPORT_REVISION)
+    if any(transport_reviewed.get(path, ())[:2] != ("100644", "blob")
+           or reviewed.get(path) != transport_reviewed[path] for path in REFERENCE_TRANSPORT_FILES):
+        raise ValueError("Reference transport differs from its fixed reviewed correction")
     current = _tree(candidate, "HEAD")
     if current.keys() != reviewed.keys() or any(
         current[path] != reviewed[path] for path in current if path != CI

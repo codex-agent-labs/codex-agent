@@ -156,6 +156,9 @@ jobs:
           ci.tests.test_runtime_native_attestation_workflow
           ci.tests.test_runtime_aggregate_attestation_workflow
           ci.tests.test_tooling_capture
+          ci.tests.test_tooling_discovery
+          ci.tests.test_reference_archive_download
+          ci.tests.test_runtime_reference_transport
           ci.tests.test_runtime_signing_workflow_isolation
           ci.tests.test_product_selection -v
       - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly'
