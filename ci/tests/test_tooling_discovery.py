@@ -1,6 +1,7 @@
 """Synthetic signed-tooling discovery checks; never hosted execution acceptance."""
 
 import io
+import copy
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,23 @@ WORKFLOW_PIN = "c" * 40
 
 @unittest.skipUnless(shutil.which("ssh-keygen"), "OpenSSH signing tool unavailable")
 class ToolingDiscoveryTest(unittest.TestCase):
+    def test_original_nested_workflow_survives_pin_rotation_and_rejects_mismatch(self):
+        prior = '084542245fba5fca34be4ad52e8113ac3f701f16'
+        run = copy.deepcopy(self.fixture.run)
+        run['referenced_workflows'] = [
+            {'path': f'codex-agent-labs/codex-agent/.github/workflows/{name}@{prior}', 'sha': prior}
+            for name in ('product-validation.yml', 'contract-validation.yml')]
+        with mock.patch.object(tooling_discovery, 'api_json', return_value=run):
+            policy = tooling_discovery._original_tooling_workflow(self.fixture.producer, WORKFLOW_PIN, TOKEN)
+            self.assertEqual(prior, policy['trusted_workflow_sha'])
+            self.assertEqual('.github/workflows/contract-validation.yml', policy['trusted_workflow_path'])
+            run['referenced_workflows'][1]['sha'] = WORKFLOW_PIN
+            with self.assertRaises(ValueError):
+                tooling_discovery._original_tooling_workflow(self.fixture.producer, WORKFLOW_PIN, TOKEN)
+            run['referenced_workflows'][0]['sha'] = WORKFLOW_PIN
+            with self.assertRaises(ValueError):
+                tooling_discovery._original_tooling_workflow(self.fixture.producer, WORKFLOW_PIN, TOKEN)
+
     def setUp(self):
         fixture = capture_fixture.ToolingCaptureTest(methodName="runTest")
         fixture.setUp()

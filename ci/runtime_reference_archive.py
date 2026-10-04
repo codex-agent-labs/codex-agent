@@ -9,6 +9,8 @@ from contextlib import contextmanager
 import hashlib
 import io
 import stat
+import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 
@@ -28,6 +30,7 @@ class _Archive(io.RawIOBase):
         if artifact.get('archive_download_url') != self.url:
             raise ValueError('Reference archive is outside the official artifact endpoint')
         self.token, self.position, self.etag, self.transferred = token, 0, None, 0
+        self.download_url = self.url
         self.opener = urllib.request.build_opener(OriginBoundRedirectHandler())
 
     def readable(self):
@@ -57,11 +60,24 @@ class _Archive(io.RawIOBase):
         if not size:
             return b''
         begin, end = self.position, self.position + size - 1
-        headers = {'Range': f'bytes={begin}-{end}', 'Accept': 'application/vnd.github+json',
-                   'Authorization': f'Bearer {self.token}', 'X-GitHub-Api-Version': '2022-11-28'}
+        headers = {'Range': f'bytes={begin}-{end}'}
         if self.etag is not None:
             headers['If-Match'] = self.etag
-        with self.opener.open(urllib.request.Request(self.url, headers=headers), timeout=60) as response:
+        def open_range(url):
+            request_headers = dict(headers)
+            if url == self.url:
+                request_headers.update({'Accept': 'application/vnd.github+json',
+                    'Authorization': f'Bearer {self.token}', 'X-GitHub-Api-Version': '2022-11-28'})
+            return self.opener.open(urllib.request.Request(url, headers=request_headers), timeout=60)
+        try:
+            response = open_range(self.download_url)
+        except urllib.error.HTTPError as error:
+            if error.code != 403 or self.download_url == self.url:
+                raise
+            error.close()
+            # A signed download link may expire; refresh once, preserving the ETag.
+            response = open_range(self.url)
+        with response:
             etag = response.headers.get('ETag')
             if (response.status != 206 or response.headers.get('Content-Range') !=
                     f'bytes {begin}-{end}/{self.size}' or not etag or self.etag not in (None, etag)):
@@ -69,6 +85,11 @@ class _Archive(io.RawIOBase):
             raw = response.read(size + 1)
             if len(raw) != size:
                 raise ValueError('Reference archive range was truncated or amplified')
+            resolved = getattr(response, 'geturl', lambda: self.url)()
+            parsed = urllib.parse.urlsplit(resolved)
+            if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError('Reference archive download URL is unsafe')
+            self.download_url = resolved
             self.etag = etag
         self.position += size
         self.transferred += size

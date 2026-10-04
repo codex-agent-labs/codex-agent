@@ -10,7 +10,10 @@ import tempfile
 if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from product_reuse import _CATALOG_LIMIT, _CATALOG_ZIP_LIMITS, _release_trust
+from product_reuse import (
+    _CATALOG_LIMIT, _CATALOG_ZIP_LIMITS, _release_trust,
+    _runtime_prior_workflow_sha, _require_ci_workflow_reference,
+)
 from reuse import api_json, download_artifact, paginated_items
 from tooling_capture import capture_tooling_ci
 from products.inventory import (
@@ -22,6 +25,21 @@ from products.receipt import validate_producer
 
 _API = "https://api.github.com/repos/codex-agent-labs/codex-agent/actions"
 _NAME = re.compile(r"codex-agent-release-tooling-([0-9a-f]{40})-attempt-([1-9][0-9]*)")
+
+
+def _original_tooling_workflow(producer, current_sha, token):
+    run = api_json(f"{_API}/runs/{producer['runId']}/attempts/{producer['runAttempt']}", token)
+    pin = _runtime_prior_workflow_sha(run, current_sha)
+    if pin is None:
+        raise ValueError("Original tooling lacks a reviewed producer workflow")
+    path = ".github/workflows/contract-validation.yml"
+    if any(isinstance(ref, dict) and isinstance(ref.get('path'), str)
+           and ref['path'].split('@', 1)[0] == f"codex-agent-labs/codex-agent/{path}"
+           for ref in run['referenced_workflows']):
+        _require_ci_workflow_reference(run, f"codex-agent-labs/codex-agent/{path}@{pin}", pin)
+        return {'trusted_workflow_sha': pin, 'trusted_workflow_path': path,
+                'trusted_job_name': 'product-validation / contract-validation / tooling-attestation'}
+    return {'trusted_workflow_sha': pin}
 
 
 def candidate_run_ids(artifacts):
@@ -104,8 +122,8 @@ def discover_tooling_ci(destination, repository_root, *, candidate_run_ids,
                         raise ValueError("Tooling locator differs from original upload identity")
                     policy = capture_tooling_ci(prepared / "capture", repository,
                         artifact_id=identifier, artifact_sha256=digest, transport_producer=producer,
-                        trusted_workflow_sha=trusted_workflow_sha, policy_revision=policy_revision,
-                        java_executable=java, token=token)
+                        policy_revision=policy_revision, java_executable=java, token=token,
+                        **_original_tooling_workflow(producer, trusted_workflow_sha, token))
                 except (ValueError, OSError) as error:
                     attempt.update(result="miss", reason=str(error))
                     report["attempts"].append(attempt)

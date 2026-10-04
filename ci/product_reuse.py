@@ -497,6 +497,7 @@ def _require_ci_workflow_reference(run, workflow, sha):
 def _runtime_prior_workflow_sha(run, current_sha):
     # Prior genuine phases retain their original reviewed workflow authority after a pin rotation.
     for sha in dict.fromkeys((current_sha, _PRIOR_RUNTIME_WORKFLOW_SHA,
+                             "084542245fba5fca34be4ad52e8113ac3f701f16",
                              "cec458a479c0556d39aa6a75b18311500ce66d71",
                              "b4148a6320d3dfe8bfb556c6327937c6b304cf4c",
                              "9be996a3269c324ad1beae37a06ff65219e69806",
