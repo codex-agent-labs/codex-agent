@@ -12,6 +12,16 @@ on:
         required: false
         default: false
         type: boolean
+      sdkRecoveryOnly:
+        description: Continue only SDK Phase 9 from an unchanged authenticated Contract and Runtime closure
+        required: false
+        default: false
+        type: boolean
+      runtimeAggregateHandoffRecovery:
+        description: Caller-pinned original signed aggregate upload locator; independently authenticate before SDK use
+        required: false
+        default: ''
+        type: string
       runtimeNativeHandoffRecovery:
         description: Caller-pinned original successful native signing uploads; authenticate before reuse
         required: false
@@ -114,7 +124,7 @@ jobs:
         run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - run: '"$HOME/go/bin/actionlint"'
       - run: sudo install -d -m 1777 /private/tmp
-      - if: inputs.runtimeRecoveryOnly
+      - if: inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
@@ -123,7 +133,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Authenticate historical acceptance without claiming current full acceptance
-        if: inputs.runtimeRecoveryOnly
+        if: inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly
         env:
           GITHUB_TOKEN: ${{ github.token }}
           TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
@@ -133,7 +143,7 @@ jobs:
           --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA"
           --github-output "$RUNNER_TEMP/runtime-recovery-acceptance"
       - name: Verify reviewed recovery controls only
-        if: inputs.runtimeRecoveryOnly
+        if: inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly
         working-directory: recovery-reviewed-source
         run: >-
           python3 -B -m unittest
@@ -148,24 +158,24 @@ jobs:
           ci.tests.test_tooling_capture
           ci.tests.test_runtime_signing_workflow_isolation
           ci.tests.test_product_selection -v
-      - if: '!inputs.runtimeRecoveryOnly'
+      - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly'
         run: python3 -m unittest discover -s ci/tests -v
-      - if: '!inputs.runtimeRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
+      - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
         uses: ./.github/actions/setup-kmp
         with:
           cache-read-only: "true"
       - name: Provision declared plugins for offline build-logic fixtures
-        if: '!inputs.runtimeRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
+        if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
         run: ./gradlew help -Pkotlin.daemon.jvmargs=-Xmx2g --no-configuration-cache --stacktrace
       - name: Verify standalone build logic and isolated offline fixtures
-        if: '!inputs.runtimeRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
+        if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
         run: >-
           ./gradlew -p gradle/build-logic test
           -Pkotlin.daemon.jvmargs=-Xmx2g
           --configuration-cache --configuration-cache-problems=fail --no-build-cache
       - id: acceptance-kind
         env:
-          RECOVERY_ONLY: ${{ inputs.runtimeRecoveryOnly }}
+          RECOVERY_ONLY: ${{ inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly }}
         run: |
           if [ "$RECOVERY_ONLY" = true ]; then
             echo 'full_acceptance_current=false' >> "$GITHUB_OUTPUT"
@@ -320,6 +330,12 @@ jobs:
               output.write('product_matrix=' + json.dumps(matrix, separators=(',', ':')) + '\n')
               output.write('contract_matrix=' + json.dumps({'include': contracts}, separators=(',', ':')) + '\n')
           PY
+      - name: Require unchanged Contract ownership before SDK continuation
+        if: inputs.sdkRecoveryOnly
+        env:
+          CONTRACT_NEXT_PHASE: ${{ steps.product-reuse.outputs.contract_next_phase }}
+        run: |
+          test "$CONTRACT_NEXT_PHASE" = none
       - id: upload_plan
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -342,7 +358,7 @@ jobs:
 
   product:
     name: product-${{ matrix.lane }}
-    if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.product_matrix != '[]'
+    if: inputs.sdkRecoveryOnly != true && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.product_matrix != '[]'
     needs: [workflow-lint, plan]
     strategy:
       fail-fast: false
@@ -383,6 +399,7 @@ jobs:
     name: contract-phase10-pgp-authority
     needs: [plan, contract-validation]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -411,6 +428,7 @@ jobs:
     name: contract-phase10-maven
     needs: [plan, contract-validation, contract-phase10-pgp-authority]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -433,6 +451,7 @@ jobs:
     name: contract-phase10-output-record
     needs: [plan, contract-phase10-maven]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -539,6 +558,14 @@ jobs:
             --handoff build/product-resume-transport \
             --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
             --github-output "$GITHUB_OUTPUT" ${tooling[@]+"${tooling[@]}"}
+      - name: Require full Runtime reuse before SDK continuation
+        if: inputs.sdkRecoveryOnly
+        env:
+          RUNTIME_WORKERS_REQUIRED: ${{ steps.resume.outputs.runtime_workers_required }}
+          SUPERVISOR_KEY: ${{ steps.resume.outputs.supervisor_key }}
+        run: |
+          test "$RUNTIME_WORKERS_REQUIRED" = false
+          test -z "$SUPERVISOR_KEY"
       - name: Preserve the resumed state and all original transport evidence
         id: upload_resume
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -554,7 +581,7 @@ jobs:
   runtime-linux-arm64-supervisor:
     name: runtime-linux-arm64-supervisor
     needs: [plan, product-resume, contract-validation]
-    if: always() && needs.product-resume.result == 'success' && needs.product-resume.outputs.supervisor_key != ''
+    if: inputs.sdkRecoveryOnly != true && always() && needs.product-resume.result == 'success' && needs.product-resume.outputs.supervisor_key != ''
     runs-on: ubuntu-24.04-arm
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
@@ -648,6 +675,7 @@ jobs:
     name: runtime-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}
     needs: [plan, product-resume, runtime-linux-arm64-supervisor, contract-validation]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.product-resume.result == 'success' &&
@@ -737,6 +765,7 @@ jobs:
     name: runtime-collect-1
     needs: [plan, product-resume, runtime-workers-1, contract-validation]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && needs.product-resume.result == 'success' &&
       needs.product-resume.outputs.runtime_workers_required == 'true' &&
       needs.product-resume.outputs.wave_failed != 'true'
@@ -792,6 +821,7 @@ jobs:
     name: runtime-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}
     needs: [plan, runtime-collect-1, contract-validation]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.runtime-collect-1.result == 'success' &&
@@ -879,6 +909,7 @@ jobs:
     name: runtime-collect-2
     needs: [plan, runtime-collect-1, runtime-workers-2, contract-validation]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && needs.runtime-collect-1.result == 'success' &&
       needs.runtime-collect-1.outputs.runtime_workers_required == 'true' &&
       needs.runtime-collect-1.outputs.wave_failed != 'true'
@@ -934,6 +965,7 @@ jobs:
     name: runtime-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}
     needs: [plan, runtime-collect-2, contract-validation]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.runtime-collect-2.result == 'success' &&
@@ -1021,6 +1053,7 @@ jobs:
     name: runtime-collect-3
     needs: [plan, runtime-collect-2, runtime-workers-3, contract-validation]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && needs.runtime-collect-2.result == 'success' &&
       needs.runtime-collect-2.outputs.runtime_workers_required == 'true' &&
       needs.runtime-collect-2.outputs.wave_failed != 'true'
@@ -1076,6 +1109,7 @@ jobs:
     name: runtime-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}
     needs: [plan, runtime-collect-3, contract-validation]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.runtime-collect-3.result == 'success' &&
@@ -1163,6 +1197,7 @@ jobs:
     name: runtime-collect-4
     needs: [plan, runtime-collect-3, runtime-workers-4, contract-validation]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && needs.runtime-collect-3.result == 'success' &&
       needs.runtime-collect-3.outputs.runtime_workers_required == 'true' &&
       needs.runtime-collect-3.outputs.wave_failed != 'true'
@@ -1304,8 +1339,16 @@ jobs:
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           state-wave: ${{ steps.parent.outputs.state_wave }}
           continuation: selected
+      - name: Require the completed immutable Runtime aggregate for SDK continuation
+        if: inputs.sdkRecoveryOnly
+        env:
+          AGGREGATE_STATE: ${{ steps.captured.outputs.aggregate_state }}
+          AGGREGATE_PAYLOAD_COMPLETE: ${{ steps.captured.outputs.aggregate_payload_complete }}
+        run: |
+          test "$AGGREGATE_STATE" = completed
+          test "$AGGREGATE_PAYLOAD_COMPLETE" = true
       - id: retained
-        if: steps.captured.outputs.aggregate_required == 'true' && inputs.runtimeNativeHandoffRecovery != ''
+        if: '!inputs.sdkRecoveryOnly && steps.captured.outputs.aggregate_required == ''true'' && inputs.runtimeNativeHandoffRecovery != '''''
         env:
           GITHUB_TOKEN: ${{ github.token }}
           RECOVERY: ${{ inputs.runtimeNativeHandoffRecovery }}
@@ -1333,6 +1376,7 @@ jobs:
     name: runtime-signing-prepare-${{ matrix.target }}
     needs: [workflow-lint, plan, runtime-continuation, contract-validation]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       github.event_name != 'workflow_dispatch' &&
@@ -1397,6 +1441,7 @@ jobs:
     name: runtime-native-attestation-${{ matrix.target }}
     needs: [workflow-lint, plan, runtime-continuation, runtime-signing-prepare-native]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       github.event_name != 'workflow_dispatch' &&
@@ -1487,6 +1532,7 @@ jobs:
     name: runtime-runtime-aggregate-metadata-aggregate
     needs: [plan, runtime-continuation, runtime-native-attestation, contract-validation]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -1611,6 +1657,7 @@ jobs:
     name: runtime-collect-5
     needs: [plan, runtime-continuation, runtime-aggregate, contract-validation]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.runtime-continuation.result == 'success' &&
@@ -1761,6 +1808,7 @@ jobs:
     name: runtime-signing-prepare-aggregate
     needs: [workflow-lint, plan, runtime-aggregate-continuation, contract-validation]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       github.event_name != 'workflow_dispatch' &&
@@ -1821,6 +1869,7 @@ jobs:
     name: runtime-aggregate-attestation
     needs: [workflow-lint, plan, runtime-continuation, runtime-native-attestation, runtime-aggregate-continuation, runtime-signing-prepare-aggregate]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       github.event_name != 'workflow_dispatch' &&
@@ -1940,6 +1989,7 @@ jobs:
     name: runtime-phase10-maven
     needs: [plan, contract-phase10-pgp-authority, runtime-aggregate-attestation]
     if: >-
+      !inputs.sdkRecoveryOnly &&
       always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -1958,7 +2008,7 @@ jobs:
 
   sdk-inputs:
     name: sdk-inputs
-    needs: [workflow-lint, plan, contract-validation, runtime-continuation, runtime-aggregate-attestation]
+    needs: [workflow-lint, plan, contract-validation, runtime-continuation, runtime-aggregate-continuation, runtime-aggregate-attestation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -1966,7 +2016,10 @@ jobs:
       needs.runtime-continuation.result == 'success' &&
       needs.runtime-continuation.outputs.sdk_handoff_required == 'true' &&
       (fromJSON(needs.runtime-continuation.outputs.sdk_input_selection || '{}').source == 'released-default' ||
-       needs.runtime-aggregate-attestation.result == 'success')
+       needs.runtime-aggregate-attestation.result == 'success' ||
+       (inputs.sdkRecoveryOnly && needs.runtime-aggregate-continuation.result == 'success' &&
+        needs.runtime-aggregate-continuation.outputs.aggregate_payload_complete == 'true' &&
+        inputs.runtimeAggregateHandoffRecovery != ''))
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -2014,8 +2067,10 @@ jobs:
           SDK_SOURCE: ${{ fromJSON(needs.runtime-continuation.outputs.sdk_input_selection).source }}
           ARTIFACT_ID: ${{ needs.runtime-aggregate-attestation.outputs.artifact_id }}
           ARTIFACT_SHA256: ${{ needs.runtime-aggregate-attestation.outputs.artifact_digest }}
-          AGGREGATE_KEY: ${{ needs.runtime-aggregate-attestation.outputs.aggregate_key }}
-          AGGREGATE_RECEIPT: ${{ needs.runtime-aggregate-attestation.outputs.aggregate_receipt_sha256 }}
+          AGGREGATE_KEY: ${{ inputs.sdkRecoveryOnly && needs.runtime-aggregate-continuation.outputs.aggregate_key || needs.runtime-aggregate-attestation.outputs.aggregate_key }}
+          AGGREGATE_RECEIPT: ${{ inputs.sdkRecoveryOnly && needs.runtime-aggregate-continuation.outputs.aggregate_receipt_sha256 || needs.runtime-aggregate-attestation.outputs.aggregate_receipt_sha256 }}
+          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
+          ORIGINAL_RUNTIME_HANDOFF: ${{ inputs.runtimeAggregateHandoffRecovery }}
           TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
           GITHUB_TOKEN: ${{ github.token }}
         shell: bash
@@ -2027,13 +2082,34 @@ jobs:
           if [ "$STATE_WAVE" != 0 ]; then state="$capture/original/runtime-state"; fi
           fresh=()
           tooling=()
+          if [ "$SDK_RECOVERY_ONLY" = true ] && [ "$SDK_SOURCE" = current-runtime ]; then
+            printf '%s' "$ORIGINAL_RUNTIME_HANDOFF" > "$RUNNER_TEMP/runtime-original-locator.json"
+            python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, write_canonical_json
+          from ci.products.receipt import validate_producer
+          locator = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['RUNNER_TEMP'], 'runtime-original-locator.json'), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
+          require_exact_keys(locator, {'artifactId', 'artifactSha256', 'originalProducer', 'trustedWorkflowSha'}, 'Original Runtime handoff locator')
+          write_canonical_json(Path(os.environ['RUNNER_TEMP'], 'runtime-original-producer.json'), validate_producer(locator['originalProducer']))
+          from ci.impact import require_oid
+          from ci.products.inventory import require_integer, require_sha256
+          values = {'ARTIFACT_ID': str(require_integer(locator['artifactId'], 'Original Runtime artifact ID', 1)),
+                    'ARTIFACT_SHA256': require_sha256(locator['artifactSha256'], 'Original Runtime artifact digest'),
+                    'ORIGINAL_RUNTIME_WORKFLOW_SHA': require_oid(locator['trustedWorkflowSha'], 'Original Runtime workflow SHA')}
+          Path(os.environ['RUNNER_TEMP'], 'runtime-original-values').write_text(''.join(f'{name}={value}\n' for name, value in values.items()))
+          PY
+            source "$RUNNER_TEMP/runtime-original-values"
+            fresh=(--runtime-original-producer "$RUNNER_TEMP/runtime-original-producer.json"
+              --runtime-original-workflow-sha "$ORIGINAL_RUNTIME_WORKFLOW_SHA")
+          fi
           if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
           if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
           case "$SDK_SOURCE" in
             released-default) destination="$GITHUB_WORKSPACE/build/sdk-inputs" ;;
             current-runtime)
               destination="$RUNNER_TEMP/sdk-inputs"
-              fresh=(--artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256"
+              fresh+=(--artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256"
                 --expected-build-key "$AGGREGATE_KEY" --expected-metadata-receipt-sha256 "$AGGREGATE_RECEIPT") ;;
             *) echo 'Unknown replayed SDK input source' >&2; exit 1 ;;
           esac
@@ -2056,7 +2132,7 @@ jobs:
           retention-days: 1
 
   android:
-    if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_android == 'true'
+    if: inputs.sdkRecoveryOnly != true && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_android == 'true'
     needs: [workflow-lint, plan]
     runs-on: ubuntu-24.04
     outputs:
@@ -2081,6 +2157,7 @@ jobs:
 
   android-runtime-evidence:
     if: >-
+      !inputs.sdkRecoveryOnly &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&
@@ -2098,7 +2175,7 @@ jobs:
       planArtifact: ${{ needs.plan.outputs.plan_artifact }}
 
   desktop:
-    if: always() && !inputs.runtimeRecoveryOnly && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.any_desktop == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    if: always() && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.any_desktop == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     needs: [workflow-lint, plan, product]
     uses: ./.github/workflows/desktop-runtime-evidence.yml
     with:
@@ -2150,16 +2227,22 @@ jobs:
       toolingTransportProducer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
 
   apple:
-    if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.any_apple == 'true'
-    needs: [workflow-lint, plan]
+    if: >-
+      always() && needs.workflow-lint.result == 'success' && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' &&
+      ((!inputs.sdkRecoveryOnly && needs.plan.outputs.any_apple == 'true') ||
+       (inputs.sdkRecoveryOnly && needs.runtime-continuation.result == 'success' &&
+        needs.sdk-ios-binary-plan.result == 'success' && needs.sdk-ios-binary-plan.outputs.sdk_workers_required == 'true'))
+    needs: [workflow-lint, plan, runtime-continuation, sdk-ios-binary-plan]
     uses: ./.github/workflows/apple-runtime-evidence.yml
     with:
       planArtifact: ${{ needs.plan.outputs.plan_artifact }}
       validationCommit: ${{ needs.plan.outputs.validation_commit }}
       validationTree: ${{ needs.plan.outputs.validation_tree }}
+      sdkBinaryOnly: ${{ inputs.sdkRecoveryOnly }}
 
   consumers:
-    if: always() && !inputs.runtimeRecoveryOnly && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.consumer_matrix != '[]' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    if: always() && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.consumer_matrix != '[]' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     needs: [workflow-lint, plan, product, android, android-runtime-evidence, desktop, apple]
     uses: ./.github/workflows/sdk-consumer-validation.yml
     with:
@@ -2220,8 +2303,10 @@ jobs:
     name: sdk-sdk-ios-binary-ios
     needs: [plan, product-resume, sdk-ios-binary-plan, apple, contract-validation]
     if: >-
-      always() && !inputs.runtimeRecoveryOnly && needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.sdk-ios-binary-plan.result == 'success' &&
+      always() && (!inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly) && needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-ios-binary-plan.result == 'success' && needs.apple.result == 'success' &&
+      needs.apple.outputs.native_tests_artifact_id != '' && needs.apple.outputs.rust_device_artifact_id != '' &&
+      needs.apple.outputs.rust_simulator_artifact_id != '' &&
       needs.sdk-ios-binary-plan.outputs.sdk_workers_required == 'true'
     strategy:
       fail-fast: false
@@ -5252,6 +5337,9 @@ jobs:
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&
+      (!inputs.sdkRecoveryOnly ||
+       (needs.sdk-completion.outputs.complete == 'true' &&
+        needs.sdk-completion.outputs.phase_count == '62')) &&
       (needs.plan.outputs.lane_ios_swift_tests_test == 'true' ||
        needs.plan.outputs.native_wrappers == 'true') &&
       !contains(needs.*.result, 'failure') &&
@@ -5263,6 +5351,11 @@ jobs:
       validationTree: ${{ needs.plan.outputs.validation_tree }}
       nodeJs: ${{ fromJSON(needs.plan.outputs.lane_node_js) }}
       nativeWrappers: ${{ fromJSON(needs.plan.outputs.native_wrappers) }}
+      importedOnly: ${{ inputs.sdkRecoveryOnly }}
+      planOutputs: ${{ toJSON(needs.plan.outputs) }}
+      contractOutputs: ${{ toJSON(needs.contract-validation.outputs) }}
+      sdkOutputs: ${{ toJSON(needs.sdk-completion.outputs) }}
+      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
 
   merge-gate:
     name: CI / merge-gate
@@ -5272,7 +5365,7 @@ jobs:
     steps:
       - name: Require readiness and successful prerequisites
         env:
-          RECOVERY_ONLY: ${{ inputs.runtimeRecoveryOnly }}
+          RECOVERY_ONLY: ${{ inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly }}
           EVENT_AUTHORIZED: ${{ needs.plan.outputs.event_authorized }}
           MERGE_READY: ${{ needs.plan.outputs.merge_ready }}
           REMOTE_BUILD_AUTHORIZED: ${{ needs.plan.outputs.remote_build_authorized }}

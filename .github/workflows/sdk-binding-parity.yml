@@ -15,6 +15,21 @@ on:
       nativeWrappers:
         required: true
         type: boolean
+      importedOnly:
+        type: boolean
+        default: false
+      planOutputs:
+        type: string
+        default: '{}'
+      contractOutputs:
+        type: string
+        default: '{}'
+      sdkOutputs:
+        type: string
+        default: '{}'
+      trustedWorkflowSha:
+        type: string
+        default: ''
     outputs:
       artifact_id:
         value: ${{ jobs.sdk-parity.outputs.artifact_id }}
@@ -36,27 +51,30 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
           ref: ${{ inputs.validationCommit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - if: ${{ !inputs.importedOnly }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: codex-agent-ci-*
           path: build/ci/receipts
-      - if: inputs.nodeJs
+      - if: inputs.nodeJs && !inputs.importedOnly
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: codex-agent-sdk-javascript-parity-${{ inputs.validationTree }}
           path: build/ci/receipts/sdk-javascript
-      - if: inputs.nativeWrappers
+      - if: inputs.nativeWrappers && !inputs.importedOnly
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: codex-agent-native-wrapper-packages-${{ inputs.validationTree }}
           path: build/ci/native-wrapper-release
-      - if: inputs.nativeWrappers
+      - if: inputs.nativeWrappers && !inputs.importedOnly
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: codex-agent-native-wrapper-host-*-${{ inputs.validationTree }}
           path: build/ci/native-wrapper-hosts
       - name: Require complete six-language M8 binding parity
+        if: ${{ !inputs.importedOnly }}
         env:
           VALIDATION_COMMIT: ${{ inputs.validationCommit }}
           VALIDATION_TREE: ${{ inputs.validationTree }}
@@ -125,7 +143,7 @@ jobs:
           cp "$binding_root/binding-obligations-m8.json" "$binding_root/m8/"
           test "$(find "$binding_root/m8" -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 9
       - name: Require complete native-wrapper parity through M11
-        if: inputs.nativeWrappers
+        if: inputs.nativeWrappers && !inputs.importedOnly
         env:
           VALIDATION_COMMIT: ${{ inputs.validationCommit }}
           VALIDATION_TREE: ${{ inputs.validationTree }}
@@ -244,6 +262,7 @@ jobs:
             -PcodexAgent.sdkCanonicalCoverageReceipt="$PWD/$coverage_receipt" \
             --stacktrace
       - name: Stage exact SDK parity evidence
+        if: ${{ !inputs.importedOnly }}
         run: |
           set -euo pipefail
           destination=build/ci/sdk-parity-evidence
@@ -252,6 +271,68 @@ jobs:
           if [ "${{ inputs.nativeWrappers }}" = true ]; then
             cp -R build/ci/cross-language-bindings/m11 "$destination/m11"
           fi
+      - name: Select installed caller Java for SDK tooling
+        if: inputs.importedOnly
+        run: |
+          set -euo pipefail
+          source ci/select_caller_java.sh
+          test -f "$selected_java_home/bin/java"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        if: inputs.importedOnly
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ fromJSON(inputs.contractOutputs).tooling_artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.contractOutputs).tooling_artifact_sha256 }}
+          transport-producer: ${{ fromJSON(inputs.contractOutputs).tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
+          policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: inputs.importedOnly
+        with:
+          artifact-ids: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          path: ${{ runner.temp }}/sdk-parity-plan
+          merge-multiple: true
+      - id: apple-policy
+        if: inputs.importedOnly
+        uses: ./.github/actions/prepare-sdk-apple-policy
+        with:
+          plan-path: ${{ runner.temp }}/sdk-parity-plan/impact-plan.json
+          tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
+      - id: capture
+        if: inputs.importedOnly
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          product: sdk
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          artifact-id: ${{ fromJSON(inputs.sdkOutputs).artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.sdkOutputs).artifact_digest }}
+          state-wave: ${{ fromJSON(inputs.sdkOutputs).state_wave }}
+          sdk-state-wave: ${{ fromJSON(inputs.sdkOutputs).sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+      - name: Verify full parity from authenticated immutable phases
+        if: inputs.importedOnly
+        env:
+          PLAN: ${{ steps.capture.outputs.plan-path }}
+          DISCOVERY_ROOT: ${{ steps.capture.outputs.discovery-root }}
+          STATE_ROOT: ${{ steps.capture.outputs.state-root }}
+          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
+          SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -B -m ci.sdk_workflow parity --plan "$PLAN" \
+            --discovery-root "$DISCOVERY_ROOT" --state-root "$STATE_ROOT" \
+            --sdk-original-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --sdk-validation-tooling "$SDK_VALIDATION_TOOLING" \
+            --sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --destination build/ci/sdk-parity-evidence
       - id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

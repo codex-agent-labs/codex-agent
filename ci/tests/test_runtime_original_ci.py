@@ -459,7 +459,8 @@ class RuntimeOriginalCiTest(unittest.TestCase):
 
     def test_current_genuine_producer_pin_survives_next_control_rotation(self):
         for original in ("9be996a3269c324ad1beae37a06ff65219e69806",
-                         "8a1c2a0c9a9ee1f3c5629d2d77278580f48a489c"):
+                         "8a1c2a0c9a9ee1f3c5629d2d77278580f48a489c",
+                         "cec458a479c0556d39aa6a75b18311500ce66d71"):
             with self.subTest(original=original):
                 run = {"referenced_workflows": [{
                     "path": f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@{original}",

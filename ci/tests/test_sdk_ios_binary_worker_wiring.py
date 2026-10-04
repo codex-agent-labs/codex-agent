@@ -157,8 +157,48 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
         for name in ("native_tests", "rust_device", "rust_simulator"):
             self.assertIn(f"needs.apple.outputs.{name}_artifact_id", binary)
             self.assertIn(f"needs.apple.outputs.{name}_artifact_digest", binary)
-        self.assertEqual(6, binary.count("needs.apple.outputs."))
+        self.assertIn("needs.apple.result == 'success'", binary)
+        for name in ("native_tests", "rust_device", "rust_simulator"):
+            self.assertIn(f"needs.apple.outputs.{name}_artifact_id != ''", binary)
+        self.assertEqual(9, binary.count("needs.apple.outputs."))
         self.assertIn("DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer", binary)
+
+    def test_sdk_recovery_excludes_runtime_execution_signing_and_phase10(self):
+        names = ('product', 'android', 'android-runtime-evidence', 'desktop', 'consumers',
+                 'runtime-linux-arm64-supervisor', 'runtime-signing-prepare-native',
+                 'runtime-native-attestation', 'runtime-aggregate',
+                 'runtime-signing-prepare-aggregate', 'runtime-aggregate-attestation',
+                 'runtime-phase10-maven', 'contract-phase10-pgp-authority',
+                 'contract-phase10-maven', 'contract-phase10-output-record')
+        names += tuple(f'runtime-{kind}-{wave}' for wave in range(1, 5) for kind in ('workers', 'collect'))
+        for name in names:
+            with self.subTest(job=name):
+                guard = self.job(name).split('    if: ', 1)[1].split('    runs-on:', 1)[0].split('    strategy:', 1)[0]
+                self.assertTrue('!inputs.sdkRecoveryOnly' in guard or 'inputs.sdkRecoveryOnly != true' in guard)
+        self.assertIn('test "$CONTRACT_NEXT_PHASE" = none', self.job('plan'))
+        self.assertIn('test "$RUNTIME_WORKERS_REQUIRED" = false', self.job('product-resume'))
+        self.assertIn('test -z "$SUPERVISOR_KEY"', self.job('product-resume'))
+        self.assertIn('test "$AGGREGATE_STATE" = completed', self.job('runtime-continuation'))
+        self.assertIn('test "$AGGREGATE_PAYLOAD_COMPLETE" = true', self.job('runtime-continuation'))
+
+    def test_sdk_recovery_preserves_original_handoff_and_separates_replay_authority(self):
+        inputs = self.job('sdk-inputs')
+        for value in ('needs.runtime-aggregate-continuation.outputs.aggregate_key',
+                      'needs.runtime-aggregate-continuation.outputs.aggregate_receipt_sha256',
+                      '--runtime-original-producer', '--runtime-original-workflow-sha',
+                      '--trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA"'):
+            self.assertIn(value, inputs)
+        self.assertNotIn('ssh-keygen', inputs)
+        self.assertNotIn('PRIVATE_KEY', inputs)
+        apple = self.job('apple')
+        self.assertIn('needs.sdk-ios-binary-plan.outputs.sdk_workers_required', apple)
+        self.assertIn('needs.runtime-continuation.result', apple)
+        self.assertIn('sdkBinaryOnly: ${{ inputs.sdkRecoveryOnly }}', apple)
+        child = (ROOT / '.github/workflows/apple-runtime-evidence.yml').read_text()
+        selected = re.search(r'(?ms)^      - id: lanes\n.*?(?=^  native-tests:)', child)[0]
+        self.assertIn('lanes=(--lane ios-native-tests --lane ios-rust-device --lane ios-rust-simulator)', selected)
+        self.assertIn('if [ "$SDK_BINARY_ONLY" != true ]; then', selected)
+        self.assertIn('RECOVERY_ONLY: ${{ inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly }}', self.job('merge-gate'))
 
     def test_binary_collection_uses_latest_runtime_state_and_rejects_incomplete_state(self):
         collect = self.job("sdk-collect-3")

@@ -12,6 +12,11 @@ on:
       validationTree:
         required: true
         type: string
+      sdkBinaryOnly:
+        description: Select only the three native prerequisites of an elected SDK iOS binary
+        required: false
+        default: false
+        type: boolean
     outputs:
       native_tests_artifact_id:
         value: ${{ jobs.native-tests.outputs.artifact_id }}
@@ -78,13 +83,17 @@ jobs:
           name: ${{ inputs.planArtifact }}
           path: build/ci
       - id: lanes
-        run: >-
-          python3 ci/lane_selection.py --plan build/ci/impact-plan.json --github-output "$GITHUB_OUTPUT"
-          --lane ios-native-tests --lane ios-rust-device --lane ios-rust-simulator
-          --lane ios-framework-device --lane ios-framework-simulator --lane ios-kotlin-tests
-          --lane ios-swift-build --lane ios-swift-tests --lane ios-package
-          --lane ios-privacy-metrics --lane consumer-common
-          --lane consumer-ios-device --lane consumer-ios-simulator
+        env:
+          SDK_BINARY_ONLY: ${{ inputs.sdkBinaryOnly }}
+        run: |
+          lanes=(--lane ios-native-tests --lane ios-rust-device --lane ios-rust-simulator)
+          if [ "$SDK_BINARY_ONLY" != true ]; then
+            lanes+=(--lane ios-framework-device --lane ios-framework-simulator --lane ios-kotlin-tests
+              --lane ios-swift-build --lane ios-swift-tests --lane ios-package
+              --lane ios-privacy-metrics --lane consumer-common
+              --lane consumer-ios-device --lane consumer-ios-simulator)
+          fi
+          python3 ci/lane_selection.py --plan build/ci/impact-plan.json --github-output "$GITHUB_OUTPUT" "${lanes[@]}"
 
   native-tests:
     if: needs.select.outputs.native == 'true'

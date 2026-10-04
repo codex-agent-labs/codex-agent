@@ -13,6 +13,27 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ProductResumeWorkflowTest(unittest.TestCase):
+    def test_sdk_recovery_full_parity_uses_authenticated_state_and_no_legacy_inputs(self):
+        parity = workflow_job(self.workflow, "sdk-parity")
+        self.assertIn("needs.sdk-completion.outputs.complete == 'true'", parity)
+        self.assertIn("needs.sdk-completion.outputs.phase_count == '62'", parity)
+        self.assertIn("importedOnly: ${{ inputs.sdkRecoveryOnly }}", parity)
+        imported = (ROOT / ".github/workflows/sdk-binding-parity.yml").read_text()
+        self.assertIn("python3 -B -m ci.sdk_workflow parity", imported)
+        self.assertIn("uses: ./.github/actions/capture-runtime-state", imported)
+        self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", imported)
+        self.assertIn("sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}", imported)
+        for name in ("Require complete six-language M8 binding parity", "Stage exact SDK parity evidence"):
+            self.assertIn("- name: " + name + "\n        if: ${{ !inputs.importedOnly }}", imported)
+        self.assertIn("if: inputs.nativeWrappers && !inputs.importedOnly", imported)
+        # A genuine changed auxiliary helper can build through the existing
+        # tooling-only route; Contract product ownership must remain complete.
+        guard = self.workflow.split("- name: Require unchanged Contract ownership before SDK continuation", 1)[1].split("      - id:", 1)[0]
+        self.assertIn('test "$CONTRACT_NEXT_PHASE" = none', guard)
+        self.assertNotIn("TOOLING_MISS", guard)
+        contract = (ROOT / ".github/workflows/contract-validation.yml").read_text()
+        self.assertIn("contract-tooling-only: ${{ fromJSON(inputs.planOutputs).tooling_miss == 'true' && fromJSON(inputs.planOutputs).contract_next_phase != 'binary' }}", contract)
+
     @classmethod
     def setUpClass(cls):
         cls.workflow = (ROOT / ".github/workflows/product-validation.yml").read_text(encoding="utf-8")
@@ -97,18 +118,16 @@ class ProductResumeWorkflowTest(unittest.TestCase):
                         self.job.index("ci/product_reuse.py resume-products"))
         self.assertNotRegex(self.job, r"(?:\./gradlew|\bcargo\s+(?:build|test)|\bcmake\s|\bxcodebuild\b|\bnpm\s+(?:ci|install|run)|\bpip\s+install)")
 
-    def test_apple_policy_comes_from_original_plan_before_both_replays(self):
+    def test_apple_policy_comes_from_original_plan_before_authenticated_resume(self):
         policy = self.job.split("      - id: apple-policy\n", 1)[1].split("\n      - ", 1)[0]
         self.assertIn("if: needs.plan.outputs.tooling_required == 'true'", policy)
         self.assertIn("plan-path: ${{ github.workspace }}/build/product-resume-inputs/plan/impact-plan.json", policy)
         self.assertIn("tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}", policy)
         self.assertLess(self.job.index("capture-product-resume-inputs"), self.job.index("      - id: apple-policy"))
         self.assertLess(self.job.index("      - id: apple-policy"), self.job.index(" resume-products"))
-        for name in ("Resume the existing product planner from authenticated Contract bytes",
-                     "Elect Runtime workers from the verified resumed state"):
-            step = self.job.split("      - name: " + name, 1)[1].split("\n      - ", 1)[0]
-            self.assertIn("SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}", step)
-            self.assertIn('tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")', step)
+        step = self.job.split("      - name: Resume the existing product planner from authenticated Contract bytes", 1)[1].split("\n      - ", 1)[0]
+        self.assertIn("SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}", step)
+        self.assertIn('tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")', step)
 
     def test_reference_handoff_for_original_inputs_and_state_is_uploaded_immutably(self):
         uploads = re.findall(r"uses: actions/upload-artifact@.*?(?=^      -|\Z)",

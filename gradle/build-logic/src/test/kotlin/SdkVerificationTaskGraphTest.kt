@@ -10,6 +10,77 @@ import org.gradle.testkit.runner.TaskOutcome
 class SdkVerificationTaskGraphTest {
     private val cachedGradleUserHome = System.getenv("GRADLE_USER_HOME")
         ?: File(System.getProperty("user.home"), ".gradle").path
+
+    @Test
+    fun `imported native and final parity select no product tasks`() {
+        val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
+            .first { it.resolve("settings.gradle.kts").isFile && it.resolve("codex-agent-core").isDirectory }
+        val work = createTempDirectory("imported-native-parity-graph-").toFile()
+        try {
+            val process = ProcessBuilder("python3", "-c", """
+                import json, sys
+                from pathlib import Path
+                from ci.sdk_workflow import IMPORTED_NATIVE_PARITY_INIT
+                root = Path(sys.argv[1])
+                (root / 'native.init.gradle').write_text(IMPORTED_NATIVE_PARITY_INIT)
+                fields = ('bootstrap', 'claims', 'capability', 'packageStage', 'packageReceipt',
+                          'validationStages', 'validationReceipts', 'runtime', 'request', 'sdks', 'output')
+                config = {name: str(root / name) for name in ('api', 'coverage', 'cabiOutput', 'finalEvidence', 'finalOutput')}
+                config['native'] = {language: {name: str(root / language / name) for name in fields}
+                                    for language in ('python', 'csharp', 'rust', 'cpp', 'dart')}
+                (root / 'native.json').write_text(json.dumps(config))
+            """.trimIndent(), work.path).directory(repository).redirectError(ProcessBuilder.Redirect.INHERIT).start()
+            assertEquals(0, process.waitFor())
+            val requested = listOf("Python", "CSharp", "Rust", "Cpp", "Dart")
+                .map { ":codex-agent-sdk:verify${it}BindingParity" } +
+                listOf(":verifyImportedCAbiBindingParity", ":verifyImportedSdkBindingParity")
+            val result = GradleRunner.create().withProjectDir(repository).withArguments(requested + listOf(
+                "--init-script", work.resolve("native.init.gradle").path,
+                "-DcodexAgent.importedNativeParityInputs=${work.resolve("native.json")}",
+                "--dry-run", "--offline", "--no-configuration-cache", "--console=plain",
+                "--gradle-user-home", cachedGradleUserHome,
+            )).build()
+            val selected = Regex("(?m)^(:[^ ]+) SKIPPED$").findAll(result.output)
+                .map { it.groupValues[1] }.toList()
+            assertEquals(requested.toSet(), selected.toSet(), result.output)
+            assertEquals(requested.size, selected.size, result.output)
+        } finally {
+            work.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `imported Java parity runs fresh consumer tasks without product producers`() {
+        val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
+            .first { it.resolve("settings.gradle.kts").isFile && it.resolve("codex-agent-core").isDirectory }
+        val work = createTempDirectory("imported-java-parity-graph-").toFile()
+        try {
+            val process = ProcessBuilder("python3", "-c",
+                "from ci.sdk_workflow import IMPORTED_JAVA_PARITY_INIT; print(IMPORTED_JAVA_PARITY_INIT, end='')")
+                .directory(repository).redirectError(ProcessBuilder.Redirect.INHERIT).start()
+            val script = work.resolve("parity.init.gradle").apply {
+                writeText(process.inputStream.bufferedReader().readText())
+            }
+            assertEquals(0, process.waitFor())
+            val result = GradleRunner.create().withProjectDir(repository).withArguments(
+                ":codex-agent-core:verifyJavaBindingParity", "--init-script", script.path,
+                "-DcodexAgent.importedJavaParityInputs=${work.resolve("originals")}",
+                "-DcodexAgent.importedJavaParityOutput=${work.resolve("new-evidence/java-parity.json")}",
+                "--dry-run", "--offline", "--no-configuration-cache", "--console=plain",
+                "--gradle-user-home", cachedGradleUserHome,
+            ).build()
+            val selected = Regex("(?m)^(:[^ ]+) SKIPPED$").findAll(result.output)
+                .map { it.groupValues[1] }.toList()
+            assertEquals(listOf(
+                ":codex-agent-core:compileImportedJavaParityTests",
+                ":codex-agent-core:runImportedJavaParityTests",
+                ":codex-agent-core:verifyJavaBindingParity",
+            ), selected, result.output)
+        } finally {
+            work.deleteRecursively()
+        }
+    }
+
     @Test
     fun `unauthenticated SDK binary producers are absent and canonical entry fails before Core tasks`() {
         val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }

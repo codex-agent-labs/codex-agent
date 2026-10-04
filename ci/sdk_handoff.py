@@ -36,6 +36,7 @@ def capture_sdk_handoff(
     keyring: Path, keys_directory: Path, selection_repository_root: Path, selection_revision: str,
     repository_root: Path | None = None, environ=None, token: str,
     expected_contract_payload_sha256: str | None = None,
+    original_producer=None,
 ) -> dict:
     """Publish original upload evidence and SDK inputs only after both gates exit."""
     if expected_contract_payload_sha256 is not None:
@@ -73,7 +74,8 @@ def capture_sdk_handoff(
         product_reuse.capture_runtime_aggregate_release_upload(plan, capture,
             artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
             expected_build_key=expected_build_key, expected_metadata_receipt_sha256=expected_metadata_receipt_sha256,
-            repository_root=repository, environ=environment, token=token)
+            repository_root=repository, environ=environment, token=token,
+            **({"original_producer": original_producer} if original_producer is not None else {}))
         if read_regular_file_bytes(capture / "plan/impact-plan.json", reject_symlink_parents=True) != plan_bytes:
             raise ValueError("Captured SDK handoff plan differs from its original bytes")
         capture_inventory = regular_file_inventory(capture, allow_empty=True)

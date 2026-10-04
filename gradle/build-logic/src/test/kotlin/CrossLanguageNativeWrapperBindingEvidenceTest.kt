@@ -73,6 +73,19 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
     }
 
     @Test
+    fun `imported phase parity cannot substitute legacy lane receipts for five original stages`() = withFixture { fixture ->
+        val input = fixture.input()
+        val originalHosts = ImportedNativeWrapperParityHosts(
+            input.hostEvidenceDirectory, input.hostEvidenceDirectory, input.claims,
+            input.claims, input.stagedCAbiSdks, input.hostEvidenceDirectory, input.hostEvidenceDirectory,
+        )
+        val failure = assertFailsWith<IllegalStateException> {
+            deriveCrossLanguageNativeWrapperBindingReceipt(input.copy(importedHosts = originalHosts))
+        }
+        assertTrue("exactly five original validation stages and receipts" in failure.message.orEmpty())
+    }
+
+    @Test
     fun `derives an exact universal receipt from compiler and executed evidence`() = withFixture { fixture ->
         val receipt = deriveCrossLanguageNativeWrapperBindingReceipt(fixture.input())
 

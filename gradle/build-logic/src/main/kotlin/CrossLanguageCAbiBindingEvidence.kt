@@ -11,12 +11,80 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.CacheableTask
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
+import org.gradle.work.DisableCachingByDefault
+
+/** Full immutable-input verification; original CI/host authentication belongs to the caller. */
+@DisableCachingByDefault(because = "The caller authenticates the original immutable phase closure")
+abstract class VerifyImportedCAbiBindingParityTask : DefaultTask() {
+    @get:Input abstract val language: Property<String>
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val packageStage: DirectoryProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val packageReceipt: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val compatibilityRequest: RegularFileProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val runtimeStages: DirectoryProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val stagedSdks: DirectoryProperty
+    @get:Internal abstract val repositoryRoot: DirectoryProperty
+    @get:OutputDirectory abstract val evidenceDirectory: DirectoryProperty
+
+    init { outputs.upToDateWhen { false } }
+
+    @TaskAction
+    fun verify() {
+        check(language.get() in nativeWrapperBindings.map { it.id }) { "C ABI parity requires a native SDK package" }
+        val output = evidenceDirectory.get().asFile.canonicalFile
+        val sources = listOf(packageStage.get().asFile, packageReceipt.get().asFile,
+            compatibilityRequest.get().asFile, runtimeStages.get().asFile, stagedSdks.get().asFile,
+            repositoryRoot.get().asFile.resolve("ci"))
+        check(!output.exists() && sources.none {
+            val source = it.canonicalFile.toPath()
+            output.toPath().startsWith(source) || source.startsWith(output.toPath())
+        }) { "C ABI parity output must be fresh and separate from original inputs" }
+        output.mkdirs()
+        val inputs = output.resolve("verified-inputs")
+        // Existing gate authenticates Contract/Runtime signatures, all five
+        // original package/validation producers, projected proofs and library
+        // bytes. No current commit is substituted for an original producer.
+        runProductPythonModule("sdk_package", listOf("verify-native",
+            "--repository", repositoryRoot.get().asFile.absolutePath, "--component", language.get(),
+            "--stage", packageStage.get().asFile.absolutePath, "--receipt", packageReceipt.get().asFile.absolutePath,
+            "--compatibility-request", compatibilityRequest.get().asFile.absolutePath,
+            "--runtime-stages", runtimeStages.get().asFile.absolutePath,
+            "--staged-sdks", stagedSdks.get().asFile.absolutePath,
+            "--validation-inputs-output", inputs.absolutePath))
+        val bootstrap = inputs.resolve("bootstrap/bootstrap-evidence.json")
+        val scenarioFile = output.resolve("c-abi-scenarios.json")
+        writeCrossLanguageCAbiScenarioProof(scenarioFile, bootstrap, productionCrossLanguageCAbiScenarioMappings())
+        val scenario = readCrossLanguageCAbiScenarioProof(scenarioFile, bootstrap)
+        val artifacts = buildList {
+            add(CrossLanguageBindingArtifactIdentity("c-abi-bootstrap", bootstrap.releaseDigest()))
+            add(CrossLanguageBindingArtifactIdentity(C_ABI_SCENARIO_PROOF_ARTIFACT_ID, scenarioFile.releaseDigest()))
+            crossLanguageCAbiTargetSpecs.keys.sorted().forEach { target ->
+                val proof = runtimeStages.get().asFile.resolve(
+                    "$target/validation/outputs/c-abi/${crossLanguageCAbiPackageEvidenceFileName(target)}")
+                check(proof.isFile) { "Original C ABI package proof is missing: $target" }
+                add(CrossLanguageBindingArtifactIdentity(crossLanguageCAbiPackageProofIds.getValue(target), proof.releaseDigest()))
+            }
+        }
+        writeCrossLanguageCAbiBindingReceipt(output.resolve("c-abi-parity.json"), CrossLanguageCAbiBindingEvidenceInput(
+            bootstrap, scenario.mappings, artifacts, scenario.testProgramSha256, scenario.testResultsSha256))
+    }
+}
 
 internal const val C_ABI_BOOTSTRAP_SCHEMA = 1
 internal const val C_ABI_BOOTSTRAP_PROTOCOL = "codex-agent-c-abi-bootstrap-evidence-v1"

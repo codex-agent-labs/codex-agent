@@ -9,8 +9,33 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import org.gradle.testfixtures.ProjectBuilder
 
 class CrossLanguageCAbiBindingEvidenceTest {
+    @Test
+    fun `imported C ABI check cannot overwrite original inputs`() {
+        val root = createTempDirectory("imported-cabi-output-").toFile()
+        try {
+            val project = ProjectBuilder.builder().withProjectDir(root).build()
+            val original = root.resolve("original").apply { mkdirs() }
+            val receipt = original.resolve("receipt.json").apply { writeText("preserved bytes\n") }
+            val task = project.tasks.create("verifyImportedCAbi", VerifyImportedCAbiBindingParityTask::class.java)
+            task.language.set("cpp")
+            task.packageStage.set(original)
+            task.packageReceipt.set(receipt)
+            task.compatibilityRequest.set(receipt)
+            task.runtimeStages.set(original)
+            task.stagedSdks.set(original)
+            task.repositoryRoot.set(root)
+            task.evidenceDirectory.set(original.resolve("new-report"))
+            assertTrue(assertFails { task.verify() }.message.orEmpty().contains("fresh and separate"))
+            assertEquals("preserved bytes\n", receipt.readText())
+            assertTrue(!original.resolve("new-report").exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     @Test
     fun `production expectations remain frozen at D104 closure`() {
         assertEquals(1, C_ABI_BOOTSTRAP_SCHEMA)

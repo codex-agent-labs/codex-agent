@@ -1,17 +1,216 @@
 """SDK workflow composition only; mocked authenticated gates are not host evidence."""
 
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, nullcontext, contextmanager
 from copy import deepcopy
 import os
 from pathlib import Path
 import tempfile
 import unittest
+from zipfile import ZipFile, ZIP_STORED
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from ci import sdk_workflow as workflow
 
 
 class SdkWorkflowTest(unittest.TestCase):
+    def test_java_import_uses_checked_zip_contents_and_rejects_changed_input_after_use(self):
+        identities = (workflow.PhaseInstanceId("contract", "contract", "binary", "common"),
+            workflow.PhaseInstanceId("runtime", "jvm", "binary", "jvm"),
+            workflow.PhaseInstanceId("sdk", "sdk-android", "package", "android"))
+        phases = [{**dict(zip(workflow.product_reuse._IDENTITY_KEYS,
+            (identity.product, identity.component, identity.phase, identity.target))), "state": "retained"}
+            for identity in identities]
+        verified = SimpleNamespace(prior={"phases": phases}, sources={identity: object() for identity in identities})
+        classes = self.root / "canonical-classes"
+        classes.mkdir()
+        (classes / "Core.class").write_bytes(b"synthetic original compiler output")
+
+        def restore(verified, identities, destination):
+            contract, runtime, android = [destination / "-".join(getattr(identity, field)
+                for field in workflow.product_reuse._IDENTITY_KEYS) / "stage/outputs" for identity in identities]
+            group = "maven/io/github/codex-agent-labs"
+            core = contract / f"{group}/codex-agent-core-jvm/0.8.0/codex-agent-core-jvm-0.8.0.jar"
+            core.parent.mkdir(parents=True)
+            with ZipFile(core, "w", compression=ZIP_STORED) as archive:
+                archive.writestr("Core.class", (classes / "Core.class").read_bytes())
+                archive.writestr("META-INF/", b"")
+                archive.writestr("META-INF/MANIFEST.MF", b"synthetic manifest")
+            for path in (contract / f"{group}/codex-agent-core-android/0.8.0/codex-agent-core-android-0.8.0.aar",
+                    runtime / "adapter/codex-agent-runtime-desktop-jvm-0.8.0.jar",
+                    android / f"{group}/codex-agent-runtime-android/0.8.0/codex-agent-runtime-android-0.8.0.aar"):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"synthetic authenticated product input")
+            evidence = contract / "evidence"
+            evidence.mkdir()
+            (evidence / "canonical-api.json").write_bytes(workflow.canonical_json_bytes({"targets": [
+                {"kind": "jvm-classes", "sha256": workflow._execution_tree_digest(classes)}]}))
+            (evidence / "canonical-coverage.json").write_bytes(b"synthetic canonical coverage")
+            execution = contract / "execution/contract-execution.zip"
+            execution.parent.mkdir()
+            with ZipFile(execution, "w", compression=ZIP_STORED) as archive:
+                archive.writestr("compiled-tests/Fixture.class", b"synthetic original fixture")
+            return {identity: {"receipt": {"productVersion": "0.8.0"}} for identity in identities}
+
+        plan_bytes = self.plan.read_bytes()
+        with patch.object(workflow.product_reuse, "_restore_product_objects", side_effect=restore):
+            with workflow._java_parity_inputs(verified, self.plan, plan_bytes) as inputs:
+                self.assertEqual((classes / "Core.class").read_bytes(), (inputs / "kotlin-classes/Core.class").read_bytes())
+                self.assertEqual(b"synthetic original fixture", (inputs / "fixture-classes/Fixture.class").read_bytes())
+            with self.assertRaisesRegex(ValueError, "Original Java parity inputs changed"):
+                with workflow._java_parity_inputs(verified, self.plan, plan_bytes) as inputs:
+                    (inputs / "core-jvm.jar").write_bytes(b"different output")
+
+    def test_full_parity_rejects_authentication_failure_or_incomplete_sdk_before_import(self):
+        for failure in (ValueError("original authentication failed"), None):
+            with self.subTest(failure=failure), \
+                    patch.object(workflow.product_reuse, "_verified_product_state",
+                        side_effect=failure, return_value=SimpleNamespace(prior={"phases": []}, sources={})) as authenticate, \
+                    patch.object(workflow.product_reuse, "_restore_product_objects") as restore, \
+                    patch.object(workflow, "decode_sdk_validation_records") as decode:
+                with self.assertRaisesRegex(ValueError, "authentication failed|every selected SDK phase"):
+                    with workflow.verified_parity_inputs(self.plan, self.discovery, self.state,
+                            repository_root=self.repository, environ={}):
+                        self.fail("Incomplete or unauthenticated products cannot reach consumers")
+                authenticate.assert_called_once()
+                restore.assert_not_called()
+                decode.assert_not_called()
+
+    def test_full_parity_composes_existing_checks_and_publishes_only_after_original_exit_checks(self):
+        self.plan.write_bytes(workflow.canonical_json_bytes({"validationCommit": self.revision}))
+        self.discovery.mkdir()
+        self.state.mkdir()
+        original = self.root / "preserved"
+        original.mkdir()
+        files = {}
+        for name in ("canonical-api.json", "canonical-coverage.json", "kotlin-parity.json",
+                "javascript-typescript-parity.json", "swift-parity.json", "objective-c-parity.json"):
+            files[name] = original / name
+            files[name].write_bytes(b"synthetic immutable evidence\n")
+        stage, receipt = original / "stage", original / "phase.json"
+        stage.mkdir()
+        (stage / "evidence").write_bytes(b"synthetic original stage\n")
+        receipt.write_bytes(b"synthetic original receipt\n")
+        record = {name: stage for name in ("packageStage", "runtimeStages", "stagedSdks", "validationStage")}
+        record.update({name: receipt for name in ("packageReceipt", "validationReceipt", "compatibilityRequest")})
+        inputs = {"java": original, "files": files, "phases": {}, "native": {
+            language: {target: record for target in workflow.NATIVE_TARGETS} for language in workflow.NATIVE_BINDINGS}}
+        tooling = {"evidence": original, "publicKey": receipt, "requiredTrustDomain": "development",
+            "keyring": None, "keysDirectory": None, "javaExecutable": "java"}
+        before = workflow.regular_file_inventory(original)
+        commands = []
+
+        def consumer(command, **kwargs):
+            commands.append(command)
+            kwargs["stdout"].write(b"synthetic consumer log\n")
+            if "--init-script" in command:
+                if ":codex-agent-core:verifyJavaBindingParity" in command:
+                    path = next(value.split("=", 1)[1] for value in command
+                        if value.startswith("-DcodexAgent.importedJavaParityOutput="))
+                    Path(path).parent.mkdir()
+                    Path(path).write_bytes(b"synthetic consumer parity\n")
+                else:
+                    config_path = next(value.split("=", 1)[1] for value in command
+                        if value.startswith("-DcodexAgent.importedNativeParityInputs="))
+                    config = workflow.product_reuse.load_json_bytes(Path(config_path).read_bytes())
+                    if ":verifyImportedSdkBindingParity" in command:
+                        Path(config["finalOutput"]).write_bytes(b'{"result":"passed"}\n')
+                    else:
+                        for values in config["native"].values():
+                            Path(values["output"]).write_bytes(b"synthetic consumer parity\n")
+                        cabi = Path(config["cabiOutput"])
+                        cabi.mkdir()
+                        (cabi / "c-abi-parity.json").write_bytes(b"synthetic consumer parity\n")
+            elif "-jar" in command:
+                output = Path(command[command.index("--output") + 1])
+                output.write_bytes(b"synthetic derived audit or receipt\n")
+
+        for exit_failure in (False, True):
+            @contextmanager
+            def authenticated(*args, **kwargs):
+                yield inputs
+                if exit_failure:
+                    raise ValueError("Original parity inputs changed during use")
+            destination = self.repository / ("success" if not exit_failure else "failure")
+            commands.clear()
+            with patch.object(workflow, "verified_parity_inputs", side_effect=authenticated) as authenticate, \
+                    patch.object(workflow, "verified_tooling_capture", return_value=nullcontext(receipt)) as tool_auth, \
+                    patch.object(workflow.subprocess, "run", side_effect=consumer):
+                if exit_failure:
+                    with self.assertRaisesRegex(ValueError, "Original parity inputs changed"):
+                        workflow.execute_parity(self.plan, self.discovery, self.state, destination,
+                            repository_root=self.repository, environ={}, sdk_validation_tooling=tooling)
+                    self.assertFalse(destination.exists())
+                else:
+                    workflow.execute_parity(self.plan, self.discovery, self.state, destination,
+                        repository_root=self.repository, environ={}, sdk_validation_tooling=tooling)
+                    self.assertEqual(14, len(list((destination / "m11").iterdir())))
+                    self.assertTrue((destination / "sdk-parity.json").is_file())
+                authenticate.assert_called_once()
+                self.assertEqual(self.revision, tool_auth.call_args.kwargs["policy_revision"])
+            self.assertEqual(before, workflow.regular_file_inventory(original))
+            audits = [command[command.index("--phase") + 1] for command in commands
+                if "audit-cross-language-bindings" in command]
+            self.assertEqual(["M8", "M9_PYTHON", "M9_CSHARP", "M9_RUST", "M9_CPP", "M9_DART", "M11"], audits)
+            self.assertEqual(5, sum("verify-native" in command for command in commands))
+
+    def test_java_parity_publishes_nothing_when_original_input_exit_check_fails(self):
+        @contextmanager
+        def changed_originals(*args, **kwargs):
+            yield self.root / "synthetic-verified-input-lifetime"
+            raise ValueError("Original Java parity inputs changed")
+
+        def consumer(command, **kwargs):
+            output = next(value.split("=", 1)[1] for value in command
+                if value.startswith("-DcodexAgent.importedJavaParityOutput="))
+            Path(output).write_text('{"synthetic":"consumer result is not authority"}\n')
+
+        destination = self.repository / "new-java-parity"
+        self.discovery.mkdir(parents=True, exist_ok=True)
+        self.state.mkdir(parents=True, exist_ok=True)
+        with patch.object(workflow, "verified_java_parity_inputs", side_effect=changed_originals), \
+                patch.object(workflow.subprocess, "run", side_effect=consumer), \
+                patch.object(workflow, "publish_regular_tree") as publish:
+            with self.assertRaisesRegex(ValueError, "inputs changed"):
+                workflow.execute_java_parity(self.plan, self.discovery, self.state, destination,
+                    repository_root=self.repository, environ={})
+            publish.assert_not_called()
+            self.assertFalse(destination.exists())
+
+    def test_java_parity_authenticates_before_import_and_rejects_missing_or_unfinished_products(self):
+        identities = (
+            workflow.PhaseInstanceId("contract", "contract", "binary", "common"),
+            workflow.PhaseInstanceId("runtime", "jvm", "binary", "jvm"),
+            workflow.PhaseInstanceId("sdk", "sdk-android", "package", "android"),
+        )
+        for missing_source, pending in ((True, False), (False, True)):
+            with self.subTest(missing_source=missing_source, pending=pending):
+                rows = [{**dict(zip(workflow.product_reuse._IDENTITY_KEYS,
+                    (identity.product, identity.component, identity.phase, identity.target))),
+                    "state": "build" if pending and identity == identities[-1] else "retained"}
+                    for identity in identities]
+                verified = SimpleNamespace(prior={"phases": rows},
+                    sources={identity: object() for identity in identities if not (missing_source and identity == identities[-1])})
+                with patch.object(workflow.product_reuse, "_verified_product_state", return_value=verified) as authenticate, \
+                        patch.object(workflow.product_reuse, "_restore_product_objects") as restore:
+                    with self.assertRaisesRegex(ValueError, "completed authenticated"):
+                        with workflow.verified_java_parity_inputs(self.plan, self.discovery, self.state,
+                                repository_root=self.repository, environ={},
+                                sdk_original_workflow_sha=self.revision):
+                            self.fail("Incomplete products must never reach a consumer")
+                    authenticate.assert_called_once()
+                    self.assertEqual(self.revision, authenticate.call_args.kwargs["sdk_original_workflow_sha"])
+                    restore.assert_not_called()
+
+    def test_java_parity_cannot_bypass_failed_original_authentication(self):
+        with patch.object(workflow.product_reuse, "_verified_product_state", side_effect=ValueError("original authentication failed")), \
+                patch.object(workflow.product_reuse, "_restore_product_objects") as restore:
+            with self.assertRaisesRegex(ValueError, "original authentication failed"):
+                with workflow.verified_java_parity_inputs(self.plan, self.discovery, self.state,
+                        repository_root=self.repository, environ={}):
+                    self.fail("Failed authentication must never reach a consumer")
+            restore.assert_not_called()
+
     def test_platform_controller_dispatch_preserves_exact_cli_tail_and_result(self):
         for command, module in (("core-metadata", "sdk_facade_metadata_workflow"),
                                 ("maven-binary", "sdk_maven_binary_workflow"),
@@ -247,6 +446,33 @@ class SdkWorkflowTest(unittest.TestCase):
         self.released.assert_not_called()
         self.assertEqual(before, self.selection)
 
+    def test_retained_runtime_identity_does_not_replace_current_sdk_replay_authority(self):
+        original = {"runId": 3, "runAttempt": 1}
+        original_pin = "d" * 40
+        self.stage(**self.upload, runtime_original_producer=original,
+                   runtime_original_workflow_sha=original_pin)
+        self.assertEqual(self.upload["trusted_workflow_sha"],
+                         self.inspect.call_args.kwargs["sdk_original_workflow_sha"])
+        self.assertEqual(original_pin, self.fresh.call_args.kwargs["trusted_workflow_sha"])
+        self.assertEqual(original, self.fresh.call_args.kwargs["original_producer"])
+        self.assertEqual(self.upload["expected_build_key"], self.fresh.call_args.kwargs["expected_build_key"])
+        self.assertEqual(self.upload["expected_metadata_receipt_sha256"],
+                         self.fresh.call_args.kwargs["expected_metadata_receipt_sha256"])
+        self.released.assert_not_called()
+
+    def test_retained_runtime_requires_paired_identity_and_current_runtime_selection(self):
+        for options in ({"runtime_original_producer": {"runId": 3}},
+                        {"runtime_original_workflow_sha": "d" * 40}):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, "must be paired"):
+                self.stage(**self.upload, **options)
+            self.inspect.assert_not_called()
+        self.selection["source"] = "released-default"
+        with self.assertRaisesRegex(ValueError, "cannot override a released default"):
+            self.stage(**self.upload, runtime_original_producer={"runId": 3},
+                       runtime_original_workflow_sha="d" * 40)
+        self.fresh.assert_not_called()
+        self.released.assert_not_called()
+
     def test_released_default_uses_current_replay_materializer_without_upload_identity(self):
         self.selection["source"] = "released-default"
         self.destination = self.repository / "build/sdk-inputs"
@@ -322,6 +548,30 @@ class SdkWorkflowTest(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     workflow.main(invalid)
                 captured.assert_not_called()
+
+    def test_cli_retained_runtime_locator_is_canonical_and_paired_before_capture(self):
+        from products.inventory import canonical_json_bytes
+        paths = {"plan": self.plan, "discovery-root": self.discovery, "state-root": self.state,
+                 "destination": self.destination, "keyring": self.arguments["keyring"],
+                 "keys-directory": self.arguments["keys_directory"], "repository-root": self.repository}
+        argv = [value for name, path in paths.items() for value in (f"--{name}", str(path))]
+        original = {"runId": 3, "runAttempt": 1}
+        locator = self.repository / "original-producer.json"
+        locator.write_bytes(canonical_json_bytes(original))
+        options = ["--runtime-original-producer", str(locator), "--runtime-original-workflow-sha", "d" * 40]
+        with patch.object(workflow, "stage") as staged:
+            self.assertEqual(0, workflow.main([*argv, *options]))
+            self.assertEqual(original, staged.call_args.kwargs["runtime_original_producer"])
+            self.assertEqual("d" * 40, staged.call_args.kwargs["runtime_original_workflow_sha"])
+            staged.reset_mock()
+            for invalid in (options[:2], options[2:]):
+                with self.subTest(invalid=invalid), self.assertRaises(SystemExit):
+                    workflow.main([*argv, *invalid])
+                staged.assert_not_called()
+            locator.write_bytes(b'{ "runId":3,"runAttempt":1 }')
+            with self.assertRaises(SystemExit):
+                workflow.main([*argv, *options])
+            staged.assert_not_called()
 
     def test_cli_forwards_paths_upload_identity_and_environment_without_source_override(self):
         paths = {"plan": self.plan, "discovery-root": self.discovery, "state-root": self.state,

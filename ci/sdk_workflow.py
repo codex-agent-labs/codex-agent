@@ -7,6 +7,7 @@ from contextlib import contextmanager
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tempfile
 
@@ -19,12 +20,449 @@ from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admis
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
     regular_file_inventory, sha256_bytes, snapshot_regular_tree, publish_regular_tree,
+    verified_zip_contents,
+    _stat_identity,
 )
-from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId
+from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PHASE_INSTANCE_IDS, PhaseInstanceId
 from products.restore import verification_scoped
 from products.sdk_apple_original_inputs import verified_apple_original_inputs
 from products.sdk_inputs import REQUEST_NAME
 from reuse import github_output
+from products.contract_model import _execution_tree_digest
+from products.signing_isolation import require_no_signing_secret
+from products.sdk_validation import decode_sdk_validation_records
+from products.sdk_maven import _zip_members
+from products.tooling import verified_tooling_capture
+
+
+IMPORTED_JAVA_PARITY_INIT = """\
+gradle.projectsEvaluated {
+    def core = rootProject.findProject(':codex-agent-core')
+    if (core == null) return
+    def inputs = System.getProperty('codexAgent.importedJavaParityInputs')
+    def output = System.getProperty('codexAgent.importedJavaParityOutput')
+    if (!inputs || !output) {
+        throw new GradleException('Imported Java parity requires explicit input and output paths')
+    }
+    def originals = new File(inputs).canonicalFile
+    def result = new File(output).canonicalFile
+    def consumerRoot = result.parentFile.toPath()
+    if (consumerRoot.startsWith(originals.toPath()) || originals.toPath().startsWith(consumerRoot)) {
+        throw new GradleException('Java consumer outputs must be separate from original inputs')
+    }
+    def externalModules = { name ->
+        // Configuration file dependencies include this project's producer
+        // outputs. Use only resolved external modules, with no builtBy edges.
+        core.files(core.configurations.getByName(name).incoming.artifacts.artifacts.findAll {
+            it.id.componentIdentifier instanceof org.gradle.api.artifacts.component.ModuleComponentIdentifier
+        }.collect { it.file })
+    }
+    def compileTests = core.tasks.register('compileImportedJavaParityTests', org.gradle.api.tasks.compile.JavaCompile) {
+        setDependsOn([])
+        source core.fileTree('src/jvmTest/java') { include '**/*.java' }
+        classpath = core.files(new File(originals, 'core-jvm.jar'), new File(originals, 'fixture-classes')) +
+            externalModules('jvmTestCompileClasspath')
+        destinationDirectory.set(new File(result.parentFile, 'compiled-java-tests'))
+        options.release.set(17)
+        outputs.upToDateWhen { false }
+    }
+    def runTests = core.tasks.register('runImportedJavaParityTests', org.gradle.api.tasks.testing.Test) {
+        setDependsOn([compileTests])
+        testClassesDirs = core.files(compileTests.flatMap { it.destinationDirectory })
+        classpath = testClassesDirs + core.files(new File(originals, 'core-jvm.jar'),
+            new File(originals, 'fixture-classes')) + externalModules('jvmTestRuntimeClasspath')
+        useJUnitPlatform()
+        filter { includeTestsMatching 'io.github.codex_agent_labs.codexagent.agent.CodexJavaApiTest' }
+        reports.junitXml.outputLocation.set(new File(result.parentFile, 'test-results'))
+        reports.html.required.set(false)
+        binaryResultsDirectory.set(new File(result.parentFile, 'binary-results'))
+        outputs.upToDateWhen { false }
+    }
+    core.tasks.named('verifyJavaBindingParity').configure {
+        useImportedInputs(originals)
+        compiledJavaTests.set(compileTests.flatMap { it.destinationDirectory })
+        testResults.set(new File(result.parentFile, 'test-results'))
+        receiptFile.set(result)
+        dependsOn runTests
+        outputs.upToDateWhen { false }
+    }
+}
+"""
+
+IMPORTED_NATIVE_PARITY_INIT = """\
+gradle.projectsEvaluated {
+    def sdk = rootProject.findProject(':codex-agent-sdk')
+    if (sdk == null) return
+    def config = new groovy.json.JsonSlurper().parse(new File(System.getProperty('codexAgent.importedNativeParityInputs')))
+    def file = { value -> new File(value) }
+    ['python':'Python', 'csharp':'CSharp', 'rust':'Rust', 'cpp':'Cpp', 'dart':'Dart'].each { language, title ->
+        def original = config.native[language]
+        sdk.tasks.named("verify${title}BindingParity").configure {
+            setDependsOn([])
+            apiReport.set(file(config.api))
+            canonicalCoverageReceipt.set(file(config.coverage))
+            getCAbiBootstrapEvidence().set(file(original.bootstrap))
+            claims.set(file(original.claims))
+            compilerEvidence.set(file(original.capability + '/compiler-evidence.tsv'))
+            testProgram.set(file(original.capability + '/test-program'))
+            testResults.set(file(original.capability + '/executed-tests.tsv'))
+            packageArtifacts.set(file(original.packageStage + '/outputs/' + language))
+            hostEvidenceDirectory.set(file(original.validationStages))
+            stagedCAbiSdks.set(file(original.sdks))
+            importedPackageStage.set(file(original.packageStage))
+            importedPackageReceipt.set(file(original.packageReceipt))
+            importedCompatibilityRequest.set(file(original.request))
+            importedRuntimeStages.set(file(original.runtime))
+            importedValidationStages.set(file(original.validationStages))
+            importedValidationReceipts.set(file(original.validationReceipts))
+            importedRepository.set(rootProject.layout.projectDirectory)
+            receipt.set(file(original.output))
+            outputs.upToDateWhen { false }
+        }
+    }
+    def type = sdk.tasks.named('verifyCppBindingParity').get().class.classLoader
+        .loadClass('VerifyImportedCAbiBindingParityTask')
+    rootProject.tasks.register('verifyImportedCAbiBindingParity', type) {
+        def original = config.native.cpp
+        language.set('cpp')
+        packageStage.set(file(original.packageStage))
+        packageReceipt.set(file(original.packageReceipt))
+        compatibilityRequest.set(file(original.request))
+        runtimeStages.set(file(original.runtime))
+        stagedSdks.set(file(original.sdks))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+        evidenceDirectory.set(file(config.cabiOutput))
+    }
+    rootProject.tasks.named('verifyImportedSdkBindingParity').configure {
+        setDependsOn([])
+        canonicalApiReport.set(file(config.api))
+        canonicalCoverageReceipt.set(file(config.coverage))
+        evidenceDirectory.set(file(config.finalEvidence))
+        resultFile.set(file(config.finalOutput))
+        outputs.upToDateWhen { false }
+    }
+}
+"""
+
+
+@contextmanager
+def verified_java_parity_inputs(plan, discovery, state, *, repository_root, environ,
+                                sdk_validation_tooling=None, sdk_original_workflow_sha=None,
+                                sdk_apple_validation_policy=None,
+                                sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    """Import unchanged products after the existing full original-source replay.
+
+    Paths grant no authority. Receipts, objects, keys and original producers are
+    authenticated by the existing replay before extraction. Derived class trees
+    are consumer inputs only; no product archive or receipt is rewritten.
+    """
+    root = Path(repository_root).resolve(strict=True)
+    plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    verified = product_reuse._verified_product_state(
+        plan, discovery, state, root, environ, sdk_validation_tooling,
+        sdk_original_workflow_sha=sdk_original_workflow_sha,
+        **_caller_policies(None, sdk_apple_validation_policy,
+            sdk_facade_metadata_admission=sdk_facade_metadata_admission,
+            sdk_android_metadata_admission=sdk_android_metadata_admission))
+    with _java_parity_inputs(verified, plan, plan_bytes) as inputs:
+        yield inputs
+
+
+@contextmanager
+def _java_parity_inputs(verified, plan, plan_bytes):
+    identities = (
+        PhaseInstanceId("contract", "contract", "binary", "common"),
+        PhaseInstanceId("runtime", "jvm", "binary", "jvm"),
+        PhaseInstanceId("sdk", "sdk-android", "package", "android"),
+    )
+    phases = {product_reuse._identity(row): row for row in verified.prior["phases"]}
+    if any(identity not in verified.sources or phases.get(identity, {}).get("state") not in {"retained", "reused"}
+           for identity in identities):
+        raise ValueError("Java parity requires completed authenticated Contract, JVM Runtime and Android SDK inputs")
+    with tempfile.TemporaryDirectory(prefix="sdk-java-parity-inputs-") as temporary:
+        private = Path(temporary).resolve()
+        originals = private / "originals"
+        originals.mkdir()
+        restored = product_reuse._restore_product_objects(verified, identities, originals)
+        inputs = private / "consumer-inputs"
+        inputs.mkdir()
+
+        def stage(identity):
+            return originals / "-".join(getattr(identity, field) for field in product_reuse._IDENTITY_KEYS) / "stage"
+
+        contract, runtime, android = (stage(identity) for identity in identities)
+        contract_version, runtime_version, sdk_version = (
+            restored[identity]["receipt"]["productVersion"] for identity in identities)
+        group = "io/github/codex-agent-labs"
+        files = {
+            "core-jvm.jar": contract / f"outputs/maven/{group}/codex-agent-core-jvm/{contract_version}/codex-agent-core-jvm-{contract_version}.jar",
+            "core-android.aar": contract / f"outputs/maven/{group}/codex-agent-core-android/{contract_version}/codex-agent-core-android-{contract_version}.aar",
+            "desktop-runtime.jar": runtime / f"outputs/adapter/codex-agent-runtime-desktop-jvm-{runtime_version}.jar",
+            "android-runtime.aar": android / f"outputs/maven/{group}/codex-agent-runtime-android/{sdk_version}/codex-agent-runtime-android-{sdk_version}.aar",
+            "canonical-api.json": contract / "outputs/evidence/canonical-api.json",
+            "canonical-coverage.json": contract / "outputs/evidence/canonical-coverage.json",
+        }
+        for name, source in files.items():
+            (inputs / name).write_bytes(read_regular_file_bytes(source, reject_symlink_parents=True))
+        # JARs legitimately include directory entries. Reuse the existing
+        # Maven archive checker; product-object ZIP rules remain unchanged.
+        classes = _zip_members(read_regular_file_bytes(inputs / "core-jvm.jar"), "preserved Core JAR")
+        for name, (data, _, _) in classes.items():
+            if name != "META-INF/MANIFEST.MF":
+                target = inputs / "kotlin-classes" / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+        api = product_reuse.load_json_bytes((inputs / "canonical-api.json").read_bytes())
+        target_digest = [row["sha256"] for row in api["targets"] if row["kind"] == "jvm-classes"]
+        if target_digest != [_execution_tree_digest(inputs / "kotlin-classes")]:
+            raise ValueError("Imported JVM classes differ from the original canonical compiler identity")
+        _, execution, _ = verified_zip_contents(contract / "outputs/execution/contract-execution.zip", allow_empty_members=True)
+        for name, data in execution.items():
+            if name.startswith("compiled-tests/"):
+                target = inputs / "fixture-classes" / name.removeprefix("compiled-tests/")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+        inventory = regular_file_inventory(private)
+        try:
+            yield inputs
+        finally:
+            if (regular_file_inventory(private) != inventory or
+                    read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024,
+                        reject_symlink_parents=True) != plan_bytes):
+                raise ValueError("Original Java parity inputs changed during consumer use")
+
+
+@contextmanager
+def verified_parity_inputs(plan, discovery, state, *, repository_root, environ,
+                           sdk_validation_tooling=None, sdk_original_workflow_sha=None,
+                           sdk_apple_validation_policy=None,
+                           sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    """Borrow completed immutable evidence after one full authenticated replay."""
+    root = Path(repository_root).resolve(strict=True)
+    plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    verified = product_reuse._verified_product_state(plan, discovery, state, root, environ,
+        sdk_validation_tooling, sdk_original_workflow_sha=sdk_original_workflow_sha,
+        **_caller_policies(None, sdk_apple_validation_policy,
+            sdk_facade_metadata_admission=sdk_facade_metadata_admission,
+            sdk_android_metadata_admission=sdk_android_metadata_admission))
+    phases = {product_reuse._identity(row): row for row in verified.prior["phases"]}
+    required = {identity for identity in PHASE_INSTANCE_IDS if identity.product == "sdk"}
+    if any(identity not in verified.sources or phases.get(identity, {}).get("state") not in {"retained", "reused"}
+           for identity in required):
+        raise ValueError("Full parity requires every selected SDK phase completed and authenticated")
+    records = {"sdkValidationEvidence": list(verified.rebased_request.get("sdkValidationEvidence", []))}
+    product_reuse._merge_native_comparison_records(records,
+        product_reuse._retained_sdk_handoffs(Path(state), root), key="sdkValidationEvidence")
+    native = decode_sdk_validation_records(root, records["sdkValidationEvidence"])
+    selected = {}
+    protected = set()
+    for language in NATIVE_BINDINGS:
+        hosts = {}
+        for target in NATIVE_TARGETS:
+            identity = PhaseInstanceId("sdk", language, "validation", target)
+            digest = phases[identity]["receiptSha256"]
+            record = native.get(digest)
+            if record is None or (record["component"], record["target"]) != (language, target):
+                raise ValueError("Parity lacks the exact authenticated native validation receipt")
+            if sha256_bytes(read_regular_file_bytes(record["validationReceipt"], reject_symlink_parents=True)) != digest:
+                raise ValueError("Parity native receipt differs from the selected immutable phase")
+            hosts[target] = record
+            protected.update(Path(record[name]) for name in (
+                "packageStage", "packageReceipt", "compatibilityRequest", "runtimeStages", "stagedSdks",
+                "validationStage", "validationReceipt"))
+        selected[language] = hosts
+    before = {path: (regular_file_inventory(path, allow_empty=True) if path.is_dir()
+        else read_regular_file_bytes(path, reject_symlink_parents=True)) for path in protected}
+    with tempfile.TemporaryDirectory(prefix="sdk-parity-originals-") as temporary:
+        private = Path(temporary).resolve()
+        originals = private / "objects"
+        originals.mkdir()
+        javascript = PhaseInstanceId("sdk", "javascript", "metadata", "node")
+        contract = PhaseInstanceId("contract", "contract", "binary", "common")
+        product_reuse._restore_product_objects(verified, (contract, javascript), originals)
+        files = {
+            "canonical-api.json": originals / "contract-contract-binary-common/stage/outputs/evidence/canonical-api.json",
+            "canonical-coverage.json": originals / "contract-contract-binary-common/stage/outputs/evidence/canonical-coverage.json",
+            "kotlin-parity.json": originals / "contract-contract-binary-common/stage/outputs/evidence/kotlin-parity.json",
+            "javascript-typescript-parity.json": originals / "sdk-javascript-metadata-node/stage/outputs/binding-evidence/javascript-typescript-parity.json",
+        }
+        apple = {"sdkAppleValidationEvidence": list(verified.rebased_request.get("sdkAppleValidationEvidence", []))}
+        product_reuse._merge_native_comparison_records(apple,
+            product_reuse._retained_apple_handoffs(Path(state), root), key="sdkAppleValidationEvidence")
+        apple_rows = [row for row in apple["sdkAppleValidationEvidence"]
+            if row["target"] == "ios-arm64" and row["receiptSha256"] ==
+                phases[PhaseInstanceId("sdk", "sdk-ios", "validation", "ios-arm64")]["receiptSha256"]]
+        if len(apple_rows) != 1:
+            raise ValueError("Parity lacks the selected authenticated Apple validation original")
+        archive = root / apple_rows[0]["evidenceRoot"] / "capture/original/execution/apple-validation-evidence.zip"
+        archive_identity = _stat_identity(archive.stat())
+        reports = {name: "reports/" + name
+            for name in ("swift-parity.json", "objective-c-parity.json")}
+        _, extracted, _ = verified_zip_contents(archive, allow_empty_members=True,
+            retained_paths=reports.values(), max_retained_bytes=16 * 1024 * 1024)
+        for name, path in reports.items():
+            destination = private / name
+            destination.write_bytes(extracted[path])
+            files[name] = destination
+        imported_inventory = regular_file_inventory(private)
+        with _java_parity_inputs(verified, plan, plan_bytes) as java:
+            try:
+                yield {"java": java, "native": selected, "files": files, "phases": phases}
+            finally:
+                if (_stat_identity(archive.stat()) != archive_identity or
+                        regular_file_inventory(private) != imported_inventory or
+                        any((regular_file_inventory(path, allow_empty=True) if path.is_dir()
+                            else read_regular_file_bytes(path, reject_symlink_parents=True)) != old
+                            for path, old in before.items())):
+                    raise ValueError("Original parity inputs changed during use")
+
+
+def execute_java_parity(plan, discovery, state, destination, *, repository_root, environ, **policies):
+    """Run the fixed consumer and full Java gate; publish after input exit checks.
+
+    This produces semantic parity evidence only, never a product phase receipt
+    or hosted-provenance claim. Missing authenticated products fail before Gradle.
+    """
+    require_no_signing_secret(environ)
+    root = Path(repository_root).resolve(strict=True)
+    discovery, state, destination = product_reuse._product_materialization_paths(root, discovery, state, destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Java parity destination must be fresh")
+    with tempfile.TemporaryDirectory(prefix="sdk-java-parity-execution-") as temporary:
+        private = Path(temporary).resolve()
+        result = private / "evidence"
+        result.mkdir()
+        script = private / "parity.init.gradle"
+        script.write_text(IMPORTED_JAVA_PARITY_INIT)
+        with verified_java_parity_inputs(plan, discovery, state, repository_root=root,
+                environ=environ, **policies) as inputs:
+            command = [str(root / "gradlew"), ":codex-agent-core:verifyJavaBindingParity",
+                "--init-script", str(script), "-DcodexAgent.importedJavaParityInputs=" + str(inputs),
+                "-DcodexAgent.importedJavaParityOutput=" + str(result / "java-parity.json"),
+                "--offline", "--no-configuration-cache", "--no-build-cache", "--console=plain"]
+            with (result / "consumer.log").open("wb") as log:
+                subprocess.run(command, cwd=root, env=dict(environ), check=True, stdout=log, stderr=subprocess.STDOUT)
+            read_regular_file_bytes(result / "java-parity.json", reject_symlink_parents=True)
+        publish_regular_tree(result, destination)
+    return {"evidence": destination / "java-parity.json"}
+
+
+def execute_parity(plan, discovery, state, destination, *, repository_root, environ,
+                   sdk_validation_tooling, **policies):
+    """Full consumer parity over authenticated originals; no product execution."""
+    require_no_signing_secret(environ)
+    root = Path(repository_root).resolve(strict=True)
+    discovery, state, destination = product_reuse._product_materialization_paths(root, discovery, state, destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Parity destination must be fresh")
+    tooling = sdk_validation_tooling
+    revision = product_reuse.load_json_bytes(read_regular_file_bytes(plan))["validationCommit"]
+    with tempfile.TemporaryDirectory(prefix="sdk-parity-execution-") as temporary:
+        private = Path(temporary).resolve()
+        result = private / "evidence"
+        result.mkdir()
+        with verified_parity_inputs(plan, discovery, state, repository_root=root,
+                environ=environ, sdk_validation_tooling=tooling, **policies) as inputs, \
+                verified_tooling_capture(Path(tooling["evidence"]), root, Path(tooling["publicKey"]),
+                    required_trust_domain=tooling["requiredTrustDomain"],
+                    keyring=Path(tooling["keyring"]) if tooling["keyring"] else None,
+                    keys_directory=Path(tooling["keysDirectory"]) if tooling["keysDirectory"] else None,
+                    policy_revision=revision) as jar, (result / "consumer.log").open("wb") as log:
+            def run(command):
+                subprocess.run(command, cwd=root, env=dict(environ), check=True,
+                    stdout=log, stderr=subprocess.STDOUT)
+
+            def copy(source, target):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(read_regular_file_bytes(source, reject_symlink_parents=True))
+
+            files = inputs["files"]
+            config = {"api": str(files["canonical-api.json"]), "coverage": str(files["canonical-coverage.json"]),
+                "native": {}, "cabiOutput": str(private / "cabi"),
+                "finalEvidence": str(result / "m11"), "finalOutput": str(result / "sdk-parity.json")}
+            titles = {"python": "Python", "csharp": "CSharp", "rust": "Rust", "cpp": "Cpp", "dart": "Dart"}
+            for language, hosts in inputs["native"].items():
+                lane = private / language
+                primary = hosts["linux-x64"]
+                for target, record in hosts.items():
+                    snapshot_regular_tree(record["validationStage"], lane / "hosts" / target)
+                    copy(record["validationReceipt"], lane / "receipts" / (target + ".json"))
+                # Existing verifier stages the original producer's source,
+                # canonical inputs, bootstrap and raw compiler/test evidence.
+                handoff = lane / "inputs"
+                command = [sys.executable, "-m", "ci.products.sdk_package", "verify-native",
+                    "--repository", str(root), "--component", language,
+                    "--validation-target", "linux-x64", "--validation-inputs-output", str(handoff)]
+                for option, key in (("stage", "packageStage"), ("receipt", "packageReceipt"),
+                        ("compatibility-request", "compatibilityRequest"), ("runtime-stages", "runtimeStages"),
+                        ("staged-sdks", "stagedSdks"), ("validation-stage", "validationStage"),
+                        ("validation-receipt", "validationReceipt")):
+                    command.extend(("--" + option, str(primary[key])))
+                run(command)
+                config["native"][language] = {"packageStage": str(primary["packageStage"]),
+                    "packageReceipt": str(primary["packageReceipt"]), "request": str(primary["compatibilityRequest"]),
+                    "runtime": str(primary["runtimeStages"]), "sdks": str(primary["stagedSdks"]),
+                    "validationStages": str(lane / "hosts"), "validationReceipts": str(lane / "receipts"),
+                    "bootstrap": str(handoff / "bootstrap/bootstrap-evidence.json"),
+                    "claims": str(handoff / "validation-source/capability-claims.tsv"),
+                    "capability": str(handoff / "validation/outputs/capability"),
+                    "output": str(private / (language + "-parity.json"))}
+            native_script = private / "native.init.gradle"
+            native_script.write_text(IMPORTED_NATIVE_PARITY_INIT)
+            java_script = private / "java.init.gradle"
+            java_script.write_text(IMPORTED_JAVA_PARITY_INIT)
+            config_path = private / "native.json"
+            config_path.write_bytes(canonical_json_bytes(config))
+            gradle = [str(root / "gradlew"), "--no-configuration-cache",
+                "--no-build-cache", "--max-workers=4", "--console=plain"]
+            native_options = ["--init-script", str(native_script),
+                "-DcodexAgent.importedNativeParityInputs=" + str(config_path)]
+            run(gradle + native_options + [":codex-agent-sdk:verify" + titles[name] + "BindingParity"
+                for name in titles] + [":verifyImportedCAbiBindingParity"])
+            run(gradle + ["--init-script", str(java_script),
+                "-DcodexAgent.importedJavaParityInputs=" + str(inputs["java"]),
+                "-DcodexAgent.importedJavaParityOutput=" + str(private / "java/java-parity.json"),
+                ":codex-agent-core:verifyJavaBindingParity"])
+            receipts = private / "m8-receipts"
+            for name in ("kotlin-parity.json", "javascript-typescript-parity.json", "swift-parity.json", "objective-c-parity.json"):
+                copy(files[name], receipts / name)
+            copy(private / "java/java-parity.json", receipts / "java-parity.json")
+            copy(private / "cabi/c-abi-parity.json", receipts / "c-abi-parity.json")
+
+            def tool(command, **options):
+                run([str(tooling["javaExecutable"]), "-jar", str(jar), command] +
+                    [item for key, value in options.items() for item in ("--" + key.replace("_", "-"), str(value))])
+
+            def audit(phase, directory, destination):
+                tool("audit-cross-language-bindings", phase=phase, api_report=files["canonical-api.json"],
+                    coverage_receipt=files["canonical-coverage.json"], receipts=directory, output=destination)
+
+            audit("M8", receipts, result / "binding-obligations-m8.json")
+            for language in titles:
+                phase = "M9_" + language.upper()
+                next_receipts = private / (phase + "-receipts")
+                next_receipts.mkdir()
+                for source in receipts.glob("*-parity.json"):
+                    tool("advance-cross-language-binding-receipt", phase=phase, source=source,
+                        output=next_receipts / source.name)
+                copy(private / (language + "-parity.json"), next_receipts / (language + "-parity.json"))
+                audit(phase, next_receipts, result / ("binding-obligations-" + phase.lower() + ".json"))
+                receipts = next_receipts
+            final = result / "m11"
+            final.mkdir()
+            for source in receipts.glob("*-parity.json"):
+                tool("advance-cross-language-binding-receipt", phase="M11", source=source, output=final / source.name)
+            for name in ("canonical-api.json", "canonical-coverage.json"):
+                copy(files[name], final / name)
+            audit("M11", final, final / "binding-obligations-m11.json")
+            run(gradle + native_options + [":verifyImportedSdkBindingParity"])
+            if product_reuse.load_json_bytes(read_regular_file_bytes(result / "sdk-parity.json"))["result"] != "passed":
+                raise ValueError("Full imported SDK parity did not pass")
+            (result / "original-phase-identities.json").write_bytes(canonical_json_bytes(list(inputs["phases"].values())))
+        # Every original lifetime and tooling authentication check must finish
+        # successfully before a report can become available to another caller.
+        publish_regular_tree(result, destination)
+    return {"evidence": destination / "sdk-parity.json"}
 
 
 def _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy, *,
@@ -59,14 +497,19 @@ def stage(plan, discovery, state, destination, *, keyring, keys_directory,
           repository_root, environ, token, trusted_workflow_sha=None, artifact_id=None,
           artifact_sha256=None, expected_build_key=None, expected_metadata_receipt_sha256=None,
           sdk_validation_tooling=None, sdk_apple_validation_policy=None,
+          runtime_original_producer=None, runtime_original_workflow_sha=None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
     """Delegate source selection and both destination policies, never grant trust."""
+    if (runtime_original_producer is None) != (runtime_original_workflow_sha is None):
+        raise ValueError("Retained Runtime producer and original workflow pin must be paired")
     tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
     validated, selection, _ = _selection(plan, discovery, state, repository_root, environ,
                                          trusted_workflow_sha=trusted_workflow_sha, **tooling)
     if selection.get("source") == "released-default":
+        if runtime_original_producer is not None:
+            raise ValueError("Retained current Runtime identity cannot override a released default")
         return product_reuse.materialize_sdk_default_inputs(plan, discovery, state, destination,
             keyring=keyring, keys_directory=keys_directory, repository_root=repository_root, environ=environ,
             **({"sdk_original_workflow_sha": trusted_workflow_sha} if trusted_workflow_sha is not None else {}),
@@ -77,13 +520,15 @@ def stage(plan, discovery, state, destination, *, keyring, keys_directory,
                                       expected_build_key, expected_metadata_receipt_sha256)):
         raise ValueError("Current Runtime SDK handoff requires complete authenticated upload identity")
     return sdk_handoff.capture_sdk_handoff(plan, destination,
-        artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
+        artifact_id=artifact_id, artifact_sha256=artifact_sha256,
+        trusted_workflow_sha=runtime_original_workflow_sha or trusted_workflow_sha,
         expected_build_key=expected_build_key, expected_metadata_receipt_sha256=expected_metadata_receipt_sha256,
         sdk_version=selection["sdkVersion"], compatible_release_range=selection["compatibleReleaseRange"],
         compatible_runtime_compatibility_range=selection["compatibleRuntimeCompatibilityRange"],
         expected_contract_payload_sha256=selection["contractPayloadSha256"],
         keyring=keyring, keys_directory=keys_directory, selection_repository_root=repository_root,
-        selection_revision=validated["validationCommit"], repository_root=repository_root, environ=environ, token=token)
+        selection_revision=validated["validationCommit"], repository_root=repository_root, environ=environ, token=token,
+        **({"original_producer": runtime_original_producer} if runtime_original_producer is not None else {}))
 
 
 @contextmanager
@@ -726,9 +1171,36 @@ def _ios_binary_main(argv):
     return 0
 
 
+def _parity_main(argv, *, full=False):
+    parser = argparse.ArgumentParser(description="Verify parity against authenticated immutable products", allow_abbrev=False)
+    for name in ("plan", "discovery-root", "state-root", "destination", "repository-root"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
+        parser.add_argument("--" + name, type=Path, required=full and name == "sdk-validation-tooling")
+    parser.add_argument("--sdk-original-workflow-sha", required=True)
+    add_metadata_admission_arguments(parser)
+    arguments = vars(parser.parse_args(argv))
+    try:
+        with metadata_admission_options(arguments) as admissions:
+            for name in ("sdk_validation_tooling", "sdk_apple_validation_policy"):
+                if arguments[name] is not None:
+                    arguments[name] = product_reuse._canonical_control(arguments[name], "Caller Java parity " + name)
+            plan, discovery, state, destination = (arguments.pop(name) for name in
+                ("plan", "discovery_root", "state_root", "destination"))
+            execute = execute_parity if full else execute_java_parity
+            execute(plan, discovery, state, destination, **arguments, **admissions, environ=os.environ)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        parser.error(str(error))
+    return 0
+
+
 @verification_scoped
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "parity":
+        return _parity_main(argv[1:], full=True)
+    if argv and argv[0] == "java-parity":
+        return _parity_main(argv[1:])
     if argv and argv[0] == "capture-transport":
         return _capture_transport_main(argv[1:])
     if argv and argv[0] == "maven-binary":
@@ -799,11 +1271,19 @@ def main(argv=None):
     parser.add_argument("--state-artifact-sha256")
     parser.add_argument("--state-capture-root", type=Path)
     parser.add_argument("--state-wave", type=int, default=0)
+    if not worker and not native_prepare:
+        parser.add_argument("--runtime-original-producer", type=Path, default=argparse.SUPPRESS)
+        parser.add_argument("--runtime-original-workflow-sha", default=argparse.SUPPRESS)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
     arguments = vars(parser.parse_args(argv))
     try:
         with metadata_admission_options(arguments) as admissions:
+            if ("runtime_original_producer" in arguments) != ("runtime_original_workflow_sha" in arguments):
+                raise ValueError("Retained Runtime producer and original workflow pin must be paired")
+            if "runtime_original_producer" in arguments:
+                arguments["runtime_original_producer"] = product_reuse._canonical_control(
+                    arguments["runtime_original_producer"], "Original retained Runtime producer")
             plan, discovery, state, destination = (arguments.pop(name) for name in ("plan", "discovery_root", "state_root", "destination"))
             state_locator = [arguments.pop(name) for name in ("state_artifact_id", "state_artifact_sha256", "state_capture_root")]
             state_wave = arguments.pop("state_wave")

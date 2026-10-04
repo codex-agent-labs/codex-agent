@@ -43,6 +43,39 @@ CORRECTED_FILES = {
 }
 HELPER = ".github/actions/prepare-runtime-signing/recovery_acceptance.py"
 NEW_FILES = {HELPER, "ci/tests/test_runtime_recovery_acceptance.py"}
+# The completed reuse controls keep their independently reviewed immutable bytes.
+REUSE_CONTROL_REVISION = "b95e95744924e84155330ac911f1078ced79ad6f"
+REUSE_NEW_FILES = {
+    "ci/products/verified_evidence.py", "ci/runtime_reference_archive.py",
+    "ci/runtime_reference_transport.py", "ci/tests/test_persistent_runtime_evidence.py",
+    "ci/tests/test_runtime_reference_transport.py",
+}
+REUSE_FIXED_FILES = REUSE_NEW_FILES | {
+    ".github/actions/capture-runtime-state/action.yml", ".github/actions/collect-runtime-wave/action.yml",
+    "ci/products/restore.py", "ci/products/reuse.py", "ci/products/selection.py",
+    "ci/runtime_prepared_state.py", "ci/runtime_signing_preparation.py",
+    "ci/tests/test_ci.py", "ci/tests/test_product_restore.py",
+    "ci/tests/test_product_reuse_adapter.py",
+    "ci/tests/test_runtime_aggregate_upload.py", "ci/tests/test_runtime_prepared_state.py",
+    "ci/tests/test_runtime_signing_preparation.py",
+}
+SDK_CONTROL_FILES = {
+    ".github/workflows/apple-runtime-evidence.yml", "ci/sdk_handoff.py", "ci/sdk_workflow.py",
+    "ci/tests/test_runtime_original_ci.py", "ci/tests/test_sdk_handoff.py",
+    "ci/tests/test_sdk_workflow.py", "ci/tests/test_sdk_ios_binary_worker_wiring.py",
+    "ci/tests/test_product_resume_workflow.py",
+    ".github/workflows/sdk-binding-parity.yml",
+    "gradle/build-logic/src/main/kotlin/CrossLanguageJavaBindingTasks.kt",
+    "gradle/build-logic/src/main/kotlin/CrossLanguageNativeWrapperBindingEvidence.kt",
+    "gradle/build-logic/src/main/kotlin/CrossLanguageNativeWrapperValidationEvidence.kt",
+    "gradle/build-logic/src/main/kotlin/CrossLanguageCAbiBindingEvidence.kt",
+    "gradle/build-logic/src/test/kotlin/SdkVerificationTaskGraphTest.kt",
+    "gradle/build-logic/src/test/kotlin/CrossLanguageNativeWrapperBindingEvidenceTest.kt",
+    "gradle/build-logic/src/test/kotlin/CrossLanguageCAbiBindingEvidenceTest.kt",
+    "gradle/build-logic/src/test/kotlin/CrossLanguageJavaBindingTasksTest.kt",
+}
+NEW_FILES |= REUSE_NEW_FILES
+NEW_FILES.add("gradle/build-logic/src/test/kotlin/CrossLanguageJavaBindingTasksTest.kt")
 CONTROL_FILES = CORRECTED_FILES | PRODUCT_CORRECTION_FILES | NEW_FILES | {
     CI, ".github/workflows/product-validation.yml",
     ".github/workflows/contract-validation.yml",
@@ -57,6 +90,7 @@ CONTROL_FILES = CORRECTED_FILES | PRODUCT_CORRECTION_FILES | NEW_FILES | {
     "ci/tests/test_runtime_native_attestation_workflow.py",
     "ci/tests/test_runtime_aggregate_attestation_workflow.py",
 }
+CONTROL_FILES |= REUSE_FIXED_FILES | SDK_CONTROL_FILES
 
 
 def _tree(root, revision):
@@ -107,6 +141,10 @@ def _reviewed_scope(trusted, candidate, sha):
     if any(product_corrected.get(path, ())[:2] != ("100644", "blob")
            or reviewed.get(path) != product_corrected[path] for path in PRODUCT_CORRECTION_FILES):
         raise ValueError("Recovery metadata verifier differs from the fixed reviewed correction")
+    reuse_reviewed = _tree(trusted, REUSE_CONTROL_REVISION)
+    if any(reuse_reviewed.get(path, ())[:2] != ("100644", "blob")
+           or reviewed.get(path) != reuse_reviewed[path] for path in REUSE_FIXED_FILES):
+        raise ValueError("Completed reuse controls differ from their fixed reviewed checkpoint")
     current = _tree(candidate, "HEAD")
     if current.keys() != reviewed.keys() or any(
         current[path] != reviewed[path] for path in current if path != CI

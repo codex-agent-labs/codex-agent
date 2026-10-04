@@ -12,6 +12,23 @@ import org.gradle.api.tasks.TaskAction
 
 @CacheableTask
 abstract class VerifyJavaBindingParityTask : DefaultTask() {
+    // Input transport is authenticated by the caller. This method only
+    // chooses files for the same semantic check; it grants no phase authority.
+    fun useImportedInputs(root: java.io.File) {
+        // The legacy registration adds product producers after task creation.
+        // Replace them only after evaluation, once all input providers are files.
+        setDependsOn(emptyList<Any>())
+        apiReport.set(root.resolve("canonical-api.json"))
+        canonicalCoverageReceipt.set(root.resolve("canonical-coverage.json"))
+        kotlinArtifact.set(root.resolve("kotlin-classes"))
+        coreJvmJar.set(root.resolve("core-jvm.jar"))
+        coreAndroidAar.set(root.resolve("core-android.aar"))
+        desktopRuntimeJar.set(root.resolve("desktop-runtime.jar"))
+        androidRuntimeAar.set(root.resolve("android-runtime.aar"))
+        compiledJavaTests.set(root.resolve("compiled-java-tests"))
+        testResults.set(root.resolve("test-results"))
+    }
+
     @get:InputFile
     @get:PathSensitive(PathSensitivity.NONE)
     abstract val apiReport: RegularFileProperty
@@ -54,6 +71,18 @@ abstract class VerifyJavaBindingParityTask : DefaultTask() {
     @TaskAction
     fun verify() {
         val output = receiptFile.get().asFile
+        val outputPath = output.canonicalFile.toPath()
+        val inputs = listOf(
+            apiReport.get().asFile, canonicalCoverageReceipt.get().asFile,
+            kotlinArtifact.get().asFile, coreJvmJar.get().asFile,
+            coreAndroidAar.get().asFile, desktopRuntimeJar.get().asFile,
+            androidRuntimeAar.get().asFile, compiledJavaTests.get().asFile,
+            testResults.get().asFile,
+        )
+        check(inputs.none { input ->
+            val path = input.canonicalFile.toPath()
+            outputPath == path || (input.isDirectory && outputPath.startsWith(path))
+        }) { "Java parity output must be separate from its original inputs" }
         Files.deleteIfExists(output.toPath())
         val report = apiReport.get().asFile
         val coverage = canonicalCoverageReceipt.get().asFile

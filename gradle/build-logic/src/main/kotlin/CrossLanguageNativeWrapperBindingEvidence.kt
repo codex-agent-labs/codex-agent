@@ -16,6 +16,8 @@ import org.gradle.api.tasks.CacheableTask
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
@@ -72,10 +74,42 @@ internal data class CrossLanguageNativeWrapperEvidenceInput(
     val packageArtifacts: Map<String, File>,
     val hostEvidenceDirectory: File,
     val stagedCAbiSdks: File,
+    val importedHosts: ImportedNativeWrapperParityHosts? = null,
+)
+
+/** Original-source/host authentication remains mandatory in the outer replay. */
+internal data class ImportedNativeWrapperParityHosts(
+    val repository: File,
+    val packageStage: File,
+    val packageReceipt: File,
+    val compatibilityRequest: File,
+    val runtimeStages: File,
+    val validationStages: File,
+    val validationReceipts: File,
 )
 
 @CacheableTask
 internal abstract class GenerateCrossLanguageNativeWrapperBindingReceiptTask : DefaultTask() {
+    @get:InputDirectory @get:Optional @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val importedPackageStage: DirectoryProperty
+
+    @get:InputFile @get:Optional @get:PathSensitive(PathSensitivity.NONE)
+    abstract val importedPackageReceipt: RegularFileProperty
+
+    @get:InputFile @get:Optional @get:PathSensitive(PathSensitivity.NONE)
+    abstract val importedCompatibilityRequest: RegularFileProperty
+
+    @get:InputDirectory @get:Optional @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val importedRuntimeStages: DirectoryProperty
+
+    @get:InputDirectory @get:Optional @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val importedValidationStages: DirectoryProperty
+
+    @get:InputDirectory @get:Optional @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val importedValidationReceipts: DirectoryProperty
+
+    @get:Internal abstract val importedRepository: DirectoryProperty
+
     @get:Input
     abstract val phase: Property<String>
 
@@ -128,7 +162,25 @@ internal abstract class GenerateCrossLanguageNativeWrapperBindingReceiptTask : D
     @TaskAction
     fun generate() {
         val output = receipt.get().asFile
+        val destination = output.canonicalFile.toPath()
+        val sources = listOfNotNull(
+            apiReport.orNull?.asFile, canonicalCoverageReceipt.orNull?.asFile,
+            cAbiBootstrapEvidence.orNull?.asFile, claims.orNull?.asFile,
+            compilerEvidence.orNull?.asFile, testProgram.orNull?.asFile, testResults.orNull?.asFile,
+            packageArtifacts.orNull?.asFile, hostEvidenceDirectory.orNull?.asFile, stagedCAbiSdks.orNull?.asFile,
+            importedPackageStage.orNull?.asFile, importedPackageReceipt.orNull?.asFile,
+            importedCompatibilityRequest.orNull?.asFile, importedRuntimeStages.orNull?.asFile,
+            importedValidationStages.orNull?.asFile, importedValidationReceipts.orNull?.asFile,
+        )
+        check(sources.none { source ->
+            val path = source.canonicalFile.toPath()
+            destination == path || (source.isDirectory && destination.startsWith(path))
+        }) { "Native parity output must be separate from its original inputs" }
         Files.deleteIfExists(output.toPath())
+        val imported = listOf(importedPackageStage.isPresent, importedPackageReceipt.isPresent,
+            importedCompatibilityRequest.isPresent, importedRuntimeStages.isPresent,
+            importedValidationStages.isPresent, importedValidationReceipts.isPresent, importedRepository.isPresent)
+        check(imported.all { it } || imported.none { it }) { "Imported native parity inputs must be complete and paired" }
         val phaseValue = CrossLanguageBindingPhase.entries.singleOrNull { it.name == phase.get() }
             ?: error("Unknown native wrapper binding phase: ${phase.get()}")
         val languageValue = CrossLanguageBinding.entries.singleOrNull { it.id == language.get() }
@@ -148,6 +200,12 @@ internal abstract class GenerateCrossLanguageNativeWrapperBindingReceiptTask : D
                 packageArtifacts = packages,
                 hostEvidenceDirectory = hostEvidenceDirectory.get().asFile,
                 stagedCAbiSdks = stagedCAbiSdks.get().asFile,
+                importedHosts = if (imported.all { it }) ImportedNativeWrapperParityHosts(
+                    importedRepository.get().asFile, importedPackageStage.get().asFile,
+                    importedPackageReceipt.get().asFile, importedCompatibilityRequest.get().asFile,
+                    importedRuntimeStages.get().asFile, importedValidationStages.get().asFile,
+                    importedValidationReceipts.get().asFile,
+                ) else null,
             ),
         )
         writeCrossLanguageBindingReceipt(output, expected)
@@ -359,6 +417,7 @@ private fun deriveCrossLanguageNativeWrapperHostConsumerProofs(
     input: CrossLanguageNativeWrapperEvidenceInput,
     stagedSdkIndex: CrossLanguageNativeWrapperSdkIndex,
 ): Pair<List<CrossLanguageBindingHostConsumerProof>, List<CrossLanguageBindingArtifactIdentity>> {
+    input.importedHosts?.let { return deriveImportedNativeWrapperHostConsumerProofs(input, it) }
     val specsByClassifier = crossLanguageCAbiTargetSpecs.values.associateBy {
         it.classifier.removePrefix("c-abi-")
     }
@@ -422,6 +481,53 @@ private fun deriveCrossLanguageNativeWrapperHostConsumerProofs(
             candidateTree = lane.candidateTree,
         )
     }
+    return proofs to artifacts.sortedBy(CrossLanguageBindingArtifactIdentity::id)
+}
+
+private fun deriveImportedNativeWrapperHostConsumerProofs(
+    input: CrossLanguageNativeWrapperEvidenceInput,
+    originals: ImportedNativeWrapperParityHosts,
+): Pair<List<CrossLanguageBindingHostConsumerProof>, List<CrossLanguageBindingArtifactIdentity>> {
+    val specs = crossLanguageCAbiTargetSpecs.values.associateBy { it.classifier.removePrefix("c-abi-") }
+    check(originals.validationStages.list()?.toSet() == specs.keys &&
+        originals.validationReceipts.list()?.toSet() == specs.keys.map { "$it.json" }.toSet()) {
+        "Imported native parity requires exactly five original validation stages and receipts"
+    }
+    val artifacts = mutableListOf<CrossLanguageBindingArtifactIdentity>()
+    val proofs = specs.toSortedMap().map { (classifier, spec) ->
+        val stage = originals.validationStages.resolve(classifier)
+        val receipt = originals.validationReceipts.resolve("$classifier.json")
+        // Reuse the complete installed-package/capability/scenario gate, never
+        // translate a phase receipt into a fabricated legacy lane receipt.
+        verifyImportedNativeWrapperValidation(originals.repository, input.language, classifier,
+            originals.packageStage, originals.packageReceipt, originals.compatibilityRequest,
+            originals.runtimeStages, input.stagedCAbiSdks, stage, receipt,
+            parityEvidence = if (classifier == "linux-x64") input else null)
+        val installed = stage.resolve("outputs/installed")
+        val row = requireExactNativeWrapperInstalledConsumerEvidence(installed, input.language.id, classifier)
+        val packageFile = input.packageArtifacts[row[1]]
+            ?: error("Imported native parity references an unknown package: ${row[1]}")
+        check(packageFile.releaseDigest() == row[2]) { "Imported native parity package digest differs" }
+        val producer = receipt.readReleaseObject().releaseObject("producer")
+        val host = installed.resolve("evidence/${input.language.id}/$classifier.tsv")
+        val toolchain = installed.resolve("evidence/${input.language.id}/toolchain.tsv")
+        artifacts += listOf(
+            CrossLanguageBindingArtifactIdentity("${input.language.id}-host-consumer-$classifier", host.releaseDigest()),
+            CrossLanguageBindingArtifactIdentity("${input.language.id}-host-phase-receipt-$classifier", receipt.releaseDigest()),
+            CrossLanguageBindingArtifactIdentity("${input.language.id}-host-toolchain-$classifier", toolchain.releaseDigest()),
+        )
+        CrossLanguageBindingHostConsumerProof(
+            classifier = classifier, runnerOs = spec.runnerOs, runnerArch = spec.runnerArch,
+            toolchainIdentitySha256 = toolchain.releaseDigest(), packageArtifactId = row[1],
+            packageSha256 = row[2], nativeLibrarySha256 = row[3], testId = row[4],
+            status = CrossLanguageBindingTestStatus.PASSED,
+            candidateCommit = producer.releaseString("commit"), candidateTree = producer.releaseString("tree"),
+        )
+    }
+    val originalPackages = nativeWrapperPackageArtifacts(input.language,
+        originals.packageStage.resolve("outputs/${input.language.id}"))
+    check(input.packageArtifacts.mapValues { it.value.releaseDigest() } ==
+        originalPackages.mapValues { it.value.releaseDigest() }) { "Imported parity package inventory differs from its original phase" }
     return proofs to artifacts.sortedBy(CrossLanguageBindingArtifactIdentity::id)
 }
 

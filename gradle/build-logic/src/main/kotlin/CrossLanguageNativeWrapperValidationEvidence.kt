@@ -50,6 +50,7 @@ internal fun verifyImportedNativeWrapperValidation(
     runtimeStages: File, stagedSdks: File, validationStage: File, validationReceipt: File,
     contentOutput: File? = null,
     enclosingContentOutput: File? = null,
+    parityEvidence: CrossLanguageNativeWrapperEvidenceInput? = null,
 ) {
     check(language in nativeWrapperBindings && crossLanguageCAbiTargetSpecs.values.any {
         it.classifier == "c-abi-$classifier"
@@ -90,6 +91,21 @@ internal fun verifyImportedNativeWrapperValidation(
         verifyCrossLanguageNativeWrapperValidationEvidence(language, classifier, handoff,
             raw.resolve("installed"), raw.resolve("capability"),
             handoff.resolve("validation-source/capability-claims.tsv"))
+        parityEvidence?.let { parity ->
+            check(parity.language == language) { "Imported parity language differs from its original validation" }
+            val pairs = listOf(
+                parity.apiReport to handoff.resolve("contract/canonical-api.json"),
+                parity.canonicalCoverageReceipt to handoff.resolve("contract/canonical-coverage.json"),
+                parity.cAbiBootstrapEvidence to handoff.resolve("bootstrap/bootstrap-evidence.json"),
+                parity.claims to handoff.resolve("validation-source/capability-claims.tsv"),
+                parity.compilerEvidence to raw.resolve("capability/compiler-evidence.tsv"),
+                parity.testProgram to raw.resolve("capability/test-program"),
+                parity.testResults to raw.resolve("capability/executed-tests.tsv"),
+            )
+            check(pairs.all { (selected, original) -> selected.releaseDigest() == original.releaseDigest() }) {
+                "Imported parity compiler/test inputs differ from the full original validation"
+            }
+        }
         val content = work.resolve("content.json")
         if (contentOutput != null) runPython("native-content",
             "--inputs", handoff.absolutePath, "--component", language.id, "--target", classifier, stdout = content)

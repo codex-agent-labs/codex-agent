@@ -68,7 +68,9 @@ class SdkHandoffTest(unittest.TestCase):
         self.assertEqual(self.plan, plan)
         self.assertEqual({name: self.options[name] for name in (
             "artifact_id", "artifact_sha256", "trusted_workflow_sha", "expected_build_key",
-            "expected_metadata_receipt_sha256", "repository_root", "environ", "token")}, arguments)
+            "expected_metadata_receipt_sha256", "repository_root", "environ", "token")}
+            | ({"original_producer": self.options["original_producer"]}
+               if "original_producer" in self.options else {}), arguments)
         captured_fixture(plan, destination, self.original)
 
     def bridge(self, original, destination, **arguments):
@@ -91,6 +93,12 @@ class SdkHandoffTest(unittest.TestCase):
         (destination / "sdk-inputs/request.json").write_bytes(b'{"synthetic-sdk":true}\n')
         self.assertFalse(self.output.exists())
         return {"inventory": "explicitly mocked bridge result"}
+
+    def test_retained_original_producer_is_forwarded_without_changing_original_bytes(self):
+        self.options["original_producer"] = {"runId": 3, "runAttempt": 1}
+        before = regular_file_inventory(self.original, allow_empty=True)
+        self.invoke()
+        self.assertEqual(before, regular_file_inventory(self.original, allow_empty=True))
 
     def invoke(self, *, capture=None, bridge=None):
         with patch.object(caller.product_reuse, "capture_runtime_aggregate_release_upload",

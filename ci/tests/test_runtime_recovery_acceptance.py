@@ -71,6 +71,9 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
             self.write(self.trusted, name, contents)
         for name in recovery.PRODUCT_CORRECTION_FILES:
             self.write(self.trusted, name, "original metadata verifier\n")
+        for name in recovery.REUSE_FIXED_FILES - recovery.REUSE_NEW_FILES:
+            if name != SELECTOR:
+                self.write(self.trusted, name, "original reuse control\n")
         self.base = self.commit(self.trusted, "baseline")
         self.producer = dict(recovery.BASELINE_PRODUCER,
             tree=self.git(self.trusted, "rev-parse", "HEAD^{tree}").strip())
@@ -80,7 +83,10 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         for name in recovery.PRODUCT_CORRECTION_FILES:
             self.write(self.trusted, name, "fixed reviewed metadata verifier\n")
         self.product_correction = self.commit(self.trusted, "fixed metadata verifier")
-        for name in recovery.NEW_FILES:
+        for name in recovery.REUSE_FIXED_FILES:
+            self.write(self.trusted, name, "fixed reviewed reuse control\n")
+        self.reuse_correction = self.commit(self.trusted, "fixed reuse controls")
+        for name in recovery.NEW_FILES - recovery.REUSE_NEW_FILES:
             self.write(self.trusted, name, "reviewed control\n")
         self.write(self.trusted, ".github/workflows/product-validation.yml", "name: reviewed recovery\n")
         for name in ("ci/runtime_preparation_capture.py", "ci/tests/test_runtime_preparation_capture.py",
@@ -122,6 +128,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
             "parents": [{"sha": "b" * 40}, {"sha": "d" * 40}]}
         for attribute, value in (("BASELINE_PRODUCER", self.producer), ("CORRECTION_REVISION", self.correction),
                                  ("PRODUCT_CORRECTION_REVISION", self.product_correction),
+                                 ("REUSE_CONTROL_REVISION", self.reuse_correction),
                                  ("__file__", str(self.trusted / recovery.HELPER))):
             patcher = mock.patch.object(recovery, attribute, value)
             patcher.start()
@@ -194,7 +201,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
 
     def test_reviewed_revision_still_rejects_changed_product_correction_selector_and_mode(self):
         for path in ("runtime/product.txt", ".github/actions/prepare-runtime-signing/action.yml",
-                     "ci/products/aggregate.py", SELECTOR, recovery.HELPER):
+                     "ci/products/aggregate.py", "ci/products/verified_evidence.py", SELECTOR, recovery.HELPER):
             with self.subTest(path=path):
                 original = self.reviewed
                 self.git(self.trusted, "checkout", "--quiet", "--detach", original)
