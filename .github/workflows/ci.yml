@@ -112,9 +112,9 @@ jobs:
       contents: read
       deployments: read
       id-token: write
-    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@822578a948aa83e972b572121958343eefe5c1d0
+    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@f116ff0ea6df44887f39fb789ac69ec1abfcc79f
     with:
-      trustedWorkflowSha: 822578a948aa83e972b572121958343eefe5c1d0
+      trustedWorkflowSha: f116ff0ea6df44887f39fb789ac69ec1abfcc79f
       runtimeRecoveryOnly: false
       sdkRecoveryOnly: true
       runtimeAggregateHandoffRecovery: '{"artifactId":11271945915,"artifactSha256":"sha256:79e7b75470ab73b2ce3b14304bde1efa9da738956a14117e611754914db3529b","originalProducer":{"commit":"db38c174a2db6f02ff6b6e2091e809681d83a4d9","event":"pull_request","pullRequest":31,"repository":"codex-agent-labs/codex-agent","runAttempt":1,"runId":37081083913,"tree":"9e500ae9373416a16f09fb4a264cd0c9c22513e8","workflowPath":".github/workflows/ci.yml"},"trustedWorkflowSha":"cec458a479c0556d39aa6a75b18311500ce66d71"}'
