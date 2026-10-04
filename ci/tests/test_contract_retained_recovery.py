@@ -23,6 +23,36 @@ class ContractRetainedRecoveryTest(unittest.TestCase):
         self.keys = {phase: fixture.load_canonical_json_bytes(path.read_bytes())["buildKey"]
                      for phase, path in self.source.receipts.items()}
 
+    def test_original_phase_workflows_use_reviewed_originals_and_require_child_pin(self):
+        old = "b4148a6320d3dfe8bfb556c6327937c6b304cf4c"
+        for phase in recovery.PHASES[:3]:
+            path = self.handoff / f"execution-closure/receipts/{phase}.json"
+            receipt = fixture.load_canonical_json_bytes(path.read_bytes())
+            receipt["producer"]["runId"] = 70
+            path.write_bytes(fixture.canonical_json_bytes(receipt))
+
+        def run(url, token):
+            pin = old if url.endswith('/70/attempts/2') else self.source.pin
+            return {"referenced_workflows": [{"path":
+                f"{fixture.REPOSITORY}/.github/workflows/{name}.yml@{pin}", "sha": pin}
+                for name in ('product-validation', 'contract-validation')]}
+
+        with mock.patch.object(recovery.transport, 'api_json', side_effect=run) as api:
+            policies = recovery._original_phase_workflows(self.handoff, self.source.pin, 'test-token')
+            self.assertEqual(2, api.call_count)
+        self.assertEqual({phase: {"path": recovery.WORKFLOW,
+            "sha": self.source.pin if phase == 'metadata' else old}
+            for phase in recovery.PHASES}, policies)
+        # Candidate hints grant no authority without the exact reviewed child reference.
+        missing_child = run('/70/attempts/2', 'test-token')
+        missing_child['referenced_workflows'].pop()
+        with mock.patch.object(recovery.transport, 'api_json', return_value=missing_child), \
+                self.assertRaisesRegex(ValueError, 'caller-pinned workflow'):
+            recovery._original_phase_workflows(self.handoff, self.source.pin, 'test-token')
+        with mock.patch.object(recovery.transport, 'api_json', return_value={'referenced_workflows': []}), \
+                self.assertRaisesRegex(ValueError, 'reviewed producer workflow'):
+            recovery._original_phase_workflows(self.handoff, self.source.pin, 'test-token')
+
     def test_exact_keys_admit_original_receipts_without_rewriting_them(self):
         original_bytes = {phase: path.read_bytes() for phase, path in self.source.receipts.items()}
         phases = recovery._verify_current_keys(self.originals, self.handoff, self.keys)

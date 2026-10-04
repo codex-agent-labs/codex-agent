@@ -22,6 +22,27 @@ CONTINUATION = "product-validation / contract-validation / contract-continuation
 ATTESTATION = "product-validation / contract-validation / contract-attestation"
 
 
+def _original_phase_workflows(capture, trusted_workflow_sha, token):
+    workflows, attempts = {}, {}
+    for phase in PHASES:
+        receipt = load_canonical_json_bytes(read_regular_file_bytes(
+            capture / f"execution-closure/receipts/{phase}.json", reject_symlink_parents=True))
+        producer = validate_producer(receipt["producer"], "Original Contract producer hint")
+        identity = producer["runId"], producer["runAttempt"]
+        if identity not in attempts:
+            run = transport.api_json(
+                f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/"
+                f"{identity[0]}/attempts/{identity[1]}", token)
+            pin = transport._runtime_prior_workflow_sha(run, trusted_workflow_sha)
+            if pin is None:
+                raise ValueError("Original Contract phase lacks a reviewed producer workflow")
+            transport._require_ci_workflow_reference(run,
+                f"codex-agent-labs/codex-agent/{WORKFLOW}@{pin}", pin)
+            attempts[identity] = pin
+        workflows[phase] = {"path": WORKFLOW, "sha": attempts[identity]}
+    return workflows
+
+
 def _verify_current_keys(originals: Path, handoff: Path, expected_build_keys: dict) -> dict:
     if expected_build_keys is not None:
         require_exact_keys(expected_build_keys, set(PHASES), "Current Contract build keys")
@@ -87,8 +108,7 @@ def capture_retained_contract(
         transport.capture_contract_original_ci_phases(
             capture, originals, contract_version=contract_version,
             trusted_workflow_sha=trusted_workflow_sha, token=token,
-            trusted_workflows_by_phase={phase: {"path": WORKFLOW, "sha": trusted_workflow_sha}
-                                        for phase in PHASES},
+            trusted_workflows_by_phase=_original_phase_workflows(capture, trusted_workflow_sha, token),
             jobs_by_phase={phase: ("product-validation / contract-validation / product-contracts"
                                    if phase == "binary" else CONTINUATION) for phase in PHASES})
         observed = transport._observe_ci_producer_jobs(

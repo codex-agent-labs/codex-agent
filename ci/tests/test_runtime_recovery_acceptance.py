@@ -44,6 +44,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.trusted.mkdir()
         self.git(self.trusted, "init", "--quiet")
         self.git(self.trusted, "config", "core.autocrlf", "false")
+        self.git(self.trusted, "config", "gc.auto", "0")
         self.ci = (
             "permissions: read\n    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@"
             + recovery.BASELINE_WORKFLOW + "\n      trustedWorkflowSha: " + recovery.BASELINE_WORKFLOW + "\n"
