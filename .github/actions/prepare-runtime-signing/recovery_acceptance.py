@@ -64,6 +64,8 @@ REUSE_FIXED_FILES = REUSE_NEW_FILES | {
 }
 REUSE_FIXED_FILES -= REFERENCE_TRANSPORT_FILES
 SDK_CONTROL_FILES = {
+    ".github/actions/capture-sdk-transport/action.yml", ".github/actions/sdk-ios-binary-worker/action.yml",
+    "ci/tests/test_sdk_transport_capture.py",
     ".github/actions/run-ci-lane/action.yml", ".github/actions/run-ci-lane/sdk_prerequisite_reuse.py",
     "ci/tests/test_sdk_prerequisite_reuse.py",
     ".github/workflows/apple-runtime-evidence.yml", "ci/sdk_handoff.py", "ci/sdk_workflow.py",

@@ -158,6 +158,10 @@ jobs:
           ci.tests.test_tooling_capture
           ci.tests.test_tooling_discovery
           ci.tests.test_sdk_prerequisite_reuse
+          ci.tests.test_sdk_transport_capture
+          ci.tests.test_sdk_ios_binary_worker_wiring
+          ci.tests.test_sdk_ios_binary_inputs
+          ci.tests.test_sdk_ios_binary_execution
           ci.tests.test_reference_archive_download
           ci.tests.test_runtime_reference_transport
           ci.tests.test_runtime_signing_workflow_isolation

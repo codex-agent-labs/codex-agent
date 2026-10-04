@@ -65,7 +65,8 @@ class ToolingDiscoveryTest(unittest.TestCase):
 
     def test_original_nested_workflow_survives_pin_rotation_and_rejects_mismatch(self):
         for prior in ('084542245fba5fca34be4ad52e8113ac3f701f16',
-                      '822578a948aa83e972b572121958343eefe5c1d0'):
+                      '822578a948aa83e972b572121958343eefe5c1d0',
+                      'd7b4f066d75b00b29dfdc10c768641e3e6d9c93b'):
             with self.subTest(prior=prior):
                 run = copy.deepcopy(self.fixture.run)
                 run['referenced_workflows'] = [

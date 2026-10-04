@@ -48,26 +48,36 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
         return textwrap.dedent(matches[0])
 
     def test_capture_and_exact_identity_precede_read_only_apple_setup(self):
-        capture = self.action.index("uses: ./.github/actions/capture-runtime-state")
+        capture = self.action.index("uses: ./.github/actions/capture-sdk-transport")
         identity = self.action.index("iOS SDK worker differs from the original replay election")
         setup = self.action.index("uses: ./.github/actions/setup-kmp")
         self.assertLess(capture, identity)
         self.assertLess(identity, setup)
         for value in (
-            "product: sdk-ios-binary", "cache-read-only: 'true'",
+            "cache-read-only: 'true'",
             "product-worker: 'true'", "xcode-fingerprint: auto",
         ):
             self.assertIn(value, self.action)
         self.assertNotIn("setup-xcode", self.action)
         self.assertNotIn("xcodebuild", self.action[:setup])
+        self.assertNotIn("uses: ./.github/actions/capture-runtime-state", self.action)
+        self.assertIn("Path(os.environ['STATE']) / 'reuse-wave-result.json'", self.identity)
+        self.assertIn("plan['validationTree'] != os.environ['TREE']", self.identity)
 
     def run_identity(self, rows, *, required="true", key=KEY, tree=TREE, sentinel=""):
         with tempfile.TemporaryDirectory(prefix="sdk-ios-worker-identity-") as temporary:
-            output = Path(temporary) / "github-output"
+            work = Path(temporary).resolve()
+            output = work / "github-output"
             if sentinel:
                 output.write_text(sentinel)
+            state = work / 'state'
+            state.mkdir()
+            report = {'matrices': {'sdk': rows}, 'fullReuse': required != 'true'}
+            (state / 'reuse-wave-result.json').write_text(json.dumps(report, sort_keys=True, separators=(',', ':')) + '\n')
+            plan = work / 'plan.json'
+            plan.write_text(json.dumps({'validationTree': TREE}, indent=2, sort_keys=True) + '\n')
             environment = {
-                "MATRIX": json.dumps({"include": rows}), "REQUIRED": required,
+                "STATE": str(state), "PLAN": str(plan),
                 "BUILD_KEY": key, "TREE": tree, "GITHUB_OUTPUT": str(output),
             }
             with patch.dict(os.environ, environment, clear=True):

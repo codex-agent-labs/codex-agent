@@ -1,5 +1,5 @@
 name: Execute elected iOS SDK binary
-description: Capture and replay original state before Apple setup, execute once, and retain every result.
+description: Capture original transport, replay and authenticate before production, and retain every result.
 inputs:
   plan-id:
     required: true
@@ -50,11 +50,8 @@ runs:
   using: composite
   steps:
     - id: captured
-      uses: ./.github/actions/capture-runtime-state
+      uses: ./.github/actions/capture-sdk-transport
       with:
-        product: sdk-ios-binary
-        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
-        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
         plan-id: ${{ inputs.plan-id }}
         artifact-id: ${{ inputs.artifact-id }}
         artifact-sha256: ${{ inputs.artifact-sha256 }}
@@ -63,20 +60,30 @@ runs:
     - id: identity
       shell: bash
       env:
-        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
-        REQUIRED: ${{ steps.captured.outputs.sdk-workers-required }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        PLAN: ${{ steps.captured.outputs.plan-path }}
         BUILD_KEY: ${{ inputs.build-key }}
         TREE: ${{ inputs.tree }}
       run: |
         python3 - <<'PY'
         import json, os, re
+        from pathlib import Path
+        from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes
         key = os.environ['BUILD_KEY']
-        rows = json.loads(os.environ['MATRIX'])['include']
+        report = load_canonical_json_bytes(read_regular_file_bytes(
+            Path(os.environ['STATE']) / 'reuse-wave-result.json', reject_symlink_parents=True))
+        plan = json.loads(read_regular_file_bytes(
+            Path(os.environ['PLAN']), reject_symlink_parents=True))
         expected = ('sdk', 'sdk-ios', 'binary', 'ios')
-        if (os.environ['REQUIRED'] != 'true' or len(rows) != 1 or
+        rows = [row for row in report['matrices']['sdk']
+                if tuple(row.get(field) for field in ('product', 'component', 'phase', 'target')) == expected]
+        # Transport and this reported selection grant no phase authority. The
+        # unchanged ios-binary input lifetime replays/authenticates before execute.
+        if (report['fullReuse'] is not False or len(rows) != 1 or
                 tuple(rows[0].get(field) for field in ('product', 'component', 'phase', 'target')) != expected or
                 rows[0].get('buildKey') != key or not re.fullmatch(r'sha256:[0-9a-f]{64}', key) or
-                not re.fullmatch(r'[0-9a-f]{40}', os.environ['TREE'])):
+                not re.fullmatch(r'[0-9a-f]{40}', os.environ['TREE']) or
+                plan['validationTree'] != os.environ['TREE']):
             raise ValueError('iOS SDK worker differs from the original replay election')
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('key_hex=' + key.removeprefix('sha256:') + '\n')

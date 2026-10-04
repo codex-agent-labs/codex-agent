@@ -117,6 +117,8 @@ class SdkTransportCaptureTest(unittest.TestCase):
                   ".github/actions/capture-sdk-transport/action.yml").read_text()
         self.assertIn("python3 -B -m ci.sdk_workflow capture-transport", source)
         self.assertIn("--sdk-state-wave \"$SDK_STATE_WAVE\"", source)
+        self.assertIn('wave=(--state-wave "$STATE_WAVE")', source)
+        self.assertIn('if [ -n "$SDK_STATE_WAVE" ]; then', source)
         self.assertNotIn("sdk-matrix", source)
         self.assertNotIn("setup-", source)
         self.assertNotIn("--sdk-android-metadata-policy", source)
