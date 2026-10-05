@@ -6185,7 +6185,12 @@ def _qualified_original_projection(locator):
     from products.restore import _VERIFICATION_SESSION, _stage_fingerprint
     from products.verified_evidence import _source_identity
     session = _VERIFICATION_SESSION.get()
-    qualified = session.get("qualifiedOriginalProjections", {}).get(canonical_json_bytes(locator)) if session else None
+    key = canonical_json_bytes(locator)
+    qualified = session.get("qualifiedOriginalProjections", {}).get(key) if session else None
+    if qualified is not None and not qualified[0].exists() and not qualified[0].is_symlink():
+        # A completed inner operation may have released its temporary custody.
+        del session["qualifiedOriginalProjections"][key]
+        qualified = None
     if qualified is None and session is not None and session.get("portableQualificationInputs"):
         import reuse_qualification
         try:
@@ -6199,7 +6204,7 @@ def _qualified_original_projection(locator):
         if policy != _source_identity():
             return None
         if _stage_fingerprint(source.parent) != fingerprint:
-            raise ValueError("Authenticated original projection custody changed")
+            raise ValueError(f"Authenticated original projection custody changed: {source}")
     return qualified
 
 

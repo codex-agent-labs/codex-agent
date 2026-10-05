@@ -12,6 +12,70 @@ from products.inventory import sha256_bytes
 
 
 class HydratedEvidenceTest(unittest.TestCase):
+    def test_expired_private_projection_rehydrates_but_changed_custody_rejects(self):
+        # Local fixture and mocked native envelope authentication, not hosted evidence.
+        from ci.tests.test_runtime_original_ci import RuntimeOriginalCiTest, TARGET
+        from products.inventory import canonical_json_bytes, load_canonical_json_bytes, snapshot_regular_tree
+        from products.restore import verification_session, _stage_fingerprint, verify_phase_shard
+        from products.verified_evidence import _source_identity
+        import reuse_qualification
+        case = RuntimeOriginalCiTest()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        captured = case.root / "projection-seed"
+        with patch("reuse.api_request", side_effect=case.api()), \
+                patch.object(adapter, "download_artifact_to_file", side_effect=case.download_fixture):
+            adapter.capture_runtime_original_ci_phases({"binary": case.receipts["binary"]}, captured,
+                target=TARGET, trusted_workflow_sha=case.pin, token="not-a-real-token", recovery_projection=True)
+        original = captured / "phases/binary/original"
+        instance = adapter._identity(load_canonical_json_bytes(case.receipts["binary"].read_bytes()))
+        verified = verify_phase_shard(original / "shard", instance)
+        rows = load_canonical_json_bytes((captured / "transport/original-ci-phases.json").read_bytes())[
+            "recoveryProjection"]["originalFiles"]["binary"]
+        locator = {"fixture": "process-private custody lifetime"}
+        key = canonical_json_bytes(locator)
+        record = {"identity": {"locator": locator}, "receipt": verified["receipt"],
+                  "receiptSha256": sha256_bytes(verified["receiptBytes"]),
+                  "objectSha256": verified["objectSha256"], "originalFiles": rows}
+        envelope, bundle = case.root / "fixture-qualification.json", case.root / "fixture-bundle.jsonl"
+        envelope.write_bytes(b"fixture qualification; native authentication mocked\n")
+        bundle.write_bytes(b"fixture signature, not genuine native authority\n")
+        with patch.dict(os.environ, {"CODEX_AGENT_HYDRATED_EVIDENCE": str(case.root / "lifetime-cache")}), \
+                verification_session() as session, \
+                patch.object(reuse_qualification, "_authenticate_bytes",
+                             return_value={"originals": [record]}) as authenticate:
+            for row in rows:
+                if not row["relativePath"].startswith("inputs/"):
+                    cache.retain(row, original / row["relativePath"])
+            session["portableQualificationInputs"] = dict(path=envelope, bundle=bundle,
+                signer_commit="a" * 40, source_commit="b" * 40)
+            for condition in ("mutated", "symlink", "expired"):
+                with self.subTest(condition=condition):
+                    with tempfile.TemporaryDirectory(dir=case.root) as temporary:
+                        source = Path(temporary).resolve() / "projection/original"
+                        snapshot_regular_tree(original, source, allow_empty=True)
+                        witness = source, _stage_fingerprint(source.parent), rows, _source_identity()
+                        session["qualifiedOriginalProjections"] = {key: witness}
+                        self.assertEqual(witness, adapter._qualified_original_projection(locator))
+                        if condition == "mutated":
+                            (source / "shard/phase-receipt.json").write_bytes(b"changed")
+                        elif condition == "symlink":
+                            shutil.rmtree(source)
+                            source.symlink_to(Path(temporary) / "missing", target_is_directory=True)
+                        if condition != "expired":
+                            with self.assertRaises(ValueError):
+                                adapter._qualified_original_projection(locator)
+                            authenticate.assert_not_called()
+                    if condition == "expired":
+                        self.assertFalse(source.exists())
+                        restored = adapter._qualified_original_projection(locator)
+                        authenticate.assert_called_once()
+                        self.assertNotEqual(source, restored[0])
+                        self.assertTrue(restored[0].is_relative_to(session["root"]))
+                        self.assertEqual(verified["receipt"],
+                                         verify_phase_shard(restored[0] / "shard", instance)["receipt"])
+                        self.assertEqual(1, session["qualificationHits"])
+
     def test_restored_bytes_require_fresh_provenance_and_current_policy(self):
         from ci.tests.test_runtime_original_ci import RuntimeOriginalCiTest, TARGET
         from products.inventory import load_canonical_json_bytes, snapshot_regular_tree
