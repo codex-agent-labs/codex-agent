@@ -150,7 +150,7 @@ def _compatible_verifier(commit):
     filenames are normalized; both profiles execute under this interpreter.
     """
     import sys
-    from products.verified_evidence import _source_identity
+    from products.verified_evidence import _source_identity, _portable_source_path
     from products.inventory import require_relative_path
 
     _commit(commit)
@@ -174,6 +174,8 @@ def _compatible_verifier(commit):
                 continue
             if relative.suffix not in suffixes:
                 continue
+            if not _portable_source_path(relative):
+                continue
             mode, kind, oid = header.decode().split()
             if mode not in {"100644", "100755"} or kind != "blob":
                 raise ValueError("Trusted verifier source is not a regular Git blob")
@@ -192,6 +194,7 @@ def _compatible_verifier(commit):
                 for target in directory.rglob("*"):
                     relative = target.relative_to(root)
                     if (target.is_file() and target.suffix in suffixes
+                            and _portable_source_path(relative)
                             and not {"tests", "__pycache__", "node_modules"}.intersection(relative.parts)):
                         observed[relative.as_posix()] = sha256_bytes(read_regular_file_bytes(
                             target, max_bytes=LIMIT, reject_symlink_parents=True))

@@ -208,15 +208,24 @@ class PortablePolicyTest(unittest.TestCase):
                       "{mutation}; print(q._compatible_verifier(sys.argv[2]))")
             for mutation, successful in (
                 ("pass", True),
+                ("from pathlib import Path; from products.verified_evidence import _source_identity; "
+                 "before = _source_identity(); caller = Path('.github/workflows/portable-reuse-proof.yml'); "
+                 "caller.write_text(caller.read_text() + '\\n# caller-only change\\n'); "
+                 "assert _source_identity() != before", True),
                 ("p._retry_github_get = lambda operation: operation", False),
                 ("q.LIMIT += 1", False),
                 ("q.configure.__defaults__ = (False,)", False),
+                ("from pathlib import Path; sdk = Path('.github/workflows/sdk-validation.yml'); "
+                 "sdk.write_text(sdk.read_text() + '\\n# incompatible SDK policy change\\n')", False),
+                ("from pathlib import Path; issuer = Path('.github/workflows/reuse-qualification.yml'); "
+                 "issuer.write_text(issuer.read_text() + '\\n# incompatible issuer change\\n')", False),
                 ("from pathlib import Path; Path('.github/extra-authority.py').write_text('# extra')", False),
             ):
                 with self.subTest(mutation=mutation):
                     result = subprocess.run([sys.executable, "-I", "-S", "-c", script.format(mutation=mutation),
                                              str(root / "ci"), commit], cwd=root, capture_output=True, timeout=90)
                     self.assertEqual(result.returncode == 0, successful, result.stderr.decode())
+                    git("checkout", "--", ".github/workflows")
             self.assertEqual(git("rev-parse", "HEAD").decode().strip(), commit)
 
 

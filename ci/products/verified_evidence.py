@@ -80,6 +80,12 @@ def _policy_value(value, *, checkout=None):
     raise TypeError("Not immutable verification policy data")
 
 
+def _portable_source_path(relative):
+    # Only the benchmark caller may change independently of verifier policy.
+    # Its original revision remains bound by native source authentication.
+    return relative.as_posix() != ".github/workflows/portable-reuse-proof.yml"
+
+
 def _source_identity(*, portable=False):
     root = Path(__file__).resolve().parents[2]
     records = []
@@ -89,6 +95,7 @@ def _source_identity(*, portable=False):
             if (path.is_file() and "__pycache__" not in relative.parts
                     and "tests" not in relative.parts
                     and (not portable or "node_modules" not in relative.parts)
+                    and (not portable or _portable_source_path(relative))
                     and path.suffix in ({".py", ".json", ".yml", ".yaml", ".sh", ".js", ".mjs"}
                                         if portable else {".py", ".json", ".yml", ".yaml", ".sh"})):
                 raw = read_regular_file_bytes(path, reject_symlink_parents=True)
