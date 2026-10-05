@@ -26,7 +26,7 @@ jobs:
       attestations: write
     outputs:
       artifact-id: ${{ steps.preserve.outputs.artifact-id }}
-      artifact-sha256: ${{ steps.preserve.outputs.artifact-digest }}
+      artifact-sha256: ${{ format('sha256:{0}', steps.preserve.outputs.artifact-digest) }}
       issuer-sha: ${{ steps.identity.outputs.commit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
