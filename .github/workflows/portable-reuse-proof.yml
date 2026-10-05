@@ -32,6 +32,10 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Retain the exact original Git policy tree before authentication
+        run: |
+          git cat-file -e 'db38c174a2db6f02ff6b6e2091e809681d83a4d9^{tree}' || git fetch --no-tags origin db38c174a2db6f02ff6b6e2091e809681d83a4d9
+          git cat-file -e 'db38c174a2db6f02ff6b6e2091e809681d83a4d9^{tree}'
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.11'
