@@ -133,7 +133,7 @@ class AcquisitionTests(unittest.TestCase):
                 file = root / name; file.write_bytes(file.read_bytes() + b"\n# acquisition-only caller change\n")
             result = consumer.snapshot(root, APPROVAL, work)
             self.assertEqual(result["productPhasesOwned"], 0)
-            self.assertEqual(len(result["overlaidControlFiles"]), 4)
+            self.assertEqual(len(result["overlaidControlFiles"]), 6)
             self.assertEqual(consumer.git(root, "rev-parse", "HEAD"), before)
             self.assertEqual(consumer.git(root, "diff", "--name-only"), b"")
             self.assertTrue(all((work / "compiled-plumbing" / name).is_file() for name in consumer.OVERLAY))

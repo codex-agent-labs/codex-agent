@@ -18,6 +18,8 @@ OVERLAY = frozenset({
     ".github/workflows/reuse-qualification.yml",
     ".github/workflows/hosted-reuse-cache-proof.yml",
     ".github/actions/restore-reuse-qualification/action.yml",
+    ".github/workflows/product-validation.yml",
+    ".github/workflows/sdk-core-validation.yml",
 })
 SUFFIXES = {".py", ".json", ".yml", ".yaml", ".sh", ".js", ".mjs"}
 IGNORED = {"tests", "__pycache__", "node_modules"}
