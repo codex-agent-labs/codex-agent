@@ -76,6 +76,15 @@ class ReuseQualificationTest(unittest.TestCase):
         value = {"schemaVersion": 1, "sourceCommit": "a" * 40,
                  "verifierPolicySha256": original["identity"]["policy"], "originals": [record]}
         self.assertEqual(value, qualification.validate(value))
+        paired = copy.deepcopy(value)
+        other = copy.deepcopy(record)
+        other["identity"]["locator"]["artifact"]["id"] += 1
+        paired["originals"].append(other)
+        self.assertEqual(paired, qualification.validate(paired))
+        other["receipt"]["outputs"][0]["sha256"] = sha256_bytes(b"different output")
+        other["receiptSha256"] = sha256_bytes(canonical_json_bytes(other["receipt"]))
+        with self.assertRaisesRegex(ValueError, "Same phase key has conflicting qualified outputs"):
+            qualification.validate(paired)
         with patch("reuse.api_request", side_effect=case.api()):
             issued = qualification.export_originals([source], case.root / "issued.json", plan=plan,
                 producer={**case.producer, "runId": 100}, source_commit="a" * 40,
