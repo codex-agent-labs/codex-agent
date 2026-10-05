@@ -75,6 +75,9 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         for name in recovery.REUSE_FIXED_FILES - recovery.REUSE_NEW_FILES:
             if name != SELECTOR:
                 self.write(self.trusted, name, "original reuse control\n")
+        for name in recovery.CACHE_FIXED_FILES - recovery.CACHE_NEW_FILES:
+            if not (self.trusted / name).exists():
+                self.write(self.trusted, name, "original cache control\n")
         self.base = self.commit(self.trusted, "baseline")
         self.producer = dict(recovery.BASELINE_PRODUCER,
             tree=self.git(self.trusted, "rev-parse", "HEAD^{tree}").strip())
@@ -99,6 +102,10 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
                      "ci/tests/test_runtime_aggregate_attestation_workflow.py"):
             self.write(self.trusted, name, "reviewed streaming control\n")
         self.reviewed = self.commit(self.trusted, "reviewed recovery")
+        for name in recovery.CACHE_FIXED_FILES:
+            self.write(self.trusted, name, "fixed independently reviewed cache control\n")
+        self.cache_correction = self.commit(self.trusted, "fixed cache controls")
+        self.reviewed = self.cache_correction
         self.candidate = self.root / "candidate"
         self.git(self.root, "clone", "--quiet", "--local", str(self.trusted), str(self.candidate))
         self.write(self.candidate, recovery.CI,
@@ -131,6 +138,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
                                  ("PRODUCT_CORRECTION_REVISION", self.product_correction),
                                  ("REUSE_CONTROL_REVISION", self.reuse_correction),
                                  ("REFERENCE_TRANSPORT_REVISION", self.reviewed),
+                                 ("CACHE_CONTROL_REVISION", self.cache_correction),
                                  ("__file__", str(self.trusted / recovery.HELPER))):
             patcher = mock.patch.object(recovery, attribute, value)
             patcher.start()
@@ -193,7 +201,8 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
 
     def test_unreviewed_product_action_selector_and_caller_changes_are_rejected(self):
         for path in ("runtime/product.txt", ".github/actions/prepare-runtime-signing/action.yml",
-                     "ci/products/aggregate.py", SELECTOR, recovery.CI):
+                     "ci/products/aggregate.py", SELECTOR, recovery.CI,
+                     ".github/actions/hydrated-evidence-cache/cache.mjs", "ci/hydrated_evidence.py"):
             with self.subTest(path=path):
                 original = (self.candidate / path).read_text()
                 self.change_candidate(path, original + "unreviewed\n")

@@ -63,6 +63,29 @@ REUSE_FIXED_FILES = REUSE_NEW_FILES | {
     "ci/tests/test_runtime_signing_preparation.py",
 }
 REUSE_FIXED_FILES -= REFERENCE_TRANSPORT_FILES
+# Only these independently reviewed cache controls supersede their B95 bytes.
+# Product ownership and all other completed reuse gates remain fixed.
+CACHE_CONTROL_REVISION = "ff966b6ba12e3a1bf693fa6997a379eb766ae3be"
+CACHE_NEW_FILES = {
+    ".github/actions/hydrated-evidence-cache/.gitignore",
+    ".github/actions/hydrated-evidence-cache/action.yml",
+    ".github/actions/hydrated-evidence-cache/cache.mjs",
+    ".github/actions/hydrated-evidence-cache/cache.test.mjs",
+    ".github/actions/hydrated-evidence-cache/entry.mjs",
+    ".github/actions/hydrated-evidence-cache/execute.mjs",
+    ".github/actions/hydrated-evidence-cache/package.json",
+    ".github/actions/hydrated-evidence-cache/package-lock.json",
+    ".github/workflows/hosted-reuse-cache-proof.yml",
+    "ci/hydrated_evidence.py", "ci/hosted_reuse_proof.py",
+    "ci/tests/test_hydrated_evidence.py", "ci/tests/data/hosted-frozen-reuse.json",
+}
+CACHE_FIXED_FILES = CACHE_NEW_FILES | {
+    "ci/products/selection.py", ".github/actions/capture-runtime-state/action.yml",
+    ".github/actions/capture-sdk-transport/action.yml", ".github/workflows/product-validation.yml",
+    "ci/product_reuse.py", "ci/runtime_workflow.py", "ci/sdk_workflow.py",
+    "ci/tests/test_product_resume_workflow.py",
+}
+REUSE_FIXED_FILES -= CACHE_FIXED_FILES
 SDK_CONTROL_FILES = {
     ".github/actions/capture-sdk-transport/action.yml", ".github/actions/sdk-ios-binary-worker/action.yml",
     "ci/tests/test_sdk_transport_capture.py",
@@ -85,6 +108,7 @@ SDK_CONTROL_FILES = {
     "gradle/build-logic/src/test/kotlin/CrossLanguageJavaBindingTasksTest.kt",
 }
 NEW_FILES |= REUSE_NEW_FILES
+NEW_FILES |= CACHE_NEW_FILES
 NEW_FILES |= {".github/actions/run-ci-lane/sdk_prerequisite_reuse.py", "ci/tests/test_sdk_prerequisite_reuse.py"}
 NEW_FILES.add("ci/tests/test_reference_archive_download.py")
 NEW_FILES.add("gradle/build-logic/src/test/kotlin/CrossLanguageJavaBindingTasksTest.kt")
@@ -103,6 +127,7 @@ CONTROL_FILES = CORRECTED_FILES | PRODUCT_CORRECTION_FILES | NEW_FILES | {
     "ci/tests/test_runtime_aggregate_attestation_workflow.py",
 }
 CONTROL_FILES |= REUSE_FIXED_FILES | SDK_CONTROL_FILES | REFERENCE_TRANSPORT_FILES
+CONTROL_FILES |= CACHE_FIXED_FILES
 
 
 def _tree(root, revision):
@@ -161,6 +186,10 @@ def _reviewed_scope(trusted, candidate, sha):
     if any(transport_reviewed.get(path, ())[:2] != ("100644", "blob")
            or reviewed.get(path) != transport_reviewed[path] for path in REFERENCE_TRANSPORT_FILES):
         raise ValueError("Reference transport differs from its fixed reviewed correction")
+    cache_reviewed = _tree(trusted, CACHE_CONTROL_REVISION)
+    if any(cache_reviewed.get(path, ())[:2] != ("100644", "blob")
+           or reviewed.get(path) != cache_reviewed[path] for path in CACHE_FIXED_FILES):
+        raise ValueError("Persistent cache controls differ from their fixed reviewed checkpoint")
     current = _tree(candidate, "HEAD")
     if current.keys() != reviewed.keys() or any(
         current[path] != reviewed[path] for path in current if path != CI
