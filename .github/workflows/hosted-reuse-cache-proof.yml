@@ -1,0 +1,72 @@
+name: Frozen hosted reuse cache proof
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  frozen-reuse:
+    if: >-
+      github.event.label.name == 'ci:reuse-cache-proof' &&
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Set disposable storage paths
+        run: |
+          {
+            echo "CODEX_AGENT_HYDRATED_EVIDENCE=$RUNNER_TEMP/hydrated-evidence"
+            echo "CODEX_AGENT_PRODUCT_CACHE=$RUNNER_TEMP/private-product-cache"
+            echo "PROOF_WORK=$RUNNER_TEMP/frozen-reuse-proof"
+          } >> "$GITHUB_ENV"
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: .github/actions/hydrated-evidence-cache
+      - name: Check storage boundaries and original reference controls
+        run: |
+          python3 -B -m unittest ci.tests.test_hydrated_evidence ci.tests.test_runtime_reference_transport -q
+          node --test .github/actions/hydrated-evidence-cache/cache.test.mjs
+      - name: Retain the exact original Git policy tree
+        run: |
+          git cat-file -e 'db38c174a2db6f02ff6b6e2091e809681d83a4d9^{tree}' || git fetch --no-tags origin db38c174a2db6f02ff6b6e2091e809681d83a4d9
+      - name: Freshly authenticate the immutable reference carrier
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -B ci/hosted_reuse_proof.py prepare --work "$PROOF_WORK"
+      - uses: ./.github/actions/hydrated-evidence-cache
+        with:
+          mode: restore
+          root: ${{ env.CODEX_AGENT_HYDRATED_EVIDENCE }}
+          manifest: ${{ env.PROOF_WORK }}/cache-manifest.json
+          report: ${{ env.PROOF_WORK }}/cache-restore.json
+      - name: Fresh original authentication and frozen fifty-phase replay
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -B ci/hosted_reuse_proof.py verify --work "$PROOF_WORK"
+      - uses: ./.github/actions/hydrated-evidence-cache
+        with:
+          mode: save
+          root: ${{ env.CODEX_AGENT_HYDRATED_EVIDENCE }}
+          manifest: ${{ env.PROOF_WORK }}/cache-manifest.json
+          report: ${{ env.PROOF_WORK }}/cache-save.json
+      - name: Preserve only proof and storage measurements
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: frozen-reuse-cache-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.PROOF_WORK }}/prepare.json
+            ${{ env.PROOF_WORK }}/proof.json
+            ${{ env.PROOF_WORK }}/cache-restore.json
+            ${{ env.PROOF_WORK }}/cache-save.json
+          if-no-files-found: error

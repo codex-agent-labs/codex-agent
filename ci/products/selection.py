@@ -234,6 +234,8 @@ _IOS_BINARY_BUILD_LOGIC = frozenset({
     "codexagent.ios-runtime.gradle.kts",
 })
 _CONTROL_ONLY_FILES = frozenset({
+    "ci/hydrated_evidence.py",
+    "ci/hosted_reuse_proof.py",
     "ci/runtime_reference_archive.py",
     "ci/contract_catalog_caller.py",
     "ci/contract_catalog_promotion.py",
@@ -658,6 +660,9 @@ def _native_metadata_owners(path: str) -> set[PhaseInstanceId]:
 
 
 def _control_selection(path: str) -> set[PhaseInstanceId] | None:
+    if (path == ".github/workflows/hosted-reuse-cache-proof.yml"
+            or _is_prefix(path, ".github/actions/hydrated-evidence-cache/")):
+        return set(ALL_INSTANCES)
     if path == "ci/products/gradle_bootstrap.py":
         return set(ALL_INSTANCES)
     if path in {"ci/products/sdk_catalog_promotion.py", "ci/sdk_catalog_promotion_caller.py",

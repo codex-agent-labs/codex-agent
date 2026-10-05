@@ -746,6 +746,7 @@ def matrix(plan, discovery, state, github_output_path, *, repository_root=None, 
     return value
 
 
+@verification_scoped
 def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha256,
             trusted_workflow_sha, state_wave=0, sdk_state_wave=None,
             repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None,

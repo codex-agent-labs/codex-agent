@@ -37,7 +37,7 @@ runs:
         path: build/sdk-transport-plan
         merge-multiple: true
     - id: capture
-      shell: bash
+      uses: ./.github/actions/hydrated-evidence-cache
       env:
         ARTIFACT_ID: ${{ inputs.artifact-id }}
         ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
@@ -45,15 +45,17 @@ runs:
         STATE_WAVE: ${{ inputs.state-wave }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
-      run: |
-        set -euo pipefail
-        wave=(--state-wave "$STATE_WAVE")
-        if [ -n "$SDK_STATE_WAVE" ]; then wave+=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
-        python3 -B -m ci.sdk_workflow capture-transport \
-          --plan build/sdk-transport-plan/impact-plan.json \
-          --destination build/sdk-transport-state \
-          --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
-          "${wave[@]}" \
-          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-          --repository-root "$GITHUB_WORKSPACE" \
-          --github-output "$GITHUB_OUTPUT"
+      with:
+        mode: execute
+        script: |
+            set -euo pipefail
+            wave=(--state-wave "$STATE_WAVE")
+            if [ -n "$SDK_STATE_WAVE" ]; then wave+=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
+            python3 -B -m ci.sdk_workflow capture-transport \
+              --plan build/sdk-transport-plan/impact-plan.json \
+              --destination build/sdk-transport-state \
+              --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
+              "${wave[@]}" \
+              --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+              --repository-root "$GITHUB_WORKSPACE" \
+              --github-output "$GITHUB_OUTPUT"

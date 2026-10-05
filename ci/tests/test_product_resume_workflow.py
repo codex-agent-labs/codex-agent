@@ -112,7 +112,8 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertNotIn("ssh-keygen", self.job)
         self.assertNotRegex(self.job, r"ci/product_reuse\.py\s+(?:discover|advance-products|advance-contract)\b")
         self.assertNotRegex(self.job, r"uses: (?:actions/cache(?:/|@)|actions/setup-)")
-        self.assertEqual(["./.github/actions/capture-sdk-tooling", "./.github/actions/prepare-sdk-apple-policy"],
+        self.assertEqual(["./.github/actions/capture-sdk-tooling", "./.github/actions/prepare-sdk-apple-policy",
+                          "./.github/actions/hydrated-evidence-cache"],
                          re.findall(r"uses: (\./\S+)", self.job))
         self.assertLess(self.job.index("uses: ./.github/actions/capture-sdk-tooling"),
                         self.job.index("ci/product_reuse.py resume-products"))

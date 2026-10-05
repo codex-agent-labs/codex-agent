@@ -552,20 +552,23 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
           SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
-        run: |
-          tooling=()
-          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
-          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
-          python3 ci/product_reuse.py resume-products \
-            --runtime-matrix \
-            --plan build/product-resume-inputs/plan/impact-plan.json \
-            --discovery-root build/product-resume-inputs/plan/product-reuse \
-            --state-root build/product-resume-inputs/state \
-            --contract-handoff build/product-resume-inputs/release/contract-input \
-            --destination build/product-resume-state \
-            --handoff build/product-resume-transport \
-            --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
-            --github-output "$GITHUB_OUTPUT" ${tooling[@]+"${tooling[@]}"}
+        uses: ./.github/actions/hydrated-evidence-cache
+        with:
+          mode: execute
+          script: |
+              tooling=()
+              if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+              if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+              python3 ci/product_reuse.py resume-products \
+                --runtime-matrix \
+                --plan build/product-resume-inputs/plan/impact-plan.json \
+                --discovery-root build/product-resume-inputs/plan/product-reuse \
+                --state-root build/product-resume-inputs/state \
+                --contract-handoff build/product-resume-inputs/release/contract-input \
+                --destination build/product-resume-state \
+                --handoff build/product-resume-transport \
+                --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
+                --github-output "$GITHUB_OUTPUT" ${tooling[@]+"${tooling[@]}"}
       - name: Require full Runtime reuse before SDK continuation
         if: inputs.sdkRecoveryOnly
         env:

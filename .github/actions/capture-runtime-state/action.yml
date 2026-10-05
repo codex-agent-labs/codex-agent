@@ -94,7 +94,7 @@ runs:
         path: build/runtime-plan
         merge-multiple: true
     - id: capture
-      shell: bash
+      uses: ./.github/actions/hydrated-evidence-cache
       env:
         ARTIFACT_ID: ${{ inputs.artifact-id }}
         ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
@@ -113,55 +113,57 @@ runs:
         TARGET: ${{ inputs.target }}
         BUILD_KEY: ${{ inputs.build-key }}
         GITHUB_TOKEN: ${{ github.token }}
-      run: |
-        set -euo pipefail
-        selected=()
-        command=(python3 -B ci/runtime_workflow.py capture)
-        case "$STATE_PRODUCT" in
-          runtime) test -z "$SDK_STATE_WAVE$SDK_FAMILY" ;;
-          sdk|sdk-ios-binary)
-            test -z "$COMPONENT$PHASE$TARGET$BUILD_KEY"
-            command=(python3 -B -m ci.sdk_workflow capture)
-            if [ -n "$SDK_STATE_WAVE" ]; then
-              selected=(--sdk-state-wave "$SDK_STATE_WAVE")
+      with:
+        mode: execute
+        script: |
+            set -euo pipefail
+            selected=()
+            command=(python3 -B ci/runtime_workflow.py capture)
+            case "$STATE_PRODUCT" in
+              runtime) test -z "$SDK_STATE_WAVE$SDK_FAMILY" ;;
+              sdk|sdk-ios-binary)
+                test -z "$COMPONENT$PHASE$TARGET$BUILD_KEY"
+                command=(python3 -B -m ci.sdk_workflow capture)
+                if [ -n "$SDK_STATE_WAVE" ]; then
+                  selected=(--sdk-state-wave "$SDK_STATE_WAVE")
+                fi
+                if [ "$STATE_PRODUCT" = sdk-ios-binary ]; then
+                  test -z "$SDK_FAMILY"
+                  selected+=(--ios-binary)
+                elif [ -n "$SDK_FAMILY" ]; then
+                  case "$SDK_FAMILY" in
+                    csharp-binary|native-package|ios-package|javascript-metadata|native-validation|native-metadata|ios-validation|ios-metadata|core-binary|core-package|core-validation|core-metadata|android-binary|android-package|android-validation|android-metadata) selected+=(--family "$SDK_FAMILY") ;;
+                    *) echo 'Unknown SDK family' >&2; exit 1 ;;
+                  esac
+                fi
+                ;;
+              *) echo 'Unknown product state projection' >&2; exit 1 ;;
+            esac
+            if [ -n "$COMPONENT$PHASE$TARGET$BUILD_KEY" ]; then
+              selected=(--component "$COMPONENT" --phase "$PHASE" --target "$TARGET" --expected-build-key "$BUILD_KEY")
             fi
-            if [ "$STATE_PRODUCT" = sdk-ios-binary ]; then
-              test -z "$SDK_FAMILY"
-              selected+=(--ios-binary)
-            elif [ -n "$SDK_FAMILY" ]; then
-              case "$SDK_FAMILY" in
-                csharp-binary|native-package|ios-package|javascript-metadata|native-validation|native-metadata|ios-validation|ios-metadata|core-binary|core-package|core-validation|core-metadata|android-binary|android-package|android-validation|android-metadata) selected+=(--family "$SDK_FAMILY") ;;
-                *) echo 'Unknown SDK family' >&2; exit 1 ;;
-              esac
+            if [ -n "$CONTINUATION" ]; then
+              test "$STATE_PRODUCT" = runtime
+              test -z "$COMPONENT$PHASE$TARGET$BUILD_KEY"
+              selected+=(--continuation "$CONTINUATION")
             fi
-            ;;
-          *) echo 'Unknown product state projection' >&2; exit 1 ;;
-        esac
-        if [ -n "$COMPONENT$PHASE$TARGET$BUILD_KEY" ]; then
-          selected=(--component "$COMPONENT" --phase "$PHASE" --target "$TARGET" --expected-build-key "$BUILD_KEY")
-        fi
-        if [ -n "$CONTINUATION" ]; then
-          test "$STATE_PRODUCT" = runtime
-          test -z "$COMPONENT$PHASE$TARGET$BUILD_KEY"
-          selected+=(--continuation "$CONTINUATION")
-        fi
-        if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then
-          selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
-        fi
-        if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
-          selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
-        fi
-        if [ -n "${SDK_FACADE_METADATA_POLICY:-}${SDK_ANDROID_METADATA_POLICY:-}" ]; then
-          test "$STATE_PRODUCT" != runtime
-        fi
-        if [ -n "${SDK_FACADE_METADATA_POLICY:-}" ]; then
-          selected+=(--sdk-facade-metadata-policy "$SDK_FACADE_METADATA_POLICY")
-        fi
-        if [ -n "${SDK_ANDROID_METADATA_POLICY:-}" ]; then
-          selected+=(--sdk-android-metadata-policy "$SDK_ANDROID_METADATA_POLICY")
-        fi
-        "${command[@]}" \
-          --plan build/runtime-plan/impact-plan.json --destination build/runtime-input \
-          --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
-          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --state-wave "$STATE_WAVE" \
-          --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"}
+            if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then
+              selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
+            fi
+            if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
+              selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
+            fi
+            if [ -n "${SDK_FACADE_METADATA_POLICY:-}${SDK_ANDROID_METADATA_POLICY:-}" ]; then
+              test "$STATE_PRODUCT" != runtime
+            fi
+            if [ -n "${SDK_FACADE_METADATA_POLICY:-}" ]; then
+              selected+=(--sdk-facade-metadata-policy "$SDK_FACADE_METADATA_POLICY")
+            fi
+            if [ -n "${SDK_ANDROID_METADATA_POLICY:-}" ]; then
+              selected+=(--sdk-android-metadata-policy "$SDK_ANDROID_METADATA_POLICY")
+            fi
+            "${command[@]}" \
+              --plan build/runtime-plan/impact-plan.json --destination build/runtime-input \
+              --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
+              --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --state-wave "$STATE_WAVE" \
+              --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"}

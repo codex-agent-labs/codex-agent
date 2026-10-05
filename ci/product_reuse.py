@@ -675,6 +675,9 @@ def _reuse_contract_ci_upload(artifact, producer, observed_run, token, *, destin
     # Metadata and original-job authentication are mandatory on every call.
     # Only fully hashed private bytes are reused; this is never an admission.
     with verification_session() as session:
+        if artifact["name"].startswith(("codex-agent-runtime-worker-", "codex-agent-runtime-aggregate-release-handoff-")):
+            with session["lock"]:
+                session["runtimeColdArchiveBytes"] = session.get("runtimeColdArchiveBytes", 0) + size
         provenance = canonical_json_bytes({
             "producer": dict(producer),
             "run": {name: observed_run.get(name) for name in
@@ -1177,10 +1180,20 @@ def capture_runtime_original_ci_phases(
             retained.mkdir(parents=True)
             archive = retained / "transport.zip"
             candidate = None
+            qualified_projection = False
+            if completed is None and session is not None:
+                # Only this process's freshly authenticated reference envelope
+                # can supply a projection. No restored marker is admission.
+                qualified = _qualified_original_projection(locator)
+                if qualified is not None:
+                    source, fingerprint, zipped, policy = qualified
+                    candidate = source, fingerprint, zipped
+                    qualified_projection = True
             if completed is None and session is not None and original_archives is not None and phase in original_archives:
                 candidate_key = (str(original_archives[phase].resolve()), artifact["id"], artifact["digest"],
                     sha256_bytes(originals[phase]), workflow_policies[phase]["sha"], canonical_json_bytes(producer))
-                candidate = session.setdefault("runtimeCandidates", {}).pop(candidate_key, None)
+                if candidate is None:
+                    candidate = session.setdefault("runtimeCandidates", {}).pop(candidate_key, None)
             if completed is not None:
                 if canonical_json_bytes(completed["receipt"]) != originals[phase]:
                     raise ValueError("Cached original Runtime receipt/provenance differs from the requested original")
@@ -1235,7 +1248,7 @@ def capture_runtime_original_ci_phases(
                     shutil.copyfile(original / record["relativePath"], output)
                 if regular_file_inventory(projected_root, allow_empty=True) != projected:
                     raise ValueError("Original Runtime recovery projection changed during copy")
-                if persistent is not None and completed is None:
+                if persistent is not None and completed is None and not qualified_projection:
                     persistent.record_verified(locator, projected_root, zipped, verified["receipt"],
                                                verified["objectSha256"])
                 if candidate is not None and _stage_fingerprint(original.parent) != fingerprint:
@@ -1437,7 +1450,16 @@ def capture_prior_failed_runtime_phases(
                 completed = persistent.read(locator) if persistent is not None else None
                 from products.restore import _stat_identity
                 shard = scratch / "original/shard"
-                if completed is not None:
+                qualified = _qualified_original_projection(locator) if completed is None else None
+                if qualified is not None:
+                    source, _fingerprint, zipped, _policy = qualified
+                    verified = verify_phase_shard(source / "shard", instance)
+                    receipt = verified["receipt"]
+                    shard.mkdir(parents=True)
+                    from runtime_reference_transport import _copy_exact
+                    _copy_exact(source / "shard" / PHASE_RECEIPT_NAME, shard / PHASE_RECEIPT_NAME,
+                          next(row for row in zipped if row["relativePath"] == "shard/" + PHASE_RECEIPT_NAME))
+                elif completed is not None:
                     # Discovery needs only the previously authenticated receipt
                     # for collision comparison. Selected admission still reads
                     # and verifies the exact object/proof through the full caller.
@@ -1467,7 +1489,7 @@ def capture_prior_failed_runtime_phases(
                     raise ValueError("Prior Runtime shard differs from its selected attempt")
                 from products.restore import _VERIFICATION_SESSION, _stage_fingerprint, _is_windows
                 session = None if _is_windows() else _VERIFICATION_SESSION.get()
-                if session is not None and completed is None:
+                if session is not None and completed is None and qualified is None:
                     candidates = session.setdefault("runtimeCandidates", {})
                     # ponytail: immediate handoff only, bounded metadata; no
                     # extra retained body or serialized verification assertion.
@@ -6115,9 +6137,19 @@ def _capture_runtime_original_reference_members(plan, producer, source, referenc
                 persistent.copy_member(completed, row["sourcePath"], destination / row["relativePath"], row)
             return {"artifact": artifact, "captureProducer": original, "observed": observed,
                     "verification": "qualified-reference-members", "rangeBytes": 0, "memberETag": None}
+    # Storage only: these expectations came from the authenticated enclosing
+    # upload. Fresh original workflow/job/attempt/window gates above always run.
+    import hydrated_evidence
+    missing = []
+    for row in references:
+        if not hydrated_evidence.copy(row, destination / row["relativePath"]):
+            missing.append(row)
+    if not missing:
+        return {"artifact": artifact, "captureProducer": original, "observed": observed,
+                "verification": "qualified-reference-members", "rangeBytes": 0, "memberETag": None}
     with open_reference_archive(artifact, token) as (archive, stream):
         resolved = {}
-        for row in references:
+        for row in missing:
             source_path = row["sourcePath"]
             target = destination / row["relativePath"]
             if source_path in resolved:
@@ -6126,9 +6158,72 @@ def _capture_runtime_original_reference_members(plan, producer, source, referenc
             else:
                 copy_reference_member(archive, source_path, target, row)
                 resolved[source_path] = target
+            hydrated_evidence.retain(row, target)
         return {"artifact": artifact, "captureProducer": original, "observed": observed,
                 "verification": "qualified-reference-members", "rangeBytes": stream.transferred,
                 "memberETag": stream.etag}
+
+
+def _qualified_original_projection(locator):
+    from products.restore import _VERIFICATION_SESSION, _stage_fingerprint
+    from products.verified_evidence import _source_identity
+    session = _VERIFICATION_SESSION.get()
+    qualified = session.get("qualifiedOriginalProjections", {}).get(canonical_json_bytes(locator)) if session else None
+    if qualified is not None:
+        source, fingerprint, _files, policy = qualified
+        if policy != _source_identity():
+            return None
+        if _stage_fingerprint(source.parent) != fingerprint:
+            raise ValueError("Authenticated original projection custody changed")
+    return qualified
+
+
+def _register_qualified_original_projections(original, references, transports, *, trusted_workflow_sha):
+    """Private custody from a freshly SHA-authenticated reviewed carrier.
+
+    Reference resolution and fresh source CI gates have finished. Replays still
+    authenticate original CI and verify the receipt/object/dependencies. This
+    process-local witness is never serialized or accepted from cache storage.
+    """
+    import hydrated_evidence
+    from products.restore import _VERIFICATION_SESSION, _stage_fingerprint
+    from products.verified_evidence import _source_identity
+    session = _VERIFICATION_SESSION.get()
+    if hydrated_evidence.root() is None or session is None:
+        return
+    policy = _source_identity()
+    for source, transport in zip(references["sources"], transports, strict=True):
+        if source["kind"] != "phase":
+            continue
+        instance = _identity(source["receipt"])
+        projected = Path(original) / source["relativePath"]
+        captured = projected.parents[2]
+        observation = _canonical_control(captured / "transport/original-ci-phases.json",
+                                         "Qualified original phase observation")
+        if "recoveryProjection" not in observation:
+            continue  # Legacy evidence retains its full cold authentication.
+        fresh = {**observation, "observed": transport["observed"],
+                 "artifacts": {instance.phase: transport["artifact"]}}
+        if _runtime_capture_identity(observation, instance) != _runtime_capture_identity(fresh, instance):
+            raise ValueError("Qualified projection changes original authenticated provenance")
+        zipped = observation["recoveryProjection"]["originalFiles"][instance.phase]
+        expected = [row for row in zipped if not row["relativePath"].startswith("inputs/")]
+        if regular_file_inventory(projected, allow_empty=True) != expected:
+            raise ValueError("Qualified original projection changes its authenticated inventory")
+        verified = verify_phase_shard(projected / "shard", instance)
+        if verified["receipt"] != source["receipt"]:
+            raise ValueError("Qualified original projection changes its original receipt")
+        job_name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
+        job = next(value for value in transport["observed"][0]["jobs"] if value.get("name") == job_name)
+        run = transport["observed"][0]["run"]
+        workflow = _runtime_prior_workflow_sha(run, trusted_workflow_sha)
+        locator = _runtime_original_locator(transport["artifact"], workflow, instance, job)
+        key = canonical_json_bytes(locator)
+        record = projected, _stage_fingerprint(projected.parent), zipped, policy
+        existing = session.setdefault("qualifiedOriginalProjections", {}).get(key)
+        if existing is not None and existing[2:] != record[2:]:
+            raise ValueError("Same original identity has conflicting qualified projections")
+        session["qualifiedOriginalProjections"][key] = record
 
 
 def _publish_runtime_original_reference_handoff(inputs, state, destination):
@@ -6239,6 +6334,7 @@ def capture_runtime_resume_upload(
         reference_control_digest = None
         original_reference_path = original / "runtime-original-references.json"
         original_reference_transports = []
+        original_references = None
         if original_reference_path.exists() or original_reference_path.is_symlink():
             if state_wave or sdk_state_wave is not None or reference_path.exists():
                 raise ValueError("Original references require an initial Runtime resume upload")
@@ -6249,8 +6345,10 @@ def capture_runtime_resume_upload(
                 original_reference_transports.append(_capture_runtime_original_reference_members(
                     plan, producer, source, records, target,
                     trusted_workflow_sha=trusted_workflow_sha, token=token))
-            zipped = resolve_original_reference_handoff(original,
-                _canonical_control(original_reference_path, "Runtime original references"), capture_source)
+            original_references = _canonical_control(original_reference_path, "Runtime original references")
+            from hydrated_evidence import hosted
+            hosted("restore", original_references, private)
+            zipped = resolve_original_reference_handoff(original, original_references, capture_source)
         if reference_path.exists() or reference_path.is_symlink():
             if sdk_state_wave is not None:
                 raise ValueError("Runtime reference transport cannot replace an SDK state upload")
@@ -6301,6 +6399,10 @@ def capture_runtime_resume_upload(
         if regular_file_inventory(prepared, allow_empty=True) != expected_files:
             raise ValueError("Runtime resume capture changed before publication")
         publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected_files)
+        if original_references is not None:
+            _register_qualified_original_projections(destination / "original", original_references,
+                original_reference_transports, trusted_workflow_sha=trusted_workflow_sha)
+            hosted("save", original_references, private)
     return transport
 
 
@@ -7064,10 +7166,13 @@ def _recover_prior_runtime_aggregate_release(plan_path, plan, phase, source, des
     artifact = matches[0]
     with tempfile.TemporaryDirectory(prefix="runtime-retained-aggregate-") as temporary:
         private = Path(temporary).resolve()
-        transport = capture_runtime_aggregate_release_upload(plan_path, private / "capture",
-            artifact_id=artifact["id"], artifact_sha256=artifact["digest"], trusted_workflow_sha=workflow,
-            expected_build_key=phase["buildKey"], expected_metadata_receipt_sha256=phase["receiptSha256"],
-            original_producer=original, repository_root=repository_root, environ=environ, token=token)
+        transport = _qualified_aggregate_capture(plan, current, original, phase, artifact,
+            private / "capture", trusted_workflow_sha=trusted_workflow_sha, token=token)
+        if transport is None:
+            transport = capture_runtime_aggregate_release_upload(plan_path, private / "capture",
+                artifact_id=artifact["id"], artifact_sha256=artifact["digest"], trusted_workflow_sha=workflow,
+                expected_build_key=phase["buildKey"], expected_metadata_receipt_sha256=phase["receiptSha256"],
+                original_producer=original, repository_root=repository_root, environ=environ, token=token)
         trust = _release_trust(repository_root, plan["validationCommit"], private / "policy")
         if trust is None:
             raise ValueError("Retained aggregate requires caller-owned release verification policy")
@@ -7078,6 +7183,41 @@ def _recover_prior_runtime_aggregate_release(plan_path, plan, phase, source, des
         write_canonical_json(destination / "recovered-runtime-aggregate-upload.json", transport)
     return rebase_runtime_aggregate_release_records(records,
         destination / "runtime-aggregate-release-evidence/0", destination)
+
+
+def _qualified_aggregate_capture(plan, current, original, phase, artifact, destination, *, trusted_workflow_sha, token):
+    from products.restore import _VERIFICATION_SESSION
+    from products.verified_evidence import _source_identity
+    from products.sdk_protected_runtime import _original_carrier
+    session = _VERIFICATION_SESSION.get()
+    checkpoint = session.get("referenceCheckpoint") if session else None
+    if checkpoint is None or checkpoint[2] != _source_identity():
+        return None
+    _root, refs, _policy = checkpoint
+    sources = [source for source in refs["sources"] if source["kind"] == "aggregate"
+               and source["receipt"]["buildKey"] == phase["buildKey"]
+               and sha256_bytes(canonical_json_bytes(source["receipt"])) == phase["receiptSha256"]
+               and source["receipt"]["producer"] == original
+               and source["artifactId"] == artifact["id"] and source["artifactSha256"] == artifact["digest"]]
+    if not sources:
+        return None
+    if len(sources) != 1:
+        raise ValueError("Qualified aggregate reference is ambiguous")
+    source = sources[0]
+    rows = [{**row, "relativePath": row["sourcePath"]} for row in refs["references"]
+            if row["source"] == source["relativePath"]
+            and row["relativePath"].startswith(source["relativePath"] + "/")]
+    captured = _capture_runtime_original_reference_members(plan, current, source, rows,
+        destination / "original", trusted_workflow_sha=trusted_workflow_sha, token=token)
+    workflow = _runtime_prior_workflow_sha(captured["observed"][0]["run"], trusted_workflow_sha)
+    caller = _canonical_control(destination / "original/caller.json", "Qualified original aggregate caller")
+    if (caller.get("transportProducer") != original or caller.get("target") != "aggregate"
+            or caller.get("trustedWorkflowSha") != workflow
+            or caller.get("metadataReceiptSha256") != phase["receiptSha256"]):
+        raise ValueError("Qualified aggregate caller changes its observed original provenance")
+    _original_carrier(destination / "original", phase["receiptSha256"], phase["buildKey"])
+    return {key: captured[key] for key in ("artifact", "captureProducer", "observed")} | {
+        "aggregateBuildKey": phase["buildKey"], "aggregateReceiptSha256": phase["receiptSha256"]}
 
 
 @verification_scoped
@@ -7165,6 +7305,10 @@ def resume_products(
             **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
         prior_records = []
         if environment.get("GITHUB_TOKEN") and sdk_original_workflow_sha:
+            if environment.get("CODEX_AGENT_HOSTED_CACHE_BACKEND"):
+                from hosted_reuse_proof import qualify_checkpoint
+                qualify_checkpoint(plan, private / "reference-checkpoint", environment["GITHUB_TOKEN"],
+                                   trusted_workflow_sha=sdk_original_workflow_sha)
             attempts = _prior_failed_pr_attempts(
                 plan, _consumer(plan, environment)["producer"], environment["GITHUB_TOKEN"])
             artifacts_by_run, jobs_by_attempt, tried = {}, {}, set()

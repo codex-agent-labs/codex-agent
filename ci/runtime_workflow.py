@@ -135,6 +135,7 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
     return value
 
 
+@verification_scoped
 def capture(plan_path, destination, github_output_path, *, artifact_id, artifact_sha256,
             trusted_workflow_sha, state_wave=0, instance=None, expected_build_key=None,
             repository_root=None, environ=None, token, sdk_validation_tooling=None, sdk_apple_validation_policy=None,
