@@ -17,6 +17,11 @@ on:
         required: false
         default: false
         type: boolean
+      reuseQualification:
+        description: Independently approved qualification assertions from the trusted caller, never product-plan or event data
+        required: false
+        default: ''
+        type: string
       runtimeAggregateHandoffRecovery:
         description: Caller-pinned original signed aggregate upload locator; independently authenticate before SDK use
         required: false
@@ -4727,6 +4732,9 @@ jobs:
       sdkInputs: ${{ toJSON(needs.sdk-inputs) }}
       packageWave: ${{ toJSON(needs.sdk-core-package-wave) }}
       trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      reuseQualification: ${{ inputs.reuseQualification }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
   sdk-core-metadata-wave:
     needs: [plan, sdk-plan, sdk-inputs, sdk-core-validation-wave]
     if: >-

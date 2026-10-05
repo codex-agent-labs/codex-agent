@@ -22,6 +22,10 @@ on:
         description: Optional JSON with artifactId, artifactSha256, runId, runAttempt, issuerSha and sourceSha. Authority pins must be independently reviewed and supplied by the trusted calling workflow, never product-plan or event data.
         default: ''
         type: string
+    secrets:
+      authority_read_token:
+        description: Read-only protected reuse-authority credential, scoped to qualification restoration
+        required: false
     outputs:
       artifact_id:
         value: ${{ jobs.sdk-core-validation-result.outputs.artifact_id }}
@@ -57,6 +61,7 @@ jobs:
       - if: inputs.reuseQualification != ''
         uses: ./.github/actions/restore-reuse-qualification
         with:
+          authority-read-token: ${{ secrets.authority_read_token }}
           artifact-id: ${{ fromJSON(inputs.reuseQualification).artifactId }}
           artifact-sha256: ${{ fromJSON(inputs.reuseQualification).artifactSha256 }}
           run-id: ${{ fromJSON(inputs.reuseQualification).runId }}
@@ -120,6 +125,7 @@ jobs:
       - if: inputs.reuseQualification != ''
         uses: ./.github/actions/restore-reuse-qualification
         with:
+          authority-read-token: ${{ secrets.authority_read_token }}
           artifact-id: ${{ fromJSON(inputs.reuseQualification).artifactId }}
           artifact-sha256: ${{ fromJSON(inputs.reuseQualification).artifactSha256 }}
           run-id: ${{ fromJSON(inputs.reuseQualification).runId }}
@@ -200,6 +206,7 @@ jobs:
       - if: inputs.reuseQualification != ''
         uses: ./.github/actions/restore-reuse-qualification
         with:
+          authority-read-token: ${{ secrets.authority_read_token }}
           artifact-id: ${{ fromJSON(inputs.reuseQualification).artifactId }}
           artifact-sha256: ${{ fromJSON(inputs.reuseQualification).artifactSha256 }}
           run-id: ${{ fromJSON(inputs.reuseQualification).runId }}

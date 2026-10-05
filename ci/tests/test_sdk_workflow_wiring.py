@@ -22,8 +22,14 @@ class SdkWorkflowWiringTest(unittest.TestCase):
         return re.search(rf"(?ms)^  {re.escape(name)}:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)", self.workflow)[0]
 
     def test_portable_authority_is_optional_and_precedes_all_core_consumers(self):
+        parent = self.job("sdk-core-validation-wave")
+        self.assertIn("reuseQualification: ${{ inputs.reuseQualification }}", parent)
+        self.assertIn("secrets:\n      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}", parent)
+        self.assertNotIn("REUSE_AUTHORITY_READ_TOKEN", parent.split("    secrets:")[0])
         self.workflow = (ROOT / ".github/workflows/sdk-core-validation.yml").read_text()
         self.assertRegex(self.workflow, r"(?s)reuseQualification:\n.*?default: ''\n")
+        self.assertRegex(self.workflow, r"(?s)    secrets:\n      authority_read_token:\n.*?required: false\n")
+        self.assertEqual(3, self.workflow.count("${{ secrets.authority_read_token }}"))
         self.assertIn("independently reviewed", self.workflow)
         fields = {"artifact-id": "artifactId", "artifact-sha256": "artifactSha256",
                   "run-id": "runId", "run-attempt": "runAttempt",
@@ -34,6 +40,8 @@ class SdkWorkflowWiringTest(unittest.TestCase):
                 restore = re.search(r"(?ms)^      - if: inputs.reuseQualification != ''\n"
                                     r".*?(?=^      -|\Z)", job)[0]
                 self.assertIn("./.github/actions/restore-reuse-qualification", restore)
+                self.assertIn("authority-read-token: ${{ secrets.authority_read_token }}", restore)
+                self.assertNotIn("secrets.authority_read_token", job.replace(restore, ""))
                 for argument, field in fields.items():
                     self.assertIn(f"{argument}: ${{{{ fromJSON(inputs.reuseQualification).{field} }}}}", restore)
                 self.assertNotRegex(restore, r"planOutputs|sdkPlan|packageWave|github.event")
