@@ -149,17 +149,20 @@ def original_source(verified, record):
     predicate = statement["predicate"]
     definition = predicate["buildDefinition"]
     dependencies = definition["resolvedDependencies"]
+    builder = predicate["runDetails"]["builder"]["id"]
+    workflow = REPOSITORY_URL + "/.github/workflows/reuse-qualification.yml@"
+    relative_builder = workflow + "refs/pull/31/merge"
     if (statement.get("predicateType") != "https://slsa.dev/provenance/v1"
             or statement.get("subject") != [{"name": "qualification.json", "digest": {
                 "sha256": record["qualificationSha256"].removeprefix("sha256:")}}]
             or definition.get("externalParameters", {}).get("workflow") != {
                 "path": ".github/workflows/portable-reuse-proof.yml", "ref": "refs/pull/31/merge",
                 "repository": REPOSITORY_URL}
-            or predicate["runDetails"]["builder"]["id"] != REPOSITORY_URL +
-                "/.github/workflows/reuse-qualification.yml@" + record["issuerSha"]
+            or builder not in (workflow + record["issuerSha"], relative_builder)
             or predicate["runDetails"]["metadata"]["invocationId"] != REPOSITORY_URL +
                 f"/actions/runs/{record['runId']}/attempts/{record['runAttempt']}"
-            or len(dependencies) != 1 or dependencies[0]["uri"] != "git+" + REPOSITORY_URL + "@refs/pull/31/merge"):
+            or len(dependencies) != 1 or dependencies[0]["uri"] != "git+" + REPOSITORY_URL + "@refs/pull/31/merge"
+            or builder == relative_builder and dependencies[0]["digest"]["gitCommit"] != record["issuerSha"]):
         raise ValueError("Verified historical qualification provenance is cross-paired")
     return authority.commit(dependencies[0]["digest"]["gitCommit"])
 

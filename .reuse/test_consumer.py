@@ -46,6 +46,23 @@ class AcquisitionTests(unittest.TestCase):
         with self.assertRaises(ValueError): consumer.original_source([], RECORD)
         with self.assertRaises(ValueError): consumer.original_source(verdict * 2, RECORD)
 
+    def test_relative_native_builder_requires_exact_approved_issuer_source(self):
+        verdict = self.verdict()
+        statement = verdict[0]["verificationResult"]["statement"]
+        statement["predicate"]["runDetails"]["builder"]["id"] = consumer.REPOSITORY_URL + \
+            "/.github/workflows/reuse-qualification.yml@refs/pull/31/merge"
+        statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"]["gitCommit"] = RECORD["issuerSha"]
+        self.assertEqual(consumer.original_source(verdict, RECORD), RECORD["issuerSha"])
+        for mutation in (
+            lambda s: s["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"].update(gitCommit="b" * 40),
+            lambda s: s["predicate"]["runDetails"]["builder"].update(id=consumer.REPOSITORY_URL +
+                "/.github/workflows/reuse-qualification.yml@refs/pull/32/merge"),
+            lambda s: s["predicate"]["runDetails"]["metadata"].update(invocationId="other-run"),
+        ):
+            value = copy.deepcopy(verdict)
+            mutation(value[0]["verificationResult"]["statement"])
+            with self.assertRaises(ValueError): consumer.original_source(value, RECORD)
+
     def test_retired_qualification_is_preserved_without_ambiguous_default_selection(self):
         import sys
         # Other cases load verifier modules from their own isolated Git fixture.
