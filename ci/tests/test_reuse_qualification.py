@@ -200,6 +200,19 @@ class PortablePolicyTest(unittest.TestCase):
 
 
 class QualificationTransportTest(unittest.TestCase):
+    def test_carrier_reference_receipt_copy_is_exact(self):
+        source = {"relativePath": "original", "receipt": {"original": "receipt bytes"}}
+        raw = canonical_json_bytes(source["receipt"])
+        member = {"relativePath": "original/shard/phase-receipt.json", "source": "original",
+                  "sourcePath": "shard/phase-receipt.json", "sha256": sha256_bytes(raw), "bytes": len(raw)}
+        self.assertEqual(qualification._original_receipt_bytes(source, [member]), raw)
+        for field, changed in (("source", "other"), ("sourcePath", "other"),
+                               ("bytes", len(raw) + 1), ("sha256", "sha256:" + "0" * 64)):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                qualification._original_receipt_bytes(source, [{**member, field: changed}])
+        with self.assertRaises(ValueError):
+            qualification._original_receipt_bytes(source, [member, member])
+
     def test_fixed_issuer_metadata_and_bounded_artifact(self):
         import io
         import zipfile

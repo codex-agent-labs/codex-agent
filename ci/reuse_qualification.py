@@ -416,6 +416,19 @@ def fetch_qualification(destination, *, artifact_id, artifact_sha256, run_id, ru
     return report
 
 
+def _original_receipt_bytes(source, references):
+    """Exact authenticated receipt copy; original full-upload verification follows."""
+    raw = canonical_json_bytes(source["receipt"])
+    expected = [row for row in references
+                if row["relativePath"] == source["relativePath"] + "/shard/phase-receipt.json"
+                and row["source"] == source["relativePath"]
+                and row["sourcePath"] == "shard/phase-receipt.json"]
+    if (len(expected) != 1 or expected[0]["sha256"] != sha256_bytes(raw)
+            or expected[0]["bytes"] != len(raw)):
+        raise ValueError("Expected original receipt differs from its authenticated carrier member")
+    return raw
+
+
 def process_read_bytes():
     """Linux root-process rchar; child tools/cache transport are measured separately."""
     path = Path("/proc/self/io")
@@ -466,14 +479,19 @@ def issue_frozen(work, token):
             receipt = source["receipt"]
             instance = products._identity(receipt)
             capture = work / "cold-capture"
+            raw = _original_receipt_bytes(source, refs["references"])
+            receipt_path = work / "expected-receipt.json"
+            with receipt_path.open("xb") as output:
+                output.write(raw)
             products.capture_runtime_original_ci_phases(
-                {instance.phase: work / "original" / source["relativePath"] / "shard/phase-receipt.json"},
+                {instance.phase: receipt_path},
                 capture, target=instance.component, original_instance=instance,
                 trusted_workflow_sha=spec["carrier"]["workflowSha"], token=token, recovery_projection=True)
             original = capture / "phases" / instance.phase / "original"
             for row in products.regular_file_inventory(original, allow_empty=True):
                 hydrated_evidence.retain(row, original / row["relativePath"])
             shutil.rmtree(capture)
+            receipt_path.unlink()
             print(json.dumps({"fullyAuthenticatedOriginal": number + 1, "of": 46}), flush=True)
         if session.get("downloadedArtifactCount", 0) < 47:
             raise ValueError("Controlled cold issuer did not freshly authenticate every original upload")
