@@ -1,0 +1,51 @@
+name: Restore independent reuse qualification
+description: Freshly authenticate a small signed issuer artifact; cache bodies confer no authority.
+inputs:
+  artifact-id:
+    required: true
+    description: Caller-owned immutable qualification artifact ID.
+  artifact-sha256:
+    required: true
+    description: Caller-owned original qualification upload SHA256.
+  run-id:
+    required: true
+    description: Exact original successful issuer run.
+  run-attempt:
+    required: true
+    description: Exact original successful issuer attempt.
+  issuer-sha:
+    required: true
+    description: Independently reviewed immutable issuer workflow revision.
+  source-sha:
+    required: true
+    description: Independently pinned original caller source revision.
+runs:
+  using: composite
+  steps:
+    - name: Prepare the pinned native attestation verifier
+      id: native
+      shell: bash
+      run: bash .github/actions/restore-reuse-qualification/install-gh.sh
+    - name: Authenticate the independent issuer artifact and native authority
+      if: steps.native.outputs.supported == 'true'
+      shell: bash
+      env:
+        QUALIFICATION_ARTIFACT_ID: ${{ inputs.artifact-id }}
+        QUALIFICATION_ARTIFACT_SHA: ${{ inputs.artifact-sha256 }}
+        QUALIFICATION_RUN: ${{ inputs.run-id }}
+        QUALIFICATION_ATTEMPT: ${{ inputs.run-attempt }}
+        QUALIFICATION_ISSUER: ${{ inputs.issuer-sha }}
+        QUALIFICATION_SOURCE: ${{ inputs.source-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        python3 -B ci/reuse_qualification.py fetch --work "$RUNNER_TEMP/reuse-qualification" \
+          --artifact-id "$QUALIFICATION_ARTIFACT_ID" --artifact-sha256 "$QUALIFICATION_ARTIFACT_SHA" \
+          --run-id "$QUALIFICATION_RUN" --run-attempt "$QUALIFICATION_ATTEMPT" \
+          --signer-commit "$QUALIFICATION_ISSUER" --source-commit "$QUALIFICATION_SOURCE"
+        {
+          echo "CODEX_AGENT_REUSE_QUALIFICATION=$RUNNER_TEMP/reuse-qualification/qualification.json"
+          echo "CODEX_AGENT_REUSE_QUALIFICATION_BUNDLE=$RUNNER_TEMP/reuse-qualification/bundle.jsonl"
+          echo "CODEX_AGENT_REUSE_QUALIFICATION_ISSUER=$QUALIFICATION_ISSUER"
+          echo "CODEX_AGENT_REUSE_QUALIFICATION_SOURCE=$QUALIFICATION_SOURCE"
+        } >> "$GITHUB_ENV"

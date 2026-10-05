@@ -83,6 +83,8 @@ def prepare(spec, work, token, retained=None):
 
 
 def verify(spec, work, token):
+    from reuse_qualification import process_read_bytes
+    read_before = process_read_bytes()
     started = time.perf_counter()
     artifact = authenticate(spec, token)  # Restore never carries authentication.
     physical, _, verified = verified_zip_contents(work / "carrier.zip", retained_paths=(),
@@ -100,14 +102,16 @@ def verify(spec, work, token):
         raise ValueError("Frozen proof has a different original phase closure")
     transports = []
     with verification_session() as session:
+        initial_cold_bytes = session.get("runtimeColdArchiveBytes", 0)
         for source in projections:
             records = [row for row in refs["references"] if row["source"] == source["relativePath"]
                        and row["relativePath"].startswith(source["relativePath"] + "/")]
             transport = products._capture_runtime_original_reference_members(plan, PRODUCER,
                 source, records, original, trusted_workflow_sha=spec["carrier"]["workflowSha"], token=token)
             transports.append(transport)
-        products._register_qualified_original_projections(original, {**refs, "sources": projections},
-            transports, trusted_workflow_sha=spec["carrier"]["workflowSha"])
+        if not session.get("portableQualificationInputs"):
+            products._register_qualified_original_projections(original, {**refs, "sources": projections},
+                transports, trusted_workflow_sha=spec["carrier"]["workflowSha"])
         # Original admission is still performed by the existing real verifier.
         phases = []
         for source in projections:
@@ -183,7 +187,7 @@ def verify(spec, work, token):
         result = plan_reuse_wave(request)
         if result != spec["expectedResult"] or not result["fullReuse"] or any(result["matrices"].values()):
             raise ValueError("Frozen fifty-phase full reuse differs or selects a product phase")
-        cold_archive_bytes = session.get("runtimeColdArchiveBytes", 0)
+        cold_archive_bytes = session.get("runtimeColdArchiveBytes", 0) - initial_cold_bytes
         if cold_archive_bytes:
             raise ValueError("Frozen cache proof unexpectedly consumed cold original archives")
         from products.verified_evidence import _source_identity
@@ -200,6 +204,10 @@ def verify(spec, work, token):
         "resultSha256": sha256_bytes(canonical_json_bytes(result)), "freshOriginalPhases": phases,
         "originalRangeBytes": sum(item["rangeBytes"] for item in [*transports, *additional_transports, signed_transport]),
         "originalColdArchiveBytes": cold_archive_bytes, "verificationPolicySha256": verification_policy,
+        "rootProcessReadBytes": process_read_bytes() - read_before if read_before is not None else None,
+        "portableQualification": {key: session.get(key, 0) for key in (
+            "qualificationHits", "qualificationMisses", "qualificationBodyReadBytes",
+            "qualificationVerificationSeconds", "downloadedArtifactCount", "downloadedArtifactBytes")},
         "checkpoint": spec["signedCheckpoint"], "prepare": json.loads((work / "prepare.json").read_bytes())}
     write_canonical_json(work / "proof.json", report)
     print(json.dumps(report), flush=True)

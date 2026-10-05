@@ -236,6 +236,11 @@ _IOS_BINARY_BUILD_LOGIC = frozenset({
 _CONTROL_ONLY_FILES = frozenset({
     "ci/hydrated_evidence.py",
     "ci/hosted_reuse_proof.py",
+    "ci/reuse_qualification.py",
+    ".github/workflows/reuse-qualification.yml",
+    ".github/actions/restore-reuse-qualification/action.yml",
+    ".github/actions/restore-reuse-qualification/install-gh.sh",
+    ".github/workflows/portable-reuse-proof.yml",
     "ci/runtime_reference_archive.py",
     "ci/contract_catalog_caller.py",
     "ci/contract_catalog_promotion.py",

@@ -713,11 +713,18 @@ def _download_contract_ci_upload_bytes(artifact, token, destination, limit, arti
         download_artifact_to_file(artifact, token, destination, max_bytes=limit)
         if destination.stat().st_size != size or sha256_file(destination) != artifact_sha256:
             raise ValueError("Contract uploaded artifact bytes differ from the caller-bound identity")
-        return artifact, destination
-    raw = download_artifact(artifact, token)
-    if len(raw) != size or sha256_bytes(raw) != artifact_sha256:
-        raise ValueError("Contract uploaded artifact bytes differ from the caller-bound identity")
-    return artifact, raw
+        body = destination
+    else:
+        body = download_artifact(artifact, token)
+        if len(body) != size or sha256_bytes(body) != artifact_sha256:
+            raise ValueError("Contract uploaded artifact bytes differ from the caller-bound identity")
+    from products.restore import _VERIFICATION_SESSION
+    session = _VERIFICATION_SESSION.get()
+    if session is not None:
+        with session["lock"]:
+            session["downloadedArtifactBytes"] = session.get("downloadedArtifactBytes", 0) + size
+            session["downloadedArtifactCount"] = session.get("downloadedArtifactCount", 0) + 1
+    return artifact, body
 
 
 def _verify_contract_ci_capture(root: Path, contract_version: str, *, with_transport: bool = False):
@@ -6092,14 +6099,9 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
     return transport
 
 
-def _capture_runtime_original_reference_members(plan, producer, source, references, destination, *,
-                                               trusted_workflow_sha, token):
-    """Fresh original source gates plus member SHA qualified by the current upload.
-
-    This is the same custody protocol as Runtime wave references. It is never
-    phase admission: original-CI and signed-handoff verification still follow.
-    """
-    from runtime_reference_archive import open_reference_archive, copy_reference_member
+def _authenticate_runtime_original_reference_source(plan, producer, source, *,
+                                                     trusted_workflow_sha, token):
+    """Fresh GitHub identity gates, independent of body storage or qualification."""
     receipt = source["receipt"]
     original = receipt["producer"]
     if (original["repository"] != plan["repository"] or original["event"] != plan["event"]
@@ -6123,10 +6125,25 @@ def _capture_runtime_original_reference_members(plan, producer, source, referenc
     artifact = _contract_ci_upload_metadata(source["artifactId"], source["artifactSha256"], name,
         original, observed[0]["run"], token)
     _require_artifact_job_window(observed[0], job, artifact)
+    return artifact, original, observed, workflow
+
+
+def _capture_runtime_original_reference_members(plan, producer, source, references, destination, *,
+                                               trusted_workflow_sha, token):
+    """Fresh original source gates plus member SHA qualified by the current upload.
+
+    This is the same custody protocol as Runtime wave references. It is never
+    phase admission: original-CI and signed-handoff verification still follow.
+    """
+    from runtime_reference_archive import open_reference_archive, copy_reference_member
+    artifact, original, observed, workflow = _authenticate_runtime_original_reference_source(
+        plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token)
+    receipt = source["receipt"]
     if source["kind"] == "phase":
         from products.verified_evidence import runtime_original_cache
         persistent = runtime_original_cache()
         instance = _identity(receipt)
+        job = f"product-validation / runtime-{receipt['component']}-{receipt['phase']}-{receipt['target']}"
         original_job = next(value for value in observed[0]["jobs"] if value.get("name") == job)
         locator = _runtime_original_locator(artifact, workflow, instance, original_job)
         completed = persistent.read(locator) if persistent is not None else None
@@ -6169,6 +6186,14 @@ def _qualified_original_projection(locator):
     from products.verified_evidence import _source_identity
     session = _VERIFICATION_SESSION.get()
     qualified = session.get("qualifiedOriginalProjections", {}).get(canonical_json_bytes(locator)) if session else None
+    if qualified is None and session is not None and session.get("portableQualificationInputs"):
+        import reuse_qualification
+        try:
+            qualified = reuse_qualification.projection(locator, **session["portableQualificationInputs"])
+        except reuse_qualification.QualificationIncompatible:
+            # Verified but incompatible claims cannot create a witness. The
+            # unchanged original authentication path still owns this evidence.
+            return None
     if qualified is not None:
         source, fingerprint, _files, policy = qualified
         if policy != _source_identity():

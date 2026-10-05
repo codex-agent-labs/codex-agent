@@ -115,6 +115,8 @@ def verification_session():
                    "lock": threading.RLock(), "hits": 0, "misses": 0}
         token = _VERIFICATION_SESSION.set(session)
         try:
+            import reuse_qualification
+            reuse_qualification.configure(session, os.environ)
             yield session
         finally:
             _VERIFICATION_SESSION.reset(token)

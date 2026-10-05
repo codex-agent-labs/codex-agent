@@ -38,7 +38,7 @@ def _authority_root():
     return base / "codex-agent/verified-evidence-authority"
 
 
-def _policy_value(value):
+def _policy_value(value, *, checkout=None):
     if value is None or type(value) in (str, int, bool):
         return value
     if type(value) is bytes:
@@ -50,30 +50,37 @@ def _policy_value(value):
     if value is Ellipsis:
         return {"ellipsis": True}
     if isinstance(value, slice):
-        return {"slice": _policy_value((value.start, value.stop, value.step))}
+        return {"slice": _policy_value((value.start, value.stop, value.step), checkout=checkout)}
     if isinstance(value, CodeType):
         # Canonical public code attributes, without marshal's transient
         # reference-sharing flags; includes nested code and Python3.14 slices.
-        return {"code": {field: _policy_value(getattr(value, field)) for field in
+        def attribute(field):
+            member = getattr(value, field)
+            if field == "co_filename" and checkout is not None:
+                prefix = str(checkout) + os.sep
+                if member.startswith(prefix):
+                    member = "<checkout>/" + member[len(prefix):].replace(os.sep, "/")
+            return _policy_value(member, checkout=checkout)
+        return {"code": {field: attribute(field) for field in
                 ("co_code", "co_consts", "co_names", "co_varnames", "co_freevars", "co_cellvars",
                  "co_argcount", "co_posonlyargcount", "co_kwonlyargcount", "co_nlocals",
                  "co_stacksize", "co_flags", "co_filename", "co_firstlineno",
                  "co_linetable", "co_exceptiontable")}}
     if isinstance(value, re.Pattern):
-        return {"regex": {"pattern": _policy_value(value.pattern), "flags": value.flags}}
+        return {"regex": {"pattern": _policy_value(value.pattern, checkout=checkout), "flags": value.flags}}
     if is_dataclass(value) and not inspect.isclass(value):
-        return _policy_value(asdict(value))
+        return _policy_value(asdict(value), checkout=checkout)
     if type(value) is dict:
-        return {"dict": sorted([[_policy_value(key), _policy_value(member)] for key, member in value.items()],
+        return {"dict": sorted([[_policy_value(key, checkout=checkout), _policy_value(member, checkout=checkout)] for key, member in value.items()],
                                key=canonical_json_bytes)}
     if type(value) in (list, tuple, set, frozenset):
-        members = [_policy_value(member) for member in value]
+        members = [_policy_value(member, checkout=checkout) for member in value]
         return {type(value).__name__: sorted(members, key=canonical_json_bytes)
                 if type(value) in (set, frozenset) else members}
     raise TypeError("Not immutable verification policy data")
 
 
-def _source_identity():
+def _source_identity(*, portable=False):
     root = Path(__file__).resolve().parents[2]
     records = []
     for directory in (root / "ci", root / ".github"):
@@ -81,7 +88,9 @@ def _source_identity():
             relative = path.relative_to(root)
             if (path.is_file() and "__pycache__" not in relative.parts
                     and "tests" not in relative.parts
-                    and path.suffix in {".py", ".json", ".yml", ".yaml", ".sh"}):
+                    and (not portable or "node_modules" not in relative.parts)
+                    and path.suffix in ({".py", ".json", ".yml", ".yaml", ".sh", ".js", ".mjs"}
+                                        if portable else {".py", ".json", ".yml", ".yaml", ".sh"})):
                 raw = read_regular_file_bytes(path, reject_symlink_parents=True)
                 records.append({"path": relative.as_posix(), "sha256": sha256_bytes(raw)})
     # Disk hashes alone can label already-imported old code with newer policy.
@@ -90,7 +99,7 @@ def _source_identity():
     executed = []
     for name in ("product_reuse", "reuse", "products.inventory", "products.restore",
                  "products.receipt", "products.registry", "products.zip_central_directory",
-                 "runtime_reference_archive", "runtime_reference_transport",
+                 "runtime_reference_archive", "runtime_reference_transport", "reuse_qualification",
                  __name__):
         main = sys.modules.get("__main__")
         executing_cli = (name == "product_reuse" and getattr(main, "__file__", None)
@@ -112,9 +121,9 @@ def _source_identity():
                 while inspect.isfunction(function) and id(function) not in seen:
                     seen.add(id(function))
                     executed.append({"symbol": f"{name}.{symbol}.{function.__qualname__}",
-                                     "code": sha256_bytes(canonical_json_bytes(_policy_value(function.__code__)))})
+                                     "code": sha256_bytes(canonical_json_bytes(_policy_value(function.__code__, checkout=root if portable else None)))})
                     try:
-                        defaults = _policy_value((function.__defaults__, function.__kwdefaults__))
+                        defaults = _policy_value((function.__defaults__, function.__kwdefaults__), checkout=root if portable else None)
                     except TypeError:
                         pass
                     else:
@@ -123,7 +132,7 @@ def _source_identity():
                     function = getattr(function, "__wrapped__", None)
             if not symbol.startswith("__"):
                 try:
-                    policy_value = _policy_value(value)
+                    policy_value = _policy_value(value, checkout=root if portable else None)
                 except TypeError:
                     pass
                 else:
