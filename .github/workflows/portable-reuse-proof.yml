@@ -21,7 +21,7 @@ jobs:
       actions: read
       id-token: write
       attestations: write
-    uses: codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml@a84c8e1c015f47b60d6ab5d3aac10267a92fba7b
+    uses: codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml@cb09d1de3e84ec11c0e7ac96c779e01b4094f81d
   warm:
     needs: cold
     runs-on: ubuntu-24.04
@@ -54,7 +54,7 @@ jobs:
           artifact-sha256: ${{ needs.cold.outputs.artifact-sha256 }}
           run-id: ${{ github.run_id }}
           run-attempt: ${{ github.run_attempt }}
-          issuer-sha: a84c8e1c015f47b60d6ab5d3aac10267a92fba7b
+          issuer-sha: cb09d1de3e84ec11c0e7ac96c779e01b4094f81d
           source-sha: ${{ github.sha }}
       - name: Freshly authenticate the frozen reference carrier
         env:
