@@ -44,6 +44,7 @@ runs:
           --run-id "$QUALIFICATION_RUN" --run-attempt "$QUALIFICATION_ATTEMPT" \
           --signer-commit "$QUALIFICATION_ISSUER" --source-commit "$QUALIFICATION_SOURCE"
         {
+          echo "CODEX_AGENT_HYDRATED_EVIDENCE=$RUNNER_TEMP/hydrated-evidence"
           echo "CODEX_AGENT_REUSE_QUALIFICATION=$RUNNER_TEMP/reuse-qualification/qualification.json"
           echo "CODEX_AGENT_REUSE_QUALIFICATION_BUNDLE=$RUNNER_TEMP/reuse-qualification/bundle.jsonl"
           echo "CODEX_AGENT_REUSE_QUALIFICATION_ISSUER=$QUALIFICATION_ISSUER"

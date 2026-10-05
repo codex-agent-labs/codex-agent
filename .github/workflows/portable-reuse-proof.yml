@@ -42,7 +42,6 @@ jobs:
       - name: Set disposable content and private custody paths
         run: |
           {
-            echo "CODEX_AGENT_HYDRATED_EVIDENCE=$RUNNER_TEMP/hydrated-evidence"
             echo "CODEX_AGENT_PRODUCT_CACHE=$RUNNER_TEMP/private-product-cache"
             echo "PROOF_WORK=$RUNNER_TEMP/warm-qualification-proof"
           } >> "$GITHUB_ENV"
