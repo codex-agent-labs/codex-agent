@@ -1,0 +1,91 @@
+name: Portable frozen reuse qualification proof
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  cold:
+    if: >-
+      github.event.label.name == 'ci:reuse-qualification-proof' &&
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml@560d558cafc69d6fad61da4974d039255f42f9ad
+  warm:
+    needs: cold
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 560d558cafc69d6fad61da4974d039255f42f9ad
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.11'
+      - name: Set disposable content and private custody paths
+        run: |
+          {
+            echo "CODEX_AGENT_HYDRATED_EVIDENCE=$RUNNER_TEMP/hydrated-evidence"
+            echo "CODEX_AGENT_PRODUCT_CACHE=$RUNNER_TEMP/private-product-cache"
+            echo "PROOF_WORK=$RUNNER_TEMP/warm-qualification-proof"
+          } >> "$GITHUB_ENV"
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: .github/actions/hydrated-evidence-cache
+      - uses: ./.github/actions/restore-reuse-qualification
+        with:
+          artifact-id: ${{ needs.cold.outputs.artifact-id }}
+          artifact-sha256: ${{ needs.cold.outputs.artifact-sha256 }}
+          run-id: ${{ github.run_id }}
+          run-attempt: ${{ github.run_attempt }}
+          issuer-sha: 560d558cafc69d6fad61da4974d039255f42f9ad
+          source-sha: ${{ github.sha }}
+      - name: Freshly authenticate the frozen reference carrier
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -B ci/hosted_reuse_proof.py prepare --work "$PROOF_WORK"
+      - uses: ./.github/actions/hydrated-evidence-cache
+        with:
+          mode: restore
+          root: ${{ env.CODEX_AGENT_HYDRATED_EVIDENCE }}
+          manifest: ${{ env.PROOF_WORK }}/cache-manifest.json
+          report: ${{ env.PROOF_WORK }}/cache-restore.json
+      - name: Reuse through native qualification in a later Python process
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B ci/hosted_reuse_proof.py verify --work "$PROOF_WORK"
+          python3 - "$PROOF_WORK/proof.json" "$PROOF_WORK/cache-restore.json" <<'PY'
+          import json, sys
+          proof = json.load(open(sys.argv[1]))
+          q = proof['portableQualification']
+          assert q['qualificationHits'] == 46 and q['qualificationMisses'] == 0
+          assert q['downloadedArtifactCount'] == 0 and q['downloadedArtifactBytes'] == 0
+          assert proof['originalColdArchiveBytes'] == 0 and proof['originalRangeBytes'] == 0
+          storage = json.load(open(sys.argv[2]))
+          assert storage['hits'] == storage['entries'] and storage['entries'] > 0 and storage['misses'] == 0
+          assert proof['selectedProductPhases'] == 0 and proof['changedProductInventories'] == 0
+          PY
+      - name: Preserve independent warm proof and exact storage measurements
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: portable-reuse-warm-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.PROOF_WORK }}/prepare.json
+            ${{ env.PROOF_WORK }}/proof.json
+            ${{ env.PROOF_WORK }}/cache-restore.json
+            ${{ runner.temp }}/reuse-qualification/qualification-restore.json
+          if-no-files-found: error
