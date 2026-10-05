@@ -7,6 +7,7 @@ from argparse import Namespace
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import sys
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -22,6 +23,14 @@ def _legacy_module():
     return legacy
 
 
+def _qualification_module():
+    spec = importlib.util.spec_from_file_location('sdk_native_qualification',
+        Path(__file__).with_name('sdk_native_qualification.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def restore_both(arguments):
     # A private module keeps these observation hooks out of all other callers.
     legacy = _legacy_module()
@@ -31,6 +40,8 @@ def restore_both(arguments):
     original_promoted = legacy.promoted_artifacts
     negative = {}
     current = None
+    current_body = None
+    qualified = None
     production_mode = False
     inventories = arguments.plan.parent / 'inventories' / arguments.lane
     def context():
@@ -45,16 +56,39 @@ def restore_both(arguments):
         )}, sort_keys=True, separators=(',', ':'))
 
     def download(artifact, token):
-        nonlocal current
+        nonlocal current, current_body
         current = None
+        current_body = None
         raw = original_download(artifact, token)  # Mandatory enclosing-archive SHA.
         current = artifact
+        current_body = raw
         return raw
 
     def validate(*args, **kwargs):
+        nonlocal qualified
         try:
             return original_validate(*args, **kwargs)
-        except (OSError, ValueError, json.JSONDecodeError, KeyError):
+        except (OSError, ValueError, json.JSONDecodeError, KeyError) as error:
+            workflow = getattr(arguments, 'trusted_workflow_sha', '')
+            if (not production_mode and workflow and current is not None
+                    and arguments.lane in ('ios-native-tests', 'ios-rust-device', 'ios-rust-simulator')
+                    and str(error) in {f'Lane {category} inventory mismatch'
+                                       for category in legacy.INPUT_NAMES}):
+                output = arguments.destination.parent / 'native-qualification'
+                try:
+                    qualification = _qualification_module().qualify_candidate(
+                        arguments, current, trusted_workflow_sha=workflow,
+                        repository_root=ROOT, output=output, archive_bytes=current_body)
+                except (OSError, ValueError, json.JSONDecodeError, KeyError):
+                    pass  # Rejected candidates retain the original fail-closed lookup path.
+                else:
+                    # Only this disposable transport copy receives current inventories.
+                    # The exact original archive/receipt remain immutable in output.
+                    for name in legacy.INPUT_NAMES.values():
+                        shutil.copyfile(inventories / name, Path(args[2]) / name)
+                    receipt = original_validate(*args, **kwargs)
+                    qualified = qualification
+                    return receipt
             if not production_mode and current is not None:
                 try:
                     original_validate(*args, **{**kwargs, 'categories': ('production',)})
@@ -98,6 +132,11 @@ def restore_both(arguments):
                   })))
     if before != context():
         raise ValueError('SDK prerequisite plan/inventory/profile changed during lookup')
+    if qualified is not None:
+        if not full['reused']:
+            raise ValueError('Qualified Apple original was not selected for transport')
+        full['native_qualification_path'] = str(arguments.destination.parent / 'native-qualification')
+        full['reason'] = 'authenticated-native-source-qualified'
     return full, production, list(negative.values())
 
 
@@ -105,6 +144,7 @@ def main():
     legacy = _legacy_module()
     parser = legacy.parser()
     parser.add_argument('--production-destination', type=Path, required=True)
+    parser.add_argument('--trusted-workflow-sha', default='')
     arguments = parser.parse_args()
     if arguments.lane not in ('ios-native-tests', 'ios-rust-device', 'ios-rust-simulator') or arguments.mode != 'full':
         raise ValueError('Combined lookup requires an SDK Apple prerequisite in full mode')

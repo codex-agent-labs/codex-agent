@@ -35,6 +35,9 @@ inputs:
   sdk-prerequisite-reuse:
     description: Share authenticated negative lookup results for the three SDK Apple prerequisites.
     default: "false"
+  trusted-workflow-sha:
+    description: Reviewed caller workflow authority for SDK native prerequisite qualification only.
+    default: ""
   producer-identities:
     description: Optional directory containing exact auxiliary producer identity manifests.
     default: ""
@@ -211,6 +214,7 @@ runs:
     - id: reuse
       env:
         SDK_PREREQUISITE_REUSE: ${{ inputs.sdk-prerequisite-reuse }}
+        SDK_TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         ARM_PRODUCER_IDENTITY: ${{ steps.producer-identities.outputs.arm_digest }}
         DISABLE_REUSE: ${{ inputs.reuse-disabled }}
         GITHUB_TOKEN: ${{ github.token }}
@@ -247,7 +251,8 @@ runs:
         lookup=(python3 ci/reuse.py)
         if [ "$SDK_PREREQUISITE_REUSE" = true ]; then
           lookup=(python3 .github/actions/run-ci-lane/sdk_prerequisite_reuse.py
-            --production-destination build/ci/reuse/production)
+            --production-destination build/ci/reuse/production
+            --trusted-workflow-sha "$SDK_TRUSTED_WORKFLOW_SHA")
         fi
         "${lookup[@]}" --plan build/ci/impact-plan.json --lane "$LANE" \
           --destination build/ci/reuse/full --mode full --github-output "$GITHUB_OUTPUT" \
@@ -741,6 +746,17 @@ runs:
         overwrite: true
         name: ${{ steps.identity.outputs.artifact_name }}
         path: ${{ steps.identity.outputs.path }}
+        compression-level: 0
+        retention-days: 90
+    - name: Preserve qualified native originals separately from current transport
+      if: steps.reuse.outputs.reused == 'true' && steps.reuse.outputs.native_qualification_path != ''
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-native-qualified-${{ inputs.lane }}-${{ inputs.validation-tree }}-attempt-${{ github.run_attempt }}
+        path: ${{ steps.reuse.outputs.native_qualification_path }}
+        if-no-files-found: error
+        overwrite: false
+        include-hidden-files: true
         compression-level: 0
         retention-days: 90
     - name: Stage the elected KMP dependency seed

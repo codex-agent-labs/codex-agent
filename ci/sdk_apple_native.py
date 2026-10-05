@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from argparse import Namespace
+import importlib.util
 from pathlib import Path
 import tempfile
 from typing import Any
@@ -158,6 +160,38 @@ def _native_lane_content(plan, producer, lane, captured, evidence, root):
                 raise ValueError("Apple native proof differs from its original producer")
         (evidence / destination).write_bytes(contents)
     return receipt, original_producer
+
+
+def _authenticate_native_transport_original(
+    plan_path, receipt, original_producer, lane, captured, *, root, token,
+    trusted_workflow_sha,
+):
+    """A current transport job cannot stand in for the original successful job."""
+    artifacts = product_reuse.paginated_items(
+        f"https://api.github.com/repos/{original_producer['repository']}/actions/runs/"
+        f"{original_producer['runId']}/artifacts", "artifacts", token)
+    name = f"codex-agent-ci-{lane}-{original_producer['tree']}"
+    selected = [a for a in artifacts if a.get("name") == name and a.get("expired") is False]
+    if len(selected) != 1:
+        raise ValueError("Original Apple transport source upload is missing or ambiguous")
+    path = Path(__file__).resolve().parents[1] / ".github/actions/run-ci-lane/sdk_native_qualification.py"
+    spec = importlib.util.spec_from_file_location("sdk_native_original_qualification", path)
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    arguments = Namespace(plan=plan_path, lane=lane, token=token,
+        runner=[f"{key}={value}" for key, value in receipt["runner"].items()],
+        toolchain=[f"{key}={value}" for key, value in receipt["toolchain"].items()
+                   if key != "validationActions"])
+    with tempfile.TemporaryDirectory(prefix="sdk-native-original-admission-") as temporary:
+        output = Path(temporary) / "original"
+        qualified = helper.qualify_candidate(arguments, selected[0],
+            trusted_workflow_sha=trusted_workflow_sha, repository_root=root, output=output)
+        if qualified["originalProducer"] != original_producer:
+            raise ValueError("Qualified native source differs from transport provenance")
+        for source in (*NATIVE_FILES[lane], *((NATIVE_TOOLCHAINS[lane],)
+                                            if lane in NATIVE_TOOLCHAINS else ())):
+            if sha256_file(captured / source) != sha256_file(output / "lane" / source):
+                raise ValueError("Transported native content differs from authenticated original")
 
 
 @contextmanager
@@ -391,6 +425,10 @@ def verified_sdk_apple_native_inputs(
             safe_extract(archive, captured)
             receipt_path = captured / "lane-receipt.json"
             receipt, original_producer = _native_lane_content(private_plan, producer, lane, captured, evidence, root)
+            if original_producer != producer:
+                _authenticate_native_transport_original(private_plan, receipt, original_producer,
+                    lane, captured, root=root, token=token,
+                    trusted_workflow_sha=trusted_workflow_sha)
             artifacts[lane] = artifact
             receipt_bytes[lane] = read_regular_file_bytes(
                 receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,

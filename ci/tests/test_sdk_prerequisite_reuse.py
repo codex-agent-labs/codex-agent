@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 import zipfile
@@ -124,6 +125,85 @@ class SdkPrerequisiteReuseTest(unittest.TestCase):
             args.toolchain.append('java=17')
         with self.assertRaisesRegex(ValueError, 'changed during lookup'):
             self.run_lookup(self.fixture.plan_path, mutate=mutate)
+
+    def test_rejection_boundary_qualification_reuses_live_body_without_bypassing_legacy(self):
+        # Caller composition only: the helper's original-job/content gates have
+        # separate tests. This fake legacy caller never supplies hosted evidence.
+        names = helper._legacy_module().INPUT_NAMES
+        original_receipt = (self.fixture.receipt_root / 'lane-receipt.json').read_bytes()
+        for case in ('accepted', 'rejected', 'no-authority', 'wrong-lane', 'wrong-error'):
+            with self.subTest(case=case):
+                root = self.fixture.root / ('qualification-' + case)
+                root.mkdir()
+                plan = root / 'plan.json'
+                plan.write_bytes(self.fixture.plan_path.read_bytes())
+                lane = 'android' if case == 'wrong-lane' else 'ios-rust-simulator'
+                inventories = root / 'inventories' / lane
+                inventories.mkdir(parents=True)
+                transport = root / 'transport'
+                transport.mkdir()
+                (transport / 'lane-receipt.json').write_bytes(original_receipt)
+                for name in names.values():
+                    (inventories / name).write_bytes(b'current inventory\n')
+                    (transport / name).write_bytes(b'original inventory\n')
+                arguments = Namespace(plan=plan, lane=lane, destination=root / 'full',
+                    production_destination=root / 'production', mode='full', workflow='ci.yml',
+                    runner=['os=macOS'], toolchain=['rustc=pinned'], token='observation-token',
+                    api_url='https://api.github.invalid',
+                    trusted_workflow_sha='' if case == 'no-authority' else 'c' * 40)
+                def validate(*args, **kwargs):
+                    if case == 'wrong-error':
+                        raise ValueError('Lane toolchain identity mismatch')
+                    if (transport / names['production']).read_bytes() != (inventories / names['production']).read_bytes():
+                        raise ValueError('Lane production inventory mismatch')
+                    return json.loads(original_receipt)
+                validator = mock.Mock(side_effect=validate)
+                downloaded = mock.Mock(return_value=self.raw)
+                legacy = SimpleNamespace(INPUT_NAMES=names, download_artifact=downloaded,
+                    validate_receipt=validator, candidate_artifacts=lambda *a, **k: [],
+                    promoted_artifacts=lambda *a, **k: [], read_json=lambda p: json.loads(p.read_bytes()))
+                def restore(args):
+                    if args.mode == 'production':
+                        return {'reused': False, 'mode': 'production'}
+                    legacy.download_artifact(self.artifact, arguments.token)
+                    try:
+                        legacy.validate_receipt(transport / 'lane-receipt.json', plan, transport)
+                    except ValueError:
+                        return {'reused': False, 'mode': 'full'}
+                    return {'reused': True, 'mode': 'full'}
+                legacy.restore = restore
+                def qualify(args, artifact, **kwargs):
+                    self.assertIs(self.raw, kwargs['archive_bytes'])
+                    self.assertEqual(self.artifact, artifact)
+                    self.assertEqual('c' * 40, kwargs['trusted_workflow_sha'])
+                    if case == 'rejected':
+                        raise ValueError('original job authentication rejected')
+                    output = kwargs['output']
+                    output.mkdir()
+                    (output / 'original-upload.zip').write_bytes(kwargs['archive_bytes'])
+                    (output / 'original-receipt.json').write_bytes(original_receipt)
+                    return {'semanticAdmissionRequired': True}
+                qualified = mock.Mock(side_effect=qualify)
+                with mock.patch.object(helper, '_legacy_module', return_value=legacy), \
+                        mock.patch.object(helper, '_qualification_module',
+                                          return_value=SimpleNamespace(qualify_candidate=qualified)):
+                    full, _, _ = helper.restore_both(arguments)
+                downloaded.assert_called_once()
+                self.assertEqual(case == 'accepted', full['reused'])
+                self.assertEqual(1 if case in ('accepted', 'rejected') else 0, qualified.call_count)
+                self.assertEqual(original_receipt, (transport / 'lane-receipt.json').read_bytes())
+                if case == 'accepted':
+                    capture = Path(full['native_qualification_path'])
+                    self.assertEqual(self.raw, (capture / 'original-upload.zip').read_bytes())
+                    self.assertEqual(original_receipt, (capture / 'original-receipt.json').read_bytes())
+                    self.assertEqual('authenticated-native-source-qualified', full['reason'])
+                    for name in names.values():
+                        self.assertEqual(b'current inventory\n', (transport / name).read_bytes())
+                    self.assertEqual(2, validator.call_count)  # original rejection + mandatory recheck
+                else:
+                    self.assertNotIn('native_qualification_path', full)
+                    for name in names.values():
+                        self.assertEqual(b'original inventory\n', (transport / name).read_bytes())
 
 
 if __name__ == '__main__':

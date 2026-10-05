@@ -1,6 +1,7 @@
 """Transport tests for fresh Apple native inputs; Kotlin owns semantic proof."""
 
 from argparse import Namespace
+from contextlib import contextmanager
 from copy import deepcopy
 import hashlib
 import io
@@ -8,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 import zipfile
@@ -30,6 +32,17 @@ def archive_tree(root: Path) -> bytes:
         for path in sorted(value for value in root.rglob("*") if value.is_file()):
             archive.writestr(path.relative_to(root).as_posix(), path.read_bytes())
     return output.getvalue()
+
+
+@contextmanager
+def original_qualification_callable(qualify):
+    """Mock only helper dispatch; its independent authentication has own tests."""
+    spec = SimpleNamespace(loader=mock.Mock())
+    with mock.patch.object(sdk_apple_native.importlib.util, "spec_from_file_location",
+                           return_value=spec) as lookup, \
+            mock.patch.object(sdk_apple_native.importlib.util, "module_from_spec",
+                              return_value=SimpleNamespace(qualify_candidate=qualify)):
+        yield lookup, spec.loader
 
 
 class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
@@ -183,7 +196,7 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
         )
         return path
 
-    def invoke(self, *, uploads=None, plan_path=None, environ=None,
+    def invoke(self, *, uploads=None, plan_path=None, environ=None, original_uploads=None,
                original_binary_receipt_path=None):
         def query(url, token):
             self.assertEqual(self.token, token)
@@ -201,6 +214,11 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
 
         def listing(url, key, token):
             self.assertEqual(self.token, token)
+            if original_uploads is not None and key == "artifacts":
+                self.assertEqual(
+                    f"https://api.github.com/repos/{self.producer['repository']}"
+                    "/actions/runs/41/artifacts", url)
+                return original_uploads
             self.assertEqual("jobs", key)
             self.assertEqual(
                 f"https://api.github.com/repos/{self.producer['repository']}"
@@ -495,9 +513,26 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
         self._repack(lane)
         raw_receipt = (self.lanes[lane] / "lane-receipt.json").read_bytes()
         raw_provenance = (self.lanes[lane] / "transport-provenance.json").read_bytes()
-        context, _, patches = self.invoke()
+        original = {**self.producer, "commit": original_commit, "tree": original_tree,
+                    "runId": 41, "runAttempt": 1}
+        original_artifact = {"id": 99, "name": f"codex-agent-ci-{lane}-{original_tree}",
+                             "expired": False, "digest": "sha256:" + "e" * 64}
+        def qualify(arguments, artifact, **kwargs):
+            self.assertEqual(lane, arguments.lane)
+            self.assertEqual(self.token, arguments.token)
+            self.assertEqual(original_artifact, artifact)
+            self.assertEqual(self.pin, kwargs["trusted_workflow_sha"])
+            self.assertEqual(self.root, kwargs["repository_root"])
+            for source in (*sdk_apple_native.NATIVE_FILES[lane], sdk_apple_native.NATIVE_TOOLCHAINS[lane]):
+                destination = kwargs["output"] / "lane" / source
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes((self.lanes[lane] / source).read_bytes())
+            return {"originalProducer": original}
+        qualifier = mock.Mock(side_effect=qualify)
+        context, _, patches = self.invoke(original_uploads=[original_artifact])
         try:
-            with context as result:
+            with original_qualification_callable(qualifier), context as result:
+                qualifier.assert_called_once()
                 self.assertEqual(original_commit, result["originalProducers"][lane]["commit"])
                 self.assertEqual(original_tree, result["originalProducers"][lane]["tree"])
                 captured = result["captureRoot"] / "lanes" / lane
@@ -506,6 +541,78 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
                 self.assertEqual(self.raw[lane], (result["captureRoot"] / "archives" / f"{lane}.zip").read_bytes())
         finally:
             self.close(patches)
+        context, _, patches = self.invoke(original_uploads=[original_artifact])
+        try:
+            rejected = mock.Mock(side_effect=ValueError("original job not authenticated"))
+            with original_qualification_callable(rejected), \
+                    self.assertRaisesRegex(ValueError, "original job not authenticated"):
+                with context:
+                    self.fail("native inputs yielded before original source authentication")
+            rejected.assert_called_once()
+        finally:
+            self.close(patches)
+
+    def test_original_native_transport_source_upload_is_unique_and_required(self):
+        lane = "ios-native-tests"
+        name = f"codex-agent-ci-{lane}-{self.producer['tree']}"
+        for artifacts in ([], [{"name": name, "expired": True}],
+                          [{"name": name, "expired": False}] * 2):
+            with self.subTest(artifacts=artifacts), \
+                    mock.patch.object(sdk_apple_native.product_reuse, "paginated_items", return_value=artifacts), \
+                    original_qualification_callable(mock.Mock()) as (lookup, _):
+                with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
+                    sdk_apple_native._authenticate_native_transport_original(
+                        self.plan_path, {}, self.producer, lane, self.lanes[lane],
+                        root=self.root, token=self.token, trusted_workflow_sha=self.pin)
+                lookup.assert_not_called()
+
+    def test_original_native_transport_qualification_arguments_and_rejections(self):
+        lane = "ios-rust-simulator"
+        artifact = {"id": 99, "name": f"codex-agent-ci-{lane}-{self.producer['tree']}",
+                    "expired": False, "digest": "sha256:" + "e" * 64}
+        receipt = json.loads((self.lanes[lane] / "lane-receipt.json").read_bytes())
+        for failure in (None, "qualifier", "producer", "content"):
+            with self.subTest(failure=failure):
+                def qualify(arguments, selected, **kwargs):
+                    self.assertEqual(self.plan_path, arguments.plan)
+                    self.assertEqual(lane, arguments.lane)
+                    self.assertEqual(self.token, arguments.token)
+                    self.assertEqual([f"{k}={v}" for k, v in receipt["runner"].items()], arguments.runner)
+                    self.assertNotIn("validationActions=build,metadata,test", arguments.toolchain)
+                    self.assertEqual(artifact, selected)
+                    self.assertEqual(self.pin, kwargs["trusted_workflow_sha"])
+                    self.assertEqual(self.root, kwargs["repository_root"])
+                    if failure == "qualifier":
+                        raise ValueError("original successful-job authentication rejected")
+                    if failure == "producer":
+                        return {"originalProducer": {**self.producer, "runId": 123}}
+                    for source in (*sdk_apple_native.NATIVE_FILES[lane], sdk_apple_native.NATIVE_TOOLCHAINS[lane]):
+                        target = kwargs["output"] / "lane" / source
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        raw = (self.lanes[lane] / source).read_bytes()
+                        target.write_bytes(raw + b"different" if failure == "content" else raw)
+                    return {"originalProducer": self.producer}
+                qualifier = mock.Mock(side_effect=qualify)
+                with mock.patch.object(sdk_apple_native.product_reuse, "paginated_items", return_value=[artifact]) as listing, \
+                        original_qualification_callable(qualifier) as (lookup, loader):
+                    def authenticate():
+                        sdk_apple_native._authenticate_native_transport_original(
+                            self.plan_path, receipt, self.producer, lane, self.lanes[lane],
+                            root=self.root, token=self.token, trusted_workflow_sha=self.pin)
+                    if failure is None:
+                        authenticate()
+                    else:
+                        expected = {"qualifier": "successful-job", "producer": "transport provenance",
+                                    "content": "differs from authenticated original"}[failure]
+                        with self.assertRaisesRegex(ValueError, expected):
+                            authenticate()
+                    listing.assert_called_once_with(
+                        f"https://api.github.com/repos/{self.producer['repository']}/actions/runs/91/artifacts",
+                        "artifacts", self.token)
+                    lookup.assert_called_once_with("sdk_native_original_qualification",
+                        CI_ROOT.parent / ".github/actions/run-ci-lane/sdk_native_qualification.py")
+                    loader.exec_module.assert_called_once()
+                    qualifier.assert_called_once()
 
     def test_malformed_transport_chain_and_cross_paired_proof_reject(self) -> None:
         lane = "ios-native-tests"

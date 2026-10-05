@@ -17,6 +17,11 @@ on:
         required: false
         default: false
         type: boolean
+      trustedWorkflowSha:
+        description: Reviewed product workflow authority for native SDK prerequisite reuse
+        required: false
+        default: ''
+        type: string
     outputs:
       native_tests_artifact_id:
         value: ${{ jobs.native-tests.outputs.artifact_id }}
@@ -114,6 +119,7 @@ jobs:
         with:
           lane: ios-native-tests
           sdk-prerequisite-reuse: ${{ inputs.sdkBinaryOnly }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           plan-artifact: ${{ inputs.planArtifact }}
           validation-commit: ${{ inputs.validationCommit }}
           validation-tree: ${{ inputs.validationTree }}
@@ -139,6 +145,7 @@ jobs:
         with:
           lane: ios-rust-device
           sdk-prerequisite-reuse: ${{ inputs.sdkBinaryOnly }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           plan-artifact: ${{ inputs.planArtifact }}
           validation-commit: ${{ inputs.validationCommit }}
           validation-tree: ${{ inputs.validationTree }}
@@ -164,6 +171,7 @@ jobs:
         with:
           lane: ios-rust-simulator
           sdk-prerequisite-reuse: ${{ inputs.sdkBinaryOnly }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           plan-artifact: ${{ inputs.planArtifact }}
           validation-commit: ${{ inputs.validationCommit }}
           validation-tree: ${{ inputs.validationTree }}
