@@ -124,7 +124,7 @@ jobs:
     if: needs.select.outputs.rust_device == 'true'
     needs: select
     runs-on: macos-26
-    timeout-minutes: 120
+    timeout-minutes: ${{ inputs.sdkBinaryOnly && 240 || 120 }}
     outputs:
       artifact_name: ${{ steps.lane.outputs.artifact_name }}
       artifact_id: ${{ steps.lane.outputs.artifact_id }}
