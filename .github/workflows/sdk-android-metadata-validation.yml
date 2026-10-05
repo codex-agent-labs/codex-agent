@@ -28,6 +28,10 @@ on:
         required: true
         type: string
         description: Independent canonical Firebase workflow and protected-source pins; empty forbids fresh metadata.
+    secrets:
+      authority_read_token:
+        description: Read-only protected reuse authority; scoped to qualification restoration
+        required: false
     outputs:
       artifact_id:
         value: ${{ jobs.sdk-android-metadata-result.outputs.artifact_id }}
@@ -68,6 +72,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.authority_read_token }}
       - id: authority
         name: Check independent protected source pins before platform setup
         env:

@@ -25,6 +25,10 @@ on:
         required: true
         type: string
         description: Canonical source and Firebase workflow pins from a protected caller selector; empty means fresh validation is forbidden.
+    secrets:
+      authority_read_token:
+        description: Read-only protected reuse authority; scoped to qualification restoration
+        required: false
     outputs:
       artifact_id:
         value: ${{ jobs.sdk-android-validation-result.outputs.artifact_id }}
@@ -79,6 +83,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.authority_read_token }}
       - id: authority
         name: Check protected Android source authority before platform setup
         env:

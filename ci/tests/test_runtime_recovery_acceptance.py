@@ -191,6 +191,60 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.event["pull_request"]["head"]["sha"] = self.activation
         self.environment["GITHUB_SHA"] = self.merge
 
+    def sdk_mode(self, *, product_change=False):
+        # Real Git trees exercise the shared inventory policy; API identities
+        # remain explicit fixtures, never genuine hosted acceptance evidence.
+        self.git(self.trusted, "checkout", "--quiet", "--detach", self.reviewed)
+        self.write(self.trusted, recovery.SDK_REGISTRY,
+            (HELPER.parents[3] / recovery.SDK_REGISTRY).read_text())
+        frozen = self.commit(self.trusted, "frozen SDK registry and product inputs")
+        self.write(self.trusted, recovery.CI, self.ci
+            + "      runtimeRecoveryOnly: false\n      sdkRecoveryOnly: true\n")
+        self.write(self.trusted, ".github/actions/run-ci-lane/sdk-current-control.py", "reviewed control-only continuation\n")
+        if product_change:
+            self.write(self.trusted, "runtime/product.txt", "changed product\n")
+        self.reviewed = self.commit(self.trusted, "reviewed SDK continuation")
+        for name, value in (("SDK_FROZEN_REVISION", frozen), ("SDK_SELECTION_REVISION", frozen)):
+            patcher = mock.patch.object(recovery, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.git(self.candidate, "fetch", "--quiet", str(self.trusted), self.reviewed)
+        self.git(self.candidate, "checkout", "--quiet", "--detach", self.reviewed)
+        caller = self.git(self.trusted, "show", f"{self.reviewed}:{recovery.CI}")
+        self.write(self.candidate, recovery.CI, recovery._activated_ci(caller.encode(), self.reviewed).decode())
+        self.activation = self.commit(self.candidate, "activate exact reviewed SDK source")
+        self.make_merge()
+        self.event["pull_request"]["head"]["sha"] = self.activation
+        self.environment["GITHUB_SHA"] = self.merge
+
+    def test_sdk_continuation_admits_only_exact_frozen_inputs_and_never_full_acceptance(self):
+        self.sdk_mode()
+        with mock.patch.object(recovery, "phase_git_inventory", wraps=recovery.phase_git_inventory) as inventory:
+            result = self.verify()
+        self.assertEqual(224, inventory.call_count)
+        self.assertTrue(result["recovery_control_admitted"])
+        self.assertFalse(result["full_acceptance_current"])
+        self.assertEqual(self.producer, result["historical_acceptance_producer"])
+
+    def test_sdk_reviewed_product_input_change_is_rejected(self):
+        self.sdk_mode(product_change=True)
+        with self.assertRaisesRegex(ValueError, "changes frozen product inputs"):
+            self.verify()
+
+    def test_sdk_control_tree_mismatch_and_unauthorized_event_are_rejected(self):
+        self.sdk_mode()
+        with self.assertRaisesRegex(ValueError, "same-repository PR"):
+            self.verify(environment=dict(self.environment, GITHUB_EVENT_NAME="workflow_dispatch"))
+        unauthorized = copy.deepcopy(self.event)
+        unauthorized["action"] = "synchronize"
+        unauthorized.pop("label")
+        unauthorized["pull_request"]["labels"] = []
+        with self.assertRaisesRegex(ValueError, "not authorized"):
+            self.verify(event=unauthorized)
+        self.change_candidate(".github/actions/run-ci-lane/sdk-current-control.py", "candidate self-authorized change\n")
+        with self.assertRaisesRegex(ValueError, "independently reviewed control tree"):
+            self.verify()
+
     def test_prior_green_job_admits_only_reviewed_recovery_and_preserves_historical_identity(self):
         result = self.verify()
         self.assertTrue(result["recovery_control_admitted"])

@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 from ci.tests import test_runtime_original_ci as fixture
@@ -20,6 +21,51 @@ adapter, TARGET = fixture.adapter, fixture.TARGET
 
 
 class ReuseQualificationTest(unittest.TestCase):
+    def test_windows_native_installer_verifies_before_extracting(self):
+        # Shell composition only; this fake executable is not native evidence.
+        installer = Path(__file__).resolve().parents[2] / ".github/actions/restore-reuse-qualification/install-gh.sh"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            commands = root / "commands"
+            commands.mkdir()
+            archive = root / "fixture.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr("bin/gh.exe", b"fixture, not a genuine executable")
+            scripts = {
+                "uname": 'if [ "$1" = -s ]; then echo "$TEST_OS"; else echo x86_64; fi',
+                "curl": 'for argument; do destination="$argument"; done; cp "$TEST_ARCHIVE" "$destination"',
+                "shasum": 'test "$*" = "-a 256 --check --status"; read -r digest file; '
+                          'test "$digest" = ae64e556ecc240b200f7eba60d550e4bb60d78e860e69dd88c449405b86067f4; '
+                          'test -f "$file"; test "$TEST_HASH_OK" = true',
+            }
+            for name, body in scripts.items():
+                command = commands / name
+                command.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + body + "\n")
+                command.chmod(0o755)
+            for name, os_name, hash_ok in (("windows", "MINGW64_NT-10.0-20348", "true"),
+                                          ("bad-hash", "MINGW64_NT-10.0-20348", "false"),
+                                          ("unknown", "Unknown", "true")):
+                with self.subTest(name=name):
+                    work = root / name
+                    work.mkdir()
+                    environment = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"],
+                        "TEST_OS": os_name, "TEST_ARCHIVE": str(archive), "TEST_HASH_OK": hash_ok,
+                        "RUNNER_TEMP": str(work), "GITHUB_PATH": str(work / "path"),
+                        "GITHUB_OUTPUT": str(work / "output")}
+                    result = subprocess.run(["bash", str(installer)], env=environment,
+                                            capture_output=True, text=True)
+                    binary = work / "reuse-qualification-gh/bin/gh.exe"
+                    self.assertEqual(0 if name != "bad-hash" else 1, result.returncode, result.stderr)
+                    self.assertEqual(name == "windows", binary.exists())
+                    if name == "windows":
+                        self.assertEqual(str(binary.parent) + "\n", (work / "path").read_text())
+                        self.assertEqual("supported=true\n", (work / "output").read_text())
+                    elif name == "unknown":
+                        self.assertEqual("supported=false\n", (work / "output").read_text())
+                        self.assertFalse((work / "reuse-qualification-gh").exists())
+                    else:
+                        self.assertFalse((work / "output").exists())
+
     def test_portable_benchmark_metrics_are_canonical_json(self):
         import ast
         source = ast.parse((Path(__file__).resolve().parents[1] / "hosted_reuse_proof.py").read_text())

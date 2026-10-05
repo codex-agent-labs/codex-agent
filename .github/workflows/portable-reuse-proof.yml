@@ -9,6 +9,22 @@ permissions:
   actions: read
 
 jobs:
+  cold:
+    if: >-
+      github.event.label.name == 'ci:reuse-refresh-proof' &&
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/reuse-qualification.yml
+    with:
+      refresh: true
+
   warm:
     if: >-
       github.event.label.name == 'ci:reuse-qualification-proof' &&

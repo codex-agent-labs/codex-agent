@@ -16,6 +16,8 @@ from products.inventory import (
     read_regular_file_bytes, run_git,
 )
 from reuse import github_output
+from products.registry import PHASE_INSTANCE_IDS
+from products.selection import phase_git_inventory
 
 
 BASELINE_PRODUCER = {
@@ -129,6 +131,12 @@ CONTROL_FILES = CORRECTED_FILES | PRODUCT_CORRECTION_FILES | NEW_FILES | {
 CONTROL_FILES |= REUSE_FIXED_FILES | SDK_CONTROL_FILES | REFERENCE_TRANSPORT_FILES
 CONTROL_FILES |= CACHE_FIXED_FILES
 
+# Exact completed product closure, not the historical acceptance producer.
+SDK_FROZEN_REVISION = "969b272984b91f4dcf467a05319132e2bca3b52a"
+SDK_REGISTRY = "ci/products/registry.py"
+SDK_SELECTION_REVISION = "de0efcddb60c9aa4c6219b8466c77260b5ae345d"
+SDK_SELECTOR = "ci/products/selection.py"
+
 
 def _tree(root, revision):
     entries = {}
@@ -158,6 +166,10 @@ def _activated_ci(original, sha):
 
 
 def _reviewed_scope(trusted, candidate, sha):
+    caller = _blob(trusted, sha, CI)
+    if (caller.splitlines().count(b"      sdkRecoveryOnly: true") == 1
+            and caller.splitlines().count(b"      runtimeRecoveryOnly: false") == 1):
+        return _sdk_reviewed_scope(trusted, candidate, sha)
     baseline = _tree(trusted, BASELINE_PRODUCER["tree"])
     reviewed = _tree(trusted, sha)
     changed = {path for path in baseline.keys() | reviewed.keys() if baseline.get(path) != reviewed.get(path)}
@@ -197,6 +209,37 @@ def _reviewed_scope(trusted, candidate, sha):
         raise ValueError("Recovery candidate differs from the independently reviewed control tree")
     if _blob(candidate, "HEAD", CI) != _activated_ci(_blob(trusted, sha, CI), sha):
         raise ValueError("Recovery candidate caller has changes beyond exact activation pins")
+
+
+def _sdk_reviewed_scope(trusted, candidate, sha):
+    """Reviewed SDK controls may evolve; completed product inputs may not."""
+    baseline = _tree(trusted, SDK_FROZEN_REVISION)
+    reviewed = _tree(trusted, sha)
+    changed = {path for path in baseline.keys() | reviewed.keys()
+               if baseline.get(path) != reviewed.get(path)}
+    if any(reviewed.get(path, ())[:2] != ("100644", "blob")
+           or path in baseline and baseline[path][:2] != ("100644", "blob")
+           for path in changed):
+        raise ValueError("SDK recovery reviewed delta contains modes, symlinks or deletions")
+    if (len(PHASE_INSTANCE_IDS) != 112 or reviewed.get(SDK_REGISTRY) != baseline.get(SDK_REGISTRY)
+            or reviewed.get(SDK_REGISTRY, ())[:2] != ("100644", "blob")):
+        raise ValueError("SDK recovery product registry differs from frozen authority")
+    selection_authority = _tree(trusted, SDK_SELECTION_REVISION)
+    if (reviewed.get(SDK_SELECTOR) != selection_authority.get(SDK_SELECTOR)
+            or reviewed.get(SDK_SELECTOR, ())[:2] != ("100644", "blob")):
+        raise ValueError("SDK recovery selector differs from independently reviewed authority")
+    for instance in PHASE_INSTANCE_IDS:
+        before = phase_git_inventory(trusted, SDK_FROZEN_REVISION, instance)
+        after = phase_git_inventory(trusted, sha, instance)
+        if before != after:
+            raise ValueError(f"SDK recovery changes frozen product inputs: {instance}")
+    current = _tree(candidate, "HEAD")
+    if current.keys() != reviewed.keys() or any(
+            current[path] != reviewed[path] for path in current if path != CI
+    ) or current.get(CI, ())[:2] != ("100644", "blob"):
+        raise ValueError("SDK recovery candidate differs from independently reviewed control tree")
+    if _blob(candidate, "HEAD", CI) != _activated_ci(_blob(trusted, sha, CI), sha):
+        raise ValueError("SDK recovery candidate caller has changes beyond exact activation pins")
 
 
 def verify_recovery_acceptance(repository_root, trusted_workflow_sha, *, token, environ):

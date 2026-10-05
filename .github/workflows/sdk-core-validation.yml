@@ -58,6 +58,10 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - if: inputs.reuseQualification == ''
+        uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.authority_read_token }}
       - if: inputs.reuseQualification != ''
         uses: ./.github/actions/restore-reuse-qualification
         with:
@@ -122,6 +126,10 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - if: inputs.reuseQualification == ''
+        uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.authority_read_token }}
       - if: inputs.reuseQualification != ''
         uses: ./.github/actions/restore-reuse-qualification
         with:
@@ -203,6 +211,10 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - if: inputs.reuseQualification == ''
+        uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.authority_read_token }}
       - if: inputs.reuseQualification != ''
         uses: ./.github/actions/restore-reuse-qualification
         with:

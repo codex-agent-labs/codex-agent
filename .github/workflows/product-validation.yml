@@ -504,6 +504,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
@@ -1295,6 +1298,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -1750,6 +1756,9 @@ jobs:
           ref: ${{ needs.plan.outputs.validation_commit }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -2049,6 +2058,9 @@ jobs:
           persist-credentials: false
           ref: ${{ needs.plan.outputs.validation_commit }}
           fetch-depth: 0
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2241,6 +2253,9 @@ jobs:
       toolingArtifactId: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
       toolingArtifactSha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
       toolingTransportProducer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
 
   apple:
     if: >-
@@ -2284,6 +2299,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -2338,6 +2356,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -2395,6 +2416,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -2467,6 +2491,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2555,6 +2582,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2607,6 +2637,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2657,6 +2690,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2707,6 +2743,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2821,6 +2860,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2873,6 +2915,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2923,6 +2968,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3011,6 +3059,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3097,6 +3148,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3154,6 +3208,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3214,6 +3271,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3296,6 +3356,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3351,6 +3414,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
@@ -3408,6 +3474,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
@@ -3492,6 +3561,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3547,6 +3619,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
@@ -3601,6 +3676,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
@@ -3685,6 +3763,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3741,6 +3822,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
@@ -3824,6 +3908,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
@@ -3908,6 +3995,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3964,6 +4054,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
@@ -4029,6 +4122,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
@@ -4112,6 +4208,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -4176,6 +4275,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail
@@ -4238,6 +4340,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail
@@ -4338,6 +4443,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail
@@ -4428,6 +4536,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -4492,6 +4603,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail
@@ -4550,6 +4664,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail
@@ -4637,6 +4754,8 @@ jobs:
       sdkPlan: ${{ toJSON(needs.sdk-plan) }}
       iosMetadataResult: ${{ toJSON(needs.sdk-ios-metadata-result) }}
       trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
 
 
   sdk-core-package-plan:
@@ -4656,6 +4775,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -4717,6 +4839,9 @@ jobs:
       binaryWave: ${{ toJSON(needs.sdk-core-binary-wave) }}
       packagePlan: ${{ toJSON(needs.sdk-core-package-plan) }}
       trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
 
   sdk-core-validation-wave:
     needs: [plan, sdk-plan, sdk-inputs, sdk-core-package-wave]
@@ -4751,6 +4876,10 @@ jobs:
       sdkInputs: ${{ toJSON(needs.sdk-inputs) }}
       validationWave: ${{ toJSON(needs.sdk-core-validation-wave) }}
       trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
+
   sdk-android-binary-result:
     needs: [plan, sdk-plan, sdk-inputs, sdk-core-validation-wave, sdk-core-metadata-wave]
     if: >-
@@ -4768,6 +4897,9 @@ jobs:
       validationWave: ${{ toJSON(needs.sdk-core-validation-wave) }}
       metadataWave: ${{ toJSON(needs.sdk-core-metadata-wave) }}
       trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
 
   sdk-android-package-plan:
     needs: [plan, sdk-plan, sdk-android-binary-result]
@@ -4787,6 +4919,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -4840,6 +4975,9 @@ jobs:
       binaryWave: ${{ toJSON(needs.sdk-android-binary-result) }}
       packagePlan: ${{ toJSON(needs.sdk-android-package-plan) }}
       trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
 
   sdk-android-validation-plan:
     needs: [plan, sdk-plan, sdk-android-package-result]
@@ -4859,6 +4997,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -4909,6 +5050,9 @@ jobs:
       validationPlan: ${{ toJSON(needs.sdk-android-validation-plan) }}
       trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
       protectedAndroidAuthority: ''
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
 
   sdk-android-metadata-plan:
     needs: [plan, sdk-plan, sdk-android-validation-result]
@@ -4928,6 +5072,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -4980,6 +5127,9 @@ jobs:
       metadataPlan: ${{ toJSON(needs.sdk-android-metadata-plan) }}
       trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
       protectedAndroidAuthority: ''
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
 
   sdk-completion:
     needs: [plan, contract-validation, product-resume, runtime-continuation, runtime-aggregate-continuation, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, sdk-plan, sdk-native-result, sdk-ios-validation-result, sdk-ios-metadata-result, sdk-core-binary-wave, sdk-core-package-wave, sdk-core-validation-wave, sdk-core-metadata-wave, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result]
@@ -5002,6 +5152,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - id: parent
         env:
           RESULTS: ${{ toJSON(needs) }}
@@ -5113,6 +5266,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
@@ -5262,6 +5418,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -5376,6 +5535,9 @@ jobs:
       contractOutputs: ${{ toJSON(needs.contract-validation.outputs) }}
       sdkOutputs: ${{ toJSON(needs.sdk-completion.outputs) }}
       trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
 
   merge-gate:
     name: CI / merge-gate

@@ -29,7 +29,7 @@ class SdkWorkflowWiringTest(unittest.TestCase):
         self.workflow = (ROOT / ".github/workflows/sdk-core-validation.yml").read_text()
         self.assertRegex(self.workflow, r"(?s)reuseQualification:\n.*?default: ''\n")
         self.assertRegex(self.workflow, r"(?s)    secrets:\n      authority_read_token:\n.*?required: false\n")
-        self.assertEqual(3, self.workflow.count("${{ secrets.authority_read_token }}"))
+        self.assertEqual(6, self.workflow.count("${{ secrets.authority_read_token }}"))
         self.assertIn("independently reviewed", self.workflow)
         fields = {"artifact-id": "artifactId", "artifact-sha256": "artifactSha256",
                   "run-id": "runId", "run-attempt": "runAttempt",
@@ -41,12 +41,68 @@ class SdkWorkflowWiringTest(unittest.TestCase):
                                     r".*?(?=^      -|\Z)", job)[0]
                 self.assertIn("./.github/actions/restore-reuse-qualification", restore)
                 self.assertIn("authority-read-token: ${{ secrets.authority_read_token }}", restore)
-                self.assertNotIn("secrets.authority_read_token", job.replace(restore, ""))
+                approved = re.search(r"(?ms)^      - if: inputs.reuseQualification == ''\n"
+                                     r".*?(?=^      -|\Z)", job)[0]
+                self.assertIn("restore-reuse-qualification@reuse-authority", approved)
+                self.assertNotIn("secrets.authority_read_token", job.replace(restore, "").replace(approved, ""))
                 for argument, field in fields.items():
                     self.assertIn(f"{argument}: ${{{{ fromJSON(inputs.reuseQualification).{field} }}}}", restore)
                 self.assertNotRegex(restore, r"planOutputs|sdkPlan|packageWave|github.event")
                 self.assertLess(job.index(restore), job.index("./.github/actions/capture-sdk-tooling"))
                 self.assertIn("remote_build_authorized == 'true'", job)
+
+    def test_sdk_entry_restore_is_scoped_and_precedes_evidence_consumers(self):
+        child_names = set()
+        restored = 0
+        for path in (ROOT / ".github/workflows").glob("*.yml"):
+            text = path.read_text()
+            if path.name != "product-validation.yml" and not path.name.startswith("sdk-"):
+                continue
+            jobs = re.findall(r"(?ms)^  ([a-z][a-z0-9-]*):\n(.*?)(?=^  [a-z][a-z0-9-]*:|\Z)", text)
+            for name, job in jobs:
+                if "uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority" not in job:
+                    continue
+                restored += 1
+                root = path.name == "product-validation.yml"
+                token = "REUSE_AUTHORITY_READ_TOKEN" if root else "authority_read_token"
+                step = re.search(r"(?ms)^      - (?:if: [^\n]+\n        )?uses: codex-agent-labs/codex-agent/"
+                                 r"\.github/actions/restore-reuse-qualification@reuse-authority\n"
+                                 r".*?(?=^      -|\Z)", job)[0]
+                self.assertIn(f"authority-read-token: ${{{{ secrets.{token} }}}}", step)
+                self.assertNotIn("env:", step)
+                self.assertNotIn("github.event", step)
+                self.assertLess(job.index("uses: actions/checkout@"), job.index(step))
+                consumer = re.search(r"uses: \./\.github/actions/(?:capture-runtime-state|capture-sdk-transport|sdk-[a-z-]+-worker)", job)
+                if consumer:
+                    self.assertLess(job.index(step), consumer.start())
+                if not root:
+                    child_names.add(path.name)
+                    self.assertRegex(text, r"(?s)    secrets:\n      authority_read_token:\n.*?required: false\n")
+        self.assertEqual(63, restored)
+        parent = (ROOT / ".github/workflows/product-validation.yml").read_text()
+        for name in child_names:
+            job = next(body for _, body in re.findall(
+                r"(?ms)^  ([a-z][a-z0-9-]*):\n(.*?)(?=^  [a-z][a-z0-9-]*:|\Z)", parent)
+                if f"uses: ./.github/workflows/{name}\n" in body)
+            self.assertIn("secrets:\n      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}", job)
+
+    def test_qualification_refresh_uses_existing_native_issuer_without_product_builds(self):
+        caller = (ROOT / ".github/workflows/portable-reuse-proof.yml").read_text()
+        cold = caller.split("  cold:\n", 1)[1].split("  warm:\n", 1)[0]
+        self.assertIn("github.event.label.name == 'ci:reuse-refresh-proof'", cold)
+        self.assertIn("github.event.pull_request.number == 31", cold)
+        self.assertIn("github.event.pull_request.head.repo.fork == false", cold)
+        self.assertIn("uses: ./.github/workflows/reuse-qualification.yml", cold)
+        self.assertIn("refresh: true", cold)
+        text = (ROOT / ".github/workflows/reuse-qualification.yml").read_text()
+        self.assertRegex(text, r"(?s)refresh:\n.*?default: false\n")
+        self.assertIn("if: inputs.refresh != true", text)
+        self.assertIn("ref: ${{ job.workflow_sha }}", text)
+        self.assertIn("ISSUER_SHA: ${{ job.workflow_sha }}", text)
+        self.assertIn("ci/reuse_qualification.py issue-frozen", text)
+        self.assertIn("subject-path: ${{ env.PROOF_WORK }}/qualification.json", text)
+        self.assertIn("overwrite: false", text)
+        self.assertNotRegex(text, r"gradlew|cargo build|cmake --build|xcodebuild")
 
     def test_elected_workers_capture_before_isolated_setup_and_always_collect(self):
         action = (ROOT / ".github/actions/sdk-javascript-worker/action.yml").read_text()

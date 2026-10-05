@@ -2,9 +2,14 @@ name: Reuse preserved authenticated qualification
 
 on:
   workflow_call:
+    inputs:
+      refresh:
+        description: Reauthenticate unchanged frozen originals under this reviewed verifier; never build products
+        type: boolean
+        default: false
     secrets:
       authority_read_token:
-        required: true
+        required: false
 
 permissions:
   contents: read
@@ -12,6 +17,82 @@ permissions:
 
 jobs:
   preserved:
+    if: inputs.refresh != true
     uses: codex-agent-labs/codex-agent/.github/workflows/approved-reuse.yml@reuse-authority
     secrets:
       authority_read_token: ${{ secrets.authority_read_token }}
+
+  qualify:
+    if: inputs.refresh && github.repository == 'codex-agent-labs/codex-agent'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Retain the authenticated original Git policy tree
+        run: |
+          git cat-file -e 'db38c174a2db6f02ff6b6e2091e809681d83a4d9^{tree}' || git fetch --no-tags origin db38c174a2db6f02ff6b6e2091e809681d83a4d9
+          git cat-file -e 'db38c174a2db6f02ff6b6e2091e809681d83a4d9^{tree}'
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - name: Bind the executing native issuer, not caller-selected source
+        env:
+          ISSUER_REPOSITORY: ${{ job.workflow_repository }}
+          ISSUER_PATH: ${{ job.workflow_file_path }}
+          ISSUER_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$ISSUER_REPOSITORY" = codex-agent-labs/codex-agent
+          test "$ISSUER_PATH" = .github/workflows/reuse-qualification.yml
+          test "$(git rev-parse HEAD)" = "$ISSUER_SHA"
+          {
+            echo "QUALIFICATION_ISSUER_REPOSITORY=$ISSUER_REPOSITORY"
+            echo "QUALIFICATION_ISSUER_PATH=$ISSUER_PATH"
+            echo "QUALIFICATION_ISSUER_SHA=$ISSUER_SHA"
+            echo "CODEX_AGENT_HYDRATED_EVIDENCE=$RUNNER_TEMP/hydrated-evidence"
+            echo "CODEX_AGENT_PRODUCT_CACHE=$RUNNER_TEMP/private-product-cache"
+            echo "PROOF_WORK=$RUNNER_TEMP/qualification-proof"
+          } >> "$GITHUB_ENV"
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: .github/actions/hydrated-evidence-cache
+      - name: Reauthenticate exact originals; verify zero selected product phases
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -B ci/reuse_qualification.py issue-frozen --work "$PROOF_WORK"
+      - uses: ./.github/actions/hydrated-evidence-cache
+        with:
+          mode: save
+          root: ${{ env.CODEX_AGENT_HYDRATED_EVIDENCE }}
+          manifest: ${{ env.PROOF_WORK }}/cache-manifest.json
+          report: ${{ env.PROOF_WORK }}/cache-save.json
+      - id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ env.PROOF_WORK }}/qualification.json
+          create-storage-record: false
+      - name: Preserve the independent native authority bundle
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE_PATH" "$PROOF_WORK/bundle.jsonl"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: reuse-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.PROOF_WORK }}/qualification.json
+            ${{ env.PROOF_WORK }}/bundle.jsonl
+            ${{ env.PROOF_WORK }}/qualification-issue.json
+            ${{ env.PROOF_WORK }}/proof.json
+            ${{ env.PROOF_WORK }}/prepare.json
+            ${{ env.PROOF_WORK }}/cache-save.json
+          if-no-files-found: error
+          overwrite: false
