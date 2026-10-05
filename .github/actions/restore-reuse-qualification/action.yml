@@ -1,52 +1,61 @@
-name: Restore independent reuse qualification
-description: Freshly authenticate a small signed issuer artifact; cache bodies confer no authority.
+name: Restore through owner-approved unchanged verification
+description: Resolve fresh owner-only authority before native original authentication; caches remain content-only.
 inputs:
+  authority-read-token:
+    required: true
+    description: Repository-scoped Administration and Contents read credential; never a writer token.
   artifact-id:
-    required: true
-    description: Caller-owned immutable qualification artifact ID.
+    required: false
+    description: Optional original artifact selector; must be independently approved.
   artifact-sha256:
-    required: true
-    description: Caller-owned original qualification upload SHA256.
+    required: false
+    description: Optional assertion of original artifact digest.
   run-id:
-    required: true
-    description: Exact original successful issuer run.
+    required: false
+    description: Optional assertion of original run.
   run-attempt:
-    required: true
-    description: Exact original successful issuer attempt.
+    required: false
+    description: Optional assertion of original attempt.
   issuer-sha:
-    required: true
-    description: Independently reviewed immutable issuer workflow revision.
+    required: false
+    description: Optional assertion; cannot choose trusted code.
   source-sha:
-    required: true
-    description: Independently pinned original caller source revision.
+    required: false
+    description: Optional assertion; original source is derived after native authentication.
 runs:
   using: composite
   steps:
-    - name: Prepare the pinned native attestation verifier
+    - name: Resolve approved source and install its unchanged current-root controls
       id: native
       shell: bash
-      run: bash .github/actions/restore-reuse-qualification/install-gh.sh
-    - name: Authenticate the independent issuer artifact and native authority
-      if: steps.native.outputs.supported == 'true'
-      shell: bash
       env:
-        QUALIFICATION_ARTIFACT_ID: ${{ inputs.artifact-id }}
-        QUALIFICATION_ARTIFACT_SHA: ${{ inputs.artifact-sha256 }}
-        QUALIFICATION_RUN: ${{ inputs.run-id }}
-        QUALIFICATION_ATTEMPT: ${{ inputs.run-attempt }}
-        QUALIFICATION_ISSUER: ${{ inputs.issuer-sha }}
-        QUALIFICATION_SOURCE: ${{ inputs.source-sha }}
+        REUSE_AUTHORITY_READ_TOKEN: ${{ inputs.authority-read-token }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
-        python3 -B ci/reuse_qualification.py fetch --work "$RUNNER_TEMP/reuse-qualification" \
-          --artifact-id "$QUALIFICATION_ARTIFACT_ID" --artifact-sha256 "$QUALIFICATION_ARTIFACT_SHA" \
-          --run-id "$QUALIFICATION_RUN" --run-attempt "$QUALIFICATION_ATTEMPT" \
-          --signer-commit "$QUALIFICATION_ISSUER" --source-commit "$QUALIFICATION_SOURCE"
-        {
-          echo "CODEX_AGENT_HYDRATED_EVIDENCE=$RUNNER_TEMP/hydrated-evidence"
-          echo "CODEX_AGENT_REUSE_QUALIFICATION=$RUNNER_TEMP/reuse-qualification/qualification.json"
-          echo "CODEX_AGENT_REUSE_QUALIFICATION_BUNDLE=$RUNNER_TEMP/reuse-qualification/bundle.jsonl"
-          echo "CODEX_AGENT_REUSE_QUALIFICATION_ISSUER=$QUALIFICATION_ISSUER"
-          echo "CODEX_AGENT_REUSE_QUALIFICATION_SOURCE=$QUALIFICATION_SOURCE"
-        } >> "$GITHUB_ENV"
+        test -n "$REUSE_AUTHORITY_READ_TOKEN"
+        case "$(uname -s)/$(uname -m)" in
+          Linux/x86_64|Linux/aarch64|Darwin/x86_64|Darwin/arm64) ;;
+          *) echo 'supported=false' >> "$GITHUB_OUTPUT"; exit 0 ;;
+        esac
+        source_root=$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)
+        python3 -B "$source_root/.reuse/consumer.py" setup --repository-root "$GITHUB_WORKSPACE" --work "$RUNNER_TEMP/approved-reuse"
+        bash "$GITHUB_WORKSPACE/.github/actions/restore-reuse-qualification/install-gh.sh"
+    - name: Fresh original native admission under the approved verifier
+      if: steps.native.outputs.supported == 'true'
+      shell: bash
+      env:
+        REUSE_AUTHORITY_READ_TOKEN: ${{ inputs.authority-read-token }}
+        APPROVED_ARTIFACT_ID: ${{ inputs.artifact-id }}
+        REQUESTED_ARTIFACT_SHA: ${{ inputs.artifact-sha256 }}
+        REQUESTED_RUN: ${{ inputs.run-id }}
+        REQUESTED_ATTEMPT: ${{ inputs.run-attempt }}
+        REQUESTED_ISSUER: ${{ inputs.issuer-sha }}
+        REQUESTED_SOURCE: ${{ inputs.source-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        source_root=$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)
+        selected=()
+        if [ -n "$APPROVED_ARTIFACT_ID" ]; then selected=(--artifact-id "$APPROVED_ARTIFACT_ID"); fi
+        python3 -B "$source_root/.reuse/consumer.py" restore --repository-root "$GITHUB_WORKSPACE" --work "$RUNNER_TEMP/approved-reuse" "${selected[@]}"

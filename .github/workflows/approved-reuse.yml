@@ -1,0 +1,102 @@
+name: Owner-approved frozen reuse consumer
+
+on:
+  workflow_call:
+    secrets:
+      authority_read_token:
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  frozen:
+    if: >-
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false &&
+      (github.event.label.name == 'ci:reuse-qualification-proof' || github.event.label.name == 'ci:reuse-cache-proof')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      REUSE_AUTHORITY_READ_TOKEN: ${{ secrets.authority_read_token }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: product
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: authority
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.11'
+      - name: Resolve protected owner approval and materialize exact unchanged controls
+        env:
+          AUTHORITY_COMMIT: ${{ job.workflow_sha }}
+          AUTHORITY_REPOSITORY: ${{ job.workflow_repository }}
+          AUTHORITY_PATH: ${{ job.workflow_file_path }}
+        run: |
+          set -euo pipefail
+          test "$AUTHORITY_REPOSITORY" = codex-agent-labs/codex-agent
+          test "$AUTHORITY_PATH" = .github/workflows/approved-reuse.yml
+          test "$(git -C authority rev-parse HEAD)" = "$AUTHORITY_COMMIT"
+          {
+            echo "AUTHORITY_COMMIT=$AUTHORITY_COMMIT"
+            echo "PROOF_WORK=$RUNNER_TEMP/approved-reuse"
+            echo "CODEX_AGENT_PRODUCT_CACHE=$RUNNER_TEMP/private-product-cache"
+          } >> "$GITHUB_ENV"
+          python3 -B authority/.reuse/consumer.py setup --repository-root "$GITHUB_WORKSPACE/product" --work "$RUNNER_TEMP/approved-reuse" --expected-authority-commit "$AUTHORITY_COMMIT"
+      - name: Install the approved native verifier
+        run: bash .github/actions/restore-reuse-qualification/install-gh.sh
+        working-directory: product
+      - name: Authenticate preserved authority and derive historical provenance
+        run: python3 -B authority/.reuse/consumer.py restore --repository-root "$GITHUB_WORKSPACE/product" --work "$PROOF_WORK" --expected-authority-commit "$AUTHORITY_COMMIT"
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: product/.github/actions/hydrated-evidence-cache
+      - name: Freshly authenticate the frozen carrier
+        run: python3 -B ci/hosted_reuse_proof.py prepare --work "$PROOF_WORK/proof"
+        working-directory: product
+      - uses: ./product/.github/actions/hydrated-evidence-cache
+        with:
+          mode: restore
+          root: ${{ env.CODEX_AGENT_HYDRATED_EVIDENCE }}
+          manifest: ${{ env.PROOF_WORK }}/proof/cache-manifest.json
+          report: ${{ env.PROOF_WORK }}/cache-restore.json
+      - name: Actual later-process reuse through approved current consumer
+        run: |
+          python3 -B authority/.reuse/consumer.py verify --repository-root "$GITHUB_WORKSPACE/product" --work "$PROOF_WORK" --expected-authority-commit "$AUTHORITY_COMMIT"
+          python3 - "$PROOF_WORK/proof/proof.json" "$PROOF_WORK/cache-restore.json" <<'PY'
+          import json, sys
+          proof, storage = (json.load(open(path)) for path in sys.argv[1:])
+          q = proof['portableQualification']
+          assert proof['frozenPhases'] == 50 and proof['productInventories'] == 112
+          assert proof['selectedProductPhases'] == proof['changedProductInventories'] == 0
+          assert q['qualificationHits'] == 46 and q['qualificationMisses'] == 0
+          assert q['downloadedArtifactCount'] == q['downloadedArtifactBytes'] == 0
+          assert proof['originalColdArchiveBytes'] == proof['originalRangeBytes'] == 0
+          assert storage['entries'] == storage['hits'] and storage['misses'] == 0
+          PY
+      - name: Independently preserve current proof and acquisition provenance
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: approved-reuse-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.PROOF_WORK }}/setup.json
+            ${{ env.PROOF_WORK }}/restore.json
+            ${{ env.PROOF_WORK }}/verify.json
+            ${{ env.PROOF_WORK }}/cache-restore.json
+            ${{ env.PROOF_WORK }}/proof/prepare.json
+            ${{ env.PROOF_WORK }}/proof/proof.json
+            ${{ env.PROOF_WORK }}/compiled-plumbing/
+          if-no-files-found: error
