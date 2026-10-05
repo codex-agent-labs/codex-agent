@@ -205,7 +205,8 @@ def verify(spec, work, token):
         "originalRangeBytes": sum(item["rangeBytes"] for item in [*transports, *additional_transports, signed_transport]),
         "originalColdArchiveBytes": cold_archive_bytes, "verificationPolicySha256": verification_policy,
         "rootProcessReadBytes": process_read_bytes() - read_before if read_before is not None else None,
-        "portableQualification": {key: session.get(key, 0) for key in (
+        "portableQualification": {key: str(session.get(key, 0)) if key == "qualificationVerificationSeconds"
+                                  else session.get(key, 0) for key in (
             "qualificationHits", "qualificationMisses", "qualificationBodyReadBytes",
             "qualificationVerificationSeconds", "downloadedArtifactCount", "downloadedArtifactBytes")},
         "checkpoint": spec["signedCheckpoint"], "prepare": json.loads((work / "prepare.json").read_bytes())}

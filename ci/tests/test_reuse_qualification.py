@@ -20,6 +20,22 @@ adapter, TARGET = fixture.adapter, fixture.TARGET
 
 
 class ReuseQualificationTest(unittest.TestCase):
+    def test_portable_benchmark_metrics_are_canonical_json(self):
+        import ast
+        source = ast.parse((Path(__file__).resolve().parents[1] / "hosted_reuse_proof.py").read_text())
+        report = next(node.value for node in ast.walk(source) if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == "report" for target in node.targets)
+                      and isinstance(node.value, ast.Dict)
+                      and any(isinstance(key, ast.Constant) and key.value == "portableQualification"
+                              for key in node.value.keys))
+        metrics = next(value for key, value in zip(report.keys, report.values)
+                       if isinstance(key, ast.Constant) and key.value == "portableQualification")
+        for session in ({}, {"qualificationHits": 46, "qualificationVerificationSeconds": 12.375}):
+            value = eval(compile(ast.Expression(metrics), "benchmark-metrics", "eval"), {"session": session})
+            self.assertEqual(session.get("qualificationHits", 0), value["qualificationHits"])
+            self.assertEqual(str(session.get("qualificationVerificationSeconds", 0)), value["qualificationVerificationSeconds"])
+            self.assertEqual(value, load_canonical_json_bytes(canonical_json_bytes(value)))
+
     def test_aggregate_metadata_phase_is_distinct_from_signed_handoff(self):
         from ci.tests.test_products import phase_receipt
         from products.receipt import compute_build_key
