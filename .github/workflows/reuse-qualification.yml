@@ -34,8 +34,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          repository: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          ref: ${{ fromJSON(toJSON(job)).workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Retain the authenticated original Git policy tree
@@ -47,9 +47,9 @@ jobs:
           python-version: '3.12'
       - name: Bind the executing native issuer, not caller-selected source
         env:
-          ISSUER_REPOSITORY: ${{ job.workflow_repository }}
-          ISSUER_PATH: ${{ job.workflow_file_path }}
-          ISSUER_SHA: ${{ job.workflow_sha }}
+          ISSUER_REPOSITORY: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          ISSUER_PATH: ${{ fromJSON(toJSON(job)).workflow_file_path }}
+          ISSUER_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
         run: |
           set -euo pipefail
           test "$ISSUER_REPOSITORY" = codex-agent-labs/codex-agent

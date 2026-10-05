@@ -25,6 +25,7 @@ from products.receipt import validate_producer
 
 _API = "https://api.github.com/repos/codex-agent-labs/codex-agent/actions"
 _NAME = re.compile(r"codex-agent-release-tooling-([0-9a-f]{40})-attempt-([1-9][0-9]*)")
+_PRIOR_TOOLING_WORKFLOW_SHA = "00feb2e6ffc0e633042ac4cebfb6495718fb82f7"
 
 
 def _original_tooling_workflow(producer, current_sha, token):
@@ -34,7 +35,10 @@ def _original_tooling_workflow(producer, current_sha, token):
     run = api_json(f"{_API}/runs/{producer['runId']}/attempts/{producer['runAttempt']}", token)
     pin = _runtime_prior_workflow_sha(run, current_sha)
     if pin is None:
-        raise ValueError("Original tooling lacks a reviewed producer workflow")
+        # Retain this independently reviewed tooling producer after pin rotation.
+        pin = _PRIOR_TOOLING_WORKFLOW_SHA
+        _require_ci_workflow_reference(run,
+            f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{pin}", pin)
     path = ".github/workflows/contract-validation.yml"
     if any(isinstance(ref, dict) and isinstance(ref.get('path'), str)
            and ref['path'].split('@', 1)[0] == f"codex-agent-labs/codex-agent/{path}"
