@@ -21,6 +21,25 @@ class SdkWorkflowWiringTest(unittest.TestCase):
     def job(self, name):
         return re.search(rf"(?ms)^  {re.escape(name)}:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)", self.workflow)[0]
 
+    def test_portable_authority_is_optional_and_precedes_all_core_consumers(self):
+        self.workflow = (ROOT / ".github/workflows/sdk-core-validation.yml").read_text()
+        self.assertRegex(self.workflow, r"(?s)reuseQualification:\n.*?default: ''\n")
+        self.assertIn("independently reviewed", self.workflow)
+        fields = {"artifact-id": "artifactId", "artifact-sha256": "artifactSha256",
+                  "run-id": "runId", "run-attempt": "runAttempt",
+                  "issuer-sha": "issuerSha", "source-sha": "sourceSha"}
+        for name in ("sdk-core-validation-plan", "sdk-core-validation", "sdk-collect-13"):
+            with self.subTest(job=name):
+                job = self.job(name)
+                restore = re.search(r"(?ms)^      - if: inputs.reuseQualification != ''\n"
+                                    r".*?(?=^      -|\Z)", job)[0]
+                self.assertIn("./.github/actions/restore-reuse-qualification", restore)
+                for argument, field in fields.items():
+                    self.assertIn(f"{argument}: ${{{{ fromJSON(inputs.reuseQualification).{field} }}}}", restore)
+                self.assertNotRegex(restore, r"planOutputs|sdkPlan|packageWave|github.event")
+                self.assertLess(job.index(restore), job.index("./.github/actions/capture-sdk-tooling"))
+                self.assertIn("remote_build_authorized == 'true'", job)
+
     def test_elected_workers_capture_before_isolated_setup_and_always_collect(self):
         action = (ROOT / ".github/actions/sdk-javascript-worker/action.yml").read_text()
         self.assertLess(action.index("./.github/actions/capture-runtime-state"), action.index("./.github/actions/setup-kmp"))
