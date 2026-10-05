@@ -1,52 +1,37 @@
-name: Restore independent reuse qualification
-description: Freshly authenticate a small signed issuer artifact; cache bodies confer no authority.
+name: Restore independently owner-approved reuse qualification
+description: Qualification inputs assert original identities; only the protected owner source selects verification code.
 inputs:
+  authority-read-token:
+    required: false
+    default: ''
+    description: Repository-scoped Administration and Contents read token; missing authority fails closed.
   artifact-id:
-    required: true
-    description: Caller-owned immutable qualification artifact ID.
+    required: false
+    description: Approved retained original artifact selector.
   artifact-sha256:
-    required: true
-    description: Caller-owned original qualification upload SHA256.
+    required: false
+    description: Optional assertion of the exact original artifact digest.
   run-id:
-    required: true
-    description: Exact original successful issuer run.
+    required: false
+    description: Optional assertion of the original run identity.
   run-attempt:
-    required: true
-    description: Exact original successful issuer attempt.
+    required: false
+    description: Optional assertion of the original attempt.
   issuer-sha:
-    required: true
-    description: Independently reviewed immutable issuer workflow revision.
+    required: false
+    description: Optional assertion; never chooses the approved verifier.
   source-sha:
-    required: true
-    description: Independently pinned original caller source revision.
+    required: false
+    description: Optional assertion; original source is derived from authenticated native provenance.
 runs:
   using: composite
   steps:
-    - name: Prepare the pinned native attestation verifier
-      id: native
-      shell: bash
-      run: bash .github/actions/restore-reuse-qualification/install-gh.sh
-    - name: Authenticate the independent issuer artifact and native authority
-      if: steps.native.outputs.supported == 'true'
-      shell: bash
-      env:
-        QUALIFICATION_ARTIFACT_ID: ${{ inputs.artifact-id }}
-        QUALIFICATION_ARTIFACT_SHA: ${{ inputs.artifact-sha256 }}
-        QUALIFICATION_RUN: ${{ inputs.run-id }}
-        QUALIFICATION_ATTEMPT: ${{ inputs.run-attempt }}
-        QUALIFICATION_ISSUER: ${{ inputs.issuer-sha }}
-        QUALIFICATION_SOURCE: ${{ inputs.source-sha }}
-        GITHUB_TOKEN: ${{ github.token }}
-      run: |
-        set -euo pipefail
-        python3 -B ci/reuse_qualification.py fetch --work "$RUNNER_TEMP/reuse-qualification" \
-          --artifact-id "$QUALIFICATION_ARTIFACT_ID" --artifact-sha256 "$QUALIFICATION_ARTIFACT_SHA" \
-          --run-id "$QUALIFICATION_RUN" --run-attempt "$QUALIFICATION_ATTEMPT" \
-          --signer-commit "$QUALIFICATION_ISSUER" --source-commit "$QUALIFICATION_SOURCE"
-        {
-          echo "CODEX_AGENT_HYDRATED_EVIDENCE=$RUNNER_TEMP/hydrated-evidence"
-          echo "CODEX_AGENT_REUSE_QUALIFICATION=$RUNNER_TEMP/reuse-qualification/qualification.json"
-          echo "CODEX_AGENT_REUSE_QUALIFICATION_BUNDLE=$RUNNER_TEMP/reuse-qualification/bundle.jsonl"
-          echo "CODEX_AGENT_REUSE_QUALIFICATION_ISSUER=$QUALIFICATION_ISSUER"
-          echo "CODEX_AGENT_REUSE_QUALIFICATION_SOURCE=$QUALIFICATION_SOURCE"
-        } >> "$GITHUB_ENV"
+    - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+      with:
+        authority-read-token: ${{ inputs.authority-read-token || env.REUSE_AUTHORITY_READ_TOKEN }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        run-id: ${{ inputs.run-id }}
+        run-attempt: ${{ inputs.run-attempt }}
+        issuer-sha: ${{ inputs.issuer-sha }}
+        source-sha: ${{ inputs.source-sha }}
