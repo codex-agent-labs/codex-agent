@@ -98,5 +98,9 @@ jobs:
             ${{ env.PROOF_WORK }}/cache-restore.json
             ${{ env.PROOF_WORK }}/proof/prepare.json
             ${{ env.PROOF_WORK }}/proof/proof.json
-            ${{ env.PROOF_WORK }}/compiled-plumbing/
+            ${{ env.PROOF_WORK }}/compiled-plumbing/.github/workflows/portable-reuse-proof.yml
+            ${{ env.PROOF_WORK }}/compiled-plumbing/.github/workflows/reuse-qualification.yml
+            ${{ env.PROOF_WORK }}/compiled-plumbing/.github/workflows/hosted-reuse-cache-proof.yml
+            ${{ env.PROOF_WORK }}/compiled-plumbing/.github/actions/restore-reuse-qualification/action.yml
+          include-hidden-files: true
           if-no-files-found: error

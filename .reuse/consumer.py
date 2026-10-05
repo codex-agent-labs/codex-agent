@@ -247,6 +247,7 @@ def main():
     root, work = args.repository_root.resolve(strict=True), args.work.absolute()
     work.mkdir(parents=True, exist_ok=True)
     value = approved(args.expected_authority_commit)
+    os.chdir(root)  # Existing production commands use the consumer checkout as cwd.
     if args.operation == "setup":
         result = snapshot(root, value, work)
     else:

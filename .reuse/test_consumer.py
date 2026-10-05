@@ -75,6 +75,23 @@ class AcquisitionTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(output.exists())
 
+    def test_entrypoint_uses_current_consumer_directory_for_production_commands(self):
+        original = Path.cwd()
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+            root, work = Path(temporary) / "product", Path(temporary) / "work"
+            root.mkdir()
+            try:
+                with patch.object(consumer.sys, "argv", ["consumer.py", "setup", "--repository-root", str(root), "--work", str(work)]), \
+                     patch.object(consumer, "approved", return_value=APPROVAL), \
+                     patch.object(consumer, "snapshot", side_effect=lambda actual, value, private: {
+                         "currentDirectoryMatches": Path.cwd() == actual}) as operation:
+                    consumer.main()
+                    operation.assert_called_once()
+                    result = json.loads((work / "setup.json").read_text())
+                    self.assertTrue(result["currentDirectoryMatches"])
+            finally:
+                os.chdir(original)
+
     def test_history_uses_authenticated_commit_tree_and_fixed_remote(self):
         producer = {"repository": consumer.authority.REPOSITORY, "commit": "b" * 40, "tree": "c" * 40}
         with patch.object(consumer, "git", return_value=("c" * 40 + "\n").encode()) as operation:
