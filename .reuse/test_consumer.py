@@ -46,6 +46,24 @@ class AcquisitionTests(unittest.TestCase):
         with self.assertRaises(ValueError): consumer.original_source([], RECORD)
         with self.assertRaises(ValueError): consumer.original_source(verdict * 2, RECORD)
 
+    def test_retired_qualification_is_preserved_without_ambiguous_default_selection(self):
+        import sys
+        # Other cases load verifier modules from their own isolated Git fixture.
+        with patch.dict(sys.modules), patch.object(sys, "path", [
+                str(Path(__file__).resolve().parents[1] / "ci"), *sys.path]):
+            import product_reuse
+            new = {**RECORD, "artifactId": RECORD["artifactId"] + 1, "issuerSha": "d" * 40}
+            value = {**APPROVAL, "activeVerifier": new["issuerSha"], "qualifications": [RECORD, new]}
+            before = copy.deepcopy(value)
+            for selector, expected in ((None, new), (RECORD["artifactId"], RECORD)):
+                with patch.object(product_reuse, "api_json", side_effect=ValueError("observation boundary")) as observed:
+                    with self.assertRaisesRegex(ValueError, "observation boundary"):
+                        consumer.restore(Path("."), Path("unused"), value, selector, "test-only")
+                    self.assertTrue(observed.call_args.args[0].endswith(f"/artifacts/{expected['artifactId']}"))
+            self.assertEqual(before, value)
+            with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
+                consumer.restore(Path("."), Path("unused"), {**value, "qualifications": [new, new]}, None, "test-only")
+
     def test_composite_uses_protected_root_and_rejects_modified_acquisition(self):
         root = Path(__file__).resolve().parents[1]
         value = {**APPROVAL}
@@ -133,7 +151,7 @@ class AcquisitionTests(unittest.TestCase):
                 file = root / name; file.write_bytes(file.read_bytes() + b"\n# acquisition-only caller change\n")
             result = consumer.snapshot(root, APPROVAL, work)
             self.assertEqual(result["productPhasesOwned"], 0)
-            self.assertEqual(len(result["overlaidControlFiles"]), 6)
+            self.assertEqual(len(result["overlaidControlFiles"]), 7)
             self.assertEqual(consumer.git(root, "rev-parse", "HEAD"), before)
             self.assertEqual(consumer.git(root, "diff", "--name-only"), b"")
             self.assertTrue(all((work / "compiled-plumbing" / name).is_file() for name in consumer.OVERLAY))

@@ -20,6 +20,7 @@ OVERLAY = frozenset({
     ".github/actions/restore-reuse-qualification/action.yml",
     ".github/workflows/product-validation.yml",
     ".github/workflows/sdk-core-validation.yml",
+    ".github/workflows/ci.yml",
 })
 SUFFIXES = {".py", ".json", ".yml", ".yaml", ".sh", ".js", ".mjs"}
 IGNORED = {"tests", "__pycache__", "node_modules"}
@@ -167,7 +168,9 @@ def restore(root, work, value, artifact_id, token):
     import product_reuse as products
     import reuse_qualification as qualification
     from products.inventory import sha256_file, load_canonical_json_bytes
-    records = [r for r in value["qualifications"] if artifact_id is None or r["artifactId"] == artifact_id]
+    records = [r for r in value["qualifications"]
+               if (r["issuerSha"] == value["activeVerifier"] if artifact_id is None
+                   else r["artifactId"] == artifact_id)]
     if len(records) != 1:
         raise ValueError("Retained qualification authority is missing or ambiguous")
     record = records[0]
