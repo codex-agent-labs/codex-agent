@@ -157,10 +157,10 @@ def qualify_candidate(arguments, artifact, *, trusted_workflow_sha, repository_r
         validate_receipt(receipt_path, original_plan, original_lane, lane,
             repository_root=original_repository, runner=parse_mapping(arguments.runner),
             toolchain=parse_mapping(arguments.toolchain))
-        evidence = private / "native-evidence"
-        evidence.mkdir()
+        # Qualification retains the original files; only phase admission needs
+        # a second compiler-input directory. Run all content checks in place.
         _, original_producer = _native_lane_content(original_plan, producer, lane,
-            original_lane, evidence, original_repository)
+            original_lane, None, original_repository)
         if original_producer != producer:
             raise ValueError("Qualification requires an original upload, not a transport wrapper")
         sources = compatible_source_inventories(repository, producer["commit"],

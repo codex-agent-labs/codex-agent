@@ -158,7 +158,8 @@ def _native_lane_content(plan, producer, lane, captured, evidence, root):
             if (type(proof) is not dict or proof.get("candidateCommit") != original_producer["commit"]
                     or proof.get("candidateTree") != original_producer["tree"]):
                 raise ValueError("Apple native proof differs from its original producer")
-        (evidence / destination).write_bytes(contents)
+        if evidence is not None:
+            (evidence / destination).write_bytes(contents)
     return receipt, original_producer
 
 

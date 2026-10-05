@@ -98,6 +98,7 @@ class ApplePrerequisiteQualificationTest(unittest.TestCase):
             self.assertEqual({"os": "macOS"}, receipt_gate.call_args.kwargs["runner"])
             self.assertEqual({"rustc": "pinned"}, receipt_gate.call_args.kwargs["toolchain"])
             content_gate.assert_called_once()
+            self.assertIsNone(content_gate.call_args.args[4])
             self.assertEqual(original_receipt, (output / "lane/lane-receipt.json").read_bytes())
             self.assertEqual(b"original immutable upload", (output / "original-upload.zip").read_bytes())
             self.assertEqual(producer, result["originalProducer"])
