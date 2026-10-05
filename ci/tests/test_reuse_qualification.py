@@ -20,6 +20,27 @@ adapter, TARGET = fixture.adapter, fixture.TARGET
 
 
 class ReuseQualificationTest(unittest.TestCase):
+    def test_aggregate_metadata_phase_is_distinct_from_signed_handoff(self):
+        from ci.tests.test_products import phase_receipt
+        from products.receipt import compute_build_key
+        receipt = phase_receipt()
+        receipt.update(product="runtime", component="runtime-aggregate", phase="metadata", target="aggregate")
+        identity = {key: receipt[key] for key in ("product", "component", "phase", "target")}
+        receipt["buildKey"] = compute_build_key(**identity, inputs=receipt["inputs"])
+        digest = sha256_bytes(b"fixture")
+        value = {"schemaVersion": 1, "sourceCommit": "a" * 40,
+                 "verifierPolicySha256": digest, "originals": [{
+                     "identity": {"policy": digest, "locator": {
+                         "instance": identity, "workflowSha": "b" * 40, "artifact": {}, "job": {}}},
+                     "receipt": receipt, "receiptSha256": sha256_bytes(canonical_json_bytes(receipt)),
+                     "objectSha256": digest, "originalFiles": [{
+                         "relativePath": "shard/phase-receipt.json", "bytes": 7, "sha256": digest}]}]}
+        self.assertEqual(value, qualification.validate(value))
+        with patch("products.verified_evidence.runtime_original_cache", return_value=object()), \
+                self.assertRaisesRegex(ValueError, "aggregate signature admission"):
+            qualification.export_originals([{"kind": "aggregate"}], Path("unused"), plan={},
+                producer={}, source_commit="a" * 40, trusted_workflow_sha="b" * 40, token="fixture")
+
     def test_native_authority_pins_and_exact_original_bindings(self):
         case = fixture.RuntimeOriginalCiTest()
         case.setUp()

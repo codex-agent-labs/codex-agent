@@ -73,7 +73,9 @@ def validate(value):
                                      "Qualified original locator")
         _commit(locator["workflowSha"])
         receipt = validate_phase_receipt(record["receipt"])
-        if receipt["product"] != "runtime" or receipt["target"] == "aggregate":
+        # Aggregate metadata is also an original phase object. The distinct
+        # signed release handoff remains outside export_originals' phase gate.
+        if receipt["product"] != "runtime":
             raise ValueError("Qualification is limited to original Runtime phases")
         if locator["instance"] != {k: receipt[k] for k in ("product", "component", "phase", "target")}:
             raise ValueError("Qualification changes its original phase")
