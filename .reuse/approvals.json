@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "activeVerifier": "48599662ff54838c3383b1e97963ed6eb8d72cdf",
+  "activeVerifier": "0a3b24e4852710316f5f366c002429280ea913dd",
   "approvedVerifiers": [
     "a4279049275ddbb5d932859df56fbc14b203b046",
     "59ae7758130bd8662a292d85dce88d18cae1e4ef",
@@ -11,7 +11,9 @@
     "26b20fa33a30abf3b5af5556a049ee3a53968b98",
     "48599662ff54838c3383b1e97963ed6eb8d72cdf",
     "9232c53abcb721fd7d9180778e177241a2a2b8a5",
-    "64773a644fc1a3ef9506712b8c28a14b79725155"
+    "64773a644fc1a3ef9506712b8c28a14b79725155",
+    "0a3b24e4852710316f5f366c002429280ea913dd",
+    "10a9b79b3e4de4bdd3e0173967e31c45c2063ed2"
   ],
   "qualifications": [
     {
@@ -77,6 +79,14 @@
       "runAttempt": 1,
       "issuerSha": "48599662ff54838c3383b1e97963ed6eb8d72cdf",
       "qualificationSha256": "sha256:78449ff8d5e5b9deb120ab1c41b20e07706dfbdaf9f2599d2cbdfb33fad4cbce"
+    },
+    {
+      "artifactId": 11437696140,
+      "artifactSha256": "sha256:e439e468271200fd6c18c2272756e1d30ca289381074693697d8a56a523d1811",
+      "runId": 37511582346,
+      "runAttempt": 1,
+      "issuerSha": "0a3b24e4852710316f5f366c002429280ea913dd",
+      "qualificationSha256": "sha256:de9cd578c53b9481a6b2c0fcc69f4c8fa77c663185172f740ab8b67cec2c77d7"
     }
   ]
 }
