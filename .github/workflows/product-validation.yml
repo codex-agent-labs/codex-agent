@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       trustedWorkflowSha:
-        description: Legacy immutable caller identity; protected callers derive native publisher and approved source
+        description: Deprecated and ignored; native protected publication owns publisher and source identities
         required: false
         default: ''
         type: string
@@ -209,8 +209,8 @@ jobs:
     needs: dispatch-authorization
     runs-on: ubuntu-24.04
     outputs:
-      publisher_sha: ${{ steps.publication.outputs.publisher-sha || inputs.trustedWorkflowSha }}
-      source_sha: ${{ steps.publication.outputs.source-sha || inputs.trustedWorkflowSha }}
+      publisher_sha: ${{ steps.publication.outputs.publisher-sha }}
+      source_sha: ${{ steps.publication.outputs.source-sha }}
       merge_ready: ${{ steps.impact.outputs.merge_ready }}
       event_authorized: ${{ steps.event-authorization.outputs.authorized }}
       remote_build_authorized: ${{ steps.impact.outputs.remote_build_authorized }}
@@ -252,7 +252,6 @@ jobs:
       tooling_transport_producer: ${{ steps.product-reuse.outputs.tooling_transport_producer }}
     steps:
       - id: publication
-        if: inputs.trustedWorkflowSha == ''
         uses: codex-agent-labs/codex-agent/.github/actions/resolve-product-publication@reuse-authority
         with:
           native-workflow-sha: ${{ fromJSON(toJSON(job)).workflow_sha }}
@@ -311,7 +310,7 @@ jobs:
         if: steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' && steps.validation-reuse.outputs.reused != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha || inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}
         run: |
           java_executable=$(readlink -f "$JAVA_HOME_17_X64/bin/java")
           test -f "$java_executable"
