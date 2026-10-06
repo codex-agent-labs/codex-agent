@@ -23,6 +23,17 @@ SELECTOR = "ci/products/selection.py"
 
 
 class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
+    def test_current_full_caller_preserves_historical_transport_assertions(self):
+        root = Path(__file__).resolve().parents[2]
+        caller = (root / '.github/workflows/ci.yml').read_bytes()
+        self.assertIn(b'trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}', caller)
+        self.assertEqual(caller, recovery._activated_ci(caller, "b" * 40))
+        for name in (b'trustedWorkflowSha', b'trustedSourceSha'):
+            invalid = caller.replace(b'      sdkRecoveryOnly: true\n',
+                b'      sdkRecoveryOnly: true\n      ' + name + b': ' + b'a' * 40 + b'\n')
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                recovery._activated_ci(invalid, "b" * 40)
+
     def test_protected_caller_is_hash_free_and_cannot_choose_source(self):
         source = (b"    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@"
                   + b"a" * 40 + b"\n      trustedWorkflowSha: " + b"a" * 40 + b"\n")

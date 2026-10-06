@@ -154,20 +154,25 @@ def _blob(root, revision, path):
 def _activated_ci(original, sha):
     """Exact protected caller transition; source identity is resolved externally."""
     require_oid(sha, "Reviewed recovery source")
+    jobs = list(re.finditer(rb"(?ms)^  product-validation:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)", original))
+    if len(jobs) > 1 or not jobs and re.search(rb"^  [a-z][a-z0-9-]*:", original, re.MULTILINE):
+        raise ValueError("Recovery caller must have exactly one product-validation job")
+    start, end = jobs[0].span() if jobs else (0, len(original))
+    caller = original[start:end]
     prefix = b"    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@"
     pattern = re.compile(b"^" + re.escape(prefix) + b"(?:[0-9a-f]{40}|reuse-authority)$", re.MULTILINE)
-    if len(pattern.findall(original)) != 1:
+    if len(pattern.findall(caller)) != 1:
         raise ValueError("Recovery caller must have exactly one protected workflow reference")
-    result = pattern.sub(lambda match: prefix + b"reuse-authority", original)
+    result = pattern.sub(lambda match: prefix + b"reuse-authority", caller)
     source = re.compile(rb"^      trustedWorkflowSha: [0-9a-f]{40}\n", re.MULTILINE)
     references = source.findall(result)
     source_fields = re.findall(rb"^      trustedWorkflowSha:.*$", result, re.MULTILINE)
     if (len(source_fields) != len(references) or len(references) > 1
-            or references and prefix + b"reuse-authority" in original
+            or references and prefix + b"reuse-authority" in caller
             or re.search(rb"^      trustedSourceSha:", result, re.MULTILINE)):
         raise ValueError("Protected recovery caller cannot supply workflow source identity")
     result = source.sub(b"", result)
-    return result
+    return original[:start] + result + original[end:]
 
 
 def _reviewed_scope(trusted, candidate, sha):

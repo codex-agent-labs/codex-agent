@@ -161,6 +161,15 @@ class ContractProducerRunTest(unittest.TestCase):
 
 
     def test_caller_pins_each_child_workflow_for_mixed_original_phases(self):
+        workflow = 'codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@' + self.pin
+        stable = {'path': workflow.split('@', 1)[0] + '@reuse-authority',
+                  'ref': 'refs/heads/reuse-authority', 'sha': self.pin}
+        product_reuse._require_ci_workflow_reference({'referenced_workflows': [stable]}, workflow, self.pin)
+        for references in ([{**stable, 'sha': 'f' * 40}], [{**stable, 'ref': 'refs/heads/main'}],
+                           [{**stable, 'path': stable['path'].replace('@reuse-authority', '@main')}],
+                           [{k: v for k, v in stable.items() if k != 'ref'}], [stable, stable]):
+            with self.subTest(references=references), self.assertRaises(ValueError):
+                product_reuse._require_ci_workflow_reference({'referenced_workflows': references}, workflow, self.pin)
         new_pin = "d" * 40
         new_path = ".github/workflows/contract-validation.yml"
         new_job = "contract-validation / contract-continuation"

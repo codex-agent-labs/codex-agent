@@ -489,8 +489,11 @@ def _require_ci_workflow_reference(run, workflow, sha):
     selected = [value for value in references if isinstance(value, dict)
                 and isinstance(value.get("path"), str)
                 and value["path"].split("@", 1)[0] == workflow.split("@", 1)[0]]
-    if (len(selected) != 1 or selected[0].get("path") != workflow
-            or selected[0].get("sha") != sha):
+    protected_path = workflow.split("@", 1)[0] + "@reuse-authority"
+    if (len(selected) != 1 or selected[0].get("sha") != sha
+            or not (selected[0].get("path") == workflow
+                    or selected[0].get("path") == protected_path
+                    and selected[0].get("ref") == "refs/heads/reuse-authority")):
         raise ValueError("Contract original CI attempt lacks the caller-pinned workflow")
 
 
