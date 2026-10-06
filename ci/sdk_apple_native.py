@@ -192,7 +192,7 @@ def _authenticate_native_transport_original(
         toolchain=[f"{key}={value}" for key, value in receipt["toolchain"].items()
                    if key != "validationActions"])
     with tempfile.TemporaryDirectory(prefix="sdk-native-original-admission-") as temporary:
-        output = Path(temporary) / "original"
+        output = Path(temporary).resolve() / "original"
         qualified = helper.qualify_candidate(arguments, selected[0],
             trusted_workflow_sha=trusted_workflow_sha, repository_root=root, output=output)
         if qualified["originalProducer"] != original_producer:

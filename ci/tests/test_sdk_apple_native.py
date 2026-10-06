@@ -1,7 +1,7 @@
 """Transport tests for fresh Apple native inputs; Kotlin owns semantic proof."""
 
 from argparse import Namespace
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 import hashlib
 import io
@@ -672,6 +672,30 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
                         CI_ROOT.parent / ".github/actions/run-ci-lane/sdk_native_qualification.py")
                     loader.exec_module.assert_called_once()
                     qualifier.assert_called_once()
+
+    def test_original_native_authentication_resolves_trusted_temporary_alias(self):
+        lane = "ios-rust-device"
+        artifact = {"id": 99, "name": f"codex-agent-ci-{lane}-{self.producer['tree']}",
+                    "expired": False, "digest": "sha256:" + "e" * 64}
+        receipt = json.loads((self.lanes[lane] / "lane-receipt.json").read_bytes())
+        temporary = self.root / "original-authentication-temp"
+        temporary.mkdir()
+        alias = self.root / "temporary-alias"
+        alias.symlink_to(temporary, target_is_directory=True)
+
+        def qualify(arguments, selected, **kwargs):
+            sdk_apple_native.snapshot_regular_tree(
+                self.lanes[lane], kwargs["output"] / "lane", allow_empty=True)
+            self.assertEqual(temporary / "original", kwargs["output"])
+            return {"originalProducer": self.producer}
+
+        with mock.patch.object(sdk_apple_native.product_reuse, "paginated_items", return_value=[artifact]), \
+                mock.patch.object(sdk_apple_native.tempfile, "TemporaryDirectory",
+                                  return_value=nullcontext(str(alias))), \
+                original_qualification_callable(qualify):
+            sdk_apple_native._authenticate_native_transport_original(
+                self.plan_path, receipt, self.producer, lane, self.lanes[lane],
+                root=self.root, token=self.token, trusted_workflow_sha=self.pin)
 
     def test_malformed_transport_chain_and_cross_paired_proof_reject(self) -> None:
         lane = "ios-native-tests"
