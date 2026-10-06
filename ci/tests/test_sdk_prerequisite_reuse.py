@@ -1,7 +1,9 @@
 """Synthetic archive/API composition checks, not SDK execution evidence."""
 from argparse import Namespace
+from contextlib import redirect_stderr
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -184,10 +186,17 @@ class SdkPrerequisiteReuseTest(unittest.TestCase):
                     (output / 'original-receipt.json').write_bytes(original_receipt)
                     return {'semanticAdmissionRequired': True}
                 qualified = mock.Mock(side_effect=qualify)
+                diagnostic = io.StringIO()
                 with mock.patch.object(helper, '_legacy_module', return_value=legacy), \
                         mock.patch.object(helper, '_qualification_module',
-                                          return_value=SimpleNamespace(qualify_candidate=qualified)):
+                                          return_value=SimpleNamespace(qualify_candidate=qualified)), \
+                        redirect_stderr(diagnostic):
                     full, _, _ = helper.restore_both(arguments)
+                if case == 'rejected':
+                    self.assertIn('SDK prerequisite qualification rejected: original job authentication rejected',
+                                  diagnostic.getvalue())
+                else:
+                    self.assertEqual('', diagnostic.getvalue())
                 downloaded.assert_called_once()
                 self.assertEqual(case == 'accepted', full['reused'])
                 self.assertEqual(1 if case in ('accepted', 'rejected') else 0, qualified.call_count)

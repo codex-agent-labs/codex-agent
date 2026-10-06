@@ -79,8 +79,9 @@ def restore_both(arguments):
                     qualification = _qualification_module().qualify_candidate(
                         arguments, current, trusted_workflow_sha=workflow,
                         repository_root=ROOT, output=output, archive_bytes=current_body)
-                except (OSError, ValueError, json.JSONDecodeError, KeyError):
-                    pass  # Rejected candidates retain the original fail-closed lookup path.
+                except (OSError, ValueError, json.JSONDecodeError, KeyError) as qualification_error:
+                    print(f'SDK prerequisite qualification rejected: {qualification_error}', file=sys.stderr)
+                    # Rejected candidates retain the original fail-closed lookup path.
                 else:
                     # Only this disposable transport copy receives current inventories.
                     # The exact original archive/receipt remain immutable in output.

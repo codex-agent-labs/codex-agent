@@ -4,6 +4,7 @@ from contextlib import ExitStack
 import importlib.util
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -15,6 +16,48 @@ SPEC.loader.exec_module(helper)
 
 
 class ApplePrerequisiteQualificationTest(unittest.TestCase):
+    def test_shallow_original_acquisition_preserves_checkout_and_checks_tree(self):
+        # Real local Git objects; official transport substituted, not hosted proof.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, checkout = root / "source", root / "checkout"
+            def git(path, *arguments):
+                return subprocess.check_output(["git", "-C", str(path), *arguments],
+                                               stderr=subprocess.PIPE).decode().strip()
+            subprocess.run(["git", "init", "--quiet", str(source)], check=True)
+            (source / "ci/lanes").mkdir(parents=True)
+            (source / "ci/lanes/fixture.json").write_bytes(b"{}\n")
+            git(source, "add", "ci/lanes/fixture.json")
+            for _ in range(2):
+                git(source, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+                    "commit", "--allow-empty", "--quiet", "-m", "fixture")
+            current, original = git(source, "rev-parse", "HEAD"), git(source, "rev-parse", "HEAD~1")
+            subprocess.run(["git", "clone", "--quiet", "--no-checkout", "--depth=1",
+                            source.as_uri(), str(checkout)], check=True)
+            producer = {"repository": "codex-agent-labs/codex-agent", "commit": original,
+                        "tree": git(source, "rev-parse", original + "^{tree}")}
+            with self.assertRaisesRegex(ValueError, "could not capture"):
+                helper._private_original_repository(checkout, root / "before", original, current)
+            run = subprocess.run
+            downloads = []
+            def transport(command, **kwargs):
+                if "fetch" not in command:
+                    return run(command, **kwargs)
+                self.assertEqual(["--no-tags", "--depth=1",
+                    "https://github.com/codex-agent-labs/codex-agent.git", original], command[-4:])
+                downloads.append(command)
+                return run([*command[:-2], source.as_uri(), original], **kwargs)
+            with patch.object(helper.subprocess, "run", side_effect=transport):
+                helper._acquire_original_revision(checkout, producer)
+                helper._acquire_original_revision(checkout, producer)
+                with self.assertRaisesRegex(ValueError, "tree differs"):
+                    helper._acquire_original_revision(checkout, {**producer, "tree": "f" * 40})
+            self.assertEqual(1, len(downloads))
+            self.assertEqual(current, git(checkout, "rev-parse", "HEAD"))
+            replay = helper._private_original_repository(checkout, root / "after", original, current)
+            self.assertEqual(original, git(replay, "rev-parse", "HEAD"))
+            self.assertEqual(b"{}\n", (replay / "ci/lanes/fixture.json").read_bytes())
+
     def test_complete_registered_inputs_and_test_inputs_are_required(self):
         inventory = [{"relativePath": "native/input", "bytes": 1, "sha256": "sha256:" + "1" * 64}]
         with patch.object(helper, "phase_git_inventory", return_value=inventory) as lookup:
@@ -78,6 +121,7 @@ class ApplePrerequisiteQualificationTest(unittest.TestCase):
             control("paginated_items", return_value=[])
             mock("_original_upload", return_value=({"id": 8}, b"original plan archive"))
             mock("_private_original_repository", return_value=root)
+            acquired = mock("_acquire_original_revision")
             receipt_gate = mock("validate_receipt", return_value={})
             content_gate = mock("_native_lane_content", return_value=({}, producer))
             mock("compatible_source_inventories", return_value=[{"inventorySha256": "sha256:" + "2" * 64}],
@@ -94,6 +138,7 @@ class ApplePrerequisiteQualificationTest(unittest.TestCase):
             self.assertEqual(0 if retained_body else 1, downloaded.call_count)
             observe.assert_called_once()
             window.assert_called_once()
+            acquired.assert_called_once_with(root, producer)
             receipt_gate.assert_called_once()
             self.assertEqual({"os": "macOS"}, receipt_gate.call_args.kwargs["runner"])
             self.assertEqual({"rustc": "pinned"}, receipt_gate.call_args.kwargs["toolchain"])

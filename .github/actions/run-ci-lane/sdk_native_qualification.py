@@ -5,6 +5,7 @@ caller must still run the existing native compiler/content semantic gate.
 """
 from pathlib import Path
 import os
+import subprocess
 import sys
 import tempfile
 
@@ -26,6 +27,25 @@ from products.selection import phase_git_inventory
 
 # Original SDK caller already reviewed independently; not a new Runtime policy.
 _ORIGINAL_SDK_WORKFLOW_SHA = "1f1e15b374ae906008bae784095654802366d63b"
+
+
+def _acquire_original_revision(repository, producer):
+    """Acquire missing source objects only after original CI authentication."""
+    if producer["repository"] != "codex-agent-labs/codex-agent":
+        raise ValueError("Apple original source repository differs")
+    revision = producer["commit"]
+    try:
+        tree = product_reuse._git_value(repository, "--no-replace-objects", "rev-parse", revision + "^{tree}")
+    except ValueError:
+        try:
+            subprocess.run(["git", "--no-replace-objects", "-C", str(repository), "fetch",
+                "--no-tags", "--depth=1", "https://github.com/codex-agent-labs/codex-agent.git", revision],
+                check=True, capture_output=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ValueError("Apple authenticated original source acquisition failed") from error
+        tree = product_reuse._git_value(repository, "--no-replace-objects", "rev-parse", revision + "^{tree}")
+    if tree != producer["tree"]:
+        raise ValueError("Apple original Git tree differs from authenticated producer")
 
 
 def _original_workflow(run, current):
@@ -145,6 +165,7 @@ def qualify_candidate(arguments, artifact, *, trusted_workflow_sha, repository_r
         plan_archive = capture / "original-plan-upload.zip"
         plan_archive.write_bytes(plan_raw)
         _extract(plan_archive, capture / "plan")
+        _acquire_original_revision(repository, producer)
         original_repository = _private_original_repository(repository,
             private / "repository", producer["commit"], plan["validationCommit"])
         original_plan = capture / "plan/impact-plan.json"
