@@ -23,6 +23,20 @@ SELECTOR = "ci/products/selection.py"
 
 
 class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
+    def test_protected_caller_is_hash_free_and_cannot_choose_source(self):
+        source = (b"    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@"
+                  + b"a" * 40 + b"\n      trustedWorkflowSha: " + b"a" * 40 + b"\n")
+        expected = b"    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority\n"
+        self.assertEqual(expected, recovery._activated_ci(source, "b" * 40))
+        self.assertEqual(expected, recovery._activated_ci(expected, "c" * 40))
+        for invalid in (source + source, expected + b"      trustedWorkflowSha: " + b"a" * 40 + b"\n",
+                        expected + b"      trustedWorkflowSha: ${{ inputs.sha }}\n",
+                        expected + b"      trustedSourceSha: " + b"a" * 40 + b"\n",
+                        expected.replace(b"reuse-authority", b"main"),
+                        expected.replace(b"reuse-authority", b"${{ inputs.sha }}")):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                recovery._activated_ci(invalid, "b" * 40)
+
     def test_scoped_recovery_cannot_pass_the_final_merge_gate(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / '.github/workflows/product-validation.yml').read_text()
@@ -166,7 +180,8 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
             "commit-tree", tree, "-p", self.base, "-p", self.activation, "-m", "synthetic tested merge").strip()
         self.git(self.candidate, "checkout", "--quiet", "--detach", self.merge)
 
-    def verify(self, *, event=None, environment=None, job=None, run=None):
+    def verify(self, *, event=None, environment=None, job=None, run=None,
+               publisher=None, source=None):
         self.event_path.write_text(json.dumps(self.event if event is None else event), encoding="utf-8")
         old_run = self.run if run is None else run
 
@@ -180,8 +195,17 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         with mock.patch.object(recovery.products, "api_json", side_effect=api), \
                 mock.patch.object(recovery.products, "paginated_items",
                     return_value=[self.job if job is None else job]):
-            return recovery.verify_recovery_acceptance(self.candidate, self.reviewed,
-                token="synthetic-token", environ=self.environment if environment is None else environment)
+            return recovery.verify_recovery_acceptance(self.candidate, publisher or self.reviewed,
+                token="synthetic-token", environ=self.environment if environment is None else environment,
+                trusted_source_sha=source)
+
+    def test_native_publisher_is_not_substituted_for_approved_source(self):
+        result = self.verify(publisher="e" * 40, source=self.reviewed)
+        self.assertEqual("e" * 40, result["executing_workflow_sha"])
+        self.assertEqual(self.reviewed, result["reviewed_source_sha"])
+        self.assertFalse(result["full_acceptance_current"])
+        with self.assertRaisesRegex(ValueError, "clean pinned source"):
+            self.verify(publisher="e" * 40, source=self.base)
 
     def change_candidate(self, path, contents):
         self.git(self.candidate, "checkout", "--quiet", "--detach", self.activation)

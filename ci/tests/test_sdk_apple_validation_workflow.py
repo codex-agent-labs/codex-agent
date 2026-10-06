@@ -98,7 +98,7 @@ class SdkAppleValidationWorkflowTest(unittest.TestCase):
                     self.assertIn(flag + ": ${{ needs.sdk-native-result.outputs." + output + " }}", block)
                 self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", block)
                 self.assertIn("sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}", block)
-                self.assertIn("trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}", block)
+                self.assertIn("trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}", block)
                 self.assertLess(job.index("uses: ./.github/actions/prepare-sdk-apple-policy"),
                                 job.index("uses: ./.github/actions/" + action))
                 if name != "sdk-ios-validation":
@@ -110,13 +110,13 @@ class SdkAppleValidationWorkflowTest(unittest.TestCase):
         self.assertIn("target: ${{ matrix.target }}", worker)
         self.assertIn("build-key: ${{ matrix.buildKey }}", worker)
 
-    def test_signer_uses_same_fixed_reviewed_source_and_separate_candidate(self):
+    def test_signer_uses_approved_source_distinct_from_publisher_and_candidate(self):
         job = self.job("sdk-apple-validation-attestation")
         self.assertIn("environment: product-attestation", job)
         self.assertIn("needs.workflow-lint.result == 'success'", self.condition(job))
-        pin = re.search(r"(?m)^          trusted-source-sha: ([0-9a-f]{40})$", job)
-        self.assertIsNotNone(pin)
-        self.assertIn("ref: " + pin[1] + "\n          path: trusted-source", job)
+        self.assertIn("trusted-source-sha: ${{ needs.plan.outputs.source_sha }}", job)
+        self.assertIn("ref: ${{ needs.plan.outputs.source_sha }}\n          path: trusted-source", job)
+        self.assertIn("trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}", job)
         self.assertIn("repository: codex-agent-labs/codex-agent", job)
         self.assertIn("uses: ./trusted-source/.github/actions/attest-sdk-apple-validation", job)
         self.assertIn("ref: ${{ needs.plan.outputs.validation_commit }}\n          path: candidate-source", job)

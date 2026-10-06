@@ -63,7 +63,7 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
         checkout = re.search(r"uses: actions/checkout@.*?(?=^      -|\Z)",
                              self.job, re.MULTILINE | re.DOTALL)
         self.assertIsNotNone(checkout)
-        for setting in ("ref: ${{ inputs.trustedWorkflowSha }}", "path: trusted-source", "persist-credentials: false"):
+        for setting in ("ref: ${{ inputs.trustedSourceSha || inputs.trustedWorkflowSha }}", "path: trusted-source", "persist-credentials: false"):
             self.assertIn(setting, checkout.group())
         self.assertNotIn("ref: ${{ needs.plan.outputs.validation_commit }}", self.job)
         self.assertNotRegex(self.job, r"uses: (?:\./|actions/cache(?:/|@)|actions/setup-)")
@@ -96,7 +96,7 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
         self.assertNotIn("uses: actions/download-artifact", self.job)
         self.assertIn("needs.contract-continuation.outputs.contract_version", self.job)
 
-    def test_workflow_pin_is_a_required_caller_literal_checked_by_the_existing_cli(self):
+    def test_native_workflow_identity_and_approved_source_are_distinct(self):
         declaration = re.search(r"^      trustedWorkflowSha:\n(?P<body>.*?)(?=^      \w|^permissions:)",
                                 self.workflow, re.MULTILINE | re.DOTALL)
         self.assertIsNotNone(declaration)
@@ -105,21 +105,12 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
         self.assertIn("TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}", self.job)
         self.assertIn('--trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA"', self.job)
         caller = workflow_job((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"), "product-validation")
-        selected = re.search(r"uses: codex-agent-labs/codex-agent/\.github/workflows/product-validation\.yml@([0-9a-f]{40})", caller)
-        argument = re.search(r"trustedWorkflowSha: ([0-9a-f]{40})", caller)
-        self.assertIsNotNone(selected)
-        self.assertIsNotNone(argument)
-        self.assertEqual(selected.group(1), argument.group(1))
-        pinned = subprocess.run(
-            ["git", "show", f"{selected.group(1)}:.github/workflows/product-validation.yml"],
-            cwd=ROOT, check=True, capture_output=True, text=True,
-        )
-        self.assertEqual(self.parent, pinned.stdout, "Caller must execute the reviewed current parent workflow bytes")
-        child = subprocess.run(
-            ["git", "show", f"{selected.group(1)}:.github/workflows/contract-validation.yml"],
-            cwd=ROOT, check=True, capture_output=True, text=True,
-        )
-        self.assertEqual(self.workflow, child.stdout, "Nested Contract workflow must be part of the reviewed pin")
+        self.assertIn("uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority", caller)
+        self.assertNotIn("trustedWorkflowSha:", caller)
+        parent = workflow_job(self.parent, "contract-validation")
+        self.assertIn("trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}", parent)
+        self.assertIn("trustedSourceSha: ${{ needs.plan.outputs.source_sha }}", parent)
+        self.assertIn("TRUSTED_SOURCE_SHA: ${{ inputs.trustedSourceSha || inputs.trustedWorkflowSha }}", self.job)
 
     def test_complete_external_capture_upload_is_immutable(self):
         uploads = re.findall(r"uses: actions/upload-artifact@.*?(?=^      -|\Z)",

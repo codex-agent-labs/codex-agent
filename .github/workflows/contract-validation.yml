@@ -9,6 +9,10 @@ on:
       trustedWorkflowSha:
         required: true
         type: string
+      trustedSourceSha:
+        required: false
+        default: ''
+        type: string
     outputs:
       contract_binary_result:
         value: ${{ jobs.contract-status.outputs.contract_binary_result }}
@@ -102,13 +106,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: ${{ inputs.trustedWorkflowSha }}
+          ref: ${{ inputs.trustedSourceSha || inputs.trustedWorkflowSha }}
           path: trusted-source
           fetch-depth: 0
           persist-credentials: false
       - name: Import exact producer Git objects without checking out producer code
         env:
-          TRUSTED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_SOURCE_SHA: ${{ inputs.trustedSourceSha || inputs.trustedWorkflowSha }}
           VALIDATION_COMMIT: ${{ fromJSON(inputs.planOutputs).validation_commit }}
           VALIDATION_TREE: ${{ fromJSON(inputs.planOutputs).validation_tree }}
         run: |
@@ -126,7 +130,7 @@ jobs:
           merge-multiple: true
       - name: Authenticate original tooling and establish detached release trust
         env:
-          TRUSTED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_SOURCE_SHA: ${{ inputs.trustedSourceSha || inputs.trustedWorkflowSha }}
           TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
           VALIDATION_TREE: ${{ fromJSON(inputs.planOutputs).validation_tree }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -669,13 +673,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: ${{ inputs.trustedWorkflowSha }}
+          ref: ${{ inputs.trustedSourceSha || inputs.trustedWorkflowSha }}
           path: trusted-source
           persist-credentials: false
       - name: Authenticate original Contract bytes and establish detached release trust
         id: attest
         env:
-          TRUSTED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_SOURCE_SHA: ${{ inputs.trustedSourceSha || inputs.trustedWorkflowSha }}
           TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
           ARTIFACT_ID: ${{ needs.contract-continuation.outputs.attestation_inputs_id }}
           ARTIFACT_SHA256: ${{ needs.contract-continuation.outputs.attestation_inputs_digest }}

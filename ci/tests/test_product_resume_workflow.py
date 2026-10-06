@@ -85,7 +85,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
             "needs.contract-validation.outputs.contract_state_digest",
             "needs.contract-validation.outputs.contract_attestation_artifact_id",
             "needs.contract-validation.outputs.contract_attestation_artifact_digest",
-            "inputs.trustedWorkflowSha",
+            "needs.plan.outputs.publisher_sha",
         ):
             self.assertIn(reference, self.job)
         for flag in ("--plan-artifact-id", "--plan-artifact-sha256", "--state-artifact-id", "--state-artifact-sha256",
@@ -106,7 +106,8 @@ class ProductResumeWorkflowTest(unittest.TestCase):
             self.assertRegex(self.job, re.escape(flag) + r"\s+[\"']?" + re.escape(path) + r"(?:[\"']|\s|$)")
 
     def test_resume_has_no_new_discovery_signing_or_product_execution(self):
-        self.assertNotIn("secrets.", self.job)
+        self.assertEqual(["REUSE_AUTHORITY_READ_TOKEN"], re.findall(r"secrets\.([A-Z_]+)", self.job))
+        self.assertIn("authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}", self.job)
         self.assertNotIn("CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY", self.job)
         self.assertNotIn("ci/contract_release.py", self.job)
         self.assertNotIn("ssh-keygen", self.job)

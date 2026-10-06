@@ -152,16 +152,21 @@ def _blob(root, revision, path):
 
 
 def _activated_ci(original, sha):
-    """Only these two literal substitutions may differ from the reviewed tree."""
-    result = original
-    for prefix in (
-        b"    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@",
-        b"      trustedWorkflowSha: ",
-    ):
-        pattern = re.compile(b"^" + re.escape(prefix) + b"[0-9a-f]{40}$", re.MULTILINE)
-        if len(pattern.findall(result)) != 1:
-            raise ValueError("Recovery caller must have exactly two literal activation pins")
-        result = pattern.sub(lambda match: prefix + sha.encode("ascii"), result)
+    """Exact protected caller transition; source identity is resolved externally."""
+    require_oid(sha, "Reviewed recovery source")
+    prefix = b"    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@"
+    pattern = re.compile(b"^" + re.escape(prefix) + b"(?:[0-9a-f]{40}|reuse-authority)$", re.MULTILINE)
+    if len(pattern.findall(original)) != 1:
+        raise ValueError("Recovery caller must have exactly one protected workflow reference")
+    result = pattern.sub(lambda match: prefix + b"reuse-authority", original)
+    source = re.compile(rb"^      trustedWorkflowSha: [0-9a-f]{40}\n", re.MULTILINE)
+    references = source.findall(result)
+    source_fields = re.findall(rb"^      trustedWorkflowSha:.*$", result, re.MULTILINE)
+    if (len(source_fields) != len(references) or len(references) > 1
+            or references and prefix + b"reuse-authority" in original
+            or re.search(rb"^      trustedSourceSha:", result, re.MULTILINE)):
+        raise ValueError("Protected recovery caller cannot supply workflow source identity")
+    result = source.sub(b"", result)
     return result
 
 
@@ -242,8 +247,12 @@ def _sdk_reviewed_scope(trusted, candidate, sha):
         raise ValueError("SDK recovery candidate caller has changes beyond exact activation pins")
 
 
-def verify_recovery_acceptance(repository_root, trusted_workflow_sha, *, token, environ):
-    sha = require_oid(trusted_workflow_sha, "Reviewed recovery workflow SHA")
+def verify_recovery_acceptance(repository_root, trusted_workflow_sha, *, token, environ,
+                              trusted_source_sha=None):
+    # Both authorities are workflow-owned: native publisher identity and the
+    # independent protected approval's source. Context checks do not grant trust.
+    publisher = require_oid(trusted_workflow_sha, "Executing recovery workflow SHA")
+    sha = require_oid(trusted_source_sha or publisher, "Reviewed recovery source SHA")
     trusted = Path(__file__).resolve().parents[3]
     candidate = Path(repository_root).resolve(strict=True)
     if (candidate == trusted
@@ -283,6 +292,7 @@ def verify_recovery_acceptance(repository_root, trusted_workflow_sha, *, token, 
     if len(jobs) != 1 or jobs[0]["id"] != BASELINE_JOB:
         raise ValueError("Recovery acceptance is not the fixed successful historical job")
     return {"recovery_control_admitted": True, "full_acceptance_current": False,
+        "executing_workflow_sha": publisher, "reviewed_source_sha": sha,
         "historical_acceptance_producer": dict(BASELINE_PRODUCER),
         "historical_acceptance_job_id": BASELINE_JOB,
         "historical_acceptance_workflow_sha": BASELINE_WORKFLOW}
@@ -292,11 +302,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--repository-root", type=Path, required=True)
     parser.add_argument("--trusted-workflow-sha", required=True)
+    parser.add_argument("--trusted-source-sha")
     parser.add_argument("--github-output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         result = verify_recovery_acceptance(args.repository_root, args.trusted_workflow_sha,
-            token=os.environ["GITHUB_TOKEN"], environ=os.environ)
+            token=os.environ["GITHUB_TOKEN"], environ=os.environ,
+            trusted_source_sha=args.trusted_source_sha)
         result["historical_acceptance_producer"] = canonical_json_bytes(
             result["historical_acceptance_producer"]).decode().strip()
         github_output(args.github_output, result)
