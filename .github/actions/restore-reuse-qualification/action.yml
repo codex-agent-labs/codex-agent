@@ -58,4 +58,4 @@ runs:
         source_root=$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)
         selected=()
         if [ -n "$APPROVED_ARTIFACT_ID" ]; then selected=(--artifact-id "$APPROVED_ARTIFACT_ID"); fi
-        python3 -B "$source_root/.reuse/consumer.py" restore --repository-root "$GITHUB_WORKSPACE" --work "$RUNNER_TEMP/approved-reuse" "${selected[@]}"
+        python3 -B "$source_root/.reuse/consumer.py" restore --repository-root "$GITHUB_WORKSPACE" --work "$RUNNER_TEMP/approved-reuse" ${selected[@]+"${selected[@]}"}

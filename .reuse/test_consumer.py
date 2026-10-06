@@ -110,6 +110,24 @@ class AcquisitionTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(output.exists())
 
+    def test_optional_selector_preserves_arguments_under_bash_nounset(self):
+        root = Path(__file__).resolve().parents[1]
+        action = (root / ".github/actions/restore-reuse-qualification/action.yml").read_text()
+        block = action.split("    - name: Fresh original native admission under the approved verifier", 1)[1]
+        script = "\n".join(line[8:] for line in block.split("      run: |\n", 1)[1].splitlines())
+        for selector in ("", "77"):
+            with self.subTest(selector=selector):
+                environment = {**os.environ, "GITHUB_ACTION_PATH": str(root / ".github/actions/restore-reuse-qualification"),
+                    "GITHUB_WORKSPACE": "/consumer with spaces", "RUNNER_TEMP": "/runner temp",
+                    "APPROVED_ARTIFACT_ID": selector}
+                result = subprocess.run(["/bin/bash", "-euc",
+                    'python3() { printf "%s\\n" "$@"; }\n' + script],
+                    env=environment, check=True, capture_output=True, text=True)
+                expected = ["-B", str(root / ".reuse/consumer.py"), "restore", "--repository-root",
+                    environment["GITHUB_WORKSPACE"], "--work", "/runner temp/approved-reuse"]
+                self.assertEqual(expected + (["--artifact-id", selector] if selector else []),
+                                 result.stdout.splitlines())
+
     def test_entrypoint_uses_current_consumer_directory_for_production_commands(self):
         original = Path.cwd()
         with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
