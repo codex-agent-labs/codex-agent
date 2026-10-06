@@ -58,9 +58,9 @@ class RuntimeSigningWorkflowIsolationTest(unittest.TestCase):
                 self.assertIn("ref: ${{ needs.plan.outputs.validation_commit }}", job)
                 self.assertIn("fetch-depth: 0", job)
                 self.assertEqual(2, job.count("persist-credentials: false"))
-                pin = re.search(r"repository: codex-agent-labs/codex-agent\n\s+ref: ([0-9a-f]{40})", job)
-                self.assertIsNotNone(pin)
-                self.assertIn(f"source-sha: {pin.group(1)}", job)
+                self.assertIn("repository: codex-agent-labs/codex-agent\n          ref: ${{ needs.plan.outputs.source_sha }}", job)
+                self.assertIn("source-sha: ${{ needs.plan.outputs.source_sha }}", job)
+                self.assertIn("workflow-sha: ${{ needs.plan.outputs.publisher_sha }}", job)
                 self.assertEqual(1, job.count("uses: ./trusted-source/.github/actions/prepare-runtime-signing"))
                 self.assertIn(f"target: {target}", job)
                 self.assertIn(f"name: codex-agent-runtime-signing-preparation-{target}-"

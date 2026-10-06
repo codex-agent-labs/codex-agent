@@ -2,14 +2,12 @@
 
 from pathlib import Path
 import re
-import subprocess
 import unittest
 
 from ci.tests.test_contract_attestation_workflow import workflow_job
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PIN = "6e2df3aaab85bebb4655d6408323506422daf7cd"
 
 
 class RuntimeNativeAttestationWorkflowTest(unittest.TestCase):
@@ -34,8 +32,9 @@ class RuntimeNativeAttestationWorkflowTest(unittest.TestCase):
 
     def test_executable_pin_and_candidate_data_are_separate(self):
         self.assertEqual(2, self.job.count("uses: actions/checkout@"))
-        self.assertIn(f"ref: {PIN}", self.job)
-        self.assertIn(f"TRUSTED_SOURCE_SHA: {PIN}", self.job)
+        self.assertIn("ref: ${{ needs.plan.outputs.source_sha }}", self.job)
+        self.assertIn("TRUSTED_SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}", self.job)
+        self.assertIn("TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}", self.job)
         for setting in ("path: trusted-source", "path: candidate-source", "fetch-depth: 0",
                         '--repository-root "$GITHUB_WORKSPACE/trusted-source"',
                         '--candidate-root "$GITHUB_WORKSPACE/candidate-source"'):
@@ -43,8 +42,7 @@ class RuntimeNativeAttestationWorkflowTest(unittest.TestCase):
         self.assertEqual(2, self.job.count("persist-credentials: false"))
         self.assertNotRegex(self.job, r"uses: (?:\./|actions/setup-|actions/cache)")
         self.assertNotRegex(self.job, r"(?:\./gradlew|\bcargo\s|\bcmake\s|\bxcodebuild\b|\bpip\s|\bnpm\s)")
-        pinned = subprocess.run(["git", "show", f"{PIN}:ci/runtime_release.py"], cwd=ROOT,
-                                check=True, capture_output=True, text=True).stdout
+        pinned = (ROOT / "ci/runtime_release.py").read_text()
         self.assertIn("def attest_runtime_state_ci(", pinned)
         self.assertIn('selection["releaseHandoffs"]', pinned)
 

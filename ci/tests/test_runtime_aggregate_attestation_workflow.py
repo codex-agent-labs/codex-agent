@@ -66,13 +66,14 @@ class RuntimeAggregateAttestationWorkflowTest(unittest.TestCase):
         self.assertIn("environment: product-attestation", self.job)
         self.assertEqual(2, self.job.count("uses: actions/checkout@"))
         self.assertEqual(2, self.job.count("persist-credentials: false"))
-        for setting in (f"ref: {PIN}", f"TRUSTED_SOURCE_SHA: {PIN}", "path: trusted-source",
+        for setting in ("ref: ${{ needs.plan.outputs.source_sha }}",
+                        "TRUSTED_SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}",
+                        "TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}", "path: trusted-source",
                         "path: candidate-source", "fetch-depth: 0"):
             self.assertIn(setting, self.job)
         self.assertNotRegex(self.job, r"uses: (?:\./|actions/setup-|actions/cache)")
         self.assertNotRegex(self.job, r"(?:\./gradlew|\bcargo\s|\bcmake\s|\bxcodebuild\b|\bpip\s|\bnpm\s)")
-        pinned = subprocess.run(["git", "show", f"{PIN}:ci/runtime_aggregate_release.py"], cwd=ROOT,
-                                check=True, capture_output=True, text=True).stdout
+        pinned = (ROOT / "ci/runtime_aggregate_release.py").read_text()
         self.assertIn("def attest_runtime_aggregate_state_ci(", pinned)
         self.assertIn("materialize_runtime_aggregate_release_evidence(", pinned)
         for field in ("artifact_id", "artifact_digest", "state_wave", "aggregate_key"):
