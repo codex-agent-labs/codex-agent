@@ -204,6 +204,8 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
                        f"/actions/runs/{self.producer['runId']}/attempts/{self.producer['runAttempt']}")
             if url == attempt:
                 return self.run
+            if url == attempt.rsplit("/", 1)[0] + "/1":
+                return {**self.run, "run_attempt": 1}
             if url == (f"https://api.github.com/repos/{self.producer['repository']}"
                        f"/git/commits/{self.producer['commit']}"):
                 return self.observed_commit
@@ -220,11 +222,8 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
                     "/actions/runs/41/artifacts", url)
                 return original_uploads
             self.assertEqual("jobs", key)
-            self.assertEqual(
-                f"https://api.github.com/repos/{self.producer['repository']}"
-                f"/actions/runs/{self.producer['runId']}/attempts/{self.producer['runAttempt']}/jobs",
-                url,
-            )
+            prefix = f"https://api.github.com/repos/{self.producer['repository']}/actions/runs/{self.producer['runId']}/attempts/"
+            self.assertIn(url, (prefix + "1/jobs", prefix + str(self.producer["runAttempt"]) + "/jobs"))
             return self.jobs
 
         def download(artifact, token):
@@ -288,7 +287,7 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
                 )
                 self.assertEqual(set(sdk_apple_native.LANES), set(result["transport"]["artifacts"]))
                 self.assertEqual(result["inventory"], regular_file_inventory(result["directory"]))
-            self.assertEqual((5, 1, 3), tuple(call.call_count for call in calls))
+            self.assertEqual((12, 3, 3), tuple(call.call_count for call in calls))
         finally:
             self.close(patches)
         self.assertEqual(self.plan_before, self.plan_path.read_bytes())
@@ -320,7 +319,7 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
                     self.assertEqual(self.plan_before, (
                         result["captureRoot"] / "plan/impact-plan.json"
                     ).read_bytes())
-                self.assertEqual((5, 1, 3), tuple(call.call_count for call in calls))
+                self.assertEqual((12, 3, 3), tuple(call.call_count for call in calls))
             finally:
                 self.close(patches)
         self.assertGreaterEqual(validate.call_count, 2)
@@ -457,16 +456,76 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
         root = self.lanes[lane]
         receipt_path = root / "lane-receipt.json"
         receipt = json.loads(receipt_path.read_text())
-        receipt["runAttempt"] = 1
+        receipt["runId"] = 99
         receipt_path.write_text(json.dumps(receipt, sort_keys=True) + "\n")
         self._repack(lane)
-        with self.assertRaisesRegex(ValueError, "current upload producer"):
+        with self.assertRaisesRegex(ValueError, "consumer context"):
             context, _, patches = self.invoke()
             try:
                 with context:
                     self.fail("cross-paired Apple native receipt yielded inputs")
             finally:
                 self.close(patches)
+
+    def test_prior_and_mixed_attempt_custodians_preserve_current_consumer(self):
+        # Synthetic original CI composition, not genuine hosted evidence.
+        for mixed in (False, True):
+            with self.subTest(mixed=mixed):
+                for lane in sdk_apple_native.LANES:
+                    path = self.lanes[lane] / "lane-receipt.json"
+                    receipt = json.loads(path.read_bytes())
+                    receipt["runAttempt"] = 2 if mixed and lane == "ios-rust-device" else 1
+                    path.write_text(json.dumps(receipt, sort_keys=True) + "\n")
+                    self._repack(lane)
+                context, _, patches = self.invoke()
+                try:
+                    with context as result:
+                        self.assertEqual(self.producer, result["producer"])
+                        self.assertEqual(self.producer, result["transport"]["captureProducer"])
+                        for lane in sdk_apple_native.LANES:
+                            expected = 2 if mixed and lane == "ios-rust-device" else 1
+                            self.assertEqual(expected, result["originalProducers"][lane]["runAttempt"])
+                            self.assertEqual(self.raw[lane], (result["captureRoot"] / "archives" / f"{lane}.zip").read_bytes())
+                        retained = self.root / f"prior-attempt-retained-{mixed}"
+                        sdk_apple_native.snapshot_regular_tree(result["captureRoot"], retained, allow_empty=True)
+                finally:
+                    self.close(patches)
+                binary_receipt = self.original_binary_receipt()
+                context, _, patches = self.invoke(original_binary_receipt_path=binary_receipt,
+                    environ={"GITHUB_RUN_ID": "unrelated", "GITHUB_RUN_ATTEMPT": "99"})
+                try:
+                    with context as historical:
+                        self.assertEqual(self.producer, historical["producer"])
+                        self.assertEqual(1, historical["originalProducers"]["ios-native-tests"]["runAttempt"])
+                        self.assertEqual(sha256_bytes(binary_receipt.read_bytes()),
+                                         historical["transport"]["binaryReceiptSha256"])
+                finally:
+                    self.close(patches)
+                with sdk_apple_native.verified_retained_sdk_apple_native_inputs(retained,
+                        original_binary_receipt_path=self.original_binary_receipt(),
+                        repository_root=self.root) as replay:
+                    self.assertEqual(self.producer, replay["producer"])
+                    self.assertEqual(1, replay["originalProducers"]["ios-native-tests"]["runAttempt"])
+
+    def test_future_attempt_and_failed_or_ambiguous_original_job_reject(self):
+        lane = "ios-native-tests"
+        for cause in ("future", "failed", "ambiguous"):
+            with self.subTest(cause=cause):
+                path = self.lanes[lane] / "lane-receipt.json"
+                receipt = json.loads(path.read_bytes())
+                receipt["runAttempt"] = 3 if cause == "future" else 1
+                path.write_text(json.dumps(receipt, sort_keys=True) + "\n")
+                self._repack(lane)
+                jobs = self.jobs
+                self.jobs = ([{**job, "conclusion": "failure"} for job in jobs] if cause == "failed"
+                             else jobs * 2 if cause == "ambiguous" else jobs)
+                context, _, patches = self.invoke()
+                try:
+                    with self.assertRaises(ValueError), context:
+                        self.fail("invalid original admitted")
+                finally:
+                    self.close(patches)
+                    self.jobs = jobs
 
     def test_missing_receipt_bound_native_file_rejects(self) -> None:
         lane = "ios-rust-device"
