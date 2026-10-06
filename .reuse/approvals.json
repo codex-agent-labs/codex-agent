@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "activeVerifier": "4e84451a3d3a9bde5c027dad7eca0c53f6f439a4",
-  "approvedVerifiers": ["a4279049275ddbb5d932859df56fbc14b203b046", "59ae7758130bd8662a292d85dce88d18cae1e4ef", "39b9842901c91c61b15660c43db8d6c45bb83593", "b55428780ca52ee600859a75b5eafc40e8e664fa", "4e84451a3d3a9bde5c027dad7eca0c53f6f439a4"],
+  "activeVerifier": "59a36013c451248082b0495bed49cfe192a562d9",
+  "approvedVerifiers": ["a4279049275ddbb5d932859df56fbc14b203b046", "59ae7758130bd8662a292d85dce88d18cae1e4ef", "39b9842901c91c61b15660c43db8d6c45bb83593", "b55428780ca52ee600859a75b5eafc40e8e664fa", "4e84451a3d3a9bde5c027dad7eca0c53f6f439a4", "59a36013c451248082b0495bed49cfe192a562d9"],
   "qualifications": [{
     "artifactId": 11354430915,
     "artifactSha256": "sha256:0a73025ac8b6deac86db5de2be5f6bb443ae00e81c7826fa052f8851dad49aa7",
@@ -37,5 +37,12 @@
     "runAttempt": 1,
     "issuerSha": "4e84451a3d3a9bde5c027dad7eca0c53f6f439a4",
     "qualificationSha256": "sha256:f46f1c930f0bf7130b8cee6d07ad439e6a50524613f516f7fe90b4743c002cfb"
+  }, {
+    "artifactId": 11404373842,
+    "artifactSha256": "sha256:3afb429b4abd4e24f4386c997c9aa796416125fb3b920ef39b0d8515e81f0b9f",
+    "runId": 37445348588,
+    "runAttempt": 1,
+    "issuerSha": "59a36013c451248082b0495bed49cfe192a562d9",
+    "qualificationSha256": "sha256:dff8cfdd9ca0fb922b96d50d54c565550878e598addb5530c2e2ac73266f5501"
   }]
 }
