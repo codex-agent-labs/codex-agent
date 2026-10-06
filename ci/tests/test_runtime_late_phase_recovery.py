@@ -219,12 +219,13 @@ class RuntimeLatePhaseRecoveryTest(unittest.TestCase):
         self.assertEqual(validation["buildKey"], result["matrices"]["runtime"][0]["buildKey"])
         carrier = adapter.verify_carrier(resumed / "reused-carrier", tuple(sorted(
             adapter._identity(row) for row in result["phases"] if row["state"] in {"retained", "reused"})),
-            adapter._consumer(self.plan, environment))
+            adapter._consumer(self.plan, environment), object_root=resumed)
         for phase, instance in (("binary", BINARY), ("package", PACKAGE)):
             record = next(row for row in carrier["objects"] if adapter._identity(row) == instance)
+            object_path = (resumed / record["originalObjectPath"] if "originalObjectPath" in record else
+                resumed / "reused-carrier" / adapter.object_relative_path(record["buildKey"], record["receiptSha256"]))
             stored = adapter.verify_object(
-                resumed / "reused-carrier" / adapter.object_relative_path(
-                    record["buildKey"], record["receiptSha256"]),
+                object_path,
                 build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
                 object_sha256=record["objectSha256"])
             self.assertEqual((originals[phase] / "phase-receipt.json").read_bytes(), stored["receiptBytes"])

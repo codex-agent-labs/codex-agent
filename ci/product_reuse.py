@@ -7290,17 +7290,31 @@ def resume_products(
             require_regular_directory(metadata_discovery, "Discovered metadata evidence carriers")
             _capture_metadata_handoffs(tuple(sorted(metadata_discovery.iterdir())), prepared / "sdk-metadata-evidence")
         snapshot_regular_tree(state_root, prepared / "contract-state", allow_empty=True)
+        original_producer = validate_producer(_canonical_control(
+            prepared / "discovery/producer.json", "Original Contract control producer"))
+        state_producer = validate_producer(_canonical_control(
+            prepared / "contract-state/producer.json", "Original Contract state producer"))
+        current_producer = _consumer(plan, environment)["producer"]
+        if (any(original_producer[field] != current_producer[field]
+                for field in current_producer if field != "runAttempt")
+                or original_producer["runAttempt"] > current_producer["runAttempt"]
+                or state_producer != original_producer):
+            raise ValueError("Original Contract snapshot differs from the current consumer")
+        # Replay original transport under its own consumer; new resume output
+        # below remains bound to the actual current execution environment.
+        contract_environment = {**environment,
+            "GITHUB_RUN_ATTEMPT": str(original_producer["runAttempt"])}
         complete = advance_contract(
             captured_plan, prepared / "discovery", prepared / "contract-state", [],
             private / "replayed-contract", private / "contract-outputs",
-            repository_root=root, environ=environment, sdk_validation_tooling=sdk_validation_tooling,
+            repository_root=root, environ=contract_environment, sdk_validation_tooling=sdk_validation_tooling,
             **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}))
         if complete["fullReuse"] is not True:
             raise ValueError("Product resume requires complete original Contract phases")
         evidence_root = prepared / "authenticated-contract"
         evidence = _capture_completed_contract_handoff(
             captured_plan, prepared / "contract-state", contract_handoff, evidence_root,
-            repository_root=root, environ=environment)
+            repository_root=root, environ=contract_environment)
         contract_request = _wave_control(
             prepared / "discovery/contract-reuse-request.json", "Original Contract request")
         requested = _requested(plan)
@@ -7320,7 +7334,7 @@ def resume_products(
         wave["catalogs"] = _rebase_catalog_paths(contract_request["catalogs"], prepared / "discovery", prepared)
         wave.update(_rebase_native_request(contract_request, prepared / "discovery", prepared))
         initial_objects, original_phases = _completed_contract_objects(
-            plan, prepared / "contract-state", prepared, environment)
+            plan, prepared / "contract-state", prepared, contract_environment)
         wave["availableObjects"] = initial_objects
         ready_plans = {}
 

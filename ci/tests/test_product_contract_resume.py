@@ -152,14 +152,36 @@ class ContractProductResumeTest(unittest.TestCase):
         for path, inventory in self.immutable.items():
             self.assertEqual(inventory, regular_file_inventory(path, allow_empty=True), str(path))
 
-    def resume(self, *, handoff=None):
-        destination = self.scratch / "resumed"
+    def resume(self, *, handoff=None, environ=None, destination=None):
+        destination = self.scratch / "resumed" if destination is None else destination
         with self.control_seams():
             adapter.resume_products(self.plan_path, self.discovery, self.state,
                                     self.handoff if handoff is None else handoff, destination,
                                     self.scratch / "github-output", repository_root=self.repository,
-                                    environ=self.environment)
+                                    environ=self.environment if environ is None else environ)
         return destination
+
+    def test_prior_attempt_contract_snapshot_preserves_originals_and_current_consumer(self):
+        baseline = self.resume(destination=self.scratch / "baseline")
+        current = {**self.environment, "GITHUB_RUN_ATTEMPT": "3"}
+        resumed = self.resume(environ=current)
+        self.assertEqual(adapter._consumer(self.plan, current)["producer"],
+                         load_canonical_json(resumed / "producer.json"))
+        self.assertEqual(load_canonical_json(baseline / "phase-plans/runtime-jvm-binary-jvm.json"),
+                         load_canonical_json(resumed / "phase-plans/runtime-jvm-binary-jvm.json"))
+        request = load_canonical_json(resumed / "reuse-wave-request.json")
+        for record in request["availableObjects"]:
+            original = adapter.verify_object(resumed / record["objectPath"], build_key=record["buildKey"],
+                                             receipt_sha256=record["receiptSha256"], object_sha256=record["objectSha256"])
+            self.assertEqual(self.original_bytes[record["phase"]], original["receiptBytes"])
+            self.assertEqual(self.producer, original["receipt"]["producer"])
+
+    def test_future_attempt_and_different_run_contract_snapshots_reject(self):
+        for field, value in (("GITHUB_RUN_ATTEMPT", "1"), ("GITHUB_RUN_ID", "8")):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "Contract.*consumer"):
+                self.resume(environ={**self.environment, field: value},
+                            destination=self.scratch / field)
+            self.assertFalse((self.scratch / field).exists())
 
     def test_completed_original_contract_unlocks_real_runtime_plan_and_retains_signed_catalog(self):
         resumed = self.resume()
