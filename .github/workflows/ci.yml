@@ -112,9 +112,8 @@ jobs:
       contents: read
       deployments: read
       id-token: write
-    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@1f1e15b374ae906008bae784095654802366d63b
+    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority
     with:
-      trustedWorkflowSha: 1f1e15b374ae906008bae784095654802366d63b
       runtimeRecoveryOnly: false
       sdkRecoveryOnly: true
       runtimeAggregateHandoffRecovery: '{"artifactId":11271945915,"artifactSha256":"sha256:79e7b75470ab73b2ce3b14304bde1efa9da738956a14117e611754914db3529b","originalProducer":{"commit":"db38c174a2db6f02ff6b6e2091e809681d83a4d9","event":"pull_request","pullRequest":31,"repository":"codex-agent-labs/codex-agent","runAttempt":1,"runId":37081083913,"tree":"9e500ae9373416a16f09fb4a264cd0c9c22513e8","workflowPath":".github/workflows/ci.yml"},"trustedWorkflowSha":"cec458a479c0556d39aa6a75b18311500ce66d71"}'
@@ -128,7 +127,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-    uses: codex-agent-labs/codex-agent/.github/workflows/sdk-failed-catalog-custody.yml@1404edc25f96a7c4bac8c4fa057965d95a452b20
+    uses: codex-agent-labs/codex-agent/.github/workflows/sdk-failed-catalog-custody.yml@reuse-authority
     with:
       producerJson: ${{ inputs.producerJson }}
       catalogArtifactId: ${{ inputs.catalogArtifactId }}
@@ -154,7 +153,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-    uses: codex-agent-labs/codex-agent/.github/workflows/runtime-phase10-output-record.yml@dd408a00d0494c2bb7c8fe7086497a68dbd08c7f
+    uses: codex-agent-labs/codex-agent/.github/workflows/runtime-phase10-output-record.yml@reuse-authority
     with:
       attestationJson: ${{ inputs.producerJson }}
     secrets: inherit
@@ -164,7 +163,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-    uses: codex-agent-labs/codex-agent/.github/workflows/contract-phase10-later-record.yml@cf32a63065462deddb147a1a4ddbd01cb752d55e
+    uses: codex-agent-labs/codex-agent/.github/workflows/contract-phase10-later-record.yml@reuse-authority
     with:
       attestationJson: ${{ inputs.producerJson }}
     secrets: inherit
@@ -174,14 +173,14 @@ jobs:
     permissions:
       actions: read
       contents: read
-    uses: codex-agent-labs/codex-agent/.github/workflows/sdk-phase10-later-authority.yml@07b3448d3757a351643d9d87c54446ede386af6c
+    uses: codex-agent-labs/codex-agent/.github/workflows/sdk-phase10-later-authority.yml@reuse-authority
 
   sdk-phase10-record:
     if: github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-record'
     permissions:
       actions: read
       contents: read
-    uses: codex-agent-labs/codex-agent/.github/workflows/sdk-phase10-later-record.yml@c494ef048be1c207a143aec94a6333c4169fc795
+    uses: codex-agent-labs/codex-agent/.github/workflows/sdk-phase10-later-record.yml@reuse-authority
     secrets: inherit
 
   sdk-phase10-maven-sidecars:
@@ -189,7 +188,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-    uses: codex-agent-labs/codex-agent/.github/workflows/sdk-phase10-maven-sidecars.yml@cdf46ce88650c294d5b65233dd12f07325c92332
+    uses: codex-agent-labs/codex-agent/.github/workflows/sdk-phase10-maven-sidecars.yml@reuse-authority
     secrets: inherit
 
   merge-gate:

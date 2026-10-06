@@ -93,12 +93,12 @@ def api(path):
     return decode(result.stdout)
 
 
-def contents(path, revision):
+def contents(path, revision, *, maximum=64 * 1024):
     value = api(f"contents/{path}?ref={commit(revision)}")
     if value.get("type") != "file" or value.get("path") != path or value.get("encoding") != "base64":
         raise ValueError("Approval source member is not a regular immutable file")
     raw = base64.b64decode(value["content"].replace("\n", ""), validate=True)
-    if len(raw) > 64 * 1024:
+    if len(raw) > maximum:
         raise ValueError("Approval source member exceeds bound")
     blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
     if blob != value.get("sha"):
@@ -127,8 +127,59 @@ def resolve(expected=None):
     return {"authorityCommit": revision, "manifestSha256": "sha256:" + hashlib.sha256(raw).hexdigest(), **value}
 
 
+def resolve_publication(expected):
+    """Bind the native protected publisher to exact independently approved source."""
+    approved = resolve(expected)
+    revision = approved["authorityCommit"]
+    raw = contents(".reuse/workflow-publication.json", revision)
+    value = decode(raw)
+    if (set(value) != {"schemaVersion", "sourceSha", "workflows"}
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or commit(value["sourceSha"]) not in approved["approvedVerifiers"]):
+        raise ValueError("Published workflows do not bind the approved executable source")
+    rows = value["workflows"]
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 128:
+        raise ValueError("Published workflow closure is missing or excessive")
+    paths, dependencies = [], set()
+    for row in rows:
+        if set(row) != {"path", "bytes", "sha256"}:
+            raise ValueError("Unexpected published workflow identity")
+        path = row["path"]
+        if not isinstance(path, str) or not re.fullmatch(r"\.github/workflows/[a-z0-9-]+\.yml", path):
+            raise ValueError("Published workflow is outside the fixed source boundary")
+        if type(row["bytes"]) is not int or not 0 < row["bytes"] <= 1024 * 1024:
+            raise ValueError("Published workflow byte length is invalid")
+        digest(row["sha256"])
+        published = contents(path, revision, maximum=1024 * 1024)
+        reviewed = contents(path, value["sourceSha"], maximum=1024 * 1024)
+        if (published != reviewed or len(published) != row["bytes"]
+                or "sha256:" + hashlib.sha256(published).hexdigest() != row["sha256"]):
+            raise ValueError("Published workflow differs from its exact reviewed source")
+        for reference in re.findall(r"^\s*(?:-\s+)?uses:[ \t]*([^\r\n]*)$", published.decode("utf-8"), re.MULTILINE):
+            reference = reference.split("#", 1)[0].strip().strip("\"'")
+            if reference.startswith("./.github/workflows/"):
+                dependencies.add(reference[2:])
+            elif reference.startswith(REPOSITORY + "/.github/workflows/"):
+                member, separator, ref = reference[len(REPOSITORY) + 1:].partition("@")
+                if not separator or ref != BRANCH:
+                    raise ValueError("Published project workflow is not owner-protected")
+                dependencies.add(member)
+        paths.append(path)
+    if paths != sorted(set(paths)) or ".github/workflows/product-validation.yml" not in paths:
+        raise ValueError("Published workflow closure is duplicate, unsorted or missing its entrypoint")
+    if not dependencies <= set(paths):
+        raise ValueError("Published workflow closure omits a required child")
+    protection(api(f"branches/{BRANCH}/protection"))
+    if api(f"branches/{BRANCH}")["commit"]["sha"] != revision:
+        raise ValueError("Workflow publication changed during resolution")
+    return {"publisherSha": revision, "sourceSha": value["sourceSha"],
+            "publicationSha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            "workflows": rows}
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--expected-authority-commit")
+    parser.add_argument("--publication", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(resolve(args.expected_authority_commit), sort_keys=True))
+    print(json.dumps((resolve_publication if args.publication else resolve)(args.expected_authority_commit), sort_keys=True))

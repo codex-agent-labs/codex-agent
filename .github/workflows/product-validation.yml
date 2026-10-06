@@ -4,8 +4,9 @@ on:
   workflow_call:
     inputs:
       trustedWorkflowSha:
-        description: Reviewed SHA matching the caller's literal reusable workflow pin
-        required: true
+        description: Deprecated and ignored; native protected publication owns publisher and source identities
+        required: false
+        default: ''
         type: string
       runtimeRecoveryOnly:
         description: Authenticate historical acceptance and verify reviewed control changes; never satisfy final acceptance
@@ -17,6 +18,11 @@ on:
         required: false
         default: false
         type: boolean
+      reuseQualification:
+        description: Independently approved qualification assertions from the trusted caller, never product-plan or event data
+        required: false
+        default: ''
+        type: string
       runtimeAggregateHandoffRecovery:
         description: Caller-pinned original signed aggregate upload locator; independently authenticate before SDK use
         required: false
@@ -128,7 +134,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: ${{ inputs.trustedWorkflowSha }}
+          ref: ${{ needs.plan.outputs.source_sha }}
           path: recovery-reviewed-source
           fetch-depth: 0
           persist-credentials: false
@@ -136,11 +142,13 @@ jobs:
         if: inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
+          TRUSTED_SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
         run: >-
           python3 -B recovery-reviewed-source/.github/actions/prepare-runtime-signing/recovery_acceptance.py
           --repository-root "$GITHUB_WORKSPACE"
           --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA"
+          --trusted-source-sha "$TRUSTED_SOURCE_SHA"
           --github-output "$RUNNER_TEMP/runtime-recovery-acceptance"
       - name: Verify reviewed recovery controls only
         if: inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly
@@ -201,6 +209,8 @@ jobs:
     needs: dispatch-authorization
     runs-on: ubuntu-24.04
     outputs:
+      publisher_sha: ${{ steps.publication.outputs.publisher-sha }}
+      source_sha: ${{ steps.publication.outputs.source-sha }}
       merge_ready: ${{ steps.impact.outputs.merge_ready }}
       event_authorized: ${{ steps.event-authorization.outputs.authorized }}
       remote_build_authorized: ${{ steps.impact.outputs.remote_build_authorized }}
@@ -241,6 +251,13 @@ jobs:
       tooling_artifact_sha256: ${{ steps.product-reuse.outputs.tooling_artifact_sha256 }}
       tooling_transport_producer: ${{ steps.product-reuse.outputs.tooling_transport_producer }}
     steps:
+      - id: publication
+        uses: codex-agent-labs/codex-agent/.github/actions/resolve-product-publication@reuse-authority
+        with:
+          native-workflow-sha: ${{ fromJSON(toJSON(job)).workflow_sha }}
+          native-workflow-repository: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          native-workflow-path: ${{ fromJSON(toJSON(job)).workflow_file_path }}
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - id: event-authorization
         env:
           EVENT_AUTHORIZED: >-
@@ -293,7 +310,7 @@ jobs:
         if: steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' && steps.validation-reuse.outputs.reused != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}
         run: |
           java_executable=$(readlink -f "$JAVA_HOME_17_X64/bin/java")
           test -f "$java_executable"
@@ -400,7 +417,8 @@ jobs:
     uses: ./.github/workflows/contract-validation.yml
     with:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
-      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
+      trustedSourceSha: ${{ needs.plan.outputs.source_sha }}
     secrets: inherit
 
   contract-phase10-pgp-authority:
@@ -424,7 +442,7 @@ jobs:
         env:
           PROTECTED_SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
           PROTECTED_PGP_KEY_SHA256: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY_SHA256 }}
-          REVIEWED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+          REVIEWED_SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
         run: |
           set -euo pipefail
           [[ "$PROTECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
@@ -443,10 +461,11 @@ jobs:
       needs.contract-validation.result == 'success' &&
       needs.contract-validation.outputs.contract_complete == 'true' &&
       needs.contract-phase10-pgp-authority.result == 'success'
-    uses: codex-agent-labs/codex-agent/.github/workflows/contract-phase10-maven.yml@914cd6234e0543f20deb716a930353c0820b62cc
+    uses: codex-agent-labs/codex-agent/.github/workflows/contract-phase10-maven.yml@reuse-authority
     with:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
-      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
+      trustedSourceSha: ${{ needs.plan.outputs.source_sha }}
       contractComplete: ${{ needs.contract-validation.outputs.contract_complete }}
       contractInputsArtifactId: ${{ needs.contract-validation.outputs.contract_attestation_inputs_artifact_id }}
       contractInputsArtifactSha256: ${{ needs.contract-validation.outputs.contract_attestation_inputs_artifact_sha256 }}
@@ -464,10 +483,10 @@ jobs:
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.contract-phase10-maven.result == 'success'
-    uses: codex-agent-labs/codex-agent/.github/workflows/contract-phase10-output-record.yml@cf32a63065462deddb147a1a4ddbd01cb752d55e
+    uses: codex-agent-labs/codex-agent/.github/workflows/contract-phase10-output-record.yml@reuse-authority
     with:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
-      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
       phase10OutputArtifactId: ${{ needs.contract-phase10-maven.outputs.phase10OutputArtifactId }}
     secrets: inherit
 
@@ -499,6 +518,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
@@ -516,7 +538,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -528,7 +550,7 @@ jobs:
           STATE_ARTIFACT_SHA256: ${{ needs.contract-validation.outputs.contract_state_digest }}
           RELEASE_ARTIFACT_ID: ${{ needs.contract-validation.outputs.contract_attestation_artifact_id }}
           RELEASE_ARTIFACT_SHA256: ${{ needs.contract-validation.outputs.contract_attestation_artifact_digest }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 ci/product_reuse.py capture-product-resume-inputs \
@@ -567,7 +589,7 @@ jobs:
                 --contract-handoff build/product-resume-inputs/release/contract-input \
                 --destination build/product-resume-state \
                 --handoff build/product-resume-transport \
-                --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
+                --sdk-original-workflow-sha "${{ needs.plan.outputs.publisher_sha }}" \
                 --github-output "$GITHUB_OUTPUT" ${tooling[@]+"${tooling[@]}"}
       - name: Require full Runtime reuse before SDK continuation
         if: inputs.sdkRecoveryOnly
@@ -620,7 +642,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -632,7 +654,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.product-resume.outputs.artifact_id }}
           artifact-sha256: ${{ needs.product-resume.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           component: linux-arm64
           phase: binary
           target: linux-arm64
@@ -658,7 +680,7 @@ jobs:
           echo "key_hex=${BUILD_KEY#sha256:}" >> "$GITHUB_OUTPUT"
           python3 -B ci/product_reuse.py execute-runtime-supervisor ${tooling[@]+"${tooling[@]}"} \
             --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
-            --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
+            --sdk-original-workflow-sha "${{ needs.plan.outputs.publisher_sha }}" \
             --expected-build-key "$BUILD_KEY" --destination build/runtime-supervisor
       - id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -725,7 +747,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -741,7 +763,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.product-resume.outputs.artifact_id }}
           artifact-sha256: ${{ needs.product-resume.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           state-wave: '0'
           component: ${{ matrix.component }}
           phase: ${{ matrix.phase }}
@@ -811,7 +833,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -823,7 +845,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.product-resume.outputs.artifact_id }}
           artifact-sha256: ${{ needs.product-resume.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           state-wave: '0'
           wave: '1'
           tree: ${{ needs.plan.outputs.validation_tree }}
@@ -871,7 +893,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -887,7 +909,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.runtime-collect-1.outputs.artifact_id }}
           artifact-sha256: ${{ needs.runtime-collect-1.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           state-wave: '1'
           component: ${{ matrix.component }}
           phase: ${{ matrix.phase }}
@@ -955,7 +977,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -967,7 +989,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.runtime-collect-1.outputs.artifact_id }}
           artifact-sha256: ${{ needs.runtime-collect-1.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           state-wave: '1'
           wave: '2'
           tree: ${{ needs.plan.outputs.validation_tree }}
@@ -1015,7 +1037,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -1031,7 +1053,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.runtime-collect-2.outputs.artifact_id }}
           artifact-sha256: ${{ needs.runtime-collect-2.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           state-wave: '2'
           component: ${{ matrix.component }}
           phase: ${{ matrix.phase }}
@@ -1099,7 +1121,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -1111,7 +1133,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.runtime-collect-2.outputs.artifact_id }}
           artifact-sha256: ${{ needs.runtime-collect-2.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           state-wave: '2'
           wave: '3'
           tree: ${{ needs.plan.outputs.validation_tree }}
@@ -1159,7 +1181,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -1175,7 +1197,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.runtime-collect-3.outputs.artifact_id }}
           artifact-sha256: ${{ needs.runtime-collect-3.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           state-wave: '3'
           component: ${{ matrix.component }}
           phase: ${{ matrix.phase }}
@@ -1243,7 +1265,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -1255,7 +1277,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.runtime-collect-3.outputs.artifact_id }}
           artifact-sha256: ${{ needs.runtime-collect-3.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           state-wave: '3'
           wave: '4'
           tree: ${{ needs.plan.outputs.validation_tree }}
@@ -1290,6 +1312,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -1307,7 +1332,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -1347,7 +1372,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ steps.parent.outputs.artifact_id }}
           artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           state-wave: ${{ steps.parent.outputs.state_wave }}
           continuation: selected
       - name: Require the completed immutable Runtime aggregate for SDK continuation
@@ -1365,7 +1390,7 @@ jobs:
           RECOVERY: ${{ inputs.runtimeNativeHandoffRecovery }}
           SELECTED_RECEIPTS: ${{ steps.captured.outputs.native_receipt_sha256s }}
           PLAN: ${{ steps.captured.outputs.plan-path }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
         run: |
           python3 -B ci/runtime_workflow.py recover-native-handoffs \
             --plan "$PLAN" --recovery-json "$RECOVERY" --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
@@ -1406,7 +1431,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: 6e2df3aaab85bebb4655d6408323506422daf7cd
+          ref: ${{ needs.plan.outputs.source_sha }}
           path: trusted-source
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1424,8 +1449,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
-          source-sha: 6e2df3aaab85bebb4655d6408323506422daf7cd
-          workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          source-sha: ${{ needs.plan.outputs.source_sha }}
+          workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           candidate-root: ${{ github.workspace }}/candidate-source
           plan: ${{ runner.temp }}/runtime-preparation-plan/impact-plan.json
           destination: ${{ runner.temp }}/runtime-signing-preparation
@@ -1474,7 +1499,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: 6e2df3aaab85bebb4655d6408323506422daf7cd
+          ref: ${{ needs.plan.outputs.source_sha }}
           path: trusted-source
           persist-credentials: false
       - name: Check out candidate as inventory data only
@@ -1494,7 +1519,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           TARGET: ${{ matrix.target }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
         run: |
           set -euo pipefail
           python3 -B trusted-source/ci/runtime_preparation_locator.py \
@@ -1504,10 +1529,10 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
       - name: Verify original selected bytes and preserve or establish detached release trust
         env:
-          TRUSTED_SOURCE_SHA: 6e2df3aaab85bebb4655d6408323506422daf7cd
+          TRUSTED_SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
           PREPARATION_ID: ${{ steps.preparation.outputs.artifact_id }}
           PREPARATION_SHA256: ${{ steps.preparation.outputs.artifact_sha256 }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
           ARTIFACT_ID: ${{ needs.runtime-continuation.outputs.artifact_id }}
           ARTIFACT_SHA256: ${{ needs.runtime-continuation.outputs.artifact_digest }}
           STATE_WAVE: ${{ needs.runtime-continuation.outputs.state_wave }}
@@ -1577,7 +1602,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -1589,7 +1614,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.runtime-continuation.outputs.artifact_id }}
           artifact-sha256: ${{ needs.runtime-continuation.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           state-wave: ${{ needs.runtime-continuation.outputs.state_wave }}
           component: runtime-aggregate
           phase: metadata
@@ -1650,7 +1675,7 @@ jobs:
           if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
           python3 -B ci/product_reuse.py execute-runtime-aggregate ${tooling[@]+"${tooling[@]}"} \
             --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
-            --sdk-original-workflow-sha "${{ inputs.trustedWorkflowSha }}" \
+            --sdk-original-workflow-sha "${{ needs.plan.outputs.publisher_sha }}" \
             --expected-build-key "$BUILD_KEY" --variant-trust-root build/runtime-variant-trust \
             --destination build/runtime-aggregate-worker
       - if: always()
@@ -1705,7 +1730,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -1717,7 +1742,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.runtime-continuation.outputs.artifact_id }}
           artifact-sha256: ${{ needs.runtime-continuation.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           state-wave: ${{ needs.runtime-continuation.outputs.state_wave }}
           wave: '5'
           tree: ${{ needs.plan.outputs.validation_tree }}
@@ -1745,6 +1770,9 @@ jobs:
           ref: ${{ needs.plan.outputs.validation_commit }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -1762,7 +1790,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -1811,7 +1839,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ steps.parent.outputs.artifact_id }}
           artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           state-wave: ${{ steps.parent.outputs.state_wave }}
           continuation: completed
 
@@ -1834,7 +1862,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: 6e2df3aaab85bebb4655d6408323506422daf7cd
+          ref: ${{ needs.plan.outputs.source_sha }}
           path: trusted-source
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1852,8 +1880,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
-          source-sha: 6e2df3aaab85bebb4655d6408323506422daf7cd
-          workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          source-sha: ${{ needs.plan.outputs.source_sha }}
+          workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           candidate-root: ${{ github.workspace }}/candidate-source
           plan: ${{ runner.temp }}/runtime-preparation-plan/impact-plan.json
           destination: ${{ runner.temp }}/runtime-signing-preparation
@@ -1903,7 +1931,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: 6e2df3aaab85bebb4655d6408323506422daf7cd
+          ref: ${{ needs.plan.outputs.source_sha }}
           path: trusted-source
           persist-credentials: false
       - name: Check out candidate as inventory data only
@@ -1934,7 +1962,7 @@ jobs:
         id: preparation
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
         run: |
           set -euo pipefail
           python3 -B trusted-source/ci/runtime_preparation_locator.py \
@@ -1944,10 +1972,10 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
       - name: Authenticate completed originals and preserve or establish external aggregate trust
         env:
-          TRUSTED_SOURCE_SHA: 6e2df3aaab85bebb4655d6408323506422daf7cd
+          TRUSTED_SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
           PREPARATION_ID: ${{ steps.preparation.outputs.artifact_id }}
           PREPARATION_SHA256: ${{ steps.preparation.outputs.artifact_sha256 }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
           ARTIFACT_ID: ${{ needs.runtime-aggregate-continuation.outputs.artifact_id }}
           ARTIFACT_SHA256: ${{ needs.runtime-aggregate-continuation.outputs.artifact_digest }}
           STATE_WAVE: ${{ needs.runtime-aggregate-continuation.outputs.state_wave }}
@@ -2006,10 +2034,11 @@ jobs:
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.contract-phase10-pgp-authority.result == 'success' &&
       needs.runtime-aggregate-attestation.result == 'success'
-    uses: codex-agent-labs/codex-agent/.github/workflows/runtime-phase10-maven.yml@4144824b5e0d4e1e4ca85d30a2c4f40f31dce62b
+    uses: codex-agent-labs/codex-agent/.github/workflows/runtime-phase10-maven.yml@reuse-authority
     with:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
-      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
+      trustedSourceSha: ${{ needs.plan.outputs.source_sha }}
       aggregateArtifactId: ${{ needs.runtime-aggregate-attestation.outputs.artifact_id }}
       aggregateArtifactSha256: ${{ needs.runtime-aggregate-attestation.outputs.artifact_digest }}
       aggregateBuildKey: ${{ needs.runtime-aggregate-attestation.outputs.aggregate_key }}
@@ -2044,6 +2073,9 @@ jobs:
           persist-credentials: false
           ref: ${{ needs.plan.outputs.validation_commit }}
           fetch-depth: 0
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2057,7 +2089,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -2082,7 +2114,7 @@ jobs:
           AGGREGATE_RECEIPT: ${{ inputs.sdkRecoveryOnly && needs.runtime-aggregate-continuation.outputs.aggregate_receipt_sha256 || needs.runtime-aggregate-attestation.outputs.aggregate_receipt_sha256 }}
           SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
           ORIGINAL_RUNTIME_HANDOFF: ${{ inputs.runtimeAggregateHandoffRecovery }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
           GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: |
@@ -2178,7 +2210,7 @@ jobs:
       actions: read
       contents: read
       id-token: write
-    uses: codex-agent-labs/codex-agent/.github/workflows/android-runtime-evidence.yml@main
+    uses: codex-agent-labs/codex-agent/.github/workflows/android-runtime-evidence.yml@reuse-authority
     with:
       candidateCommit: ${{ needs.plan.outputs.validation_commit }}
       ciRunId: ${{ github.run_id }}
@@ -2215,7 +2247,7 @@ jobs:
       planId: ${{ needs.plan.outputs.plan_id }}
       validationCommit: ${{ needs.plan.outputs.validation_commit }}
       validationTree: ${{ needs.plan.outputs.validation_tree }}
-      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
       stateArtifactId: ${{ needs.sdk-csharp-binary-result.outputs.artifact_id }}
       stateArtifactSha256: ${{ needs.sdk-csharp-binary-result.outputs.artifact_digest }}
       stateWave: ${{ needs.sdk-csharp-binary-result.outputs.state_wave }}
@@ -2236,6 +2268,9 @@ jobs:
       toolingArtifactId: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
       toolingArtifactSha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
       toolingTransportProducer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
 
   apple:
     if: >-
@@ -2251,6 +2286,7 @@ jobs:
       validationCommit: ${{ needs.plan.outputs.validation_commit }}
       validationTree: ${{ needs.plan.outputs.validation_tree }}
       sdkBinaryOnly: ${{ inputs.sdkRecoveryOnly }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
 
   consumers:
     if: always() && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.consumer_matrix != '[]' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
@@ -2278,6 +2314,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -2295,7 +2334,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -2308,7 +2347,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.product-resume.outputs.artifact_id }}
           artifact-sha256: ${{ needs.product-resume.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
 
   sdk-ios-binary:
     name: sdk-sdk-ios-binary-ios
@@ -2332,6 +2371,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -2349,7 +2391,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -2360,7 +2402,7 @@ jobs:
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.product-resume.outputs.artifact_id }}
           artifact-sha256: ${{ needs.product-resume.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           build-key: ${{ matrix.buildKey }}
           tree: ${{ needs.plan.outputs.validation_tree }}
           native-tests-artifact-id: ${{ needs.apple.outputs.native_tests_artifact_id }}
@@ -2389,6 +2431,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -2406,7 +2451,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -2435,7 +2480,7 @@ jobs:
           artifact-id: ${{ steps.parent.outputs.artifact_id }}
           artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}
           state-wave: ${{ steps.parent.outputs.state_wave }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '3'
           tree: ${{ needs.plan.outputs.validation_tree }}
 
@@ -2461,6 +2506,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2474,7 +2522,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -2530,7 +2578,7 @@ jobs:
           artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}
           state-wave: ${{ steps.parent.outputs.state_wave }}
           sdk-state-wave: ${{ steps.parent.outputs.sdk_state_wave }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
 
   sdk-workers-1:
     name: sdk-javascript-${{ matrix.phase }}-node
@@ -2549,6 +2597,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2562,7 +2613,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -2577,7 +2628,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-plan.outputs.sdk_state_wave }}
           sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
           sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           phase: ${{ matrix.phase }}
           build-key: ${{ matrix.buildKey }}
           tree: ${{ needs.plan.outputs.validation_tree }}
@@ -2601,6 +2652,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2614,7 +2668,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -2629,7 +2683,7 @@ jobs:
           artifact-sha256: ${{ needs.sdk-plan.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-plan.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-plan.outputs.sdk_state_wave }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '1'
           tree: ${{ needs.plan.outputs.validation_tree }}
 
@@ -2651,6 +2705,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2664,7 +2721,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -2678,7 +2735,7 @@ jobs:
           sdk-state-wave: '1'
           sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
           sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           phase: ${{ matrix.phase }}
           build-key: ${{ matrix.buildKey }}
           tree: ${{ needs.plan.outputs.validation_tree }}
@@ -2701,6 +2758,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2714,7 +2774,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -2729,7 +2789,7 @@ jobs:
           artifact-sha256: ${{ needs.sdk-collect-1.outputs.artifact_digest }}
           state-wave: '0'
           sdk-state-wave: '1'
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '2'
           tree: ${{ needs.plan.outputs.validation_tree }}
 
@@ -2815,6 +2875,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2828,7 +2891,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -2844,7 +2907,7 @@ jobs:
           artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
 
   sdk-csharp-binary:
     name: sdk-csharp-binary-desktop
@@ -2867,6 +2930,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2880,7 +2946,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -2893,7 +2959,7 @@ jobs:
           artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
           sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
           tree: ${{ needs.plan.outputs.validation_tree }}
@@ -2917,6 +2983,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -2930,7 +2999,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -2946,7 +3015,7 @@ jobs:
           artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '19'
           tree: ${{ needs.plan.outputs.validation_tree }}
 
@@ -3005,6 +3074,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3018,7 +3090,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -3034,7 +3106,7 @@ jobs:
           artifact-sha256: ${{ needs.sdk-csharp-binary-result.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-csharp-binary-result.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-csharp-binary-result.outputs.sdk_state_wave }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
       - id: preparation
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -3043,7 +3115,7 @@ jobs:
           STATE: ${{ steps.capture.outputs.state-root }}
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
           SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
         run: |
           python3 - <<'PY'
           import os, sys
@@ -3091,6 +3163,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3104,7 +3179,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -3118,7 +3193,7 @@ jobs:
           artifact-sha256: ${{ needs.sdk-csharp-binary-result.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-csharp-binary-result.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-csharp-binary-result.outputs.sdk_state_wave }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
           sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
           tree: ${{ needs.plan.outputs.validation_tree }}
@@ -3148,6 +3223,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3161,7 +3239,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -3174,7 +3252,7 @@ jobs:
           artifact-sha256: ${{ needs.sdk-csharp-binary-result.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-csharp-binary-result.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-csharp-binary-result.outputs.sdk_state_wave }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
           sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
           tree: ${{ needs.plan.outputs.validation_tree }}
@@ -3208,6 +3286,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3221,7 +3302,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -3237,7 +3318,7 @@ jobs:
           artifact-sha256: ${{ needs.sdk-csharp-binary-result.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-csharp-binary-result.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-csharp-binary-result.outputs.sdk_state_wave }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '4'
           tree: ${{ needs.plan.outputs.validation_tree }}
 
@@ -3290,6 +3371,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3307,7 +3391,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -3323,7 +3407,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-native-packages.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
 
   sdk-ios-package:
     name: sdk-sdk-ios-package-ios
@@ -3345,6 +3429,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
@@ -3360,7 +3447,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -3376,7 +3463,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-native-packages.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           build-key: ${{ matrix.buildKey }}
           tree: ${{ needs.plan.outputs.validation_tree }}
           sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
@@ -3402,6 +3489,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
@@ -3417,7 +3507,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -3433,7 +3523,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-native-packages.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '5'
           tree: ${{ needs.plan.outputs.validation_tree }}
 
@@ -3486,6 +3576,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3503,7 +3596,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -3519,7 +3612,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-ios-packages.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
 
   sdk-javascript-metadata:
     name: sdk-javascript-metadata-node
@@ -3541,6 +3634,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
@@ -3556,7 +3652,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -3569,7 +3665,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-ios-packages.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           build-key: ${{ matrix.buildKey }}
           tree: ${{ needs.plan.outputs.validation_tree }}
           sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
@@ -3595,6 +3691,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
@@ -3610,7 +3709,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -3626,7 +3725,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-ios-packages.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '6'
           tree: ${{ needs.plan.outputs.validation_tree }}
 
@@ -3679,6 +3778,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3696,7 +3798,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -3712,7 +3814,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
 
   sdk-native-validation:
     name: sdk-${{ matrix.component }}-validation-${{ matrix.target }}
@@ -3735,6 +3837,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
@@ -3750,7 +3855,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -3768,7 +3873,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           component: ${{ matrix.component }}
           target: ${{ matrix.target }}
           build-key: ${{ matrix.buildKey }}
@@ -3818,6 +3923,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
@@ -3833,7 +3941,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -3849,7 +3957,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '7'
           tree: ${{ needs.plan.outputs.validation_tree }}
 
@@ -3902,6 +4010,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -3919,7 +4030,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -3935,7 +4046,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-native-validation-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
 
   sdk-native-metadata:
     name: sdk-${{ matrix.component }}-metadata-${{ matrix.target }}
@@ -3958,6 +4069,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
@@ -3973,7 +4087,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -3986,7 +4100,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-native-validation-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           component: ${{ matrix.component }}
           build-key: ${{ matrix.buildKey }}
           tree: ${{ needs.plan.outputs.validation_tree }}
@@ -4023,6 +4137,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         run: |
           set -euo pipefail
@@ -4038,7 +4155,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -4054,7 +4171,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-native-validation-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '8'
           tree: ${{ needs.plan.outputs.validation_tree }}
 
@@ -4106,6 +4223,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -4120,7 +4240,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -4148,7 +4268,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-native-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
 
   sdk-ios-validation:
     name: sdk-sdk-ios-validation-${{ matrix.target }}
@@ -4170,6 +4290,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail
@@ -4182,7 +4305,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -4205,7 +4328,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-native-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           target: ${{ matrix.target }}
           build-key: ${{ matrix.buildKey }}
           tree: ${{ needs.plan.outputs.validation_tree }}
@@ -4232,6 +4355,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail
@@ -4245,7 +4371,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -4260,7 +4386,7 @@ jobs:
           target: ${{ matrix.target }}
           build-key: ${{ matrix.buildKey }}
           tree: ${{ needs.plan.outputs.validation_tree }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
           tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
 
@@ -4287,7 +4413,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: 5a3c70c9874c7c2e377973df629a4e9ea424421c
+          ref: ${{ needs.plan.outputs.source_sha }}
           path: trusted-source
           persist-credentials: false
       - name: Check out candidate as inventory data only
@@ -4309,8 +4435,8 @@ jobs:
           target: ${{ matrix.target }}
           build-key: ${{ matrix.buildKey }}
           tree: ${{ needs.plan.outputs.validation_tree }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
-          trusted-source-sha: 5a3c70c9874c7c2e377973df629a4e9ea424421c
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          trusted-source-sha: ${{ needs.plan.outputs.source_sha }}
           private-key: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
 
   sdk-collect-9:
@@ -4332,6 +4458,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail
@@ -4344,7 +4473,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -4370,7 +4499,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-native-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '9'
           tree: ${{ needs.plan.outputs.validation_tree }}
 
@@ -4422,6 +4551,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -4436,7 +4568,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -4464,7 +4596,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-ios-validation-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
 
   sdk-ios-metadata:
     name: sdk-sdk-ios-metadata-${{ matrix.target }}
@@ -4486,6 +4618,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail
@@ -4498,7 +4633,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -4521,7 +4656,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-ios-validation-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           build-key: ${{ matrix.buildKey }}
           tree: ${{ needs.plan.outputs.validation_tree }}
 
@@ -4544,6 +4679,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail
@@ -4556,7 +4694,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -4582,7 +4720,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-ios-validation-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '10'
           tree: ${{ needs.plan.outputs.validation_tree }}
 
@@ -4630,7 +4768,9 @@ jobs:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
       sdkPlan: ${{ toJSON(needs.sdk-plan) }}
       iosMetadataResult: ${{ toJSON(needs.sdk-ios-metadata-result) }}
-      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
 
 
   sdk-core-package-plan:
@@ -4650,6 +4790,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -4664,7 +4807,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -4692,7 +4835,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-core-binary-wave.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
 
   sdk-core-package-wave:
     needs: [plan, sdk-plan, sdk-inputs, sdk-core-binary-wave, sdk-core-package-plan]
@@ -4710,7 +4853,10 @@ jobs:
       sdkInputs: ${{ toJSON(needs.sdk-inputs) }}
       binaryWave: ${{ toJSON(needs.sdk-core-binary-wave) }}
       packagePlan: ${{ toJSON(needs.sdk-core-package-plan) }}
-      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
 
   sdk-core-validation-wave:
     needs: [plan, sdk-plan, sdk-inputs, sdk-core-package-wave]
@@ -4726,7 +4872,10 @@ jobs:
       sdkPlan: ${{ toJSON(needs.sdk-plan) }}
       sdkInputs: ${{ toJSON(needs.sdk-inputs) }}
       packageWave: ${{ toJSON(needs.sdk-core-package-wave) }}
-      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
+      reuseQualification: ${{ inputs.reuseQualification }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
   sdk-core-metadata-wave:
     needs: [plan, sdk-plan, sdk-inputs, sdk-core-validation-wave]
     if: >-
@@ -4741,7 +4890,11 @@ jobs:
       sdkPlan: ${{ toJSON(needs.sdk-plan) }}
       sdkInputs: ${{ toJSON(needs.sdk-inputs) }}
       validationWave: ${{ toJSON(needs.sdk-core-validation-wave) }}
-      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
+
   sdk-android-binary-result:
     needs: [plan, sdk-plan, sdk-inputs, sdk-core-validation-wave, sdk-core-metadata-wave]
     if: >-
@@ -4758,7 +4911,10 @@ jobs:
       sdkInputs: ${{ toJSON(needs.sdk-inputs) }}
       validationWave: ${{ toJSON(needs.sdk-core-validation-wave) }}
       metadataWave: ${{ toJSON(needs.sdk-core-metadata-wave) }}
-      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
 
   sdk-android-package-plan:
     needs: [plan, sdk-plan, sdk-android-binary-result]
@@ -4778,6 +4934,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -4792,7 +4951,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -4809,7 +4968,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-android-binary-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
 
   sdk-android-package-result:
     needs: [plan, sdk-plan, sdk-inputs, sdk-core-validation-wave, sdk-core-metadata-wave, sdk-android-binary-result, sdk-android-package-plan]
@@ -4830,7 +4989,10 @@ jobs:
       metadataWave: ${{ toJSON(needs.sdk-core-metadata-wave) }}
       binaryWave: ${{ toJSON(needs.sdk-android-binary-result) }}
       packagePlan: ${{ toJSON(needs.sdk-android-package-plan) }}
-      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
 
   sdk-android-validation-plan:
     needs: [plan, sdk-plan, sdk-android-package-result]
@@ -4850,6 +5012,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -4864,7 +5029,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -4881,7 +5046,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-android-package-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
 
   sdk-android-validation-result:
     needs: [plan, sdk-plan, sdk-inputs, sdk-android-package-result, sdk-android-validation-plan]
@@ -4898,8 +5063,11 @@ jobs:
       sdkInputs: ${{ toJSON(needs.sdk-inputs) }}
       packageWave: ${{ toJSON(needs.sdk-android-package-result) }}
       validationPlan: ${{ toJSON(needs.sdk-android-validation-plan) }}
-      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
       protectedAndroidAuthority: ''
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
 
   sdk-android-metadata-plan:
     needs: [plan, sdk-plan, sdk-android-validation-result]
@@ -4919,6 +5087,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -4933,7 +5104,7 @@ jobs:
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -4950,7 +5121,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-android-validation-result.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
 
   sdk-android-metadata-result:
     needs: [plan, sdk-plan, sdk-inputs, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-plan]
@@ -4969,8 +5140,11 @@ jobs:
       packageWave: ${{ toJSON(needs.sdk-android-package-result) }}
       validationWave: ${{ toJSON(needs.sdk-android-validation-result) }}
       metadataPlan: ${{ toJSON(needs.sdk-android-metadata-plan) }}
-      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
       protectedAndroidAuthority: ''
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
 
   sdk-completion:
     needs: [plan, contract-validation, product-resume, runtime-continuation, runtime-aggregate-continuation, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, sdk-plan, sdk-native-result, sdk-ios-validation-result, sdk-ios-metadata-result, sdk-core-binary-wave, sdk-core-package-wave, sdk-core-validation-wave, sdk-core-metadata-wave, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result]
@@ -4993,6 +5167,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - id: parent
         env:
           RESULTS: ${{ toJSON(needs) }}
@@ -5019,7 +5196,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -5046,7 +5223,7 @@ jobs:
           sdk-state-wave: ${{ steps.parent.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
       - name: Require every selected SDK phase to be complete
         id: completion
         env:
@@ -5055,7 +5232,7 @@ jobs:
           STATE_ROOT: ${{ steps.capture.outputs.state-root }}
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
           SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -5104,6 +5281,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
@@ -5113,7 +5293,7 @@ jobs:
         env:
           RESULTS: ${{ toJSON(needs) }}
           PLAN: ${{ runner.temp }}/sdk-partial-plan/impact-plan.json
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
@@ -5161,7 +5341,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -5182,7 +5362,7 @@ jobs:
           sdk-state-wave: ${{ steps.parent.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
       - id: catalog
         name: Stage only verified original SDK phase objects
         env:
@@ -5191,7 +5371,7 @@ jobs:
           STATE_ROOT: ${{ steps.capture.outputs.state-root }}
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
           SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -5253,6 +5433,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         run: |
@@ -5267,7 +5450,7 @@ jobs:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
@@ -5294,7 +5477,7 @@ jobs:
           sdk-state-wave: ${{ needs.sdk-completion.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
       - name: Assemble completed SDK same-PR cache catalog
         id: catalog
         env:
@@ -5303,7 +5486,7 @@ jobs:
           STATE_ROOT: ${{ steps.capture.outputs.state-root }}
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
           SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -5366,7 +5549,10 @@ jobs:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
       contractOutputs: ${{ toJSON(needs.contract-validation.outputs) }}
       sdkOutputs: ${{ toJSON(needs.sdk-completion.outputs) }}
-      trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
 
   merge-gate:
     name: CI / merge-gate

@@ -9,6 +9,10 @@ on:
       trustedWorkflowSha:
         required: true
         type: string
+      trustedSourceSha:
+        required: false
+        default: ''
+        type: string
       aggregateArtifactId:
         required: true
         type: string
@@ -53,7 +57,7 @@ jobs:
           PROTECTED_SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
           PROTECTED_PGP_KEY: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY }}
           PROTECTED_PGP_KEY_SHA256: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY_SHA256 }}
-          CALLER_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}
+          CALLER_SOURCE_SHA: ${{ inputs.trustedSourceSha || inputs.trustedWorkflowSha }}
           CALLER_PGP_KEY_SHA256: ${{ inputs.expectedPgpKeySha256 }}
           AGGREGATE_ID: ${{ inputs.aggregateArtifactId }}
           AGGREGATE_SHA256: ${{ inputs.aggregateArtifactSha256 }}

@@ -83,5 +83,38 @@ class AuthorityTests(unittest.TestCase):
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}, clear=True), self.assertRaises(ValueError):
             authority.api("branches/reuse-authority/protection")
 
+    def test_publication_binds_native_publisher_and_approved_source(self):
+        publisher, source = "c" * 40, self.manifest["activeVerifier"]
+        entry, child = ".github/workflows/product-validation.yml", ".github/workflows/child.yml"
+        bodies = {entry: b"jobs:\n  child:\n    uses: ./.github/workflows/child.yml\n", child: b"name: reviewed child\n"}
+        publication = {"schemaVersion": 1, "sourceSha": source, "workflows": [
+            {"path": path, "bytes": len(raw), "sha256": "sha256:" + hashlib.sha256(raw).hexdigest()}
+            for path, raw in sorted(bodies.items())]}
+
+        def contents(path, revision, **_):
+            if path == ".reuse/workflow-publication.json": return json.dumps(publication).encode()
+            self.assertIn(revision, (publisher, source))
+            return bodies[path]
+
+        def api(path):
+            if path.endswith("/protection"): return copy.deepcopy(self.protection)
+            return {"commit": {"sha": publisher}}
+
+        with patch.object(authority, "resolve", return_value={"authorityCommit": publisher,
+                "activeVerifier": "f" * 40, "approvedVerifiers": [source, "f" * 40]}), \
+             patch.object(authority, "contents", side_effect=contents), patch.object(authority, "api", side_effect=api):
+            result = authority.resolve_publication(publisher)
+            self.assertEqual((publisher, source), (result["publisherSha"], result["sourceSha"]))
+            publication["sourceSha"] = "e" * 40
+            with self.assertRaises(ValueError): authority.resolve_publication(publisher)
+            publication["sourceSha"] = source
+            publication["workflows"] = [row for row in publication["workflows"] if row["path"] == entry]
+            with self.assertRaisesRegex(ValueError, "required child"): authority.resolve_publication(publisher)
+            publication["workflows"] = [{"path": path, "bytes": len(raw),
+                "sha256": "sha256:" + hashlib.sha256(raw).hexdigest()} for path, raw in sorted(bodies.items())]
+            with patch.object(authority, "contents", side_effect=lambda path, rev, **kw:
+                    contents(path, rev, **kw) + (b"tampered" if path == child and rev == publisher else b"")):
+                with self.assertRaisesRegex(ValueError, "exact reviewed"): authority.resolve_publication(publisher)
+
 
 if __name__ == "__main__": unittest.main()

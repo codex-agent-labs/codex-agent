@@ -1,0 +1,49 @@
+name: Resolve owner-approved product workflow publication
+description: Bind native protected workflow identity and independently approved executable source.
+inputs:
+  native-workflow-sha:
+    required: true
+  native-workflow-repository:
+    required: true
+  native-workflow-path:
+    required: true
+  authority-read-token:
+    required: true
+outputs:
+  publisher-sha:
+    value: ${{ steps.resolve.outputs.publisher-sha }}
+  source-sha:
+    value: ${{ steps.resolve.outputs.source-sha }}
+  publication-sha256:
+    value: ${{ steps.resolve.outputs.publication-sha256 }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        repository: ${{ inputs.native-workflow-repository }}
+        ref: ${{ inputs.native-workflow-sha }}
+        path: product-publication-authority
+        persist-credentials: false
+    - id: resolve
+      shell: bash
+      env:
+        NATIVE_SHA: ${{ inputs.native-workflow-sha }}
+        NATIVE_REPOSITORY: ${{ inputs.native-workflow-repository }}
+        NATIVE_PATH: ${{ inputs.native-workflow-path }}
+        REUSE_AUTHORITY_READ_TOKEN: ${{ inputs.authority-read-token }}
+      run: |
+        set -euo pipefail
+        test "$NATIVE_REPOSITORY" = codex-agent-labs/codex-agent
+        test "$NATIVE_PATH" = .github/workflows/product-validation.yml
+        test "$(git -C product-publication-authority rev-parse HEAD)" = "$NATIVE_SHA"
+        python3 -B product-publication-authority/.reuse/resolve.py \
+          --publication --expected-authority-commit "$NATIVE_SHA" > "$RUNNER_TEMP/product-publication.json"
+        python3 - "$RUNNER_TEMP/product-publication.json" "$GITHUB_OUTPUT" <<'PY'
+        import json, sys
+        value = json.load(open(sys.argv[1]))
+        with open(sys.argv[2], 'a') as output:
+            for key, field in [('publisher-sha', 'publisherSha'), ('source-sha', 'sourceSha'),
+                               ('publication-sha256', 'publicationSha256')]:
+                output.write(key + '=' + value[field] + '\n')
+        PY
