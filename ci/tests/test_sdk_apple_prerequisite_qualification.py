@@ -173,6 +173,24 @@ class ApplePrerequisiteQualificationTest(unittest.TestCase):
                 "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@"
                 + helper._ORIGINAL_SDK_WORKFLOW_SHA, helper._ORIGINAL_SDK_WORKFLOW_SHA)
 
+    def test_actual_reference_gate_preserves_reviewed_sdk_pins_only(self):
+        # Exact native metadata shape; local policy proof, not hosted acceptance.
+        current = "f" * 40
+        path = "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@"
+        for sha in (current, *helper._PRIOR_SDK_WORKFLOW_SHAS):
+            with self.subTest(sha=sha):
+                self.assertEqual(sha, helper._original_workflow({"referenced_workflows": [
+                    {"path": path + sha, "sha": sha}]}, current))
+        reviewed = helper._PRIOR_SDK_WORKFLOW_SHAS[-1]
+        for references in (
+            [{"path": path + "e" * 40, "sha": "e" * 40}],
+            [{"path": path + reviewed, "sha": "e" * 40}],
+            [{"path": path + "e" * 40, "sha": reviewed}],
+            [{"path": path + reviewed, "sha": reviewed}] * 2,
+        ):
+            with self.subTest(references=references), self.assertRaisesRegex(ValueError, "reviewed SDK"):
+                helper._original_workflow({"referenced_workflows": references}, current)
+
 
 if __name__ == "__main__":
     unittest.main()

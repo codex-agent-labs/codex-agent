@@ -27,6 +27,8 @@ from products.selection import phase_git_inventory
 
 # Original SDK caller already reviewed independently; not a new Runtime policy.
 _ORIGINAL_SDK_WORKFLOW_SHA = "1f1e15b374ae906008bae784095654802366d63b"
+_PRIOR_SDK_WORKFLOW_SHAS = (_ORIGINAL_SDK_WORKFLOW_SHA,
+    "7931e086771b5aa478ed4756f6108fbfdbbdd5f0")
 
 
 def _acquire_original_revision(repository, producer):
@@ -52,10 +54,14 @@ def _original_workflow(run, current):
     workflow = product_reuse._runtime_prior_workflow_sha(run, current)
     if workflow is not None:
         return workflow
-    product_reuse._require_ci_workflow_reference(run,
-        "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@"
-        + _ORIGINAL_SDK_WORKFLOW_SHA, _ORIGINAL_SDK_WORKFLOW_SHA)
-    return _ORIGINAL_SDK_WORKFLOW_SHA
+    for sha in _PRIOR_SDK_WORKFLOW_SHAS:
+        try:
+            product_reuse._require_ci_workflow_reference(run,
+                "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@" + sha, sha)
+        except ValueError:
+            continue
+        return sha
+    raise ValueError("Apple original CI attempt lacks a reviewed SDK workflow")
 
 
 def compatible_source_inventories(repository, original, current, lane):
