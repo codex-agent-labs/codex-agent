@@ -70,9 +70,16 @@ _SDK_SEED_SCRIPT = """gradle.projectsEvaluated {
         rootProject.dependencies.add(markers.name,
             plugin.pluginId + ':' + plugin.pluginId + '.gradle.plugin:' + plugin.version.requiredVersion)
     }
+    def compilerPlugins = rootProject.configurations.create('sdkProjectCompilerPlugins') {
+        canBeResolved = true
+        canBeConsumed = false
+    }
+    rootProject.dependencies.add(compilerPlugins.name,
+        'org.jetbrains.kotlin:kotlin-serialization-compiler-plugin-embeddable:' +
+        catalog.findVersion('kotlin').get().requiredVersion)
     rootProject.tasks.register('resolveSdkBuildDependencies') {
         doLast {
-            ['sdkPluginMarkers', 'compileClasspath', 'runtimeClasspath', 'embeddedKotlin',
+            ['sdkPluginMarkers', 'sdkProjectCompilerPlugins', 'compileClasspath', 'runtimeClasspath', 'embeddedKotlin',
              'kotlinBuildToolsApiClasspath', 'kotlinCompilerClasspath', 'kotlinCompilerPluginClasspathMain',
              'compilePluginsBlocksPluginClasspathElements'].each { name ->
                 rootProject.configurations.getByName(name).files.each { file ->
@@ -154,3 +161,63 @@ def seed_sdk_gradle_dependencies(root: Path, revision: str, wrapper: Path,
                                 stderr=subprocess.STDOUT, check=False)
     if result.returncode:
         raise ValueError(f"Pinned SDK dependency seeding failed; see {destination / 'gradle.log'}")
+
+
+def seed_sdk_ios_native_distribution(root: Path, revision: str, wrapper: Path,
+                                     environment, destination: Path) -> None:
+    """Run KGP's prebuilt tool setup only, never a native product task.
+
+    Gradle pins authenticate the distribution archive. Konan's own downloader
+    handles its declared dependencies; its direct downloads are not Gradle inputs.
+    """
+    import tomllib
+    from ci.product_reuse import _runtime_worker_command
+    version = tomllib.loads(git_regular_blob_bytes(root, revision,
+        'gradle/libs.versions.toml', max_bytes=4 * 1024**2).decode())['versions']['kotlin']
+    if version != '2.3.10':
+        raise ValueError('SDK native setup requires reviewed Kotlin 2.3.10 routing')
+    if destination.exists() or destination.is_symlink():
+        raise ValueError('SDK native setup requires a fresh diagnostic destination')
+    require_regular_directory(destination.parent, 'SDK native setup parent')
+    destination.mkdir()
+    (destination / 'gradle').mkdir()
+    (destination / 'gradle/verification-metadata.xml').write_bytes(git_regular_blob_bytes(root, revision,
+        '.github/actions/sdk-ios-binary-worker/verification-metadata.xml', max_bytes=4 * 1024**2))
+    (destination / 'settings.gradle.kts').write_text(
+        'pluginManagement { repositories { mavenCentral(); gradlePluginPortal() } }\n', encoding='utf-8')
+    (destination / 'build.gradle.kts').write_text(
+        f'plugins {{ kotlin("multiplatform") version "{version}" }}\n'
+        'repositories { mavenCentral() }\n'
+        'kotlin { iosArm64(); iosSimulatorArm64() }\n', encoding='utf-8')
+    original = _runtime_worker_command(wrapper, {}, environment, build_directory='.')
+    command = [*original[:original.index('--offline')], '-p', str(destination),
+        'downloadKotlinNativeDistribution', '--dependency-verification=strict', '--no-daemon',
+        '--no-configuration-cache', '--console=plain', '-Pkotlin.native.distribution.type=prebuilt']
+    with (destination / 'gradle.log').open('xb') as log:
+        result = subprocess.run(command, cwd=root, env=dict(environment), stdout=log,
+            stderr=subprocess.STDOUT, check=False)
+    if result.returncode:
+        raise ValueError(f'SDK native tool setup failed; see {destination / "gradle.log"}')
+    from .inventory import load_canonical_json_bytes, require_array, require_exact_keys, require_integer, require_sha256
+    from .toolchain import _tree_digest
+    policy = require_exact_keys(load_canonical_json_bytes(git_regular_blob_bytes(root, revision,
+        '.github/actions/sdk-ios-binary-worker/native-dependencies.json', max_bytes=64 * 1024)),
+        {'schemaVersion', 'kotlinVersion', 'host', 'dependencies'}, 'SDK native dependency policy')
+    if (require_integer(policy['schemaVersion'], 'SDK native dependency policy schema', 1) != 1 or
+            policy['kotlinVersion'] != version or policy['host'] != 'macos_arm64'):
+        raise ValueError('SDK native dependency policy differs from its fixed compiler/host')
+    konan = Path(environment.get('KONAN_DATA_DIR', str(Path.home() / '.konan')))
+    if not konan.is_absolute() or konan.resolve(strict=True) != konan:
+        raise ValueError('SDK Konan data directory must be normalized')
+    names = []
+    for record in require_array(policy['dependencies'], 'SDK native dependencies'):
+        require_exact_keys(record, {'name', 'treeSha256'}, 'SDK native dependency')
+        name = record['name']
+        if name not in {'libffi-3.3-1-macos-arm64', 'llvm-19-aarch64-macos-essentials-79'}:
+            raise ValueError('Unsupported SDK native dependency')
+        names.append(name)
+        expected = require_sha256(record['treeSha256'], 'SDK native dependency tree')
+        if _tree_digest(konan / 'dependencies' / name, 'SDK native dependency') != expected:
+            raise ValueError('SDK native dependency differs from its approved immutable tree')
+    if sorted(names) != ['libffi-3.3-1-macos-arm64', 'llvm-19-aarch64-macos-essentials-79']:
+        raise ValueError('SDK native dependency policy must contain exactly the required two trees')

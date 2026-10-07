@@ -2,6 +2,7 @@
 
 from pathlib import Path, PureWindowsPath
 import subprocess
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -82,6 +83,28 @@ class SdkDependencySeedTest(unittest.TestCase):
             self.assertNotIn('--offline', command)
             self.assertIn('--dependency-verification=strict', command)
             self.assertNotIn('shell', run.call_args.kwargs)
+
+    def test_native_setup_only_requests_prebuilt_distribution_without_product_tasks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            def blob(*args, **limits):
+                if args[2].endswith('.json'):
+                    return (json.dumps({'schemaVersion': 1, 'host': 'macos_arm64', 'kotlinVersion': '2.3.10',
+                        'dependencies': [{'name': name, 'treeSha256': 'sha256:' + 'a' * 64} for name in
+                            ('libffi-3.3-1-macos-arm64', 'llvm-19-aarch64-macos-essentials-79')]},
+                        sort_keys=True, separators=(',', ':')) + '\n').encode()
+                return b'[versions]\nkotlin="2.3.10"\n' if args[2].endswith('.toml') else self.metadata('native')
+            with patch.object(bootstrap, 'git_regular_blob_bytes', side_effect=blob), \
+                    patch('ci.products.toolchain._tree_digest', return_value='sha256:' + 'a' * 64), \
+                    patch.object(bootstrap.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+                bootstrap.seed_sdk_ios_native_distribution(root, 'a' * 40, root / 'gradlew',
+                    {'KONAN_DATA_DIR': str(root)}, root / 'native')
+            command = run.call_args.args[0]
+            self.assertIn('downloadKotlinNativeDistribution', command)
+            self.assertIn('--dependency-verification=strict', command)
+            self.assertIn('-Pkotlin.native.distribution.type=prebuilt', command)
+            self.assertNotIn('ciProductPhase', command)
+            self.assertNotIn('compileKotlinIosArm64', command)
 
     def test_shared_environment_seeds_only_explicit_sdk_after_wrapper_admission(self):
         from ci import product_reuse as worker

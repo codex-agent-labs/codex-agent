@@ -2719,4 +2719,12 @@
             <sha256 value="0fe31326e83b7622cbcd9c75d467b291f01ffe3cc6e3e76651ac05a1c1c7a360" origin="Official SHA-1 exact match; locally computed SHA-256 content pin" />
          </artifact>
       </component>
+      <component group="org.jetbrains.kotlin" name="kotlin-serialization-compiler-plugin-embeddable" version="2.3.10">
+         <artifact name="kotlin-serialization-compiler-plugin-embeddable-2.3.10.jar">
+            <sha256 value="75d66e4a95072a95e702453ea07fcc1479ac835c1623de7ae739d044e6f5f366" origin="Official SHA-1 exact match; locally computed SHA-256 content pin"/>
+         </artifact>
+         <artifact name="kotlin-serialization-compiler-plugin-embeddable-2.3.10.pom">
+            <sha256 value="bf42a6e26bdeb45188c6d7f837b3d796d188793f2ea1eb8ee88bd234dc182363" origin="Official SHA-1 exact match; locally computed SHA-256 content pin"/>
+         </artifact>
+      </component>
    </components></verification-metadata>
