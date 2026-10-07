@@ -9,6 +9,107 @@ permissions:
   actions: read
 
 jobs:
+  recovery-diagnostics:
+    if: >-
+      github.event.label.name == 'ci:reuse-recovery-diagnostics' &&
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 32da1aafe48c1e41576ca91f4bd7c7349c2e63c3
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@320d594e358c84d511b59db3eb5a60b7c604a352
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      - name: Recover the unchanged original phase without product execution
+        uses: ./.github/actions/hydrated-evidence-cache
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          mode: execute
+          script: |
+            python3 -u - <<'PY'
+            import json, os, subprocess, sys
+            from pathlib import Path
+            sys.path.insert(0, str(Path.cwd() / 'ci'))
+            import product_reuse as products
+            from products.inventory import load_canonical_json_bytes, write_canonical_json, sha256_bytes
+            from products.restore import verification_session, verify_phase_shard
+            root = Path(os.environ['RUNNER_TEMP']) / 'recovery-diagnostics'
+            root.mkdir(exist_ok=False)
+            report = {'diagnosticOnly': True, 'productExecuted': False,
+                      'executionRun': int(os.environ['GITHUB_RUN_ID']),
+                      'executionAttempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
+                      'executionSource': os.environ['GITHUB_SHA'],
+                      'verificationSource': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()}
+            try:
+                assert report['verificationSource'] == '32da1aafe48c1e41576ca91f4bd7c7349c2e63c3'
+                qualified = load_canonical_json_bytes(Path(os.environ['CODEX_AGENT_REUSE_QUALIFICATION']).read_bytes())
+                original = next(row for row in qualified['originals']
+                                if row['receipt']['component'] == 'linux-arm64' and row['receipt']['phase'] == 'binary')
+                instance = products._identity(original['receipt'])
+                key = original['receipt']['buildKey']
+                assert key == 'sha256:d95776c784a5541f167fcc3f1e723c6c2aec6ec813be0ed2f93ace3441a75656'
+                report['buildKey'] = key
+                report['originalProducer'] = original['receipt']['producer']
+                manifest = root / 'cache-manifest.json'
+                write_canonical_json(manifest, [{'sha256': row['sha256'], 'bytes': row['bytes']}
+                    for row in original['originalFiles'] if not row['relativePath'].startswith('inputs/')])
+                subprocess.run([os.environ['CODEX_AGENT_CACHE_NODE'], os.environ['CODEX_AGENT_HOSTED_CACHE_BACKEND']],
+                    check=True, env={**os.environ, 'INPUT_MODE': 'restore',
+                        'INPUT_ROOT': os.environ['CODEX_AGENT_HYDRATED_EVIDENCE'],
+                        'INPUT_MANIFEST': str(manifest), 'INPUT_REPORT': str(root / 'cache-restore.json')})
+                plan = {'event': 'pull_request', 'repository': 'codex-agent-labs/codex-agent', 'pullRequest': 31}
+                consumer = {'runId': report['executionRun'], 'runAttempt': report['executionAttempt']}
+                token = os.environ['GITHUB_TOKEN']
+                with verification_session():
+                    attempts = products._prior_failed_pr_attempts(plan, consumer, token)
+                    report['eligibleAttempts'] = len(attempts)
+                    report['originalAttemptSelected'] = any(
+                        (row['id'], row['run_attempt']) == (36579465980, 1) for row in attempts)
+                    print(json.dumps(report, sort_keys=True), flush=True)
+                    captured = products.capture_prior_failed_runtime_phases(plan, consumer, {instance: key},
+                        root / 'captured', trusted_workflow_sha='320d594e358c84d511b59db3eb5a60b7c604a352',
+                        token=token, attempts=attempts)
+                    report['capturedCount'] = len(captured)
+                    if instance not in captured:
+                        raise ValueError('Exact qualified original was not recovered')
+                    verified = verify_phase_shard(root / 'captured/linux-arm64/binary/linux-arm64/phases/binary/original/shard', instance)
+                    assert verified['receipt'] == original['receipt']
+                    assert sha256_bytes(verified['receiptBytes']) == original['receiptSha256']
+                    assert verified['objectSha256'] == original['objectSha256']
+                    report['receiptSha256'] = original['receiptSha256']
+                    report['objectSha256'] = original['objectSha256']
+                    report['result'] = 'recovered-original'
+            except Exception as error:
+                report['result'] = 'diagnostic-failure'
+                report['error'] = type(error).__name__ + ': ' + str(error)
+                raise
+            finally:
+                write_canonical_json(root / 'report.json', report)
+                print(json.dumps(report, sort_keys=True), flush=True)
+            PY
+      - name: Preserve diagnostic observations, never product acceptance
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: reuse-recovery-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/recovery-diagnostics/report.json
+            ${{ runner.temp }}/recovery-diagnostics/cache-restore.json
+          if-no-files-found: warn
+          overwrite: false
+          retention-days: 90
+
   cold:
     if: >-
       github.event.label.name == 'ci:reuse-refresh-proof' &&
