@@ -39,10 +39,11 @@ def _retry_github_get(operation):
         for attempt in range(4):
             try:
                 return operation(*args, **kwargs)
-            except urllib.error.HTTPError as error:
-                if error.code not in {502, 503, 504} or attempt == 3:
+            except (urllib.error.HTTPError, TimeoutError) as error:
+                if attempt == 3 or isinstance(error, urllib.error.HTTPError) and error.code not in {502, 503, 504}:
                     raise
-                error.close()
+                if isinstance(error, urllib.error.HTTPError):
+                    error.close()
                 time.sleep(2 ** attempt)
     return retry
 
