@@ -65,11 +65,10 @@ jobs:
           mode: execute
           script: |
             python3 -u - <<'PY'
-            import inspect, json, os, subprocess, sys, time
+            import json, os, subprocess, sys, time
             from pathlib import Path
             sys.path.insert(0, str(Path.cwd() / 'ci'))
             import product_reuse as products
-            import runtime_workflow
             import reuse_qualification
             from products.inventory import load_canonical_json_bytes, write_canonical_json
             from products.restore import verification_session
@@ -88,7 +87,7 @@ jobs:
                           'tree': '0689ecd71853a215ff430a7f75f40345adc25d7c',
                           'event': 'pull_request', 'runId': 37662871186,
                           'runAttempt': 1, 'pullRequest': 31},
-                      'recoveryWaves': [], 'plannerWaves': [], 'stages': [], 'callCounts': {}}
+                      'stages': []}
             try:
                 assert report['verificationSource'] == '32da1aafe48c1e41576ca91f4bd7c7349c2e63c3'
                 workspace = Path.cwd()
@@ -109,78 +108,38 @@ jobs:
                 }
                 inputs = workspace / 'build/recovery-diagnostic-inputs'
                 state = workspace / 'build/recovery-diagnostic-state'
-                options = {'repository_root': workspace, 'environ': original_environment,
-                    'sdk_original_workflow_sha': pin,
-                    'sdk_validation_tooling': load_canonical_json_bytes(Path(os.environ['SDK_VALIDATION_TOOLING']).read_bytes()),
-                    'sdk_apple_validation_policy': load_canonical_json_bytes(Path(os.environ['SDK_APPLE_VALIDATION_POLICY']).read_bytes())}
                 policy = _source_identity(portable=True)
                 assert reuse_qualification._compatible_verifier(report['verificationSource']) == policy
                 report['verifierPolicyBefore'] = policy
-                watched = {id(inspect.unwrap(function).__code__): label for function, label in (
-                    (products.resume_products, 'resume'),
-                    (products.capture_prior_failed_runtime_phases, 'capture'),
-                    (products._plan_with_sdk_tooling, 'planner'),
-                    (products._recover_prior_runtime_aggregate_release, 'aggregate-release-recovery'),
-                    (products._qualified_aggregate_capture, 'aggregate-qualified-capture'),
-                    (products.capture_runtime_aggregate_release_upload, 'aggregate-upload-capture'),
-                    (runtime_workflow.matrix, 'runtime-matrix'))}
-                active_frames = {}
-                def observe(frame, event, value):
-                    label = watched.get(id(frame.f_code))
-                    if label is None or event not in ('call', 'return'):
-                        return
-                    if event == 'call':
-                        record = {'stage': label, 'startedNs': time.time_ns()}
-                        active_frames[id(frame)] = record
-                        report['stages'].append(record)
-                        report['callCounts'][label] = report['callCounts'].get(label, 0) + 1
-                        if label == 'capture':
-                            values = frame.f_locals
-                            attempts = values['attempts']
-                            wave = {'wanted': [{**products._identity_record(instance), 'buildKey': key}
-                                               for instance, key in sorted(values['requested'].items())],
-                                    'eligibleAttempts': len(attempts),
-                                    'originalAttemptSelected': any((row['id'], row['run_attempt']) == (36579465980, 1)
-                                                                   for row in attempts), 'captured': []}
-                            record['recoveryWave'] = len(report['recoveryWaves'])
-                            report['recoveryWaves'].append(wave)
-                    else:
-                        record = active_frames.pop(id(frame))
-                        record.update(completedNs=time.time_ns(), returnType=type(value).__name__)
-                        if label == 'capture' and isinstance(value, dict):
-                            report['recoveryWaves'][record['recoveryWave']]['captured'] = [
-                                products._identity_record(instance) for instance in sorted(value)]
-                        elif label == 'planner' and isinstance(value, dict):
-                            report['plannerWaves'].append({'fullReuse': value['fullReuse'],
-                                'phases': [{name: phase[name] for name in ('product', 'component', 'phase', 'target',
-                                    'state', 'buildKey', 'receiptSha256', 'objectSha256')} for phase in value['phases']]})
-                    report['verificationCounters'] = {key: session.get(key, 0) for key in (
-                        'qualificationHits', 'qualificationMisses', 'qualificationBodyReadBytes',
-                        'downloadedArtifactCount', 'downloadedArtifactBytes', 'runtimeColdArchiveBytes')}
-                    write_canonical_json(root / 'report.json', report)
-                with verification_session() as session:
+                with verification_session():
                     transport = products.capture_product_resume_inputs(plan_path, inputs, uploads=uploads,
                         trusted_workflow_sha=pin, repository_root=workspace, environ=original_environment, token=token,
                         trusted_contract_workflow_path='.github/workflows/contract-validation.yml',
                         trusted_contract_continuation_job='product-validation / contract-validation / contract-continuation')
                     report['authenticatedInputUploads'] = {name: {'id': artifact['id'], 'digest': artifact['digest']}
                         for name, artifact in transport['artifacts'].items()}
-                    original_profile = sys.getprofile()
-                    sys.setprofile(observe)
-                    try:
-                        assert reuse_qualification._compatible_verifier(report['verificationSource']) == policy
-                        report['verifierPolicyDuring'] = _source_identity(portable=True)
-                        assert report['verifierPolicyDuring'] == policy
-                        report['resumeResult'] = products.resume_products(inputs / 'plan/impact-plan.json',
-                            inputs / 'plan/product-reuse', inputs / 'state', inputs / 'release/contract-input',
-                            state, root / 'outputs', **options)
-                        report['runtimeMatrix'] = runtime_workflow.matrix(inputs / 'plan/impact-plan.json',
-                            state, state, root / 'outputs', **options)
-                    finally:
-                        sys.setprofile(original_profile)
-                        assert reuse_qualification._compatible_verifier(report['verificationSource']) == policy
-                        report['verifierPolicyAfter'] = _source_identity(portable=True)
-                        assert report['verifierPolicyAfter'] == policy
+                command = [sys.executable, '-u', 'ci/product_reuse.py', 'resume-products', '--runtime-matrix',
+                    '--plan', str(inputs / 'plan/impact-plan.json'),
+                    '--discovery-root', str(inputs / 'plan/product-reuse'), '--state-root', str(inputs / 'state'),
+                    '--contract-handoff', str(inputs / 'release/contract-input'), '--destination', str(state),
+                    '--sdk-original-workflow-sha', pin, '--github-output', str(root / 'outputs'),
+                    '--sdk-validation-tooling', os.environ['SDK_VALIDATION_TOOLING'],
+                    '--sdk-apple-validation-policy', os.environ['SDK_APPLE_VALIDATION_POLICY']]
+                stage = {'stage': 'original-cli', 'startedNs': time.time_ns()}
+                report['stages'].append(stage)
+                write_canonical_json(root / 'report.json', report)
+                completed = subprocess.run(command, cwd=workspace, env=original_environment, check=False)
+                stage.update(completedNs=time.time_ns(), returnCode=completed.returncode)
+                if (state / 'reuse-wave-result.json').exists():
+                    result = load_canonical_json_bytes((state / 'reuse-wave-result.json').read_bytes())
+                    report['replayedPhases'] = [{name: phase[name] for name in ('product', 'component', 'phase',
+                        'target', 'state', 'buildKey', 'receiptSha256', 'objectSha256')} for phase in result['phases']]
+                if (root / 'outputs').exists():
+                    report['cliOutputs'] = (root / 'outputs').read_text()
+                assert reuse_qualification._compatible_verifier(report['verificationSource']) == policy
+                report['verifierPolicyAfter'] = _source_identity(portable=True)
+                assert report['verifierPolicyAfter'] == policy
+                completed.check_returncode()
                 report['result'] = 'diagnostic-complete'
             except Exception as error:
                 report['result'] = 'diagnostic-failure'
