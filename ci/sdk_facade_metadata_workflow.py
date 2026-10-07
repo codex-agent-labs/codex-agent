@@ -184,7 +184,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
             if canonical_json_bytes(original["expectedContent"]) != expected:
                 raise ValueError("Core metadata expected content changed")
             worker = destination / "worker"
-            environment, wrapper = product_reuse._runtime_worker_environment(root, producer, worker, environ)
+            environment, wrapper = product_reuse._runtime_worker_environment(root, producer, worker, environ, build_directory=".")
             product_reuse._prepare_destination(worker, root)
             fields = {"codexAgent.product": "sdk", "codexAgent.component": "sdk-core", "codexAgent.phase": "metadata",
                 "codexAgent.target": "common", "codexAgent.sdkVersion": version,

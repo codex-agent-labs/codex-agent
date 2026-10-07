@@ -190,7 +190,7 @@ def _execute_metadata(plan, *, producer, sdk_version, request, repository_root,
     if any(path.exists() or path.is_symlink() for path in (destination, stage)):
         raise ValueError("Android metadata requires fresh diagnostics and product output")
     product_reuse._prepare_destination(stage, root).rmdir()
-    environment, wrapper = product_reuse._runtime_worker_environment(root, current, destination, environ)
+    environment, wrapper = product_reuse._runtime_worker_environment(root, current, destination, environ, build_directory=".")
     destination = product_reuse._prepare_destination(destination, root)
     fields = {
         "codexAgent.product": "sdk", "codexAgent.component": "sdk-android",

@@ -34,7 +34,7 @@ class FacadeValidationPhaseTest(unittest.TestCase):
         self.host = self.enterContext(patch.object(phase, "host_classifier", return_value="linux-x64"))
         self.checkout = self.enterContext(patch.object(phase, "_runtime_worker_checkout"))
         self.environment_gate = self.enterContext(patch.object(phase, "_runtime_worker_environment",
-            side_effect=lambda root, producer, destination, environ: (dict(environ), root / "gradlew")))
+            side_effect=lambda root, producer, destination, environ, *, build_directory: (dict(environ), root / "gradlew")))
         self.enterContext(patch.object(phase, "_request_inventory", side_effect=lambda path: {path: sha256_file(path)}))
         self.process = self.enterContext(patch.object(phase.subprocess, "run", side_effect=self.run_producer))
         self.source_capture = self.enterContext(patch.object(phase, "capture_facade_validation_sources",

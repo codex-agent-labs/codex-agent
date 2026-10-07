@@ -92,7 +92,7 @@ def execute(
         inputs.extend((compatibility_request, *request_inventory))
     _require_capability_output_separate(destination, [stage, *inputs])
     _require_capability_output_separate(stage, inputs)
-    environment, wrapper = _runtime_worker_environment(root, producer, destination, environ)
+    environment, wrapper = _runtime_worker_environment(root, producer, destination, environ, build_directory=".")
     _prepare_destination(stage, root).rmdir()
     destination = _prepare_destination(destination, root)
     fields.update({"codexAgent.product": "sdk", "codexAgent.component": "javascript",

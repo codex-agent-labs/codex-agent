@@ -102,7 +102,7 @@ def execute(plan: Mapping, *, producer: Mapping, repository_root: Path,
             raise ValueError("Core validation original input changed during execution")
 
     originals_unchanged()
-    environment, wrapper = _runtime_worker_environment(root, current, destination, environ)
+    environment, wrapper = _runtime_worker_environment(root, current, destination, environ, build_directory=".")
     destination = _prepare_destination(destination, root)
     retained_request = destination / "facade-request.json"
     with retained_request.open("xb") as stream:

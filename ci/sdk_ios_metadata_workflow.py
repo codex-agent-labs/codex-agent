@@ -84,7 +84,7 @@ def _execute_metadata(plan, *, producer, sdk_version, package_stage, validation_
         raise ValueError("iOS metadata requires fresh diagnostics and product output")
     product_reuse._prepare_destination(stage, root).rmdir()
     environment, wrapper = product_reuse._runtime_worker_environment(
-        root, current_producer, destination, environ)
+        root, current_producer, destination, environ, build_directory=".")
     destination = product_reuse._prepare_destination(destination, root)
     fields = {
         "codexAgent.product": "sdk", "codexAgent.component": "sdk-ios",

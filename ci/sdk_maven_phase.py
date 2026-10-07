@@ -154,7 +154,7 @@ def execute(plan, *, producer, sdk_version, repository_root, destination, enviro
             raise ValueError("Maven SDK private bytecode namespace was modified")
 
     unchanged()
-    environment, wrapper = _runtime_worker_environment(root, current, destination, environ)
+    environment, wrapper = _runtime_worker_environment(root, current, destination, environ, build_directory=".")
     for output in owned:
         _prepare_destination(output, root).rmdir()
     destination = _prepare_destination(destination, root)

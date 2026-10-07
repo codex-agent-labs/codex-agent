@@ -66,7 +66,7 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
             exec(compile(textwrap.dedent(code), '<action-' + step + '>', 'exec'), {})
 
     @staticmethod
-    def worker_environment(root, producer, destination, environ):
+    def worker_environment(root, producer, destination, environ, *, build_directory="runtime"):
         # Shared checkout/wrapper/environment admission is an explicit mock seam.
         return dict(environ, PYTHONPYCACHEPREFIX=str(destination / 'python-bytecode'),
                     PYTHONDONTWRITEBYTECODE='1', PYTHONNOUSERSITE='1', PYTHONSAFEPATH='1',

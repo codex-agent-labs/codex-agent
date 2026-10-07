@@ -4791,8 +4791,12 @@ def _allow_locked_runtime_node_fetch(instance, environment):
         environment["npm_config_registry"] = "https://registry.npmjs.org/"
 
 
-def _runtime_worker_environment(root, producer, destination, environ):
-    from products.gradle_bootstrap import require_preprovisioned_gradle
+def _runtime_worker_environment(root, producer, destination, environ, *, build_directory="runtime"):
+    from products.gradle_bootstrap import require_preprovisioned_gradle, seed_sdk_gradle_dependencies
+    if build_directory not in {"runtime", "."}:
+        raise ValueError("Product worker requires the fixed Runtime or root SDK build")
+    if build_directory == "." and environ.get("CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH", ""):
+        raise ValueError("SDK product commands remain offline after verified dependency seeding")
     environment = dict(environ)
     _runtime_worker_checkout(root, producer)
     for name in environment:
@@ -4827,6 +4831,14 @@ def _runtime_worker_environment(root, producer, destination, environ):
     if properties != git_regular_blob_bytes(root, producer["commit"], properties_path, max_bytes=64 * 1024):
         raise ValueError("Runtime worker wrapper properties differ from exact Git source")
     require_preprovisioned_gradle(properties, environment)
+    if build_directory == ".":
+        seed = destination.parent / (destination.name + "-dependency-seed")
+        if seed.exists() or seed.is_symlink():
+            raise ValueError("SDK dependency seed namespace must be fresh")
+        seed = _prepare_destination(seed, root)
+        seed.rmdir()
+        seed_sdk_gradle_dependencies(root, producer["commit"], wrapper, environment, seed)
+        _runtime_worker_checkout(root, producer)
     return environment, wrapper
 
 

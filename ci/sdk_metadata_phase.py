@@ -91,7 +91,7 @@ def execute(
               *(Path(path) for path in (tooling_keyring, tooling_keys_directory) if path is not None)]
     _require_capability_output_separate(destination, [stage, *inputs])
     _require_capability_output_separate(stage, inputs)
-    environment, wrapper = _runtime_worker_environment(root, producer, destination, environ)
+    environment, wrapper = _runtime_worker_environment(root, producer, destination, environ, build_directory=".")
     _prepare_destination(stage, root).rmdir()
     destination = _prepare_destination(destination, root)
     captured = destination / "inputs"

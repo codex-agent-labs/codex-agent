@@ -86,7 +86,7 @@ _SDK_SEED_SCRIPT = """gradle.projectsEvaluated {
 
 
 def seed_sdk_gradle_dependencies(root: Path, revision: str, wrapper: Path,
-                                 environment, destination: Path) -> None:
+                                 environment, destination: Path, *, platform_name=None) -> None:
     """Resolve only pinned build dependencies; the product command stays offline.
 
     The private fixture uses exact Git build/catalog bytes, never SDK sources or
@@ -107,9 +107,7 @@ def seed_sdk_gradle_dependencies(root: Path, revision: str, wrapper: Path,
     namespace = {"v": "https://schema.gradle.org/dependency-verification"}
     merged = None
     components = {}
-    for relative in ("runtime/build-logic/gradle/verification-metadata.xml",
-                     "runtime/gradle/verification-metadata.xml",
-                     ".github/actions/sdk-ios-binary-worker/verification-metadata.xml"):
+    for relative in (".github/actions/sdk-ios-binary-worker/verification-metadata.xml",):
         document = ET.fromstring(git_regular_blob_bytes(root, revision, relative, max_bytes=4 * 1024**2))
         configuration = document.find("v:configuration", namespace)
         if ((configuration is None and merged is None) or
@@ -144,7 +142,11 @@ def seed_sdk_gradle_dependencies(root: Path, revision: str, wrapper: Path,
     metadata.write_bytes(ET.tostring(merged, encoding="utf-8", xml_declaration=True))
     script = destination / "resolve-dependencies.gradle"
     script.write_text(_SDK_SEED_SCRIPT, encoding="utf-8")
-    command = [str(wrapper), "-p", str(destination / "gradle/build-logic"), "-I", str(script),
+    from ci.product_reuse import _runtime_worker_command
+    product_command = _runtime_worker_command(wrapper, {}, environment,
+        build_directory=".", platform_name=platform_name)
+    command = [*product_command[:product_command.index("--offline")],
+               "-p", str(destination / "gradle/build-logic"), "-I", str(script),
                "resolveSdkBuildDependencies", "--dependency-verification=strict",
                "--no-daemon", "--no-configuration-cache", "--console=plain"]
     with (destination / "gradle.log").open("xb") as log:

@@ -105,7 +105,7 @@ def _execute_validation(plan, *, producer, sdk_version, repository_root, destina
     _require_capability_output_separate(destination, [*protected, *owned])
     for output in owned:
         _require_capability_output_separate(output, protected)
-    environment, wrapper = product_reuse._runtime_worker_environment(root, producer, destination, environ)
+    environment, wrapper = product_reuse._runtime_worker_environment(root, producer, destination, environ, build_directory=".")
 
     def unchanged():
         product_reuse._runtime_worker_checkout(root, producer)
