@@ -1,13 +1,66 @@
 import assert from 'node:assert/strict';
-import {test} from 'node:test';
+import {test, mock} from 'node:test';
 import {createHash} from 'node:crypto';
 import {Readable, Writable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
-import {createGzip, createGunzip} from 'node:zlib';
-import {verify, main} from './cache.mjs';
+import {createGzip, createGunzip, gzipSync} from 'node:zlib';
+import {verify, main, cacheResponse} from './cache.mjs';
 import {mkdtemp, mkdir, writeFile, readFile, rm, realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+
+test('unavailable cache transport falls back; transient failures retry; successful bodies still require verification', async () => {
+  for (const status of [403, 404, 410, 429, 503]) {
+    let calls = 0;
+    assert.equal(await cacheResponse('https://example.invalid/', async () => {
+      calls++;
+      return new Response('unavailable', {status});
+    }), null);
+    assert.equal(calls, status === 429 || status >= 500 ? 3 : 1);
+  }
+  assert.equal(await cacheResponse('https://example.invalid/', async () => { throw new TypeError('network'); }), null);
+  let calls = 0;
+  const response = await cacheResponse('https://example.invalid/', async () => {
+    calls++;
+    return new Response('body', {status: calls === 1 ? 503 : 200});
+  });
+  assert.equal(calls, 2);
+  assert.equal(await response.text(), 'body');
+  await assert.rejects(cacheResponse('https://example.invalid/', async () => { throw new Error('programming defect'); }), /programming defect/);
+});
+
+test('restore reports unavailable cache as a miss without publishing; corrupt HTTP-success remains fatal', async () => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'hydrated-transport-check-')));
+  const previous = {...process.env};
+  const body = Buffer.from('qualified original');
+  const digest = createHash('sha256').update(body).digest('hex');
+  const row = {bytes: body.length, sha256: `sha256:${digest}`};
+  try {
+    const manifest = join(directory, 'manifest.json');
+    await writeFile(manifest, JSON.stringify([row]));
+    Object.assign(process.env, {INPUT_MODE: 'restore', INPUT_ROOT: directory, INPUT_MANIFEST: manifest,
+      INPUT_REPORT: join(directory, 'miss-report.json')});
+    const client = {GetCacheEntryDownloadURL: async ({key}) =>
+      ({ok: true, matchedKey: key, signedDownloadUrl: 'https://example.invalid/body'})};
+    const request = mock.method(globalThis, 'fetch', async () => new Response('unavailable', {status: 503}));
+    await main(client);
+    const report = JSON.parse(await readFile(process.env.INPUT_REPORT));
+    assert.equal(report.misses, 1);
+    assert.equal(report.hits, 0);
+    const file = join(directory, 'blobs', digest.slice(0, 2), digest);
+    await assert.rejects(readFile(file), {code: 'ENOENT'});
+    request.mock.mockImplementation(async () => new Response(gzipSync(Buffer.from('tampered'))));
+    process.env.INPUT_REPORT = join(directory, 'corrupt-report.json');
+    await assert.rejects(main(client), /identity mismatch/);
+    await assert.rejects(readFile(file), {code: 'ENOENT'});
+    await assert.rejects(readFile(process.env.INPUT_REPORT), {code: 'ENOENT'});
+  } finally {
+    mock.restoreAll();
+    for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
+    Object.assign(process.env, previous);
+    await rm(directory, {recursive: true, force: true});
+  }
+});
 
 test('gzip storage verifies exact bytes before publication; partial/tampered bodies fail', async () => {
   const body = Buffer.from('preserved original evidence');

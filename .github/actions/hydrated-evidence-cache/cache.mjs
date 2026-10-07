@@ -28,8 +28,22 @@ export function verify(row) {
   });
 }
 
+export async function cacheResponse(url, fetchBody = fetch) {
+  // An unavailable accelerator is a miss, not permission to bypass original admission.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let response;
+    try { response = await fetchBody(url); }
+    catch (error) { if (!(error instanceof TypeError)) throw error; }
+    if (response?.ok) return response;
+    if (response?.body) await response.body.cancel();
+    if (response && response.status !== 408 && response.status !== 429 && response.status < 500) break;
+  }
+  console.warn('Cache transport unavailable; restoring authenticated original evidence instead');
+  return null;
+}
 
-export async function main() {
+
+export async function main(client = internalCacheTwirpClient()) {
 const mode = process.env.INPUT_MODE;
 const root = process.env.INPUT_ROOT;
 if (!['restore', 'save'].includes(mode) || !isAbsolute(root)) throw Error('Invalid cache operation');
@@ -42,7 +56,6 @@ for (const row of records) {
   if (unique.has(row.sha256) && unique.get(row.sha256).bytes !== row.bytes) throw Error('Ambiguous cache identity');
   unique.set(row.sha256, row);
 }
-const client = internalCacheTwirpClient();
 const version = createHash('sha256').update('codex-hydrated-evidence-raw-gzip-v1').digest('hex');
 const stats = {mode, entries: unique.size, hits: 0, misses: 0, saved: 0, compressedBytes: 0, hydratedBytes: 0};
 const started = performance.now();
@@ -80,8 +93,8 @@ async function entry(row) {
     if (mode === 'restore') {
       if (!found.ok) { stats.misses++; return; }
       if (new URL(found.signedDownloadUrl).protocol !== 'https:') throw Error('Unsafe cache download URL');
-      const response = await fetch(found.signedDownloadUrl);
-      if (!response.ok) throw Error('Cache download failed');
+      const response = await cacheResponse(found.signedDownloadUrl);
+      if (response === null) { stats.misses++; return; }
       let compressed = 0;
       const count = new Transform({transform(chunk, _, done) {
         compressed += chunk.length;
