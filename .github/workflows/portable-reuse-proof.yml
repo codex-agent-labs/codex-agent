@@ -17,7 +17,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,10 +30,37 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@320d594e358c84d511b59db3eb5a60b7c604a352
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Recover the unchanged original phase without product execution
+      - name: Retrieve the exact original plan for authenticated capture
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: 11501403340
+          github-token: ${{ github.token }}
+          run-id: 37662871186
+          path: build/recovery-original-plan
+          merge-multiple: true
+      - name: Select installed caller Java for tooling verification
+        run: echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - id: diagnostic-tooling
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: 11372310363
+          artifact-sha256: sha256:32639b8d7e56ab9891f71a163e3d4b29aadee3d4308c50f1b22ef900f1672829
+          transport-producer: '{"commit":"7ad4880c2fef5d4bc021cf8c9beb283f5885efa7","tree":"ecbc35685fd083765eca88528f95f753adb8fe36","event":"pull_request","repository":"codex-agent-labs/codex-agent","pullRequest":31,"runId":37374073958,"runAttempt":1,"workflowPath":".github/workflows/ci.yml"}'
+          trusted-workflow-sha: 00feb2e6ffc0e633042ac4cebfb6495718fb82f7
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
+          policy-revision: 32da1aafe48c1e41576ca91f4bd7c7349c2e63c3
+      - id: diagnostic-apple-policy
+        uses: ./.github/actions/prepare-sdk-apple-policy
+        with:
+          plan-path: ${{ github.workspace }}/build/recovery-original-plan/impact-plan.json
+          tooling-policy: ${{ steps.diagnostic-tooling.outputs.tooling-policy }}
+      - name: Replay the complete original resume without product execution
         uses: ./.github/actions/hydrated-evidence-cache
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          SDK_VALIDATION_TOOLING: ${{ steps.diagnostic-tooling.outputs.tooling-policy }}
+          SDK_APPLE_VALIDATION_POLICY: ${{ steps.diagnostic-apple-policy.outputs.apple-policy }}
         with:
           mode: execute
           script: |
@@ -42,61 +69,97 @@ jobs:
             from pathlib import Path
             sys.path.insert(0, str(Path.cwd() / 'ci'))
             import product_reuse as products
-            from products.inventory import load_canonical_json_bytes, write_canonical_json, sha256_bytes
-            from products.restore import verification_session, verify_phase_shard
+            import runtime_workflow
+            from products.inventory import load_canonical_json_bytes, write_canonical_json
+            from products.restore import verification_session
             root = Path(os.environ['RUNNER_TEMP']) / 'recovery-diagnostics'
             root.mkdir(exist_ok=False)
             report = {'diagnosticOnly': True, 'productExecuted': False,
                       'executionRun': int(os.environ['GITHUB_RUN_ID']),
                       'executionAttempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
                       'executionSource': os.environ['GITHUB_SHA'],
-                      'verificationSource': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()}
+                      'verificationSource': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+                      'replayContext': 'original successful inputs and original consumer; diagnostic execution is separate',
+                      'originalConsumer': {'repository': 'codex-agent-labs/codex-agent',
+                          'workflowPath': '.github/workflows/ci.yml',
+                          'commit': '32da1aafe48c1e41576ca91f4bd7c7349c2e63c3',
+                          'tree': '0689ecd71853a215ff430a7f75f40345adc25d7c',
+                          'event': 'pull_request', 'runId': 37662871186,
+                          'runAttempt': 1, 'pullRequest': 31},
+                      'recoveryWaves': [], 'plannerWaves': []}
             try:
                 assert report['verificationSource'] == '32da1aafe48c1e41576ca91f4bd7c7349c2e63c3'
-                qualified = load_canonical_json_bytes(Path(os.environ['CODEX_AGENT_REUSE_QUALIFICATION']).read_bytes())
-                original = next(row for row in qualified['originals']
-                                if row['receipt']['component'] == 'linux-arm64' and row['receipt']['phase'] == 'binary')
-                instance = products._identity(original['receipt'])
-                key = original['receipt']['buildKey']
-                assert key == 'sha256:d95776c784a5541f167fcc3f1e723c6c2aec6ec813be0ed2f93ace3441a75656'
-                report['buildKey'] = key
-                report['originalProducer'] = original['receipt']['producer']
-                manifest = root / 'cache-manifest.json'
-                write_canonical_json(manifest, [{'sha256': row['sha256'], 'bytes': row['bytes']}
-                    for row in original['originalFiles'] if not row['relativePath'].startswith('inputs/')])
-                subprocess.run([os.environ['CODEX_AGENT_CACHE_NODE'], os.environ['CODEX_AGENT_HOSTED_CACHE_BACKEND']],
-                    check=True, env={**os.environ, 'INPUT_MODE': 'restore',
-                        'INPUT_ROOT': os.environ['CODEX_AGENT_HYDRATED_EVIDENCE'],
-                        'INPUT_MANIFEST': str(manifest), 'INPUT_REPORT': str(root / 'cache-restore.json')})
-                plan = {'event': 'pull_request', 'repository': 'codex-agent-labs/codex-agent', 'pullRequest': 31}
-                consumer = {'runId': report['executionRun'], 'runAttempt': report['executionAttempt']}
+                workspace = Path.cwd()
+                # Explicit historical replay context; never a claim about this diagnostic's producer.
+                original_environment = {**os.environ, 'GITHUB_RUN_ID': '37662871186', 'GITHUB_RUN_ATTEMPT': '1'}
+                plan_path = workspace / 'build/recovery-original-plan/impact-plan.json'
+                plan = products._validate_plan(plan_path, workspace)
+                assert products._consumer(plan, original_environment)['producer'] == report['originalConsumer']
                 token = os.environ['GITHUB_TOKEN']
+                pin = '320d594e358c84d511b59db3eb5a60b7c604a352'
+                uploads = {
+                    'plan': {'artifactId': 11501403340,
+                        'artifactSha256': 'sha256:f3f7f05b8697912cdf3cfe0a6da1f1f5a2bb62fa015cae9ea93fef68147202ed'},
+                    'state': {'artifactId': 11501493625,
+                        'artifactSha256': 'sha256:ec0fb829e82403384af6a8714c253b5f19b93e395d1458e5c1b1ad76ac1a7235'},
+                    'release': {'artifactId': 11501878831,
+                        'artifactSha256': 'sha256:db0b248ef1572997f8f38d05181d5a4772b31e97492c08ffb62c1db8a2c8146a'},
+                }
+                inputs = workspace / 'build/recovery-diagnostic-inputs'
+                state = workspace / 'build/recovery-diagnostic-state'
+                options = {'repository_root': workspace, 'environ': original_environment,
+                    'sdk_original_workflow_sha': pin,
+                    'sdk_validation_tooling': load_canonical_json_bytes(Path(os.environ['SDK_VALIDATION_TOOLING']).read_bytes()),
+                    'sdk_apple_validation_policy': load_canonical_json_bytes(Path(os.environ['SDK_APPLE_VALIDATION_POLICY']).read_bytes())}
+                original_capture = products.capture_prior_failed_runtime_phases
+                original_planner = products._plan_with_sdk_tooling
+                def traced_capture(*args, **kwargs):
+                    wave = {'wanted': [{**products._identity_record(instance), 'buildKey': key}
+                                       for instance, key in sorted(args[2].items())],
+                            'eligibleAttempts': len(kwargs['attempts']),
+                            'originalAttemptSelected': any((row['id'], row['run_attempt']) == (36579465980, 1)
+                                                           for row in kwargs['attempts']),
+                            'captured': []}
+                    report['recoveryWaves'].append(wave)
+                    write_canonical_json(root / 'report.json', report)
+                    captured = original_capture(*args, **kwargs)
+                    wave['captured'] = [products._identity_record(instance) for instance in sorted(captured)]
+                    write_canonical_json(root / 'report.json', report)
+                    return captured
+                def traced_planner(*args, **kwargs):
+                    result = original_planner(*args, **kwargs)
+                    report['plannerWaves'].append({'fullReuse': result['fullReuse'],
+                        'phases': [{name: phase[name] for name in ('product', 'component', 'phase', 'target',
+                            'state', 'buildKey', 'receiptSha256', 'objectSha256')} for phase in result['phases']]})
+                    write_canonical_json(root / 'report.json', report)
+                    return result
                 with verification_session():
-                    attempts = products._prior_failed_pr_attempts(plan, consumer, token)
-                    report['eligibleAttempts'] = len(attempts)
-                    report['originalAttemptSelected'] = any(
-                        (row['id'], row['run_attempt']) == (36579465980, 1) for row in attempts)
-                    print(json.dumps(report, sort_keys=True), flush=True)
-                    captured = products.capture_prior_failed_runtime_phases(plan, consumer, {instance: key},
-                        root / 'captured', trusted_workflow_sha='320d594e358c84d511b59db3eb5a60b7c604a352',
-                        token=token, attempts=attempts)
-                    report['capturedCount'] = len(captured)
-                    if instance not in captured:
-                        raise ValueError('Exact qualified original was not recovered')
-                    verified = verify_phase_shard(root / 'captured/linux-arm64/binary/linux-arm64/phases/binary/original/shard', instance)
-                    assert verified['receipt'] == original['receipt']
-                    assert sha256_bytes(verified['receiptBytes']) == original['receiptSha256']
-                    assert verified['objectSha256'] == original['objectSha256']
-                    report['receiptSha256'] = original['receiptSha256']
-                    report['objectSha256'] = original['objectSha256']
-                    report['result'] = 'recovered-original'
+                    transport = products.capture_product_resume_inputs(plan_path, inputs, uploads=uploads,
+                        trusted_workflow_sha=pin, repository_root=workspace, environ=original_environment, token=token,
+                        trusted_contract_workflow_path='.github/workflows/contract-validation.yml',
+                        trusted_contract_continuation_job='product-validation / contract-validation / contract-continuation')
+                    report['authenticatedInputUploads'] = {name: {'id': artifact['id'], 'digest': artifact['digest']}
+                        for name, artifact in transport['artifacts'].items()}
+                    products.capture_prior_failed_runtime_phases = traced_capture
+                    products._plan_with_sdk_tooling = traced_planner
+                    try:
+                        report['resumeResult'] = products.resume_products(inputs / 'plan/impact-plan.json',
+                            inputs / 'plan/product-reuse', inputs / 'state', inputs / 'release/contract-input',
+                            state, root / 'outputs', **options)
+                        report['runtimeMatrix'] = runtime_workflow.matrix(inputs / 'plan/impact-plan.json',
+                            state, state, root / 'outputs', **options)
+                    finally:
+                        products.capture_prior_failed_runtime_phases = original_capture
+                        products._plan_with_sdk_tooling = original_planner
+                report['result'] = 'diagnostic-complete'
             except Exception as error:
                 report['result'] = 'diagnostic-failure'
                 report['error'] = type(error).__name__ + ': ' + str(error)
                 raise
             finally:
                 write_canonical_json(root / 'report.json', report)
-                print(json.dumps(report, sort_keys=True), flush=True)
+                print(json.dumps({key: report[key] for key in ('diagnosticOnly', 'productExecuted',
+                    'executionRun', 'verificationSource', 'result')}, sort_keys=True), flush=True)
             PY
       - name: Preserve diagnostic observations, never product acceptance
         if: always()
@@ -105,7 +168,11 @@ jobs:
           name: reuse-recovery-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/recovery-diagnostics/report.json
-            ${{ runner.temp }}/recovery-diagnostics/cache-restore.json
+            ${{ runner.temp }}/recovery-diagnostics/outputs
+            build/recovery-diagnostic-state/reuse-wave-request.json
+            build/recovery-diagnostic-state/reuse-wave-result.json
+            build/recovery-diagnostic-state/producer.json
+            build/recovery-diagnostic-state/phase-plans/*.json
           if-no-files-found: warn
           overwrite: false
           retention-days: 90
