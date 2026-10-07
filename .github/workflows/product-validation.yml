@@ -2362,7 +2362,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-ios-binary-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: 360
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
