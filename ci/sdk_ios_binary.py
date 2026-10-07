@@ -202,6 +202,10 @@ def execute(
     unchanged()
     if stage.exists() or stage.is_symlink():
         raise ValueError("iOS SDK binary product stage appeared before execution")
+    from products.gradle_bootstrap import seed_sdk_gradle_dependencies
+    seed_sdk_gradle_dependencies(root, producer["commit"], wrapper, environment,
+                                 destination / "dependency-seed")
+    unchanged()
     command = _runtime_worker_command(wrapper, fields, environment, build_directory=".")
     started = time.monotonic_ns()
     return_code, launch_error = None, None

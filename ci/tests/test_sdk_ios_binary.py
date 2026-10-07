@@ -121,6 +121,7 @@ class SdkIosBinaryPropertiesTest(unittest.TestCase):
                 return_value=({"SAFE": "fixed environment"}, self.root / "gradlew"),
             ))
             self.checkout = stack.enter_context(patch.object(product_reuse, "_runtime_worker_checkout"))
+            self.seed = stack.enter_context(patch("products.gradle_bootstrap.seed_sdk_gradle_dependencies"))
             stack.enter_context(patch.object(sdk_ios_binary.subprocess, "run", side_effect=self.process))
             return sdk_ios_binary.execute(self.plan, **arguments)
 
@@ -209,6 +210,10 @@ class SdkIosBinaryPropertiesTest(unittest.TestCase):
             "native": regular_file_inventory(self.native),
         }
         result = self.execute()
+        self.seed.assert_called_once_with(
+            self.root, self.producer["commit"], self.root / "gradlew",
+            {"SAFE": "fixed environment"}, self.destination / "dependency-seed",
+        )
         self.assertEqual({"stage", "diagnostics", "outputInventory"}, set(result))
         self.assertEqual(self.product_stage, result["stage"])
         self.assertEqual(self.destination, result["diagnostics"])

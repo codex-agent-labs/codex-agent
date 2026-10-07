@@ -7,8 +7,10 @@ network isolation. Toolchain admission must independently authenticate tool byte
 import hashlib
 from pathlib import Path
 import re
+import subprocess
+import xml.etree.ElementTree as ET
 
-from .inventory import read_regular_file_bytes, require_regular_directory
+from .inventory import git_regular_blob_bytes, read_regular_file_bytes, require_regular_directory
 from .toolchain import _properties
 
 
@@ -55,3 +57,98 @@ def require_preprovisioned_gradle(properties_bytes: bytes, environment) -> Path:
     if not read_regular_file_bytes(launchers[0], max_bytes=128 * 1024 * 1024, reject_symlink_parents=True):
         raise ValueError("Offline Gradle launcher is empty")
     return installation
+
+
+_SDK_SEED_SCRIPT = """gradle.projectsEvaluated {
+    def catalog = rootProject.extensions.getByType(org.gradle.api.artifacts.VersionCatalogsExtension).named('libs')
+    def markers = rootProject.configurations.create('sdkPluginMarkers') {
+        canBeResolved = true
+        canBeConsumed = false
+    }
+    catalog.pluginAliases.each { alias ->
+        def plugin = catalog.findPlugin(alias).get().get()
+        rootProject.dependencies.add(markers.name,
+            plugin.pluginId + ':' + plugin.pluginId + '.gradle.plugin:' + plugin.version.requiredVersion)
+    }
+    rootProject.tasks.register('resolveSdkBuildDependencies') {
+        doLast {
+            ['sdkPluginMarkers', 'compileClasspath', 'runtimeClasspath', 'embeddedKotlin',
+             'kotlinBuildToolsApiClasspath', 'kotlinCompilerClasspath', 'kotlinCompilerPluginClasspathMain',
+             'compilePluginsBlocksPluginClasspathElements'].each { name ->
+                rootProject.configurations.getByName(name).files.each { file ->
+                    println('SDK_DEPENDENCY ' + file.name)
+                }
+            }
+        }
+    }
+}
+"""
+
+
+def seed_sdk_gradle_dependencies(root: Path, revision: str, wrapper: Path,
+                                 environment, destination: Path) -> None:
+    """Resolve only pinned build dependencies; the product command stays offline.
+
+    The private fixture uses exact Git build/catalog bytes, never SDK sources or
+    product tasks. Generated seed files and logs are external execution evidence.
+    """
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("SDK dependency seed requires a fresh destination")
+    require_regular_directory(destination.parent, "SDK dependency seed parent")
+    if destination.parent.resolve(strict=True) != destination.parent:
+        raise ValueError("SDK dependency seed parent must be normalized")
+    destination.mkdir()
+    for relative in ("gradle/build-logic/build.gradle.kts",
+                     "gradle/build-logic/settings.gradle.kts", "gradle/libs.versions.toml"):
+        path = destination / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(git_regular_blob_bytes(root, revision, relative, max_bytes=4 * 1024**2))
+
+    namespace = {"v": "https://schema.gradle.org/dependency-verification"}
+    merged = None
+    components = {}
+    for relative in ("runtime/build-logic/gradle/verification-metadata.xml",
+                     "runtime/gradle/verification-metadata.xml",
+                     ".github/actions/sdk-ios-binary-worker/verification-metadata.xml"):
+        document = ET.fromstring(git_regular_blob_bytes(root, revision, relative, max_bytes=4 * 1024**2))
+        configuration = document.find("v:configuration", namespace)
+        if ((configuration is None and merged is None) or
+                configuration is not None and configuration.findtext("v:verify-metadata", namespaces=namespace) != "true"):
+            raise ValueError("SDK seed requires metadata verification")
+        children = document.find("v:components", namespace)
+        if children is None:
+            raise ValueError("SDK seed lacks pinned components")
+        incoming = list(children)
+        if merged is None:
+            merged = document
+            merged.find("v:components", namespace).clear()
+        for component in incoming:
+            key = tuple(component.get(field) for field in ("group", "name", "version"))
+            if key not in components:
+                components[key] = component
+                continue
+            known = {artifact.get("name"): artifact for artifact in components[key]}
+            for artifact in component:
+                name = artifact.get("name")
+                if name not in known:
+                    components[key].append(artifact)
+                    known[name] = artifact
+                elif {item.get("value") for item in artifact.findall("v:sha256", namespace)} != {
+                        item.get("value") for item in known[name].findall("v:sha256", namespace)}:
+                    raise ValueError("SDK seed policies contain conflicting checksums")
+    merged.find("v:components", namespace).extend(components[key] for key in sorted(components))
+    metadata = destination / "gradle/build-logic/gradle/verification-metadata.xml"
+    metadata.parent.mkdir()
+    ET.register_namespace("", namespace["v"])
+    ET.register_namespace("xsi", "http://www.w3.org/2001/XMLSchema-instance")
+    metadata.write_bytes(ET.tostring(merged, encoding="utf-8", xml_declaration=True))
+    script = destination / "resolve-dependencies.gradle"
+    script.write_text(_SDK_SEED_SCRIPT, encoding="utf-8")
+    command = [str(wrapper), "-p", str(destination / "gradle/build-logic"), "-I", str(script),
+               "resolveSdkBuildDependencies", "--dependency-verification=strict",
+               "--no-daemon", "--no-configuration-cache", "--console=plain"]
+    with (destination / "gradle.log").open("xb") as log:
+        result = subprocess.run(command, cwd=root, env=dict(environment), stdout=log,
+                                stderr=subprocess.STDOUT, check=False)
+    if result.returncode:
+        raise ValueError(f"Pinned SDK dependency seeding failed; see {destination / 'gradle.log'}")
