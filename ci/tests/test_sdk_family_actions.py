@@ -35,13 +35,15 @@ class SdkFamilyActionsTest(unittest.TestCase):
         source = self.capture if name == "capture" else self.collect
         block = re.search(rf"(?ms)^    - id: {name}\n(.*?)(?=^    - |\Z)", source)
         self.assertIsNotNone(block)
-        script = textwrap.dedent(block[1].split("      run: |\n", 1)[1])
+        script = textwrap.dedent(block[1].split(
+            "script: |\n" if name == "capture" else "run: |\n", 1)[1])
         with tempfile.TemporaryDirectory(prefix="sdk-family-shell-") as temporary:
             root = Path(temporary)
             binary = root / "bin"
             binary.mkdir()
             python = binary / "python3"
             python.write_text("#!/bin/sh\nprintf '%s\\0' \"$@\" >> \"$RECORDED_ARGS\"\n"
+                              "printf '\\0' >> \"$RECORDED_ARGS\"\n"
                               "printf '%s' \"$GITHUB_TOKEN\" > \"$RECORDED_TOKEN\"\n"
                               "exit \"${PYTHON_EXIT:-0}\"\n")
             python.chmod(0o700)
@@ -54,11 +56,14 @@ class SdkFamilyActionsTest(unittest.TestCase):
                 "TRUSTED_WORKFLOW_SHA": "b" * 40, "STATE_WAVE": "0", "STATE_PRODUCT": "runtime",
                 "SDK_STATE_WAVE": "", "SDK_FAMILY": "", "COMPONENT": "", "PHASE": "", "TARGET": "",
                 "BUILD_KEY": "", "PRODUCT": "runtime", "INPUT_ROOT": "/original input/with spaces",
-                "WAVE": "1", "SDK_APPLE_VALIDATION_POLICY": "", **changes,
+                "WAVE": "1", "SDK_APPLE_VALIDATION_POLICY": "", "CONTINUATION": "", **changes,
             }
             result = subprocess.run([self.shell, "--noprofile", "--norc", "-c", script], cwd=root,
                                     env=environment, capture_output=True, text=True, check=False)
-            args = record.read_bytes().decode().split("\0")[:-1] if record.exists() else None
+            self.invocations = ([call.split("\0") for call in
+                                 record.read_bytes().decode().split("\0\0")[:-1]]
+                                if record.exists() else [])
+            args = self.invocations[0] if self.invocations else None
             observed_token = token.read_text() if token.exists() else None
             return result, args, observed_token, str(output)
 
@@ -173,6 +178,18 @@ class SdkFamilyActionsTest(unittest.TestCase):
                 self.assertNotEqual(0, result.returncode)
                 self.assertIsNone(args)
                 self.assertIsNone(token)
+
+    def test_runtime_reference_export_is_a_separate_post_collection_call(self):
+        result, _, _, _ = self.run_action("collect")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(2, len(self.invocations))
+        self.assertEqual(["-B", "ci/runtime_workflow.py", "export-references",
+            "--handoff", "build/runtime-next/handoff", "--base-root", "/original input/with spaces",
+            "--base-capture", "/original input/with spaces/capture-transport.json",
+            "--destination", "build/runtime-reference-handoff", "--state-wave", "1"], self.invocations[1])
+        result, _, _, _ = self.run_action("collect", PRODUCT="sdk")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(1, len(self.invocations))
 
     def test_python_failure_propagates_and_collection_forwards_capture_family(self):
         for name in ("capture", "collect"):

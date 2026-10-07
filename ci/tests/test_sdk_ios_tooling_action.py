@@ -24,25 +24,25 @@ class SdkIosToolingActionTest(unittest.TestCase):
         self.harness = actions.SdkFamilyActionsTest(methodName='runTest')
         self.harness.setUp()
 
-    def test_local_optional_capture_precedes_identity_and_setup(self):
+    def test_transport_only_capture_precedes_identity_and_setup(self):
         self.assertIn("  sdk-validation-tooling:\n    default: ''", self.action)
         self.assertIn("  sdk-apple-validation-policy:\n    default: ''", self.action)
         capture = self.action.split('    - id: captured\n', 1)[1].split('    - id: identity\n', 1)[0]
-        self.assertIn('sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}', capture)
-        self.assertIn('sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}', capture)
-        self.assertIn('product: sdk-ios-binary', capture)
+        self.assertIn('uses: ./.github/actions/capture-sdk-transport', capture)
+        for name in ('plan-id', 'artifact-id', 'artifact-sha256', 'state-wave', 'trusted-workflow-sha'):
+            self.assertIn(name + ': ${{ inputs.' + name + ' }}', capture)
+        for forbidden in ('capture-runtime-state', 'product:', 'sdk-validation-tooling:',
+                          'sdk-apple-validation-policy:'):
+            self.assertNotIn(forbidden, capture)
         self.assertLess(self.action.index('- id: captured'), self.action.index('- id: identity'))
         self.assertLess(self.action.index('- id: identity'), self.action.index('./.github/actions/setup-kmp'))
         for forbidden in ('capture-sdk-tooling', 'ci.tooling_capture', 'ci.tooling_discovery'):
             self.assertNotIn(forbidden, self.action)
-        for policy, apple in product(('', '/caller policy/tooling.json'), ('', '/caller policy/apple.json')):
-            result, args, _, output = self.harness.run_action('capture', STATE_PRODUCT='sdk-ios-binary',
-                SDK_VALIDATION_TOOLING=policy, SDK_APPLE_VALIDATION_POLICY=apple)
-            self.assertEqual(0, result.returncode, result.stderr)
-            selected = ['--ios-binary'] + (['--sdk-validation-tooling', policy] if policy else [])
-            if apple:
-                selected += ['--sdk-apple-validation-policy', apple]
-            self.assertEqual(self.harness.capture_arguments(output, selected, sdk=True), args)
+        identity = self.action.split('    - id: identity\n', 1)[1].split('    - uses:', 1)[0]
+        self.assertIn("expected = ('sdk', 'sdk-ios', 'binary', 'ios')", identity)
+        self.assertIn("rows[0].get('buildKey') != key", identity)
+        self.assertIn("plan['validationTree'] != os.environ['TREE']", identity)
+        self.assertIn('Transport and this reported selection grant no phase authority', identity)
 
     def test_actual_execution_shell_keeps_upload_tuple_and_optional_policy(self):
         block = self.action.split('    - name: Execute exact iOS SDK binary within verified original input lifetimes\n', 1)[1].split('\n    - ', 1)[0]
