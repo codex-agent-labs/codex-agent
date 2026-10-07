@@ -35,6 +35,40 @@ def _tar(path: Path, members: list[tuple[str, bytes]]) -> None:
 
 
 class SdkArchiveTest(unittest.TestCase):
+    def test_npm_directory_names_share_one_canonical_member_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            compatibility = root / "sdk-compatibility.json"
+            compatibility.write_bytes(canonical_json_bytes(sdk_compatibility()))
+            archive = root / "codex-agent-0.2.0.tgz"
+            output = root / "evidence.json"
+            for directories, collision, valid in (
+                (("package", "package/dist"), None, True),
+                (("package/", "package/dist/"), None, True),
+                (("package", "package/"), None, False),
+                (("package",), "package", False),
+                (("package//dist",), None, False),
+            ):
+                with self.subTest(directories=directories, collision=collision):
+                    with tarfile.open(archive, "w:gz") as package:
+                        for name in directories:
+                            entry = tarfile.TarInfo(name)
+                            entry.type = tarfile.DIRTYPE
+                            package.addfile(entry)
+                        for name, contents in (
+                            (NPM_COMPATIBILITY_PATH, compatibility.read_bytes()),
+                            ("package/package.json", b'{"name":"@codex-agent-labs/codex-agent","version":"0.2.0"}'),
+                            *([(collision, b"collision")] if collision else []),
+                        ):
+                            entry = tarfile.TarInfo(name)
+                            entry.size = len(contents)
+                            package.addfile(entry, io.BytesIO(contents))
+                    if not valid:
+                        with self.assertRaisesRegex(ValueError, "unsafe or duplicate"):
+                            verify_npm_sdk_compatibility(archive, compatibility, output, sdk_version="0.2.0")
+                    else:
+                        verify_npm_sdk_compatibility(archive, compatibility, output, sdk_version="0.2.0")
+
     def test_npm_archive_binds_one_exact_compatibility_member(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
