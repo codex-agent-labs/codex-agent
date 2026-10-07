@@ -163,6 +163,7 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
         self.assertNotIn("runtime-continuation", plan)
         self.assertNotIn("runtime-aggregate-continuation", plan)
         binary = self.job("sdk-ios-binary")
+        self.assertIn("timeout-minutes: 360", binary)
         self.assertIn("needs: [plan, product-resume, sdk-ios-binary-plan, apple, contract-validation]", binary)
         self.assertIn("uses: ./.github/actions/capture-sdk-tooling", binary)
         for name in ("native_tests", "rust_device", "rust_simulator"):

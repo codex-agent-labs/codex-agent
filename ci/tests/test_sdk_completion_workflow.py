@@ -140,7 +140,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                             ("transport-producer", "transport_producer")):
             self.assertIn(flag + ": ${{ needs.contract-validation.outputs.tooling_" + field + " }}", block)
         self.assertIn("policy-revision: ${{ needs.plan.outputs.validation_commit }}", block)
-        self.assertIn("trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}", block)
+        self.assertIn("trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}", block)
         self.assertIn("trusted-workflow-path: .github/workflows/contract-validation.yml", block)
         self.assertNotIn("needs.sdk-plan.outputs.tooling_", job)
         self.assertLess(job.index("select_sdk_completion_state"), job.index("./.github/actions/capture-sdk-tooling"))
@@ -209,13 +209,13 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             self.assertIn(flag + ": ${{ steps.parent.outputs." + field + " }}", capture)
         self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", capture)
         self.assertIn("sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}", capture)
-        self.assertIn("trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}", capture)
+        self.assertIn("trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}", capture)
         completion = job.split("        id: completion\n", 1)[1]
         for name, output in (("PLAN", "plan-path"), ("DISCOVERY_ROOT", "discovery-root"), ("STATE_ROOT", "state-root")):
             self.assertIn(name + ": ${{ steps.capture.outputs." + output + " }}", completion)
         self.assertIn("SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}", completion)
         self.assertIn("SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}", completion)
-        self.assertIn("TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}", completion)
+        self.assertIn("TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}", completion)
         self.assertIn("GITHUB_TOKEN: ${{ github.token }}", completion)
         for name, output in (("complete", "complete"), ("phase_count", "phaseCount"), ("full_reuse", "fullReuse")):
             self.assertIn(name + ": ${{ steps.completion.outputs." + output + " }}", job)
