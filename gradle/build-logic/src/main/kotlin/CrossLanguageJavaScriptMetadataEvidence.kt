@@ -11,8 +11,10 @@ internal fun restoreJavaScriptMetadataPackage(archive: File, destination: File) 
         generateSequence(archive) { it.parentFile }.none { Files.isSymbolicLink(it.toPath()) }) {
         "JavaScript metadata archive is missing or unsafe"
     }
-    check(!destination.exists() &&
-        generateSequence(destination) { it.parentFile }.none { Files.isSymbolicLink(it.toPath()) } &&
+    fun destinationAvailable() = (!destination.exists() ||
+        (destination.isDirectory && destination.list()?.isEmpty() == true)) &&
+        generateSequence(destination) { it.parentFile }.none { Files.isSymbolicLink(it.toPath()) }
+    check(destinationAvailable() &&
         !archive.canonicalFile.toPath().startsWith(destination.canonicalFile.toPath()) &&
         !destination.canonicalFile.toPath().startsWith(archive.canonicalFile.toPath())) {
         "JavaScript metadata package destination is occupied or overlaps its original"
@@ -51,7 +53,9 @@ internal fun restoreJavaScriptMetadataPackage(archive: File, destination: File) 
     val temporary = Files.createTempDirectory(destination.parentFile.toPath(), ".javascript-metadata-")
     try {
         retained.forEach { (name, bytes) -> Files.write(temporary.resolve(name), bytes) }
-        check(!destination.exists()) { "JavaScript metadata destination appeared during capture" }
+        check(destinationAvailable()) { "JavaScript metadata destination became occupied during capture" }
+        // Gradle precreates @OutputDirectory. Atomic directory rename accepts
+        // its empty directory, but cannot replace a file or nonempty directory.
         Files.move(temporary, destination.toPath(), ATOMIC_MOVE)
     } finally {
         if (Files.exists(temporary)) {

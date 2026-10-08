@@ -237,6 +237,11 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             assertFailsWith<IllegalStateException> { restoreJavaScriptMetadataPackage(good, captured) }
             assertEquals("exact:index.cjs", captured.resolve("index.cjs").readText())
             assertFailsWith<IllegalStateException> { restoreJavaScriptMetadataPackage(good, root) }
+            val precreated = root.resolve("gradle-output").apply { mkdirs() }
+            restoreJavaScriptMetadataPackage(good, precreated)
+            assertEquals(primaries.sorted(), precreated.listFiles()!!.map(File::getName).sorted())
+            primaries.forEach { assertEquals("exact:$it", precreated.resolve(it).readText()) }
+            assertTrue(original.contentEquals(good.readBytes()))
             listOf(
                 archive("missing.tgz", members.drop(1)),
                 archive("duplicate.tgz", members + members.first()),
