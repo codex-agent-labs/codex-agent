@@ -80,7 +80,8 @@ jobs:
           proof, storage = (json.load(open(path)) for path in sys.argv[1:])
           q = proof['portableQualification']
           assert proof['frozenPhases'] == 50 and proof['productInventories'] == 112
-          assert proof['selectedProductPhases'] == proof['changedProductInventories'] == 0
+          assert proof['selectedProductPhases'] == 0
+          assert proof.get('changedFrozenInventories', proof['changedProductInventories']) == 0
           assert q['qualificationHits'] == 46 and q['qualificationMisses'] == 0
           assert q['downloadedArtifactCount'] == q['downloadedArtifactBytes'] == 0
           assert proof['originalColdArchiveBytes'] == proof['originalRangeBytes'] == 0

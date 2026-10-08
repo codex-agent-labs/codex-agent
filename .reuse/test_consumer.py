@@ -16,6 +16,26 @@ RECORD = APPROVAL["qualifications"][0]
 
 
 class AcquisitionTests(unittest.TestCase):
+    def test_warm_proof_protects_frozen_scope_and_retains_legacy_zero_change_check(self):
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/approved-reuse.yml").read_text()
+        block = workflow.split("          q = proof['portableQualification']\n", 1)[1].split("          PY", 1)[0]
+        script = "q = proof['portableQualification']\n" + "\n".join(line[10:] for line in block.splitlines())
+        proof = {"frozenPhases": 50, "productInventories": 112, "selectedProductPhases": 0,
+                 "changedProductInventories": 0, "originalColdArchiveBytes": 0, "originalRangeBytes": 0,
+                 "portableQualification": {"qualificationHits": 46, "qualificationMisses": 0,
+                    "downloadedArtifactCount": 0, "downloadedArtifactBytes": 0}}
+        for changes, accepted in (({}, True), ({"changedProductInventories": 5}, False),
+                ({"changedProductInventories": 5, "changedFrozenInventories": 0}, True),
+                ({"changedProductInventories": 5, "changedFrozenInventories": 1}, False),
+                ({"selectedProductPhases": 1, "changedFrozenInventories": 0}, False)):
+            with self.subTest(changes=changes):
+                arguments = {"proof": {**proof, **changes}, "storage": {"entries": 1, "hits": 1, "misses": 0}}
+                if accepted:
+                    exec(compile(script, "warm-proof-check", "exec"), arguments)
+                else:
+                    with self.assertRaises(AssertionError):
+                        exec(compile(script, "warm-proof-check", "exec"), arguments)
+
     def verdict(self):
         return [{"verificationResult": {"statement": {
             "predicateType": "https://slsa.dev/provenance/v1",
