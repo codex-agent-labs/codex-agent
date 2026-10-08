@@ -7,7 +7,6 @@ and package evidence, and the original consumer directory independently.
 
 import os
 from pathlib import Path
-import subprocess
 import tempfile
 
 from .inventory import (
@@ -17,11 +16,21 @@ from .inventory import (
 from .plan import _upstream_record
 from .receipt import validate_phase_receipt, verify_output_manifest_identity
 from .sdk_package import _require_capability_output_separate
-from .tooling import verified_tooling_capture
 
 
 _LIMIT = 16 * 1024 * 1024
 _OUTPUT = "outputs/binding-evidence/javascript-typescript-parity.json"
+
+
+def javascript_metadata_uses_raw_validation(receipt):
+    """Only the already-preserved reviewed original may retain its old edge."""
+    producer = receipt["producer"]
+    return (tuple(receipt[field] for field in ("product", "component", "phase", "target", "productVersion"))
+            == ("sdk", "javascript", "metadata", "node", "0.8.0")
+            and producer["repository"] == "codex-agent-labs/codex-agent"
+            and (producer["commit"], producer["tree"]) == (
+                "e5746e17f5fd2354cbdab9c0e6f27731ed68a6b7",
+                "945047e23f5cb6371f36a85f7d41808d7c880944"))
 
 
 def _inventory(path):
@@ -43,6 +52,7 @@ def verify_sdk_javascript_metadata_content(
     repository: Path, tooling_evidence: Path, tooling_public_key: Path,
     java_executable: Path, policy_revision: str, required_trust_domain: str,
     tooling_keyring: Path | None = None, tooling_keys_directory: Path | None = None,
+    validation_projection=None,
 ) -> tuple[dict, bytes]:
     if (type(policy_revision) is not str or len(policy_revision) != 40
             or any(character not in "0123456789abcdef" for character in policy_revision)):
@@ -102,28 +112,38 @@ def verify_sdk_javascript_metadata_content(
         if (len(metadata["outputs"]) != 1 or metadata["outputs"][0]["relativePath"] != _OUTPUT
                 or metadata["outputs"][0]["kind"] != "binding-evidence"):
             raise ValueError("JavaScript metadata requires its sole exact semantic output")
-        if metadata["inputs"]["upstreamArtifacts"] != [_upstream_record(receipts["validation"])]:
-            raise ValueError("JavaScript metadata does not bind its original validation")
         expected = [_upstream_record(receipts[name]) for name in ("package", "runtime")]
         expected.sort(key=lambda record: tuple(record[field] for field in ("product", "component", "phase", "target")))
         if receipts["validation"]["inputs"]["upstreamArtifacts"] != expected:
             raise ValueError("JavaScript validation does not bind its original package and Runtime program")
-        content_output = private / "replayed.json"
-        with verified_tooling_capture(tooling_evidence, repository, tooling_public_key,
-                required_trust_domain=required_trust_domain, keyring=tooling_keyring,
-                keys_directory=tooling_keys_directory, policy_revision=policy_revision) as jar:
-            arguments = {"contract-stage": private / "contract", "package-stage": private / "package",
-                "validation-stage": private / "validation", "runtime-validation-stage": private / "runtime",
-                "original-consumer-directory": original_consumer_directory,
-                "contract-version": receipts["contract"]["productVersion"], "sdk-version": version,
-                "runtime-version": receipts["runtime"]["productVersion"], "content-output": content_output}
-            command = [str(java_executable), "-jar", str(jar), "write-javascript-metadata-content"]
-            command += [part for name, value in arguments.items() for part in (f"--{name}", str(value))]
-            environment = {key: value for key, value in os.environ.items() if key in {
-                "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL"}}
-            subprocess.run(command, cwd=private, env=environment, check=True,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        content = read_regular_file_bytes(content_output, max_bytes=_LIMIT, reject_symlink_parents=True)
+        from .sdk_javascript_validation_phase import (
+            VerifiedJavaScriptValidationProjection, verify_sdk_javascript_validation_projection,
+        )
+
+        legacy = javascript_metadata_uses_raw_validation(metadata)
+        if legacy and metadata["inputs"]["upstreamArtifacts"] != [_upstream_record(receipts["validation"])]:
+            raise ValueError("JavaScript metadata does not bind its original validation")
+        proof = validation_projection
+        if proof is None:
+            proof = verify_sdk_javascript_validation_projection(repository=repository,
+                **{f"{name}_stage": private / name for name in ("contract", "package", "validation")},
+                runtime_validation_stage=private / "runtime",
+                **{f"{name}_receipt": captured_receipts / f"{name}.json"
+                   for name in ("contract", "package", "validation")},
+                runtime_validation_receipt=captured_receipts / "runtime.json",
+                original_consumer_directory=original_consumer_directory,
+                tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
+                java_executable=java_executable, policy_revision=policy_revision,
+                required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
+                tooling_keys_directory=tooling_keys_directory)
+        if type(proof) is not VerifiedJavaScriptValidationProjection:
+            raise ValueError("JavaScript metadata requires the full factory-authenticated validation proof")
+        expected_validation = (_upstream_record(receipts["validation"])
+            if legacy
+            else proof.upstream_record(receipts["validation"]))
+        if metadata["inputs"]["upstreamArtifacts"] != [expected_validation]:
+            raise ValueError("JavaScript metadata does not bind its authenticated validation view")
+        content = proof.content_bytes(receipts["validation"])
         if not content or content != read_regular_file_bytes(private / "metadata" / _OUTPUT, max_bytes=_LIMIT):
             raise ValueError("Original JavaScript metadata differs from the full authenticated replay")
         for name, source in trees.items():

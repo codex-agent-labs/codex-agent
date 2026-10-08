@@ -283,6 +283,11 @@ def runtime_validation_dependencies(
     )
 
 
+def javascript_validation_dependencies(instance: PhaseInstanceId) -> tuple[PhaseInstanceId, ...]:
+    return ((PhaseInstanceId("sdk", "javascript", "validation", "node"),)
+            if instance == PhaseInstanceId("sdk", "javascript", "metadata", "node") else ())
+
+
 def native_runtime_validation_dependencies(instance: PhaseInstanceId) -> tuple[PhaseInstanceId, ...]:
     return tuple(identity for identity in sorted(phase_instance_dependencies(instance)) if (
         instance.product == "sdk" and instance.component in NATIVE_BINDINGS
@@ -377,6 +382,8 @@ def plan_phase(
     native_runtime_projections: tuple[VerifiedNativeRuntimeProjection, ...] | None = None,
     contract_execution_projection: VerifiedContractExecutionProjection | None = None,
     sdk_validation_projections: tuple[VerifiedSdkValidationProjection, ...] | None = None,
+    sdk_javascript_validation_projection=None,
+    sdk_javascript_legacy_metadata_receipt=None,
 ) -> dict[str, Any]:
     """Return the exact canonical inputs and build key for one registry phase."""
     if instance not in PHASE_INSTANCE_IDS:
@@ -443,6 +450,23 @@ def plan_phase(
             sdk_values[identity] = proof.receipt_value(upstream_by_identity[identity], package)
     elif sdk_validation_projections is not None:
         raise ValueError("Unexpected authenticated SDK validation projections")
+    javascript_upstream = None
+    javascript_identity = PhaseInstanceId("sdk", "javascript", "validation", "node")
+    if instance == PhaseInstanceId("sdk", "javascript", "metadata", "node"):
+        from .sdk_javascript_validation_phase import VerifiedJavaScriptValidationProjection
+        if type(sdk_javascript_validation_projection) is not VerifiedJavaScriptValidationProjection:
+            raise ValueError("Authenticated JavaScript validation projection is required for metadata")
+        javascript_upstream = sdk_javascript_validation_projection.upstream_record(
+            upstream_by_identity[javascript_identity])
+        if sdk_javascript_legacy_metadata_receipt is not None:
+            from .sdk_javascript_metadata import javascript_metadata_uses_raw_validation
+            legacy = validate_phase_receipt(sdk_javascript_legacy_metadata_receipt)
+            if (not javascript_metadata_uses_raw_validation(legacy)
+                    or legacy["inputs"]["inventory"] != inventory):
+                raise ValueError("JavaScript legacy metadata requires its exact reviewed original recipe")
+            javascript_upstream = _upstream_record(upstream_by_identity[javascript_identity])
+    elif sdk_javascript_validation_projection is not None or sdk_javascript_legacy_metadata_receipt is not None:
+        raise ValueError("Unexpected JavaScript validation projection or legacy metadata")
     if native_dependencies:
         if not isinstance(native_runtime_projections, (tuple, list)) or len(native_runtime_projections) != len(native_dependencies):
             raise ValueError("Authenticated native Runtime projections are required for every SDK dependency")
@@ -478,7 +502,7 @@ def plan_phase(
         raise ValueError("Unexpected authenticated Contract execution projection")
     upstream_artifacts = sorted(
         (
-            _upstream_record(
+            javascript_upstream if identity == javascript_identity and javascript_upstream is not None else _upstream_record(
                 receipt,
                 contract_value if identity == contract_identity else None,
                 execution_value if identity == execution_identity else
@@ -512,6 +536,10 @@ def plan_phase(
         target=instance.target,
         inputs=inputs,
     )
+    if sdk_javascript_legacy_metadata_receipt is not None and (
+            sdk_javascript_legacy_metadata_receipt["inputs"] != inputs
+            or sdk_javascript_legacy_metadata_receipt["buildKey"] != build_key):
+        raise ValueError("JavaScript legacy metadata differs from its exact original inputs/key")
     return {
         "schemaVersion": 1,
         "product": instance.product,

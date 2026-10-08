@@ -100,6 +100,7 @@ from products.plan import (
     runtime_validation_dependencies,
     native_runtime_validation_dependencies,
     sdk_validation_dependencies,
+    javascript_validation_dependencies,
 )
 from products.runtime_flags import load_runtime_binary_flags_bytes
 from products.sdk_dotnet_toolchain import load_sdk_dotnet_profile_bytes
@@ -2538,7 +2539,8 @@ def _validate_reuse_result(
             {"kind", *_IDENTITY_KEYS, "dependencies"},
             label,
         )
-        if requirement["kind"] not in {"runtime-validation-evidence", "native-runtime-validation-evidence", "sdk-validation-evidence"}:
+        if requirement["kind"] not in {"runtime-validation-evidence", "native-runtime-validation-evidence", "sdk-validation-evidence",
+                                        "sdk-javascript-validation-evidence"}:
             raise ValueError("Reuse continuation requirement kind is invalid")
         instance = _identity(requirement)
         if instance not in phase_by_instance:
@@ -2546,6 +2548,7 @@ def _validate_reuse_result(
         dependencies = (native_runtime_validation_dependencies(instance)
                         if requirement["kind"] == "native-runtime-validation-evidence"
                         else sdk_validation_dependencies(instance) if requirement["kind"] == "sdk-validation-evidence"
+                        else javascript_validation_dependencies(instance) if requirement["kind"] == "sdk-javascript-validation-evidence"
                         else runtime_validation_dependencies(instance))
         if not dependencies:
             raise ValueError("Reuse continuation requirement is not applicable")
@@ -2562,7 +2565,7 @@ def _validate_reuse_result(
         instance for instance in closure
         if phase_by_instance[instance]["state"] == "waiting"
         and (runtime_validation_dependencies(instance) or native_runtime_validation_dependencies(instance)
-             or sdk_validation_dependencies(instance))
+             or sdk_validation_dependencies(instance) or javascript_validation_dependencies(instance))
         and all(dependency in selected_set or (
             sdk_runtime_external and instance.product == "sdk" and dependency.product == "runtime")
             for dependency in phase_instance_dependencies(instance))
@@ -2997,6 +3000,84 @@ def _apple_package_origin(plan_path, root, workflow_sha, environment):
             "token": environment.get("GITHUB_TOKEN", "")}
 
 
+def _javascript_projection_provider(request, tooling, original_context):
+    """Authenticate the original upload/cwd before deriving a metadata key view."""
+    if (tooling is None or original_context is None or not any(
+            javascript_validation_dependencies(_identity(value)) for value in request.get("requested", []))):
+        return None
+    from products.sdk_javascript_validation_phase import verify_sdk_javascript_validation_projection
+
+    policy = require_exact_keys(tooling,
+        {"evidence", "publicKey", "javaExecutable", "requiredTrustDomain", "keyring", "keysDirectory"},
+        "JavaScript caller tooling policy")
+    arguments = {name: (None if policy[field] is None and field in {"keyring", "keysDirectory"}
+                       else Path(require_string(policy[field], f"JavaScript tooling {field}")))
+                 for field, name in (("evidence", "tooling_evidence"), ("publicKey", "tooling_public_key"),
+                     ("javaExecutable", "java_executable"), ("keyring", "tooling_keyring"),
+                     ("keysDirectory", "tooling_keys_directory"))}
+    if any(path is not None and not path.is_absolute() for path in arguments.values()):
+        raise ValueError("JavaScript tooling paths must be absolute caller inputs")
+    objects = {_identity(record): record for record in request["availableObjects"]}
+    artifact_root = Path(request["artifactRoot"])
+    proofs = {}
+
+    def verify(instance, originals):
+        if not javascript_validation_dependencies(instance) or len(originals) != 4:
+            raise ValueError("JavaScript projection requires its exact metadata input family")
+        selected = {_identity(value["receipt"]): value for value in originals}
+        records = [objects.get(_identity(value["receipt"])) for value in originals]
+        if any(record is None for record in records):
+            return None
+        for record, original in zip(records, originals, strict=True):
+            if any(record[field] != original[field] for field in ("receiptSha256", "objectSha256")) or \
+                    record["buildKey"] != original["receipt"]["buildKey"]:
+                raise ValueError("JavaScript selected object differs from its authenticated original")
+        validation = selected[PhaseInstanceId("sdk", "javascript", "validation", "node")]
+        if validation["receipt"]["producer"]["event"] == "local":
+            return None  # Local proofs require their own explicit, observed caller context.
+        key = tuple((value["receiptSha256"], value["objectSha256"]) for value in originals)
+        if key not in proofs:
+            with tempfile.TemporaryDirectory(prefix="sdk-javascript-key-proof-") as temporary:
+                private = Path(temporary).resolve()
+                (private / "stages").mkdir()
+                stages, receipts = {}, {}
+                for index, (record, original) in enumerate(zip(records, originals, strict=True)):
+                    identity = _identity(original["receipt"])
+                    stages[identity] = private / "stages" / str(index)
+                    restored = restore_object(artifact_root / require_relative_path(record["objectPath"], "JS original object"),
+                        stages[identity], build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
+                        object_sha256=record["objectSha256"])
+                    if restored["receiptBytes"] != original["receiptBytes"]:
+                        raise ValueError("JavaScript restored input differs from its selected original")
+                    receipts[identity] = private / f"receipt-{index}.json"
+                    receipts[identity].write_bytes(original["receiptBytes"])
+                validation_id = PhaseInstanceId("sdk", "javascript", "validation", "node")
+                from sdk_javascript_validation_locator import locate_javascript_validation_upload
+                locator = locate_javascript_validation_upload(receipts[validation_id],
+                    trusted_workflow_sha=original_context["trusted_workflow_sha"], token=original_context["token"])
+                transport = capture_sdk_javascript_validation_upload(original_context["plan_path"], private / "upload",
+                    validation_receipt_path=receipts[validation_id], **locator,
+                    trusted_workflow_sha=original_context["trusted_workflow_sha"],
+                    repository_root=original_context["repository_root"], environ=original_context["environ"],
+                    token=original_context["token"])
+                inputs = {}
+                for name, identity in (("contract", PhaseInstanceId("contract", "contract", "binary", "common")),
+                        ("package", PhaseInstanceId("sdk", "javascript", "package", "node")),
+                        ("validation", validation_id),
+                        ("runtime_validation", PhaseInstanceId("runtime", "node-js", "validation", "node-js-binding"))):
+                    inputs[f"{name}_stage"], inputs[f"{name}_receipt"] = stages[identity], receipts[identity]
+                proofs[key] = verify_sdk_javascript_validation_projection(**inputs, **arguments,
+                    original_consumer_directory=Path(transport["originalConsumerDirectory"]),
+                    # Deliberate original-source readmission, after observed
+                    # job/upload authentication; never a tooling-error fallback.
+                    repository=original_context["repository_root"],
+                    policy_revision=validation["receipt"]["producer"]["commit"],
+                    required_trust_domain=policy["requiredTrustDomain"])
+        return proofs[key]
+
+    return verify
+
+
 def _plan_with_sdk_tooling(request, tooling, *, apple_policy=None, apple_package_origin=None, **kwargs):
     # Never serialize invocation authority into retained control or evidence.
     if {"sdkValidationTooling", "sdkAppleValidationPolicy"} & request.keys():
@@ -3028,6 +3109,10 @@ def _plan_with_sdk_tooling(request, tooling, *, apple_policy=None, apple_package
     else:
         context = nullcontext(None)
     with context as factory:
+        if "sdk_javascript_validation_projection_provider" not in kwargs:
+            javascript_provider = _javascript_projection_provider(request, tooling, apple_package_origin)
+            if javascript_provider is not None:
+                kwargs["sdk_javascript_validation_projection_provider"] = javascript_provider
         result = plan_reuse_wave(invocation,
             **({"sdk_apple_package_admission_factory": factory} if factory is not None else {}), **kwargs)
     if apple_package_origin is not None and needs_package and apple_policy is not None:

@@ -8,8 +8,8 @@ import unittest
 from unittest.mock import patch
 
 from ci.products.inventory import canonical_json_bytes, git_product_versions, regular_file_inventory
-from ci.products.plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST, plan_phase
-from ci.products.receipt import write_output_manifest
+from ci.products.plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST, _upstream_record, plan_phase
+from ci.products.receipt import compute_build_key, write_output_manifest
 from ci.products.registry import PhaseInstanceId
 from ci.products.sdk_javascript_metadata import verify_sdk_javascript_metadata_content
 from ci.products.sdk_javascript_metadata_admission import (
@@ -79,10 +79,23 @@ class SdkJavaScriptMetadataAdmissionTest(unittest.TestCase):
         identity = PhaseInstanceId("sdk", "javascript", phase, "node")
         upstream = ([support.receipts["validation"]] if phase == "metadata" else
                     [support.receipts["package"], support.receipts["runtime"]])
+        projection = {}
+        if phase == "metadata":
+            from ci.products.sdk_javascript_validation_phase import verify_sdk_javascript_validation_projection
+
+            raw = support.receipt_paths["validation"].read_bytes()
+            with patch("ci.products.sdk_javascript_validation_phase._verify_sdk_javascript_validation",
+                       return_value=(support.receipts["validation"], raw, support.content)):
+                projection["sdk_javascript_validation_projection"] = verify_sdk_javascript_validation_projection()
         plan = plan_phase(identity, inventory=phase_git_inventory(self.repository, commit, identity),
             versions=git_product_versions(self.repository, commit), upstream_receipts=upstream,
             toolchain_profile_digest=NOT_APPLICABLE_TOOLCHAIN_DIGEST,
-            flags_digest=NOT_APPLICABLE_FLAGS_DIGEST, output_schema_version=1)
+            flags_digest=NOT_APPLICABLE_FLAGS_DIGEST, output_schema_version=1, **projection)
+        if phase == "metadata":
+            # Explicit legacy fixture recipe, not an approved production source.
+            plan["inputs"]["upstreamArtifacts"] = [_upstream_record(support.receipts["validation"])]
+            plan["buildKey"] = compute_build_key(product="sdk", component="javascript", phase=phase,
+                                                 target="node", inputs=plan["inputs"])
         self.assertTrue(plan["inputs"]["inventory"])
         if phase == "metadata":
             self.assertIn(self.metadata_source.relative_to(self.repository).as_posix(),
@@ -112,8 +125,11 @@ class SdkJavaScriptMetadataAdmissionTest(unittest.TestCase):
         return result
 
     def verify(self):
-        with patch("ci.products.sdk_javascript_metadata.verified_tooling_capture", self.tooling), \
-                patch("ci.products.sdk_javascript_metadata.subprocess.run", self.process), \
+        with patch("ci.products.sdk_javascript_validation_phase.verified_tooling_capture", self.tooling), \
+                patch("ci.products.sdk_javascript_validation_phase.subprocess.run", self.process), \
+                patch("ci.products.sdk_javascript_validation_phase._verify_sdk_javascript_validation", self.support.synthetic_validation), \
+                patch("ci.products.sdk_javascript_metadata.javascript_metadata_uses_raw_validation", return_value=True), \
+                patch("ci.products.sdk_javascript_metadata_admission.javascript_metadata_uses_raw_validation", return_value=True), \
                 patch("ci.products.sdk_javascript_metadata_admission.verify_sdk_javascript_metadata_content", self.content):
             return verify_sdk_javascript_metadata_admission(**self.support.args)
 

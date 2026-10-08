@@ -12,10 +12,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from ci.products.inventory import canonical_json_bytes, regular_file_inventory
+from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory
 from ci.products.plan import _upstream_record
 from ci.products.receipt import write_output_manifest
-from ci.products.sdk_javascript_metadata import verify_sdk_javascript_metadata_content
+from ci.products.sdk_javascript_metadata import (
+    javascript_metadata_uses_raw_validation, verify_sdk_javascript_metadata_content,
+)
 from ci.tests.product_chain_support import write_receipt
 
 
@@ -115,18 +117,78 @@ class SdkJavaScriptMetadataTest(unittest.TestCase):
         for name, flag in (("contract", "contract-stage"), ("package", "package-stage"),
                            ("validation", "validation-stage"), ("runtime", "runtime-validation-stage")):
             captured = Path(fields[f"--{flag}"])
-            self.assertEqual(captured, private / name)
+            self.assertEqual(captured.parent, private)
             self.assertEqual(regular_file_inventory(captured), regular_file_inventory(self.stage_paths[name]))
-        for name, path in self.receipt_paths.items():
-            self.assertEqual((private / "receipts" / f"{name}.json").read_bytes(), path.read_bytes())
+        for name, path in self.projected_receipts.items():
+            self.assertEqual(path.read_bytes(), self.receipt_paths[name].read_bytes())
         Path(fields["--content-output"]).write_bytes(self.content)
         self.mutate(fields)
         return subprocess.CompletedProcess(command, 0, b"", b"")
 
-    def verify(self, **overrides):
-        with patch("ci.products.sdk_javascript_metadata.verified_tooling_capture", self.tooling), \
-                patch("ci.products.sdk_javascript_metadata.subprocess.run", self.process):
+    def verify(self, *, fixture_legacy=True, **overrides):
+        with patch("ci.products.sdk_javascript_validation_phase.verified_tooling_capture", self.tooling), \
+                patch("ci.products.sdk_javascript_validation_phase.subprocess.run", self.process), \
+                patch("ci.products.sdk_javascript_validation_phase._verify_sdk_javascript_validation", self.synthetic_validation), \
+                patch("ci.products.sdk_javascript_metadata.javascript_metadata_uses_raw_validation", return_value=fixture_legacy):
             return verify_sdk_javascript_metadata_content(**{**self.args, **overrides})
+
+    def test_semantic_metadata_edge_requires_opaque_original_validation_view(self):
+        from ci.products.sdk_javascript_validation_phase import verify_sdk_javascript_validation_projection
+
+        raw = self.receipt_paths["validation"].read_bytes()
+        with patch("ci.products.sdk_javascript_validation_phase._verify_sdk_javascript_validation",
+                   return_value=(self.receipts["validation"], raw, self.content)):
+            proof = verify_sdk_javascript_validation_projection()
+        with self.assertRaisesRegex(ValueError, "authenticated validation view"):
+            self.verify(fixture_legacy=False)
+        self.rewrite("metadata", upstream=[proof.upstream_record(self.receipts["validation"])])
+        receipt, original = self.verify(fixture_legacy=False)
+        self.assertEqual(original, self.receipt_paths["metadata"].read_bytes())
+        self.assertEqual(receipt["inputs"]["upstreamArtifacts"], [proof.upstream_record(self.receipts["validation"])])
+
+    def test_legacy_recipe_is_limited_to_exact_preserved_reviewed_source(self):
+        receipt = deepcopy(self.receipts["metadata"])
+        self.assertFalse(javascript_metadata_uses_raw_validation(receipt))
+        receipt["productVersion"] = "0.8.0"
+        receipt["producer"].update(repository="codex-agent-labs/codex-agent",
+            commit="e5746e17f5fd2354cbdab9c0e6f27731ed68a6b7", tree="945047e23f5cb6371f36a85f7d41808d7c880944")
+        self.assertTrue(javascript_metadata_uses_raw_validation(receipt))
+        receipt["producer"]["tree"] = "f" * 40
+        self.assertFalse(javascript_metadata_uses_raw_validation(receipt))
+
+    def synthetic_validation(self, **arguments):
+        """Mock full-verifier boundary only; never genuine projection evidence."""
+        from ci.products import sdk_javascript_validation_phase as verifier
+
+        fields = {name: arguments[f"{name}_stage"] for name in ("contract", "package", "validation")}
+        fields["runtime"] = arguments["runtime_validation_stage"]
+        self.projected_receipts = {name: arguments[f"{name}_receipt"]
+                                  for name in ("contract", "package", "validation")}
+        self.projected_receipts["runtime"] = arguments["runtime_validation_receipt"]
+        before = {name: regular_file_inventory(path) for name, path in fields.items()}
+        raw = {name: path.read_bytes() for name, path in self.projected_receipts.items()}
+        private = arguments["validation_stage"].parent
+        output = private / "replayed.json"
+        with verifier.verified_tooling_capture(arguments["tooling_evidence"], arguments["repository"],
+                arguments["tooling_public_key"], required_trust_domain=arguments["required_trust_domain"],
+                keyring=arguments.get("tooling_keyring"), keys_directory=arguments.get("tooling_keys_directory"),
+                policy_revision=arguments["policy_revision"]) as jar:
+            options = {"contract-stage": fields["contract"], "package-stage": fields["package"],
+                "validation-stage": fields["validation"], "runtime-validation-stage": fields["runtime"],
+                "original-consumer-directory": arguments["original_consumer_directory"],
+                "contract-version": "0.2.0", "sdk-version": "0.3.0", "runtime-version": "0.2.7",
+                "content-output": output}
+            command = [str(arguments["java_executable"]), "-jar", str(jar), "write-javascript-metadata-content"]
+            command += [part for name, value in options.items() for part in (f"--{name}", str(value))]
+            verifier.subprocess.run(command, cwd=private, env={}, check=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if (any(regular_file_inventory(path) != before[name] for name, path in fields.items())
+                or any(path.read_bytes() != raw[name] for name, path in self.projected_receipts.items())):
+            raise ValueError("Synthetic verifier inputs changed during replay")
+        content = output.read_bytes()
+        if content != (fields["validation"] / "outputs/binding-evidence/javascript-typescript-parity.json").read_bytes():
+            raise ValueError("JavaScript validation differs from the full authenticated replay")
+        return load_canonical_json_bytes(raw["validation"]), raw["validation"], content
 
     def test_exact_original_receipts_private_stages_versions_and_raw_bytes(self):
         before = regular_file_inventory(self.root)
@@ -208,8 +270,10 @@ class SdkJavaScriptMetadataTest(unittest.TestCase):
             self.verify()
         self.exit_hook = lambda: None
         self.receipt_paths["contract"].write_bytes(canonical_json_bytes(self.receipts["contract"]))
-        with patch("ci.products.sdk_javascript_metadata.verified_tooling_capture", self.tooling), \
-                patch("ci.products.sdk_javascript_metadata.subprocess.run", side_effect=subprocess.CalledProcessError(1, "java")):
+        with patch("ci.products.sdk_javascript_validation_phase.verified_tooling_capture", self.tooling), \
+                patch("ci.products.sdk_javascript_validation_phase.subprocess.run", side_effect=subprocess.CalledProcessError(1, "java")), \
+                patch("ci.products.sdk_javascript_validation_phase._verify_sdk_javascript_validation", self.synthetic_validation), \
+                patch("ci.products.sdk_javascript_metadata.javascript_metadata_uses_raw_validation", return_value=True):
             with self.assertRaises(subprocess.CalledProcessError):
                 verify_sdk_javascript_metadata_content(**self.args)
 

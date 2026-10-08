@@ -51,6 +51,7 @@ from .plan import (
     verify_runtime_validation_projection,
     native_runtime_validation_dependencies, _native_runtime_projections_from_request,
     sdk_validation_dependencies,
+    javascript_validation_dependencies,
     NATIVE_RUNTIME_EVIDENCE_KEYS, VerifiedNativeRuntimeProjection,
     _native_runtime_projection_from_record, _contract_projection_from_request_components,
 )
@@ -1105,6 +1106,7 @@ def plan_reuse_wave(
     sdk_apple_package_admission_factory: Callable[[dict[str, Any]], ApplePackageAdmission] | None = None,
     sdk_facade_metadata_admission: FacadeMetadataAdmission | None = None,
     sdk_android_metadata_admission: AndroidMetadataAdmission | None = None,
+    sdk_javascript_validation_projection_provider=None,
 ) -> dict[str, Any]:
     """Decode one strict control request and delegate all resolution to advance_reuse."""
     if sdk_runtime_consumer is not None and not callable(sdk_runtime_consumer):
@@ -1489,6 +1491,7 @@ def plan_reuse_wave(
             runtime_validation_projection_provider=runtime_validation_projection_provider,
             native_runtime_projection_provider=native_runtime_projection_provider,
             sdk_validation_projection_provider=sdk_projection_provider,
+            sdk_javascript_validation_projection_provider=sdk_javascript_validation_projection_provider,
             sdk_apple_package_admission=sdk_apple_package_admission,
             sdk_apple_package_admission_factory=sdk_apple_package_admission_factory,
             sdk_apple_validation_admission=apple_admission,
@@ -1532,6 +1535,8 @@ def _plan(
         "native_runtime_projections",
         "contract_execution_projection",
         "sdk_validation_projections",
+        "sdk_javascript_validation_projection",
+        "sdk_javascript_legacy_metadata_receipt",
     }
     if not _PHASE_INPUT_KEYS.issubset(keys) or not keys.issubset(allowed):
         raise ValueError(f"Phase inputs fields are invalid: {instance}")
@@ -1604,6 +1609,7 @@ def advance_reuse(
     sdk_apple_package_admission_factory: Callable[[dict[str, Any]], ApplePackageAdmission] | None = None,
     sdk_facade_metadata_admission: FacadeMetadataAdmission | None = None,
     sdk_android_metadata_admission: AndroidMetadataAdmission | None = None,
+    sdk_javascript_validation_projection_provider=None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
     """Resolve verified reuse and return only the next dependency-ready build wave.
 
@@ -1669,6 +1675,8 @@ def advance_reuse(
         raise ValueError("Contract execution projection provider must be callable")
     if sdk_validation_projection_provider is not None and not callable(sdk_validation_projection_provider):
         raise ValueError("SDK validation projection provider must be callable")
+    if sdk_javascript_validation_projection_provider is not None and not callable(sdk_javascript_validation_projection_provider):
+        raise ValueError("JavaScript validation projection provider must be caller-owned and callable")
     resolved_repository_root = None if repository_root is None else Path(repository_root)
     if (sdk_runtime_receipts is None) != (sdk_default_runtime_version is None):
         raise ValueError("SDK Runtime dependencies require original receipts and selected default together")
@@ -1703,7 +1711,8 @@ def advance_reuse(
     for instance, values in phase_inputs.items():
         if not isinstance(values, Mapping):
             raise ValueError(f"Phase inputs must be a mapping: {instance}")
-        if {"runtime_validation_projection", "contract_execution_projection", "native_runtime_projections", "sdk_validation_projections"} & set(values):
+        if {"runtime_validation_projection", "contract_execution_projection", "native_runtime_projections", "sdk_validation_projections",
+            "sdk_javascript_validation_projection", "sdk_javascript_legacy_metadata_receipt"} & set(values):
             raise ValueError("Callers cannot supply an execution validation projection")
         effective_inputs[instance] = dict(values)
     envelopes: dict[PhaseInstanceId, dict[str, Any]] = {}
@@ -1817,6 +1826,32 @@ def advance_reuse(
                     }
                     continue
                 effective_inputs[instance]["sdk_validation_projections"] = sdk_projections
+                continuation_requirements.pop(instance, None)
+            javascript_dependencies = javascript_validation_dependencies(instance)
+            if javascript_dependencies:
+                originals = tuple(dependency_envelope(instance, dependency) for dependency in (
+                    PhaseInstanceId("contract", "contract", "binary", "common"),
+                    PhaseInstanceId("sdk", "javascript", "package", "node"),
+                    PhaseInstanceId("sdk", "javascript", "validation", "node"),
+                    PhaseInstanceId("runtime", "node-js", "validation", "node-js-binding")))
+                proof = (None if sdk_javascript_validation_projection_provider is None or any(
+                    original is None for original in originals) else
+                    sdk_javascript_validation_projection_provider(instance, originals))
+                if proof is None:
+                    continuation_requirements[instance] = {
+                        "kind": "sdk-javascript-validation-evidence", "product": instance.product,
+                        "component": instance.component, "phase": instance.phase, "target": instance.target,
+                        "dependencies": [{"product": item.product, "component": item.component,
+                                          "phase": item.phase, "target": item.target}
+                                         for item in javascript_dependencies],
+                    }
+                    continue
+                effective_inputs[instance]["sdk_javascript_validation_projection"] = proof
+                if instance in envelopes:
+                    from .sdk_javascript_metadata import javascript_metadata_uses_raw_validation
+                    original_metadata = envelopes[instance]["receipt"]
+                    if javascript_metadata_uses_raw_validation(original_metadata):
+                        effective_inputs[instance]["sdk_javascript_legacy_metadata_receipt"] = original_metadata
                 continuation_requirements.pop(instance, None)
             plan = _plan(
                 instance,
