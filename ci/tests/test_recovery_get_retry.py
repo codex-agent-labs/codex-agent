@@ -1,6 +1,8 @@
 """Recovery retries transport failures, never failed content authentication."""
 import hashlib
 import io
+import socket
+import ssl
 from pathlib import Path
 import tempfile
 import unittest
@@ -14,6 +16,9 @@ import reuse
 class RecoveryGetRetryTest(unittest.TestCase):
     def test_timeout_retries_are_bounded_and_authentication_errors_do_not_retry(self):
         for error, calls in ((TimeoutError("read timed out"), 4),
+                             (urllib.error.URLError(socket.gaierror(8, "nodename nor servname provided")), 4),
+                             (urllib.error.URLError(ssl.SSLCertVerificationError("certificate rejected")), 1),
+                             (urllib.error.URLError("unknown transport failure"), 1),
                              (urllib.error.HTTPError("https://example.invalid", 503, "unavailable", {}, None), 4),
                              (ValueError("digest mismatch"), 1),
                              (urllib.error.HTTPError("https://example.invalid", 403, "denied", {}, None), 1)):

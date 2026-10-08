@@ -13,6 +13,7 @@ import ntpath
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -39,8 +40,11 @@ def _retry_github_get(operation):
         for attempt in range(4):
             try:
                 return operation(*args, **kwargs)
-            except (urllib.error.HTTPError, TimeoutError) as error:
-                if attempt == 3 or isinstance(error, urllib.error.HTTPError) and error.code not in {502, 503, 504}:
+            except (urllib.error.URLError, TimeoutError) as error:
+                transient = (isinstance(error, TimeoutError)
+                    or isinstance(error, urllib.error.HTTPError) and error.code in {502, 503, 504}
+                    or isinstance(error, urllib.error.URLError) and isinstance(error.reason, socket.gaierror))
+                if attempt == 3 or not transient:
                     raise
                 if isinstance(error, urllib.error.HTTPError):
                     error.close()
