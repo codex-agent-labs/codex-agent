@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import textwrap
 import unittest
@@ -18,6 +19,70 @@ from ci.tests import test_tooling_capture as capture_fixture
 
 TOKEN = "not-a-real-token"
 WORKFLOW_PIN = "c" * 40
+
+
+class ToolingMetadataRotationTest(unittest.TestCase):
+    def test_protected_metadata_rotation_preserves_code_and_rejects_other_authority(self):
+        with tempfile.TemporaryDirectory(prefix='tooling-publisher-rotation-') as temporary:
+            repository = Path(temporary)
+
+            def git(*arguments):
+                return subprocess.run(['git', *arguments], cwd=repository, check=True,
+                                      capture_output=True, text=True).stdout.strip()
+
+            def commit(path, contents):
+                target = repository / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(contents)
+                git('add', path)
+                git('commit', '-qm', 'synthetic publisher fixture')
+                return git('rev-parse', 'HEAD')
+
+            git('init', '-q')
+            git('config', 'user.name', 'Tooling fixture')
+            git('config', 'user.email', 'tooling-fixture@example.invalid')
+            commit('.github/workflows/product-validation.yml', 'name: unchanged executable fixture\n')
+            original = commit('.github/workflows/contract-validation.yml', 'name: unchanged child fixture\n')
+            producer = {'repository': 'codex-agent-labs/codex-agent', 'workflowPath': '.github/workflows/ci.yml',
+                        'commit': original, 'tree': git('rev-parse', 'HEAD^{tree}'), 'event': 'pull_request',
+                        'runId': 7, 'runAttempt': 1, 'pullRequest': 31}
+            commit('.reuse/approvals.json', '{"syntheticApproval":true}\n')
+            current = commit('.reuse/workflow-publication.json', '{"syntheticPublication":true}\n')
+            changed_code = commit('.github/workflows/product-validation.yml', 'name: changed executable fixture\n')
+
+            def observed(pin):
+                return {'referenced_workflows': [
+                    {'path': 'codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority',
+                     'ref': 'refs/heads/reuse-authority', 'sha': pin},
+                    {'path': f'codex-agent-labs/codex-agent/.github/workflows/contract-validation.yml@{pin}',
+                     'ref': 'refs/heads/reuse-authority', 'sha': pin}]}
+
+            run = observed(original)
+            with mock.patch.object(tooling_discovery, 'api_json', return_value=run):
+                policy = tooling_discovery._original_tooling_workflow(producer, current, TOKEN,
+                                                                      repository_root=repository)
+                self.assertEqual(original, policy['trusted_workflow_sha'])
+                self.assertEqual('.github/workflows/contract-validation.yml', policy['trusted_workflow_path'])
+                run['referenced_workflows'][0]['path'] = (
+                    f'codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{original}')
+                self.assertEqual(policy, tooling_discovery._original_tooling_workflow(
+                    producer, current, TOKEN, repository_root=repository))
+            rejected = [('code-change', observed(original), changed_code),
+                        ('non-ancestor', observed(current), original)]
+            child_sha = observed(original)
+            child_sha['referenced_workflows'][1]['sha'] = current
+            rejected.append(('mismatched-child-sha', child_sha, current))
+            child_ref = observed(original)
+            child_ref['referenced_workflows'][1]['ref'] = 'refs/heads/unprotected'
+            rejected.append(('unprotected-child-ref', child_ref, current))
+            parent_ref = observed(original)
+            parent_ref['referenced_workflows'][0]['ref'] = 'refs/heads/unprotected'
+            rejected.append(('unprotected-parent-ref', parent_ref, current))
+            for label, run, pin in rejected:
+                with self.subTest(label=label), mock.patch.object(tooling_discovery, 'api_json', return_value=run):
+                    with self.assertRaises(ValueError):
+                        tooling_discovery._original_tooling_workflow(producer, pin, TOKEN,
+                                                                    repository_root=repository)
 
 
 @unittest.skipUnless(shutil.which("ssh-keygen"), "OpenSSH signing tool unavailable")

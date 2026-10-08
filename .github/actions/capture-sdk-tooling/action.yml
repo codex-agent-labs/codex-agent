@@ -82,7 +82,8 @@ runs:
             ('', ''), ('.github/workflows/contract-validation.yml',
                        'product-validation / contract-validation / tooling-attestation'),
         ):
-            original = _original_tooling_workflow(producer, original_sha, os.environ['GITHUB_TOKEN'])
+            original = _original_tooling_workflow(producer, original_sha, os.environ['GITHUB_TOKEN'],
+                                                  repository_root=repository)
             original_sha = original['trusted_workflow_sha']
             workflow_policy = ([
                 '--trusted-workflow-path', original['trusted_workflow_path'],

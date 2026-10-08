@@ -4,6 +4,7 @@ import argparse
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 
@@ -18,7 +19,7 @@ from reuse import api_json, download_artifact, paginated_items
 from tooling_capture import capture_tooling_ci
 from products.inventory import (
     load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
-    require_integer, require_sha256, run_git, verified_zip_contents, write_canonical_json,
+    require_array, require_integer, require_sha256, run_git, verified_zip_contents, write_canonical_json,
 )
 from products.receipt import validate_producer
 
@@ -28,21 +29,55 @@ _NAME = re.compile(r"codex-agent-release-tooling-([0-9a-f]{40})-attempt-([1-9][0
 _PRIOR_TOOLING_WORKFLOW_SHA = "00feb2e6ffc0e633042ac4cebfb6495718fb82f7"
 
 
-def _original_tooling_workflow(producer, current_sha, token):
+def _original_tooling_workflow(producer, current_sha, token, *, repository_root=None):
     producer = validate_producer(producer, 'Original tooling producer hint')
     if not isinstance(current_sha, str) or re.fullmatch(r'[0-9a-f]{40}', current_sha) is None:
         raise ValueError('Tooling workflow requires a pinned current SHA')
     run = api_json(f"{_API}/runs/{producer['runId']}/attempts/{producer['runAttempt']}", token)
     pin = _runtime_prior_workflow_sha(run, current_sha)
+    metadata_rotation = False
     if pin is None:
         # Retain this independently reviewed tooling producer after pin rotation.
         pin = _PRIOR_TOOLING_WORKFLOW_SHA
-        _require_ci_workflow_reference(run,
-            f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{pin}", pin)
+        try:
+            _require_ci_workflow_reference(run,
+                f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{pin}", pin)
+        except ValueError:
+            if repository_root is None:
+                raise
+            refs = [ref for ref in require_array(run.get('referenced_workflows'), 'Original tooling references')
+                    if isinstance(ref, dict) and isinstance(ref.get('path'), str)
+                    and ref['path'].split('@', 1)[0] ==
+                    'codex-agent-labs/codex-agent/.github/workflows/product-validation.yml']
+            if (len(refs) != 1 or refs[0].get('ref') != 'refs/heads/reuse-authority'
+                    or not isinstance(refs[0].get('sha'), str)
+                    or re.fullmatch(r'[0-9a-f]{40}', refs[0]['sha']) is None):
+                raise ValueError('Original tooling lacks an exact protected publisher reference')
+            pin = refs[0]['sha']
+            _require_ci_workflow_reference(run,
+                f'codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{pin}', pin)
+            try:
+                for sha in (pin, current_sha):
+                    if run_git(repository_root, '--no-replace-objects', 'rev-parse', f'{sha}^{{commit}}').strip() != sha:
+                        raise ValueError('Tooling publisher must be an exact commit')
+                run_git(repository_root, '--no-replace-objects', 'merge-base', '--is-ancestor', pin, current_sha)
+                changed = run_git(repository_root, '--no-replace-objects', 'diff', '--no-ext-diff',
+                    '--no-textconv', '--no-renames', '--name-only', '-z', pin, current_sha, '--', binary=True)
+            except subprocess.CalledProcessError as error:
+                raise ValueError('Tooling rotation requires available ancestor publisher commits') from error
+            if set(changed.split(b'\0')) - {b'', b'.reuse/approvals.json', b'.reuse/workflow-publication.json'}:
+                raise ValueError('Tooling publisher rotation changes executable or other source bytes')
+            metadata_rotation = True
     path = ".github/workflows/contract-validation.yml"
     if any(isinstance(ref, dict) and isinstance(ref.get('path'), str)
            and ref['path'].split('@', 1)[0] == f"codex-agent-labs/codex-agent/{path}"
            for ref in run['referenced_workflows']):
+        if metadata_rotation and any(
+                ref.get('ref') != 'refs/heads/reuse-authority'
+                for ref in run['referenced_workflows'] if isinstance(ref, dict)
+                and isinstance(ref.get('path'), str)
+                and ref['path'].split('@', 1)[0] == f'codex-agent-labs/codex-agent/{path}'):
+            raise ValueError('Original tooling child workflow lacks its protected publisher reference')
         _require_ci_workflow_reference(run, f"codex-agent-labs/codex-agent/{path}@{pin}", pin)
         return {'trusted_workflow_sha': pin, 'trusted_workflow_path': path,
                 'trusted_job_name': 'product-validation / contract-validation / tooling-attestation'}
@@ -130,7 +165,8 @@ def discover_tooling_ci(destination, repository_root, *, candidate_run_ids,
                     policy = capture_tooling_ci(prepared / "capture", repository,
                         artifact_id=identifier, artifact_sha256=digest, transport_producer=producer,
                         policy_revision=policy_revision, java_executable=java, token=token,
-                        **_original_tooling_workflow(producer, trusted_workflow_sha, token))
+                        **_original_tooling_workflow(producer, trusted_workflow_sha, token,
+                                                     repository_root=repository))
                 except (ValueError, OSError) as error:
                     attempt.update(result="miss", reason=str(error))
                     report["attempts"].append(attempt)
