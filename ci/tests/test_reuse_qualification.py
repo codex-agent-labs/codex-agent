@@ -21,6 +21,28 @@ adapter, TARGET = fixture.adapter, fixture.TARGET
 
 
 class ReuseQualificationTest(unittest.TestCase):
+    def test_frozen_inventory_scope_reports_unrelated_sdk_changes(self):
+        import hosted_reuse_proof as proof
+        path = "gradle/build-logic/src/main/kotlin/CrossLanguageJavaScriptMetadataEvidence.kt"
+        frozen = [{"product": "runtime", "component": "runtime-aggregate",
+                   "phase": "metadata", "target": "aggregate"}]
+        # Git enumeration is a fixture seam; real registered phase ownership is used.
+        with patch.object(proof, "tree_entries", return_value=[(path, "blob")]), \
+                patch.object(proof.subprocess, "check_output", return_value=path + "\n"):
+            changed = proof.verify_frozen_inventories("a" * 40, frozen)
+        self.assertEqual([{"product": "sdk", "component": "javascript",
+                           "phase": "metadata", "target": "node"}], changed)
+
+    def test_frozen_inventory_scope_still_rejects_retained_input_changes(self):
+        import hosted_reuse_proof as proof
+        path = "ci/products/aggregate.py"
+        frozen = [{"product": "runtime", "component": "runtime-aggregate",
+                   "phase": "metadata", "target": "aggregate"}]
+        with patch.object(proof, "tree_entries", return_value=[(path, "blob")]), \
+                patch.object(proof.subprocess, "check_output", return_value=path + "\n"):
+            with self.assertRaisesRegex(ValueError, "Frozen product inventory changed"):
+                proof.verify_frozen_inventories("a" * 40, frozen)
+
     def test_windows_native_installer_verifies_before_extracting(self):
         # Shell composition only; this fake executable is not native evidence.
         installer = Path(__file__).resolve().parents[2] / ".github/actions/restore-reuse-qualification/install-gh.sh"

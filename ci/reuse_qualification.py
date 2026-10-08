@@ -466,6 +466,9 @@ def issue_frozen(work, token):
     if git_regular_blob_bytes(root, commit, "ci/tests/data/hosted-frozen-reuse.json", max_bytes=LIMIT) != spec_bytes:
         raise ValueError("Fixed frozen closure fixture differs from the issuer source")
     spec = load_canonical_json_bytes(spec_bytes)
+    # Fail before cold acquisition; final verification repeats this over the
+    # actually authenticated planner result, not merely the expected fixture.
+    proof.verify_frozen_inventories(spec["inventoryBaseline"], spec["expectedResult"]["phases"])
     work = Path(work).resolve()
     work.mkdir(exist_ok=False)
     started = time.perf_counter()
