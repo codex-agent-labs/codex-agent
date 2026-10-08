@@ -222,7 +222,7 @@ def _reviewed_scope(trusted, candidate, sha):
 
 
 def _sdk_reviewed_scope(trusted, candidate, sha):
-    """Reviewed SDK controls may evolve; completed product inputs may not."""
+    """Reviewed SDK inputs may evolve; completed Contract/Runtime inputs may not."""
     baseline = _tree(trusted, SDK_FROZEN_REVISION)
     reviewed = _tree(trusted, sha)
     changed = {path for path in baseline.keys() | reviewed.keys()
@@ -239,6 +239,8 @@ def _sdk_reviewed_scope(trusted, candidate, sha):
             or reviewed.get(SDK_SELECTOR, ())[:2] != ("100644", "blob")):
         raise ValueError("SDK recovery selector differs from independently reviewed authority")
     for instance in PHASE_INSTANCE_IDS:
+        if instance.product == "sdk":
+            continue
         before = phase_git_inventory(trusted, SDK_FROZEN_REVISION, instance)
         after = phase_git_inventory(trusted, sha, instance)
         if before != after:

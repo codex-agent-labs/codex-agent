@@ -226,7 +226,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.event["pull_request"]["head"]["sha"] = self.activation
         self.environment["GITHUB_SHA"] = self.merge
 
-    def sdk_mode(self, *, product_change=False):
+    def sdk_mode(self, *, product_change=False, sdk_change=False):
         # Real Git trees exercise the shared inventory policy; API identities
         # remain explicit fixtures, never genuine hosted acceptance evidence.
         self.git(self.trusted, "checkout", "--quiet", "--detach", self.reviewed)
@@ -238,6 +238,8 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.write(self.trusted, ".github/actions/run-ci-lane/sdk-current-control.py", "reviewed control-only continuation\n")
         if product_change:
             self.write(self.trusted, "runtime/product.txt", "changed product\n")
+        if sdk_change:
+            self.write(self.trusted, "ci/products/sdk_archive.py", "# reviewed SDK-only archive validation\n")
         self.reviewed = self.commit(self.trusted, "reviewed SDK continuation")
         for name, value in (("SDK_FROZEN_REVISION", frozen), ("SDK_SELECTION_REVISION", frozen)):
             patcher = mock.patch.object(recovery, name, value)
@@ -256,7 +258,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.sdk_mode()
         with mock.patch.object(recovery, "phase_git_inventory", wraps=recovery.phase_git_inventory) as inventory:
             result = self.verify()
-        self.assertEqual(224, inventory.call_count)
+        self.assertEqual(100, inventory.call_count)
         self.assertTrue(result["recovery_control_admitted"])
         self.assertFalse(result["full_acceptance_current"])
         self.assertEqual(self.producer, result["historical_acceptance_producer"])
@@ -265,6 +267,13 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.sdk_mode(product_change=True)
         with self.assertRaisesRegex(ValueError, "changes frozen product inputs"):
             self.verify()
+
+    def test_reviewed_sdk_input_change_does_not_claim_current_sdk_acceptance(self):
+        self.sdk_mode(sdk_change=True)
+        result = self.verify()
+        self.assertTrue(result["recovery_control_admitted"])
+        self.assertFalse(result["full_acceptance_current"])
+        self.assertEqual(self.producer, result["historical_acceptance_producer"])
 
     def test_sdk_control_tree_mismatch_and_unauthorized_event_are_rejected(self):
         self.sdk_mode()
