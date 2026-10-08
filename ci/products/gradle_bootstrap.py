@@ -200,7 +200,7 @@ def seed_sdk_ios_native_distribution(root: Path, revision: str, wrapper: Path,
         '}\n'
         'tasks.register("resolveSdkIosDependencies") {\n'
         '    doLast {\n'
-        '        listOf("iosArm64CompileKlibraries", "iosSimulatorArm64CompileKlibraries").forEach { name ->\n'
+        '        listOf("iosArm64CompileKlibraries", "iosSimulatorArm64CompileKlibraries", "kotlinCompilerClasspath").forEach { name ->\n'
         '            configurations.getByName(name).files.forEach { println("SDK_DEPENDENCY ${it.name}") }\n'
         '        }\n'
         '    }\n'

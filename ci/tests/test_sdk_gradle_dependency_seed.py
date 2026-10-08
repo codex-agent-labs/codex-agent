@@ -119,7 +119,7 @@ class SdkDependencySeedTest(unittest.TestCase):
             script = (root / 'native/build.gradle.kts').read_text()
             for dependency in ('libs.kotlinx.coroutines.core', 'libs.kotlinx.serialization.json', 'libs.okio'):
                 self.assertIn(f'implementation({dependency})', script)
-            self.assertIn('listOf("iosArm64CompileKlibraries", "iosSimulatorArm64CompileKlibraries")', script)
+            self.assertIn('listOf("iosArm64CompileKlibraries", "iosSimulatorArm64CompileKlibraries", "kotlinCompilerClasspath")', script)
             self.assertIn('configurations.getByName(name).files', script)
             self.assertNotIn('dependsOn', script)
             self.assertNotIn('findAll', script)
