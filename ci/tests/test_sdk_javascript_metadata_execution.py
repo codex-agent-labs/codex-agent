@@ -38,6 +38,8 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
         fixture.SdkJavascriptWorkflowTest.setUp(self)
         self.producer.update(event="pull_request", workflowPath=".github/workflows/ci.yml",
                              runId=71, runAttempt=2, pullRequest=31)
+        self.validation_producer = {**self.producer, "commit": "d" * 40, "tree": "e" * 40,
+                                    "runId": 70, "runAttempt": 1}
         for identity, version in ((CONTRACT_BINARY, "0.2.0"), (SDK_VALIDATION, "0.2.9")):
             directory = self.originals / self.name(identity)
             stage = directory / "stage"
@@ -48,7 +50,8 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
             receipt_path = directory / "phase-receipt.json"
             receipt = write_receipt(receipt_path, product=identity.product, component=identity.component,
                 phase=identity.phase, target=identity.target, version=version, version_identity=version,
-                outputs=manifest["outputs"], upstream=[], context={"producer": self.producer})
+                outputs=manifest["outputs"], upstream=[], context={"producer":
+                    self.validation_producer if identity == SDK_VALIDATION else self.producer})
             self.original_paths[identity] = {"stage": stage, "receiptPath": receipt_path, "receipt": receipt}
             self.receipts[identity] = receipt_path.read_bytes()
         self.before = regular_file_inventory(self.originals)
@@ -184,7 +187,9 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
         self.candidate_path = kwargs["metadata_receipt"].parent
         self.assertEqual(self.consumer, kwargs["original_consumer_directory"])
         self.assertEqual(self.repository, kwargs["repository"])
-        for name in ("tooling_evidence", "tooling_public_key", "java_executable", "policy_revision",
+        self.assertEqual(self.validation_producer["commit"], kwargs["policy_revision"])
+        self.assertNotEqual(self.arguments["policy_revision"], kwargs["policy_revision"])
+        for name in ("tooling_evidence", "tooling_public_key", "java_executable",
                      "required_trust_domain", "tooling_keyring", "tooling_keys_directory"):
             self.assertEqual(self.arguments[name], kwargs[name])
         for prefix, identity in (("contract", CONTRACT_BINARY), ("package", fixture.SDK_PACKAGE),
@@ -224,6 +229,16 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
         self.assertEqual(b"", (self.destination / "validation-upload/original/worker/gradle.log").read_bytes())
         self.assertFalse(self.capture_path.exists())
         self.assertFalse(self.candidate_path.exists())
+
+    def test_retained_validation_source_policy_does_not_relabel_current_metadata(self):
+        result = self.invoke()
+        self.assertNotEqual(self.validation_producer["commit"], self.producer["commit"])
+        self.assertEqual(self.producer, result["receipt"]["producer"])
+        self.assertEqual(self.ready["buildKey"], result["receipt"]["buildKey"])
+        retained = self.destination / "inputs" / self.name(SDK_VALIDATION) / "phase-receipt.json"
+        self.assertEqual(self.receipts[SDK_VALIDATION], retained.read_bytes())
+        self.assertEqual(self.validation_producer, load_canonical_json_bytes(retained.read_bytes())["producer"])
+        self.assertEqual(self.before, regular_file_inventory(self.originals))
 
     def test_explicit_apple_policy_reaches_both_replays_without_replacing_existing_gates(self):
         policy = caller_apple_policy(self.root / "caller")

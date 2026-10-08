@@ -153,6 +153,9 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
                 repository_root=root, environ=environ, token=token)
             capture_inventory = _inventory(capture, allow_empty=True)
             consumer = Path(transport["originalConsumerDirectory"])
+            # Deliberate original-source replay after upload authentication,
+            # never a current-tooling failure fallback or a new metadata producer.
+            validation_policy_revision = validation["receipt"]["producer"]["commit"]
 
             def unchanged():
                 inputs_unchanged()
@@ -184,7 +187,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
                 metadata_stage=result["stage"], metadata_receipt=candidate / PHASE_RECEIPT_NAME,
                 original_consumer_directory=consumer, repository=root, tooling_evidence=tooling_evidence,
                 tooling_public_key=tooling_public_key, java_executable=java_executable,
-                policy_revision=policy_revision, required_trust_domain=required_trust_domain,
+                policy_revision=validation_policy_revision, required_trust_domain=required_trust_domain,
                 tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory)
             if admitted != finalized["receipt"] or raw != read_regular_file_bytes(candidate / PHASE_RECEIPT_NAME):
                 raise ValueError("JavaScript metadata admission returned a different candidate receipt")
