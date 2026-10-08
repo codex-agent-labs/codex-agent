@@ -165,15 +165,16 @@ def seed_sdk_gradle_dependencies(root: Path, revision: str, wrapper: Path,
 
 def seed_sdk_ios_native_distribution(root: Path, revision: str, wrapper: Path,
                                      environment, destination: Path) -> None:
-    """Run KGP's prebuilt tool setup only, never a native product task.
+    """Seed pinned iOS dependencies and KGP's prebuilt tools, never product tasks.
 
     Gradle pins authenticate the distribution archive. Konan's own downloader
     handles its declared dependencies; its direct downloads are not Gradle inputs.
     """
     import tomllib
     from ci.product_reuse import _runtime_worker_command
-    version = tomllib.loads(git_regular_blob_bytes(root, revision,
-        'gradle/libs.versions.toml', max_bytes=4 * 1024**2).decode())['versions']['kotlin']
+    catalog = git_regular_blob_bytes(root, revision,
+        'gradle/libs.versions.toml', max_bytes=4 * 1024**2)
+    version = tomllib.loads(catalog.decode())['versions']['kotlin']
     if version != '2.3.10':
         raise ValueError('SDK native setup requires reviewed Kotlin 2.3.10 routing')
     if destination.exists() or destination.is_symlink():
@@ -181,6 +182,7 @@ def seed_sdk_ios_native_distribution(root: Path, revision: str, wrapper: Path,
     require_regular_directory(destination.parent, 'SDK native setup parent')
     destination.mkdir()
     (destination / 'gradle').mkdir()
+    (destination / 'gradle/libs.versions.toml').write_bytes(catalog)
     (destination / 'gradle/verification-metadata.xml').write_bytes(git_regular_blob_bytes(root, revision,
         '.github/actions/sdk-ios-binary-worker/verification-metadata.xml', max_bytes=4 * 1024**2))
     (destination / 'settings.gradle.kts').write_text(
@@ -188,10 +190,25 @@ def seed_sdk_ios_native_distribution(root: Path, revision: str, wrapper: Path,
     (destination / 'build.gradle.kts').write_text(
         f'plugins {{ kotlin("multiplatform") version "{version}" }}\n'
         'repositories { mavenCentral() }\n'
-        'kotlin { iosArm64(); iosSimulatorArm64() }\n', encoding='utf-8')
+        'kotlin {\n'
+        '    iosArm64(); iosSimulatorArm64()\n'
+        '    sourceSets.commonMain.dependencies {\n'
+        '        implementation(libs.kotlinx.coroutines.core)\n'
+        '        implementation(libs.kotlinx.serialization.json)\n'
+        '        implementation(libs.okio)\n'
+        '    }\n'
+        '}\n'
+        'tasks.register("resolveSdkIosDependencies") {\n'
+        '    doLast {\n'
+        '        listOf("iosArm64CompileKlibraries", "iosSimulatorArm64CompileKlibraries").forEach { name ->\n'
+        '            configurations.getByName(name).files.forEach { println("SDK_DEPENDENCY ${it.name}") }\n'
+        '        }\n'
+        '    }\n'
+        '}\n', encoding='utf-8')
     original = _runtime_worker_command(wrapper, {}, environment, build_directory='.')
     command = [*original[:original.index('--offline')], '-p', str(destination),
-        'downloadKotlinNativeDistribution', '--dependency-verification=strict', '--no-daemon',
+        'downloadKotlinNativeDistribution', 'resolveSdkIosDependencies',
+        '--dependency-verification=strict', '--no-daemon',
         '--no-configuration-cache', '--console=plain', '-Pkotlin.native.distribution.type=prebuilt']
     with (destination / 'gradle.log').open('xb') as log:
         result = subprocess.run(command, cwd=root, env=dict(environment), stdout=log,
