@@ -93,6 +93,10 @@ runs:
         cache-read-only: 'true'
         product-worker: 'true'
         xcode-fingerprint: auto
+    - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+      with:
+        toolchain: '1.95.0'
+        components: rust-src
     - name: Execute exact iOS SDK binary within verified original input lifetimes
       shell: bash
       env:

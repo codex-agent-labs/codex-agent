@@ -65,6 +65,20 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
         self.assertIn("Path(os.environ['STATE']) / 'reuse-wave-result.json'", self.identity)
         self.assertIn("plan['validationTree'] != os.environ['TREE']", self.identity)
 
+    def test_imported_native_identity_has_the_pinned_rust_toolchain_before_execute(self):
+        setup = "uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b"
+        start = self.action.index(setup)
+        end = self.action.index("- name: Execute exact iOS SDK binary")
+        self.assertLess(self.action.index("uses: ./.github/actions/setup-kmp"), start)
+        self.assertLess(start, end)
+        provisioning = self.action[start:end]
+        self.assertIn("toolchain: '1.95.0'", provisioning)
+        self.assertIn("components: rust-src", provisioning)
+        authority = (ROOT / "gradle/build-logic/src/main/kotlin/codexagent.ios-runtime.gradle.kts").read_text()
+        self.assertIn('private val pinnedRustToolchain = "1.95.0"', authority)
+        self.assertNotIn("cargo", provisioning)
+        self.assertNotIn("targets:", provisioning)
+
     def run_identity(self, rows, *, required="true", key=KEY, tree=TREE, sentinel=""):
         with tempfile.TemporaryDirectory(prefix="sdk-ios-worker-identity-") as temporary:
             work = Path(temporary).resolve()
