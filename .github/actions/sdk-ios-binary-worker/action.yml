@@ -65,7 +65,7 @@ runs:
         BUILD_KEY: ${{ inputs.build-key }}
         TREE: ${{ inputs.tree }}
       run: |
-        python3 - <<'PY'
+        python3 -B - <<'PY'
         import json, os, re
         from pathlib import Path
         from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes

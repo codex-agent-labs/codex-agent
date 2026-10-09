@@ -4,7 +4,9 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -22,7 +24,7 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
         cls.action = (ROOT / ".github/actions/sdk-ios-binary-worker/action.yml").read_text()
         cls.workflow = (ROOT / ".github/workflows/product-validation.yml").read_text()
         matches = re.findall(
-            r"^        python3 - <<'PY'\n(.*?)^        PY$",
+            r"^        python3 -B - <<'PY'\n(.*?)^        PY$",
             cls.action, re.MULTILINE | re.DOTALL,
         )
         if len(matches) != 1:
@@ -78,6 +80,31 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
         self.assertIn('private val pinnedRustToolchain = "1.95.0"', authority)
         self.assertNotIn("cargo", provisioning)
         self.assertNotIn("targets:", provisioning)
+
+    def test_real_election_import_keeps_the_checkout_free_of_bytecode(self):
+        for flags in ([], ["-B"]):
+            with self.subTest(flags=flags), tempfile.TemporaryDirectory(prefix="sdk-ios-guard-bytecode-") as temporary:
+                work = Path(temporary).resolve()
+                products = work / "ci/products"
+                products.mkdir(parents=True)
+                for name in ("__init__.py", "inventory.py"):
+                    shutil.copy2(ROOT / "ci/products" / name, products / name)
+                state = work / "state"
+                state.mkdir()
+                row = dict(product="sdk", component="sdk-ios", phase="binary", target="ios", buildKey=KEY)
+                (state / "reuse-wave-result.json").write_text(
+                    json.dumps(dict(matrices=dict(sdk=[row]), fullReuse=False), sort_keys=True, separators=(",", ":")) + "\n")
+                plan = work / "plan.json"
+                plan.write_text(json.dumps(dict(validationTree=TREE)))
+                environment = {key: value for key, value in os.environ.items()
+                               if key not in {"PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX", "PYTHONPATH"}}
+                environment.update(STATE=str(state), PLAN=str(plan), BUILD_KEY=KEY, TREE=TREE,
+                                   GITHUB_OUTPUT=str(work / "output"))
+                result = subprocess.run([sys.executable, *flags, "-"], input=self.identity,
+                                        cwd=work, env=environment, text=True, capture_output=True)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(bool(flags), not any(work.rglob("__pycache__")))
+                self.assertEqual("key_hex=" + "a" * 64 + "\n", (work / "output").read_text())
 
     def run_identity(self, rows, *, required="true", key=KEY, tree=TREE, sentinel=""):
         with tempfile.TemporaryDirectory(prefix="sdk-ios-worker-identity-") as temporary:
