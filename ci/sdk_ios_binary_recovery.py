@@ -11,8 +11,8 @@ if __package__:
 import product_reuse as products
 from products.inventory import (
     load_canonical_json_bytes, publish_regular_tree,
-    read_regular_file_bytes, regular_file_inventory, require_integer,
-    require_regular_directory, require_sha256,
+    read_regular_file_bytes, regular_file_inventory, require_exact_keys, require_integer,
+    require_regular_directory, require_sha256, sha256_bytes, snapshot_regular_tree,
 )
 from products.registry import PhaseInstanceId
 from products.restore import _stage_fingerprint, verify_phase_shard
@@ -51,9 +51,9 @@ def _record(capture, artifact_root):
             .relative_to(artifact_root).as_posix()}
 
 
-def replay_prior_ios_binary(capture_root, artifact_root, *, plan, consumer_producer,
-        trusted_workflow_sha, token, environ):
-    """Fresh original CI observation plus exact retained whole-upload verification.
+def replay_prior_ios_binary(capture_root, artifact_root, *, plan_path, repository_root,
+        plan, consumer_producer, trusted_workflow_sha, token, environ):
+    """Reauthenticate compact custody against a freshly verified whole original upload.
 
     Original capture/receipt bytes are not rewritten. Returned records contain
     content identity only; current retrieval observation is not product identity.
@@ -73,6 +73,12 @@ def replay_prior_ios_binary(capture_root, artifact_root, *, plan, consumer_produ
         parent /= name
         require_regular_directory(parent, "Prior SDK capture family")
     fingerprint = _stage_fingerprint(root)
+    if sorted(path.name for path in capture.iterdir()) != ["capture-transport.json", "original"]:
+        raise ValueError("Prior SDK compact capture has an unexpected member")
+    require_regular_directory(capture / "original", "Prior SDK compact original")
+    if sorted(path.name for path in (capture / "original").iterdir()) != ["shard"]:
+        raise ValueError("Prior SDK compact original has an unexpected member")
+    inventory = regular_file_inventory(capture)
     receipt_path = capture / "original/shard/phase-receipt.json"
     raw = read_regular_file_bytes(receipt_path, max_bytes=16 * 1024**2, reject_symlink_parents=True)
     receipt = products.validate_phase_receipt(load_canonical_json_bytes(raw))
@@ -85,17 +91,37 @@ def replay_prior_ios_binary(capture_root, artifact_root, *, plan, consumer_produ
         raise ValueError("Prior SDK binary lacks a reviewed original workflow")
     locator = locate_original_apple_upload(receipt_path, trusted_workflow_sha=workflow,
         token=token, environ=environ)
-    # Fresh locator independently observes original successful job, source and upload window.
-    # Existing verifier hashes the complete retained outer archive and exact materialization.
-    products.verify_retained_sdk_ios_upload(capture, raw)
-    transport = products._canonical_control(capture / "capture-transport.json", "Prior SDK transport")
+    transport = require_exact_keys(products._canonical_control(
+        capture / "capture-transport.json", "Prior SDK transport"),
+        {"artifact", "captureProducer", "observed", "binaryReceiptSha256"}, "Prior SDK transport")
     if (locator["artifact_id"] != transport["artifact"].get("id")
             or locator["artifact_sha256"] != transport["artifact"].get("digest")
+            or transport["captureProducer"] != producer
+            or transport["binaryReceiptSha256"] != sha256_bytes(raw)
             or receipt["trustDomain"] != "development" or producer["event"] != "pull_request"
             or producer["pullRequest"] != plan["pullRequest"]):
         raise ValueError("Prior SDK retained upload differs from freshly observed original")
+    # A compact descriptor is never authority. Authenticate the complete official
+    # upload privately again, then compare the exact delivered original shard.
+    with tempfile.TemporaryDirectory(prefix="sdk-ios-compact-replay-") as temporary:
+        private = Path(temporary).resolve()
+        selected = private / "selected-receipt.json"
+        selected.write_bytes(raw)
+        fresh = private / "capture"
+        fresh_transport = products.capture_sdk_ios_binary_upload(plan_path, fresh,
+            binary_receipt_path=selected, **locator, trusted_workflow_sha=workflow,
+            repository_root=repository_root, environ=environ, token=token)
+        if (fresh_transport["captureProducer"] != transport["captureProducer"]
+                or fresh_transport["binaryReceiptSha256"] != transport["binaryReceiptSha256"]
+                or any(fresh_transport["artifact"].get(field) != transport["artifact"].get(field)
+                       for field in ("id", "name", "digest", "size_in_bytes", "created_at",
+                                     "archive_download_url", "workflow_run"))
+                or regular_file_inventory(fresh / "original/shard") !=
+                   regular_file_inventory(capture / "original/shard")):
+            raise ValueError("Prior SDK compact shard differs from its authenticated original upload")
     record = _record(capture, Path(artifact_root))
     if (_stage_fingerprint(root) != fingerprint
+            or regular_file_inventory(capture) != inventory
             or read_regular_file_bytes(receipt_path, reject_symlink_parents=True) != raw):
         raise ValueError("Prior SDK original capture changed during readmission")
     require_no_signing_secret(environ)
@@ -184,7 +210,17 @@ def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, dest
             raise ValueError("Prior SDK exact build key has conflicting output inventories")
         source = found[0][0]  # Original producer stays unchanged, even across equivalent attempts.
         target = destination / _RELATIVE
-        inventory = regular_file_inventory(source, allow_empty=True)
-        publish_regular_tree(source, target, allow_empty=True, expected_inventory=inventory)
+        fingerprint = _stage_fingerprint(source)
+        transport = read_regular_file_bytes(source / "capture-transport.json", reject_symlink_parents=True)
+        shard_inventory = regular_file_inventory(source / "original/shard")
+        compact = scratch / "compact"
+        snapshot_regular_tree(source / "original/shard", compact / "original/shard")
+        (compact / "capture-transport.json").write_bytes(transport)
+        if (_stage_fingerprint(source) != fingerprint
+                or read_regular_file_bytes(source / "capture-transport.json", reject_symlink_parents=True) != transport
+                or regular_file_inventory(compact / "original/shard") != shard_inventory):
+            raise ValueError("Prior SDK original changed during compact publication")
+        inventory = regular_file_inventory(compact)
+        publish_regular_tree(compact, target, expected_inventory=inventory)
         require_no_signing_secret(environ)
         return [_record(target, Path(artifact_root))]

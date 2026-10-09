@@ -3801,7 +3801,8 @@ def _verified_product_state(
             raise ValueError("Prior SDK replay requires caller-pinned workflow authority and token")
         from sdk_ios_binary_recovery import replay_prior_ios_binary
         prior_records.extend(replay_prior_ios_binary(sdk_capture, discovery_root,
-            plan=plan, consumer_producer=consumer["producer"],
+            plan=plan, plan_path=plan_path, repository_root=root,
+            consumer_producer=consumer["producer"],
             trusted_workflow_sha=sdk_original_workflow_sha,
             token=environment["GITHUB_TOKEN"], environ=environment))
     initial_objects = []

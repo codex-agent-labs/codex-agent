@@ -52,13 +52,22 @@ class IosBinaryRecoveryTest(unittest.TestCase):
             records = self.capture()
             before = regular_file_inventory(self.output, allow_empty=True)
             replay = recovery.replay_prior_ios_binary(self.output, self.work, plan=self.plan,
+                plan_path=self.plan_path, repository_root=self.root,
                 consumer_producer={**self.producer, "runId": 72}, trusted_workflow_sha=self.pin,
                 token="synthetic-token", environ={})
         self.assertEqual(records, replay)
         self.assertEqual(before, regular_file_inventory(self.output, allow_empty=True))
         self.assertEqual(self.receipt_bytes,
             (self.output / "sdk-ios/binary/ios/original/shard/phase-receipt.json").read_bytes())
-        self.assertEqual(self.raw, (self.output / "sdk-ios/binary/ios/transport.zip").read_bytes())
+        capture = self.output / "sdk-ios/binary/ios"
+        self.assertEqual({"capture-transport.json", "original"}, {path.name for path in capture.iterdir()})
+        self.assertEqual({"shard"}, {path.name for path in (capture / "original").iterdir()})
+        for name, raw in self.files.items():
+            if name.startswith("shard/"):
+                self.assertEqual(raw, (capture / "original" / name).read_bytes())
+        self.assertEqual({"sdk-ios/binary/ios/capture-transport.json",
+            *("sdk-ios/binary/ios/original/" + name for name in self.files if name.startswith("shard/"))},
+            {row["relativePath"] for row in before})
 
     def test_failed_original_job_cannot_be_recovered(self):
         with self.gates(), patch.object(recovery.products, "capture_sdk_ios_binary_upload") as capture:
@@ -89,13 +98,13 @@ class IosBinaryRecoveryTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "earlier failed"):
                 recovery._require_prior(self.plan, {**self.producer, "runId": 72}, prior)
 
-    def test_tampered_retained_archive_rejected_without_redownload(self):
+    def test_tampered_compact_shard_rejected_after_full_original_authentication(self):
         with self.gates():
-            self.capture()
-            (self.output / "sdk-ios/binary/ios/transport.zip").write_bytes(b"corrupt")
-            with patch.object(recovery.products, "download_artifact_to_file", side_effect=AssertionError("redownload")), \
-                    self.assertRaises(ValueError):
+            record, = self.capture()
+            (self.work / record["objectPath"]).write_bytes(b"corrupt")
+            with self.assertRaisesRegex(ValueError, "compact shard differs"):
                 recovery.replay_prior_ios_binary(self.output, self.work, plan=self.plan,
+                    plan_path=self.plan_path, repository_root=self.root,
                     consumer_producer={**self.producer, "runId": 72}, trusted_workflow_sha=self.pin,
                     token="synthetic-token", environ={})
 
@@ -120,6 +129,7 @@ class IosBinaryRecoveryTest(unittest.TestCase):
             (self.output / "extra").write_bytes(b"unrelated")
             with self.assertRaisesRegex(ValueError, "unexpected capture family"):
                 recovery.replay_prior_ios_binary(self.output, self.work, plan=self.plan,
+                    plan_path=self.plan_path, repository_root=self.root,
                     consumer_producer={**self.producer, "runId": 72}, trusted_workflow_sha=self.pin,
                     token="synthetic-token", environ={})
 
@@ -160,6 +170,34 @@ class IosBinaryRecoveryTest(unittest.TestCase):
                     repository_root=self.root, environ={}, trusted_workflow_sha=self.pin,
                     token="synthetic-token", attempts=(self.run, prior))
         self.assertFalse(self.output.exists())
+
+    def test_full_original_authentication_failure_cannot_admit_compact_custody(self):
+        with self.gates():
+            self.capture()
+            before = regular_file_inventory(self.output)
+            with patch.object(recovery.products, "capture_sdk_ios_binary_upload",
+                              side_effect=ValueError("official whole archive digest mismatch")), \
+                    self.assertRaisesRegex(ValueError, "whole archive digest mismatch"):
+                recovery.replay_prior_ios_binary(self.output, self.work, plan=self.plan,
+                    plan_path=self.plan_path, repository_root=self.root,
+                    consumer_producer={**self.producer, "runId": 72}, trusted_workflow_sha=self.pin,
+                    token="synthetic-token", environ={})
+            self.assertEqual(before, regular_file_inventory(self.output))
+
+    def test_full_capture_mutating_compact_custody_cannot_publish_readmission(self):
+        with self.gates():
+            self.capture()
+            actual = recovery.products.capture_sdk_ios_binary_upload
+            def mutate(*args, **kwargs):
+                result = actual(*args, **kwargs)
+                (self.output / "sdk-ios/binary/ios/extra").write_bytes(b"late mutation")
+                return result
+            with patch.object(recovery.products, "capture_sdk_ios_binary_upload", side_effect=mutate), \
+                    self.assertRaisesRegex(ValueError, "changed during readmission"):
+                recovery.replay_prior_ios_binary(self.output, self.work, plan=self.plan,
+                    plan_path=self.plan_path, repository_root=self.root,
+                    consumer_producer={**self.producer, "runId": 72}, trusted_workflow_sha=self.pin,
+                    token="synthetic-token", environ={})
 
 
 if __name__ == "__main__":
