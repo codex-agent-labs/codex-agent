@@ -523,14 +523,18 @@ def _runtime_prior_workflow_sha(run, current_sha):
     return None
 
 
-def _matching_ci_jobs(jobs, name):
+def _matching_ci_jobs(jobs, name, *, expected_build_key=None):
+    names = {name}
+    if expected_build_key is not None:
+        require_sha256(expected_build_key, "Caller-pinned SDK worker build key")
+        names.add(f"{name} ({expected_build_key}, ...")
     matrix_name = re.compile(
         re.escape(name) + r" \(contracts, (?:true|false), (?:true|false), (?:true|false)\)"
     ) if name in {
         "product-validation / product-contracts",
         "product-validation / contract-validation / product-contracts",
     } else None
-    return [job for job in jobs if job.get("name") == name or (
+    return [job for job in jobs if job.get("name") in names or (
         matrix_name is not None and type(job.get("name")) is str
         and matrix_name.fullmatch(job["name"]) is not None
     )]
@@ -5387,7 +5391,9 @@ def collect_runtime_workers(
     for instance, _ready in selected:
         name = (sdk_worker_job_name.replace("{target}", instance.target) if sdk_family == "core-validation"
                 and sdk_worker_job_name is not None else sdk_worker_job_name or _worker_job_name(product, instance))
-        if any(job.get("name") == name and job.get("status") != "completed" for job in jobs):
+        matrix_key = _ready["buildKey"] if product == "sdk" and sdk_worker_job_name is None else None
+        if any(job.get("status") != "completed" for job in
+               _matching_ci_jobs(jobs, name, expected_build_key=matrix_key)):
             raise ValueError("An elected Runtime worker is still running; collect after all siblings finish")
         if sdk_family == "ios-validation":
             signer = f"product-validation / sdk-apple-validation-attestation-{instance.target}"
@@ -5409,10 +5415,13 @@ def collect_runtime_workers(
                    "artifact": None, "originalDirectory": None, "shardDirectory": None}
             rows.append(row)
             try:
-                matching_jobs = [job for job in jobs if job.get("name") == job_name]
+                matrix_key = ready["buildKey"] if product == "sdk" and sdk_worker_job_name is None else None
+                matching_jobs = _matching_ci_jobs(jobs, job_name, expected_build_key=matrix_key)
                 if len(matching_jobs) != 1:
                     raise ValueError("Runtime worker job is missing or ambiguous")
                 job = matching_jobs[0]
+                job_name = job["name"]
+                row["jobName"] = job_name
                 require_integer(job.get("id"), "Runtime worker job ID", 1)
                 if (require_integer(job.get("run_id"), "Runtime worker job run", 1) != producer["runId"]
                         or job.get("head_sha") != observed[0]["run"]["head_sha"]):
@@ -6887,6 +6896,13 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
             bootstrap_plan = canonical_json_bytes(plan)
         build_key = elected_build_key if bootstrap else receipt["buildKey"]
         job = f"product-validation / sdk-sdk-ios-{phase}-{target}"
+        original_jobs = paginated_items(
+            f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{producer['runId']}/attempts/{producer['runAttempt']}/jobs",
+            "jobs", token)
+        matching = _matching_ci_jobs(original_jobs, job, expected_build_key=build_key)
+        if len(matching) != 1:
+            raise ValueError("Apple original worker job is missing or ambiguous")
+        job = matching[0]["name"]
         observed = _observe_ci_producer_jobs({f"ios-{phase}": producer},
             jobs_by_phase={f"ios-{phase}": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
         name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-{target}-{build_key.removeprefix('sha256:')}-"

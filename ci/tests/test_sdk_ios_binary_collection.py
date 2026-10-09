@@ -103,6 +103,59 @@ class SdkIosBinaryCollectionTest(unittest.TestCase):
                 self.assertEqual(b"", (destination / row["originalDirectory"] / "gradle.log").read_bytes())
                 self.assertEqual(before, regular_file_inventory(shard))
 
+    def test_exact_key_bound_native_matrix_name_preserves_the_original_shard(self):
+        ready, _, descriptor, files = self.shard()
+        base, artifact = self.names(IOS, ready['buildKey'])
+        actual = f"{base} ({ready['buildKey']}, ..."
+        with patch.object(self, 'names', return_value=(actual, artifact)):
+            result = self.collect({IOS: ready}, {IOS: archive(files)}, self.repository / 'build/matrix-name')
+        row, = result['rows']
+        self.assertEqual('success', row['result'])
+        self.assertEqual(actual, row['jobName'])
+        self.assertEqual(descriptor['receiptBytes'],
+                         (self.repository / 'build/matrix-name' / row['shardDirectory'] / 'phase-receipt.json').read_bytes())
+
+    def test_wrong_key_suffix_is_not_an_original_worker(self):
+        ready, _, _, files = self.shard()
+        base, artifact = self.names(IOS, ready['buildKey'])
+        with patch.object(self, 'names', return_value=(f"{base} (sha256:{'f' * 64}, ...", artifact)):
+            result = self.collect({IOS: ready}, {IOS: archive(files)}, self.repository / 'build/wrong-matrix-key')
+        row, = result['rows']
+        self.assertEqual('failure', row['result'])
+        self.assertIn('missing or ambiguous', row['reason'])
+        self.assertIsNone(row['originalDirectory'])
+
+    def test_matrix_running_and_base_plus_matrix_ambiguity_fail_closed(self):
+        ready, _, _, files = self.shard()
+        base, artifact = self.names(IOS, ready['buildKey'])
+        actual = f"{base} ({ready['buildKey']}, ..."
+        for running in (True, False):
+            destination = self.repository / f'build/matrix-negative-{running}'
+            with self.subTest(running=running), patch.object(self, 'names', return_value=(actual, artifact)), \
+                    patch.object(adapter, '_verified_product_state', return_value=self.state({IOS: ready})), \
+                    self.official_api({IOS: ready}, {IOS: archive(files)}) as (_, listed, downloaded):
+                original_listing = listed.side_effect
+                def listing(url, field, token):
+                    rows = original_listing(url, field, token)
+                    if field != 'jobs':
+                        return rows
+                    worker = next(row for row in rows if row['name'] == actual)
+                    if running:
+                        return [{**row, 'status': 'in_progress'} if row is worker else row for row in rows]
+                    return [*rows, {**worker, 'name': base}]
+                listed.side_effect = listing
+                if running:
+                    with self.assertRaisesRegex(ValueError, 'still running'):
+                        adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery, destination,
+                            trusted_workflow_sha=PIN, repository_root=self.repository, environ=self.environment,
+                            token='synthetic-token', sdk_ios_binary_only=True)
+                else:
+                    result = adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery, destination,
+                        trusted_workflow_sha=PIN, repository_root=self.repository, environ=self.environment,
+                        token='synthetic-token', sdk_ios_binary_only=True)
+                    self.assertIn('missing or ambiguous', result['rows'][0]['reason'])
+                downloaded.assert_not_called()
+
     def test_only_ios_binary_is_collected_among_other_sdk_runtime_and_contract_work(self):
         ready, _, _, files = self.shard()
         unrelated = [PhaseInstanceId(*identity) for identity in (

@@ -176,6 +176,27 @@ class SdkIosPackageUploadTest(unittest.TestCase):
             self.assertEqual(raw, (self.output / "original" / name).read_bytes(), name)
         self.assertEqual(source_before, regular_file_inventory(self.root, allow_empty=True))
 
+    def test_exact_key_bound_matrix_job_preserves_original_upload(self):
+        key = json.loads(self.receipt_bytes)['buildKey']
+        self.jobs[0]['name'] += f' ({key}, ...'
+        result = self.call()
+        self.assertEqual(self.producer, result['captureProducer'])
+        self.assertEqual(self.receipt_bytes, (self.output / 'original/shard/phase-receipt.json').read_bytes())
+        self.assertEqual(self.raw, (self.output / 'transport.zip').read_bytes())
+
+    def test_wrong_key_or_ambiguous_matrix_job_rejects_before_publication(self):
+        baseline = deepcopy(self.jobs)
+        key = json.loads(self.receipt_bytes)['buildKey']
+        for ambiguous in (False, True):
+            self.jobs = deepcopy(baseline)
+            base = self.jobs[0]['name']
+            self.jobs[0]['name'] = f"{base} ({key if ambiguous else 'sha256:' + 'f' * 64}, ..."
+            if ambiguous:
+                self.jobs.append({**self.jobs[0], 'name': base})
+            with self.subTest(ambiguous=ambiguous), self.assertRaisesRegex(ValueError, 'missing or ambiguous'):
+                self.call()
+            self.assertFalse(self.output.exists())
+
     def test_job_attempt_pin_window_digest_and_name_are_exact(self):
         baseline = deepcopy((self.run, self.jobs, self.artifact, self.commit))
         for case in ("job", "job-failed", "attempt", "pin", "artifact-run", "artifact-head",
