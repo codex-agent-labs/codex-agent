@@ -34,7 +34,7 @@ class MavenPhaseTest(unittest.TestCase):
             return_value=({"FIXTURE": "true"}, self.root / "gradlew")))
         self.enterContext(patch.object(worker, "_request_inventory", side_effect=lambda path: {path: sha256_file(path)}))
         self.process = self.enterContext(patch.object(worker.subprocess, "run", side_effect=self.produce))
-        self.android_seed = self.enterContext(patch('products.gradle_bootstrap.seed_sdk_android_dependencies'))
+        self.android_seed = self.enterContext(patch('products.gradle_bootstrap.seed_sdk_maven_binary_dependencies'))
 
     def record(self, product, component, phase, target, filename="outputs/data.bin", kind="maven"):
         stage = self.root / "originals" / (component + "-" + phase)
@@ -113,6 +113,7 @@ class MavenPhaseTest(unittest.TestCase):
                             self.assertNotIn("codexAgent.sdkCompatibilityRequest", fields)
                         if (component, phase) == ("sdk-android", "binary"):
                             self.assertEqual(str(fixture.archive), fields["codexAgent.codexArchiveFile"])
+                        if phase == 'binary':
                             fixture.android_seed.assert_called_once()
                             self.assertEqual(fields, fixture.android_seed.call_args.args[-1])
                         else:

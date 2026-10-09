@@ -159,10 +159,10 @@ def execute(plan, *, producer, sdk_version, repository_root, destination, enviro
         _prepare_destination(output, root).rmdir()
     destination = _prepare_destination(destination, root)
     unchanged()
-    if (component, phase) == ('sdk-android', 'binary'):
-        from products.gradle_bootstrap import seed_sdk_android_dependencies
-        seed_sdk_android_dependencies(root, current['commit'], wrapper, environment,
-                                      destination / 'dependency-seed', fields)
+    if phase == 'binary':
+        from products.gradle_bootstrap import seed_sdk_maven_binary_dependencies
+        seed_sdk_maven_binary_dependencies(root, current['commit'], wrapper, environment,
+                                          destination / 'dependency-seed', fields)
         unchanged()
     command = _runtime_worker_command(wrapper, fields, environment, build_directory=".")
     started = time.monotonic_ns()

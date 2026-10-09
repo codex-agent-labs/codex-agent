@@ -151,7 +151,7 @@ class SdkDependencySeedTest(unittest.TestCase):
                 (target / 'core-0.8.0.aar').write_bytes(payload)
                 (target / 'core-0.8.0.module').write_bytes(module)
                 return manifest
-            properties = {'codexAgent.contractVersion': '0.8.0', **{
+            properties = {'codexAgent.component': 'sdk-android', 'codexAgent.contractVersion': '0.8.0', **{
                 'codexAgent.' + name: str(root / name) for name in
                 ('contractPayload', 'contractMetadataReceipt', 'contractAttestation',
                  'contractAttestationSignature', 'contractPublicKey')}}
@@ -159,7 +159,7 @@ class SdkDependencySeedTest(unittest.TestCase):
                     patch.object(contract_attestation, 'materialize_contract_payload', side_effect=materialize), \
                     patch.object(bootstrap.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
                 destination = root / 'android-seed'
-                bootstrap.seed_sdk_android_dependencies(root, 'a' * 40, root / 'gradlew',
+                bootstrap.seed_sdk_maven_binary_dependencies(root, 'a' * 40, root / 'gradlew',
                     {'GITHUB_ACTIONS': 'true'}, destination, properties)
             command = run.call_args.args[0]
             self.assertIn('resolveSdkAndroidDependencies', command)
@@ -176,6 +176,43 @@ class SdkDependencySeedTest(unittest.TestCase):
             metadata = (destination / 'gradle/verification-metadata.xml').read_bytes()
             self.assertIn(b'name="codex-agent-core.aar"', metadata)
             self.assertIn(digest.removeprefix('sha256:').encode(), metadata)
+
+    def test_core_seed_uses_full_signed_contract_lock_and_only_main_dependencies(self):
+        from ci.products import contract_attestation
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            requested = []
+            def blob(*args, **limits):
+                requested.append(args[2])
+                if args[2].endswith('.toml'):
+                    return b'[versions]\nkotlin="2.3.10"\nagp="9.2.1"\n'
+                if args[2].endswith('.xml'): return self.metadata('native')
+                return b'# exact facade authenticated lock\n'
+            fields = {'codexAgent.component': 'sdk-core', 'codexAgent.contractVersion': '0.8.0', **{
+                'codexAgent.' + name: str(root / name) for name in
+                ('contractPayload', 'contractMetadataReceipt', 'contractAttestation',
+                 'contractAttestationSignature', 'contractPublicKey')}}
+            with patch.object(bootstrap, 'git_regular_blob_bytes', side_effect=blob), \
+                    patch.object(contract_attestation, 'materialize_contract_payload',
+                        return_value={'mavenFiles': []}) as materialize, \
+                    patch.object(bootstrap.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+                destination = root / 'core-seed'
+                bootstrap.seed_sdk_maven_binary_dependencies(root, 'a' * 40, root / 'gradlew',
+                    {}, destination, fields)
+            self.assertIn('codex-agent-sdk/gradle-authenticated-contract.lockfile', requested)
+            self.assertEqual(12, len(materialize.call_args.kwargs['required_components']))
+            self.assertIn('node-wasm', materialize.call_args.kwargs['required_components'])
+            command = run.call_args.args[0]
+            self.assertIn('resolveSdkCoreDependencies', command)
+            self.assertIn('--dependency-verification=strict', command)
+            self.assertIn('-Pkotlin.native.distribution.type=prebuilt', command)
+            self.assertNotIn('ciProductPhase', command)
+            script = (destination / 'build.gradle.kts').read_text()
+            for name in ('jsNpmAggregated', 'wasmJsNpmAggregated', 'kotlinKlibCommonizerClasspath',
+                         'kotlinNativeBundleConfiguration', 'mingwX64CompileKlibraries',
+                         'linuxArm64CompilationDependenciesMetadata'):
+                self.assertIn('"' + name + '"', script)
+            self.assertNotIn('findAll', script)
 
     def test_shared_environment_seeds_only_explicit_sdk_after_wrapper_admission(self):
         from ci import product_reuse as worker

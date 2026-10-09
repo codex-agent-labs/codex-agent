@@ -163,15 +163,19 @@ def seed_sdk_gradle_dependencies(root: Path, revision: str, wrapper: Path,
         raise ValueError(f"Pinned SDK dependency seeding failed; see {destination / 'gradle.log'}")
 
 
-def seed_sdk_android_dependencies(root: Path, revision: str, wrapper: Path,
-                                  environment, destination: Path, properties) -> None:
-    """Resolve the locked Android producer tools against authenticated Contract bytes."""
+def seed_sdk_maven_binary_dependencies(root: Path, revision: str, wrapper: Path,
+                                      environment, destination: Path, properties) -> None:
+    """Resolve the locked facade/Android tools against authenticated Contract bytes."""
     import json
     import tomllib
     from .contract_attestation import materialize_contract_payload
     from .inventory import require_semver, require_relative_path
     from ci.product_reuse import _runtime_worker_command
 
+    component = properties['codexAgent.component']
+    if component not in {'sdk-core', 'sdk-android'}:
+        raise ValueError('Unsupported Maven SDK dependency seed component')
+    core = component == 'sdk-core'
     if destination.exists() or destination.is_symlink():
         raise ValueError('Android dependency seed requires a fresh destination')
     require_regular_directory(destination.parent, 'Android dependency seed parent')
@@ -183,7 +187,8 @@ def seed_sdk_android_dependencies(root: Path, revision: str, wrapper: Path,
         raise ValueError('Android seed requires the reviewed Kotlin/AGP tool routing')
     (destination / 'gradle/libs.versions.toml').write_bytes(catalog)
     (destination / 'gradle.lockfile').write_bytes(git_regular_blob_bytes(root, revision,
-        'codex-agent-runtime-android/gradle-authenticated-contract.lockfile', max_bytes=4 * 1024**2))
+        ('codex-agent-sdk' if core else 'codex-agent-runtime-android') +
+        '/gradle-authenticated-contract.lockfile', max_bytes=4 * 1024**2))
     version = require_semver(properties['codexAgent.contractVersion'], 'Android seed Contract version')
     release = environment.get('GITHUB_ACTIONS') == 'true'
     manifest = materialize_contract_payload(
@@ -191,7 +196,10 @@ def seed_sdk_android_dependencies(root: Path, revision: str, wrapper: Path,
           ('contractPayload', 'contractMetadataReceipt', 'contractAttestation',
            'contractAttestationSignature', 'contractPublicKey')),
         destination / 'contract', required_trust_domain='release' if release else 'development',
-        expected_contract_version=version, required_components=('android',),
+        expected_contract_version=version, required_components=(
+            ('common', 'android', 'jvm', 'ios-arm64', 'ios-simulator-arm64', 'macos-arm64',
+             'macos-x64', 'linux-arm64', 'linux-x64', 'windows-x64', 'node-js', 'node-wasm')
+            if core else ('android',)),
         keyring=root / 'gradle/release/product-signing-keys.json' if release else None,
         keys_directory=root / 'gradle/release/keys' if release else None,
     )
@@ -252,7 +260,7 @@ def seed_sdk_android_dependencies(root: Path, revision: str, wrapper: Path,
         '        google(); mavenCentral()\n'
         '    }\n'
         '}\n', encoding='utf-8')
-    (destination / 'build.gradle.kts').write_text(
+    android_script = (
         'import com.android.build.gradle.internal.res.Aapt2FromMaven\n'
         'plugins { alias(libs.plugins.android.library); alias(libs.plugins.kotlin.jvm) apply false }\n'
         'android { namespace = "io.github.codex_agent_labs.dependencyseed"; compileSdk = 37\n'
@@ -270,11 +278,37 @@ def seed_sdk_android_dependencies(root: Path, revision: str, wrapper: Path,
         '        configurations.getByName(name).files.forEach { println("SDK_DEPENDENCY ${it.name}") }\n'
         '    }\n'
         '    aapt2.aapt2Directory.files.forEach { println("SDK_AAPT2 ${it}") }\n'
-        '} }\n', encoding='utf-8')
+        '} }\n')
+    core_script = (
+        '@file:OptIn(org.jetbrains.kotlin.gradle.ExperimentalWasmDsl::class)\n'
+        'import org.jetbrains.kotlin.gradle.dsl.JvmTarget\n'
+        'plugins { alias(libs.plugins.kotlin.multiplatform); alias(libs.plugins.android.kmp.library) }\n'
+        'kotlin { explicitApi(); jvmToolchain(17)\n'
+        '    android { namespace = "io.github.codex_agent_labs.dependencyseed"; compileSdk = 37; minSdk = 26; compilerOptions.jvmTarget.set(JvmTarget.JVM_17) }\n'
+        '    jvm { compilerOptions.jvmTarget.set(JvmTarget.JVM_17) }\n'
+        '    iosArm64(); iosSimulatorArm64(); macosArm64(); macosX64(); linuxArm64(); linuxX64(); mingwX64()\n'
+        '    js { nodejs() }; wasmJs { nodejs() }\n'
+        f'    sourceSets.commonMain.dependencies {{ api("io.github.codex-agent-labs:codex-agent-core:{version}") }}\n'
+        '}\n'
+        'dependencyLocking { lockAllConfigurations() }\n'
+        'tasks.register("resolveSdkCoreDependencies") { doLast {\n'
+        '    listOf("kotlinBuildToolsApiClasspath", "kotlinCompilerClasspath", "kotlinKlibCommonizerClasspath", "kotlinNativeBundleConfiguration",\n'
+        '        "kotlinCompilerPluginClasspathAndroidMain", "kotlinCompilerPluginClasspathJvmMain", "kotlinCompilerPluginClasspathJsMain", "kotlinCompilerPluginClasspathWasmJsMain", "kotlinCompilerPluginClasspathMetadataCommonMain",\n'
+        '        "allSourceSetsCompileDependenciesMetadata", "androidCompileClasspath", "androidRuntimeClasspath", "androidLintTool", "jvmCompileClasspath", "jvmRuntimeClasspath",\n'
+        '        "jsCompileClasspath", "jsRuntimeClasspath", "jsNpmAggregated", "wasmJsCompileClasspath", "wasmJsRuntimeClasspath", "wasmJsNpmAggregated",\n'
+        '        "iosArm64CompileKlibraries", "iosArm64CompilationDependenciesMetadata", "iosSimulatorArm64CompileKlibraries", "iosSimulatorArm64CompilationDependenciesMetadata",\n'
+        '        "macosArm64CompileKlibraries", "macosArm64CompilationDependenciesMetadata", "macosX64CompileKlibraries", "macosX64CompilationDependenciesMetadata",\n'
+        '        "linuxArm64CompileKlibraries", "linuxArm64CompilationDependenciesMetadata", "linuxX64CompileKlibraries", "linuxX64CompilationDependenciesMetadata", "mingwX64CompileKlibraries", "mingwX64CompilationDependenciesMetadata").forEach { name ->\n'
+        '        configurations.getByName(name).files.forEach { println("SDK_DEPENDENCY ${it.name}") }\n'
+        '    }\n'
+        '} }\n')
+    (destination / 'build.gradle.kts').write_text(core_script if core else android_script, encoding='utf-8')
     original = _runtime_worker_command(wrapper, {}, environment, build_directory='.')
     command = [*original[:original.index('--offline')], '-p', str(destination),
-        'resolveSdkAndroidDependencies', '--dependency-verification=strict',
+        'resolveSdkCoreDependencies' if core else 'resolveSdkAndroidDependencies', '--dependency-verification=strict',
         '--no-daemon', '--no-configuration-cache', '--console=plain']
+    if core:
+        command.append('-Pkotlin.native.distribution.type=prebuilt')
     with (destination / 'gradle.log').open('xb') as log:
         result = subprocess.run(command, cwd=root, env=dict(environment), stdout=log,
             stderr=subprocess.STDOUT, check=False)
