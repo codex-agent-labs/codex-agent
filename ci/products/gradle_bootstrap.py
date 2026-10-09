@@ -163,6 +163,125 @@ def seed_sdk_gradle_dependencies(root: Path, revision: str, wrapper: Path,
         raise ValueError(f"Pinned SDK dependency seeding failed; see {destination / 'gradle.log'}")
 
 
+def seed_sdk_android_dependencies(root: Path, revision: str, wrapper: Path,
+                                  environment, destination: Path, properties) -> None:
+    """Resolve the locked Android producer tools against authenticated Contract bytes."""
+    import json
+    import tomllib
+    from .contract_attestation import materialize_contract_payload
+    from .inventory import require_semver, require_relative_path
+    from ci.product_reuse import _runtime_worker_command
+
+    if destination.exists() or destination.is_symlink():
+        raise ValueError('Android dependency seed requires a fresh destination')
+    require_regular_directory(destination.parent, 'Android dependency seed parent')
+    destination.mkdir()
+    (destination / 'gradle').mkdir()
+    catalog = git_regular_blob_bytes(root, revision, 'gradle/libs.versions.toml', max_bytes=4 * 1024**2)
+    versions = tomllib.loads(catalog.decode())['versions']
+    if versions['kotlin'] != '2.3.10' or versions['agp'] != '9.2.1':
+        raise ValueError('Android seed requires the reviewed Kotlin/AGP tool routing')
+    (destination / 'gradle/libs.versions.toml').write_bytes(catalog)
+    (destination / 'gradle.lockfile').write_bytes(git_regular_blob_bytes(root, revision,
+        'codex-agent-runtime-android/gradle-authenticated-contract.lockfile', max_bytes=4 * 1024**2))
+    version = require_semver(properties['codexAgent.contractVersion'], 'Android seed Contract version')
+    release = environment.get('GITHUB_ACTIONS') == 'true'
+    manifest = materialize_contract_payload(
+        *(Path(properties['codexAgent.' + name]) for name in
+          ('contractPayload', 'contractMetadataReceipt', 'contractAttestation',
+           'contractAttestationSignature', 'contractPublicKey')),
+        destination / 'contract', required_trust_domain='release' if release else 'development',
+        expected_contract_version=version, required_components=('android',),
+        keyring=root / 'gradle/release/product-signing-keys.json' if release else None,
+        keys_directory=root / 'gradle/release/keys' if release else None,
+    )
+    metadata = ET.fromstring(git_regular_blob_bytes(root, revision,
+        '.github/actions/sdk-ios-binary-worker/verification-metadata.xml', max_bytes=4 * 1024**2))
+    namespace = 'https://schema.gradle.org/dependency-verification'
+    if metadata.findtext('{' + namespace + '}configuration/{' + namespace + '}verify-metadata') != 'true':
+        raise ValueError('Android dependency seed requires metadata verification')
+    components = metadata.find('{' + namespace + '}components')
+    if components is None:
+        raise ValueError('Android dependency seed lacks pinned components')
+    by_id = {tuple(component.get(key) for key in ('group', 'name', 'version')): component
+             for component in components}
+
+    def pin(parts, filename, digest):
+        identity = ('.'.join(parts[:-3]), parts[-3], parts[-2])
+        component = by_id.get(identity)
+        if component is None:
+            component = ET.SubElement(components, '{' + namespace + '}component',
+                dict(zip(('group', 'name', 'version'), identity)))
+            by_id[identity] = component
+        known = [artifact for artifact in component if artifact.get('name') == filename]
+        if known:
+            if not any(value.get('value') == digest for artifact in known
+                       for value in artifact.findall('{' + namespace + '}sha256')):
+                raise ValueError('Android seed Contract pin conflicts with its verified payload')
+            return
+        artifact = ET.SubElement(component, '{' + namespace + '}artifact', {'name': filename})
+        ET.SubElement(artifact, '{' + namespace + '}sha256', {'value': digest,
+            'origin': 'Transient seed pin from authenticated Contract Maven allow-list'})
+
+    for record in manifest['mavenFiles']:
+        parts = Path(record['path']).parts[1:]
+        pin(parts, parts[-1], record['sha256'].removeprefix('sha256:'))
+        if parts[-1].endswith('.module'):
+            module = destination / 'contract' / record['path']
+            for variant in json.loads(module.read_bytes()).get('variants', []):
+                for artifact in variant.get('files', []):
+                    name = require_relative_path(artifact['name'], 'Contract module artifact alias')
+                    url = require_relative_path(artifact['url'], 'Contract module artifact URL')
+                    if '/' in name or '/' in url:
+                        raise ValueError('Contract module seed alias must be a sibling file')
+                    body = read_regular_file_bytes(module.parent / url, reject_symlink_parents=True)
+                    pin(parts, name, hashlib.sha256(body).hexdigest())
+    ET.register_namespace('', namespace)
+    ET.register_namespace('xsi', 'http://www.w3.org/2001/XMLSchema-instance')
+    (destination / 'gradle/verification-metadata.xml').write_bytes(
+        ET.tostring(metadata, encoding='utf-8', xml_declaration=True))
+    (destination / 'settings.gradle.kts').write_text(
+        'pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }\n'
+        'dependencyResolutionManagement {\n'
+        '    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)\n'
+        '    repositories {\n'
+        '        exclusiveContent {\n'
+        '            forRepository { maven { url = uri(layout.settingsDirectory.dir("contract/maven")) } }\n'
+        '            filter { includeGroup("io.github.codex-agent-labs") }\n'
+        '        }\n'
+        '        google(); mavenCentral()\n'
+        '    }\n'
+        '}\n', encoding='utf-8')
+    (destination / 'build.gradle.kts').write_text(
+        'import com.android.build.gradle.internal.res.Aapt2FromMaven\n'
+        'plugins { alias(libs.plugins.android.library); alias(libs.plugins.kotlin.jvm) apply false }\n'
+        'android { namespace = "io.github.codex_agent_labs.dependencyseed"; compileSdk = 37\n'
+        '    defaultConfig { minSdk = 26 }\n'
+        '    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }\n'
+        '}\n'
+        f'dependencies {{ api("io.github.codex-agent-labs:codex-agent-core:{version}")\n'
+        '    implementation(libs.androidx.browser); implementation(libs.androidx.sqlite)\n'
+        '    implementation(libs.androidx.sqlite.framework); implementation(libs.kotlinx.coroutines.core); implementation(libs.okio)\n'
+        '}\n'
+        'dependencyLocking { lockAllConfigurations() }\n'
+        'val aapt2 = Aapt2FromMaven.create(project) { null }\n'
+        'tasks.register("resolveSdkAndroidDependencies") { doLast {\n'
+        '    listOf("kotlinCompilerClasspath", "kotlinBuildToolsApiClasspath", "releaseCompileClasspath", "releaseRuntimeClasspath", "androidLintTool").forEach { name ->\n'
+        '        configurations.getByName(name).files.forEach { println("SDK_DEPENDENCY ${it.name}") }\n'
+        '    }\n'
+        '    aapt2.aapt2Directory.files.forEach { println("SDK_AAPT2 ${it}") }\n'
+        '} }\n', encoding='utf-8')
+    original = _runtime_worker_command(wrapper, {}, environment, build_directory='.')
+    command = [*original[:original.index('--offline')], '-p', str(destination),
+        'resolveSdkAndroidDependencies', '--dependency-verification=strict',
+        '--no-daemon', '--no-configuration-cache', '--console=plain']
+    with (destination / 'gradle.log').open('xb') as log:
+        result = subprocess.run(command, cwd=root, env=dict(environment), stdout=log,
+            stderr=subprocess.STDOUT, check=False)
+    if result.returncode:
+        raise ValueError(f'Pinned Android dependency seed failed; see {destination / "gradle.log"}')
+
+
 def seed_sdk_ios_native_distribution(root: Path, revision: str, wrapper: Path,
                                      environment, destination: Path) -> None:
     """Seed pinned iOS dependencies and KGP's prebuilt tools, never product tasks.

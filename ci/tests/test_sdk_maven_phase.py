@@ -34,6 +34,7 @@ class MavenPhaseTest(unittest.TestCase):
             return_value=({"FIXTURE": "true"}, self.root / "gradlew")))
         self.enterContext(patch.object(worker, "_request_inventory", side_effect=lambda path: {path: sha256_file(path)}))
         self.process = self.enterContext(patch.object(worker.subprocess, "run", side_effect=self.produce))
+        self.android_seed = self.enterContext(patch('products.gradle_bootstrap.seed_sdk_android_dependencies'))
 
     def record(self, product, component, phase, target, filename="outputs/data.bin", kind="maven"):
         stage = self.root / "originals" / (component + "-" + phase)
@@ -112,10 +113,29 @@ class MavenPhaseTest(unittest.TestCase):
                             self.assertNotIn("codexAgent.sdkCompatibilityRequest", fields)
                         if (component, phase) == ("sdk-android", "binary"):
                             self.assertEqual(str(fixture.archive), fields["codexAgent.codexArchiveFile"])
+                            fixture.android_seed.assert_called_once()
+                            self.assertEqual(fields, fixture.android_seed.call_args.args[-1])
+                        else:
+                            fixture.android_seed.assert_not_called()
                         self.assertTrue(all(name not in fields for name in (
                             "codexAgent.codexVersion", "codexAgent.codexArchiveSha256", "codexAgent.codexBinarySha256")))
                     finally:
                         fixture.doCleanups()
+
+    def test_android_dependency_seed_failure_prevents_product_execution(self):
+        arguments = self.arguments('sdk-android', 'binary')
+        self.android_seed.side_effect = ValueError('strict dependency seed failed')
+        with self.assertRaisesRegex(ValueError, 'strict dependency seed failed'):
+            worker.execute(self.plan, **arguments)
+        self.process.assert_not_called()
+        self.assertFalse((self.destination / 'execution.json').exists())
+
+    def test_android_seed_cannot_mutate_original_archive(self):
+        arguments = self.arguments('sdk-android', 'binary')
+        self.android_seed.side_effect = lambda *args: self.archive.write_bytes(b'changed original')
+        with self.assertRaisesRegex(ValueError, 'input changed'):
+            worker.execute(self.plan, **arguments)
+        self.process.assert_not_called()
 
     def test_missing_archive_and_cross_phase_inputs_fail_before_process(self):
         arguments = self.arguments("sdk-android", "binary")

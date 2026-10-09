@@ -124,6 +124,59 @@ class SdkDependencySeedTest(unittest.TestCase):
             self.assertNotIn('dependsOn', script)
             self.assertNotIn('findAll', script)
 
+    def test_android_seed_requires_authenticated_contract_locked_dependencies_and_strict_tools(self):
+        from ci.products import contract_attestation
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            catalog = b'[versions]\nkotlin="2.3.10"\nagp="9.2.1"\n'
+            payload = b'authenticated aar'
+            import hashlib
+            digest = 'sha256:' + hashlib.sha256(payload).hexdigest()
+            module = b'{"variants":[{"files":[{"name":"codex-agent-core.aar","url":"core-0.8.0.aar"}]}]}'
+            manifest = {'mavenFiles': [
+                {'path': 'maven/example/core/0.8.0/core-0.8.0.aar', 'sha256': digest},
+                {'path': 'maven/example/core/0.8.0/core-0.8.0.module',
+                 'sha256': 'sha256:' + hashlib.sha256(module).hexdigest()},
+            ]}
+            def blob(*args, **limits):
+                if args[2].endswith('.toml'): return catalog
+                if args[2].endswith('.xml'): return self.metadata('native')
+                return b'# exact authenticated dependency lock\n'
+            def materialize(*args, **kwargs):
+                self.assertEqual('release', kwargs['required_trust_domain'])
+                self.assertEqual(('android',), kwargs['required_components'])
+                self.assertEqual(root / 'gradle/release/product-signing-keys.json', kwargs['keyring'])
+                target = args[5] / 'maven/example/core/0.8.0'
+                target.mkdir(parents=True)
+                (target / 'core-0.8.0.aar').write_bytes(payload)
+                (target / 'core-0.8.0.module').write_bytes(module)
+                return manifest
+            properties = {'codexAgent.contractVersion': '0.8.0', **{
+                'codexAgent.' + name: str(root / name) for name in
+                ('contractPayload', 'contractMetadataReceipt', 'contractAttestation',
+                 'contractAttestationSignature', 'contractPublicKey')}}
+            with patch.object(bootstrap, 'git_regular_blob_bytes', side_effect=blob), \
+                    patch.object(contract_attestation, 'materialize_contract_payload', side_effect=materialize), \
+                    patch.object(bootstrap.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+                destination = root / 'android-seed'
+                bootstrap.seed_sdk_android_dependencies(root, 'a' * 40, root / 'gradlew',
+                    {'GITHUB_ACTIONS': 'true'}, destination, properties)
+            command = run.call_args.args[0]
+            self.assertIn('resolveSdkAndroidDependencies', command)
+            self.assertIn('--dependency-verification=strict', command)
+            self.assertNotIn('ciProductPhase', command)
+            self.assertNotIn('--offline', command)
+            script = (destination / 'build.gradle.kts').read_text()
+            self.assertIn('androidLintTool', script)
+            self.assertIn('dependencyLocking { lockAllConfigurations() }', script)
+            self.assertIn('Aapt2FromMaven.create(project) { null }', script)
+            settings = (destination / 'settings.gradle.kts').read_text()
+            self.assertIn('exclusiveContent', settings)
+            self.assertIn('contract/maven', settings)
+            metadata = (destination / 'gradle/verification-metadata.xml').read_bytes()
+            self.assertIn(b'name="codex-agent-core.aar"', metadata)
+            self.assertIn(digest.removeprefix('sha256:').encode(), metadata)
+
     def test_shared_environment_seeds_only_explicit_sdk_after_wrapper_admission(self):
         from ci import product_reuse as worker
         for directory in ('runtime', '.'):
