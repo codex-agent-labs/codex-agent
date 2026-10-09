@@ -134,7 +134,7 @@ CONTROL_FILES |= CACHE_FIXED_FILES
 # Exact completed product closure, not the historical acceptance producer.
 SDK_FROZEN_REVISION = "969b272984b91f4dcf467a05319132e2bca3b52a"
 SDK_REGISTRY = "ci/products/registry.py"
-SDK_SELECTION_REVISION = "de0efcddb60c9aa4c6219b8466c77260b5ae345d"
+SDK_SELECTION_REVISION = "7a0759f087c5390d83704470bffa4b9eb9bac2de"
 SDK_SELECTOR = "ci/products/selection.py"
 
 
