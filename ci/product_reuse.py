@@ -513,7 +513,8 @@ def _runtime_prior_workflow_sha(run, current_sha):
                              "cec458a479c0556d39aa6a75b18311500ce66d71",
                              "b4148a6320d3dfe8bfb556c6327937c6b304cf4c",
                              "9be996a3269c324ad1beae37a06ff65219e69806",
-                             "8a1c2a0c9a9ee1f3c5629d2d77278580f48a489c")):
+                             "8a1c2a0c9a9ee1f3c5629d2d77278580f48a489c",
+                             "4dcf10739d30dc0462eb03090e17612d4ca6a97b")):
         try:
             _require_ci_workflow_reference(run,
                 f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{sha}", sha)
@@ -3794,6 +3795,15 @@ def _verified_product_state(
         prior_records = _prior_failed_runtime_objects(
             prior_capture, discovery_root, trusted_workflow_sha=sdk_original_workflow_sha,
             token=environment.get("GITHUB_TOKEN"), plan=plan, consumer_producer=consumer["producer"])
+    sdk_capture = discovery_root / "prior-failed-sdk"
+    if sdk_capture.exists() or sdk_capture.is_symlink():
+        if not sdk_original_workflow_sha or not environment.get("GITHUB_TOKEN"):
+            raise ValueError("Prior SDK replay requires caller-pinned workflow authority and token")
+        from sdk_ios_binary_recovery import replay_prior_ios_binary
+        prior_records.extend(replay_prior_ios_binary(sdk_capture, discovery_root,
+            plan=plan, consumer_producer=consumer["producer"],
+            trusted_workflow_sha=sdk_original_workflow_sha,
+            token=environment["GITHUB_TOKEN"], environ=environment))
     initial_objects = []
     if request["availableObjects"]:
         supplied_objects = require_array(request["availableObjects"], "Initial availableObjects")
@@ -3806,7 +3816,7 @@ def _verified_product_state(
         expected_ids = tuple(sorted((*_dependency_closure((contract,)),
                                      *(_identity(record) for record in prior_records))))
         if tuple(supplied_ids) != expected_ids:
-            raise ValueError("Initial availableObjects differ from authenticated Contract/Runtime objects")
+            raise ValueError("Initial availableObjects differ from authenticated original product objects")
         with tempfile.TemporaryDirectory(prefix="codex-agent-initial-contract-", dir=root) as temporary:
             verified = Path(temporary).resolve() / "verified"
             evidence = _capture_completed_contract_handoff(
@@ -7469,6 +7479,7 @@ def resume_products(
             build_plan_consumer=retain,
             **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
         prior_records = []
+        prior_sdk_records = []
         if environment.get("GITHUB_TOKEN") and sdk_original_workflow_sha:
             if environment.get("CODEX_AGENT_HOSTED_CACHE_BACKEND"):
                 from hosted_reuse_proof import qualify_checkpoint
@@ -7510,13 +7521,33 @@ def resume_products(
                     apple_package_origin=_apple_package_origin(captured_plan, root, sdk_original_workflow_sha, environment),
                     build_plan_consumer=retain,
                     **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
+            ios_binary = PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
+            ios_misses = [phase for phase in reuse["phases"]
+                          if _identity(phase) == ios_binary and phase["state"] == "build"]
+            if ios_misses:
+                from sdk_ios_binary_recovery import capture_prior_ios_binary
+                prior_sdk_records = capture_prior_ios_binary(captured_plan, plan,
+                    _consumer(plan, environment)["producer"], ios_misses[0]["buildKey"],
+                    prepared / "prior-failed-sdk", prepared, repository_root=root,
+                    environ=environment, trusted_workflow_sha=sdk_original_workflow_sha,
+                    token=environment["GITHUB_TOKEN"], attempts=attempts)
+                if prior_sdk_records:
+                    wave["availableObjects"] = sorted(
+                        (*initial_objects, *prior_records, *prior_sdk_records), key=_identity)
+                    ready_plans.clear()
+                    reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling,
+                        apple_policy=sdk_apple_validation_policy,
+                        apple_package_origin=_apple_package_origin(captured_plan, root,
+                            sdk_original_workflow_sha, environment), build_plan_consumer=retain,
+                        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
         _, selected, phases = _validate_reuse_result(reuse, requested, require_complete=False,
             sdk_runtime_external=wave.get("sdkRuntimeSource") == "released-default")
         by_id = {_identity(phase): phase for phase in phases}
         originals = {_identity(phase): phase for phase in original_phases}
         if any(by_id.get(instance, {}).get("state") != "retained" for instance in originals):
             raise ValueError("Product resume did not retain every authenticated Contract object")
-        elected_prior = _elected_prior_runtime_records(prior_records, selected, by_id)
+        elected_prior = _elected_prior_runtime_records(
+            [*prior_records, *prior_sdk_records], selected, by_id)
         sources = {_identity(record): prepared / record["objectPath"]
                    for record in (*initial_objects, *elected_prior.values())}
         remote_sources = _catalog_object_sources(wave)
@@ -7549,7 +7580,9 @@ def resume_products(
             if instance in originals:
                 carrier_phases.append(originals[instance])
             elif instance in elected_prior:
-                shard = (prepared / "prior-failed-runtime" / instance.component / instance.phase / instance.target /
+                shard = (prepared / "prior-failed-sdk" / instance.component / instance.phase /
+                         instance.target / "original/shard" if instance.product == "sdk" else
+                         prepared / "prior-failed-runtime" / instance.component / instance.phase / instance.target /
                          "phases" / instance.phase / "original/shard")
                 descriptor = _canonical_control(shard / PHASE_SHARD_NAME, "Prior failed Runtime shard")
                 receipt = verify_phase_shard(shard, instance)["receipt"]

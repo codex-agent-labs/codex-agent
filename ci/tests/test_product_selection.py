@@ -347,6 +347,12 @@ class ProductSelectionTest(unittest.TestCase):
                 for instance in PHASE_INSTANCE_IDS:
                     self.assertEqual((), phase_inventory_paths([path], instance))
 
+    def test_original_ios_recovery_does_not_own_product_bytes(self):
+        path = "ci/sdk_ios_binary_recovery.py"
+        self.assertEqual((), classify_paths([path]).unknown_paths)
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((), phase_inventory_paths([path], instance))
+
     def test_protected_product_custody_controls_do_not_change_product_bytes(self):
         contract_metadata = {PhaseInstanceId("contract", "contract", "metadata", "common")}
         runtime_metadata = {PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")}
