@@ -87,6 +87,23 @@ class OriginalAppleUploadLocatorTest(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 self.call()
 
+    def test_exact_keyed_matrix_names_preserve_original_binary_and_package(self):
+        for phase in self.receipts:
+            self.configure(phase)
+            raw = self.receipt_path.read_bytes()
+            base = self.f.jobs[0]["name"]
+            self.f.jobs[0]["name"] = f"{base} ({self.receipt['buildKey']}, ..."
+            with self.subTest(phase=phase):
+                self.assertEqual({"artifact_id": 701, "artifact_sha256": self.f.artifact["digest"]}, self.call())
+                self.assertEqual(raw, self.receipt_path.read_bytes())
+                self.f.jobs.append({**self.f.jobs[0], "name": base})
+                with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
+                    self.call()
+                self.f.jobs.pop()
+                self.f.jobs[0]["name"] = f"{base} (sha256:{'0' * 64}, ..."
+                with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
+                    self.call()
+
     def test_official_job_pin_run_detail_and_window_checks_remain_mandatory(self):
         baseline = deepcopy((self.f.run, self.f.jobs, self.f.artifact))
         for mutation in ("job", "failed", "pin", "attempt", "run", "head", "window", "detail", "url"):

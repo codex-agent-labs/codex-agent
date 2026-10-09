@@ -69,6 +69,21 @@ class AppleUploadLocatorTest(unittest.TestCase):
                     self.assertEqual(plan_bytes, self.f.plan_path.read_bytes())
                     self.assertFalse(self.f.output.exists())
 
+    def test_validation_matrix_name_is_bound_to_exact_elected_key(self):
+        for target in ("ios-arm64", "ios-simulator-arm64"):
+            self.configure("validation", target)
+            base = self.f.jobs[0]["name"]
+            self.f.jobs[0]["name"] = f"{base} ({self.key}, ..."
+            with self.subTest(target=target):
+                self.assertEqual({"artifact_id": 701, "artifact_sha256": self.f.artifact["digest"]}, self.call())
+                self.f.jobs.append({**self.f.jobs[0], "name": base})
+                with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
+                    self.call()
+                self.f.jobs.pop()
+                self.f.jobs[0]["name"] = f"{base} (sha256:{'0' * 64}, ..."
+                with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
+                    self.call()
+
     def test_missing_ambiguous_expired_wrong_attempt_key_and_malformed_metadata_reject(self):
         for mode in ("validation", "preparation"):
             self.configure(mode, "ios-arm64")

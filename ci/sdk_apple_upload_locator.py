@@ -19,9 +19,17 @@ from reuse import github_output
 
 
 def _locate(producer, *, phase, job, name, token, trusted_workflow_sha=None,
-            trusted_workflows_by_phase=None):
+            trusted_workflows_by_phase=None, expected_build_key=None):
     """Shared fixed-callsite observation/list/detail/window checks, no downloads."""
     producer_bytes = canonical_json_bytes(producer)
+    if expected_build_key is not None:
+        jobs = products.paginated_items(
+            f"https://api.github.com/repos/{producer['repository']}/actions/runs/{producer['runId']}/attempts/{producer['runAttempt']}/jobs",
+            "jobs", token)
+        matching = products._matching_ci_jobs(jobs, job, expected_build_key=expected_build_key)
+        if len(matching) != 1:
+            raise ValueError("Apple original worker job is missing or ambiguous")
+        job = matching[0]["name"]
     observation = products._observe_ci_producer_jobs({phase: producer},
         jobs_by_phase={phase: job}, trusted_workflow_sha=trusted_workflow_sha,
         trusted_workflows_by_phase=trusted_workflows_by_phase, token=token)[0]
@@ -72,7 +80,8 @@ def locate_original_apple_upload(receipt_path, *, trusted_workflow_sha, token, e
     name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-ios-{receipt['buildKey'].removeprefix('sha256:')}-"
             f"{producer['tree']}-attempt-{producer['runAttempt']}")
     result = _locate(producer, phase=phase, job=job, name=name,
-                     trusted_workflow_sha=trusted_workflow_sha, token=token)
+                     trusted_workflow_sha=trusted_workflow_sha, token=token,
+                     expected_build_key=receipt["buildKey"])
     require_no_signing_secret(environment)
     if (read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != raw
             or canonical_json_bytes(receipt) != raw):
@@ -118,7 +127,8 @@ def locate_apple_upload(plan_path, candidate_root, *, mode, target,
             name = (f"codex-agent-sdk-apple-signing-preparation-{target}-"
                     f"{producer['tree']}-attempt-{producer['runAttempt']}")
         result = _locate(producer, phase=mode, job=job, name=name,
-                         trusted_workflow_sha=trusted_workflow_sha, token=token)
+                         trusted_workflow_sha=trusted_workflow_sha, token=token,
+                         expected_build_key=expected_build_key)
         require_no_signing_secret(environment)
         if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes
                 or read_regular_file_bytes(captured_plan) != plan_bytes
