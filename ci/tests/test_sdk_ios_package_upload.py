@@ -134,6 +134,24 @@ class SdkIosPackageUploadTest(unittest.TestCase):
             capture.verify_retained_sdk_ios_upload(self.output, self.receipt_bytes)
         self.assertEqual(before, regular_file_inventory(self.output, allow_empty=True))
 
+    def test_fresh_and_retained_outer_bounds_are_phase_specific(self):
+        # Only outer transport differs: native-input copies make the binary
+        # worker upload larger than its independently bounded phase object.
+        expected = (capture._CATALOG_ZIP_LIMITS if self.phase == "binary"
+                    else capture._APPLE_UPLOAD_ZIP_LIMITS)
+        with patch.object(capture, "verified_zip_contents", wraps=capture.verified_zip_contents) as verify:
+            self.call()
+            capture.verify_retained_sdk_ios_upload(self.output, self.receipt_bytes)
+        self.assertEqual(2, verify.call_count)
+        for invocation in verify.call_args_list:
+            self.assertEqual("transport.zip", Path(invocation.args[0]).name)
+            self.assertEqual({**expected, "retained_paths": (), "allow_empty_members": True},
+                             invocation.kwargs)
+        self.assertEqual(16 * 1024**3 if self.phase == "binary" else 8 * 1024**3,
+                         expected["max_archive_bytes"])
+        self.assertEqual(8 * 1024**3, capture.OBJECT_ZIP_LIMITS["max_archive_bytes"])
+        self.assertEqual(self.receipt_bytes, (self.output / "original/shard/phase-receipt.json").read_bytes())
+
     def test_retained_upload_rejects_archive_materialization_and_identity_mutations(self):
         self.call()
         for index, mutation in enumerate(("archive", "original", "plan-extra", "root-extra", "producer", "receipt", "name", "id")):

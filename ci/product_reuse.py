@@ -6691,7 +6691,7 @@ def verify_retained_sdk_ios_upload(capture, receipt_bytes):
     if (transport["captureProducer"] != producer
             or transport[f"{phase}ReceiptSha256"] != sha256_bytes(receipt_bytes)):
         raise ValueError("Retained Apple transport differs from the exact original receipt")
-    _verify_retained_sdk_upload_archive(capture, transport["artifact"], apple=True)
+    _verify_retained_sdk_upload_archive(capture, transport["artifact"], apple=phase != "binary")
     name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-{target}-{receipt['buildKey'].removeprefix('sha256:')}-"
             f"{producer['tree']}-attempt-{producer['runAttempt']}")
     if transport["artifact"].get("name") != name:
@@ -6923,7 +6923,7 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
             observed[0]["run"], token, destination=archive)
         _require_artifact_job_window(observed[0], job, artifact)
         zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
-            **_APPLE_UPLOAD_ZIP_LIMITS)
+            **(_CATALOG_ZIP_LIMITS if phase == "binary" else _APPLE_UPLOAD_ZIP_LIMITS))
         original = prepared / "original"
         safe_extract(archive, original)
         verified = verify_phase_shard(original / "shard", instance)
