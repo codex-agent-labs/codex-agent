@@ -65,7 +65,11 @@ def _original_tooling_workflow(producer, current_sha, token, *, repository_root=
                     '--no-textconv', '--no-renames', '--name-only', '-z', pin, current_sha, '--', binary=True)
             except subprocess.CalledProcessError as error:
                 raise ValueError('Tooling rotation requires available ancestor publisher commits') from error
-            if set(changed.split(b'\0')) - {b'', b'.reuse/approvals.json', b'.reuse/workflow-publication.json'}:
+            # Protected parent orchestration is not executable tooling. Original
+            # child authority remains exact; capture still checks every compiler
+            # input and actual JAR resource against current caller Git policy.
+            if set(changed.split(b'\0')) - {b'', b'.reuse/approvals.json', b'.reuse/workflow-publication.json',
+                                          b'.github/workflows/product-validation.yml'}:
                 raise ValueError('Tooling publisher rotation changes executable or other source bytes')
             metadata_rotation = True
     path = ".github/workflows/contract-validation.yml"

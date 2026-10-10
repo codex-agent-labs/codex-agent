@@ -22,7 +22,7 @@ WORKFLOW_PIN = "c" * 40
 
 
 class ToolingMetadataRotationTest(unittest.TestCase):
-    def test_protected_metadata_rotation_preserves_code_and_rejects_other_authority(self):
+    def test_protected_parent_rotation_preserves_tooling_and_rejects_other_authority(self):
         with tempfile.TemporaryDirectory(prefix='tooling-publisher-rotation-') as temporary:
             repository = Path(temporary)
 
@@ -48,7 +48,9 @@ class ToolingMetadataRotationTest(unittest.TestCase):
                         'runId': 7, 'runAttempt': 1, 'pullRequest': 31}
             commit('.reuse/approvals.json', '{"syntheticApproval":true}\n')
             current = commit('.reuse/workflow-publication.json', '{"syntheticPublication":true}\n')
-            changed_code = commit('.github/workflows/product-validation.yml', 'name: changed executable fixture\n')
+            changed_parent = commit('.github/workflows/product-validation.yml', 'name: changed orchestration fixture\n')
+            changed_child = commit('.github/workflows/contract-validation.yml', 'name: changed tooling attestation fixture\n')
+            changed_code = commit('gradle/build-logic/src/main/kotlin/Tooling.kt', '// changed compiler input\n')
 
             def observed(pin):
                 return {'referenced_workflows': [
@@ -67,7 +69,10 @@ class ToolingMetadataRotationTest(unittest.TestCase):
                     f'codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{original}')
                 self.assertEqual(policy, tooling_discovery._original_tooling_workflow(
                     producer, current, TOKEN, repository_root=repository))
+                self.assertEqual(policy, tooling_discovery._original_tooling_workflow(
+                    producer, changed_parent, TOKEN, repository_root=repository))
             rejected = [('code-change', observed(original), changed_code),
+                        ('tooling-child-change', observed(original), changed_child),
                         ('non-ancestor', observed(current), original)]
             child_sha = observed(original)
             child_sha['referenced_workflows'][1]['sha'] = current
