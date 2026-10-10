@@ -39,6 +39,43 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertIsNotNone(match, "Missing saved workflow job: " + name)
         return match[0]
 
+    def test_sdk_workers_and_catalog_ignore_skipped_ancestors_not_failed_inputs(self):
+        # Exercise the saved conjunctions, not GitHub's scheduler. Optional iOS
+        # ancestors may be skipped on reuse; actual inputs must all succeed.
+        for name in ("sdk-workers-1", "sdk-workers-2", "sdk-catalog"):
+            job = self.job(name)
+            condition = re.search(r"(?ms)^    if: >-\n(.*?)(?=^    \S)", job)[1]
+            clauses = [value.strip() for value in condition.split("&&")]
+            self.assertEqual(["always()", "!cancelled()"], clauses[:2])
+            comparisons = []
+            for clause in clauses[2:]:
+                comparison = re.fullmatch(r"([\w.-]+) == '([^']*)'", clause)
+                self.assertIsNotNone(comparison, clause)
+                comparisons.append(comparison.groups())
+            expected = dict(comparisons)
+            parents = re.search(r"needs: \[([^\]]+)\]", job)[1].split(", ")
+            for parent in parents:
+                self.assertEqual("success", expected[f"needs.{parent}.result"])
+            for flag in ("event_authorized", "remote_build_authorized"):
+                self.assertEqual("true", expected[f"needs.plan.outputs.{flag}"])
+            if name == "sdk-catalog":
+                self.assertEqual("true", expected["needs.sdk-completion.outputs.complete"])
+                self.assertEqual("62", expected["needs.sdk-completion.outputs.phase_count"])
+            else:
+                selector = "sdk-plan" if name.endswith("1") else "sdk-collect-1"
+                self.assertEqual("true", expected[f"needs.{selector}.outputs.sdk_workers_required"])
+                if name.endswith("2"):
+                    self.assertEqual("false", expected["needs.sdk-collect-1.outputs.wave_failed"])
+            values = {**expected, "needs.sdk-collect-3.result": "skipped"}
+            eligible = lambda: all(values[key] == value for key, value in comparisons)
+            with self.subTest(job=name):
+                self.assertTrue(eligible())
+                for key in expected:
+                    for rejected in ("", "failure", "cancelled", "skipped"):
+                        values[key] = rejected
+                        self.assertFalse(eligible(), (name, key, rejected))
+                    values[key] = expected[key]
+
     @staticmethod
     def sdk_predecessors(source="released-default", aggregate_state="completed", binary=False):
         return {

@@ -2584,6 +2584,11 @@ jobs:
     name: sdk-javascript-${{ matrix.phase }}-node
     needs: [plan, sdk-plan, sdk-inputs]
     if: >-
+      always() && !cancelled() &&
+      needs.plan.result == 'success' &&
+      needs.sdk-plan.result == 'success' &&
+      needs.sdk-inputs.result == 'success' &&
+      needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.outputs.sdk_workers_required == 'true'
     strategy:
@@ -2691,6 +2696,12 @@ jobs:
     name: sdk-javascript-${{ matrix.phase }}-node
     needs: [plan, sdk-plan, sdk-collect-1, sdk-inputs]
     if: >-
+      always() && !cancelled() &&
+      needs.plan.result == 'success' &&
+      needs.sdk-plan.result == 'success' &&
+      needs.sdk-inputs.result == 'success' &&
+      needs.sdk-collect-1.result == 'success' &&
+      needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-collect-1.outputs.wave_failed == 'false' &&
       needs.sdk-collect-1.outputs.sdk_workers_required == 'true'
@@ -5413,6 +5424,9 @@ jobs:
     name: sdk-catalog
     needs: [plan, contract-validation, sdk-completion]
     if: >-
+      always() && !cancelled() &&
+      needs.plan.result == 'success' &&
+      needs.contract-validation.result == 'success' &&
       github.event_name == 'pull_request' &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
