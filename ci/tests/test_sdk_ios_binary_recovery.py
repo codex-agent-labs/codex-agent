@@ -48,13 +48,16 @@ class IosBinaryRecoveryTest(unittest.TestCase):
             token="synthetic-token", attempts=(self.run,), **changes)
 
     def test_exact_original_capture_and_fresh_replay_preserve_receipt(self):
-        with self.gates():
+        with self.gates(), patch.object(recovery.products, "capture_sdk_ios_binary_upload",
+                wraps=recovery.products.capture_sdk_ios_binary_upload) as capture:
             records = self.capture()
             before = regular_file_inventory(self.output, allow_empty=True)
             replay = recovery.replay_prior_ios_binary(self.output, self.work, plan=self.plan,
                 plan_path=self.plan_path, repository_root=self.root,
                 consumer_producer={**self.producer, "runId": 72}, trusted_workflow_sha=self.pin,
                 token="synthetic-token", environ={})
+        self.assertEqual(2, capture.call_count)
+        self.assertTrue(all(call.kwargs["compact_recovery"] is True for call in capture.call_args_list))
         self.assertEqual(records, replay)
         self.assertEqual(before, regular_file_inventory(self.output, allow_empty=True))
         self.assertEqual(self.receipt_bytes,

@@ -12,7 +12,7 @@ import product_reuse as products
 from products.inventory import (
     load_canonical_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys, require_integer,
-    require_regular_directory, require_sha256, sha256_bytes, snapshot_regular_tree,
+    require_regular_directory, require_sha256, sha256_bytes,
 )
 from products.registry import PhaseInstanceId
 from products.restore import _stage_fingerprint, verify_phase_shard
@@ -110,7 +110,7 @@ def replay_prior_ios_binary(capture_root, artifact_root, *, plan_path, repositor
         fresh = private / "capture"
         fresh_transport = products.capture_sdk_ios_binary_upload(plan_path, fresh,
             binary_receipt_path=selected, **locator, trusted_workflow_sha=workflow,
-            repository_root=repository_root, environ=environ, token=token)
+            repository_root=repository_root, environ=environ, token=token, compact_recovery=True)
         if (fresh_transport["captureProducer"] != transport["captureProducer"]
                 or fresh_transport["binaryReceiptSha256"] != transport["binaryReceiptSha256"]
                 or any(fresh_transport["artifact"].get(field) != transport["artifact"].get(field)
@@ -199,7 +199,8 @@ def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, dest
             capture = scratch / f"{run}-{attempt}"
             products.capture_sdk_ios_binary_upload(plan_path, capture, binary_receipt_path=selected,
                 artifact_id=artifact["id"], artifact_sha256=artifact["digest"],
-                trusted_workflow_sha=workflow, repository_root=repository_root, environ=environ, token=token)
+                trusted_workflow_sha=workflow, repository_root=repository_root, environ=environ,
+                token=token, compact_recovery=True)
             verified = verify_phase_shard(capture / "original/shard", INSTANCE)
             if verified["receiptBytes"] != raw:
                 raise ValueError("Prior SDK captured original differs from discovery")
@@ -211,16 +212,9 @@ def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, dest
         source = found[0][0]  # Original producer stays unchanged, even across equivalent attempts.
         target = destination / _RELATIVE
         fingerprint = _stage_fingerprint(source)
-        transport = read_regular_file_bytes(source / "capture-transport.json", reject_symlink_parents=True)
-        shard_inventory = regular_file_inventory(source / "original/shard")
-        compact = scratch / "compact"
-        snapshot_regular_tree(source / "original/shard", compact / "original/shard")
-        (compact / "capture-transport.json").write_bytes(transport)
-        if (_stage_fingerprint(source) != fingerprint
-                or read_regular_file_bytes(source / "capture-transport.json", reject_symlink_parents=True) != transport
-                or regular_file_inventory(compact / "original/shard") != shard_inventory):
+        inventory = regular_file_inventory(source)
+        if _stage_fingerprint(source) != fingerprint:
             raise ValueError("Prior SDK original changed during compact publication")
-        inventory = regular_file_inventory(compact)
-        publish_regular_tree(compact, target, expected_inventory=inventory)
+        publish_regular_tree(source, target, expected_inventory=inventory)
         require_no_signing_secret(environ)
         return [_record(target, Path(artifact_root))]

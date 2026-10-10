@@ -6824,11 +6824,13 @@ def capture_sdk_ios_package_upload(plan_path, destination, *, package_receipt_pa
 
 
 def capture_sdk_ios_binary_upload(plan_path, destination, *, binary_receipt_path,
-        artifact_id, artifact_sha256, trusted_workflow_sha, repository_root=None, environ=None, token):
+        artifact_id, artifact_sha256, trusted_workflow_sha, repository_root=None, environ=None, token,
+        compact_recovery=False):
     """Retain the observed original binary upload; native semantic admission is separate."""
     return _capture_sdk_ios_upload(plan_path, destination, phase="binary", receipt_path=binary_receipt_path,
         artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
-        repository_root=repository_root, environ=environ, token=token)
+        repository_root=repository_root, environ=environ, token=token,
+        compact_recovery=compact_recovery)
 
 
 def capture_sdk_ios_validation_upload(plan_path, destination, *, validation_receipt_path,
@@ -6854,10 +6856,12 @@ def capture_elected_sdk_ios_validation_upload(plan_path, destination, *, target,
 
 def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
         artifact_id, artifact_sha256, trusted_workflow_sha, repository_root, environ, token,
-        elected_target=None, elected_build_key=None):
+        elected_target=None, elected_build_key=None, compact_recovery=False):
     from products.sdk_package import _require_capability_output_separate
     from products.signing_isolation import require_no_signing_secret
     bootstrap = receipt_path is None
+    if type(compact_recovery) is not bool or compact_recovery and (phase != "binary" or bootstrap):
+        raise ValueError("Compact Apple capture requires an exact original binary receipt")
     environment = os.environ if environ is None else environ
     if bootstrap:
         require_no_signing_secret(environment)
@@ -6894,7 +6898,7 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
     producer = receipt["producer"] if receipt is not None else None
     with tempfile.TemporaryDirectory(prefix=f"sdk-ios-{phase}-upload-") as temporary:
         prepared = Path(temporary).resolve() / "capture"
-        captured_plan = prepared / "plan/impact-plan.json"
+        captured_plan = (prepared.parent if compact_recovery else prepared) / "plan/impact-plan.json"
         captured_plan.parent.mkdir(parents=True)
         captured_plan.write_bytes(plan_bytes)
         plan = _validate_plan(captured_plan, root)
@@ -6918,14 +6922,19 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
             jobs_by_phase={f"ios-{phase}": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
         name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-{target}-{build_key.removeprefix('sha256:')}-"
                 f"{producer['tree']}-attempt-{producer['runAttempt']}")
-        archive = prepared / "transport.zip"
+        archive = (prepared.parent if compact_recovery else prepared) / "transport.zip"
         artifact, _ = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer,
             observed[0]["run"], token, destination=archive)
         _require_artifact_job_window(observed[0], job, artifact)
         zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
             **(_CATALOG_ZIP_LIMITS if phase == "binary" else _APPLE_UPLOAD_ZIP_LIMITS))
         original = prepared / "original"
-        safe_extract(archive, original)
+        retained = ([row for row in zipped if row["relativePath"].startswith("shard/")]
+                    if compact_recovery else zipped)
+        if compact_recovery:
+            _extract_runtime_original_projection(archive, retained, original)
+        else:
+            safe_extract(archive, original)
         verified = verify_phase_shard(original / "shard", instance)
         if bootstrap:
             if verified["receipt"]["producer"] != producer or verified["receipt"]["buildKey"] != build_key:
@@ -6938,18 +6947,20 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
         write_canonical_json(prepared / "capture-transport.json", transport)
         transport_bytes = canonical_json_bytes(transport)
         expected_files = sorted([
-            {"relativePath": "plan/impact-plan.json", "bytes": len(plan_bytes),
-             "sha256": sha256_bytes(plan_bytes)},
-            {"relativePath": "transport.zip", "bytes": archive.stat().st_size, "sha256": artifact_sha256},
+            *([] if compact_recovery else [
+                {"relativePath": "plan/impact-plan.json", "bytes": len(plan_bytes),
+                 "sha256": sha256_bytes(plan_bytes)},
+                {"relativePath": "transport.zip", "bytes": archive.stat().st_size, "sha256": artifact_sha256},
+            ]),
             {"relativePath": "capture-transport.json", "bytes": len(transport_bytes),
              "sha256": sha256_bytes(transport_bytes)},
-            *({**record, "relativePath": f"original/{record['relativePath']}"} for record in zipped),
+            *({**record, "relativePath": f"original/{record['relativePath']}"} for record in retained),
         ], key=lambda record: record["relativePath"])
         if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes
                 or (receipt_path is not None and read_regular_file_bytes(receipt_path,
                     max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != receipt_bytes)
                 or captured_plan.read_bytes() != plan_bytes or sha256_file(archive) != artifact_sha256
-                or regular_file_inventory(original, allow_empty=True) != zipped
+                or regular_file_inventory(original, allow_empty=True) != retained
                 or regular_file_inventory(prepared, allow_empty=True) != expected_files):
             raise ValueError(f"Apple {phase} original inputs or upload changed before publication")
         output_safe()

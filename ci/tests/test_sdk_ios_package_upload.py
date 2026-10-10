@@ -7,8 +7,10 @@ not treat retained execution or descriptor bytes as package-content admission.
 
 from copy import deepcopy
 import json
+import io
 from pathlib import Path
 import unittest
+import zipfile
 from unittest.mock import patch
 
 from ci.tests import test_runtime_aggregate_upload as fixture
@@ -356,6 +358,50 @@ class SdkIosPackageUploadTest(unittest.TestCase):
 
 class SdkIosBinaryUploadTest(SdkIosPackageUploadTest):
     phase = "binary"
+
+    def test_compact_recovery_authenticates_full_upload_but_materializes_only_shard(self):
+        with patch.object(capture, "safe_extract", side_effect=AssertionError("full extraction")), \
+                patch.object(capture, "publish_regular_tree", wraps=publish_regular_tree) as publish:
+            transport = self.call(compact_recovery=True)
+        files = regular_file_inventory(self.output)
+        self.assertEqual({"capture-transport.json",
+            *("original/" + name for name in self.files if name.startswith("shard/"))},
+            {row["relativePath"] for row in files})
+        for name, contents in self.files.items():
+            if name.startswith("shard/"):
+                self.assertEqual(contents, (self.output / "original" / name).read_bytes())
+        self.assertEqual(self.producer, transport["captureProducer"])
+        self.assertEqual(self.artifact["digest"], transport["artifact"]["digest"])
+        self.assertEqual(1, publish.call_count)
+        self.assertEqual(files, publish.call_args.kwargs["expected_inventory"])
+
+    def test_compact_recovery_rejects_corrupt_unselected_member_crc(self):
+        # Official whole digest matches the deliberately corrupted fixture, but
+        # every member CRC must still pass, including unextracted native input.
+        member = "native-original/ios-rust-device/codex-agent-ios-arm64.a"
+        with zipfile.ZipFile(io.BytesIO(self.raw)) as archive:
+            entry = archive.getinfo(member)
+        raw = bytearray(self.raw)
+        offset = entry.header_offset
+        data = offset + 30 + int.from_bytes(raw[offset + 26:offset + 28], "little") + \
+            int.from_bytes(raw[offset + 28:offset + 30], "little")
+        raw[data] ^= 1
+        self.raw = bytes(raw)
+        self.artifact["digest"] = sha256_bytes(self.raw)
+        with self.assertRaisesRegex(ValueError, "malformed or unsafe") as raised, \
+                patch.object(capture, "publish_regular_tree") as publish:
+            self.call(compact_recovery=True)
+        self.assertIsInstance(raised.exception.__cause__, zipfile.BadZipFile)
+        self.assertIn("CRC", str(raised.exception.__cause__))
+        publish.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_compact_recovery_rejects_wrong_whole_upload_digest(self):
+        self.artifact["digest"] = "sha256:" + "0" * 64
+        with self.assertRaises(ValueError), patch.object(capture, "publish_regular_tree") as publish:
+            self.call(compact_recovery=True)
+        publish.assert_not_called()
+        self.assertFalse(self.output.exists())
 
 
 class SdkIosValidationUploadTest(SdkIosPackageUploadTest):
