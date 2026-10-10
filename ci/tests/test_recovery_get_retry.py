@@ -14,6 +14,15 @@ import reuse
 
 
 class RecoveryGetRetryTest(unittest.TestCase):
+    def test_failed_original_transfer_reports_identity_without_retry_or_admission(self):
+        digest = "sha256:" + "a" * 64
+        failure = ValueError("GitHub artifact transport digest or size mismatch")
+        with mock.patch.object(recovery, "download_artifact_to_file", side_effect=failure) as download:
+            with self.assertRaisesRegex(ValueError, "original artifact 71, expected 23 bytes / " + digest):
+                recovery._download_contract_ci_upload_bytes(
+                    {"id": 71}, "secret-token", Path("unused.zip"), 1024, digest, 23)
+            download.assert_called_once()
+
     def test_timeout_retries_are_bounded_and_authentication_errors_do_not_retry(self):
         for error, calls in ((TimeoutError("read timed out"), 4),
                              (urllib.error.URLError(socket.gaierror(8, "nodename nor servname provided")), 4),

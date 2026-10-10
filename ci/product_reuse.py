@@ -724,7 +724,11 @@ def _reuse_contract_ci_upload(artifact, producer, observed_run, token, *, destin
 
 def _download_contract_ci_upload_bytes(artifact, token, destination, limit, artifact_sha256, size):
     if destination is not None:
-        download_artifact_to_file(artifact, token, destination, max_bytes=limit)
+        try:
+            download_artifact_to_file(artifact, token, destination, max_bytes=limit)
+        except ValueError as error:
+            raise ValueError(f"{error}; original artifact {artifact['id']}, "
+                             f"expected {size} bytes / {artifact_sha256}") from error
         if destination.stat().st_size != size or sha256_file(destination) != artifact_sha256:
             raise ValueError("Contract uploaded artifact bytes differ from the caller-bound identity")
         body = destination
