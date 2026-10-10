@@ -1,0 +1,351 @@
+name: SDK Binding Parity
+
+on:
+  workflow_call:
+    inputs:
+      validationCommit:
+        required: true
+        type: string
+      validationTree:
+        required: true
+        type: string
+      nodeJs:
+        required: true
+        type: boolean
+      nativeWrappers:
+        required: true
+        type: boolean
+      importedOnly:
+        type: boolean
+        default: false
+      planOutputs:
+        type: string
+        default: '{}'
+      contractOutputs:
+        type: string
+        default: '{}'
+      sdkOutputs:
+        type: string
+        default: '{}'
+      trustedWorkflowSha:
+        type: string
+        default: ''
+    secrets:
+      authority_read_token:
+        description: Read-only protected reuse authority; scoped to qualification restoration
+        required: false
+    outputs:
+      artifact_id:
+        value: ${{ jobs.sdk-parity.outputs.artifact_id }}
+      artifact_digest:
+        value: ${{ jobs.sdk-parity.outputs.artifact_digest }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  sdk-parity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: sha256:${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ inputs.validationCommit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.authority_read_token }}
+      - if: ${{ !inputs.importedOnly }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codex-agent-ci-*
+          path: build/ci/receipts
+      - if: inputs.nodeJs && !inputs.importedOnly
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-sdk-javascript-parity-${{ inputs.validationTree }}
+          path: build/ci/receipts/sdk-javascript
+      - if: inputs.nativeWrappers && !inputs.importedOnly
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-native-wrapper-packages-${{ inputs.validationTree }}
+          path: build/ci/native-wrapper-release
+      - if: inputs.nativeWrappers && !inputs.importedOnly
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codex-agent-native-wrapper-host-*-${{ inputs.validationTree }}
+          path: build/ci/native-wrapper-hosts
+      - name: Require complete six-language M8 binding parity
+        if: ${{ !inputs.importedOnly }}
+        env:
+          VALIDATION_COMMIT: ${{ inputs.validationCommit }}
+          VALIDATION_TREE: ${{ inputs.validationTree }}
+        shell: bash
+        run: |
+          one_file() {
+            mapfile -t matches < <(find build/ci/receipts -type f -name "$1" -print)
+            test "${#matches[@]}" -eq 1
+            printf '%s\n' "${matches[0]}"
+          }
+          one_desktop_file() {
+            mapfile -t matches < <(find build/ci/receipts -type f \
+              -path '*/payload/codex-agent-runtime-desktop/build/*' -name "$1" -print)
+            test "${#matches[@]}" -eq 1
+            printf '%s\n' "${matches[0]}"
+          }
+          binding_root=build/ci/cross-language-bindings
+          mkdir -p "$binding_root/receipts" "$binding_root/c-abi-packages" "$binding_root/c-abi-proofs"
+          release_tool=$(one_file codex-agent-release-tooling.jar)
+          api_report=$(one_file canonical-api.json)
+          coverage_receipt=$(one_file canonical-coverage.json)
+          bootstrap=$(one_desktop_file bootstrap-evidence.json)
+          scenario_proof=$(one_desktop_file c-abi-scenarios.json)
+          for proof in c-abi-package-macos-arm64.json c-abi-package-macos-x64.json \
+              c-abi-package-linux-arm64.json c-abi-package-linux-x64.json c-abi-package-windows-x64.json; do
+            cp "$(one_desktop_file "$proof")" "$binding_root/c-abi-proofs/$proof"
+          done
+          mapfile -t versions < <(jq -r '.libraryVersion' "$binding_root"/c-abi-proofs/*.json | sort -u)
+          test "${#versions[@]}" -eq 1
+          version=${versions[0]}
+          test -n "$version"
+          for classifier in macos-arm64 macos-x64 linux-arm64 linux-x64 windows-x64; do
+            archive=$(one_desktop_file "*-$version-c-abi-$classifier.zip")
+            cp "$archive" "$binding_root/c-abi-packages/$(basename "$archive")"
+          done
+          java -jar "$release_tool" assemble-c-abi-binding-receipt \
+            --repository "$PWD" \
+            --bootstrap "$bootstrap" \
+            --scenario-proof "$scenario_proof" \
+            --packages "$binding_root/c-abi-packages" \
+            --proofs "$binding_root/c-abi-proofs" \
+            --version "$version" \
+            --commit "$VALIDATION_COMMIT" \
+            --tree "$VALIDATION_TREE" \
+            --output "$binding_root/receipts/c-abi-parity.json"
+          for receipt in kotlin-parity.json java-parity.json javascript-typescript-parity.json swift-parity.json objective-c-parity.json; do
+            cp "$(one_file "$receipt")" "$binding_root/receipts/$receipt"
+          done
+          java -jar "$release_tool" audit-cross-language-bindings \
+            --phase M8 \
+            --api-report "$api_report" \
+            --coverage-receipt "$coverage_receipt" \
+            --receipts "$binding_root/receipts" \
+            --output "$binding_root/binding-obligations-m8.json"
+          jq -e '
+            .result == "complete" and .phase == "M8" and
+            .summary == {
+              total: 6116, active: 3324, pending: 2780,
+              excluded: 12, satisfied: 3324, missing: 0
+            }
+          ' "$binding_root/binding-obligations-m8.json" >/dev/null
+          mkdir -p "$binding_root/m8"
+          cp "$api_report" "$binding_root/m8/canonical-api.json"
+          cp "$coverage_receipt" "$binding_root/m8/canonical-coverage.json"
+          cp "$binding_root"/receipts/*.json "$binding_root/m8/"
+          cp "$binding_root/binding-obligations-m8.json" "$binding_root/m8/"
+          test "$(find "$binding_root/m8" -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 9
+      - name: Require complete native-wrapper parity through M11
+        if: inputs.nativeWrappers && !inputs.importedOnly
+        env:
+          VALIDATION_COMMIT: ${{ inputs.validationCommit }}
+          VALIDATION_TREE: ${{ inputs.validationTree }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          one_file() {
+            mapfile -t matches < <(find build/ci/receipts -type f -name "$1" -print)
+            test "${#matches[@]}" -eq 1
+            printf '%s\n' "${matches[0]}"
+          }
+          one_host_evidence() {
+            mapfile -t matches < <(find build/ci/native-wrapper-hosts -type f \
+              -path "*/evidence/$1/$2.tsv" -print)
+            test "${#matches[@]}" -eq 1
+            printf '%s\n' "${matches[0]}"
+          }
+          binding_root=build/ci/cross-language-bindings
+          release=build/ci/native-wrapper-release
+          release_tool=$(one_file codex-agent-release-tooling.jar)
+          api_report=$(one_file canonical-api.json)
+          coverage_receipt=$(one_file canonical-coverage.json)
+          mapfile -t bootstraps < <(find build/ci/receipts -type f \
+            -path '*/payload/codex-agent-runtime-desktop/build/*' \
+            -name bootstrap-evidence.json -print)
+          test "${#bootstraps[@]}" -eq 1
+          bootstrap=${bootstraps[0]}
+          for classifier in macos-arm64 macos-x64 linux-arm64 linux-x64 windows-x64; do
+            for language in python csharp rust cpp dart; do
+              evidence=$(one_host_evidence "$language" "$classifier")
+              artifact_root=$(dirname "$(dirname "$(dirname "$evidence")")")
+              test -f "$artifact_root/lane-receipt.json"
+              host="$binding_root/host/$language"
+              mkdir -p "$host"
+              cp "$evidence" "$host/$classifier.tsv"
+              cp "$artifact_root/lane-receipt.json" "$host/$classifier-lane-receipt.json"
+            done
+          done
+          ./gradlew \
+            :codex-agent-sdk:verifyPythonBindingParity \
+            :codex-agent-sdk:verifyCSharpBindingParity \
+            :codex-agent-sdk:verifyRustBindingParity \
+            :codex-agent-sdk:verifyCppBindingParity \
+            :codex-agent-sdk:verifyDartBindingParity \
+            -PcodexAgent.nativeWrapperReleaseDirectory="$PWD/$release" \
+            -PcodexAgent.nativeWrapperHostEvidenceDirectory="$PWD/$binding_root/host" \
+            -PcodexAgent.nativeWrapperApiReport="$PWD/$api_report" \
+            -PcodexAgent.nativeWrapperCoverageReceipt="$PWD/$coverage_receipt" \
+            -PcodexAgent.nativeWrapperBootstrapEvidence="$PWD/$bootstrap" \
+            --stacktrace
+
+          languages=(python csharp rust cpp dart)
+          phases=(M9_PYTHON M9_CSHARP M9_RUST M9_CPP M9_DART)
+          satisfied=(3880 4436 4992 5548 6104)
+          pending=(2224 1668 1112 556 0)
+          previous="$binding_root/m8"
+          for index in "${!languages[@]}"; do
+            language=${languages[$index]}
+            phase=${phases[$index]}
+            phase_root="$binding_root/${phase,,}"
+            receipts="$phase_root/receipts"
+            mkdir -p "$receipts"
+            for source in "$previous"/*-parity.json; do
+              java -jar "$release_tool" advance-cross-language-binding-receipt \
+                --phase "$phase" --source "$source" --output "$receipts/$(basename "$source")"
+            done
+            cp "codex-agent-sdk/build/reports/cross-language-api/bindings/$language-parity.json" \
+              "$receipts/$language-parity.json"
+            audit="$phase_root/binding-obligations-${phase,,}.json"
+            java -jar "$release_tool" audit-cross-language-bindings \
+              --phase "$phase" \
+              --api-report "$api_report" \
+              --coverage-receipt "$coverage_receipt" \
+              --receipts "$receipts" \
+              --output "$audit"
+            jq -e --arg phase "$phase" --argjson satisfied "${satisfied[$index]}" \
+              --argjson pending "${pending[$index]}" '
+                .result == "complete" and .phase == $phase and
+                .summary == {
+                  total: 6116, active: 6104, pending: $pending,
+                  excluded: 12, satisfied: $satisfied, missing: 0
+                }
+              ' "$audit" >/dev/null
+            previous="$receipts"
+          done
+
+          m11_receipts="$binding_root/m11-receipts"
+          mkdir -p "$m11_receipts"
+          for source in "$previous"/*-parity.json; do
+            java -jar "$release_tool" advance-cross-language-binding-receipt \
+              --phase M11 --source "$source" --output "$m11_receipts/$(basename "$source")"
+          done
+          m11_audit="$binding_root/binding-obligations-m11.json"
+          java -jar "$release_tool" audit-cross-language-bindings \
+            --phase M11 \
+            --api-report "$api_report" \
+            --coverage-receipt "$coverage_receipt" \
+            --receipts "$m11_receipts" \
+            --output "$m11_audit"
+          jq -e '
+            .result == "complete" and .phase == "M11" and
+            .summary == {
+              total: 6116, active: 6104, pending: 0,
+              excluded: 12, satisfied: 6104, missing: 0
+            }
+          ' "$m11_audit" >/dev/null
+          mkdir -p "$binding_root/m11"
+          cp "$api_report" "$binding_root/m11/canonical-api.json"
+          cp "$coverage_receipt" "$binding_root/m11/canonical-coverage.json"
+          cp "$m11_receipts"/*.json "$binding_root/m11/"
+          cp "$m11_audit" "$binding_root/m11/"
+          test "$(find "$binding_root/m11" -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 14
+          ./gradlew verifySdkBindingParity \
+            -PcodexAgent.sdkBindingEvidenceDirectory="$PWD/$binding_root/m11" \
+            -PcodexAgent.sdkCanonicalApiReport="$PWD/$api_report" \
+            -PcodexAgent.sdkCanonicalCoverageReceipt="$PWD/$coverage_receipt" \
+            --stacktrace
+      - name: Stage exact SDK parity evidence
+        if: ${{ !inputs.importedOnly }}
+        run: |
+          set -euo pipefail
+          destination=build/ci/sdk-parity-evidence
+          mkdir -p "$destination"
+          cp -R build/ci/cross-language-bindings/m8 "$destination/m8"
+          if [ "${{ inputs.nativeWrappers }}" = true ]; then
+            cp -R build/ci/cross-language-bindings/m11 "$destination/m11"
+          fi
+      - name: Select installed caller Java for SDK tooling
+        if: inputs.importedOnly
+        run: |
+          set -euo pipefail
+          source ci/select_caller_java.sh
+          test -f "$selected_java_home/bin/java"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        if: inputs.importedOnly
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ fromJSON(inputs.contractOutputs).tooling_artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.contractOutputs).tooling_artifact_sha256 }}
+          transport-producer: ${{ fromJSON(inputs.contractOutputs).tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
+          policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: inputs.importedOnly
+        with:
+          artifact-ids: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          path: ${{ runner.temp }}/sdk-parity-plan
+          merge-multiple: true
+      - id: apple-policy
+        if: inputs.importedOnly
+        uses: ./.github/actions/prepare-sdk-apple-policy
+        with:
+          plan-path: ${{ runner.temp }}/sdk-parity-plan/impact-plan.json
+          tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
+      - id: capture
+        if: inputs.importedOnly
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          product: sdk
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          artifact-id: ${{ fromJSON(inputs.sdkOutputs).artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.sdkOutputs).artifact_digest }}
+          state-wave: ${{ fromJSON(inputs.sdkOutputs).state_wave }}
+          sdk-state-wave: ${{ fromJSON(inputs.sdkOutputs).sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+      - name: Verify full parity from authenticated immutable phases
+        if: inputs.importedOnly
+        env:
+          PLAN: ${{ steps.capture.outputs.plan-path }}
+          DISCOVERY_ROOT: ${{ steps.capture.outputs.discovery-root }}
+          STATE_ROOT: ${{ steps.capture.outputs.state-root }}
+          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
+          SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -B -m ci.sdk_workflow parity --plan "$PLAN" \
+            --discovery-root "$DISCOVERY_ROOT" --state-root "$STATE_ROOT" \
+            --sdk-original-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --sdk-validation-tooling "$SDK_VALIDATION_TOOLING" \
+            --sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --destination build/ci/sdk-parity-evidence
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          name: codex-agent-sdk-binding-parity-${{ inputs.validationTree }}
+          path: build/ci/sdk-parity-evidence
+          compression-level: 0
+          retention-days: 90

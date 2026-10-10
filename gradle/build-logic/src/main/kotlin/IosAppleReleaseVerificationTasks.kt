@@ -48,6 +48,14 @@ fun Project.registerIosAppleReleaseVerificationTasks(
         isReproducibleFileOrder = true
         outputs.cacheIf("Reproducible XCFramework binary ZIP") { true }
         from(distribution.releaseXCFrameworkDirectory) { into("CodexAgent.xcframework") }
+        distribution.sdkCompatibilityFile?.let { compatibility ->
+            dependsOn(":codex-agent-sdk:generateNativeWrapperSdkCompatibility")
+            listOf("ios-arm64", "ios-arm64-simulator").forEach { slice ->
+                from(compatibility) {
+                    into("CodexAgent.xcframework/$slice/CodexAgent.framework/META-INF/codex-agent")
+                }
+            }
+        }
     }
 
     val verifyIosDeploymentTargets = tasks.register<VerifyIosDeploymentTargetsTask>("verifyIosDeploymentTargets") {

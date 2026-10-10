@@ -13,15 +13,21 @@ import kotlinx.serialization.json.longOrNull
 internal fun verifyCandidatePayload(
     manifestFile: File,
     payload: File,
-    expectedVersion: String,
+    expectedVersions: ProductVersions,
     expectedTag: String,
     expectedCommit: String,
     policyFiles: Map<String, File>,
 ): JsonObject {
+    val expectedVersion = expectedVersions.sdk
     check(manifestFile.name == "candidate-manifest.json") { "Candidate manifest file name is invalid" }
     val manifest = manifestFile.readReleaseObject()
     verifyCandidateManifestStructure(manifest)
     check(manifest.releaseString("version") == expectedVersion) { "Candidate version mismatch" }
+    check(manifest.releaseString("contractVersion") == expectedVersions.contract &&
+        manifest.releaseString("runtimeVersion") == expectedVersions.runtime &&
+        manifest.releaseString("sdkVersion") == expectedVersions.sdk) {
+        "Candidate product versions mismatch"
+    }
     check(manifest.releaseString("releaseTag") == expectedTag) { "Candidate release tag mismatch" }
     check(manifest.releaseString("candidateCommit") == expectedCommit) { "Candidate commit mismatch" }
     val evidence = manifest.releaseObject("evidence")
@@ -41,7 +47,7 @@ internal fun verifyCandidatePayload(
         "Candidate payload file set mismatch: expected=${expectedFiles.toSet().sorted()} actual=${actualFiles.sorted()}"
     }
     records.forEach { verifyPayloadRecord(payload, it) }
-    verifyPromotedCandidatePayload(manifest, payload, expectedVersion, expectedCommit)
+    verifyPromotedCandidatePayload(manifest, payload, expectedVersions, expectedCommit)
     check(policyFiles.keys == policies.keys) { "Candidate policy verifier is incomplete" }
     policyFiles.forEach { (name, file) ->
         val record = policies.releaseObject(name)
@@ -58,6 +64,12 @@ internal fun verifyCandidatePayload(
                 add(JsonPrimitive(record.releaseString("fileName")))
             }
         })
+        put("nativeWrapperAssets", buildJsonArray {
+            promotedNativeWrapperPackageRecords(manifest).forEach { record ->
+                add(JsonPrimitive(record.releaseString("fileName")))
+            }
+        })
+        put("sbomAsset", JsonPrimitive(artifacts.releaseObject("sbom").releaseString("fileName")))
     }
 }
 
@@ -65,6 +77,8 @@ internal fun candidatePayloadRecords(manifest: JsonObject): List<JsonObject> = b
     val artifacts = manifest.releaseObject("artifacts")
     add(artifacts.releaseObject("swiftPackage"))
     promotedCentralBundleRecords(manifest).forEach(::add)
+    promotedNativeWrapperPackageRecords(manifest).forEach(::add)
+    add(artifacts.releaseObject("sbom"))
     val evidence = manifest.releaseObject("evidence")
     evidence.filterKeys { it !in candidateEvidenceArrayNames }.values.forEach { add(it as JsonObject) }
     candidateEvidenceArrayNames.forEach { name ->
@@ -78,12 +92,20 @@ internal fun candidatePayloadRecords(manifest: JsonObject): List<JsonObject> = b
 private fun verifyPromotedCandidatePayload(
     manifest: JsonObject,
     payload: File,
-    expectedVersion: String,
+    expectedVersions: ProductVersions,
     expectedCommit: String,
 ) {
+    val expectedVersion = expectedVersions.sdk
     val expectedTree = manifest.releaseString("candidateTree")
     val evidence = manifest.releaseObject("evidence")
     val artifacts = manifest.releaseObject("artifacts")
+    val crossLanguageM11Files = evidence.releaseArray("crossLanguageM11").associate { value ->
+        val record = value.jsonObject
+        val name = record.releaseString("fileName")
+        name to safePayloadFile(payload, name)
+    }
+    verifyCompleteCrossLanguageM11Evidence(crossLanguageM11Files)
+    verifyTransportedNativeWrapperPackages(manifest, payload, crossLanguageM11Files)
     val promotion = safePayloadFile(payload, evidence.releaseObject("promotionReceipt").releaseString("fileName"))
         .readReleaseObject()
     check(promotion.releaseInt("schemaVersion") == 1 &&
@@ -107,8 +129,11 @@ private fun verifyPromotedCandidatePayload(
     }.keys
     val promotionLanes = promotion.releaseObject("lanes")
     val validationLanes = validation.releaseObject("lanes")
-    check(plan.releaseInt("schemaVersion") == 1 && plan.releaseString("repository") == CodexAgentBuild.REPOSITORY &&
+    check(plan.keys == impactPlanKeys && plan.releaseInt("schemaVersion") == 1 &&
+        plan.releaseString("repository") == CodexAgentBuild.REPOSITORY &&
         plan.releaseString("event") == "merge_group" && plan.releaseBoolean("mergeReady") &&
+        plan.releaseBoolean("remoteBuildAuthorized") &&
+        plan.releaseString("remoteBuildAuthorizationReason") == "merge-group" &&
         plan.releaseString("validationTree") == expectedTree &&
         validation.releaseInt("schemaVersion") == 1 &&
         validation.releaseString("repository") == CodexAgentBuild.REPOSITORY &&
@@ -169,15 +194,19 @@ private fun verifyPromotedCandidatePayload(
 
     val mavenFile = safePayloadFile(payload, evidence.releaseObject("mavenInventory").releaseString("fileName"))
     val maven = mavenFile.readReleaseObject()
-    val expectedArtifactIds = expectedMavenPrimaryPaths(expectedVersion).map { it.substringBefore('/') }.toSet()
+    val expectedArtifactIds = expectedMavenPrimaryPaths(expectedVersions).map { it.substringBefore('/') }.toSet()
     val artifactIds = maven.releaseArray("artifactIds").map { it.jsonPrimitive.content }
     check(maven.keys == setOf(
-        "schemaVersion", "groupId", "version", "artifactIds", "signaturesRequired", "primaryArtifactCount", "files",
-    ) && maven.releaseInt("schemaVersion") == 3 &&
+        "schemaVersion", "groupId", "contractVersion", "runtimeVersion", "sdkVersion",
+        "artifactIds", "signaturesRequired", "primaryArtifactCount", "files",
+    ) && maven.releaseInt("schemaVersion") == 4 &&
         maven.releaseString("groupId") == CodexAgentBuild.MAVEN_GROUP &&
-        maven.releaseString("version") == expectedVersion && maven.releaseBoolean("signaturesRequired") &&
+        maven.releaseString("contractVersion") == expectedVersions.contract &&
+        maven.releaseString("runtimeVersion") == expectedVersions.runtime &&
+        maven.releaseString("sdkVersion") == expectedVersions.sdk &&
+        maven.releaseBoolean("signaturesRequired") &&
         artifactIds.size == expectedArtifactIds.size && artifactIds.toSet() == expectedArtifactIds &&
-        maven.releaseInt("primaryArtifactCount") == expectedMavenPrimaryPaths(expectedVersion).size) {
+        maven.releaseInt("primaryArtifactCount") == expectedMavenPrimaryPaths(expectedVersions).size) {
         "Transported Maven inventory is not the signed promoted repository"
     }
     val centralFile = safePayloadFile(
@@ -218,11 +247,55 @@ private fun verifyPromotedCandidatePayload(
         artifacts.releaseObject("swiftPackage").releaseString("swiftPmChecksum") == swift.releaseDigest()) {
         "Transported Swift checksum does not bind the promoted ZIP"
     }
+    val policies = manifest.releaseObject("policies")
+    verifyAggregateReleaseSbom(
+        safePayloadFile(payload, artifacts.releaseObject("sbom").releaseString("fileName")),
+        expectedVersions,
+        "v$expectedVersion",
+        expectedCommit,
+        expectedTree,
+        mavenFile,
+        swift,
+        promotedNativeWrapperPackageRecords(manifest).map { record ->
+            safePayloadFile(payload, record.releaseString("fileName"))
+        },
+        safePayloadFile(payload, policies.releaseObject("desktopDistributionManifest").releaseString("fileName")),
+        safePayloadFile(payload, policies.releaseObject("desktopBundledLicense").releaseString("fileName")),
+        safePayloadFile(payload, policies.releaseObject("desktopBundledNotice").releaseString("fileName")),
+    )
     check(evidence.releaseObject("privacyAudit").releaseString("fileName") == "privacy-audit.json") {
         "Transported promoted privacy audit is missing"
     }
     verifyPromotedIosEvidence(manifest, payload, expectedVersion, expectedCommit, expectedTree, swift, swiftChecksum)
-    verifyPromotedRuntimeEvidence(manifest, payload, expectedVersion, mavenFile, centralBundle)
+    verifyPromotedRuntimeEvidence(manifest, payload, expectedVersions, mavenFile, centralBundle)
+}
+
+private fun verifyTransportedNativeWrapperPackages(
+    manifest: JsonObject,
+    payload: File,
+    crossLanguageM11Files: Map<String, File>,
+) {
+    val receipts = nativeWrapperBindings.associateWith { language ->
+        readCrossLanguageBindingReceipt(crossLanguageM11Files.getValue("${language.id}-parity.json"))
+    }
+    val expected = nativeWrapperM11PackageArtifacts(receipts).values.flatMap { it.values }
+    val packageRecords = promotedNativeWrapperPackageRecords(manifest)
+    val toolchainRecords = manifest.releaseObject("evidence").releaseArray("nativeWrapperPackageToolchains")
+        .map { it.jsonObject }
+    val actual = (packageRecords + toolchainRecords).associateBy { it.releaseString("fileName") }
+    check(actual.size == packageRecords.size + toolchainRecords.size &&
+        actual.keys == expected.map { File(it.id).name }.toSet()) {
+        "Transported native-wrapper candidate package set does not match M11 receipts"
+    }
+    expected.forEach { artifact ->
+        val name = File(artifact.id).name
+        val record = actual.getValue(name)
+        val file = safePayloadFile(payload, name)
+        verifyReleaseRecord(file, record)
+        check(record.releaseString("sha256") == artifact.sha256) {
+            "Transported native-wrapper package hash does not match M11 receipt: ${artifact.id}"
+        }
+    }
 }
 
 private fun verifyPromotedIosEvidence(
@@ -405,7 +478,7 @@ private data class TransportedRuntimeEvidence(
 private fun verifyPromotedRuntimeEvidence(
     manifest: JsonObject,
     payload: File,
-    version: String,
+    versions: ProductVersions,
     mavenInventory: File,
     centralBundle: File,
 ) {
@@ -440,7 +513,7 @@ private fun verifyPromotedRuntimeEvidence(
     )
     val temporary = Files.createTempDirectory("codex-agent-promoted-runtime-").toFile()
     try {
-        val classifiers = extractCandidateDesktopClassifiers(centralBundle, version, temporary)
+        val classifiers = extractCandidateDesktopClassifiers(centralBundle, versions.runtime, temporary)
         val desktopCommits = commits(desktop, ::desktopRuntimeEvidenceFileName)
         val jvmCommits = commits(jvm, ::jvmRuntimeEvidenceFileName)
         val nodeCommits = commits(node) { target -> nodeRuntimeEvidenceFileName(target, NODE_RUNTIME_JS_BACKEND) }
@@ -453,7 +526,7 @@ private fun verifyPromotedRuntimeEvidence(
         val desktopErrors = validateDesktopRuntimeEvidence(
             desktop.map(TransportedRuntimeEvidence::file),
             desktopCommits,
-            version,
+            versions.runtime,
             mavenInventory,
             distributionManifest,
             classifiers,
@@ -492,7 +565,7 @@ private fun verifyPromotedRuntimeEvidence(
     check(androidCommits.size == 1) { "Promoted Firebase Android evidence has multiple validation commits" }
     val androidFiles = android.map(TransportedRuntimeEvidence::file)
     verifyCandidateFirebaseAndroidEvidence(androidFiles, androidCommits.single())
-    verifyCandidateCentralAndroidRuntimeBinding(androidFiles, centralBundle, version)
+    verifyCandidateCentralAndroidRuntimeBinding(androidFiles, centralBundle, versions.sdk)
 }
 
 private fun extractCandidateDesktopClassifiers(
@@ -517,6 +590,8 @@ internal fun candidateGithubOutputs(result: JsonObject): String = buildString {
     append("releaseTag=").append(result.releaseString("releaseTag")).append('\n')
     append("swiftAsset=").append(result.releaseString("swiftAsset")).append('\n')
     append("centralBundles=").append(result.releaseArray("centralBundles")).append('\n')
+    append("nativeWrapperAssets=").append(result.releaseArray("nativeWrapperAssets")).append('\n')
+    append("sbomAsset=").append(result.releaseString("sbomAsset")).append('\n')
 }
 
 internal fun resolveCandidatePrivacyReview(

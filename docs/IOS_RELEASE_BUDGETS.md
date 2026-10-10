@@ -15,6 +15,6 @@ The tighter 2-second median and 3-second maximum targets are report-only;
 enabling them requires ten comparable hosted runs on the pinned image. Idle
 and recursive-search memory report current resident size from
 `mach_task_basic_info`; they are snapshots, not process-lifetime peaks, and
-have no CI threshold for `0.2.0`. Peak memory during an authenticated model
-turn must be captured manually with Instruments because credential-free
-automation cannot execute a real turn.
+have no CI threshold for the initial release. Peak memory during an
+authenticated model turn must be captured manually with Instruments because
+credential-free automation cannot execute a real turn.

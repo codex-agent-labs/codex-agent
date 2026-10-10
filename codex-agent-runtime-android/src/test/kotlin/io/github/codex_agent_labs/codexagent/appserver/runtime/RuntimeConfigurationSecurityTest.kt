@@ -1,5 +1,6 @@
 package io.github.codex_agent_labs.codexagent.appserver.runtime
 
+import java.nio.file.Files
 import okio.FileSystem
 import okio.Path
 import okio.Path.Companion.toPath
@@ -9,6 +10,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
+import kotlin.test.assertTrue
 
 class RuntimeConfigurationSecurityTest {
     @Test
@@ -69,6 +72,35 @@ class RuntimeConfigurationSecurityTest {
                 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
                 binary.sha256(),
             )
+        } finally {
+            FileSystem.SYSTEM.deleteRecursively(directory, mustExist = false)
+        }
+    }
+
+    @Test
+    fun certificateBundleDoesNotReuseStaleSharedSymlink() {
+        val directory =
+            FileSystem.SYSTEM_TEMPORARY_DIRECTORY / "codex-runtime-certificate-${Random.nextLong()}"
+        val codexHome = directory / "codex"
+        FileSystem.SYSTEM.createDirectories(codexHome)
+        try {
+            val certificate = (directory / "source.pem").also { it.write("certificate") }
+            val sentinel = (directory / "sentinel").also { it.write("leave untouched") }
+            val bundle = codexHome / "system-ca.pem"
+            Files.createSymbolicLink(
+                java.nio.file.Path.of(bundle.toString()),
+                java.nio.file.Path.of(sentinel.toString()),
+            )
+
+            val first = prepareRuntimeCertificateBundle(listOf(certificate), codexHome)
+            val second = prepareRuntimeCertificateBundle(listOf(certificate), codexHome)
+            assertNotEquals(first, second)
+            assertEquals("certificate\n", first.read())
+            assertEquals("certificate\n", second.read())
+            assertEquals("leave untouched", sentinel.read())
+            assertTrue(Files.isSymbolicLink(java.nio.file.Path.of(bundle.toString())))
+            FileSystem.SYSTEM.delete(first)
+            assertEquals("certificate\n", second.read())
         } finally {
             FileSystem.SYSTEM.deleteRecursively(directory, mustExist = false)
         }

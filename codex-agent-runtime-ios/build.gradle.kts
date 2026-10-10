@@ -10,12 +10,17 @@ plugins {
 }
 
 val codexAgentRepositoryUrl = rootProject.extra["codexAgent.repositoryUrl"].toString()
+val contractDependency: Any = if (rootProject.extra.has("codexAgent.authenticatedContractVersion")) {
+    "${project.group}:codex-agent-core:${rootProject.extra["codexAgent.authenticatedContractVersion"]}"
+} else {
+    project(":codex-agent-core")
+}
 
 kotlin {
     explicitApi()
     sourceSets {
         commonMain.dependencies {
-            api(project(":codex-agent-client"))
+            api(contractDependency)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
         }
@@ -67,5 +72,12 @@ mavenPublishing {
 }
 
 dependencyLocking {
+    lockFile.set(layout.projectDirectory.file(
+        if (rootProject.extra.has("codexAgent.authenticatedContractVersion")) {
+            "gradle-authenticated-contract.lockfile"
+        } else {
+            "gradle.lockfile"
+        },
+    ))
     lockAllConfigurations()
 }

@@ -1,0 +1,114 @@
+name: SDK Phase-10 Later Authority
+
+on:
+  workflow_call:
+    outputs:
+      authorityArtifactId:
+        value: ${{ jobs.authority.outputs.artifact_id }}
+      authorityArtifactSha256:
+        value: ${{ jobs.authority.outputs.artifact_sha256 }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  authority:
+    name: sdk-phase10-authority
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.purpose == 'sdk-phase10-authority'
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_sha256: sha256:${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - name: Require independently approved completed-campaign authority before checkout
+        id: approval
+        env:
+          SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
+          AUTHORITY_JSON: ${{ vars.CODEX_AGENT_SDK_AUTHORITY_JSON }}
+          AUTHORITY_SHA256: ${{ vars.CODEX_AGENT_SDK_AUTHORITY_APPROVED_SHA256 }}
+          ORIGINAL_PRODUCER_SHA256: ${{ vars.CODEX_AGENT_SDK_ORIGINAL_PRODUCER_APPROVED_SHA256 }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$AUTHORITY_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$ORIGINAL_PRODUCER_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          test -n "$AUTHORITY_JSON"
+          printf '%s\n' "$AUTHORITY_JSON" > "$RUNNER_TEMP/sdk-campaign-authority.json"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/sdk-campaign-authority.json" | cut -d ' ' -f 1)" = "$AUTHORITY_SHA256"
+          python3 - "$RUNNER_TEMP/sdk-campaign-authority.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          def unique(pairs):
+              value = {}
+              for key, item in pairs:
+                  if key in value:
+                      raise ValueError("duplicate SDK authority key")
+                  value[key] = item
+              return value
+          def no_float(_):
+              raise ValueError("SDK authority cannot contain a float")
+          raw = Path(sys.argv[1]).read_bytes()
+          value = json.loads(raw, object_pairs_hook=unique, parse_float=no_float,
+                             parse_constant=no_float)
+          if type(value) is not dict or raw != (json.dumps(
+                  value, sort_keys=True, separators=(",", ":"),
+                  ensure_ascii=False, allow_nan=False) + "\n").encode():
+              raise ValueError("SDK authority is not canonical JSON")
+          PY
+          {
+            printf 'source_sha=%s\n' "$SOURCE_SHA"
+            printf 'authority_sha256=%s\n' "$AUTHORITY_SHA256"
+            printf 'original_producer_sha256=%s\n' "$ORIGINAL_PRODUCER_SHA256"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check out protected reviewed authority verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.approval.outputs.source_sha }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify original producer and stage the exact approved authority
+        id: stage
+        env:
+          AUTHORITY_SHA256: ${{ steps.approval.outputs.authority_sha256 }}
+          ORIGINAL_PRODUCER_SHA256: ${{ steps.approval.outputs.original_producer_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/sdk_campaign_authority_producer.py \
+            --approved-authority "$RUNNER_TEMP/sdk-campaign-authority.json" \
+            --approved-sha256 "$AUTHORITY_SHA256" \
+            --destination "$RUNNER_TEMP/sdk-authority-stage"
+          python3 -B - "$RUNNER_TEMP/sdk-campaign-authority.json" "$ORIGINAL_PRODUCER_SHA256" "$GITHUB_OUTPUT" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+          sys.path.insert(0, "trusted-source")
+          from ci.products.inventory import canonical_json_bytes, load_canonical_json, sha256_bytes
+          from ci.products.receipt import validate_producer
+          authority = load_canonical_json(Path(sys.argv[1]))
+          original = validate_producer(authority["completedCatalogPin"]["producer"])
+          if (original["event"] != "pull_request"
+                  or original["repository"] != "codex-agent-labs/codex-agent"
+                  or sha256_bytes(canonical_json_bytes(original)) != sys.argv[2]):
+              raise ValueError("SDK authority differs from approved original producer")
+          tree = original["tree"]
+          if not re.fullmatch(r"[0-9a-f]{40}", tree):
+              raise ValueError("invalid original SDK tree")
+          with Path(sys.argv[3]).open("a", encoding="utf-8") as output:
+              output.write("original_tree=" + tree + "\n")
+          PY
+      - name: Upload exact authority for later independent artifact approval
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-sdk-campaign-authority-${{ steps.stage.outputs.original_tree }}-attestation-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-authority-stage
+          compression-level: 0
+          retention-days: 90

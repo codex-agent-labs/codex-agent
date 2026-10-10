@@ -14,8 +14,8 @@ class ReleaseCandidateTasksTest {
             repository.resolve("codex-agent-runtime-ios/apple/Sources/CodexAgentAuthentication/PrivacyInfo.xcprivacy"),
             repository.resolve("gradle/release/privacy-data-flow-review.json"),
             repository.resolve("codex-agent-runtime-desktop/codex-app-server-distributions.json"),
-            repository.resolve("codex-agent-runtime-android/src/main/assets/openai-codex-LICENSE.txt"),
-            repository.resolve("codex-agent-runtime-android/src/main/assets/openai-codex-NOTICE.txt"),
+            repository.resolve("legal/openai-codex/openai-codex-LICENSE.txt"),
+            repository.resolve("legal/openai-codex/openai-codex-NOTICE.txt"),
         )
     }
 

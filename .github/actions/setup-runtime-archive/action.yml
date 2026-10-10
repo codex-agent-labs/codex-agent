@@ -1,0 +1,54 @@
+name: Setup pinned Runtime upstream archive
+description: Capture only the elected Git-pinned upstream bytes; the offline worker independently verifies them.
+inputs:
+  phase-plan:
+    description: Absolute path to the authenticated generic native binary phase plan.
+    required: true
+  revision:
+    description: Exact elected Git commit.
+    required: true
+outputs:
+  archive:
+    description: Absolute path to the verified pinned archive.
+    value: ${{ steps.spec.outputs.archive }}
+runs:
+  using: composite
+  steps:
+    - id: spec
+      shell: bash
+      env:
+        PHASE_PLAN: ${{ inputs.phase-plan }}
+        REVISION: ${{ inputs.revision }}
+      run: |
+        set -euo pipefail
+        python3 -B ci/runtime_native_phase.py archive-spec --phase-plan "$PHASE_PLAN" --revision "$REVISION" --github-output "$GITHUB_OUTPUT"
+    - id: cache
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ steps.spec.outputs.directory }}
+        key: runtime-upstream-v1-${{ steps.spec.outputs.sha256 }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        PHASE_PLAN: ${{ inputs.phase-plan }}
+        REVISION: ${{ inputs.revision }}
+        ARCHIVE_URL: ${{ steps.spec.outputs.url }}
+      run: |
+        set -euo pipefail
+        runtime_archive_download="$(mktemp "$RUNNER_TEMP/runtime-upstream.XXXXXXXX")"
+        trap 'rm -f -- "$runtime_archive_download"' EXIT
+        curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-redirs 5 --max-filesize 536870912 --output "$runtime_archive_download" "$ARCHIVE_URL"
+        python3 -B ci/runtime_native_phase.py capture-archive --phase-plan "$PHASE_PLAN" --revision "$REVISION" --source "$runtime_archive_download"
+    - name: Verify restored or captured archive
+      shell: bash
+      env:
+        PHASE_PLAN: ${{ inputs.phase-plan }}
+        REVISION: ${{ inputs.revision }}
+      run: |
+        set -euo pipefail
+        python3 -B ci/runtime_native_phase.py verify-archive --phase-plan "$PHASE_PLAN" --revision "$REVISION"
+    - if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.spec.outputs.directory }}
+        key: runtime-upstream-v1-${{ steps.spec.outputs.sha256 }}

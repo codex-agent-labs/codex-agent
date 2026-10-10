@@ -1,0 +1,66 @@
+name: Hydrated evidence storage
+description: Granular Actions cache storage; authentication remains caller-owned.
+inputs:
+  mode:
+    required: true
+    description: restore, save or execute an existing capture command
+  manifest:
+    required: false
+    description: Freshly qualified SHA/size records, without authority or secrets.
+  root:
+    required: false
+    description: Absolute content-addressed evidence storage root.
+  report:
+    required: false
+    description: Storage byte counts and duration output path.
+  script:
+    required: false
+    description: Existing caller-owned capture command, only for execute mode.
+outputs:
+  aggregate_key:
+    description: Original capture command output.
+  aggregate_payload_complete:
+    description: Original capture command output.
+  aggregate_receipt_sha256:
+    description: Original capture command output.
+  aggregate_required:
+    description: Original capture command output.
+  aggregate_state:
+    description: Original capture command output.
+  discovery_root:
+    description: Original capture command output.
+  full_reuse:
+    description: Original capture command output.
+  input_root:
+    description: Original capture command output.
+  native_attestation_matrix:
+    description: Original capture command output.
+  native_receipt_sha256s:
+    description: Original capture command output.
+  phase_plan:
+    description: Original capture command output.
+  plan_path:
+    description: Original capture command output.
+  product_reuse_reason:
+    description: Original capture command output.
+  runtime_matrix:
+    description: Original capture command output.
+  runtime_workers_required:
+    description: Original capture command output.
+  sdk_handoff_required:
+    description: Original capture command output.
+  sdk_input_selection:
+    description: Original capture command output.
+  sdk_matrix:
+    description: Original capture command output.
+  sdk_workers_required:
+    description: Original capture command output.
+  state_root:
+    description: Original capture command output.
+  supervisor_key:
+    description: Original capture command output.
+  target_jobs_required:
+    description: Original capture command output.
+runs:
+  using: node24
+  main: entry.mjs

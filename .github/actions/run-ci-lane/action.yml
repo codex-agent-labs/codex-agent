@@ -23,24 +23,40 @@ inputs:
     default: none
   force-build:
     default: "false"
+  contract-tooling-only:
+    description: Build only release tooling when authenticated Contract phases are already available.
+    default: "false"
   reuse-only:
     description: Check and transport exact full or production reuse without executing the lane.
     default: "false"
   reuse-disabled:
     description: Execute from already transported inputs without another remote reuse lookup.
     default: "false"
+  sdk-prerequisite-reuse:
+    description: Share authenticated negative lookup results for the three SDK Apple prerequisites.
+    default: "false"
+  trusted-workflow-sha:
+    description: Reviewed caller workflow authority for SDK native prerequisite qualification only.
+    default: ""
   producer-identities:
     description: Optional directory containing exact auxiliary producer identity manifests.
     default: ""
   production-prepared:
     description: Trust already transported production bytes in the current workspace.
     default: "false"
+  runtime-binary-stage:
+    description: Optional exact imported Runtime binary stage for compiler-free Desktop packaging.
+    default: ""
   record-producer-role:
     description: Optional producer role to capture into producer-identities before reuse.
     default: ""
 outputs:
   artifact_name:
     value: ${{ steps.identity.outputs.artifact_name }}
+  artifact_id:
+    value: ${{ steps.upload_lane.outputs.artifact-id }}
+  artifact_digest:
+    value: ${{ steps.upload_lane.outputs.artifact-digest && format('sha256:{0}', steps.upload_lane.outputs.artifact-digest) || '' }}
   reused:
     value: ${{ steps.reuse.outputs.reused }}
   production_reused:
@@ -55,9 +71,15 @@ runs:
         PRODUCER_IDENTITIES: ${{ inputs.producer-identities }}
         REUSE_DISABLED: ${{ inputs.reuse-disabled }}
         REUSE_ONLY: ${{ inputs.reuse-only }}
+        TOOLING_ONLY: ${{ inputs.contract-tooling-only }}
       shell: bash
       run: |
         printf 'PYTHONDONTWRITEBYTECODE=1\n' >> "$GITHUB_ENV"
+        if [ "$TOOLING_ONLY" = true ]; then
+          test "$LANE" = contracts
+          test "$REUSE_DISABLED" = true
+          test "$REUSE_ONLY" != true
+        fi
         if [ "$PREPARED_PRODUCTION" = true ]; then
           test "$LANE" = desktop-linux-arm64
           test "$REUSE_DISABLED" = true
@@ -191,6 +213,8 @@ runs:
         --github-output "$GITHUB_OUTPUT"
     - id: reuse
       env:
+        SDK_PREREQUISITE_REUSE: ${{ inputs.sdk-prerequisite-reuse }}
+        SDK_TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         ARM_PRODUCER_IDENTITY: ${{ steps.producer-identities.outputs.arm_digest }}
         DISABLE_REUSE: ${{ inputs.reuse-disabled }}
         GITHUB_TOKEN: ${{ github.token }}
@@ -224,7 +248,13 @@ runs:
             --toolchain "producerLinuxX64CrossBuilder=$X64_PRODUCER_IDENTITY"
           )
         fi
-        python3 ci/reuse.py --plan build/ci/impact-plan.json --lane "$LANE" \
+        lookup=(python3 ci/reuse.py)
+        if [ "$SDK_PREREQUISITE_REUSE" = true ]; then
+          lookup=(python3 .github/actions/run-ci-lane/sdk_prerequisite_reuse.py
+            --production-destination build/ci/reuse/production
+            --trusted-workflow-sha "$SDK_TRUSTED_WORKFLOW_SHA")
+        fi
+        "${lookup[@]}" --plan build/ci/impact-plan.json --lane "$LANE" \
           --destination build/ci/reuse/full --mode full --github-output "$GITHUB_OUTPUT" \
           --runner "os=$RUNNER_OS" --runner "arch=$RUNNER_ARCH" --runner "image=$RUNNER_IMAGE" \
           --runner "imageVersion=$RUNNER_IMAGE_VERSION" \
@@ -244,6 +274,12 @@ runs:
     - id: production
       if: steps.reuse.outputs.reused != 'true'
       env:
+        COMBINED_COMPLETE: ${{ steps.reuse.outputs.production_discovery_complete }}
+        COMBINED_REUSED: ${{ steps.reuse.outputs.production_reused }}
+        COMBINED_REASON: ${{ steps.reuse.outputs.production_reason }}
+        COMBINED_NAME: ${{ steps.reuse.outputs.production_artifact_name }}
+        COMBINED_RUN_ID: ${{ steps.reuse.outputs.production_source_run_id }}
+        COMBINED_RUN_ATTEMPT: ${{ steps.reuse.outputs.production_source_run_attempt }}
         ARM_PRODUCER_IDENTITY: ${{ steps.producer-identities.outputs.arm_digest }}
         DISABLE_REUSE: ${{ inputs.reuse-disabled }}
         GITHUB_TOKEN: ${{ github.token }}
@@ -271,6 +307,11 @@ runs:
         fi
         if [ "$DISABLE_REUSE" = true ]; then
           printf 'reused=false\nmode=production\nreason=disabled\n' >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if [ "$COMBINED_COMPLETE" = true ]; then
+          printf 'reused=%s\nmode=production\nreason=%s\nartifact_name=%s\nsource_run_id=%s\nsource_run_attempt=%s\n' \
+            "$COMBINED_REUSED" "$COMBINED_REASON" "$COMBINED_NAME" "$COMBINED_RUN_ID" "$COMBINED_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
           exit 0
         fi
         producer_toolchain=()
@@ -361,12 +402,167 @@ runs:
         CI_NODE_WASM_REQUIRED: ${{ steps.selection.outputs.node_wasm }}
         CI_PRODUCTION_REUSED: 'false'
         CI_VALIDATION_COMMIT: ${{ inputs.validation-commit }}
+        CI_VALIDATION_TREE: ${{ inputs.validation-tree }}
       shell: bash
-      run: ci/run-lane.sh "${{ inputs.lane }}"
+      run: |
+        if [ "${{ inputs.contract-tooling-only }}" = true ]; then
+          ./gradlew :build-logic:releaseToolingJar --stacktrace
+        else
+          ci/run-lane.sh "${{ inputs.lane }}"
+        fi
+    - id: portable-runtime-products
+      name: Stage the exact portable Runtime binary and package products
+      if: >-
+        inputs.lane == 'portable' && inputs.reuse-only != 'true' &&
+        inputs.production-prepared != 'true' && steps.reuse.outputs.reused != 'true' &&
+        steps.production.outputs.reused != 'true' && steps.production-execution.outcome == 'success'
+      continue-on-error: true
+      env:
+        VALIDATION_COMMIT: ${{ inputs.validation-commit }}
+        VALIDATION_TREE: ${{ inputs.validation-tree }}
+      shell: bash
+      run: |
+        for component in jvm node-js node-wasm; do
+          ./gradlew ciProductPhase \
+            -PcodexAgent.product=runtime \
+            -PcodexAgent.component="$component" \
+            -PcodexAgent.phase=binary \
+            -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+            -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+            --stacktrace
+          binary=$PWD/codex-agent-runtime-desktop/build/product-stage/runtime/$component/binary
+          test -f "$binary/output-manifest.json"
+          binary_version=$(python3 -c 'from pathlib import Path; from ci.products.inventory import load_canonical_json; import sys; print(load_canonical_json(Path(sys.argv[1]))["productVersion"])' "$binary/output-manifest.json")
+          ./gradlew ciProductPhase \
+            -PcodexAgent.product=runtime \
+            -PcodexAgent.component="$component" \
+            -PcodexAgent.phase=package \
+            -PcodexAgent.runtimeBinaryStage="$binary" \
+            -PcodexAgent.runtimeBinaryVersion="$binary_version" \
+            -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+            -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+            --stacktrace
+        done
+    - id: contract-product
+      name: Stage the exact Contract binary product
+      if: >-
+        inputs.lane == 'contracts' && inputs.contract-tooling-only != 'true' && inputs.reuse-only != 'true' &&
+        steps.reuse.outputs.reused != 'true' && steps.production.outputs.reused != 'true' &&
+        steps.production-execution.outcome == 'success'
+      continue-on-error: true
+      env:
+        VALIDATION_COMMIT: ${{ inputs.validation-commit }}
+        VALIDATION_TREE: ${{ inputs.validation-tree }}
+      shell: bash
+      run: |
+        ./gradlew ciProductPhase \
+          -PcodexAgent.product=contract \
+          -PcodexAgent.component=contract \
+          -PcodexAgent.phase=binary \
+          -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+          -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+          --stacktrace
+    - id: contract-product-shard
+      name: Finalize the elected Contract binary phase
+      if: inputs.lane == 'contracts' && steps.contract-product.outcome == 'success'
+      continue-on-error: true
+      shell: bash
+      run: |
+        plan=build/ci/product-reuse/phase-plans/contract-contract-binary-common.json
+        if [ -L "$plan" ]; then
+          exit 1
+        elif [ ! -e "$plan" ]; then
+          exit 0
+        fi
+        producer=build/ci/product-reuse/producer.json
+        stage=build/product-stage/contract/contract/binary
+        test -f "$plan" && test ! -L "$plan"
+        test -f "$producer" && test ! -L "$producer"
+        test -f "$stage/output-manifest.json" && test ! -L "$stage/output-manifest.json"
+        IFS= read -r contract_version < gradle/release/versions/contract.txt
+        case "$GITHUB_EVENT_NAME" in
+          pull_request) trust_domain=development ;;
+          merge_group) trust_domain=release ;;
+          *) exit 1 ;;
+        esac
+        python3 -m ci.products restore store-phase \
+          --stage-root "$stage" \
+          --phase-plan "$plan" \
+          --producer "$producer" \
+          --product-version "$contract_version" \
+          --trust-domain "$trust_domain" \
+          --destination build/product-phase/contract-contract-binary-common
+        printf 'ready=true\n' >> "$GITHUB_OUTPUT"
+    - id: contract-product-shard-upload
+      name: Upload the elected Contract binary phase
+      if: steps.contract-product-shard.outputs.ready == 'true'
+      continue-on-error: true
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        if-no-files-found: error
+        overwrite: false
+        name: codex-agent-product-phase-contract-contract-binary-common-${{ inputs.validation-tree }}
+        path: build/product-phase/contract-contract-binary-common
+        compression-level: 0
+        retention-days: 90
+    - name: Stage the exact Desktop Runtime binary product
+      if: >-
+        startsWith(inputs.lane, 'desktop-') && inputs.reuse-only != 'true' &&
+        inputs.production-prepared != 'true' && steps.reuse.outputs.reused != 'true' &&
+        steps.production.outputs.reused != 'true' && steps.production-execution.outcome == 'success'
+      env:
+        LANE: ${{ inputs.lane }}
+        VALIDATION_COMMIT: ${{ inputs.validation-commit }}
+        VALIDATION_TREE: ${{ inputs.validation-tree }}
+      shell: bash
+      run: |
+        component=${LANE#desktop-}
+        ./gradlew ciProductPhase \
+          -PcodexAgent.product=runtime \
+          -PcodexAgent.component="$component" \
+          -PcodexAgent.phase=binary \
+          -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+          -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+          --stacktrace
+    - name: Stage the exact Desktop Runtime package handoff
+      if: >-
+        startsWith(inputs.lane, 'desktop-') && inputs.reuse-only != 'true' &&
+        steps.reuse.outputs.reused != 'true' &&
+        (inputs.production-prepared == 'true' ||
+        (steps.production.outputs.reused != 'true' && steps.production-execution.outcome == 'success')) &&
+        (inputs.force-build == 'true' || steps.selection.outputs.build == 'true' ||
+        steps.selection.outputs.test == 'true')
+      env:
+        LANE: ${{ inputs.lane }}
+        RUNTIME_BINARY_STAGE: ${{ inputs.runtime-binary-stage }}
+        VALIDATION_COMMIT: ${{ inputs.validation-commit }}
+        VALIDATION_TREE: ${{ inputs.validation-tree }}
+      shell: bash
+      run: |
+        component=${LANE#desktop-}
+        binary=${RUNTIME_BINARY_STAGE:-$PWD/codex-agent-runtime-desktop/build/product-stage/runtime/$component/binary}
+        canonical=$PWD/codex-agent-runtime-desktop/build/product-stage/runtime/$component/binary
+        test -f "$binary/output-manifest.json"
+        if [[ "$binary" != "$canonical" ]]; then
+          PYTHONDONTWRITEBYTECODE=1 python3 -m ci.products receipt snapshot-tree \
+            --source "$binary" --destination "$canonical"
+          binary=$canonical
+        fi
+        binary_version=$(python3 -c 'from pathlib import Path; from ci.products.inventory import load_canonical_json; import sys; print(load_canonical_json(Path(sys.argv[1]))["productVersion"])' "$binary/output-manifest.json")
+        ./gradlew ciProductPhase \
+          -PcodexAgent.product=runtime \
+          -PcodexAgent.component="$component" \
+          -PcodexAgent.phase=package \
+          -PcodexAgent.runtimeBinaryStage="$binary" \
+          -PcodexAgent.runtimeBinaryVersion="$binary_version" \
+          -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+          -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+          --stacktrace
     - id: execution
       if: >-
-        inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&
+        inputs.contract-tooling-only != 'true' && inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&
         steps.production-execution.outcome != 'failure' &&
+        steps.portable-runtime-products.outcome != 'failure' &&
         (inputs.force-build == 'true' || steps.selection.outputs.test == 'true' ||
         steps.selection.outputs.metadata == 'true' ||
         (steps.selection.outputs.build != 'true' && steps.production.outputs.reused != 'true'))
@@ -379,13 +575,62 @@ runs:
         CI_NODE_WASM_REQUIRED: ${{ steps.selection.outputs.node_wasm }}
         CI_PRODUCTION_REUSED: 'true'
         CI_VALIDATION_COMMIT: ${{ inputs.validation-commit }}
+        CI_VALIDATION_TREE: ${{ inputs.validation-tree }}
       shell: bash
       run: ci/run-lane.sh "${{ inputs.lane }}"
+    - id: runtime-validation-handoff
+      name: Stage the exact Desktop Runtime validation handoff
+      if: >-
+        startsWith(inputs.lane, 'desktop-') && inputs.reuse-only != 'true' &&
+        steps.reuse.outputs.reused != 'true' &&
+        steps.production-execution.outcome != 'failure' && steps.execution.outcome == 'success' &&
+        (inputs.force-build == 'true' || steps.selection.outputs.test == 'true')
+      continue-on-error: true
+      env:
+        LANE: ${{ inputs.lane }}
+        VALIDATION_COMMIT: ${{ inputs.validation-commit }}
+        VALIDATION_TREE: ${{ inputs.validation-tree }}
+      shell: bash
+      run: |
+        component=${LANE#desktop-}
+        package=$PWD/codex-agent-runtime-desktop/build/product-stage/runtime/$component/package
+        test -f "$package/output-manifest.json"
+        ./gradlew ciProductPhase \
+          -PcodexAgent.product=runtime \
+          -PcodexAgent.component="$component" \
+          -PcodexAgent.phase=validation \
+          -PcodexAgent.runtimePackageStage="$package" \
+          -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+          -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+          --stacktrace
+        case "$component" in
+          macos-arm64) target=macosArm64 ;;
+          macos-x64) target=macosX64 ;;
+          linux-arm64) target=linuxArm64 ;;
+          linux-x64) target=linuxX64 ;;
+          windows-x64) target=mingwX64 ;;
+          *) exit 2 ;;
+        esac
+        for adapter in jvm node-js node-wasm; do
+          adapter_package=$PWD/codex-agent-runtime-desktop/build/product-stage/runtime/$adapter/package
+          test -f "$adapter_package/output-manifest.json"
+          ./gradlew ciProductPhase \
+            -PcodexAgent.product=runtime \
+            -PcodexAgent.component="$adapter" \
+            -PcodexAgent.phase=validation \
+            -PcodexAgent.runtimePackageStage="$adapter_package" \
+            -PcodexAgent.runtimeNativePackageStage="$package" \
+            -PcodexAgent.desktopEvidenceTarget="$target" \
+            -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+            -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+            --stacktrace
+        done
     - name: Stage reusable production after a later validation failure
       if: >-
         inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&
         (inputs.production-prepared == 'true' || steps.production-execution.outcome == 'success') &&
-        steps.execution.outcome == 'failure'
+        (steps.execution.outcome == 'failure' ||
+        steps.runtime-validation-handoff.outcome == 'failure')
       env:
         LANE: ${{ inputs.lane }}
         TREE: ${{ inputs.validation-tree }}
@@ -403,7 +648,8 @@ runs:
       if: >-
         inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&
         (inputs.production-prepared == 'true' || steps.production-execution.outcome == 'success') &&
-        steps.execution.outcome == 'failure'
+        (steps.execution.outcome == 'failure' ||
+        steps.runtime-validation-handoff.outcome == 'failure')
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         if-no-files-found: error
@@ -430,7 +676,10 @@ runs:
         printf '%s\n' "Apply: \`perl -0pi -e 's/(?<=checksum: \")[0-9a-f]{64}(?=\")/$checksum/' Package.swift\`" >> "$GITHUB_STEP_SUMMARY"
     - if: >-
         inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&
-        steps.production-execution.outcome != 'failure' && steps.execution.outcome != 'failure'
+        steps.production-execution.outcome != 'failure' &&
+        steps.portable-runtime-products.outcome != 'failure' &&
+        steps.execution.outcome != 'failure' &&
+        steps.runtime-validation-handoff.outcome != 'failure'
       env:
         LANE: ${{ inputs.lane }}
         PREPARED_PRODUCTION: ${{ inputs.production-prepared }}
@@ -446,7 +695,9 @@ runs:
           restored=(--restored-production build/ci/reuse/production)
         fi
         forced=()
-        if [ "$PREPARED_PRODUCTION" = true ] && [ "${{ steps.selection.outputs.build }}" != true ]; then
+        if [ "${{ inputs.contract-tooling-only }}" = true ]; then
+          forced=(--production-only)
+        elif [ "$PREPARED_PRODUCTION" = true ] && [ "${{ steps.selection.outputs.build }}" != true ]; then
           forced=(--force-production)
         elif [ "${{ inputs.force-build }}" = true ] || {
           [ "${{ steps.selection.outputs.test }}" = true ] &&
@@ -465,7 +716,10 @@ runs:
       if: >-
         steps.reuse.outputs.reused == 'true' ||
         (inputs.reuse-only != 'true' &&
-        steps.production-execution.outcome != 'failure' && steps.execution.outcome != 'failure')
+        steps.production-execution.outcome != 'failure' &&
+        steps.portable-runtime-products.outcome != 'failure' &&
+        steps.execution.outcome != 'failure' &&
+        steps.runtime-validation-handoff.outcome != 'failure')
       env:
         REUSED: ${{ steps.reuse.outputs.reused }}
         REUSED_NAME: ${{ steps.reuse.outputs.artifact_name }}
@@ -478,16 +732,31 @@ runs:
         else
           printf 'artifact_name=codex-agent-ci-%s-%s\npath=build/ci/lane\n' "$LANE" "$TREE" >> "$GITHUB_OUTPUT"
         fi
-    - if: >-
+    - id: upload_lane
+      if: >-
         steps.reuse.outputs.reused == 'true' ||
         (inputs.reuse-only != 'true' &&
-        steps.production-execution.outcome != 'failure' && steps.execution.outcome != 'failure')
+        steps.production-execution.outcome != 'failure' &&
+        steps.portable-runtime-products.outcome != 'failure' &&
+        steps.execution.outcome != 'failure' &&
+        steps.runtime-validation-handoff.outcome != 'failure')
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         if-no-files-found: error
         overwrite: true
         name: ${{ steps.identity.outputs.artifact_name }}
         path: ${{ steps.identity.outputs.path }}
+        compression-level: 0
+        retention-days: 90
+    - name: Preserve qualified native originals separately from current transport
+      if: steps.reuse.outputs.reused == 'true' && steps.reuse.outputs.native_qualification_path != ''
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-native-qualified-${{ inputs.lane }}-${{ inputs.validation-tree }}-attempt-${{ github.run_attempt }}
+        path: ${{ steps.reuse.outputs.native_qualification_path }}
+        if-no-files-found: error
+        overwrite: false
+        include-hidden-files: true
         compression-level: 0
         retention-days: 90
     - name: Stage the elected KMP dependency seed
@@ -557,6 +826,12 @@ runs:
     - name: Fail after preserving reusable production and diagnostics
       if: >-
         inputs.reuse-only != 'true' && always() && steps.reuse.outputs.reused != 'true' &&
-        (steps.production-execution.outcome == 'failure' || steps.execution.outcome == 'failure')
+        (steps.production-execution.outcome == 'failure' ||
+        steps.contract-product.outcome == 'failure' ||
+        steps.contract-product-shard.outcome == 'failure' ||
+        steps.contract-product-shard-upload.outcome == 'failure' ||
+        steps.portable-runtime-products.outcome == 'failure' ||
+        steps.execution.outcome == 'failure' ||
+        steps.runtime-validation-handoff.outcome == 'failure')
       shell: bash
       run: exit 1

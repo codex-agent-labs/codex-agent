@@ -1,0 +1,120 @@
+name: Capture exact signed SDK validation tooling
+description: Reauthenticate tooling under the consumer's Git policy and installed Java, importing missing signed-original Git objects without checkout. No build, signing or JAR execution.
+inputs:
+  artifact-id:
+    required: true
+    description: Caller-selected exact original tooling upload ID.
+  artifact-sha256:
+    required: true
+    description: Caller-selected exact original tooling upload digest.
+  transport-producer:
+    required: true
+    description: Caller-selected original upload producer JSON, not obtained from the download.
+  trusted-workflow-sha:
+    required: true
+    description: Exact reviewed workflow pin for the observed original upload.
+  trusted-workflow-path:
+    default: ''
+    description: Optional caller-pinned child workflow path; requires trusted-job-name.
+  trusted-job-name:
+    default: ''
+    description: Optional caller-pinned original producer job; requires trusted-workflow-path.
+  policy-revision:
+    required: true
+    description: Exact consumer Git revision owning the public signing and tooling policy.
+  plan-id:
+    default: ''
+    description: Optional exact original plan upload ID for constructing current-job Apple validation policy.
+outputs:
+  tooling-policy:
+    description: Current consumer's external six-field policy path, valid for this job only.
+    value: ${{ steps.capture.outputs.tooling_policy }}
+  plan-directory:
+    description: Caller-selected plan download directory, present only when plan-id was supplied.
+    value: ${{ steps.capture.outputs.plan_directory }}
+  apple-policy:
+    description: Optional current-job external Apple validation policy path; never transported as authority.
+    value: ${{ steps.apple-policy.outputs.apple-policy }}
+runs:
+  using: composite
+  steps:
+    - id: capture
+      name: Capture caller-selected tooling using provisioned Java
+      shell: bash
+      env:
+        ARTIFACT_ID: ${{ inputs.artifact-id }}
+        ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
+        TRANSPORT_PRODUCER: ${{ inputs.transport-producer }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        TRUSTED_WORKFLOW_PATH: ${{ inputs.trusted-workflow-path }}
+        TRUSTED_JOB_NAME: ${{ inputs.trusted-job-name }}
+        POLICY_REVISION: ${{ inputs.policy-revision }}
+        PLAN_ID: ${{ inputs.plan-id }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B - <<'PY'
+        import os, subprocess, sys, tempfile
+        from pathlib import Path
+        from ci.products.inventory import canonical_json_bytes, load_json_bytes, read_regular_file_bytes
+        from ci.tooling_discovery import _original_tooling_workflow
+        repository = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        java_home = Path(os.environ['JAVA_HOME'])
+        scratch_root = Path(os.environ['RUNNER_TEMP'])
+        if not java_home.is_absolute() or not scratch_root.is_absolute():
+            raise ValueError('Tooling capture requires absolute caller Java and scratch paths')
+        java = (java_home / 'bin' / ('java.exe' if os.name == 'nt' else 'java')).resolve(strict=True)
+        read_regular_file_bytes(java, max_bytes=128 * 1024 * 1024, reject_symlink_parents=True)
+        scratch_root = scratch_root.resolve(strict=True)
+        if scratch_root.is_relative_to(repository) or repository.is_relative_to(scratch_root):
+            raise ValueError('Tooling capture scratch must be outside and separate from the checkout')
+        producer = load_json_bytes(os.environ['TRANSPORT_PRODUCER'].encode('utf-8'))
+        parent = Path(tempfile.mkdtemp(prefix='sdk-tooling-capture-', dir=scratch_root)).resolve(strict=True)
+        producer_path, destination = parent / 'transport-producer.json', parent / 'capture'
+        producer_path.write_bytes(canonical_json_bytes(producer))
+        if bool(os.environ['TRUSTED_WORKFLOW_PATH']) != bool(os.environ['TRUSTED_JOB_NAME']):
+            raise ValueError('Tooling workflow path and job must be pinned together')
+        workflow_policy = ([
+            '--trusted-workflow-path', os.environ['TRUSTED_WORKFLOW_PATH'],
+            '--trusted-job-name', os.environ['TRUSTED_JOB_NAME'],
+        ] if os.environ['TRUSTED_WORKFLOW_PATH'] else [])
+        original_sha = os.environ['TRUSTED_WORKFLOW_SHA']
+        if (os.environ['TRUSTED_WORKFLOW_PATH'], os.environ['TRUSTED_JOB_NAME']) in (
+            ('', ''), ('.github/workflows/contract-validation.yml',
+                       'product-validation / contract-validation / tooling-attestation'),
+        ):
+            original = _original_tooling_workflow(producer, original_sha, os.environ['GITHUB_TOKEN'],
+                                                  repository_root=repository)
+            original_sha = original['trusted_workflow_sha']
+            workflow_policy = ([
+                '--trusted-workflow-path', original['trusted_workflow_path'],
+                '--trusted-job-name', original['trusted_job_name'],
+            ] if 'trusted_workflow_path' in original else [])
+        subprocess.run([sys.executable, '-B', '-m', 'ci.tooling_capture',
+            '--destination', str(destination), '--repository-root', str(repository),
+            '--transport-producer', str(producer_path), '--java-executable', str(java),
+            '--artifact-id', os.environ['ARTIFACT_ID'], '--artifact-sha256', os.environ['ARTIFACT_SHA256'],
+            '--trusted-workflow-sha', original_sha, '--policy-revision', os.environ['POLICY_REVISION'],
+            *workflow_policy],
+            cwd=repository, env=os.environ, check=True)
+        policy = destination / 'tooling-policy.json'
+        read_regular_file_bytes(policy, reject_symlink_parents=True)
+        if any(character in str(policy) for character in '\r\n'):
+            raise ValueError('Tooling policy output path must occupy one output line')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('tooling_policy=' + str(policy) + '\n')
+            if os.environ.get('PLAN_ID'):
+                output.write('plan_directory=' + str(parent / 'plan') + '\n')
+        PY
+    - name: Download the exact original plan outside the checkout
+      if: inputs.plan-id != ''
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        artifact-ids: ${{ inputs.plan-id }}
+        path: ${{ steps.capture.outputs.plan_directory }}
+        merge-multiple: true
+    - id: apple-policy
+      if: inputs.plan-id != ''
+      uses: ./.github/actions/prepare-sdk-apple-policy
+      with:
+        plan-path: ${{ steps.capture.outputs.plan_directory }}/impact-plan.json
+        tooling-policy: ${{ steps.capture.outputs.tooling_policy }}

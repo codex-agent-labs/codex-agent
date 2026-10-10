@@ -1,0 +1,327 @@
+name: Execute elected Core Maven phase
+description: Capture the exact Core binary or package election before setup, then retain its authenticated product shard.
+inputs:
+  phase:
+    required: true
+    description: Exactly binary or package; binary runs on macOS Arm64, package on Linux X64.
+  plan-id:
+    required: true
+    description: Original plan artifact ID.
+  artifact-id:
+    required: true
+    description: Current predecessor state artifact ID.
+  artifact-sha256:
+    required: true
+    description: Exact predecessor state digest.
+  state-wave:
+    default: '0'
+    description: Current Runtime state wave.
+  sdk-state-wave:
+    default: ''
+    description: Current SDK state wave.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  build-key:
+    required: true
+    description: Exact elected Core phase key.
+  tree:
+    required: true
+    description: Exact tested source tree.
+  sdk-inputs-id:
+    default: ''
+    description: Package only; original signed S858 upload ID.
+  sdk-inputs-sha256:
+    default: ''
+    description: Package only; exact S858 upload digest.
+  binary-artifact-id:
+    default: ''
+    description: Package only; authenticated original Core binary upload ID.
+  binary-artifact-sha256:
+    default: ''
+    description: Package only; exact original Core binary upload digest.
+  binary-contract-evidence:
+    default: ''
+    description: Package only; independently supplied canonical original binary Contract evidence policy path.
+  binary-original-context:
+    default: ''
+    description: Package only; independently supplied canonical original binary invocation context path.
+  binary-original-workflow-path:
+    default: ''
+    description: Package only; caller-pinned original Core binary child workflow path.
+  binary-original-job-name:
+    default: ''
+    description: Package only; caller-pinned original Core binary child job name.
+  sdk-validation-tooling:
+    default: ''
+    description: Optional independently supplied caller tooling policy for predecessor replay.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional independently supplied caller Apple policy for predecessor replay.
+  sdk-facade-metadata-policy:
+    default: ''
+    description: Optional independently supplied Core metadata policy for predecessor replay.
+  sdk-android-metadata-policy:
+    default: ''
+    description: Optional independently supplied Android metadata policy for predecessor replay.
+outputs:
+  binary-original-context:
+    description: Binary only; caller-owned canonical original checkout and worker paths.
+    value: ${{ steps.context.outputs.value }}
+  binary-artifact-id:
+    description: Binary only; official original upload ID, usable only after successful phase collection.
+    value: >-
+      ${{ inputs.phase == 'binary' && steps.execute.outcome == 'success' &&
+          steps.upload.outcome == 'success' && steps.upload.outputs.artifact-id != '' &&
+          steps.upload.outputs.artifact-digest != '' && steps.upload.outputs.artifact-id || '' }}
+  binary-artifact-sha256:
+    description: Binary only; official original upload digest, usable only after successful phase collection.
+    value: >-
+      ${{ inputs.phase == 'binary' && steps.execute.outcome == 'success' &&
+          steps.upload.outcome == 'success' && steps.upload.outputs.artifact-id != '' &&
+          steps.upload.outputs.artifact-digest != '' &&
+          format('sha256:{0}', steps.upload.outputs.artifact-digest) || '' }}
+runs:
+  using: composite
+  steps:
+    - id: policy
+      name: Pin independent original policies before state capture
+      shell: bash
+      env:
+        PHASE: ${{ inputs.phase }}
+        SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        BINARY_ARTIFACT_ID: ${{ inputs.binary-artifact-id }}
+        BINARY_ARTIFACT_SHA256: ${{ inputs.binary-artifact-sha256 }}
+        BINARY_CONTRACT_EVIDENCE: ${{ inputs.binary-contract-evidence }}
+        BINARY_ORIGINAL_CONTEXT: ${{ inputs.binary-original-context }}
+        BINARY_ORIGINAL_WORKFLOW_PATH: ${{ inputs.binary-original-workflow-path }}
+        BINARY_ORIGINAL_JOB_NAME: ${{ inputs.binary-original-job-name }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+      run: |
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes, require_sha256, sha256_bytes
+        from ci.products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        phase = os.environ['PHASE']
+        if phase not in ('binary', 'package'):
+            raise ValueError('Core Maven worker requires binary or package')
+        package = ('SDK_INPUTS_ID', 'SDK_INPUTS_SHA256', 'BINARY_ARTIFACT_ID',
+                   'BINARY_ARTIFACT_SHA256', 'BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT')
+        if ((phase == 'package' and not all(os.environ[name] for name in package))
+                or (phase == 'binary' and any(os.environ[name] for name in package))):
+            raise ValueError('Core Maven package requires all original caller inputs; binary accepts none')
+        if (bool(os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']) != bool(os.environ['BINARY_ORIGINAL_JOB_NAME'])
+                or phase == 'binary' and os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']):
+            raise ValueError('Core binary child workflow path and job must be pinned together for package only')
+        if phase == 'package':
+            for name in ('SDK_INPUTS_ID', 'BINARY_ARTIFACT_ID'):
+                if not os.environ[name].isascii() or not os.environ[name].isdecimal() or int(os.environ[name]) < 1:
+                    raise ValueError('Core Maven original upload IDs must be positive decimal integers')
+            for name in ('SDK_INPUTS_SHA256', 'BINARY_ARTIFACT_SHA256'):
+                require_sha256(os.environ[name], 'Core Maven ' + name)
+        policies = {}
+        for name in ('BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT', 'SDK_VALIDATION_TOOLING',
+                     'SDK_APPLE_VALIDATION_POLICY', 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY'):
+            value = os.environ[name]
+            if not value:
+                continue
+            path = Path(value)
+            if not path.is_absolute() or path.resolve(strict=True) != path:
+                raise ValueError('Core Maven policies require absolute non-symbolic caller paths')
+            raw = read_regular_file_bytes(path, reject_symlink_parents=True)
+            load_canonical_json_bytes(raw)
+            policies[name] = sha256_bytes(raw)
+        if os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']:
+            policies['BINARY_ORIGINAL_WORKFLOW_PATH'] = os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']
+            policies['BINARY_ORIGINAL_JOB_NAME'] = os.environ['BINARY_ORIGINAL_JOB_NAME']
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('policy_sha256=' + sha256_bytes(canonical_json_bytes(policies)) + '\n')
+        PY
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: sdk
+        sdk-family: core-${{ inputs.phase }}
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        state-wave: ${{ inputs.state-wave }}
+        sdk-state-wave: ${{ inputs.sdk-state-wave }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+        sdk-facade-metadata-policy: ${{ inputs.sdk-facade-metadata-policy }}
+        sdk-android-metadata-policy: ${{ inputs.sdk-android-metadata-policy }}
+    - id: identity
+      name: Require exact Core election and runner before setup
+      shell: bash
+      env:
+        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
+        REQUIRED: ${{ steps.captured.outputs.sdk-workers-required }}
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        PHASE: ${{ inputs.phase }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
+        POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
+        BINARY_CONTRACT_EVIDENCE: ${{ inputs.binary-contract-evidence }}
+        BINARY_ORIGINAL_CONTEXT: ${{ inputs.binary-original-context }}
+        BINARY_ORIGINAL_WORKFLOW_PATH: ${{ inputs.binary-original-workflow-path }}
+        BINARY_ORIGINAL_JOB_NAME: ${{ inputs.binary-original-job-name }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+      run: |
+        python3 -B - <<'PY'
+        import json, os, re, sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        from native_wrappers import host_classifier
+        from products.inventory import canonical_json_bytes, read_regular_file_bytes, sha256_bytes
+        from products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        policies = {}
+        for name in ('BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT', 'SDK_VALIDATION_TOOLING',
+                     'SDK_APPLE_VALIDATION_POLICY', 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY'):
+            if os.environ[name]:
+                policies[name] = sha256_bytes(read_regular_file_bytes(Path(os.environ[name]), reject_symlink_parents=True))
+        if os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']:
+            policies['BINARY_ORIGINAL_WORKFLOW_PATH'] = os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']
+            policies['BINARY_ORIGINAL_JOB_NAME'] = os.environ['BINARY_ORIGINAL_JOB_NAME']
+        if sha256_bytes(canonical_json_bytes(policies)) != os.environ['POLICY_SHA256']:
+            raise ValueError('Core Maven independent caller policy changed during state capture')
+        phase, key, tree = os.environ['PHASE'], os.environ['BUILD_KEY'], os.environ['TREE']
+        runner = ('macos-26', 'macOS', 'ARM64') if phase == 'binary' else ('ubuntu-24.04', 'Linux', 'X64')
+        host = 'macos-arm64' if phase == 'binary' else 'linux-x64'
+        rows = json.loads(os.environ['MATRIX'])['include']
+        if (host_classifier() != host or os.environ['REQUIRED'] != 'true'
+                or type(rows) is not list or len(rows) != 1 or type(rows[0]) is not dict
+                or tuple(rows[0].get(name) for name in ('product', 'component', 'phase', 'target')) !=
+                   ('sdk', 'sdk-core', phase, 'common')
+                or tuple(rows[0].get(name) for name in ('runner', 'runnerOs', 'runnerArch')) != runner
+                or rows[0].get('buildKey') != key or not re.fullmatch(r'sha256:[0-9a-f]{64}', key)
+                or not re.fullmatch(r'[0-9a-f]{40}', tree)):
+            raise ValueError('Core Maven phase differs from its elected host, target or key')
+        with open(os.environ['PLAN']) as plan:
+            if json.load(plan)['validationTree'] != tree:
+                raise ValueError('Core Maven tree differs from the authenticated plan')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
+        PY
+    - id: context
+      if: inputs.phase == 'binary'
+      name: Record caller-owned original binary invocation context
+      shell: bash
+      run: |
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        from ci.products.inventory import canonical_json_bytes
+        from ci.products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        if root.as_posix() != os.environ['GITHUB_WORKSPACE']:
+            raise ValueError('Core Maven checkout must have one canonical original path')
+        value = canonical_json_bytes({
+            'repositoryRoot': root.as_posix(),
+            'workerRoot': (root / 'build/sdk-core-maven-worker').as_posix(),
+        }).decode().strip()
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('value=' + value + '\n')
+        PY
+    - uses: ./.github/actions/setup-kmp
+      with:
+        cache-read-only: 'true'
+        product-worker: 'true'
+    - id: execute
+      name: Execute exact Core Maven controller with held original inputs
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        PHASE: ${{ inputs.phase }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
+        SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        BINARY_ARTIFACT_ID: ${{ inputs.binary-artifact-id }}
+        BINARY_ARTIFACT_SHA256: ${{ inputs.binary-artifact-sha256 }}
+        BINARY_CONTRACT_EVIDENCE: ${{ inputs.binary-contract-evidence }}
+        BINARY_ORIGINAL_CONTEXT: ${{ inputs.binary-original-context }}
+        BINARY_ORIGINAL_WORKFLOW_PATH: ${{ inputs.binary-original-workflow-path }}
+        BINARY_ORIGINAL_JOB_NAME: ${{ inputs.binary-original-job-name }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B - <<'PY'
+        import os, subprocess, sys
+        from pathlib import Path
+        from ci.products.inventory import canonical_json_bytes, read_regular_file_bytes, sha256_bytes
+        from ci.products.signing_isolation import require_no_signing_secret
+        require_no_signing_secret(os.environ)
+        root = Path(os.environ['GITHUB_WORKSPACE'])
+        policies = {}
+        for name in ('BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT', 'SDK_VALIDATION_TOOLING',
+                     'SDK_APPLE_VALIDATION_POLICY', 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY'):
+            if os.environ[name]:
+                policies[name] = sha256_bytes(read_regular_file_bytes(Path(os.environ[name]), reject_symlink_parents=True))
+        if os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']:
+            policies['BINARY_ORIGINAL_WORKFLOW_PATH'] = os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']
+            policies['BINARY_ORIGINAL_JOB_NAME'] = os.environ['BINARY_ORIGINAL_JOB_NAME']
+        if sha256_bytes(canonical_json_bytes(policies)) != os.environ['POLICY_SHA256']:
+            raise ValueError('Core Maven caller policy changed before execution')
+        phase = os.environ['PHASE']
+        fields = {
+            '--plan': os.environ['PLAN'], '--discovery-root': os.environ['DISCOVERY'],
+            '--state-root': os.environ['STATE'], '--destination': str(root / 'build/sdk-core-maven-worker'),
+            '--repository-root': str(root), '--component': 'sdk-core',
+            '--expected-build-key': os.environ['BUILD_KEY'],
+            '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
+        }
+        for env_name, flag in (('SDK_VALIDATION_TOOLING', '--sdk-validation-tooling'),
+                               ('SDK_APPLE_VALIDATION_POLICY', '--sdk-apple-validation-policy'),
+                               ('SDK_FACADE_METADATA_POLICY', '--sdk-facade-metadata-policy'),
+                               ('SDK_ANDROID_METADATA_POLICY', '--sdk-android-metadata-policy')):
+            if os.environ[env_name]:
+                fields[flag] = os.environ[env_name]
+        if phase == 'package':
+            fields.update({
+                '--sdk-inputs-artifact-id': os.environ['SDK_INPUTS_ID'],
+                '--sdk-inputs-artifact-sha256': os.environ['SDK_INPUTS_SHA256'],
+                '--binary-artifact-id': os.environ['BINARY_ARTIFACT_ID'],
+                '--binary-artifact-sha256': os.environ['BINARY_ARTIFACT_SHA256'],
+                '--binary-contract-evidence': os.environ['BINARY_CONTRACT_EVIDENCE'],
+                '--binary-original-context': os.environ['BINARY_ORIGINAL_CONTEXT'],
+                '--keyring': str(root / 'gradle/release/product-signing-keys.json'),
+                '--keys-directory': str(root / 'gradle/release/keys'),
+            })
+            if os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']:
+                fields['--binary-original-workflow-path'] = os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']
+                fields['--binary-original-job-name'] = os.environ['BINARY_ORIGINAL_JOB_NAME']
+        command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'maven-' + phase]
+        command += [part for flag, value in fields.items() for part in (flag, value)]
+        subprocess.run(command, cwd=root, check=True)
+        require_no_signing_secret(os.environ)
+        PY
+    - id: upload
+      if: always() && steps.identity.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-worker-sdk-core-${{ inputs.phase }}-common-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/sdk-core-maven-worker
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90

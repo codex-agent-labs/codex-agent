@@ -1,0 +1,336 @@
+name: SDK Android Binary Validation
+
+on:
+  workflow_call:
+    inputs:
+      planOutputs:
+        required: true
+        type: string
+      sdkPlan:
+        required: true
+        type: string
+      sdkInputs:
+        required: true
+        type: string
+      validationWave:
+        required: true
+        type: string
+      metadataWave:
+        required: true
+        type: string
+      trustedWorkflowSha:
+        required: true
+        type: string
+    secrets:
+      authority_read_token:
+        description: Read-only protected reuse authority; scoped to qualification restoration
+        required: false
+    outputs:
+      artifact_id:
+        value: ${{ jobs.sdk-android-binary-result.outputs.artifact_id }}
+      artifact_digest:
+        value: ${{ jobs.sdk-android-binary-result.outputs.artifact_digest }}
+      state_wave:
+        value: ${{ jobs.sdk-android-binary-result.outputs.state_wave }}
+      sdk_state_wave:
+        value: ${{ jobs.sdk-android-binary-result.outputs.sdk_state_wave }}
+      binary_build_key:
+        value: ${{ jobs.sdk-android-binary-result.outputs.binary_build_key }}
+      binary_original_context:
+        value: ${{ jobs.sdk-android-binary-result.outputs.binary_original_context }}
+      binary_artifact_id:
+        value: ${{ jobs.sdk-android-binary-result.outputs.binary_artifact_id }}
+      binary_artifact_sha256:
+        value: ${{ jobs.sdk-android-binary-result.outputs.binary_artifact_sha256 }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  sdk-android-binary-plan:
+    if: >-
+      always() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      fromJSON(inputs.sdkPlan).result == 'success' &&
+      fromJSON(inputs.metadataWave).result == 'success' &&
+      fromJSON(inputs.metadataWave).outputs.artifact_id != ''
+    runs-on: ubuntu-24.04
+    outputs:
+      sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
+      sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.authority_read_token }}
+      - name: Select installed caller Java
+        if: fromJSON(inputs.planOutputs).tooling_required == 'true'
+        run: |
+          set -euo pipefail
+          source ci/select_caller_java.sh
+          test -f "$selected_java_home/bin/java"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        if: fromJSON(inputs.planOutputs).tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
+          policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+      - id: capture
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          product: sdk
+          sdk-family: android-binary
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          artifact-id: ${{ fromJSON(inputs.metadataWave).outputs.artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.metadataWave).outputs.artifact_digest }}
+          state-wave: ${{ fromJSON(inputs.metadataWave).outputs.state_wave }}
+          sdk-state-wave: ${{ fromJSON(inputs.metadataWave).outputs.sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+
+  sdk-android-binary:
+    name: sdk-android-binary-android
+    needs: [sdk-android-binary-plan]
+    if: >-
+      always() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      fromJSON(inputs.sdkPlan).result == 'success' &&
+      fromJSON(inputs.sdkInputs).result == 'success' &&
+      fromJSON(inputs.validationWave).result == 'success' &&
+      fromJSON(inputs.metadataWave).result == 'success' &&
+      fromJSON(inputs.metadataWave).outputs.sdk_state_wave == '14' &&
+      fromJSON(inputs.metadataWave).outputs.metadata_build_key != '' &&
+      fromJSON(inputs.metadataWave).outputs.metadata_original_context != '' &&
+      fromJSON(inputs.metadataWave).outputs.metadata_receipt_sha256 != '' &&
+      fromJSON(inputs.metadataWave).outputs.metadata_artifact_id != '' &&
+      fromJSON(inputs.metadataWave).outputs.metadata_artifact_sha256 != '' &&
+      needs.sdk-android-binary-plan.result == 'success' &&
+      needs.sdk-android-binary-plan.outputs.sdk_workers_required == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.sdk-android-binary-plan.outputs.sdk_matrix || '{"include":[]}') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    outputs:
+      binary_build_key: ${{ steps.binary.outputs.binary-artifact-id != '' && matrix.buildKey || '' }}
+      binary_original_context: ${{ steps.binary.outputs.binary-original-context }}
+      binary_artifact_id: ${{ steps.binary.outputs.binary-artifact-id }}
+      binary_artifact_sha256: ${{ steps.binary.outputs.binary-artifact-sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.authority_read_token }}
+      - name: Select installed caller Java
+        run: |
+          set -euo pipefail
+          source ci/select_caller_java.sh
+          test -f "$selected_java_home/bin/java"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
+          policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+      - id: native-archives
+        name: Provision Git-pinned Core native compiler archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_archive() {
+            python3 -B -m ci.sdk_core_native_archive_provision \
+              --plan "${{ steps.tooling.outputs.plan-directory }}/impact-plan.json" \
+              --target "$1" --destination "$RUNNER_TEMP/android15-$2.tar.gz" \
+              --repository-root "$GITHUB_WORKSPACE"
+          }
+          macos_aarch64=$(native_archive macos-arm64 macos-aarch64)
+          macos_x86_64=$(native_archive macos-x64 macos-x86_64)
+          linux_x86_64=$(native_archive linux-x64 linux-x86_64)
+          windows_x86_64=$(native_archive windows-x64 windows-x86_64)
+          {
+            echo "macos_aarch64=$macos_aarch64"
+            echo "macos_x86_64=$macos_x86_64"
+            echo "linux_x86_64=$linux_x86_64"
+            echo "windows_x86_64=$windows_x86_64"
+          } >> "$GITHUB_OUTPUT"
+      - id: core14
+        uses: ./.github/actions/sdk-android-core14-caller
+        with:
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          core13-artifact-id: ${{ fromJSON(inputs.validationWave).outputs.artifact_id }}
+          core13-artifact-sha256: ${{ fromJSON(inputs.validationWave).outputs.artifact_digest }}
+          before-state-wave: ${{ fromJSON(inputs.validationWave).outputs.state_wave }}
+          before-sdk-state-wave: ${{ fromJSON(inputs.validationWave).outputs.sdk_state_wave }}
+          metadata-artifact-id: ${{ fromJSON(inputs.metadataWave).outputs.metadata_artifact_id }}
+          metadata-artifact-sha256: ${{ fromJSON(inputs.metadataWave).outputs.metadata_artifact_sha256 }}
+          metadata-build-key: ${{ fromJSON(inputs.metadataWave).outputs.metadata_build_key }}
+          metadata-receipt-sha256: ${{ fromJSON(inputs.metadataWave).outputs.metadata_receipt_sha256 }}
+          metadata-original-context: ${{ fromJSON(inputs.metadataWave).outputs.metadata_original_context }}
+          sdk-inputs-id: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_id }}
+          sdk-inputs-sha256: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_digest }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          keyring: ${{ github.workspace }}/gradle/release/product-signing-keys.json
+          keys-directory: ${{ github.workspace }}/gradle/release/keys
+          native-compiler-archive-ios-arm64: ${{ steps.native-archives.outputs.macos_aarch64 }}
+          native-compiler-archive-ios-simulator-arm64: ${{ steps.native-archives.outputs.macos_aarch64 }}
+          native-compiler-archive-linux-arm64: ${{ steps.native-archives.outputs.linux_x86_64 }}
+          native-compiler-archive-linux-x64: ${{ steps.native-archives.outputs.linux_x86_64 }}
+          native-compiler-archive-macos-arm64: ${{ steps.native-archives.outputs.macos_aarch64 }}
+          native-compiler-archive-macos-x64: ${{ steps.native-archives.outputs.macos_x86_64 }}
+          native-compiler-archive-windows-x64: ${{ steps.native-archives.outputs.windows_x86_64 }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+      - id: android-archive
+        name: Provision Git-pinned Android Codex archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=$(python3 -B -m ci.sdk_android_archive_provision \
+            --plan "${{ steps.tooling.outputs.plan-directory }}/impact-plan.json" \
+            --destination "$RUNNER_TEMP/android15-codex.tar.gz" \
+            --repository-root "$GITHUB_WORKSPACE")
+          echo "path=$archive" >> "$GITHUB_OUTPUT"
+      - id: binary
+        uses: ./.github/actions/sdk-android-maven-worker
+        with:
+          phase: binary
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          artifact-id: ${{ fromJSON(inputs.metadataWave).outputs.artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.metadataWave).outputs.artifact_digest }}
+          state-wave: ${{ fromJSON(inputs.metadataWave).outputs.state_wave }}
+          sdk-state-wave: ${{ fromJSON(inputs.metadataWave).outputs.sdk_state_wave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          build-key: ${{ matrix.buildKey }}
+          tree: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+          android-runtime-archive: ${{ steps.android-archive.outputs.path }}
+          core13-artifact-id: ${{ fromJSON(inputs.validationWave).outputs.artifact_id }}
+          core13-artifact-sha256: ${{ fromJSON(inputs.validationWave).outputs.artifact_digest }}
+          core13-state-wave: ${{ fromJSON(inputs.validationWave).outputs.state_wave }}
+          core13-sdk-state-wave: ${{ fromJSON(inputs.validationWave).outputs.sdk_state_wave }}
+          core14-build-key: ${{ fromJSON(inputs.metadataWave).outputs.metadata_build_key }}
+          core14-metadata-receipt: ${{ steps.core14.outputs.metadata-receipt }}
+          core14-metadata-receipt-sha256: ${{ fromJSON(inputs.metadataWave).outputs.metadata_receipt_sha256 }}
+          core14-metadata-artifact-id: ${{ fromJSON(inputs.metadataWave).outputs.metadata_artifact_id }}
+          core14-metadata-artifact-sha256: ${{ fromJSON(inputs.metadataWave).outputs.metadata_artifact_sha256 }}
+          core14-replay-policy: ${{ steps.core14.outputs.replay-policy }}
+          core14-original-context: ${{ steps.core14.outputs.original-context }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+
+  sdk-collect-15:
+    needs: [sdk-android-binary-plan, sdk-android-binary]
+    if: >-
+      always() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      fromJSON(inputs.sdkPlan).result == 'success' &&
+      fromJSON(inputs.metadataWave).result == 'success' &&
+      needs.sdk-android-binary-plan.result == 'success' &&
+      needs.sdk-android-binary-plan.outputs.sdk_workers_required == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
+      wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - name: Select installed caller Java
+        run: |
+          set -euo pipefail
+          source ci/select_caller_java.sh
+          test -f "$selected_java_home/bin/java"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
+          policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+      - id: collect
+        uses: ./.github/actions/collect-runtime-wave
+        with:
+          product: sdk
+          sdk-family: android-binary
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          artifact-id: ${{ fromJSON(inputs.metadataWave).outputs.artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.metadataWave).outputs.artifact_digest }}
+          state-wave: ${{ fromJSON(inputs.metadataWave).outputs.state_wave }}
+          sdk-state-wave: ${{ fromJSON(inputs.metadataWave).outputs.sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          wave: '15'
+          tree: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+          sdk-worker-workflow-path: .github/workflows/sdk-android-binary-validation.yml
+          sdk-worker-job-name: product-validation / sdk-android-binary-result / sdk-android-binary-android
+
+  sdk-android-binary-result:
+    needs: [sdk-android-binary-plan, sdk-android-binary, sdk-collect-15]
+    if: >-
+      always() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
+      fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
+      fromJSON(inputs.sdkPlan).result == 'success' &&
+      fromJSON(inputs.metadataWave).result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.result.outputs.artifact_id }}
+      artifact_digest: ${{ steps.result.outputs.artifact_digest }}
+      state_wave: ${{ steps.result.outputs.state_wave }}
+      sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
+      binary_build_key: ${{ steps.result.outcome == 'success' && needs.sdk-android-binary.result == 'success' && needs.sdk-android-binary.outputs.binary_build_key || '' }}
+      binary_original_context: ${{ steps.result.outcome == 'success' && needs.sdk-android-binary.result == 'success' && needs.sdk-android-binary.outputs.binary_original_context || '' }}
+      binary_artifact_id: ${{ steps.result.outcome == 'success' && needs.sdk-android-binary.result == 'success' && needs.sdk-android-binary.outputs.binary_artifact_id || '' }}
+      binary_artifact_sha256: ${{ steps.result.outcome == 'success' && needs.sdk-android-binary.result == 'success' && needs.sdk-android-binary.outputs.binary_artifact_sha256 || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+      - id: result
+        name: Fail only after collecting Android binary results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          METADATA_RESULT: ${{ inputs.metadataWave }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_native_continuation import select_native_state
+          from ci.reuse import github_output
+          needs = json.loads(os.environ['RESULTS'])
+          needs['sdk-core-metadata-wave'] = json.loads(os.environ['METADATA_RESULT'])
+          result = select_native_state(needs, stage='android-binary')
+          github_output(Path(os.environ['GITHUB_OUTPUT']), result)
+          PY

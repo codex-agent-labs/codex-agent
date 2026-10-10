@@ -24,6 +24,12 @@ class RuntimeBootstrapDeviceTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
 
     @Test
+    fun javaHostLifecycleIsObservableAndIdempotentlyCloseable() {
+        assertDeviceContract()
+        JavaLifecycleConsumer.run(context)
+    }
+
+    @Test
     fun missingNonExecutableAndCorruptOverridesFailClosed() {
         assertDeviceContract()
         clearRuntimeState()

@@ -1,3 +1,4 @@
-codex-agent-runtime-node/src/webTest/**
-codex-agent-runtime-node/src/wasmJsTest/**
+codex-agent-runtime-desktop/src/commonTest/**
+codex-agent-runtime-desktop/src/wasmJsTest/**
+codex-agent-runtime-desktop/src/webTest/**
 gradle/build-logic/src/test/**/*Node*

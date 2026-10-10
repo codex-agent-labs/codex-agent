@@ -1,0 +1,169 @@
+name: Capture authenticated Runtime state
+description: Verify the exact parent upload and re-elect work before any platform setup.
+inputs:
+  product:
+    default: runtime
+    description: Fixed runtime, sdk JavaScript, or sdk-ios-binary readiness projection.
+  plan-id:
+    required: true
+    description: Caller-owned original plan artifact ID.
+  artifact-id:
+    required: true
+    description: Caller-owned parent state artifact ID.
+  artifact-sha256:
+    required: true
+    description: Caller-owned parent state artifact digest.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed literal product workflow revision.
+  state-wave:
+    default: '0'
+    description: Zero for initial resume; otherwise the fixed preceding wave.
+  continuation:
+    default: ''
+    description: Optional selected/completed Runtime continuation in the same verification process.
+  sdk-state-wave:
+    default: ''
+    description: Optional exact SDK collection wave, mutually exclusive with Runtime state-wave.
+  sdk-family:
+    default: ''
+    description: Optional exact SDK family projection selected by ci.sdk_workflow.
+  sdk-validation-tooling:
+    default: ''
+    description: Caller-provisioned tooling policy path; never obtained from the captured state.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Caller-provisioned Apple validation policy path; never obtained from the captured state.
+  sdk-facade-metadata-policy:
+    default: ''
+    description: Caller-provisioned Core metadata policy path; never obtained from the captured state.
+  sdk-android-metadata-policy:
+    default: ''
+    description: Caller-provisioned Android metadata policy path; never obtained from the captured state.
+  component:
+    default: ''
+    description: Optional elected Runtime component.
+  phase:
+    default: ''
+    description: Optional elected phase.
+  target:
+    default: ''
+    description: Optional elected target.
+  build-key:
+    default: ''
+    description: Optional exact elected build key.
+outputs:
+  native_attestation_matrix:
+    value: ${{ steps.capture.outputs.native_attestation_matrix }}
+  native_receipt_sha256s:
+    value: ${{ steps.capture.outputs.native_receipt_sha256s }}
+  aggregate_state:
+    value: ${{ steps.capture.outputs.aggregate_state }}
+  aggregate_key:
+    value: ${{ steps.capture.outputs.aggregate_key }}
+  aggregate_receipt_sha256:
+    value: ${{ steps.capture.outputs.aggregate_receipt_sha256 }}
+  aggregate_required:
+    value: ${{ steps.capture.outputs.aggregate_required }}
+  aggregate_payload_complete:
+    value: ${{ steps.capture.outputs.aggregate_payload_complete }}
+  sdk_handoff_required:
+    value: ${{ steps.capture.outputs.sdk_handoff_required }}
+  sdk_input_selection:
+    value: ${{ steps.capture.outputs.sdk_input_selection }}
+  sdk-matrix:
+    value: ${{ steps.capture.outputs.sdk_matrix }}
+  sdk-workers-required:
+    value: ${{ steps.capture.outputs.sdk_workers_required }}
+  plan-path:
+    value: ${{ steps.capture.outputs.plan_path }}
+  discovery-root:
+    value: ${{ steps.capture.outputs.discovery_root }}
+  state-root:
+    value: ${{ steps.capture.outputs.state_root }}
+  input-root:
+    value: ${{ steps.capture.outputs.input_root }}
+  phase-plan:
+    value: ${{ steps.capture.outputs.phase_plan }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        artifact-ids: ${{ inputs.plan-id }}
+        path: build/runtime-plan
+        merge-multiple: true
+    - id: capture
+      uses: ./.github/actions/hydrated-evidence-cache
+      env:
+        ARTIFACT_ID: ${{ inputs.artifact-id }}
+        ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        STATE_WAVE: ${{ inputs.state-wave }}
+        CONTINUATION: ${{ inputs.continuation }}
+        STATE_PRODUCT: ${{ inputs.product }}
+        SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
+        SDK_FAMILY: ${{ inputs.sdk-family }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        COMPONENT: ${{ inputs.component }}
+        PHASE: ${{ inputs.phase }}
+        TARGET: ${{ inputs.target }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        GITHUB_TOKEN: ${{ github.token }}
+      with:
+        mode: execute
+        script: |
+            set -euo pipefail
+            selected=()
+            command=(python3 -B ci/runtime_workflow.py capture)
+            case "$STATE_PRODUCT" in
+              runtime) test -z "$SDK_STATE_WAVE$SDK_FAMILY" ;;
+              sdk|sdk-ios-binary)
+                test -z "$COMPONENT$PHASE$TARGET$BUILD_KEY"
+                command=(python3 -B -m ci.sdk_workflow capture)
+                if [ -n "$SDK_STATE_WAVE" ]; then
+                  selected=(--sdk-state-wave "$SDK_STATE_WAVE")
+                fi
+                if [ "$STATE_PRODUCT" = sdk-ios-binary ]; then
+                  test -z "$SDK_FAMILY"
+                  selected+=(--ios-binary)
+                elif [ -n "$SDK_FAMILY" ]; then
+                  case "$SDK_FAMILY" in
+                    csharp-binary|native-package|ios-package|javascript-metadata|native-validation|native-metadata|ios-validation|ios-metadata|core-binary|core-package|core-validation|core-metadata|android-binary|android-package|android-validation|android-metadata) selected+=(--family "$SDK_FAMILY") ;;
+                    *) echo 'Unknown SDK family' >&2; exit 1 ;;
+                  esac
+                fi
+                ;;
+              *) echo 'Unknown product state projection' >&2; exit 1 ;;
+            esac
+            if [ -n "$COMPONENT$PHASE$TARGET$BUILD_KEY" ]; then
+              selected=(--component "$COMPONENT" --phase "$PHASE" --target "$TARGET" --expected-build-key "$BUILD_KEY")
+            fi
+            if [ -n "$CONTINUATION" ]; then
+              test "$STATE_PRODUCT" = runtime
+              test -z "$COMPONENT$PHASE$TARGET$BUILD_KEY"
+              selected+=(--continuation "$CONTINUATION")
+            fi
+            if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then
+              selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
+            fi
+            if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
+              selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
+            fi
+            if [ -n "${SDK_FACADE_METADATA_POLICY:-}${SDK_ANDROID_METADATA_POLICY:-}" ]; then
+              test "$STATE_PRODUCT" != runtime
+            fi
+            if [ -n "${SDK_FACADE_METADATA_POLICY:-}" ]; then
+              selected+=(--sdk-facade-metadata-policy "$SDK_FACADE_METADATA_POLICY")
+            fi
+            if [ -n "${SDK_ANDROID_METADATA_POLICY:-}" ]; then
+              selected+=(--sdk-android-metadata-policy "$SDK_ANDROID_METADATA_POLICY")
+            fi
+            "${command[@]}" \
+              --plan build/runtime-plan/impact-plan.json --destination build/runtime-input \
+              --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
+              --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --state-wave "$STATE_WAVE" \
+              --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"}

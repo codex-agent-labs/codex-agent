@@ -1,0 +1,37 @@
+name: Restore independently owner-approved reuse qualification
+description: Qualification inputs assert original identities; only the protected owner source selects verification code.
+inputs:
+  authority-read-token:
+    required: false
+    default: ''
+    description: Repository-scoped Administration and Contents read token; missing authority fails closed.
+  artifact-id:
+    required: false
+    description: Approved retained original artifact selector.
+  artifact-sha256:
+    required: false
+    description: Optional assertion of the exact original artifact digest.
+  run-id:
+    required: false
+    description: Optional assertion of the original run identity.
+  run-attempt:
+    required: false
+    description: Optional assertion of the original attempt.
+  issuer-sha:
+    required: false
+    description: Optional assertion; never chooses the approved verifier.
+  source-sha:
+    required: false
+    description: Optional assertion; original source is derived from authenticated native provenance.
+runs:
+  using: composite
+  steps:
+    - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+      with:
+        authority-read-token: ${{ inputs.authority-read-token || env.REUSE_AUTHORITY_READ_TOKEN }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        run-id: ${{ inputs.run-id }}
+        run-attempt: ${{ inputs.run-attempt }}
+        issuer-sha: ${{ inputs.issuer-sha }}
+        source-sha: ${{ inputs.source-sha }}

@@ -1,0 +1,142 @@
+name: Execute elected iOS SDK binary
+description: Capture original transport, replay and authenticate before production, and retain every result.
+inputs:
+  plan-id:
+    required: true
+    description: Exact original plan upload.
+  artifact-id:
+    required: true
+    description: Exact predecessor state upload.
+  artifact-sha256:
+    required: true
+    description: Exact predecessor state digest.
+  state-wave:
+    default: '0'
+    description: Original product state wave.
+  sdk-validation-tooling:
+    default: ''
+    description: Optional caller-owned local authenticated SDK tooling policy.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional caller-owned local Apple policy for replaying retained validation state.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  build-key:
+    required: true
+    description: Exact elected iOS binary key.
+  tree:
+    required: true
+    description: Exact tested tree.
+  native-tests-artifact-id:
+    required: true
+    description: Exact current Apple native tests upload ID.
+  native-tests-artifact-sha256:
+    required: true
+    description: Exact current Apple native tests upload digest.
+  rust-device-artifact-id:
+    required: true
+    description: Exact current Apple Rust device upload ID.
+  rust-device-artifact-sha256:
+    required: true
+    description: Exact current Apple Rust device upload digest.
+  rust-simulator-artifact-id:
+    required: true
+    description: Exact current Apple Rust simulator upload ID.
+  rust-simulator-artifact-sha256:
+    required: true
+    description: Exact current Apple Rust simulator upload digest.
+runs:
+  using: composite
+  steps:
+    - id: captured
+      uses: ./.github/actions/capture-sdk-transport
+      with:
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        state-wave: ${{ inputs.state-wave }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+    - id: identity
+      shell: bash
+      env:
+        STATE: ${{ steps.captured.outputs.state-root }}
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
+      run: |
+        python3 -B - <<'PY'
+        import json, os, re
+        from pathlib import Path
+        from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes
+        key = os.environ['BUILD_KEY']
+        report = load_canonical_json_bytes(read_regular_file_bytes(
+            Path(os.environ['STATE']) / 'reuse-wave-result.json', reject_symlink_parents=True))
+        plan = json.loads(read_regular_file_bytes(
+            Path(os.environ['PLAN']), reject_symlink_parents=True))
+        expected = ('sdk', 'sdk-ios', 'binary', 'ios')
+        rows = [row for row in report['matrices']['sdk']
+                if tuple(row.get(field) for field in ('product', 'component', 'phase', 'target')) == expected]
+        # Transport and this reported selection grant no phase authority. The
+        # unchanged ios-binary input lifetime replays/authenticates before execute.
+        if (report['fullReuse'] is not False or len(rows) != 1 or
+                tuple(rows[0].get(field) for field in ('product', 'component', 'phase', 'target')) != expected or
+                rows[0].get('buildKey') != key or not re.fullmatch(r'sha256:[0-9a-f]{64}', key) or
+                not re.fullmatch(r'[0-9a-f]{40}', os.environ['TREE']) or
+                plan['validationTree'] != os.environ['TREE']):
+            raise ValueError('iOS SDK worker differs from the original replay election')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
+        PY
+    - uses: ./.github/actions/setup-kmp
+      with:
+        cache-read-only: 'true'
+        product-worker: 'true'
+        xcode-fingerprint: auto
+    - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+      with:
+        toolchain: '1.95.0'
+        components: rust-src
+    - name: Execute exact iOS SDK binary within verified original input lifetimes
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
+        STATE: ${{ steps.captured.outputs.state-root }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        NATIVE_TESTS_ID: ${{ inputs.native-tests-artifact-id }}
+        NATIVE_TESTS_SHA256: ${{ inputs.native-tests-artifact-sha256 }}
+        RUST_DEVICE_ID: ${{ inputs.rust-device-artifact-id }}
+        RUST_DEVICE_SHA256: ${{ inputs.rust-device-artifact-sha256 }}
+        RUST_SIMULATOR_ID: ${{ inputs.rust-simulator-artifact-id }}
+        RUST_SIMULATOR_SHA256: ${{ inputs.rust-simulator-artifact-sha256 }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        tooling=()
+        if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+        if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+        python3 -B -m ci.sdk_workflow ios-binary \
+          --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+          --destination "$GITHUB_WORKSPACE/build/sdk-ios-worker" \
+          --repository-root "$GITHUB_WORKSPACE" --expected-build-key "$BUILD_KEY" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --native-tests-artifact-id "$NATIVE_TESTS_ID" \
+          --native-tests-artifact-sha256 "$NATIVE_TESTS_SHA256" \
+          --rust-device-artifact-id "$RUST_DEVICE_ID" \
+          --rust-device-artifact-sha256 "$RUST_DEVICE_SHA256" \
+          --rust-simulator-artifact-id "$RUST_SIMULATOR_ID" \
+          --rust-simulator-artifact-sha256 "$RUST_SIMULATOR_SHA256" ${tooling[@]+"${tooling[@]}"}
+    - if: always() && steps.identity.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-sdk-worker-sdk-ios-binary-ios-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: build/sdk-ios-worker
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90

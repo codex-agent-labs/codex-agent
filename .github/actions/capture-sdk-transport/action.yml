@@ -1,0 +1,88 @@
+name: Capture original SDK state transport
+description: Authenticate one exact official SDK state upload before caller metadata policy election; this does not elect or admit product work.
+inputs:
+  plan-id:
+    required: true
+    description: Caller-owned current plan artifact ID.
+  artifact-id:
+    required: true
+    description: Caller-owned original SDK state artifact ID.
+  artifact-sha256:
+    required: true
+    description: Caller-owned original SDK state upload digest.
+  sdk-state-wave:
+    default: ''
+    description: Exact original completed SDK collector wave, one through eighteen.
+  state-wave:
+    default: '0'
+    description: Original Runtime resume wave when no SDK collector wave is supplied.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed literal product workflow revision.
+  qualification-artifact-id:
+    default: ''
+    description: Optional caller-owned signed qualification artifact ID.
+  qualification-artifact-sha256:
+    default: ''
+    description: Exact original qualification upload SHA256.
+  qualification-run-id:
+    default: ''
+    description: Exact original issuer run.
+  qualification-run-attempt:
+    default: ''
+    description: Exact original issuer attempt.
+  qualification-issuer-sha:
+    default: ''
+    description: Independently reviewed immutable issuer workflow commit.
+  qualification-source-sha:
+    default: ''
+    description: Independently pinned original issuer caller source commit.
+outputs:
+  plan-path:
+    value: ${{ steps.capture.outputs.plan_path }}
+  discovery-root:
+    value: ${{ steps.capture.outputs.discovery_root }}
+  state-root:
+    value: ${{ steps.capture.outputs.state_root }}
+  input-root:
+    value: ${{ steps.capture.outputs.input_root }}
+runs:
+  using: composite
+  steps:
+    - if: inputs.qualification-artifact-id != ''
+      uses: ./.github/actions/restore-reuse-qualification
+      with:
+        artifact-id: ${{ inputs.qualification-artifact-id }}
+        artifact-sha256: ${{ inputs.qualification-artifact-sha256 }}
+        run-id: ${{ inputs.qualification-run-id }}
+        run-attempt: ${{ inputs.qualification-run-attempt }}
+        issuer-sha: ${{ inputs.qualification-issuer-sha }}
+        source-sha: ${{ inputs.qualification-source-sha }}
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        artifact-ids: ${{ inputs.plan-id }}
+        path: build/sdk-transport-plan
+        merge-multiple: true
+    - id: capture
+      uses: ./.github/actions/hydrated-evidence-cache
+      env:
+        ARTIFACT_ID: ${{ inputs.artifact-id }}
+        ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
+        SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
+        STATE_WAVE: ${{ inputs.state-wave }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      with:
+        mode: execute
+        script: |
+            set -euo pipefail
+            wave=(--state-wave "$STATE_WAVE")
+            if [ -n "$SDK_STATE_WAVE" ]; then wave+=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
+            python3 -B -m ci.sdk_workflow capture-transport \
+              --plan build/sdk-transport-plan/impact-plan.json \
+              --destination build/sdk-transport-state \
+              --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
+              "${wave[@]}" \
+              --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+              --repository-root "$GITHUB_WORKSPACE" \
+              --github-output "$GITHUB_OUTPUT"
