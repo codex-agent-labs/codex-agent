@@ -1761,43 +1761,20 @@ jobs:
       state_wave: ${{ steps.parent.outputs.state_wave }}
       artifact_id: ${{ steps.parent.outputs.artifact_id }}
       artifact_digest: ${{ steps.parent.outputs.artifact_digest }}
-      aggregate_key: ${{ steps.captured.outputs.aggregate_key }}
-      aggregate_receipt_sha256: ${{ steps.captured.outputs.aggregate_receipt_sha256 }}
-      aggregate_payload_complete: ${{ steps.captured.outputs.aggregate_payload_complete }}
+      aggregate_key: ${{ steps.parent.outputs.reuse_completed == 'true' && steps.parent.outputs.aggregate_key || steps.captured.outputs.aggregate_key }}
+      aggregate_receipt_sha256: ${{ steps.parent.outputs.reuse_completed == 'true' && steps.parent.outputs.aggregate_receipt_sha256 || steps.captured.outputs.aggregate_receipt_sha256 }}
+      aggregate_payload_complete: ${{ steps.parent.outputs.reuse_completed == 'true' && steps.parent.outputs.aggregate_payload_complete || steps.captured.outputs.aggregate_payload_complete }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.validation_commit }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java for SDK tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        shell: bash
-        run: |
-          source ci/select_caller_java.sh
-          java_binary=java
-          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
-          test -f "$selected_java_home/bin/$java_binary"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - name: Select the exact completed original aggregate state
         id: parent
         env:
           PREDECESSORS: ${{ toJSON(needs) }}
+          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
         run: |
           python3 - <<'PY'
           import json, os, re
@@ -1828,10 +1805,45 @@ jobs:
               raise ValueError('Aggregate key or upload identity differs')
           if any(not re.fullmatch(r'sha256:[0-9a-f]{64}', value) for value in (key, receipt, digest)):
               raise ValueError('Aggregate original digest is missing or malformed')
+          recovery = os.environ.get('SDK_RECOVERY_ONLY', 'false')
+          if recovery not in ('true', 'false'):
+              raise ValueError('SDK recovery routing must be boolean')
+          reuse = recovery == 'true' and original['aggregate_required'] == 'false'
+          # Routing only; each SDK consumer independently authenticates originals.
+          values = {'state_wave': wave, 'artifact_id': artifact, 'artifact_digest': digest,
+                    'reuse_completed': str(reuse).lower(), 'aggregate_key': key,
+                    'aggregate_receipt_sha256': receipt, 'aggregate_payload_complete': 'true'}
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write(f'state_wave={wave}\nartifact_id={artifact}\nartifact_digest={digest}\n')
+              for name, value in values.items():
+                  output.write(f'{name}={value}\n')
           PY
+      - if: steps.parent.outputs.reuse_completed != 'true'
+        uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      - name: Select installed caller Java for SDK tooling
+        if: steps.parent.outputs.reuse_completed != 'true' && needs.plan.outputs.tooling_required == 'true'
+        shell: bash
+        run: |
+          source ci/select_caller_java.sh
+          java_binary=java
+          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
+          test -f "$selected_java_home/bin/$java_binary"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        if: steps.parent.outputs.reuse_completed != 'true' && needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: captured
+        if: steps.parent.outputs.reuse_completed != 'true'
         uses: ./.github/actions/capture-runtime-state
         with:
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
@@ -2116,59 +2128,61 @@ jobs:
           ORIGINAL_RUNTIME_HANDOFF: ${{ inputs.runtimeAggregateHandoffRecovery }}
           TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
           GITHUB_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          capture="$GITHUB_WORKSPACE/build/runtime-input"
-          discovery="$capture/original/product-resume-state"
-          state="$discovery"
-          if [ "$STATE_WAVE" != 0 ]; then state="$capture/original/runtime-state"; fi
-          fresh=()
-          tooling=()
-          if [ "$SDK_RECOVERY_ONLY" = true ] && [ "$SDK_SOURCE" = current-runtime ]; then
-            printf '%s\n' "$ORIGINAL_RUNTIME_HANDOFF" > "$RUNNER_TEMP/runtime-original-locator.json"
-            python3 - <<'PY'
-          import os
-          from pathlib import Path
-          from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, write_canonical_json
-          from ci.products.receipt import validate_producer
-          locator = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['RUNNER_TEMP'], 'runtime-original-locator.json'), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
-          require_exact_keys(locator, {'artifactId', 'artifactSha256', 'originalProducer', 'trustedWorkflowSha'}, 'Original Runtime handoff locator')
-          write_canonical_json(Path(os.environ['RUNNER_TEMP'], 'runtime-original-producer.json'), validate_producer(locator['originalProducer']))
-          from ci.impact import require_oid
-          from ci.products.inventory import require_integer, require_sha256
-          values = {'ARTIFACT_ID': str(require_integer(locator['artifactId'], 'Original Runtime artifact ID', 1)),
-                    'ARTIFACT_SHA256': require_sha256(locator['artifactSha256'], 'Original Runtime artifact digest'),
-                    'ORIGINAL_RUNTIME_WORKFLOW_SHA': require_oid(locator['trustedWorkflowSha'], 'Original Runtime workflow SHA')}
-          Path(os.environ['RUNNER_TEMP'], 'runtime-original-values').write_text(''.join(f'{name}={value}\n' for name, value in values.items()))
-          PY
-            source "$RUNNER_TEMP/runtime-original-values"
-            fresh=(--runtime-original-producer "$RUNNER_TEMP/runtime-original-producer.json"
-              --runtime-original-workflow-sha "$ORIGINAL_RUNTIME_WORKFLOW_SHA")
-          fi
-          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
-          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
-          case "$SDK_SOURCE" in
-            released-default) destination="$GITHUB_WORKSPACE/build/sdk-inputs" ;;
-            current-runtime)
-              destination="$RUNNER_TEMP/sdk-inputs"
-              fresh+=(--artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256"
-                --expected-build-key "$AGGREGATE_KEY" --expected-metadata-receipt-sha256 "$AGGREGATE_RECEIPT") ;;
-            *) echo 'Unknown replayed SDK input source' >&2; exit 1 ;;
-          esac
-          python3 -B -m ci.sdk_workflow --plan "$PLAN" --discovery-root "$discovery" --state-root "$state" \
-            --destination "$destination" --repository-root "$GITHUB_WORKSPACE" \
-            --state-capture-root "$capture" --state-wave "$STATE_WAVE" \
-            --state-artifact-id "$STATE_ARTIFACT_ID" --state-artifact-sha256 "$STATE_ARTIFACT_SHA256" \
-            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-            --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
-            --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" ${fresh[@]+"${fresh[@]}"} ${tooling[@]+"${tooling[@]}"}
-          printf 'path=%s\n' "$destination" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/hydrated-evidence-cache
+        with:
+          mode: execute
+          script: |
+            set -euo pipefail
+            capture="$GITHUB_WORKSPACE/build/runtime-input"
+            discovery="$capture/original/product-resume-state"
+            state="$discovery"
+            if [ "$STATE_WAVE" != 0 ]; then state="$capture/original/runtime-state"; fi
+            fresh=()
+            tooling=()
+            if [ "$SDK_RECOVERY_ONLY" = true ] && [ "$SDK_SOURCE" = current-runtime ]; then
+              printf '%s\n' "$ORIGINAL_RUNTIME_HANDOFF" > "$RUNNER_TEMP/runtime-original-locator.json"
+              python3 - <<'PY'
+            import os
+            from pathlib import Path
+            from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, write_canonical_json
+            from ci.products.receipt import validate_producer
+            locator = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['RUNNER_TEMP'], 'runtime-original-locator.json'), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
+            require_exact_keys(locator, {'artifactId', 'artifactSha256', 'originalProducer', 'trustedWorkflowSha'}, 'Original Runtime handoff locator')
+            write_canonical_json(Path(os.environ['RUNNER_TEMP'], 'runtime-original-producer.json'), validate_producer(locator['originalProducer']))
+            from ci.impact import require_oid
+            from ci.products.inventory import require_integer, require_sha256
+            values = {'ARTIFACT_ID': str(require_integer(locator['artifactId'], 'Original Runtime artifact ID', 1)),
+                      'ARTIFACT_SHA256': require_sha256(locator['artifactSha256'], 'Original Runtime artifact digest'),
+                      'ORIGINAL_RUNTIME_WORKFLOW_SHA': require_oid(locator['trustedWorkflowSha'], 'Original Runtime workflow SHA')}
+            Path(os.environ['RUNNER_TEMP'], 'runtime-original-values').write_text(''.join(f'{name}={value}\n' for name, value in values.items()))
+            PY
+              source "$RUNNER_TEMP/runtime-original-values"
+              fresh=(--runtime-original-producer "$RUNNER_TEMP/runtime-original-producer.json"
+                --runtime-original-workflow-sha "$ORIGINAL_RUNTIME_WORKFLOW_SHA")
+            fi
+            if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+            if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+            case "$SDK_SOURCE" in
+              released-default) destination="$GITHUB_WORKSPACE/build/sdk-inputs" ;;
+              current-runtime)
+                destination="$RUNNER_TEMP/sdk-inputs"
+                fresh+=(--artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256"
+                  --expected-build-key "$AGGREGATE_KEY" --expected-metadata-receipt-sha256 "$AGGREGATE_RECEIPT") ;;
+              *) echo 'Unknown replayed SDK input source' >&2; exit 1 ;;
+            esac
+            python3 -B -m ci.sdk_workflow --plan "$PLAN" --discovery-root "$discovery" --state-root "$state" \
+              --destination "$destination" --repository-root "$GITHUB_WORKSPACE" \
+              --state-capture-root "$capture" --state-wave "$STATE_WAVE" \
+              --state-artifact-id "$STATE_ARTIFACT_ID" --state-artifact-sha256 "$STATE_ARTIFACT_SHA256" \
+              --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+              --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
+              --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" ${fresh[@]+"${fresh[@]}"} ${tooling[@]+"${tooling[@]}"}
+            printf 'input_root=%s\n' "$destination" >> "$GITHUB_OUTPUT"
       - id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: codex-agent-sdk-inputs-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
-          path: ${{ steps.staged.outputs.path }}
+          path: ${{ steps.staged.outputs.input_root }}
           if-no-files-found: error
           overwrite: false
           compression-level: 0
@@ -2485,10 +2499,19 @@ jobs:
           tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-plan:
-    needs: [plan, contract-validation, runtime-continuation, runtime-aggregate-continuation, sdk-inputs, sdk-ios-binary-plan, sdk-collect-3]
+    needs: [workflow-lint, plan, contract-validation, runtime-continuation, runtime-aggregate-continuation, runtime-aggregate-attestation, sdk-ios-binary-plan, sdk-collect-3]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
-      needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-inputs.result == 'success'
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.workflow-lint.result == 'success' &&
+      needs.runtime-continuation.result == 'success' &&
+      needs.runtime-continuation.outputs.sdk_handoff_required == 'true' &&
+      (fromJSON(needs.runtime-continuation.outputs.sdk_input_selection || '{}').source == 'released-default' ||
+       needs.runtime-aggregate-attestation.result == 'success' ||
+       (inputs.sdkRecoveryOnly && needs.runtime-aggregate-continuation.result == 'success' &&
+        needs.runtime-aggregate-continuation.outputs.aggregate_payload_complete == 'true' &&
+        inputs.runtimeAggregateHandoffRecovery != '')) &&
+      needs.sdk-ios-binary-plan.result == 'success'
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.parent.outputs.artifact_id }}
