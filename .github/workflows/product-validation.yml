@@ -2172,7 +2172,7 @@ jobs:
           if-no-files-found: error
           overwrite: false
           compression-level: 0
-          retention-days: 1
+          retention-days: 90
 
   android:
     if: inputs.sdkRecoveryOnly != true && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_android == 'true'
@@ -2869,12 +2869,12 @@ jobs:
 
   sdk-csharp-binary-plan:
     name: sdk-csharp-binary-plan
-    needs: [plan, sdk-plan, sdk-javascript]
+    needs: [plan, sdk-plan, sdk-javascript-metadata-result]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.sdk-javascript.result == 'success' &&
-      needs.sdk-javascript.outputs.artifact_id != '' &&
+      needs.sdk-javascript-metadata-result.result == 'success' &&
+      needs.sdk-javascript-metadata-result.outputs.artifact_id != '' &&
       needs.sdk-plan.result == 'success'
     runs-on: ubuntu-24.04
     outputs:
@@ -2914,15 +2914,15 @@ jobs:
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          artifact-id: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.sdk_state_wave }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
 
   sdk-csharp-binary:
     name: sdk-csharp-binary-desktop
-    needs: [plan, sdk-plan, sdk-javascript, sdk-csharp-binary-plan, sdk-inputs]
+    needs: [plan, sdk-plan, sdk-javascript-metadata-result, sdk-csharp-binary-plan, sdk-inputs]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -2934,7 +2934,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-csharp-binary-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2966,10 +2966,10 @@ jobs:
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          artifact-id: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.sdk_state_wave }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
           sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
@@ -2978,7 +2978,7 @@ jobs:
 
   sdk-collect-19:
     name: sdk-collect-19
-    needs: [plan, sdk-plan, sdk-javascript, sdk-csharp-binary-plan, sdk-csharp-binary]
+    needs: [plan, sdk-plan, sdk-javascript-metadata-result, sdk-csharp-binary-plan, sdk-csharp-binary]
     if: >-
       always() && needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-csharp-binary-plan.result == 'success' &&
@@ -3022,17 +3022,17 @@ jobs:
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          artifact-id: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.sdk_state_wave }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '19'
           tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-csharp-binary-result:
     name: sdk-csharp-binary-result
-    needs: [plan, sdk-javascript, sdk-csharp-binary-plan, sdk-csharp-binary, sdk-collect-19]
+    needs: [plan, sdk-javascript-metadata-result, sdk-csharp-binary-plan, sdk-csharp-binary, sdk-collect-19]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
@@ -3074,11 +3074,11 @@ jobs:
     outputs:
       sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
       sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
-      preparation_component: ${{ steps.preparation.outputs.component }}
-      preparation_build_key: ${{ steps.preparation.outputs.build_key }}
-      preparation_required: ${{ steps.preparation.outputs.preparation_required }}
-      preparation_phase: ${{ steps.preparation.outputs.phase }}
-      preparation_target: ${{ steps.preparation.outputs.target }}
+      preparation_component: ${{ steps.capture.outputs.native-preparation-component }}
+      preparation_build_key: ${{ steps.capture.outputs.native-preparation-build-key }}
+      preparation_required: ${{ steps.capture.outputs.native-preparation-required }}
+      preparation_phase: ${{ steps.capture.outputs.native-preparation-phase }}
+      preparation_target: ${{ steps.capture.outputs.native-preparation-target }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3118,33 +3118,6 @@ jobs:
           state-wave: ${{ needs.sdk-csharp-binary-result.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-csharp-binary-result.outputs.sdk_state_wave }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-      - id: preparation
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          PLAN: ${{ steps.capture.outputs.plan-path }}
-          DISCOVERY: ${{ steps.capture.outputs.discovery-root }}
-          STATE: ${{ steps.capture.outputs.state-root }}
-          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
-          SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
-          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
-        run: |
-          python3 - <<'PY'
-          import os, sys
-          from pathlib import Path
-          sys.path.insert(0, str(Path.cwd() / 'ci'))
-          from ci.product_reuse import inspect_products, _canonical_control
-          from ci.sdk_native_continuation import select_preparation_anchor
-          from ci.reuse import github_output
-          policy = os.environ['SDK_VALIDATION_TOOLING']
-          tooling = {'sdk_validation_tooling': _canonical_control(Path(policy), 'Caller SDK tooling')} if policy else {}
-          apple_policy = os.environ.get('SDK_APPLE_VALIDATION_POLICY', '')
-          if apple_policy:
-              tooling['sdk_apple_validation_policy'] = _canonical_control(Path(apple_policy), 'Caller Apple validation policy')
-          inspected = inspect_products(Path(os.environ['PLAN']), Path(os.environ['DISCOVERY']), Path(os.environ['STATE']),
-              repository_root=Path.cwd(), environ=os.environ,
-              sdk_original_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'], **tooling)
-          github_output(Path(os.environ['GITHUB_OUTPUT']), select_preparation_anchor(inspected['readyPlans']))
-          PY
 
   sdk-native-prepare:
     name: sdk-native-prepare
@@ -3156,7 +3129,7 @@ jobs:
       needs.sdk-native-plan.outputs.preparation_required == 'true' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 180
     outputs:
       artifact_id: ${{ steps.prepare.outputs.artifact-id }}
       artifact_digest: ${{ steps.prepare.outputs.artifact-sha256 }}
@@ -3227,7 +3200,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-native-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3433,7 +3406,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-ios-package-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3570,6 +3543,208 @@ jobs:
           PY
 
   sdk-javascript-metadata-plan:
+    needs: [plan, sdk-plan, sdk-javascript]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-javascript.result == 'success' &&
+      needs.sdk-javascript.outputs.artifact_id != '' &&
+      needs.sdk-plan.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
+      sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      - name: Select installed caller Java for SDK tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        run: |
+          set -euo pipefail
+          source ci/select_caller_java.sh
+          java_binary=java
+          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
+          test -f "$selected_java_home/bin/$java_binary"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        if: needs.plan.outputs.tooling_required == 'true'
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+      - id: capture
+        uses: ./.github/actions/capture-runtime-state
+        with:
+          product: sdk
+          sdk-family: javascript-metadata
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+
+  sdk-javascript-metadata:
+    name: sdk-javascript-metadata-node
+    needs: [plan, sdk-plan, sdk-javascript, sdk-javascript-metadata-plan, sdk-inputs]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-javascript-metadata-plan.result == 'success' &&
+      needs.sdk-javascript-metadata-plan.outputs.sdk_workers_required == 'true' &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.sdk-javascript-metadata-plan.outputs.sdk_matrix || '{"include":[]}') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      - name: Select installed caller Java for SDK tooling
+        run: |
+          set -euo pipefail
+          source ci/select_caller_java.sh
+          java_binary=java
+          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
+          test -f "$selected_java_home/bin/$java_binary"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+      - uses: ./.github/actions/sdk-javascript-metadata-worker
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          build-key: ${{ matrix.buildKey }}
+          tree: ${{ needs.plan.outputs.validation_tree }}
+          sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
+          sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
+
+  sdk-collect-6:
+    name: sdk-collect-6
+    needs: [plan, sdk-plan, sdk-javascript, sdk-javascript-metadata-plan, sdk-javascript-metadata]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-javascript.result == 'success' &&
+      needs.sdk-javascript-metadata-plan.result == 'success' &&
+      needs.sdk-javascript-metadata-plan.outputs.sdk_workers_required == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
+      wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      - name: Select installed caller Java for SDK tooling
+        run: |
+          set -euo pipefail
+          source ci/select_caller_java.sh
+          java_binary=java
+          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
+          test -f "$selected_java_home/bin/$java_binary"
+          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+      - id: tooling
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+      - id: collect
+        uses: ./.github/actions/collect-runtime-wave
+        with:
+          product: sdk
+          sdk-family: javascript-metadata
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          wave: '6'
+          tree: ${{ needs.plan.outputs.validation_tree }}
+
+  sdk-javascript-metadata-result:
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true'
+    needs: [plan, sdk-javascript, sdk-javascript-metadata-plan, sdk-javascript-metadata, sdk-collect-6]
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.result.outputs.artifact_id }}
+      artifact_digest: ${{ steps.result.outputs.artifact_digest }}
+      state_wave: ${{ steps.result.outputs.state_wave }}
+      sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - name: Fail after collecting every elected JavaScript metadata result
+        id: result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_native_continuation import select_native_state
+          from ci.reuse import github_output
+          result = select_native_state(json.loads(os.environ['RESULTS']), stage='javascript-metadata')
+          github_output(Path(os.environ['GITHUB_OUTPUT']), result)
+          PY
+
+  sdk-native-validation-plan:
     needs: [plan, sdk-plan, sdk-ios-packages]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
@@ -3615,221 +3790,19 @@ jobs:
         uses: ./.github/actions/capture-runtime-state
         with:
           product: sdk
-          sdk-family: javascript-metadata
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-ios-packages.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-ios-packages.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-ios-packages.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-ios-packages.outputs.sdk_state_wave }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-
-  sdk-javascript-metadata:
-    name: sdk-javascript-metadata-node
-    needs: [plan, sdk-plan, sdk-ios-packages, sdk-javascript-metadata-plan, sdk-inputs]
-    if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
-      needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.sdk-javascript-metadata-plan.result == 'success' &&
-      needs.sdk-javascript-metadata-plan.outputs.sdk_workers_required == 'true' &&
-      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.sdk-javascript-metadata-plan.outputs.sdk_matrix || '{"include":[]}') }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-          ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java for SDK tooling
-        run: |
-          set -euo pipefail
-          source ci/select_caller_java.sh
-          java_binary=java
-          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
-          test -f "$selected_java_home/bin/$java_binary"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - uses: ./.github/actions/sdk-javascript-metadata-worker
-        with:
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-ios-packages.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-ios-packages.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-ios-packages.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-ios-packages.outputs.sdk_state_wave }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          build-key: ${{ matrix.buildKey }}
-          tree: ${{ needs.plan.outputs.validation_tree }}
-          sdk-inputs-id: ${{ needs.sdk-inputs.outputs.artifact_id }}
-          sdk-inputs-sha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
-
-  sdk-collect-6:
-    name: sdk-collect-6
-    needs: [plan, sdk-plan, sdk-ios-packages, sdk-javascript-metadata-plan, sdk-javascript-metadata]
-    if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
-      needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.sdk-ios-packages.result == 'success' &&
-      needs.sdk-javascript-metadata-plan.result == 'success' &&
-      needs.sdk-javascript-metadata-plan.outputs.sdk_workers_required == 'true'
-    runs-on: ubuntu-24.04
-    outputs:
-      artifact_id: ${{ steps.collect.outputs.artifact-id }}
-      artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
-      wave_failed: ${{ steps.collect.outputs.wave-failed }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-          ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java for SDK tooling
-        run: |
-          set -euo pipefail
-          source ci/select_caller_java.sh
-          java_binary=java
-          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
-          test -f "$selected_java_home/bin/$java_binary"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - id: collect
-        uses: ./.github/actions/collect-runtime-wave
-        with:
-          product: sdk
-          sdk-family: javascript-metadata
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-ios-packages.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-ios-packages.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-ios-packages.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-ios-packages.outputs.sdk_state_wave }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          wave: '6'
-          tree: ${{ needs.plan.outputs.validation_tree }}
-
-  sdk-javascript-metadata-result:
-    if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
-      needs.plan.outputs.remote_build_authorized == 'true'
-    needs: [plan, sdk-ios-packages, sdk-javascript-metadata-plan, sdk-javascript-metadata, sdk-collect-6]
-    runs-on: ubuntu-24.04
-    outputs:
-      artifact_id: ${{ steps.result.outputs.artifact_id }}
-      artifact_digest: ${{ steps.result.outputs.artifact_digest }}
-      state_wave: ${{ steps.result.outputs.state_wave }}
-      sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-          ref: ${{ needs.plan.outputs.validation_commit }}
-      - name: Fail after collecting every elected JavaScript metadata result
-        id: result
-        env:
-          RESULTS: ${{ toJSON(needs) }}
-        run: |
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          from ci.sdk_native_continuation import select_native_state
-          from ci.reuse import github_output
-          result = select_native_state(json.loads(os.environ['RESULTS']), stage='javascript-metadata')
-          github_output(Path(os.environ['GITHUB_OUTPUT']), result)
-          PY
-
-  sdk-native-validation-plan:
-    needs: [plan, sdk-plan, sdk-javascript-metadata-result]
-    if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
-      needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.sdk-javascript-metadata-result.result == 'success' &&
-      needs.sdk-javascript-metadata-result.outputs.artifact_id != '' &&
-      needs.sdk-plan.result == 'success'
-    runs-on: ubuntu-24.04
-    outputs:
-      sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
-      sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-          ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java for SDK tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        run: |
-          set -euo pipefail
-          source ci/select_caller_java.sh
-          java_binary=java
-          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
-          test -f "$selected_java_home/bin/$java_binary"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - id: capture
-        uses: ./.github/actions/capture-runtime-state
-        with:
-          product: sdk
           sdk-family: native-validation
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.sdk_state_wave }}
+          artifact-id: ${{ needs.sdk-ios-packages.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-ios-packages.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-ios-packages.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-ios-packages.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
 
   sdk-native-validation:
     name: sdk-${{ matrix.component }}-validation-${{ matrix.target }}
-    needs: [plan, sdk-plan, sdk-javascript-metadata-result, sdk-native-validation-plan, sdk-native-prepare, sdk-inputs]
+    needs: [plan, sdk-plan, sdk-ios-packages, sdk-native-validation-plan, sdk-native-prepare, sdk-inputs]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -3841,7 +3814,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-native-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3878,10 +3851,10 @@ jobs:
       - uses: ./.github/actions/sdk-native-validation-worker
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.sdk_state_wave }}
+          artifact-id: ${{ needs.sdk-ios-packages.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-ios-packages.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-ios-packages.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-ios-packages.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
@@ -3916,11 +3889,11 @@ jobs:
 
   sdk-collect-7:
     name: sdk-collect-7
-    needs: [plan, sdk-plan, sdk-javascript-metadata-result, sdk-native-validation-plan, sdk-native-validation]
+    needs: [plan, sdk-plan, sdk-ios-packages, sdk-native-validation-plan, sdk-native-validation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.sdk-javascript-metadata-result.result == 'success' &&
+      needs.sdk-ios-packages.result == 'success' &&
       needs.sdk-native-validation-plan.result == 'success' &&
       needs.sdk-native-validation-plan.outputs.sdk_workers_required == 'true'
     runs-on: ubuntu-24.04
@@ -3962,10 +3935,10 @@ jobs:
           product: sdk
           sdk-family: native-validation
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.sdk_state_wave }}
+          artifact-id: ${{ needs.sdk-ios-packages.outputs.artifact_id }}
+          artifact-sha256: ${{ needs.sdk-ios-packages.outputs.artifact_digest }}
+          state-wave: ${{ needs.sdk-ios-packages.outputs.state_wave }}
+          sdk-state-wave: ${{ needs.sdk-ios-packages.outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
@@ -3976,7 +3949,7 @@ jobs:
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
-    needs: [plan, sdk-javascript-metadata-result, sdk-native-validation-plan, sdk-native-validation, sdk-collect-7]
+    needs: [plan, sdk-ios-packages, sdk-native-validation-plan, sdk-native-validation, sdk-collect-7]
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
@@ -4073,7 +4046,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-native-metadata-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4294,7 +4267,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-ios-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4359,7 +4332,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-ios-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4622,7 +4595,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-ios-metadata-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -5267,7 +5240,7 @@ jobs:
       always() && github.event_name == 'pull_request' &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.sdk-completion.result == 'failure' &&
+      (needs.sdk-completion.result == 'failure' || needs.sdk-completion.result == 'cancelled') &&
       (needs.sdk-collect-3.outputs.wave_failed == 'true' ||
        needs.sdk-collect-1.outputs.wave_failed == 'true' ||
        needs.sdk-collect-2.outputs.wave_failed == 'true' ||
@@ -5284,7 +5257,18 @@ jobs:
        needs.sdk-core-validation-wave.result == 'failure' ||
        needs.sdk-core-metadata-wave.result == 'failure' ||
        needs.sdk-android-binary-result.result == 'failure' ||
-       needs.sdk-android-package-result.result == 'failure')
+       needs.sdk-android-package-result.result == 'failure' ||
+       needs.sdk-collect-3.result == 'failure' || needs.sdk-collect-3.result == 'cancelled' ||
+       needs.sdk-collect-1.result == 'failure' || needs.sdk-collect-1.result == 'cancelled' ||
+       needs.sdk-collect-2.result == 'failure' || needs.sdk-collect-2.result == 'cancelled' ||
+       needs.sdk-collect-6.result == 'failure' || needs.sdk-collect-6.result == 'cancelled' ||
+       needs.sdk-collect-19.result == 'failure' || needs.sdk-collect-19.result == 'cancelled' ||
+       needs.sdk-collect-4.result == 'failure' || needs.sdk-collect-4.result == 'cancelled' ||
+       needs.sdk-collect-5.result == 'failure' || needs.sdk-collect-5.result == 'cancelled' ||
+       needs.sdk-collect-7.result == 'failure' || needs.sdk-collect-7.result == 'cancelled' ||
+       needs.sdk-collect-8.result == 'failure' || needs.sdk-collect-8.result == 'cancelled' ||
+       needs.sdk-collect-9.result == 'failure' || needs.sdk-collect-9.result == 'cancelled' ||
+       needs.sdk-collect-10.result == 'failure' || needs.sdk-collect-10.result == 'cancelled')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -5317,7 +5301,8 @@ jobs:
           from ci.reuse import github_output
           needs = json.loads(os.environ['RESULTS'])
           top = any(needs[f'sdk-collect-{wave}']['outputs'].get('wave_failed') == 'true'
-                    for wave in (3, 1, 2, 19, 4, 5, 6, 7, 8, 9, 10))
+                    or needs[f'sdk-collect-{wave}']['result'] in ('failure', 'cancelled')
+                    for wave in (3, 1, 2, 6, 19, 4, 5, 7, 8, 9, 10))
           nested = any(needs[name]['result'] == 'failure' for name in (
               'sdk-core-binary-wave', 'sdk-core-package-wave', 'sdk-core-validation-wave',
               'sdk-core-metadata-wave', 'sdk-android-binary-result', 'sdk-android-package-result'))

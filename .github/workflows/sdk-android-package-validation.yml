@@ -119,7 +119,14 @@ jobs:
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+      - name: Restore exact pinned archive bytes
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/sdk-archive-cache-v1
+          key: sdk-archives-v1-all-${{ hashFiles('gradle.properties', 'gradle/libs.versions.toml', '**/verification-metadata.xml') }}
       - id: android-archive
+        env:
+          CODEX_SDK_ARCHIVE_CACHE: ${{ runner.temp }}/sdk-archive-cache-v1
         name: Provision Git-pinned Android Codex archive
         shell: bash
         run: |
@@ -158,6 +165,8 @@ jobs:
             --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
             ${policy[@]+"${policy[@]}"}
       - id: native-archives
+        env:
+          CODEX_SDK_ARCHIVE_CACHE: ${{ runner.temp }}/sdk-archive-cache-v1
         name: Provision Git-pinned Core native compiler archives
         shell: bash
         run: |
