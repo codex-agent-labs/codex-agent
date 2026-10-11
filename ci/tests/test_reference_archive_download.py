@@ -143,17 +143,51 @@ class ReferenceDownloadTest(unittest.TestCase):
             self.assertEqual(3, factory.return_value.open.call_count)
             self.assertEqual(0, stream.tell())
             self.assertEqual([mock.call(1), mock.call(2)], sleep.call_args_list)
-            for content, content_range in ((b'ab', 'bytes 0-3/4'), (b'abcd', 'bytes 0-2/4')):
-                response = io.BytesIO(content)
-                response.status = 206
-                response.headers = {'ETag': '"same"', 'Content-Range': content_range}
-                factory.return_value.open.side_effect = None
-                factory.return_value.open.return_value = response
+            for content, content_range, attempts in ((b'ab', 'bytes 0-3/4', 3),
+                    (b'abcde', 'bytes 0-3/4', 1), (b'abcd', 'bytes 0-2/4', 1)):
+                def response_for_range(*args, **kwargs):
+                    response = io.BytesIO(content)
+                    response.status = 206
+                    response.headers = {'ETag': '"same"', 'Content-Range': content_range}
+                    return response
+                factory.return_value.open.side_effect = response_for_range
                 factory.return_value.open.reset_mock()
                 with self.assertRaises(ValueError):
                     stream.read(4)
-                factory.return_value.open.assert_called_once()
+                self.assertEqual(attempts, factory.return_value.open.call_count)
                 self.assertEqual(0, stream.tell())
+
+    def test_fragmented_reads_and_incomplete_first_range_keep_pinned_identity(self):
+        artifact = dict(id=1, size_in_bytes=4, digest='sha256:' + 'a' * 64,
+            archive_download_url='https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/1/zip')
+        for changed in (False, True):
+            requests = []
+            class Fragmented(io.BytesIO):
+                def read(self, size=-1):
+                    return super().read(min(size, 1))
+            def open_range(request, timeout):
+                requests.append(request)
+                response = Fragmented(b'ab' if len(requests) == 1 else b'abcd')
+                response.status = 206
+                response.headers = {'ETag': '"changed"' if changed and len(requests) > 1 else '"same"',
+                    'Content-Range': 'bytes 0-3/4'}
+                return response
+            with mock.patch.object(transport.urllib.request, 'build_opener') as factory, \
+                    mock.patch.object(transport.time, 'sleep') as sleep:
+                factory.return_value.open.side_effect = open_range
+                stream = transport._Archive(artifact, 'unused-fixture-token')
+                if changed:
+                    with self.assertRaisesRegex(ValueError, 'identity changed'):
+                        stream.read(4)
+                    self.assertEqual(0, stream.tell())
+                    self.assertEqual(0, stream.transferred)
+                else:
+                    self.assertEqual(b'abcd', stream.read(4))
+                    self.assertEqual(4, stream.tell())
+                    self.assertEqual(4, stream.transferred)
+                self.assertEqual(['bytes=0-3', 'bytes=0-3'], [r.get_header('Range') for r in requests])
+                self.assertEqual('"same"', requests[1].get_header('If-match'))
+                sleep.assert_called_once_with(1)
 
 
 if __name__ == '__main__':

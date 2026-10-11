@@ -86,6 +86,8 @@ class _Archive(io.RawIOBase):
             headers['If-Match'] = self.etag
         def open_range(url):
             request_headers = dict(headers)
+            if self.etag is not None:
+                request_headers['If-Match'] = self.etag
             if url == self.url:
                 request_headers.update({'Accept': 'application/vnd.github+json',
                     'Authorization': f'Bearer {self.token}', 'X-GitHub-Api-Version': '2022-11-28'})
@@ -105,16 +107,23 @@ class _Archive(io.RawIOBase):
                     if (response.status != 206 or response.headers.get('Content-Range') !=
                             f'bytes {begin}-{end}/{self.size}' or not etag or self.etag not in (None, etag)):
                         raise ValueError('Reference archive range identity changed or was not honored')
-                    raw = response.read(size + 1)
-                    if len(raw) != size:
-                        raise ValueError('Reference archive range was truncated or amplified')
                     resolved = getattr(response, 'geturl', lambda: self.url)()
                     parsed = urllib.parse.urlsplit(resolved)
                     if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
                         raise ValueError('Reference archive download URL is unsafe')
                     self.download_url = resolved
                     self.etag = etag
-                    return raw
+                    raw = bytearray()
+                    while len(raw) <= size:
+                        chunk = response.read(size + 1 - len(raw))
+                        if not chunk:
+                            break
+                        raw.extend(chunk)
+                    if len(raw) > size:
+                        raise ValueError(f'Reference archive range was amplified: received {len(raw)}, expected {size}')
+                    if len(raw) < size:
+                        raise http.client.IncompleteRead(bytes(raw), size - len(raw))
+                    return bytes(raw)
             except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead) as error:
                 transient = (isinstance(error, (TimeoutError, ConnectionError, http.client.IncompleteRead))
                     or isinstance(error, urllib.error.HTTPError) and error.code in {408, 429, 500, 502, 503, 504}
@@ -123,6 +132,9 @@ class _Archive(io.RawIOBase):
                 if isinstance(error, urllib.error.HTTPError):
                     error.close()
                 if not transient or attempt == 2:
+                    if isinstance(error, http.client.IncompleteRead):
+                        raise ValueError(f'Reference archive range was truncated: received {len(error.partial)}, '
+                                         f'expected {size}; range {begin}-{end}, attempts {attempt + 1}') from error
                     raise
                 time.sleep(2 ** attempt)
 
