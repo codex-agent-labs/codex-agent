@@ -39,6 +39,16 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertIsNotNone(match, "Missing saved workflow job: " + name)
         return match[0]
 
+    def test_javascript_workers_allow_authenticated_recovery_before_execution(self):
+        # Genuine capture exceeded 60 minutes before reaching the key gate.
+        # Both callers need time for recovery, input verification and upload.
+        for name in ("sdk-workers-1", "sdk-workers-2"):
+            with self.subTest(job=name):
+                job = self.job(name)
+                self.assertRegex(job, r"(?m)^    timeout-minutes: 180$")
+                self.assertIn("uses: ./.github/actions/sdk-javascript-worker", job)
+                self.assertIn("build-key: ${{ matrix.buildKey }}", job)
+
     def test_sdk_workers_and_catalog_ignore_skipped_ancestors_not_failed_inputs(self):
         # Exercise the saved conjunctions, not GitHub's scheduler. Optional iOS
         # ancestors may be skipped on reuse; actual inputs must all succeed.
