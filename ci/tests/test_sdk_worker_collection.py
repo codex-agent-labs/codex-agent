@@ -97,6 +97,45 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                 trusted_workflow_sha=PIN, repository_root=self.repository, environ=self.environment,
                 token="synthetic-token", sdk_javascript_only=family is None, sdk_family=family)
 
+    def test_retry_reuses_original_sibling_only_with_private_completed_collection(self):
+        from products.inventory import write_canonical_json
+        instance, ready, _, _, files = self.shard("package")
+        write_canonical_json(self.discovery / "producer.json", self.producer)
+        current = {**self.producer, "runAttempt": 3}
+        state = self.state({instance: ready})
+        state.producer = current
+        destination = self.repository / "build/retry-collected"
+        with adapter.verification_session(), \
+                patch.object(adapter, "_verified_product_state", return_value=state), \
+                self.official_api({instance: ready}, {instance: archive(files)}) as (_, listing, _):
+            original_listing = listing.side_effect
+            listing.side_effect = lambda url, *args: ([] if "/attempts/3/" in url else original_listing(url, *args))
+            result = adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery, destination,
+                trusted_workflow_sha=PIN, repository_root=self.repository,
+                environ={**self.environment, "GITHUB_RUN_ATTEMPT": "3"}, token="synthetic-token",
+                sdk_javascript_only=True)
+            listing.side_effect = lambda url, *args: ([{"name": self.names(instance, ready["buildKey"])[0],
+                "status": "in_progress"}] if "/attempts/3/" in url else original_listing(url, *args))
+            with self.assertRaisesRegex(ValueError, "still running"):
+                adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
+                    self.repository / "build/running-retry", trusted_workflow_sha=PIN,
+                    repository_root=self.repository, environ={**self.environment, "GITHUB_RUN_ATTEMPT": "3"},
+                    token="synthetic-token", sdk_javascript_only=True)
+            row = result["rows"][0]
+            self.assertEqual("success", row["result"], row["reason"])
+            self.assertEqual(current, result["producer"])
+            shard = destination / row["shardDirectory"]
+            verified = adapter.verify_phase_shard(shard, instance)
+            self.assertEqual(self.producer, verified["receipt"]["producer"])
+            self.assertEqual(self.producer, adapter._require_collected_sdk_original(
+                shard, verified, {"producer": current}, PIN))
+            for changed, pin in (({**verified, "objectSha256": "sha256:" + "d" * 64}, PIN),
+                                 (verified, "d" * 40)):
+                with self.assertRaisesRegex(ValueError, "fresh authenticated"):
+                    adapter._require_collected_sdk_original(shard, changed, {"producer": current}, pin)
+        with self.assertRaisesRegex(ValueError, "fresh authenticated"):
+            adapter._require_collected_sdk_original(shard, verified, {"producer": current}, PIN)
+
     def test_core_worker_uses_exact_workflow_job_without_extra_sdk_prefix(self):
         instance, ready, _, _, files = self.shard("binary", component="sdk-core", target="common")
         result = self.collect({instance: ready}, {instance: archive(files)},

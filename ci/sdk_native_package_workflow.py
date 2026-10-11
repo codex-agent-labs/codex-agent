@@ -74,6 +74,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
         private = Path(temporary).resolve()
         candidate, capture = private / "shard", private / "prepared-upload"
         with sdk_workflow.verified_inputs(plan, discovery, state,
+                requested_scope=(instance,),
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
                 repository_root=root, environ=environ, token=token, **tooling) as inputs:
@@ -82,7 +83,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             if identity not in selection["consumers"]:
                 raise ValueError("Native SDK package is not selected")
             inspected = product_reuse.inspect_products(plan, discovery, preparation_state,
-                repository_root=root, environ=environ,
+                repository_root=root, environ=environ, requested_scope=(product_reuse._identity(preparation_identity),),
                 sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
             elected = [row for row in inspected["readyPlans"]
                        if all(row.get(name) == value for name, value in preparation_identity.items())]

@@ -8,6 +8,94 @@ import {verify, main, cacheResponse} from './cache.mjs';
 import {mkdtemp, mkdir, writeFile, readFile, rm, realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import fs from 'node:fs';
+import {syncBuiltinESMExports} from 'node:module';
+
+test('cache service failures and competing saves preserve original bytes; integrity and defects remain fatal', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'cache-outage-')));
+  const previous = {...process.env};
+  try {
+    const body = Buffer.from('verified original');
+    const digest = createHash('sha256').update(body).digest('hex');
+    const file = join(root, 'blobs', digest.slice(0, 2), digest);
+    await mkdir(join(root, 'blobs', digest.slice(0, 2)), {recursive: true});
+    const manifest = join(root, 'manifest.json'), report = join(root, 'report.json');
+    await writeFile(manifest, JSON.stringify([{bytes: body.length, sha256: `sha256:${digest}`} ]));
+    Object.assign(process.env, {INPUT_ROOT: root, INPUT_MANIFEST: manifest, INPUT_REPORT: report});
+    const outage = () => { throw Object.assign(Error('connection reset'), {code: 'ECONNRESET'}); };
+    process.env.INPUT_MODE = 'restore';
+    await main({GetCacheEntryDownloadURL: outage});
+    assert.equal(JSON.parse(await readFile(report)).misses, 1);
+    await assert.rejects(readFile(file), {code: 'ENOENT'});
+    await rm(report);
+    process.env.INPUT_MODE = 'save';
+    await writeFile(file, body);
+    for (const failure of ['lookup', 'reservation', 'upload', 'finalization']) {
+      const client = {
+        GetCacheEntryDownloadURL: failure === 'lookup' ? outage : async () => ({ok: false}),
+        CreateCacheEntry: async () => ({ok: failure !== 'reservation', signedUploadUrl: 'https://example.invalid/upload'}),
+        FinalizeCacheEntryUpload: async () => ({ok: false})
+      };
+      await main(client, failure === 'upload' ? outage : async () => {});
+      const stats = JSON.parse(await readFile(report));
+      assert.equal(stats.saved, 0);
+      assert.equal(stats.skipped, 1);
+      assert.deepEqual(await readFile(file), body);
+      await rm(report);
+    }
+    await writeFile(file, Buffer.alloc(body.length));
+    await assert.rejects(main({GetCacheEntryDownloadURL: outage}), /identity mismatch/);
+    await assert.rejects(main({GetCacheEntryDownloadURL: async () => { throw Error('programming defect'); }}), /programming defect/);
+    await assert.rejects(main({GetCacheEntryDownloadURL: async () => ({})}), /Malformed cache lookup/);
+    await assert.rejects(main({GetCacheEntryDownloadURL: async ({key}) => ({ok: true, matchedKey: key + '-wrong'})}), /different content identity/);
+    await assert.rejects(readFile(report), {code: 'ENOENT'});
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
+    Object.assign(process.env, previous);
+    await rm(root, {recursive: true, force: true});
+  }
+});
+
+test('save hits verify every byte without a gzip file or upload; corrupt hits fail', async () => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'hydrated-save-hit-')));
+  const previous = {...process.env};
+  try {
+    const body = Buffer.from('existing qualified body');
+    const digest = createHash('sha256').update(body).digest('hex');
+    const row = {sha256: `sha256:${digest}`, bytes: body.length};
+    const file = join(directory, 'blobs', digest.slice(0, 2), digest);
+    await mkdir(join(directory, 'blobs', digest.slice(0, 2)), {recursive: true});
+    await writeFile(file, body);
+    const manifest = join(directory, 'manifest.json');
+    await writeFile(manifest, JSON.stringify([row]));
+    Object.assign(process.env, {INPUT_MODE: 'save', INPUT_ROOT: directory, INPUT_MANIFEST: manifest,
+      INPUT_REPORT: join(directory, 'report.json')});
+    const client = {GetCacheEntryDownloadURL: async ({key}) => ({ok: true, matchedKey: key}),
+      CreateCacheEntry: async () => assert.fail('A save hit must not reserve an upload')};
+    mock.method(fs, 'createWriteStream', () => assert.fail('A save hit must not write a gzip file'));
+    syncBuiltinESMExports();
+    await main(client);
+    const report = JSON.parse(await readFile(process.env.INPUT_REPORT));
+    assert.equal(report.hits, 1);
+    assert.equal(report.saved, 0);
+    assert.equal(report.compressedBytes, 0);
+    assert.deepEqual(await readFile(file), body);
+    for (const corrupt of [Buffer.alloc(body.length), body.subarray(0, 3), Buffer.concat([body, body])]) {
+      await writeFile(file, corrupt);
+      process.env.INPUT_REPORT = join(directory, 'corrupt-report.json');
+      await assert.rejects(main(client), /identity mismatch|exceeds immutable size/);
+      await assert.rejects(readFile(process.env.INPUT_REPORT), {code: 'ENOENT'});
+    }
+    await assert.rejects(main({GetCacheEntryDownloadURL: async () => ({ok: true, matchedKey: 'wrong'})}),
+      /different content identity/);
+  } finally {
+    mock.restoreAll();
+    syncBuiltinESMExports();
+    for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
+    Object.assign(process.env, previous);
+    await rm(directory, {recursive: true, force: true});
+  }
+});
 
 test('unavailable cache transport falls back; transient failures retry; successful bodies still require verification', async () => {
   for (const status of [403, 404, 410, 429, 503]) {

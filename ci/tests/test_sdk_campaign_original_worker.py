@@ -48,6 +48,17 @@ class SdkCampaignOriginalWorkerTest(TestCase):
             self.assertEqual(3, query.call_count)
             download.assert_called_once()
 
+    def test_large_original_uses_streamed_transport_and_keeps_exit_checks(self):
+        with self.fixture.official_api({self.instance: self.ready}, {self.instance: self.raw}), \
+                patch.object(worker.product_reuse, "_INLINE_UPLOAD_LIMIT", 1), \
+                patch.object(worker.product_reuse, "download_artifact", side_effect=AssertionError("inline download")):
+            with self.observe() as (_, extracted):
+                self.assertEqual(self.original.receipt_bytes,
+                                 (extracted / "shard/phase-receipt.json").read_bytes())
+            with self.assertRaisesRegex(ValueError, "changed during verification"):
+                with self.observe() as (_, extracted):
+                    (extracted / "shard/phase-receipt.json").write_bytes(b"changed")
+
     def test_caller_pinned_child_route_is_observed_as_an_exact_pair(self):
         path = ".github/workflows/product-validation.yml"
         job = f"product-validation / sdk-{self.instance.component}-{self.instance.phase}-{self.instance.target}"

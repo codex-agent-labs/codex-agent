@@ -78,6 +78,12 @@ class AppleAttestationCaptureTest(unittest.TestCase):
                 "environ": {"GITHUB_RUN_ID": "71", "GITHUB_RUN_ATTEMPT": "2"},
                 "token": "synthetic-token", **changes})
 
+    def test_retry_selects_original_signer_without_changing_current_environment(self):
+        environment = {"GITHUB_RUN_ID": "71", "GITHUB_RUN_ATTEMPT": "3"}
+        result = self.call(environ=environment, original_run_attempt=2)
+        self.assertEqual(self.fixture.producer, result["captureProducer"])
+        self.assertEqual("3", environment["GITHUB_RUN_ATTEMPT"])
+
     def test_both_targets_preserve_full_carrier_under_current_not_original_producer(self):
         f = self.fixture
         before = regular_file_inventory(self.carrier_fixture.root, allow_empty=True)

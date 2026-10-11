@@ -73,13 +73,13 @@ def held_fresh_sdk_worker_upload(instance, original, current_transport_bytes, *,
     observed = product_reuse._observe_ci_producer_jobs(
         {"worker": producer}, jobs_by_phase={"worker": job_name},
         token=token, **policy)
-    artifact, raw = product_reuse._download_contract_ci_upload(
-        artifact_id, artifact_sha256, artifact_name, producer, observed[0]["run"], token)
-    product_reuse._require_artifact_job_window(observed[0], job_name, artifact)
     with tempfile.TemporaryDirectory(prefix="sdk-original-worker-") as temporary:
         root = Path(temporary).resolve()
         archive = root / "transport.zip"
-        archive.write_bytes(raw)
+        artifact, _ = product_reuse._download_contract_ci_upload(
+            artifact_id, artifact_sha256, artifact_name, producer, observed[0]["run"], token,
+            destination=archive)
+        product_reuse._require_artifact_job_window(observed[0], job_name, artifact)
         zipped, _, _ = verified_zip_contents(archive, retained_paths=(),
             allow_empty_members=True, **product_reuse._CATALOG_ZIP_LIMITS)
         extracted = root / "original"

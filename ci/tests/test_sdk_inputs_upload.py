@@ -67,6 +67,14 @@ class SdkInputsUploadTest(unittest.TestCase):
             self.plan_validation_call = validate.call_args
             return result
 
+    def test_retry_keeps_original_source_attempt_and_environment(self):
+        environment = {"GITHUB_RUN_ID": "71", "GITHUB_RUN_ATTEMPT": "3"}
+        before = dict(environment)
+        result = self.call(environ=environment)
+        self.assertEqual(self.producer, result["captureProducer"])
+        self.assertEqual(before, environment)
+        self.assertEqual(self.raw, (self.output / "transport.zip").read_bytes())
+
     def original_package_receipt(self, *, product="sdk", component="sdk-ios", phase="package", target="ios"):
         path = self.work / "original-package" / f"{product}-{component}-{phase}-{target}.json"
         write_receipt(
@@ -289,7 +297,7 @@ class SdkInputsUploadTest(unittest.TestCase):
             elif case == "parents": self.commit["parents"].reverse()
             elif case == "artifact-run": self.artifact["workflow_run"]["id"] = 72
             elif case == "artifact-head": self.artifact["workflow_run"]["head_sha"] = "e" * 40
-            elif case == "name": self.artifact["name"] = self.artifact["name"].replace("attempt-2", "attempt-1")
+            elif case == "name": self.artifact["name"] = self.artifact["name"].replace("attempt-2", "attempt-3")
             elif case == "unqualified-name": self.artifact["name"] = self.artifact["name"].removesuffix("-attempt-2")
             elif case == "digest": self.artifact["digest"] = "sha256:" + "d" * 64
             elif case == "expired": self.artifact["expired"] = True

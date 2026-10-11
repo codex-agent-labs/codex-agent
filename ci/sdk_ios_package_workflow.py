@@ -69,7 +69,7 @@ def execute(
     with tempfile.TemporaryDirectory(prefix="sdk-ios-package-candidate-") as temporary:
         candidate = Path(temporary).resolve() / "shard"
         with sdk_workflow.verified_inputs(
-            plan, discovery, state, artifact_id=sdk_inputs_artifact_id,
+            plan, discovery, state, requested_scope=(_INSTANCE,), artifact_id=sdk_inputs_artifact_id,
             artifact_sha256=sdk_inputs_artifact_sha256,
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
             keys_directory=keys_directory, repository_root=root,

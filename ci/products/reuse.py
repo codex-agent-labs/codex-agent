@@ -147,6 +147,11 @@ class RemoteCatalog:
     contract_public_key: Path | None = None
 
 
+def catalog_sequence(value):
+    """Accept legacy single catalogs and ordered historical fallbacks."""
+    return () if value is None else tuple(value) if isinstance(value, (list, tuple)) else (value,)
+
+
 @dataclass(frozen=True, slots=True)
 class LocalCandidate:
     receipt_sha256: str
@@ -282,8 +287,8 @@ class LookupSession:
         pull_request: int | None,
         restore_root: Path | None = None,
         stable: Iterable[RemoteCatalog] = (),
-        promoted_main: RemoteCatalog | None = None,
-        same_pr: RemoteCatalog | None = None,
+        promoted_main: RemoteCatalog | Iterable[RemoteCatalog] | None = None,
+        same_pr: RemoteCatalog | Iterable[RemoteCatalog] | None = None,
         local: LocalCatalog | None = None,
         native_runtime_projection=None,
         native_runtime_evidence=None,
@@ -334,10 +339,9 @@ class LookupSession:
                 )
             stable_indexes.append(index)
             loaded_indexes.append(index)
-        if promoted_main is not None:
-            loaded_indexes.append(self._load_catalog("promoted-main", promoted_main))
-        if same_pr is not None:
-            loaded_indexes.append(self._load_catalog("same-pr", same_pr))
+        for source, values in (("promoted-main", promoted_main), ("same-pr", same_pr)):
+            for catalog in catalog_sequence(values):
+                loaded_indexes.append(self._load_catalog(source, catalog))
         self._reject_conflicting_catalog_outputs(loaded_indexes)
         self._local = self._snapshot_local(local)
 
@@ -586,7 +590,8 @@ class LookupSession:
                             self._verify_release_attested_runtime_aggregate(envelope, captured)
                         elif source == "promoted-main" and identity.product == "sdk":
                             from .sdk_campaign_index import verify_release_sdk_campaign_objects
-                            # ponytail: recheck 62 originals per SDK lookup; cache only if measured cost warrants it.
+                            # Completed original comparisons share private custody;
+                            # the captured signature and caller policy still check.
                             originals = verify_release_sdk_campaign_objects(
                                 index, captured.catalog.objects, repository=self.repository)
                             original = originals.get(identity)
@@ -1285,16 +1290,14 @@ def plan_reuse_wave(
         _remote_catalog(artifact_root, member, f"reuse-wave request.catalogs.stable[{index}]")
         for index, member in enumerate(stable_values)
     )
-    promoted_main = None if catalogs["promotedMain"] is None else _remote_catalog(
-        artifact_root,
-        catalogs["promotedMain"],
-        "reuse-wave request.catalogs.promotedMain",
-    )
-    same_pr = None if catalogs["samePr"] is None else _remote_catalog(
-        artifact_root,
-        catalogs["samePr"],
-        "reuse-wave request.catalogs.samePr",
-    )
+    def historical_catalogs(name):
+        values = catalog_sequence(catalogs[name])
+        parsed = tuple(_remote_catalog(artifact_root, member,
+            f"reuse-wave request.catalogs.{name}[{index}]") for index, member in enumerate(values))
+        if len({catalog.manifest for catalog in parsed}) != len(parsed):
+            raise ValueError("Historical catalog manifests must be unique")
+        return parsed
+    promoted_main, same_pr = historical_catalogs("promotedMain"), historical_catalogs("samePr")
     comparison_trust = {}
     if contract_evidence is not None and contract_evidence["expectedTrustDomain"] == "release":
         comparison_trust = {"keyring": contract_evidence["keyring"],
@@ -1302,7 +1305,7 @@ def plan_reuse_wave(
     else:
         # Catalog request trust roots are caller-pinned index authorities, unlike
         # paths inside transported native comparison evidence.
-        release_catalog = next(iter((*stable, *((promoted_main,) if promoted_main else ()))), None)
+        release_catalog = next(iter((*stable, *promoted_main)), None)
         if release_catalog is not None:
             comparison_trust = {"keyring": release_catalog.keyring,
                                 "keys_directory": release_catalog.keys_directory}

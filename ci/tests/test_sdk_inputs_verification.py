@@ -89,6 +89,20 @@ class VerifiedSdkInputsTest(unittest.TestCase):
                         self.fail("transported path escaped the private inputs")
                 producer.assert_not_called()
 
+    def test_outer_private_copy_is_borrowed_only_within_checked_lifetime(self):
+        root = self.copy()
+        with patch.object(verifier, "snapshot_regular_tree", wraps=verifier.snapshot_regular_tree) as copy:
+            with verifier._borrow_private_sdk_inputs(root), self.verify(root) as value:
+                self.assertEqual(root, value["directory"])
+            copy.assert_not_called()
+            with self.verify(root) as value:
+                self.assertNotEqual(root, value["directory"])
+            copy.assert_called_once()
+        with self.assertRaisesRegex(ValueError, "custody changed"):
+            with verifier._borrow_private_sdk_inputs(root), self.verify(root) as value:
+                path = value["directory"] / REQUEST_NAME
+                path.write_bytes(path.read_bytes() + b"changed\n")
+
     def test_inventory_schema_file_tamper_and_symlinks_are_not_accepted(self):
         root = self.copy()
         inventory = (root / INVENTORY_NAME).read_bytes()

@@ -259,6 +259,12 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    preflight = commands.add_parser("preflight")
+    preflight.add_argument("--plan", type=Path, required=True)
+    preflight.add_argument("--product", required=True)
+    preflight.add_argument("--wave", type=int, required=True)
+    preflight.add_argument("--family")
+    preflight.add_argument("--trusted-workflow-sha", required=True)
     show = commands.add_parser("matrix")
     for name in ("plan", "discovery-root", "state-root", "github-output"):
         show.add_argument(f"--{name}", type=Path, required=True)
@@ -306,15 +312,20 @@ def main(argv=None):
     for name in ("handoff", "base-root", "base-capture", "destination"):
         referenced.add_argument(f"--{name}", type=Path, required=True)
     referenced.add_argument("--state-wave", type=int, required=True)
+    referenced.add_argument("--sdk-state-wave", type=int)
     args = parser.parse_args(argv)
     try:
         apple_policy = ({} if getattr(args, "sdk_apple_validation_policy", None) is None else {
             "sdk_apple_validation_policy": products._canonical_control(
                 args.sdk_apple_validation_policy, "Caller Apple validation policy")})
-        if args.command == "export-references":
+        if args.command == "preflight":
+            products.preflight_worker_uploads(args.plan, product=args.product, wave=args.wave,
+                family=args.family, trusted_workflow_sha=args.trusted_workflow_sha,
+                token=os.environ.get("GITHUB_TOKEN"))
+        elif args.command == "export-references":
             from runtime_reference_transport import stage_reference_handoff
             stage_reference_handoff(args.handoff, args.base_root, args.base_capture,
-                                    args.destination, state_wave=args.state_wave)
+                                    args.destination, state_wave=args.state_wave, sdk_state_wave=args.sdk_state_wave)
         elif args.command == "matrix":
             tooling = ({} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
                 products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")})

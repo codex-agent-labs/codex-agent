@@ -80,7 +80,9 @@ class SdkNativeFamilyOrchestrationTest(unittest.TestCase):
                     family=family, repository_root=self.root, environ=self.environment,
                     sdk_validation_tooling=self.tooling)
                 inspect.assert_called_once_with(self.plan, self.discovery, self.state,
-                    repository_root=self.root, environ=self.environment, sdk_validation_tooling=self.tooling)
+                    repository_root=self.root, environ=self.environment, sdk_validation_tooling=self.tooling,
+                    requested_scope=tuple(identity for identity in PHASE_INSTANCE_IDS
+                        if product_reuse._sdk_family_worker_instance(identity, family)))
                 self.assertIs(self.tooling, inspect.call_args.kwargs["sdk_validation_tooling"])
                 self.assertEqual(count, len(result["include"]))
                 for row in result["include"]:
@@ -143,7 +145,7 @@ class SdkNativeFamilyOrchestrationTest(unittest.TestCase):
                             self.assertNotIn("sdk_evidence_roots", kwargs)
                         args[4].mkdir(parents=True)
                         (args[4] / "retained").write_bytes(b"synthetic advanced control")
-                        return {"synthetic": "advanced"}
+                        return {"synthetic": "advanced", "matrices": {"sdk": []}}
 
                     with patch.object(product_reuse, "collect_runtime_workers", side_effect=collect) as collector, \
                             patch.object(product_reuse, "advance_products", side_effect=advance) as advanced, \
@@ -151,7 +153,7 @@ class SdkNativeFamilyOrchestrationTest(unittest.TestCase):
                         result = sdk_workflow.collect(original, destination, self.root / f"output-{family}-{failure}",
                             wave=wave, family=family, trusted_workflow_sha="c" * 40, repository_root=self.root,
                             environ=self.environment, token="synthetic", sdk_validation_tooling=self.tooling)
-                    self.assertEqual({"synthetic": "advanced"}, result)
+                    self.assertEqual({"synthetic": "advanced", "matrices": {"sdk": []}}, result)
                     self.assertIs(self.tooling, collector.call_args.kwargs["sdk_validation_tooling"])
                     self.assertIs(self.tooling, advanced.call_args.kwargs["sdk_validation_tooling"])
                     self.assertEqual(family, collector.call_args.kwargs["sdk_family"])
@@ -159,9 +161,7 @@ class SdkNativeFamilyOrchestrationTest(unittest.TestCase):
                         matrix.assert_not_called()
                         self.assertEqual(b"original failure", (destination / "collection/rows/1/original/gradle.log").read_bytes())
                     else:
-                        matrix.assert_called_once()
-                        self.assertIs(self.tooling, matrix.call_args.kwargs["sdk_validation_tooling"])
-                        self.assertEqual(family, matrix.call_args.kwargs["family"])
+                        matrix.assert_not_called()
                     for name in ("product-resume-inputs", "product-resume-state"):
                         self.assertEqual(regular_file_inventory(original / name, allow_empty=True),
                                          regular_file_inventory(destination / "handoff" / name, allow_empty=True))

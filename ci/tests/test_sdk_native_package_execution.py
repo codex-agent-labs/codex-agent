@@ -151,6 +151,8 @@ class SdkNativePackageExecutionTest(unittest.TestCase):
     @contextmanager
     def verified(self, *args, **kwargs):
         self.assertEqual((self.plan_path, self.discovery, self.state), args)
+        self.assertEqual((PhaseInstanceId("sdk", self.arguments["component"], "package", "desktop"),),
+                         kwargs.pop("requested_scope"))
         self.assertEqual({"artifact_id": 71, "artifact_sha256": self.arguments["sdk_inputs_artifact_sha256"],
             **{name: self.arguments[name] for name in ("trusted_workflow_sha", "keyring", "keys_directory",
                                                      "repository_root", "environ", "token")}}, kwargs)
@@ -175,6 +177,8 @@ class SdkNativePackageExecutionTest(unittest.TestCase):
             self.live = False
 
     def inspect(self, *args, **kwargs):
+        self.assertEqual((PhaseInstanceId("sdk", self.arguments["preparation_component"], "package", "desktop"),),
+                         kwargs.pop("requested_scope"))
         self.assertTrue(self.live)
         self.events.append("inspect")
         self.assertEqual((self.plan_path, self.discovery, self.preparation_state), args)

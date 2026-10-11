@@ -31,7 +31,7 @@ def _path(value):
     return path
 
 
-def validate_references(value, state_wave):
+def validate_references(value, state_wave, *, sdk_state_wave=None):
     value = require_exact_keys(value, {"schemaVersion", "base", "inventory", "references"},
                                "Runtime references")
     if require_integer(value["schemaVersion"], "Runtime references schema", 1) != 1:
@@ -39,15 +39,31 @@ def validate_references(value, state_wave):
     base_keys = {"artifactId", "artifactSha256", "stateWave"}
     if isinstance(value["base"], dict) and "referenceControlSha256" in value["base"]:
         base_keys.add("referenceControlSha256")
+    if isinstance(value["base"], dict) and "sdkStateWave" in value["base"]:
+        base_keys.add("sdkStateWave")
+    if isinstance(value["base"], dict) and "runAttempt" in value["base"]:
+        base_keys.add("runAttempt")
     base = require_exact_keys(value["base"], base_keys,
                               "Runtime reference base")
     require_integer(base["artifactId"], "Runtime reference upload ID", 1)
     require_sha256(base["artifactSha256"], "Runtime reference upload digest")
+    if "runAttempt" in base:
+        require_integer(base["runAttempt"], "Runtime reference original attempt", 1)
     if "referenceControlSha256" in base:
         require_sha256(base["referenceControlSha256"], "Runtime reference control digest")
     wave = require_integer(base["stateWave"], "Runtime reference base wave")
-    if type(state_wave) is not int or not 0 <= wave < state_wave <= 5:
-        raise ValueError("Runtime reference must identify a strictly earlier Runtime wave")
+    sdk_order = (3, 1, 2, 6, 19, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+    base_sdk = (require_integer(base["sdkStateWave"], "SDK reference base wave", 1)
+                if "sdkStateWave" in base else None)
+    if sdk_state_wave is None:
+        if base_sdk is not None or type(state_wave) is not int or not 0 <= wave < state_wave <= 5:
+            raise ValueError("Runtime reference must identify a strictly earlier Runtime wave")
+    elif (type(sdk_state_wave) is not int or sdk_state_wave not in sdk_order
+            or type(state_wave) is not int or state_wave != 0
+            or not 0 <= wave <= 5
+            or base_sdk is not None and (type(base_sdk) is not int or base_sdk not in sdk_order
+                or wave != 0 or sdk_order.index(base_sdk) >= sdk_order.index(sdk_state_wave))):
+        raise ValueError("SDK reference must identify a strictly earlier campaign wave")
     inventory = require_sorted_unique_records(value["inventory"], "Runtime reference inventory")
     if not inventory or len(inventory) > 16_384:
         raise ValueError("Runtime reference inventory exceeds its fixed bound")
@@ -103,13 +119,17 @@ def _copy_exact(source, destination, record, *, destination_directory=None):
         os.close(descriptor)
 
 
-def stage_reference_handoff(handoff, base_root, base_capture, destination, *, state_wave):
+def stage_reference_handoff(handoff, base_root, base_capture, destination, *, state_wave, sdk_state_wave=None):
     """Emit only changed files and exact references; never mutate the full handoff."""
     transport = load_canonical_json_bytes(read_regular_file_bytes(
         base_capture, max_bytes=PRODUCT_JSON_LIMIT, reject_symlink_parents=True))
     artifact = transport["artifact"]
     base = {"artifactId": artifact["id"], "artifactSha256": artifact["digest"],
             "stateWave": transport.get("stateWave", 0)}
+    if "captureProducer" in transport:
+        base["runAttempt"] = transport["captureProducer"]["runAttempt"]
+    if "sdkStateWave" in transport:
+        base["sdkStateWave"] = transport["sdkStateWave"]
     if "referenceControlSha256" in transport:
         base["referenceControlSha256"] = transport["referenceControlSha256"]
     inventory = regular_file_inventory(handoff, allow_empty=True)
@@ -122,7 +142,7 @@ def stage_reference_handoff(handoff, base_root, base_capture, destination, *, st
     if not references:
         raise ValueError("Runtime reference export has no existing immutable files")
     value = validate_references({"schemaVersion": 1, "base": base,
-                                "inventory": inventory, "references": references}, state_wave)
+                                "inventory": inventory, "references": references}, state_wave, sdk_state_wave=sdk_state_wave)
     inherited = {record["relativePath"] for record in references}
     with tempfile.TemporaryDirectory(prefix="runtime-reference-export-") as temporary:
         prepared = Path(temporary).resolve() / "handoff"
@@ -138,9 +158,9 @@ def stage_reference_handoff(handoff, base_root, base_capture, destination, *, st
     return value
 
 
-def resolve_reference_handoff(original, base_root, value, *, state_wave):
+def resolve_reference_handoff(original, base_root, value, *, state_wave, sdk_state_wave=None):
     """Resolve a freshly authenticated base; caller must still admit all phases."""
-    value = validate_references(value, state_wave)
+    value = validate_references(value, state_wave, sdk_state_wave=sdk_state_wave)
     referenced = {record["relativePath"] for record in value["references"]}
     materialized = regular_file_inventory(original, allow_empty=True, excluded_paths=(REFERENCE_NAME,))
     if materialized != [record for record in value["inventory"] if record["relativePath"] not in referenced]:

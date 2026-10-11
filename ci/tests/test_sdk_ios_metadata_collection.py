@@ -59,7 +59,7 @@ class SdkIosMetadataFamilyTest(unittest.TestCase):
                 self.assertEqual([] if failure else
                     [destination / "collection/rows/sdk-ios-metadata-ios/original/shard"], args[3])
                 args[4].mkdir(parents=True)
-                return {"advanced": not failure}
+                return {"advanced": not failure, "matrices": {"sdk": []}}
 
             with patch.object(workflow.product_reuse, "collect_runtime_workers", return_value={"rows": [row]}) as collect, \
                     patch.object(workflow.product_reuse, "advance_products", side_effect=advance), \
@@ -68,10 +68,10 @@ class SdkIosMetadataFamilyTest(unittest.TestCase):
                     wave=10, family="ios-metadata", trusted_workflow_sha=PIN,
                     repository_root=self.repository, environ={}, token="synthetic-token",
                     sdk_apple_validation_policy=policy)
-            self.assertEqual({"advanced": not failure}, result)
+            self.assertEqual({"advanced": not failure, "matrices": {"sdk": []}}, result)
             self.assertEqual("ios-metadata", collect.call_args.kwargs["sdk_family"])
             self.assertIs(policy, collect.call_args.kwargs["sdk_apple_validation_policy"])
-            self.assertEqual(not failure, matrix.called)
+            matrix.assert_not_called()
             for name in ("product-resume-inputs", "product-resume-state"):
                 self.assertEqual(name.encode(), (destination / "handoff" / name / "retained.bin").read_bytes())
         with self.assertRaisesRegex(ValueError, "exact wave for its elected family"):

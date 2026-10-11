@@ -12,6 +12,46 @@ from products.inventory import sha256_bytes
 
 
 class HydratedEvidenceTest(unittest.TestCase):
+    def test_hosted_manifest_includes_aggregate_unique_bytes_and_excludes_aliases(self):
+        import json
+        from ci.tests.test_products import phase_receipt
+        from products.receipt import compute_build_key
+        from products.inventory import canonical_json_bytes
+        sources, references, inventory = [], [], []
+        for component, phase, target, kind, body in (
+                ("linux-x64", "binary", "linux-x64", "phase", b"phase"),
+                ("runtime-aggregate", "metadata", "aggregate", "aggregate", b"aggregate")):
+            receipt = phase_receipt()
+            receipt.update(product="runtime", component=component, phase=phase, target=target)
+            receipt["buildKey"] = compute_build_key(**{key: receipt[key] for key in
+                ("product", "component", "phase", "target", "inputs")})
+            prefix = (f"product-resume-state/prior-failed-runtime/{component}/{phase}/{target}/phases/{phase}/original"
+                      if kind == "phase" else "product-resume-state/runtime-aggregate-release-evidence/0/handoffs/"
+                      + sha256_bytes(canonical_json_bytes(receipt))[7:])
+            sources.append(dict(relativePath=prefix, kind=kind, receipt=receipt,
+                                artifactId=len(sources) + 1, artifactSha256=sha256_bytes(body)))
+            row = dict(relativePath=prefix + "/body", bytes=len(body), sha256=sha256_bytes(body))
+            inventory.append(row)
+            references.append(dict(**row, source=prefix, sourcePath="body"))
+        alias = {**inventory[0], "relativePath": "product-resume-inputs/alias"}
+        inventory.append(alias)
+        references.append(dict(**alias, source=sources[0]["relativePath"], sourcePath="body"))
+        value = dict(schemaVersion=1, inventory=sorted(inventory, key=lambda r: r["relativePath"]),
+                     sources=sorted(sources, key=lambda r: r["relativePath"]),
+                     references=sorted(references, key=lambda r: r["relativePath"]))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with patch.dict(os.environ, {"CODEX_AGENT_HOSTED_CACHE_BACKEND": "local-fixture",
+                    "CODEX_AGENT_CACHE_NODE": "local-node", "CODEX_AGENT_HYDRATED_EVIDENCE": str(root)}), \
+                    patch.object(cache.subprocess, "run") as execute:
+                for mode in ("restore", "save"):
+                    cache.hosted(mode, value, root)
+                    records = json.loads((root / f"cache-{mode}-manifest.json").read_text())
+                    self.assertEqual({sha256_bytes(b"phase"), sha256_bytes(b"aggregate")},
+                                     {row["sha256"] for row in records})
+                    self.assertEqual(2, len(records))
+                self.assertEqual(2, execute.call_count)
+
     def test_expired_private_projection_rehydrates_but_changed_custody_rejects(self):
         # Local fixture and mocked native envelope authentication, not hosted evidence.
         from ci.tests.test_runtime_original_ci import RuntimeOriginalCiTest, TARGET

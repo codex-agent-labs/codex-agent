@@ -5,7 +5,6 @@ evidence, never a product payload or a substitute for full original admission.
 """
 
 import argparse
-import hashlib
 import os
 from pathlib import Path
 import sys
@@ -23,7 +22,7 @@ from products.inventory import (git_regular_blob_bytes, read_regular_file_bytes,
 from products.signing_isolation import require_no_signing_secret
 from products.toolchain import (_metadata_checksum, RUNTIME_VERIFICATION_METADATA,
                                 VERSION_CATALOG)
-from sdk_android_archive_provision import _publish_archive
+from sdk_android_archive_provision import _publish_archive, _fetch_pinned_archive
 
 
 _SUFFIXES = {
@@ -91,21 +90,9 @@ def provision(plan_path, target, destination, *, repository_root):
     with tempfile.TemporaryDirectory(prefix="core-native-", dir=destination.parent,
                                      ignore_cleanup_errors=True) as temporary:
         archive = Path(temporary) / name
-        digest = hashlib.sha256()
-        count = 0
-        with _open_archive(url) as response:
-            if response.status != 200:
-                raise ValueError("Core native archive download did not return HTTP 200")
-            _maven_https(response.geturl())
-            with archive.open("xb") as output:
-                while chunk := response.read(1024 * 1024):
-                    count += len(chunk)
-                    if count > _MAX_ARCHIVE_BYTES:
-                        raise ValueError("Core native archive exceeds the pinned size limit")
-                    output.write(chunk)
-                    digest.update(chunk)
-        if (not count or "sha256:" + digest.hexdigest() != expected
-                or sha256_file(archive, reject_symlink_parents=True) != expected):
+        _fetch_pinned_archive(url, archive, expected, _MAX_ARCHIVE_BYTES,
+                              _open_archive, _maven_https)
+        if sha256_file(archive, reject_symlink_parents=True) != expected:
             raise ValueError("Core native archive differs from the immutable Git pin")
         if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024,
                                     reject_symlink_parents=True) != plan_bytes

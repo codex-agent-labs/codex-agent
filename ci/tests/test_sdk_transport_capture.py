@@ -29,7 +29,7 @@ class SdkTransportCaptureTest(unittest.TestCase):
             capture.assert_called_once_with(plan, destination, artifact_id=71,
                 artifact_sha256="sha256:" + "a" * 64, trusted_workflow_sha="b" * 40,
                 sdk_state_wave=17, state_wave=0, repository_root=root,
-                environ={}, token="synthetic")
+                environ={}, token="synthetic", allow_earlier_attempt=True)
             self.assertEqual(destination / "original/runtime-state", paths["state_root"])
             self.assertEqual(destination / "original/product-resume-state", paths["discovery_root"])
             self.assertEqual(destination / "original/product-resume-inputs/plan/impact-plan.json", paths["plan_path"])

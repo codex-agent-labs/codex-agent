@@ -18,7 +18,7 @@ inputs:
     description: Current SDK state wave when applicable.
   preparation-state-id:
     required: true
-    description: Original preparation state upload ID, independently recaptured.
+    description: Original preparation state upload ID, independently matched to authenticated capture.
   preparation-state-sha256:
     required: true
     description: Exact original preparation state digest.
@@ -81,7 +81,7 @@ runs:
         sdk-state-wave: ${{ inputs.sdk-state-wave }}
         trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
     - id: preparation
-      name: Capture the original preparation state separately
+      name: Reuse an identical authenticated preparation state or capture its original
       shell: bash
       env:
         PLAN: ${{ steps.captured.outputs.plan-path }}
@@ -93,8 +93,23 @@ runs:
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
+        CURRENT_ARTIFACT_ID: ${{ inputs.artifact-id }}
+        CURRENT_ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
+        CURRENT_STATE_WAVE: ${{ inputs.state-wave }}
+        CURRENT_SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
+        CURRENT_MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
+        CURRENT_STATE_ROOT: ${{ steps.captured.outputs.state-root }}
       run: |
         set -euo pipefail
+        # Both captures use the same fixed family, plan and caller policy inputs.
+        # The separate preparation and worker key elections below still run.
+        if [ -n "$ARTIFACT_ID" ] && [ "$ARTIFACT_ID" = "$CURRENT_ARTIFACT_ID" ] && \
+          [ "$ARTIFACT_SHA256" = "$CURRENT_ARTIFACT_SHA256" ] && \
+          [ "$STATE_WAVE" = "$CURRENT_STATE_WAVE" ] && \
+          [ "$SDK_STATE_WAVE" = "$CURRENT_SDK_STATE_WAVE" ]; then
+          printf 'sdk_matrix=%s\nstate_root=%s\n' "$CURRENT_MATRIX" "$CURRENT_STATE_ROOT" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         selected=()
         if [ -n "$SDK_STATE_WAVE" ]; then selected=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
         if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
@@ -195,7 +210,11 @@ runs:
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-sdk-worker-${{ inputs.component }}-package-desktop-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
-        path: build/sdk-worker
+        path: |
+          build/sdk-worker/shard
+          build/sdk-worker/worker/execution.json
+          build/sdk-worker/worker/gradle.log
+          ${{ job.status != 'success' && 'build/sdk-worker' || '' }}
         if-no-files-found: warn
         overwrite: false
         include-hidden-files: true

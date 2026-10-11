@@ -378,7 +378,7 @@ class SdkWorkflowTest(unittest.TestCase):
                 self.assertEqual((workflow.PhaseInstanceId(**identity),) if failure else (), kwargs["failed_instances"])
                 self.assertEqual([] if failure else [destination / "collection/rows/js/original/shard"], args[3])
                 args[4].mkdir(parents=True)
-                return {"synthetic": "advanced"}
+                return {"synthetic": "advanced", "matrices": {"sdk": []}}
 
             with patch.object(workflow.product_reuse, "collect_runtime_workers", return_value={"rows": [row]}) as collect, \
                     patch.object(workflow.product_reuse, "advance_products", side_effect=advance) as advanced, \
@@ -390,10 +390,8 @@ class SdkWorkflowTest(unittest.TestCase):
             self.assertIsNone(collect.call_args.kwargs["sdk_worker_job_name"])
             self.assertEqual("c" * 40, advanced.call_args.kwargs[
                 "sdk_original_workflow_sha"])
-            if not failure:
-                self.assertEqual("c" * 40, matrix.call_args.kwargs["trusted_workflow_sha"])
-            self.assertEqual({"synthetic": "advanced"}, result)
-            self.assertEqual(not failure, matrix.called)
+            self.assertEqual({"synthetic": "advanced", "matrices": {"sdk": []}}, result)
+            matrix.assert_not_called()
             for name in ("product-resume-inputs", "product-resume-state"):
                 self.assertEqual(name.encode(), (destination / "handoff" / name / "original.bin").read_bytes())
 

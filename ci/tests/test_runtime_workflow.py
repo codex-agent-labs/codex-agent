@@ -79,7 +79,7 @@ class RuntimeWorkflowTest(unittest.TestCase):
         self.assertLess(action.index('./.github/actions/capture-runtime-state'), action.index('./.github/actions/setup-msvc'))
         collected = (root / '.github/actions/collect-runtime-wave/action.yml').read_text()
         self.assertIn('runtime_workflow.py export-references', collected)
-        self.assertIn("path: ${{ inputs.product == 'runtime' && (inputs.wave == '1' || inputs.wave == '2' || inputs.wave == '3') && 'build/runtime-reference-handoff' || 'build/runtime-next/handoff' }}", collected)
+        self.assertIn("path: ${{ (inputs.product != 'runtime' || inputs.wave == '1' || inputs.wave == '2' || inputs.wave == '3') && 'build/runtime-reference-handoff' || 'build/runtime-next/handoff' }}", collected)
         self.assertIn('build/runtime-next/collection', collected)
         self.assertIn('if: ${{ failure() }}', collected)
         self.assertNotIn('${{ failure() &&', collected)
@@ -770,6 +770,38 @@ class RuntimeWorkflowTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 workflow.main([*capture_args, "--component", "node-js"])
             capture.assert_not_called()
+
+
+class WorkerUploadPreflightTest(unittest.TestCase):
+    def test_absence_stops_before_replay_while_any_current_sibling_is_preserved(self):
+        from ci.tests import test_runtime_resume_capture as fixtures
+        fixture = fixtures.RuntimeResumeCaptureTest()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        products = workflow.products
+        producer = fixture.producer
+        name = (f"codex-agent-sdk-worker-javascript-validation-node-{'a' * 64}-"
+                f"{producer['tree']}-attempt-{producer['runAttempt']}")
+        with mock.patch.object(products, '_validate_plan', return_value=json.loads(fixture.plan_path.read_bytes())), \
+                mock.patch.object(products, '_consumer', return_value={'producer': producer}), \
+                mock.patch.object(products, '_observe_ci_producer_jobs') as observe, \
+                mock.patch.object(products, 'paginated_items') as artifacts, \
+                mock.patch.object(products, '_verified_product_state', side_effect=AssertionError('expensive replay')):
+            def preflight():
+                products.preflight_worker_uploads(fixture.plan_path, product='sdk', wave=2,
+                    trusted_workflow_sha=fixture.pin, token='fixture', repository_root=fixture.root,
+                    environ=fixture.environment)
+            for names in ([], [name.replace('-attempt-3', '-attempt-4')], [name.replace('-validation-', '-package-')]):
+                artifacts.return_value = [{'name': value} for value in names]
+                with self.assertRaisesRegex(ValueError, 'parent recovery was not started'):
+                    preflight()
+            self.assertEqual('no-worker-uploads', json.loads(
+                (fixture.root / 'build/runtime-preflight.json').read_text())['result'])
+            artifacts.return_value = [{'name': name}, {'name': 'unrelated diagnostic'}]
+            preflight()
+            artifacts.return_value = [{"name": name.replace("-attempt-3", "-attempt-2")}]
+            preflight()
+            observe.assert_not_called()  # Presence grants no admission.
 
 
 if __name__ == "__main__":

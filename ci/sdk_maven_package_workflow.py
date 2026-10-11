@@ -147,6 +147,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             _require_capability_output_separate(private, [root, *protected])
             candidate = private / "shard"
             with sdk_workflow.verified_inputs(plan, discovery, state,
+                requested_scope=(instance,),
                     artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                     trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
                     repository_root=root, environ=environ, token=token, **policies, **admissions) as sdk_inputs, ExitStack() as binary_contexts:

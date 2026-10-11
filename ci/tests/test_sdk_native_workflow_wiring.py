@@ -21,6 +21,42 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class SdkNativeWorkflowWiringTest(unittest.TestCase):
+    def test_same_preparation_transport_reuses_capture_but_every_difference_recaptures(self):
+        source = (ROOT / ".github/actions/sdk-native-package-worker/action.yml").read_text()
+        block = source.split("    - id: preparation\n", 1)[1].split("    - id: identity\n", 1)[0]
+        script = textwrap.dedent(block.split("      run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "python3"
+            executable.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > "$CAPTURE_CALL"\n')
+            executable.chmod(0o700)
+            output, call = root / "output", root / "call"
+            environment = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                "GITHUB_OUTPUT": str(output), "CAPTURE_CALL": str(call), "PLAN": "plan.json",
+                "GITHUB_WORKSPACE": str(root), "TRUSTED_WORKFLOW_SHA": "a" * 40,
+                "SDK_VALIDATION_TOOLING": "", "SDK_APPLE_VALIDATION_POLICY": "",
+                "CURRENT_MATRIX": json.dumps({"include": [self.row("python")]}),
+                "CURRENT_STATE_ROOT": str(root / "already-captured")}
+            values = dict(ARTIFACT_ID="71", ARTIFACT_SHA256="sha256:" + "a" * 64,
+                          STATE_WAVE="0", SDK_STATE_WAVE="19")
+            environment.update(values)
+            environment.update({"CURRENT_" + key: value for key, value in values.items()})
+            for changed in (None, *values):
+                output.write_text("")
+                if call.exists():
+                    call.unlink()
+                current = dict(environment)
+                if changed:
+                    current[changed] = "different"
+                subprocess.run(["bash", "-c", script], env=current, check=True)
+                if changed:
+                    self.assertIn("ci.sdk_workflow capture --family native-package", call.read_text())
+                    self.assertEqual("", output.read_text())
+                else:
+                    self.assertFalse(call.exists())
+                    self.assertIn("state_root=" + environment["CURRENT_STATE_ROOT"], output.read_text())
+                    self.assertIn("sdk_matrix=" + environment["CURRENT_MATRIX"], output.read_text())
+
     def setUp(self):
         self.workflow = (ROOT / ".github/workflows/product-validation.yml").read_text()
 
@@ -80,7 +116,8 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         self.assertIn("needs.sdk-csharp-binary-result.result == 'success'", planned)
         self.assertIn("needs.plan.outputs.event_authorized == 'true'", self.job("sdk-javascript"))
         self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", planned)
-        self.assertLess(planned.index("./.github/actions/capture-runtime-state"), planned.index("- id: preparation"))
+        self.assertIn("steps.capture.outputs.native-preparation-required", planned)
+        self.assertNotIn("inspect_products", planned)
         self.assertIn("sdk-family: native-package", planned)
         self.assertNotIn("setup-kmp", planned)
 
@@ -183,59 +220,58 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         gate = self.job("merge-gate").split("    runs-on:", 1)[0]
         self.assertIn("sdk-native-packages", gate)
 
-    def test_preparation_passes_full_ready_plans_and_caller_policy_to_existing_selector(self):
-        # Selector semantics have dedicated real-plan tests; these are explicit
-        # inspection/selector seams proving the workflow never forges a package.
-        rows = [{"synthetic": "unchanged authenticated ready-plan boundary"}]
+    def matrix_outputs(self, policy=None):
+        with tempfile.TemporaryDirectory(prefix="native-routing-") as temporary:
+            output = Path(temporary) / "github-output"
+            sdk_workflow.matrix(Path("/original/plan"), Path("/original/discovery"), Path("/original/state"),
+                output, family="native-package", trusted_workflow_sha="c" * 40,
+                **({"sdk_validation_tooling": policy} if policy else {}))
+            return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+    def test_preparation_and_matrix_share_one_authenticated_election(self):
         for phase, target in (("package", "desktop"), ("validation", "macos-arm64"), ("metadata", "desktop")):
-            selected = dict(preparation_required=True, component="rust", phase=phase, target=target, build_key="sha256:" + "a" * 64)
+            rows = [selector_fixture.ready("python", phase, target)]
             policy = {"synthetic": "caller-owned policy boundary"}
-            with self.subTest(phase=phase), patch.object(product_reuse, "inspect_products", return_value={"readyPlans": rows}) as inspect, \
-                    patch.object(product_reuse, "_canonical_control", return_value=policy), \
-                    patch.object(sdk_native_continuation, "select_preparation_anchor", return_value=selected) as select:
-                output = self.snippet("sdk-native-plan", {"PLAN": "/original/plan", "DISCOVERY": "/original/discovery",
-                    "STATE": "/original/state", "SDK_VALIDATION_TOOLING": "/caller/policy"})
-                select.assert_called_once_with(rows)
-                self.assertIs(rows, select.call_args.args[0])
-                self.assertEqual((Path("/original/plan"), Path("/original/discovery"), Path("/original/state")), inspect.call_args.args)
+            with self.subTest(phase=phase), patch.object(sdk_workflow.product_reuse, "inspect_products",
+                    return_value={"readyPlans": rows}) as inspect:
+                output = self.matrix_outputs(policy)
+                inspect.assert_called_once()
                 self.assertIs(policy, inspect.call_args.kwargs["sdk_validation_tooling"])
-                self.assertEqual({**selected, "preparation_required": "true"}, output)
+                scope = inspect.call_args.kwargs["requested_scope"]
+                self.assertTrue(all(row.component in sdk_workflow.NATIVE_BINDINGS for row in scope))
+                self.assertEqual("true", output["native_preparation_required"])
+                self.assertEqual(phase, output["native_preparation_phase"])
+                self.assertEqual(rows[0]["buildKey"], output["native_preparation_build_key"])
+                self.assertEqual(phase == "package", bool(json.loads(output["sdk_matrix"])["include"]))
 
     def test_selector_failure_and_noop_do_not_manufacture_preparation(self):
-        environment = {"PLAN": "/plan", "DISCOVERY": "/discovery", "STATE": "/state", "SDK_VALIDATION_TOOLING": ""}
-        empty = dict(preparation_required=False, component="", phase="", target="", build_key="")
-        with patch.object(product_reuse, "inspect_products", return_value={"readyPlans": []}) as inspect, \
-                patch.object(sdk_native_continuation, "select_preparation_anchor", return_value=empty) as select:
-            self.assertEqual({**empty, "preparation_required": "false"}, self.snippet("sdk-native-plan", environment))
+        with patch.object(sdk_workflow.product_reuse, "inspect_products", return_value={"readyPlans": []}) as inspect:
+            output = self.matrix_outputs()
+            self.assertEqual("false", output["native_preparation_required"])
+            self.assertEqual("", output["native_preparation_build_key"])
             self.assertNotIn("sdk_validation_tooling", inspect.call_args.kwargs)
-            select.side_effect = ValueError("invalid original ready plans")
+            inspect.return_value = {"readyPlans": [{"invalid": "original plan"}]}
             with self.assertRaises(ValueError):
-                self.snippet("sdk-native-plan", environment)
+                self.matrix_outputs()
 
     def test_saved_plan_imports_in_fresh_process_before_inspection_seam(self):
-        match = re.search(r"(?ms)^          python3 - <<'PY'\n(.*?)^          PY$", self.job("sdk-native-plan"))
-        code = textwrap.dedent(match[1])
-        # Execute the exact production import prefix first. No fixture/bootstrap
-        # imports in the child may mask missing script-module path setup.
-        prefix, suffix = code.split("policy = os.environ['SDK_VALIDATION_TOOLING']", 1)
-        seam = "\nimport json\nfrom unittest.mock import Mock\ninspect_products = Mock(return_value={'readyPlans': json.loads(os.environ['READY_PLANS'])})\n"
-        code = prefix + seam + "policy = os.environ['SDK_VALIDATION_TOOLING']" + suffix
-        anchor = selector_fixture.ready("python", "validation", "macos-arm64")
-        for rows in ([], [anchor]):
-            with self.subTest(ready=bool(rows)), tempfile.TemporaryDirectory(prefix="native-plan-import-") as temporary:
-                output = Path(temporary) / "output"
-                env = {key: value for key, value in os.environ.items() if not key.startswith("PYTHON")}
-                env.update(PLAN="/original/plan", DISCOVERY="/original/discovery", STATE="/original/state",
-                           SDK_VALIDATION_TOOLING="", TRUSTED_WORKFLOW_SHA="c" * 40,
-                           GITHUB_OUTPUT=str(output), READY_PLANS=json.dumps(rows))
-                result = subprocess.run([sys.executable, "-B", "-c", code], cwd=ROOT, env=env,
-                                        capture_output=True, text=True)
-                self.assertEqual(0, result.returncode, result.stderr)
-                expected = dict(preparation_required="false", component="", phase="", target="", build_key="")
-                if rows:
-                    expected.update(preparation_required="true", component="python", phase="validation",
-                                    target="macos-arm64", build_key=anchor["buildKey"])
-                self.assertEqual(expected, dict(line.split("=", 1) for line in output.read_text().splitlines()))
+        code = """from pathlib import Path
+import json, os
+from ci import sdk_workflow
+from unittest.mock import patch
+with patch.object(sdk_workflow.product_reuse, 'inspect_products', return_value={'readyPlans': json.loads(os.environ['READY_PLANS'])}):
+    sdk_workflow.matrix(Path('/plan'), Path('/discovery'), Path('/state'), Path(os.environ['GITHUB_OUTPUT']), family='native-package')
+"""
+        rows = [selector_fixture.ready("python", "validation", "macos-arm64")]
+        with tempfile.TemporaryDirectory(prefix="native-plan-import-") as temporary:
+            output = Path(temporary) / "output"
+            env = {key: value for key, value in os.environ.items() if not key.startswith("PYTHON")}
+            env.update(GITHUB_OUTPUT=str(output), READY_PLANS=json.dumps(rows))
+            result = subprocess.run([sys.executable, "-B", "-c", code], cwd=ROOT, env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("native_preparation_phase=validation", output.read_text())
+
 
     def test_summary_requires_planning_and_every_elected_result(self):
         base = self.needs()

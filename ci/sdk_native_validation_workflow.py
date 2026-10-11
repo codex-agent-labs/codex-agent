@@ -234,6 +234,7 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
         publication, capture = private / "publication", private / "prepared-upload"
         candidate, evidence = publication / "shard", publication / "sdk-validation-evidence"
         with sdk_workflow.verified_inputs(plan, discovery, state,
+                requested_scope=(instance,),
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
                 repository_root=root, environ=environ, token=token, sdk_validation_tooling=tooling, **apple) as inputs:
@@ -243,6 +244,7 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
             if identity not in selection["consumers"]:
                 raise ValueError("Native SDK validation is not selected")
             inspected = product_reuse.inspect_products(plan, discovery, preparation_state,
+                requested_scope=(prep_instance,),
                 repository_root=root, environ=environ, sdk_validation_tooling=tooling,
                 sdk_original_workflow_sha=trusted_workflow_sha, **apple)
             elected = [row for row in inspected["readyPlans"] if all(row.get(name) == value for name, value in prep_identity.items())]

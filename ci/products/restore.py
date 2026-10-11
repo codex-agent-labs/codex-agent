@@ -394,12 +394,21 @@ def verify_carrier(
     root: Path,
     expected_instances: Any,
     consumer: Any,
-    *, object_root: Path | None = None,
+    *, object_root: Path | None = None, selected_instances=None,
 ) -> dict[str, Any]:
+    """Verify a carrier, or explicitly return only a caller-selected object view.
+
+    A selected view authenticates no other object. Full admission callers leave
+    selected_instances unset. All carrier controls and path structure still check.
+    """
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("Product carrier directory is missing or unsafe")
     expected = _carrier_expected_instances(expected_instances)
+    selected = expected if selected_instances is None else _carrier_expected_instances(selected_instances)
+    if not set(selected).issubset(expected):
+        raise ValueError("Selected carrier view is outside its expected closure")
+    before = _stage_fingerprint(root) if selected_instances is not None and not _is_windows() else None
     carrier_bytes = _read_safe_regular(root / CARRIER_NAME, max_bytes=PRODUCT_JSON_LIMIT)
     resolution_bytes = _read_safe_regular(
         root / CARRIER_RESOLUTION_NAME, max_bytes=PRODUCT_JSON_LIMIT,
@@ -471,10 +480,23 @@ def verify_carrier(
         if not references:
             expected_paths.add(object_relative_path(record["buildKey"], record["receiptSha256"]))
         expected_paths.add(transport_relative_path(record["buildKey"], record["receiptSha256"], record["transportSha256"]))
-    verified = bounded_verify(verify_member, zip(records, phases, strict=True))
-    actual_paths = {record["relativePath"] for record in regular_file_inventory(root)}
+    verified = bounded_verify(verify_member, (
+        pair for pair in zip(records, phases, strict=True)
+        if _carrier_identity(pair[0], "Selected carrier object") in selected))
+    actual_paths = ({Path(path).relative_to(root).as_posix() for path, _ in before if Path(path).is_file()}
+                    if before is not None else
+                    {record["relativePath"] for record in regular_file_inventory(root)})
     if actual_paths != expected_paths:
         raise ValueError("Product carrier file inventory is incomplete or unexpected")
+    if before is not None and _stage_fingerprint(root) != before:
+        raise ValueError("Selected carrier view changed during verification")
+    if selected_instances is not None:
+        # Return a visibly scoped control view, never a full-carrier admission.
+        resolution = {**resolution, "phases": [phase for phase in phases
+            if _carrier_identity(phase, "Selected carrier phase") in selected]}
+        carrier = {**carrier, "objects": [record for record in records
+            if _carrier_identity(record, "Selected carrier object") in selected],
+            "resolutionSha256": sha256_bytes(canonical_json_bytes(resolution))}
     return {"carrier": carrier, "resolution": resolution, "objects": verified}
 
 

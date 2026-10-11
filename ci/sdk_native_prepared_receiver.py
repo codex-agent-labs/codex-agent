@@ -151,6 +151,7 @@ def receive(plan, discovery, state, preparation_state, destination, *,
                                           ("prepared-upload", "predecessors", "runtime-stages"))
         upload = private / "upload"
         with sdk_workflow.verified_inputs(plan, discovery, state,
+                requested_scope=(PhaseInstanceId("sdk", preparation_component, preparation_phase, preparation_target),),
                 artifact_id=sdk_inputs_artifact_id,
                 artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
@@ -163,7 +164,7 @@ def receive(plan, discovery, state, preparation_state, destination, *,
                     "phase": preparation_phase, "target": preparation_target} not in inputs["selection"]["consumers"]:
                 raise ValueError("Native preparation anchor is not selected")
             inspected = product_reuse.inspect_products(plan, discovery, preparation_state,
-                repository_root=root, environ=environ,
+                repository_root=root, environ=environ, requested_scope=(identity,),
                 sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
             elected = [row for row in inspected["readyPlans"] if
                        tuple(row.get(name) for name in ("product", "component", "phase", "target")) ==

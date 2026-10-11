@@ -23,6 +23,9 @@ class SdkCampaignOriginalLocatorTest(TestCase):
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.original_names = self.fixture.names
+        from ci.tests.test_runtime_reference_transport import RangeOpener
+        self.range_opener = RangeOpener({})
+        self.enterContext(patch('runtime_reference_archive.urllib.request.build_opener', return_value=self.range_opener))
 
     def selected(self, *, core=False, android_phase=None):
         if core or android_phase is not None:
@@ -57,7 +60,9 @@ class SdkCampaignOriginalLocatorTest(TestCase):
             "source": None, "transportSource": None, "misses": []}
         original = ObservedSdkOriginal(descriptor["receiptBytes"], canonical_json_bytes(record),
             shard / descriptor["objectPath"], shard.parent / "stage")
-        return instance, ready, original, archive(files)
+        raw = archive(files)
+        self.range_opener.archives[901] = raw
+        return instance, ready, original, raw
 
     def locate(self, instance, original, digest=None, environ=None, workflow_path=None, job_name=None):
         return locator.locate_fresh_sdk_original_upload(instance, original,
@@ -100,11 +105,11 @@ class SdkCampaignOriginalLocatorTest(TestCase):
                     self.assertEqual(901, pin["artifact_id"])
                     self.assertEqual(job, pin["job_name"])
                     self.assertIsInstance(FreshSdkOriginalPin(**pin), FreshSdkOriginalPin)
-                    download.assert_called_once()
+                    download.assert_not_called()
                     with self.assertRaisesRegex(ValueError, "independent phase identity"):
                         locator.discover_fresh_sdk_original_pin(
                             instance, **{**arguments, "expected_product_version": "0.9.0"})
-                    self.assertEqual(2, download.call_count)
+                    self.assertEqual(0, download.call_count)
                     with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
                         locator.discover_fresh_sdk_original_pin(
                             instance, **{**arguments, "expected_build_key": "sha256:" + "0" * 64})
@@ -114,7 +119,7 @@ class SdkCampaignOriginalLocatorTest(TestCase):
                     with self.assertRaisesRegex(ValueError, "caller-pinned workflow"):
                         locator.discover_fresh_sdk_original_pin(
                             instance, **{**arguments, "trusted_workflow_path": ".github/workflows/other.yml"})
-                    self.assertEqual(2, download.call_count)
+                    self.assertEqual(0, download.call_count)
                 with patch.object(locator.products, "api_json") as api, \
                      self.assertRaisesRegex(ValueError, "independent version, token and workflow route"):
                     locator.discover_fresh_sdk_original_pin(instance,

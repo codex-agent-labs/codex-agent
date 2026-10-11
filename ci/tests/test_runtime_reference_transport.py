@@ -201,7 +201,8 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
         opener = RangeOpener({101: raw})
         artifact = {'id': 101, 'digest': sha256_bytes(raw), 'size_in_bytes': len(raw),
                     'archive_download_url': 'https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/101/zip'}
-        with mock.patch('runtime_reference_archive.urllib.request.build_opener', return_value=opener):
+        with mock.patch('runtime_reference_archive._READ_AHEAD', 0), \
+                mock.patch('runtime_reference_archive.urllib.request.build_opener', return_value=opener):
             stream = _Archive(artifact, 'synthetic-token')
             self.assertEqual(raw[:2], stream.read(2))
             opener.etag = '"different-body"'
@@ -234,6 +235,12 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
                 product_reuse._download_contract_ci_upload(*arguments)
 
     def test_capture_authenticates_both_original_uploads_before_resolving(self):
+        self.capture_authenticated_references(sdk=False)
+
+    def test_sdk_capture_authenticates_wave19_before_wave4_without_original_transfer(self):
+        self.capture_authenticated_references(sdk=True)
+
+    def capture_authenticated_references(self, *, sdk):
         fixture = resume_fixture.RuntimeResumeCaptureTest()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
@@ -253,23 +260,31 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
             'product-resume-state/unreferenced.bin': b'x' * (4 * 1024 * 1024)})
         base_artifact = {**fixture.artifact, 'created_at': '2026-01-01T01:01:00Z',
             'digest': sha256_bytes(base_raw), 'size_in_bytes': len(base_raw)}
-        write_canonical_json(capture, {'artifact': base_artifact})
+        if sdk:
+            base_artifact['name'] = f"codex-agent-sdk-wave-19-state-{fixture.producer['tree']}-attempt-2"
+        write_canonical_json(capture, {'artifact': base_artifact, **({'sdkStateWave': 19,
+            'captureProducer': {**fixture.producer, 'runAttempt': 2}} if sdk else {})})
         delta = root / 'reference-delta'
-        stage_reference_handoff(handoff, base, capture, delta, state_wave=1)
+        stage_reference_handoff(handoff, base, capture, delta, state_wave=0 if sdk else 1,
+                                sdk_state_wave=4 if sdk else None)
         raw = archive({path.relative_to(delta).as_posix(): path.read_bytes()
                        for path in delta.rglob('*') if path.is_file()})
         artifact = {**base_artifact, 'id': 102, 'digest': sha256_bytes(raw),
                     'size_in_bytes': len(raw),
                     'name': f"codex-agent-runtime-wave-1-state-{fixture.producer['tree']}-attempt-3",
                     'archive_download_url': base_artifact['archive_download_url'].replace('/101/', '/102/')}
+        if sdk:
+            artifact['name'] = f"codex-agent-sdk-wave-4-state-{fixture.producer['tree']}-attempt-3"
         jobs = [{**fixture.job, 'name': name, 'started_at': '2026-01-01T01:00:00Z',
                  'completed_at': '2026-01-01T01:02:00Z'} for name in
-                ('product-validation / runtime-collect-1', 'product-validation / product-resume')]
+                (('product-validation / sdk-collect-4', 'product-validation / sdk-collect-19') if sdk else
+                 ('product-validation / runtime-collect-1', 'product-validation / product-resume'))]
 
         def run_capture(destination, original=base_artifact):
             ranges = RangeOpener({101: base_raw})
             with mock.patch.object(product_reuse, 'api_json', side_effect=[
-                    fixture.run, fixture.commit, artifact, fixture.run, fixture.commit, original]), \
+                    fixture.run, fixture.commit, artifact,
+                    {**fixture.run, "run_attempt": 2} if sdk else fixture.run, fixture.commit, original]), \
                     mock.patch.object(product_reuse, 'paginated_items', side_effect=[[jobs[0]], [jobs[1]]]), \
                     mock.patch.object(product_reuse, 'download_artifact_to_file',
                         side_effect=lambda item, token, path, **kwargs:
@@ -277,7 +292,8 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
                     mock.patch('runtime_reference_archive.urllib.request.build_opener', return_value=ranges):
                 result = product_reuse.capture_runtime_resume_upload(
                     fixture.plan_path, destination, artifact_id=102, artifact_sha256=artifact['digest'],
-                    trusted_workflow_sha=fixture.pin, state_wave=1, repository_root=root,
+                    trusted_workflow_sha=fixture.pin, state_wave=0 if sdk else 1, sdk_state_wave=4 if sdk else None,
+                    repository_root=root,
                     environ=fixture.environment, token='synthetic-token')
                 return result, downloads.call_count, ranges
         destination = root / 'build/reference-capture'
@@ -286,6 +302,14 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
         self.assertLess(sum(end-start+1 for _, start, end in ranges.requests), len(base_raw) // 2)
         self.assertEqual('qualified-reference-members', result['referenceBase']['verification'])
         self.assertEqual(base_artifact, result['referenceBase']['artifact'])
+        if sdk:
+            self.assertEqual(2, result['referenceBase']['observed'][0]['run']['run_attempt'])
+            with mock.patch.object(product_reuse, '_observe_ci_producer_jobs') as observe:
+                with self.assertRaisesRegex(ValueError, 'future attempt'):
+                    product_reuse._capture_runtime_reference_members({}, b'', fixture.producer,
+                        {'runAttempt': 4}, root / 'future', trusted_workflow_sha=fixture.pin,
+                        token='synthetic-token', wanted={})
+                observe.assert_not_called()
         self.assertEqual(regular_file_inventory(handoff, allow_empty=True),
                          regular_file_inventory(destination / 'original', allow_empty=True))
         rejected = root / 'build/rejected-reference'
@@ -311,6 +335,17 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
             delta = root / 'delta'
             value = stage_reference_handoff(handoff, base, capture, delta, state_wave=2)
             self.assertEqual(3, len(value['references']))
+            for predecessor, successor in ((3, 1), (2, 6), (6, 19), (19, 4), (5, 7), (17, 18)):
+                sdk_value = copy.deepcopy(value)
+                sdk_value['base'].update(stateWave=0, sdkStateWave=predecessor)
+                validate_references(sdk_value, 0, sdk_state_wave=successor)
+                for invalid in (predecessor, True, None):
+                    with self.assertRaises(ValueError):
+                        validate_references(sdk_value, 0, sdk_state_wave=invalid)
+                sdk_value['base']['sdkStateWave'] = successor
+                with self.assertRaises(ValueError):
+                    validate_references(sdk_value, 0, sdk_state_wave=predecessor)
+
             self.assertEqual(before, regular_file_inventory(handoff, allow_empty=True))
             self.assertFalse((delta / 'product-resume-state/v1/objects/original.zip').exists())
             resolved = root / 'resolved'

@@ -5,10 +5,12 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from ci.products.index import SignedProductIndex, verify_release_product_index
 from ci.products.inventory import sha256_file
-from ci.products.restore import object_relative_path
+from ci.products.restore import object_relative_path, verification_session
+from ci.products import sdk_campaign_index as verifier
 from ci.products.reuse import LookupSession, RemoteCatalog, ReuseLookupError
 from ci.products.sdk_campaign_index import verify_release_sdk_campaign_objects
 from ci.products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
@@ -85,6 +87,24 @@ class SdkReleaseCampaignObjectsTest(unittest.TestCase):
         substituted[keys[0]] = tampered
         with self.assertRaises(ValueError):
             self.verify(objects=substituted)
+
+    def test_completed_campaign_reuses_only_unchanged_private_session_custody(self):
+        with patch.object(verifier, "verify_object", wraps=verifier.verify_object) as verify:
+            with verification_session():
+                first = self.verify()
+                self.verify()
+                self.assertEqual(62, verify.call_count)
+                first.clear()
+                self.assertEqual(62, len(self.verify()))
+                keys = sorted(self.objects)
+                swapped = dict(self.objects)
+                swapped[keys[0]] = swapped[keys[1]]
+                with self.assertRaises(ValueError):
+                    self.verify(objects=swapped)
+            count = verify.call_count
+            with verification_session():
+                self.verify()
+            self.assertEqual(count + 62, verify.call_count)
 
     def test_non_exact_or_non_promoted_index_fails_closed(self):
         shortened = deepcopy(self.index)

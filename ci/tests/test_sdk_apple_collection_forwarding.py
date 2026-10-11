@@ -51,7 +51,7 @@ class AppleCollectionForwardingTest(unittest.TestCase):
                 args[3].mkdir(parents=True)
                 (args[3] / "diagnostics.bin").write_bytes(b"original sibling diagnostics\x00\xff")
                 return {"rows": rows}
-            advanced_result = {"fullReuse": False, "synthetic": "advance boundary"}
+            advanced_result = {"fullReuse": False, "synthetic": "advance boundary", "matrices": {"sdk": []}}
             def advance(*args, **kwargs):
                 args[4].mkdir(parents=True)
                 (args[4] / "result.json").write_bytes(b"retained state")
@@ -77,14 +77,8 @@ class AppleCollectionForwardingTest(unittest.TestCase):
                 sdk_apple_evidence_roots=tuple(destination / "collection" / row["sdkAppleValidationEvidenceDirectory"]
                                              for row in successes))
             self.assertNotIn("sdk_evidence_roots", advanced.call_args.kwargs)
-            if failed:
-                matrix.assert_not_called()
-                self.assertIn("sdk_workers_required=false", output.read_text())
-            else:
-                matrix.assert_called_once_with(destination / "handoff/product-resume-inputs/plan/impact-plan.json",
-                    destination / "handoff/product-resume-state", destination / "handoff/runtime-state", output,
-                    repository_root=f.root, environ={}, trusted_workflow_sha=fixtures.PIN,
-                    family="ios-validation", **policy)
+            matrix.assert_not_called()
+            self.assertIn("sdk_workers_required=false", output.read_text())
             self.assertEqual(before, regular_file_inventory(f.inputs))
             for name in ("product-resume-inputs", "product-resume-state"):
                 self.assertEqual(regular_file_inventory(f.inputs / name),
@@ -111,7 +105,7 @@ class AppleCollectionForwardingTest(unittest.TestCase):
         f = self.fixture
         with patch.object(workflow.product_reuse, "collect_runtime_workers", return_value={"rows": []}), \
                 patch.object(workflow.product_reuse, "advance_products"), \
-                patch.object(workflow, "matrix", return_value={"include": [DEVICE]}), \
+                patch.object(workflow, "_write_matrix", return_value={"include": [DEVICE]}), \
                 self.assertRaisesRegex(ValueError, "remain after their final"):
             workflow.collect(f.inputs, f.destination, f.output, wave=9, family="ios-validation",
                 trusted_workflow_sha=fixtures.PIN, repository_root=f.root, environ={}, token="observer")

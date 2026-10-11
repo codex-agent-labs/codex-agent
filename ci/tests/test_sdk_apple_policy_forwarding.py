@@ -128,12 +128,12 @@ class ApplePolicyForwardingTest(unittest.TestCase):
                 self.assertNotIn("sdk_apple_validation_policy", result)
             with patch.object(workflow.product_reuse, "_product_materialization_paths", return_value=(self.discovery, self.discovery, self.destination)), \
                     patch.object(workflow.product_reuse, "collect_runtime_workers", return_value={"rows": []}) as collect, \
-                    patch.object(workflow.product_reuse, "advance_products", return_value={"fixture": "advanced"}) as advance, \
+                    patch.object(workflow.product_reuse, "advance_products", return_value={"fixture": "advanced", "matrices": {"sdk": []}}) as advance, \
                     patch.object(workflow, "snapshot_regular_tree"), \
                     patch.object(workflow, "matrix", return_value={"include": []}) as matrix:
                 workflow.collect(self.discovery, self.destination, self.output, wave=1,
                     trusted_workflow_sha="a" * 40, **self.common, **self.optional(present))
-                for operation in (collect, advance, matrix):
+                for operation in (collect, advance):
                     self.assert_policy(operation.call_args, present)
 
     def argv(self, mode):

@@ -71,8 +71,8 @@ def hosted(mode, references, directory):
     from products.inventory import write_canonical_json
     from runtime_reference_transport import validate_original_references
     references = validate_original_references(references)
-    phases = {source["relativePath"] for source in references["sources"] if source["kind"] == "phase"}
-    records = [row for row in references["references"] if row["source"] in phases
+    sources = {source["relativePath"] for source in references["sources"]}
+    records = [row for row in references["references"] if row["source"] in sources
                and row["relativePath"].startswith(row["source"] + "/")]
     manifest = Path(directory) / ("cache-" + mode + "-manifest.json")
     write_canonical_json(manifest, [{"sha256": row["sha256"], "bytes": row["bytes"]} for row in records])

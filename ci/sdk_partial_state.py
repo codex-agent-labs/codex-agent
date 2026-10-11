@@ -8,7 +8,7 @@ from .sdk_native_continuation import _job, _locator
 from .products.inventory import require_object
 
 
-_WAVES = (3, 1, 2, 19, 4, 5, 6, 7, 8, 9, 10)
+_WAVES = (3, 1, 2, 6, 19, 4, 5, 7, 8, 9, 10)
 
 
 def select_failed_sdk_wave_state(needs):
@@ -17,6 +17,14 @@ def select_failed_sdk_wave_state(needs):
     jobs = tuple(_job(needs, f"sdk-collect-{wave}") for wave in _WAVES)
     candidates = [index for index, job in enumerate(jobs)
                   if job["result"] == "success" and job["outputs"].get("wave_failed") == "true"]
+    checkpoint = False
+    if not candidates:
+        failures = [index for index, job in enumerate(jobs) if job["result"] in {"failure", "cancelled"}]
+        if failures:
+            prior = [index for index, job in enumerate(jobs[:failures[0]]) if job["result"] == "success"]
+            if prior:
+                candidates = [prior[-1]]
+                checkpoint = True
     if len(candidates) != 1:
         raise ValueError("Partial SDK state requires one failed top-level collection")
     chosen = candidates[0]
@@ -25,7 +33,7 @@ def select_failed_sdk_wave_state(needs):
         if index < chosen and (result not in {"success", "skipped"}
                 or result == "success" and job["outputs"].get("wave_failed") != "false"):
             raise ValueError("Partial SDK state has a failed or incomplete predecessor")
-        if index > chosen and result != "skipped":
+        if index > chosen and result not in ({"skipped", "failure", "cancelled"} if checkpoint else {"skipped"}):
             raise ValueError("Partial SDK state has a successor after failed collection")
         if result == "skipped" and job["outputs"]:
             raise ValueError("Skipped SDK collection claims output")
@@ -40,6 +48,8 @@ def select_failed_sdk_wave_state(needs):
                 raise ValueError("Successful SDK predecessor lacks its upload locator")
     wave = _WAVES[chosen]
     outputs = jobs[chosen]["outputs"]
+    if checkpoint and outputs.get("wave_failed") != "false":
+        raise ValueError("SDK checkpoint must have completed without failed siblings")
     for field, expected in (("state_wave", "0"), ("sdk_state_wave", str(wave))):
         if field in outputs and outputs[field] != expected:
             raise ValueError("Failed SDK collection contradicts its original wave")

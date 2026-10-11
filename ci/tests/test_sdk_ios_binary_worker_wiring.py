@@ -50,14 +50,14 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
             raise AssertionError(f"Expected the sole {job} parent selector")
         return textwrap.dedent(matches[0])
 
-    def test_capture_and_exact_identity_precede_read_only_apple_setup(self):
+    def test_capture_and_exact_identity_precede_selected_apple_cache_writer(self):
         capture = self.action.index("uses: ./.github/actions/capture-sdk-transport")
         identity = self.action.index("iOS SDK worker differs from the original replay election")
         setup = self.action.index("uses: ./.github/actions/setup-kmp")
         self.assertLess(capture, identity)
         self.assertLess(identity, setup)
         for value in (
-            "cache-read-only: 'true'",
+            "cache-read-only: 'false'",
             "product-worker: 'true'", "xcode-fingerprint: auto",
         ):
             self.assertIn(value, self.action)

@@ -82,6 +82,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         _require_capability_output_separate(private, [root, *trees, *files])
         capture, candidate = private / "validation-upload", private / "shard"
         with sdk_workflow.verified_inputs(plan, discovery, state,
+                requested_scope=(instance,),
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
                 repository_root=root, environ=environ, token=token, sdk_validation_tooling=tooling, **apple) as inputs:

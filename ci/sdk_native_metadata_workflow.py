@@ -84,6 +84,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
         private = Path(temporary).resolve()
         capture = private / "prepared-upload"
         with sdk_workflow.verified_inputs(plan, discovery, state,
+                requested_scope=(instance,),
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
                 repository_root=root, environ=environ, token=token, sdk_validation_tooling=tooling, **apple) as inputs:
@@ -92,6 +93,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             if identity not in selection["consumers"]:
                 raise ValueError("Native SDK metadata is not selected")
             inspected = product_reuse.inspect_products(plan, discovery, preparation_state,
+                requested_scope=(preparation_instance,),
                 repository_root=root, environ=environ, sdk_validation_tooling=tooling,
                 sdk_original_workflow_sha=trusted_workflow_sha, **apple)
             elected = [row for row in inspected["readyPlans"]

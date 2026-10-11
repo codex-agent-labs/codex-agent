@@ -464,6 +464,45 @@ class ProductRestoreTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inventory"):
             verify_carrier(carrier_root, (instance,), consumer)
 
+    def test_selected_carrier_checks_only_selected_bytes_but_keeps_full_admission_strict(self):
+        identities = (PhaseInstanceId("sdk", "javascript", "package", "node"),
+                      PhaseInstanceId("sdk", "sdk-core", "package", "common"))
+        phases, sources = [], {}
+        for number, identity in enumerate(identities):
+            stage = self.root / f"scoped-stage-{number}"
+            (stage / "outputs").mkdir(parents=True)
+            (stage / "outputs/artifact.bin").write_bytes(b"immutable original output")
+            fields = {key: getattr(identity, key) for key in ("product", "component", "phase", "target")}
+            write_output_manifest(stage, identity.product, identity.component, identity.phase,
+                                  identity.target, "0.2.0", {"package": "outputs"})
+            plan = {"schemaVersion": 1, **fields, "inputs": self.receipt["inputs"],
+                    "buildKey": compute_build_key(**fields, inputs=self.receipt["inputs"])}
+            shard = self.root / f"scoped-shard-{number}"
+            value = finalize_phase_object(stage_root=stage, phase_plan=plan, producer=self.producer(),
+                product_version="0.2.0", trust_domain="development", destination=shard)
+            phases.append({**fields, **{key: value[key] for key in
+                ("buildKey", "receiptSha256", "objectSha256")}, "state": "reused",
+                "source": "stable", "transportSource": self.remote_transport()["source"], "misses": []})
+            sources[identity] = shard / value["objectPath"]
+        resolution = {"schemaVersion": 1, "result": "complete", "fullReuse": True,
+                      "phases": phases, "matrices": {"contract": [], "runtime": [], "sdk": []}}
+        root = self.root / "scoped-carrier"
+        consumer = self.remote_transport()["consumer"]
+        write_carrier(root, resolution, identities, sources, consumer)
+        unrelated = root / object_relative_path(phases[1]["buildKey"], phases[1]["receiptSha256"])
+        unrelated.write_bytes(b"damaged unselected original")
+        with mock.patch.object(product_restore, "verify_object", wraps=verify_object) as checked:
+            value = verify_carrier(root, identities, consumer, selected_instances=identities[:1])
+        self.assertEqual(1, checked.call_count)
+        self.assertEqual(phases[:1], value["resolution"]["phases"])
+        self.assertEqual(1, len(value["objects"]))
+        with self.assertRaises(CacheObjectError):
+            verify_carrier(root, identities, consumer)
+        selected = root / object_relative_path(phases[0]["buildKey"], phases[0]["receiptSha256"])
+        selected.write_bytes(b"damaged required original")
+        with self.assertRaises(CacheObjectError):
+            verify_carrier(root, identities, consumer, selected_instances=identities[:1])
+
     def test_phase_finalizer_preserves_the_plan_receipt_and_exact_object_shard(self) -> None:
         instance = PhaseInstanceId("sdk", "sdk-core", "package", "common")
         plan = {

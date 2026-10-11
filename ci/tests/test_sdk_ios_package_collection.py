@@ -207,7 +207,7 @@ class SdkIosPackageWorkflowCollectionTest(unittest.TestCase):
                 self.assertEqual([] if failed else [destination / "collection/rows/sdk-ios-package/original/shard"],
                                  arguments[3])
                 arguments[4].mkdir(parents=True)
-                return {"synthetic": "advanced"}
+                return {"synthetic": "advanced", "matrices": {"sdk": []}}
 
             with patch.object(
                 workflow.product_reuse, "collect_runtime_workers", return_value={"rows": [row]},
@@ -220,11 +220,9 @@ class SdkIosPackageWorkflowCollectionTest(unittest.TestCase):
                     repository_root=self.repository, environ={}, token="synthetic-token",
                     family="ios-package",
                 )
-            self.assertEqual({"synthetic": "advanced"}, result)
+            self.assertEqual({"synthetic": "advanced", "matrices": {"sdk": []}}, result)
             self.assertEqual("ios-package", collect.call_args.kwargs["sdk_family"])
-            self.assertEqual(not failed, matrix.called)
-            if matrix.called:
-                self.assertEqual("ios-package", matrix.call_args.kwargs["family"])
+            matrix.assert_not_called()
             for name in ("product-resume-inputs", "product-resume-state"):
                 self.assertEqual(name.encode(), (destination / "handoff" / name / "original.bin").read_bytes())
 

@@ -158,10 +158,16 @@ jobs:
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
           plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+      - name: Restore exact pinned archive bytes
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/sdk-archive-cache-v1
+          key: sdk-archives-v1-${{ matrix.target }}-${{ hashFiles('gradle.properties', 'gradle/libs.versions.toml', '**/verification-metadata.xml') }}
       - id: native-archive
         name: Provision only Git-pinned native compiler archives
         shell: bash
         env:
+          CODEX_SDK_ARCHIVE_CACHE: ${{ runner.temp }}/sdk-archive-cache-v1
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail

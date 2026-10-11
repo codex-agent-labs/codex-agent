@@ -12,6 +12,35 @@ from ci.products import gradle_bootstrap as bootstrap
 
 
 class SdkDependencySeedTest(unittest.TestCase):
+    def test_completed_seed_is_reused_only_in_process_with_unchanged_dependencies(self):
+        from ci.products.restore import verification_session
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            cache = root / 'gradle-cache'
+            modules = cache / 'caches/modules-2'
+            modules.mkdir(parents=True)
+            dependency = modules / 'dependency'
+            dependency.write_bytes(b'original')
+            wrapper = root / 'gradlew'
+            wrapper.write_bytes(b'wrapper fixture')
+            with patch.object(bootstrap, 'git_regular_blob_bytes', side_effect=lambda *a, **k:
+                    self.metadata('same') if a[2].endswith('.xml') else b'// Git input\n'), \
+                    patch.object(bootstrap.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+                def seed(index):
+                    bootstrap.seed_sdk_gradle_dependencies(root, 'a' * 40, wrapper,
+                        {'GRADLE_USER_HOME': str(cache)}, root / f'seed-{index}')
+                with verification_session():
+                    seed(1)
+                    seed(2)
+                    self.assertEqual(1, run.call_count)
+                    self.assertTrue(json.loads((root / 'seed-2/seed-timing.json').read_text())['reusedInProcess'])
+                    dependency.write_bytes(b'changed')
+                    seed(3)
+                    self.assertEqual(2, run.call_count)
+                with verification_session():
+                    seed(4)
+                self.assertEqual(3, run.call_count)
+
     def test_exact_git_fixture_merges_all_pins_and_only_resolves_dependencies(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

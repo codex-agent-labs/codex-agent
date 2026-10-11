@@ -75,7 +75,7 @@ runs:
         PY
     - uses: ./.github/actions/setup-kmp
       with:
-        cache-read-only: 'true'
+        cache-read-only: 'false'
         node-version: '24.18.0'
         product-worker: 'true'
     - name: Execute exact SDK phase within verified original input lifetimes
@@ -108,7 +108,11 @@ runs:
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-sdk-worker-javascript-${{ inputs.phase }}-node-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
-        path: build/sdk-worker
+        path: |
+          build/sdk-worker/shard
+          build/sdk-worker/worker/execution.json
+          build/sdk-worker/worker/gradle.log
+          ${{ job.status != 'success' && 'build/sdk-worker' || '' }}
         if-no-files-found: warn
         overwrite: false
         include-hidden-files: true

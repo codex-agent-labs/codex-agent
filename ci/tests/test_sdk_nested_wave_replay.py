@@ -80,9 +80,9 @@ class NestedSdkWaveReplayTest(unittest.TestCase):
                     expected_artifact_sha256=_PIN["artifact_sha256"],
                     trusted_workflow_sha="c" * 40, repository_root=self.root,
                     environ=_CURRENT, token="test-token")
-            with self.assertRaisesRegex(ValueError, "wave 11–16"):
+            with self.assertRaisesRegex(ValueError, "wave 1–19"):
                 replay.replay_failed_nested_sdk_wave(self.plan, self.destination,
-                    producer=_PRODUCER, wave=17,
+                    producer=_PRODUCER, wave=20,
                     expected_artifact_id=_PIN["artifact_id"],
                     expected_artifact_sha256=_PIN["artifact_sha256"],
                     trusted_workflow_sha="c" * 40, repository_root=self.root,

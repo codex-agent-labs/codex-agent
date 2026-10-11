@@ -304,10 +304,16 @@ class ReusedSdkOriginalTest(unittest.TestCase):
         self.assertEqual(1, sum(call.args[0]["id"] == 902 for call in downloads.call_args_list))
 
     def test_failed_run_partial_catalog_preserves_successful_original_worker(self):
+        self.partial_catalog_original('failure')
+
+    def test_cancelled_run_partial_catalog_preserves_successful_original_worker(self):
+        self.partial_catalog_original('cancelled')
+
+    def partial_catalog_original(self, conclusion):
         producer = self.fixture.producer
         name = locator.failed_sdk_partial_catalog_name(producer)
         self.catalog_artifact["name"] = name
-        self.run = {**self.run, "status": "completed", "conclusion": "failure"}
+        self.run = {**self.run, "status": "completed", "conclusion": conclusion}
         worker_job, _ = fresh_sdk_worker_route(self.instance, self.descriptor["receipt"])
         selection = {self.instance: {
             "expected_build_key": self.ready["buildKey"],
@@ -338,7 +344,7 @@ class ReusedSdkOriginalTest(unittest.TestCase):
                     trusted_worker_workflow_path=".github/workflows/product-validation.yml",
                     trusted_worker_job_name=worker_job) as (evidence, object_path):
                 self.assertEqual(self.original_object.read_bytes(), object_path.read_bytes())
-                self.assertEqual("failure", evidence["catalogProducer"][0]["run"]["conclusion"])
+                self.assertEqual(conclusion, evidence["catalogProducer"][0]["run"]["conclusion"])
 
     def test_early_js_partial_catalog_has_separate_exact_child_route(self):
         producer = self.fixture.producer

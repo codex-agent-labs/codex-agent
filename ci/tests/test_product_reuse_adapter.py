@@ -1264,6 +1264,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
             return product_reuse.Catalog(source, {}, str(artifact["id"]), {}, {})
 
         with mock.patch.object(product_reuse, "paginated_items", return_value=artifacts) as listed, \
+                mock.patch.object(product_reuse, "_catalog_index_hint", return_value={"entries": []}) as headers, \
                 mock.patch.object(product_reuse, "_same_pr_run", return_value={
                     "id": 7, "run_attempt": 1, "head_sha": COMMIT,
                 }), \
@@ -1285,6 +1286,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
         )
         listed.assert_called_once()
         self.assertEqual(3, downloaded.call_count)
+        self.assertEqual([4, 6], [call.args[1]["id"] for call in headers.call_args_list])
 
     def test_discovery_includes_exact_git_sdk_default_without_replacing_current_runtime(self) -> None:
         # Real Git policy, mocked transport only: discovery is not carrier admission.
@@ -1324,6 +1326,30 @@ class ProductReuseAdapterTest(unittest.TestCase):
         self.assertEqual([2], [artifact["id"] for artifact in product_reuse._candidate_artifacts(
             artifacts, "stable", 31, {**versions, "runtime-release": "0.8.0"},
             sdk_default_runtime_version="0.8.0")])
+
+    def test_historical_discovery_downloads_missing_keys_and_conflicts_but_skips_duplicate_bodies(self):
+        identity = dict(product="sdk", component="javascript", phase="package", target="node")
+        first = {**identity, "productVersion": VERSIONS["sdk"], "buildKey": sha256_bytes(b"first"), "outputs": ["a"]}
+        older = {**first, "buildKey": sha256_bytes(b"older")}
+        conflict = {**first, "outputs": ["different"]}
+        entries = {4: first, 3: first, 2: older, 1: conflict}
+        artifacts = [{"id": number, "expired": False,
+            "name": f"codex-agent-product-catalog-v1-pull-request-31-{number}"} for number in entries]
+        def materialize(source, artifact, *args, **kwargs):
+            entry = entries[artifact["id"]]
+            return product_reuse.Catalog(source, {"entries": [entry]}, str(artifact["id"]),
+                {"manifest": str(artifact["id"])}, {entry["buildKey"]: self.root / "original.zip"})
+        environment = {"GITHUB_TOKEN": "synthetic", "GITHUB_API_URL": "https://api.github.com",
+                       "GITHUB_REPOSITORY": "codex-agent-labs/codex-agent"}
+        with mock.patch.object(product_reuse, "paginated_items", return_value=artifacts), \
+                mock.patch.object(product_reuse, "_catalog_index_hint",
+                    side_effect=lambda source, artifact, *args, **kwargs: {"entries": [entries[artifact["id"]]]}) as headers, \
+                mock.patch.object(product_reuse, "_materialize_catalog", side_effect=materialize) as bodies:
+            catalogs = product_reuse._discover_catalogs(impact_plan(changed=["known.kt"]),
+                self.root / "fallbacks", None, environment, VERSIONS)
+        self.assertEqual([4, 2, 1], [call.args[1]["id"] for call in bodies.call_args_list])
+        self.assertEqual([3, 2, 1], [call.args[1]["id"] for call in headers.call_args_list])
+        self.assertEqual([catalog.request for catalog in catalogs], product_reuse._catalog_request(catalogs)["samePr"])
 
     def test_discovery_does_not_read_sdk_default_for_no_sdk_or_sdk_binary_only(self) -> None:
         plan = impact_plan(changed=["known.kt"])
@@ -2024,6 +2050,10 @@ class ProductReuseAdapterTest(unittest.TestCase):
             "discovery-rebase/objects/value.zip",
             rebased["samePr"]["objects"][0]["objectPath"],
         )
+        multiple = product_reuse._rebase_catalog_paths({**catalogs,
+            "samePr": [record, {**record, "manifest": "older/index.json"}]}, discovery, root)
+        self.assertEqual([rebased["samePr"]["manifest"], "discovery-rebase/older/index.json"],
+                         [member["manifest"] for member in multiple["samePr"]])
 
         for value in ("../index.json", "/index.json"):
             with self.subTest(value=value):

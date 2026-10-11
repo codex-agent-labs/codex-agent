@@ -20,13 +20,16 @@ class SdkFamilyWorkflowTest(unittest.TestCase):
     setUp = fixture.SdkWorkflowTest.setUp
 
     def test_exact_native_and_metadata_matrices_exclude_all_other_instances(self):
-        self.inspect.return_value = {"readyPlans": [
+        all_ready = {"readyPlans": [
             {**workflow.product_reuse._identity_record(instance),
              "buildKey": "sha256:" + "a" * 64} for instance in PHASE_INSTANCE_IDS]}
         for family, expected in (
                 ("csharp-binary", {PhaseInstanceId("sdk", "csharp", "binary", "desktop")}),
                 ("native-package", {PhaseInstanceId("sdk", language, "package", "desktop") for language in NATIVE_BINDINGS}),
                 ("javascript-metadata", {PhaseInstanceId("sdk", "javascript", "metadata", "node")})):
+            from ci.tests.test_sdk_native_continuation import ready
+            self.inspect.return_value = ({"readyPlans": [ready(language, "package", "desktop")
+                for language in NATIVE_BINDINGS]} if family == "native-package" else all_ready)
             value = workflow.matrix(self.plan, self.discovery, self.state, self.repository / family,
                 family=family, repository_root=self.repository, environ={})
             self.assertEqual(expected, {workflow.product_reuse._identity(row) for row in value["include"]})
@@ -59,7 +62,7 @@ class SdkFamilyWorkflowTest(unittest.TestCase):
                     self.assertEqual((identity,) if failure else (), kwargs["failed_instances"])
                     self.assertEqual([] if failure else [destination / "collection/rows/original/shard"], args[3])
                     args[4].mkdir(parents=True)
-                    return {"synthetic": "advanced"}
+                    return {"synthetic": "advanced", "matrices": {"sdk": []}}
                 with patch.object(workflow.product_reuse, "collect_runtime_workers", return_value={"rows": [row]}) as collect, \
                         patch.object(workflow.product_reuse, "advance_products", side_effect=advance), \
                         patch.object(workflow, "matrix", return_value={"include": []}) as matrix:
@@ -67,7 +70,7 @@ class SdkFamilyWorkflowTest(unittest.TestCase):
                         wave=wave, family=family, trusted_workflow_sha="a" * 40,
                         repository_root=self.repository, environ={}, token="synthetic")
                 self.assertEqual(family, collect.call_args.kwargs["sdk_family"])
-                self.assertEqual(not failure, matrix.called)
+                matrix.assert_not_called()
                 self.assertEqual(b"original\x00\xff", (destination / "handoff/product-resume-state/retained").read_bytes())
             with self.assertRaises(ValueError):
                 workflow.collect(source, self.repository / "wrong-wave", self.repository / "unused",

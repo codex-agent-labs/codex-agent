@@ -86,6 +86,8 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
     @contextmanager
     def verified(self, *args, **kwargs):
         self.assertEqual((self.plan, self.discovery, self.state), args)
+        self.assertEqual((workflow.PhaseInstanceId("sdk", "javascript", "metadata", "node"),),
+                         kwargs.pop("requested_scope"))
         self.assertEqual({"artifact_id": 71, "artifact_sha256": self.arguments["sdk_inputs_artifact_sha256"],
             **{name: self.arguments[name] for name in ("trusted_workflow_sha", "keyring", "keys_directory",
                                                      "repository_root", "environ", "token")},

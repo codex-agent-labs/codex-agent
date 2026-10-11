@@ -8,10 +8,13 @@ import hashlib
 from pathlib import Path
 import re
 import subprocess
+import time
 import xml.etree.ElementTree as ET
 
 from .inventory import git_regular_blob_bytes, read_regular_file_bytes, require_regular_directory
 from .toolchain import _properties
+from .restore import _VERIFICATION_SESSION, _stage_fingerprint
+from .inventory import _is_windows, canonical_json_bytes, regular_file_inventory, write_canonical_json
 
 
 def require_preprovisioned_gradle(properties_bytes: bytes, environment) -> Path:
@@ -156,11 +159,36 @@ def seed_sdk_gradle_dependencies(root: Path, revision: str, wrapper: Path,
                "-p", str(destination / "gradle/build-logic"), "-I", str(script),
                "resolveSdkBuildDependencies", "--dependency-verification=strict",
                "--no-daemon", "--no-configuration-cache", "--console=plain"]
+    session = None if _is_windows() else _VERIFICATION_SESSION.get()
+    cache = Path(environment.get("GRADLE_USER_HOME", str(Path.home() / ".gradle")))
+    key = None
+    if session is not None and (cache / "caches/modules-2").is_dir() and wrapper.is_file():
+        # No persisted marker is authority. Only this process's completed seed
+        # can skip another startup; the actual product keeps strict offline checks.
+        key = canonical_json_bytes({"fixture": regular_file_inventory(destination),
+            "wrapper": hashlib.sha256(read_regular_file_bytes(wrapper, reject_symlink_parents=True)).hexdigest(),
+            "command": product_command[:product_command.index("--offline")],
+            "cache": str(cache), "environment": {name: environment.get(name) for name in
+                ("JAVA_HOME", "GRADLE_USER_HOME", "GRADLE_OPTS", "JAVA_OPTS", "PATH")}})
+        fingerprint = _stage_fingerprint(cache / "caches/modules-2")
+        with session["lock"]:
+            previous = session.setdefault("sdkDependencySeeds", {}).get(key)
+        if previous is not None and previous == fingerprint:
+            write_canonical_json(destination / "seed-timing.json", {"elapsedNs": 0, "reusedInProcess": True})
+            return
+    started = time.monotonic_ns()
     with (destination / "gradle.log").open("xb") as log:
         result = subprocess.run(command, cwd=root, env=dict(environment), stdout=log,
                                 stderr=subprocess.STDOUT, check=False)
     if result.returncode:
         raise ValueError(f"Pinned SDK dependency seeding failed; see {destination / 'gradle.log'}")
+    write_canonical_json(destination / "seed-timing.json", {
+        "elapsedNs": time.monotonic_ns() - started, "reusedInProcess": False})
+    if key is not None:
+        fingerprint = _stage_fingerprint(cache / "caches/modules-2")
+        with session["lock"]:
+            if len(session["sdkDependencySeeds"]) < 8:
+                session["sdkDependencySeeds"][key] = fingerprint
 
 
 def seed_sdk_maven_binary_dependencies(root: Path, revision: str, wrapper: Path,

@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -94,6 +95,14 @@ class CoreNativeArchiveProvisionTest(unittest.TestCase):
                 extension = "zip" if target == "windows-x64" else "tar.gz"
                 name = f"kotlin-native-prebuilt-{VERSION}-{provider._SUFFIXES[target]}.{extension}"
                 self.assertEqual([f"{provider._MAVEN_ROOT}/{VERSION}/{name}"], self.download_urls)
+                self.assertEqual(self.payload, result.read_bytes())
+                result.unlink()
+
+    def test_shared_host_digest_reuses_bytes_across_targets_in_private_destinations(self):
+        with patch.dict(os.environ, {"CODEX_SDK_ARCHIVE_CACHE": str(self.base / "cache")}):
+            for target in ("macos-arm64", "ios-arm64", "ios-simulator-arm64"):
+                result = self.run_provider(target=target)
+                self.assertEqual([URL] if target == "macos-arm64" else [], self.download_urls)
                 self.assertEqual(self.payload, result.read_bytes())
                 result.unlink()
 

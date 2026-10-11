@@ -17,6 +17,18 @@ def jobs(failed_wave):
 
 
 class SdkPartialStateTest(unittest.TestCase):
+    def test_failed_or_cancelled_collector_preserves_the_last_successful_checkpoint(self):
+        for result in ('failure', 'cancelled'):
+            value = jobs(6)
+            value['sdk-collect-6'] = {'result': result, 'outputs': {}}
+            selected = select_failed_sdk_wave_state(value)
+            self.assertEqual('2', selected['sdk_state_wave'])
+            self.assertEqual('102', selected['artifact_id'])
+            value['sdk-collect-19'] = {'result': 'success', 'outputs': {
+                'wave_failed': 'false', 'artifact_id': '119', 'artifact_digest': 'sha256:' + 'a' * 64}}
+            with self.assertRaisesRegex(ValueError, 'successor'):
+                select_failed_sdk_wave_state(value)
+
     def test_each_top_level_failed_collection_keeps_its_exact_upload(self):
         for wave in _WAVES:
             with self.subTest(wave=wave):

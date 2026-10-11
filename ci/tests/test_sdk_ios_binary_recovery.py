@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from copy import deepcopy
 import io
+import os
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -11,6 +12,7 @@ import zipfile
 from ci.tests import test_sdk_ios_package_upload as fixture
 from ci import sdk_ios_binary_recovery as recovery
 from products.inventory import canonical_json_bytes, regular_file_inventory, load_canonical_json_bytes
+from products.restore import verification_session
 
 
 class IosBinaryRecoveryTest(unittest.TestCase):
@@ -46,6 +48,113 @@ class IosBinaryRecoveryTest(unittest.TestCase):
             {**self.producer, "runId": 72}, receipt["buildKey"], self.output, self.work,
             repository_root=self.root, environ={}, trusted_workflow_sha=self.pin,
             token="synthetic-token", attempts=(self.run,), **changes)
+
+    def replay(self):
+        return recovery.replay_prior_ios_binary(self.output, self.work, plan=self.plan,
+            plan_path=self.plan_path, repository_root=self.root,
+            consumer_producer={**self.producer, "runId": 72}, trusted_workflow_sha=self.pin,
+            token="synthetic-token", environ={})
+
+    def test_session_downloads_once_but_observes_every_replay_and_expires(self):
+        with self.gates():
+            original = self.capture()
+            before = regular_file_inventory(self.output)
+            with patch.object(recovery.products, "capture_sdk_ios_binary_upload",
+                    wraps=recovery.products.capture_sdk_ios_binary_upload) as capture, \
+                    patch.object(recovery, "locate_original_apple_upload",
+                        wraps=recovery.locate_original_apple_upload) as observe:
+                with verification_session() as session:
+                    for _ in range(3):
+                        self.assertEqual(original, self.replay())
+                    self.assertEqual(1, capture.call_count)
+                    self.assertEqual(3, observe.call_count)
+                    self.assertEqual(1, session["downloadedArtifactCount"])
+                    self.assertEqual(len(self.raw), session["downloadedArtifactBytes"])
+                with verification_session():
+                    self.assertEqual(original, self.replay())
+                self.assertEqual(2, capture.call_count)
+                self.assertEqual(original, self.replay())  # No outer session: full authentication.
+                self.assertEqual(3, capture.call_count)
+            self.assertEqual(before, regular_file_inventory(self.output))
+
+    def test_session_hit_rejects_changed_live_provenance_before_download(self):
+        with self.gates():
+            self.capture()
+            with verification_session(), patch.object(recovery, "_source_identity", return_value="policy"), \
+                    patch.object(recovery.products, "capture_sdk_ios_binary_upload",
+                        wraps=recovery.products.capture_sdk_ios_binary_upload) as capture:
+                self.replay()
+                for source, changes in (
+                    (self.run, {"conclusion": "success"}),
+                    (self.run, {"pull_requests": [{"number": 32}]}),
+                    (self.run["head_repository"], {"fork": True}),
+                    (self.jobs[0], {"conclusion": "failure"}),
+                    (self.artifact, {"expired": True}),
+                    (self.artifact, {"size_in_bytes": len(self.raw) + 1}),
+                    (self.artifact, {"created_at": "2026-09-11T11:15:00Z"}),
+                    (self.artifact, {"digest": "sha256:" + "0" * 64}),
+                    (self.plan, {"remoteBuildAuthorized": False}),
+                ):
+                    with self.subTest(changes=changes), patch.dict(source, changes), self.assertRaises(ValueError):
+                        self.replay()
+                self.assertEqual(1, capture.call_count)
+
+    def test_session_hit_hashes_actual_compact_bytes_even_with_restored_mtime(self):
+        with self.gates():
+            record, = self.capture()
+            with verification_session(), patch.object(recovery, "_source_identity", return_value="policy"), \
+                    patch.object(recovery.products, "capture_sdk_ios_binary_upload",
+                        wraps=recovery.products.capture_sdk_ios_binary_upload) as capture:
+                self.replay()
+                path = self.work / record["objectPath"]
+                before = path.stat()
+                path.write_bytes(b"x" * before.st_size)
+                os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+                with self.assertRaisesRegex(ValueError, "compact shard differs"):
+                    self.replay()
+                self.assertEqual(1, capture.call_count)
+
+    def test_failed_comparison_and_late_mutation_never_seal_session(self):
+        with self.gates():
+            self.capture()
+            with verification_session() as session, \
+                    patch.object(recovery, "_source_identity", return_value="policy"):
+                with patch.object(recovery.products, "capture_sdk_ios_binary_upload",
+                        side_effect=ValueError("whole archive digest mismatch")), \
+                        self.assertRaisesRegex(ValueError, "whole archive digest mismatch"):
+                    self.replay()
+                self.assertFalse(session.get("sdkIosOriginals"))
+                original_record = recovery._record
+                original_plan = self.plan_path.read_bytes()
+                def mutate(*args):
+                    record = original_record(*args)
+                    self.plan_path.write_bytes(original_plan + b" ")
+                    return record
+                with patch.object(recovery, "_record", side_effect=mutate), \
+                        self.assertRaisesRegex(ValueError, "changed during readmission"):
+                    self.replay()
+                self.assertFalse(session.get("sdkIosOriginals"))
+                self.plan_path.write_bytes(original_plan)
+                with patch.object(recovery.products, "capture_sdk_ios_binary_upload",
+                        wraps=recovery.products.capture_sdk_ios_binary_upload) as capture:
+                    self.replay()
+                    self.replay()
+                    self.assertEqual(1, capture.call_count)
+
+    def test_policy_change_reauthenticates_and_windows_keeps_full_path(self):
+        with self.gates():
+            self.capture()
+            with verification_session(), patch.object(recovery, "_source_identity", return_value="policy-1") as policy, \
+                    patch.object(recovery.products, "capture_sdk_ios_binary_upload",
+                        wraps=recovery.products.capture_sdk_ios_binary_upload) as capture:
+                self.replay()
+                policy.return_value = "policy-2"
+                self.replay()
+                self.assertEqual(2, capture.call_count)
+                with patch.object(recovery, "_is_windows", return_value=True):
+                    self.replay()
+                    self.replay()
+                self.assertEqual(4, capture.call_count)
 
     def test_exact_original_capture_and_fresh_replay_preserve_receipt(self):
         with self.gates(), patch.object(recovery.products, "capture_sdk_ios_binary_upload",

@@ -5,6 +5,8 @@ The protected signer must establish every component's release proof before signi
 """
 
 from collections.abc import Mapping
+from copy import deepcopy
+import os
 from pathlib import Path
 
 from .index import (
@@ -12,9 +14,9 @@ from .index import (
     verify_release_product_index,
 )
 from .aggregate import validate_product_index
-from .inventory import sha256_bytes
+from .inventory import canonical_json_bytes, sha256_bytes, _is_windows, _stat_identity
 from .registry import PhaseInstanceId
-from .restore import verify_object
+from .restore import verify_object, _open_safe_regular, _VERIFICATION_SESSION
 from .sdk_campaign_selection import (
     SDK_CAMPAIGN_INSTANCES, held_sdk_campaign_selection, verify_sdk_campaign_objects,
 )
@@ -41,6 +43,25 @@ def verify_release_sdk_campaign_objects(index: dict, objects: Mapping[str, Path]
     if not isinstance(objects, Mapping) or set(objects) != {entry["buildKey"] for entry in entries.values()}:
         raise ValueError("SDK release catalog lacks the exact indexed original objects")
 
+    def custody():
+        result = []
+        for key, path in sorted(objects.items()):
+            descriptor, metadata = _open_safe_regular(Path(path), "SDK original object")
+            os.close(descriptor)
+            result.append((key, str(Path(path).absolute()), _stat_identity(metadata)))
+        return tuple(result)
+
+    session = None if _is_windows() else _VERIFICATION_SESSION.get()
+    before = custody() if session is not None else None
+    key = (canonical_json_bytes(index), before)
+    if session is not None:
+        with session["lock"]:
+            cached = session.setdefault("sdkCampaigns", {}).get(key)
+        if cached is not None:
+            if custody() != before:
+                raise ValueError("SDK campaign originals changed during reuse")
+            return deepcopy(cached)
+
     sources, envelopes, archives = {}, {}, {}
     for instance, entry in entries.items():
         archive = Path(objects[entry["buildKey"]])
@@ -62,6 +83,13 @@ def verify_release_sdk_campaign_objects(index: dict, objects: Mapping[str, Path]
         envelopes[instance] = envelope
         archives[instance] = archive
     verify_sdk_campaign_objects(sources, envelopes, archives)
+    if session is not None:
+        if custody() != before:
+            raise ValueError("SDK campaign originals changed during verification")
+        with session["lock"]:
+            # Bound completed comparisons; signature and source admission stay with callers.
+            if len(session["sdkCampaigns"]) < 8:
+                session["sdkCampaigns"][key] = deepcopy(envelopes)
     return envelopes
 
 

@@ -144,6 +144,11 @@ class AppleOriginalInputsTest(unittest.TestCase):
         (runtime / "aggregate-input" / name).write_bytes(signed.read_bytes())
         (runtime / "aggregate-input" / signature.name).write_bytes(signature.read_bytes())
         (runtime / "aggregate-input/public-key.pub").write_bytes(public.read_bytes())
+        proof_path = runtime / "original-evidence/transport/original-ci-phases.json"
+        proof = load_canonical_json_bytes(proof_path.read_bytes())
+        proof_path.write_bytes(canonical_json_bytes({**proof, "signing": signing}))
+        proof_path.with_suffix(".sig").unlink()
+        sign_manifest(proof_path, private, signing)
         # Both signatures are genuinely valid under the same caller policy;
         # the join must still enforce the exact original attestation identity.
         with verifier.verified_runtime_aggregate_handoff(runtime, keyring=keyring, keys_directory=keys):

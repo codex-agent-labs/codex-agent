@@ -18,6 +18,13 @@ from stage import OUTPUTS, RUNNER_IDENTITY, TOOLCHAIN_IDENTITY, recorded_identit
 
 
 class CacheIdentityContractTest(unittest.TestCase):
+    def test_selected_sdk_jobs_populate_the_product_cache_namespace(self):
+        for name in ("sdk-javascript-worker", "sdk-ios-binary-worker"):
+            action = (REPOSITORY / ".github/actions" / name / "action.yml").read_text()
+            block = action.split("uses: ./.github/actions/setup-kmp", 1)[1].split("    - ", 1)[0]
+            self.assertIn("cache-read-only: 'false'", block)
+            self.assertIn("product-worker: 'true'", block)
+
     def test_product_worker_cache_policy_is_opt_in_and_fail_closed(self) -> None:
         action = (REPOSITORY / ".github/actions/setup-kmp/action.yml").read_text()
         script = textwrap.dedent(action.split("      run: |\n", 1)[1].split("    - uses:", 1)[0])

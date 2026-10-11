@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import PurePosixPath
 from pathlib import Path
 import re
@@ -1627,6 +1628,27 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
     return direct
 
 
+@lru_cache(maxsize=8192)
+def _inventory_owners(path: str) -> frozenset[PhaseInstanceId] | None:
+    # Pure path policy only: never cache file bytes, Git identity or admission.
+    if (
+        path == _RUNTIME_BINARY_FLAGS_PATH
+        or path in _RUNTIME_TOOLCHAIN_PROFILE_PATHS
+        or path == _SDK_CSHARP_TOOLCHAIN_PROFILE_PATH
+        or path in _DOC_FILES
+        or path in _STATIC_ONLY_FILES
+        or _is_prefix(path, "docs/")
+        or _is_prefix(path, "ci/tests/")
+        or any(_is_prefix(path, prefix) for prefix in _STATIC_TEST_PREFIXES)
+    ):
+        return frozenset()
+    selected = _classify(path)
+    if selected is None:
+        return None
+    return (frozenset() if _is_control_only(path) else
+            frozenset(_direct_owners(path, selected) | _native_metadata_owners(path)))
+
+
 def phase_inventory_paths(
     repository_paths: Iterable[str],
     instance: PhaseInstanceId,
@@ -1636,21 +1658,8 @@ def phase_inventory_paths(
         raise ValueError(f"Unknown product phase instance: {instance}")
     owned = []
     for path in _normalized_paths(repository_paths):
-        if (
-            path == _RUNTIME_BINARY_FLAGS_PATH
-            or path in _RUNTIME_TOOLCHAIN_PROFILE_PATHS
-            or path == _SDK_CSHARP_TOOLCHAIN_PROFILE_PATH
-            or path in _DOC_FILES
-            or path in _STATIC_ONLY_FILES
-            or _is_prefix(path, "docs/")
-            or _is_prefix(path, "ci/tests/")
-            or any(_is_prefix(path, prefix) for prefix in _STATIC_TEST_PREFIXES)
-        ):
-            continue
-        selected = _classify(path)
-        if selected is None:
-            owned.append(path)
-        elif not _is_control_only(path) and instance in (_direct_owners(path, selected) | _native_metadata_owners(path)):
+        selected = _inventory_owners(path)
+        if selected is None or instance in selected:
             owned.append(path)
     return tuple(owned)
 

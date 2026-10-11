@@ -25,6 +25,23 @@ FAMILY_WAVES = {
 
 
 class SdkFamilyActionsTest(unittest.TestCase):
+    def test_generic_success_uploads_keep_original_shard_and_execution_without_staged_inputs(self):
+        for action, directory in {
+            "sdk-javascript-worker": "sdk-worker",
+            "sdk-csharp-binary-worker": "sdk-csharp-binary-worker",
+            "sdk-native-package-worker": "sdk-worker",
+            "sdk-javascript-metadata-worker": "sdk-worker",
+            "sdk-native-metadata-worker": "sdk-worker",
+        }.items():
+            with self.subTest(action=action):
+                source = (ROOT / ".github/actions" / action / "action.yml").read_text()
+                block = source.split("        path: |\n", 1)[1].split("        if-no-files-found:", 1)[0]
+                self.assertEqual([
+                    f"build/{directory}/shard", f"build/{directory}/worker/execution.json",
+                    f"build/{directory}/worker/gradle.log",
+                    "${{ job.status != 'success' && 'build/" + directory + "' || '' }}",
+                ], [line.strip() for line in block.splitlines()])
+
     def setUp(self):
         self.capture = (ROOT / ".github/actions/capture-runtime-state/action.yml").read_text()
         self.collect = (ROOT / ".github/actions/collect-runtime-wave/action.yml").read_text()
@@ -189,7 +206,12 @@ class SdkFamilyActionsTest(unittest.TestCase):
             "--destination", "build/runtime-reference-handoff", "--state-wave", "1"], self.invocations[1])
         result, _, _, _ = self.run_action("collect", PRODUCT="sdk")
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(1, len(self.invocations))
+        self.assertEqual(2, len(self.invocations))
+        self.assertEqual(["--state-wave", "0", "--sdk-state-wave", "1"], self.invocations[1][-4:])
+        for wave in ('4', '5'):
+            result, _, _, _ = self.run_action("collect", PRODUCT="runtime", WAVE=wave)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(1, len(self.invocations))
 
     def test_python_failure_propagates_and_collection_forwards_capture_family(self):
         for name in ("capture", "collect"):

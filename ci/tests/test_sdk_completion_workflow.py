@@ -42,12 +42,16 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
     def test_javascript_workers_allow_authenticated_recovery_before_execution(self):
         # Genuine capture exceeded 60 minutes before reaching the key gate.
         # Both callers need time for recovery, input verification and upload.
-        for name in ("sdk-workers-1", "sdk-workers-2"):
+        for name in ("sdk-workers-1", "sdk-workers-2", "sdk-csharp-binary",
+                     "sdk-native-prepare", "sdk-native-workers", "sdk-ios-package",
+                     "sdk-javascript-metadata", "sdk-native-validation", "sdk-native-metadata",
+                     "sdk-ios-validation", "sdk-apple-signing-prepare", "sdk-ios-metadata"):
             with self.subTest(job=name):
                 job = self.job(name)
                 self.assertRegex(job, r"(?m)^    timeout-minutes: 180$")
-                self.assertIn("uses: ./.github/actions/sdk-javascript-worker", job)
-                self.assertIn("build-key: ${{ matrix.buildKey }}", job)
+                if name in ("sdk-workers-1", "sdk-workers-2"):
+                    self.assertIn("uses: ./.github/actions/sdk-javascript-worker", job)
+                    self.assertIn("build-key: ${{ matrix.buildKey }}", job)
 
     def test_sdk_workers_and_catalog_ignore_skipped_ancestors_not_failed_inputs(self):
         # Exercise the saved conjunctions, not GitHub's scheduler. Optional iOS

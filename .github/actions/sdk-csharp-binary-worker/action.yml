@@ -113,7 +113,11 @@ runs:
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-sdk-worker-sdk-csharp-binary-desktop-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
-        path: build/sdk-csharp-binary-worker
+        path: |
+          build/sdk-csharp-binary-worker/shard
+          build/sdk-csharp-binary-worker/worker/execution.json
+          build/sdk-csharp-binary-worker/worker/gradle.log
+          ${{ job.status != 'success' && 'build/sdk-csharp-binary-worker' || '' }}
         if-no-files-found: warn
         overwrite: false
         include-hidden-files: true

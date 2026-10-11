@@ -181,7 +181,7 @@ def _materialize_failed_sdk_partial_catalog(artifact, destination, *, producer,
     observed = products._observe_ci_producer_jobs({"catalog": producer},
         jobs_by_phase={"catalog": job}, token=token, **policy)
     if (len(observed) != 1 or observed[0]["run"].get("status") != "completed"
-            or observed[0]["run"].get("conclusion") != "failure"
+            or observed[0]["run"].get("conclusion") not in {"failure", "cancelled"}
             or artifact["workflow_run"].get("head_sha") != observed[0]["run"].get("head_sha")):
         raise ValueError("Partial SDK catalog lacks its failed run and successful original job")
     products._require_artifact_job_window(observed[0], job, artifact)
@@ -202,7 +202,7 @@ def discover_fresh_sdk_original_pin(instance, *, producer, expected_build_key,
 
     The caller supplies the exact phase, build key, version, current producer and
     reviewed workflow route independently. This is a non-secret locator only;
-    the 62-original holder still re-downloads and verifies the complete shard.
+    the 62-original holder downloads and verifies the complete original upload.
     """
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
@@ -225,27 +225,28 @@ def discover_fresh_sdk_original_pin(instance, *, producer, expected_build_key,
                   trusted_workflows_by_phase=policy["trusted_workflows_by_phase"])
     observed = products._observe_ci_producer_jobs(
         {"worker": producer}, jobs_by_phase={"worker": job}, token=token, **policy)[0]
-    with tempfile.TemporaryDirectory(prefix="sdk-original-pin-") as temporary:
-        archive = Path(temporary) / "original-upload.zip"
-        artifact, _ = products._download_contract_ci_upload(
-            pin["artifact_id"], pin["artifact_sha256"], name, producer,
-            observed["run"], token, destination=archive)
-        products._require_artifact_job_window(observed, job, artifact)
-        _, retained, _ = verified_zip_contents(
-            archive, retained_paths=("shard/phase-receipt.json",),
-            max_retained_bytes=16 * 1024 * 1024, allow_empty_members=True,
-            **products._CATALOG_ZIP_LIMITS)
-        receipt_bytes = retained.get("shard/phase-receipt.json")
-        if receipt_bytes is None:
-            raise ValueError("Fresh SDK original upload lacks its phase receipt")
-        receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
-        if (tuple(receipt[field] for field in ("product", "component", "phase", "target"))
-                != tuple(getattr(instance, field) for field in ("product", "component", "phase", "target"))
-                or receipt["buildKey"] != expected_build_key
-                or receipt["productVersion"] != expected_product_version
-                or receipt["producer"] != producer
-                or receipt["trustDomain"] != "development"):
-            raise ValueError("Fresh SDK original upload differs from independent phase identity")
+    artifact = products._contract_ci_upload_metadata(
+        pin["artifact_id"], pin["artifact_sha256"], name, producer, observed["run"], token)
+    products._require_artifact_job_window(observed, job, artifact)
+    # This is a locator hint, not content admission. The original holder below
+    # independently verifies the FULL upload SHA and this selected receipt pin.
+    from runtime_reference_archive import open_reference_archive
+    with open_reference_archive(artifact, token) as (archive, _):
+        try:
+            entry = archive.getinfo("shard/phase-receipt.json")
+        except KeyError as error:
+            raise ValueError("Fresh SDK original upload lacks its phase receipt") from error
+        if entry.file_size > 16 * 1024 * 1024:
+            raise ValueError("Fresh SDK receipt exceeds its fixed control bound")
+        receipt_bytes = archive.read(entry)
+    receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+    if (tuple(receipt[field] for field in ("product", "component", "phase", "target"))
+            != tuple(getattr(instance, field) for field in ("product", "component", "phase", "target"))
+            or receipt["buildKey"] != expected_build_key
+            or receipt["productVersion"] != expected_product_version
+            or receipt["producer"] != producer
+            or receipt["trustDomain"] != "development"):
+        raise ValueError("Fresh SDK original upload differs from independent phase identity")
     require_no_signing_secret(environment)
     return {"receipt_sha256": sha256_bytes(receipt_bytes),
             "artifact_id": pin["artifact_id"], "artifact_sha256": pin["artifact_sha256"],

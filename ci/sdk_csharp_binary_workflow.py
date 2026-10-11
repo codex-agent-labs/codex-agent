@@ -59,7 +59,7 @@ def lookup_only_plan(plan, discovery, state, *, repository_root, environ,
         Path(plan), Path(discovery), Path(state), root, environ, sdk_validation_tooling,
         sdk_runtime_consumer=capture_released_default,
         sdk_apple_validation_policy=sdk_apple_validation_policy,
-        sdk_original_workflow_sha=sdk_original_workflow_sha,
+        requested_scope=(product_reuse._identity(_PACKAGE),), sdk_original_workflow_sha=sdk_original_workflow_sha,
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
     if _INSTANCE in verified.closure:
@@ -136,6 +136,7 @@ def verified_lookup_only_same_pr_original(plan, discovery, state, *,
         stage = private / "stage"
         captured = []
         with sdk_workflow.verified_inputs(plan, discovery, state,
+                requested_scope=(product_reuse._identity(_PACKAGE),),
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
                 keys_directory=keys_directory, repository_root=root, environ=environ,
@@ -156,7 +157,7 @@ def verified_lookup_only_same_pr_original(plan, discovery, state, *,
                 Path(plan), Path(discovery), Path(state), root, environ,
                 sdk_validation_tooling, authenticated_lookup_consumer=capture,
                 sdk_apple_validation_policy=sdk_apple_validation_policy,
-                sdk_original_workflow_sha=trusted_workflow_sha,
+                requested_scope=(product_reuse._identity(_PACKAGE),), sdk_original_workflow_sha=trusted_workflow_sha,
                 sdk_facade_metadata_admission=sdk_facade_metadata_admission,
                 sdk_android_metadata_admission=sdk_android_metadata_admission)
             controls_unchanged()
@@ -223,6 +224,7 @@ def verified_selected_csharp_original(plan, discovery, state, *,
         private = Path(temporary).resolve()
         stage = private / "stage"
         with sdk_workflow.verified_inputs(plan, discovery, state,
+                requested_scope=(product_reuse._identity(_PACKAGE),),
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
                 keys_directory=keys_directory, repository_root=root, environ=environ,
@@ -232,7 +234,7 @@ def verified_selected_csharp_original(plan, discovery, state, *,
                 sdk_android_metadata_admission=sdk_android_metadata_admission) as inputs:
             verified = product_reuse._verified_product_state(
                 plan, discovery, state, root, environ, sdk_validation_tooling,
-                sdk_original_workflow_sha=trusted_workflow_sha,
+                requested_scope=(product_reuse._identity(_PACKAGE),), sdk_original_workflow_sha=trusted_workflow_sha,
                 sdk_apple_validation_policy=sdk_apple_validation_policy,
                 sdk_facade_metadata_admission=sdk_facade_metadata_admission,
                 sdk_android_metadata_admission=sdk_android_metadata_admission)
@@ -286,7 +288,7 @@ def verified_csharp_original(plan, discovery, state, **kwargs):
     verified = product_reuse._verified_product_state(
         Path(plan), Path(discovery), Path(state), root, kwargs["environ"],
         kwargs.get("sdk_validation_tooling"),
-        sdk_original_workflow_sha=kwargs["trusted_workflow_sha"],
+        requested_scope=(product_reuse._identity(_PACKAGE),), sdk_original_workflow_sha=kwargs["trusted_workflow_sha"],
         sdk_apple_validation_policy=kwargs.get("sdk_apple_validation_policy"),
         sdk_facade_metadata_admission=kwargs.get("sdk_facade_metadata_admission"),
         sdk_android_metadata_admission=kwargs.get("sdk_android_metadata_admission"))
@@ -371,6 +373,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
     with tempfile.TemporaryDirectory(prefix="sdk-csharp-binary-") as temporary:
         candidate = Path(temporary).resolve() / "shard"
         with sdk_workflow.verified_inputs(plan, discovery, state,
+                requested_scope=(product_reuse._identity(_PACKAGE),),
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
                 keys_directory=keys_directory, repository_root=root, environ=environ,
@@ -380,7 +383,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             if _PACKAGE not in selection["consumers"]:
                 raise ValueError("C# binary requires the selected C# package S858 inputs")
             inspected = product_reuse.inspect_products(plan, discovery, state,
-                repository_root=root, environ=environ,
+                repository_root=root, environ=environ, requested_scope=(product_reuse._identity(_PACKAGE),),
                 sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
             elected = [item for item in inspected["readyPlans"] if
                        tuple(item.get(name) for name in ("product", "component", "phase", "target")) ==
@@ -411,7 +414,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
                     or bundles[0]["sha256"] != selection["contractPayloadSha256"]):
                 raise ValueError("C# binary Contract differs from selected S858 payload")
             verified_state = product_reuse._verified_product_state(plan, discovery, state, root,
-                environ, sdk_validation_tooling, sdk_original_workflow_sha=trusted_workflow_sha,
+                environ, sdk_validation_tooling, requested_scope=(product_reuse._identity(_PACKAGE),), sdk_original_workflow_sha=trusted_workflow_sha,
                 **sdk_workflow._caller_policies(None, sdk_apple_validation_policy,
                     sdk_facade_metadata_admission=sdk_facade_metadata_admission,
                     sdk_android_metadata_admission=sdk_android_metadata_admission))

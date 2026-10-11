@@ -1,10 +1,13 @@
 """Dart cache action routing with process/Git seams mocked; no Dart/network execution."""
 
 import json
+import hashlib
+import io
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+import tarfile
 import textwrap
 import unittest
 from unittest.mock import patch
@@ -96,6 +99,34 @@ class ProvisionSdkDartCacheActionTest(unittest.TestCase):
             diagnostics = Path(outputs['diagnostics'])
             self.assertEqual(b'raw resolution diagnostics\x00\xff', (diagnostics / 'pub.log').read_bytes())
             self.assertTrue((diagnostics / 'execution.json').is_file())
+
+    def test_cache_reconstructs_only_lock_hashed_original_archive_contents(self):
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode='w:gz') as tar:
+            member = tarfile.TarInfo('lib/dependency.dart')
+            body = b'original dependency source'
+            member.size = len(body)
+            tar.addfile(member, io.BytesIO(body))
+        raw = archive.getvalue()
+        digest = hashlib.sha256(raw).hexdigest()
+        self.manifests['pubspec.lock'] = (
+            'packages:\n  dependency:\n    dependency: transitive\n    description:\n'
+            '      name: dependency\n      sha256: "' + digest + '"\n'
+            '      url: "https://pub.dev"\n    source: hosted\n    version: "1.2.3"\n'
+            'sdks:\n  dart: ">=3.0.0 <4.0.0"\n').encode()
+        (self.binding / 'pubspec.lock').write_bytes(self.manifests['pubspec.lock'])
+        archives = self.scratch / 'archives'
+        archives.mkdir()
+        (archives / digest).write_bytes(raw)
+        self.environment['CODEX_SDK_ARCHIVE_CACHE'] = str(archives)
+        with patch('urllib.request.OpenerDirector.open', side_effect=AssertionError('network')):
+            self.execute()
+        self.assertEqual(body, (self.cache / 'hosted/pub.dev/dependency-1.2.3/lib/dependency.dart').read_bytes())
+        self.assertEqual(digest, (self.cache / 'hosted-hashes/pub.dev/dependency-1.2.3.sha256').read_text())
+        (archives / digest).write_bytes(b'corrupt archive')
+        with patch.object(self, 'process') as process, self.assertRaisesRegex(ValueError, 'Git pin'):
+            self.execute()
+        process.assert_not_called()
 
     def test_checkout_scratch_and_dirty_manifests_fail_before_process(self):
         self.environment['RUNNER_TEMP'] = str(self.repository)

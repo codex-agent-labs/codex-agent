@@ -59,6 +59,25 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
             "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/91/attempts/3/jobs",
             "jobs", "not-a-real-token")
 
+    def test_retry_locates_original_attempt_before_full_source_authentication(self):
+        environment = {**self.environment, "GITHUB_RUN_ATTEMPT": "4"}
+        original_job = {**self.job, "started_at": "2026-01-01T10:00:00Z",
+                        "completed_at": "2026-01-01T11:00:00Z"}
+        artifact = {**self.artifact, "created_at": "2026-01-01T10:30:00Z"}
+        def jobs(url, *args):
+            return [original_job] if "/attempts/3/" in url else []
+        with mock.patch.object(product_reuse, "api_json", side_effect=[
+                artifact, self.run, self.commit, artifact]), \
+                mock.patch.object(product_reuse, "paginated_items", side_effect=jobs), \
+                mock.patch.object(product_reuse, "download_artifact_to_file",
+                    side_effect=lambda artifact, token, destination, **kw: Path(destination).write_bytes(self.raw)):
+            result = product_reuse.capture_runtime_resume_upload(self.plan_path,
+                self.root / "build/retry-original-state", artifact_id=101,
+                artifact_sha256=artifact["digest"], trusted_workflow_sha=self.pin,
+                repository_root=self.root, environ=environment, token="synthetic", allow_earlier_attempt=True)
+        self.assertEqual(self.producer, result["captureProducer"])
+        self.assertEqual("4", environment["GITHUB_RUN_ATTEMPT"])
+
     def capture_members(self, destination, members):
         raw = archive(members)
         original = self.artifact

@@ -176,6 +176,71 @@ class ContractProductResumeTest(unittest.TestCase):
             self.assertEqual(self.original_bytes[record["phase"]], original["receiptBytes"])
             self.assertEqual(self.producer, original["receipt"]["producer"])
 
+    def test_sdk_scope_replays_required_contract_and_excludes_unrelated_ios_recovery(self):
+        from products import reuse as reuse_planner
+        javascript = adapter.PhaseInstanceId("sdk", "javascript", "metadata", "node")
+        ios = adapter.PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
+        requested = tuple(sorted((javascript, ios)))
+        original_authorities = adapter._authorities
+        original_plan = reuse_planner._plan
+        def fixture_plan(identity, inputs, upstream, *location):
+            # This fixture supplies synthetic Runtime build authorities only.
+            # Contract byte/signature replay and dependency/key planning are real;
+            # no Runtime build or host admission is claimed by this test.
+            if identity.product == "runtime":
+                return reuse_planner.plan_phase(identity, upstream_receipts=upstream, **inputs[identity])
+            return original_plan(identity, inputs, upstream, *location)
+        def authorities(root, revision, closure):
+            rows = []
+            for identity in closure:
+                actual, _ = original_authorities(root, revision, (identity,))
+                rows.extend(actual or [{**adapter._identity_record(identity),
+                    "toolchainProfileDigest": "sha256:" + "a" * 64,
+                    "flagsDigest": "sha256:" + "b" * 64, "outputSchemaVersion": 1}])
+            return rows, None
+        resumed = self.scratch / "sdk-state"
+        with mock.patch.object(adapter, "_validate_plan", return_value=self.plan), \
+                mock.patch.object(adapter, "_requested", return_value=requested), \
+                mock.patch.object(adapter, "_authorities", side_effect=authorities), \
+                mock.patch.object(reuse_planner, "_plan", side_effect=fixture_plan):
+            adapter.resume_products(self.plan_path, self.discovery, self.state, self.handoff, resumed,
+                self.scratch / "sdk-output", repository_root=self.repository, environ=self.environment)
+            full = adapter._verified_product_state(self.plan_path, resumed, resumed,
+                self.repository, self.environment, None)
+            scope = adapter._verified_product_state(self.plan_path, resumed, resumed,
+                self.repository, self.environment, None, requested_scope=(javascript,))
+            self.assertNotIn(ios, scope.closure)
+            self.assertEqual(adapter._scoped_reuse_result(full.prior, scope.closure), scope.prior)
+            self.assertEqual({key: value for key, value in full.prior_ready_plans.items()
+                              if key in scope.closure}, scope.prior_ready_plans)
+            retry_environment = {**self.environment, "GITHUB_RUN_ATTEMPT": "3", "GITHUB_TOKEN": "synthetic"}
+            original_producer_bytes = (resumed / "producer.json").read_bytes()
+            with mock.patch.object(adapter, "_observe_ci_producer_jobs") as observe:
+                retry = adapter._verified_product_state(self.plan_path, resumed, resumed,
+                    self.repository, retry_environment, None, requested_scope=(javascript,),
+                    sdk_original_workflow_sha="a" * 40)
+            self.assertEqual(3, retry.producer["runAttempt"])
+            self.assertEqual(scope.prior, retry.prior)
+            self.assertEqual(original_producer_bytes, (resumed / "producer.json").read_bytes())
+            self.assertEqual("3", retry_environment["GITHUB_RUN_ATTEMPT"])
+            self.assertEqual(scope.producer, observe.call_args.args[0]["state"])
+            with self.assertRaisesRegex(ValueError, "fresh original workflow authority"):
+                adapter._verified_product_state(self.plan_path, resumed, resumed,
+                    self.repository, retry_environment, None, requested_scope=(javascript,))
+            (resumed / "prior-failed-sdk").mkdir()
+            again = adapter._verified_product_state(self.plan_path, resumed, resumed,
+                self.repository, self.environment, None, requested_scope=(javascript,))
+            self.assertEqual(scope.prior, again.prior)
+            with self.assertRaisesRegex(ValueError, "Prior SDK replay requires"):
+                adapter._verified_product_state(self.plan_path, resumed, resumed,
+                    self.repository, self.environment, None)
+            required = next(iter(scope.sources.values()))
+            required.chmod(0o600)
+            required.write_bytes(b"damaged required input")
+            with self.assertRaises(ValueError):
+                adapter._verified_product_state(self.plan_path, resumed, resumed,
+                    self.repository, self.environment, None, requested_scope=(javascript,))
+
     def test_future_attempt_and_different_run_contract_snapshots_reject(self):
         for field, value in (("GITHUB_RUN_ATTEMPT", "1"), ("GITHUB_RUN_ID", "8")):
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, "Contract.*consumer"):

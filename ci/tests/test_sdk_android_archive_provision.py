@@ -78,6 +78,24 @@ class AndroidArchiveProvisionTest(unittest.TestCase):
                     self.run_provider(response=response)
                 self.assertFalse(self.destination.exists())
 
+    def test_cached_git_pinned_bytes_are_copied_and_rehashed_without_network(self):
+        cache = self.base / "archive-cache"
+        with patch.dict(os.environ, {"CODEX_SDK_ARCHIVE_CACHE": str(cache)}):
+            self.run_provider()
+            cached = next(cache.iterdir())
+            self.assertNotEqual(cached.stat().st_ino, self.destination.stat().st_ino)
+            self.destination.unlink()
+            _, urls = self.run_provider()
+            self.assertEqual([], urls)
+            self.assertEqual(self.payload, self.destination.read_bytes())
+            self.destination.unlink()
+            cached.chmod(0o600)
+            cached.write_bytes(b"wrong")
+            with self.assertRaisesRegex(ValueError, "Git pin"):
+                self.run_provider()
+            self.assertEqual([], self.download_urls)
+            self.assertFalse(self.destination.exists())
+
     def test_plan_mutation_oversize_and_existing_destination_fail_closed(self):
         def mutate(_url):
             self.plan.write_bytes(b"changed during download")

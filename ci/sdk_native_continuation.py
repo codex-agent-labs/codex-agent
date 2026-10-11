@@ -26,11 +26,11 @@ _IDENTITY = ("product", "component", "phase", "target")
 _LOCATOR = ("artifact_id", "artifact_digest", "state_wave", "sdk_state_wave")
 _STAGES = {
     # Wave 19 is an additive pre-package compatibility slot; numbers are upload identities, not chronology.
-    "csharp-binary": ("sdk-javascript", "sdk-csharp-binary-plan", "sdk-csharp-binary", "sdk-collect-19", "19"),
+    "csharp-binary": ("sdk-javascript-metadata-result", "sdk-csharp-binary-plan", "sdk-csharp-binary", "sdk-collect-19", "19"),
     "package": ("sdk-csharp-binary-result", "sdk-native-plan", "sdk-native-workers", "sdk-collect-4", "4"),
     "ios-package": ("sdk-native-packages", "sdk-ios-package-plan", "sdk-ios-package", "sdk-collect-5", "5"),
-    "javascript-metadata": ("sdk-ios-packages", "sdk-javascript-metadata-plan", "sdk-javascript-metadata", "sdk-collect-6", "6"),
-    "validation": ("sdk-javascript-metadata-result", "sdk-native-validation-plan", "sdk-native-validation", "sdk-collect-7", "7"),
+    "javascript-metadata": ("sdk-javascript", "sdk-javascript-metadata-plan", "sdk-javascript-metadata", "sdk-collect-6", "6"),
+    "validation": ("sdk-ios-packages", "sdk-native-validation-plan", "sdk-native-validation", "sdk-collect-7", "7"),
     "metadata": ("sdk-native-validation-result", "sdk-native-metadata-plan", "sdk-native-metadata", "sdk-collect-8", "8"),
     "ios-validation": ("sdk-native-result", "sdk-ios-validation-plan", "sdk-ios-validation", "sdk-collect-9", "9"),
     "ios-metadata": ("sdk-ios-validation-result", "sdk-ios-metadata-plan", "sdk-ios-metadata", "sdk-collect-10", "10"),

@@ -476,11 +476,12 @@ def _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy, *,
 
 def _selection(plan, discovery, state, repository_root, environ, sdk_validation_tooling=None,
                sdk_apple_validation_policy=None, *, trusted_workflow_sha=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, requested_scope=None):
     plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     validated = product_reuse._validate_plan(plan, repository_root)
     inspected = product_reuse.inspect_products(plan, discovery, state,
         repository_root=repository_root, environ=environ, include_sdk_selection=True,
+        **({"requested_scope": requested_scope} if requested_scope is not None else {}),
         **({"sdk_original_workflow_sha": trusted_workflow_sha} if trusted_workflow_sha is not None else {}),
         **_caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
@@ -535,7 +536,7 @@ def stage(plan, discovery, state, destination, *, keyring, keys_directory,
 def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
                     trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token,
                     sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, requested_scope=None):
     """Keep upload, SDK policy and raw Runtime originals verified through consumer use.
 
     Returned paths expire on exit. Consumers must finish using them inside the
@@ -545,6 +546,7 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
     """
     validated, selection, plan_bytes = _selection(plan, discovery, state, repository_root, environ,
                                                 sdk_validation_tooling=sdk_validation_tooling,
+                                                requested_scope=requested_scope,
                                                 trusted_workflow_sha=trusted_workflow_sha,
                                                 **_caller_policies(None, sdk_apple_validation_policy,
                                                     sdk_facade_metadata_admission=sdk_facade_metadata_admission,
@@ -696,11 +698,8 @@ def execute_ios_binary(plan, discovery, state, destination, *, expected_build_ke
         producer=producer, product_version=version, trust_domain=trust, destination=destination / "shard")
 
 
-def matrix(plan, discovery, state, github_output_path, *, repository_root=None, environ=None, ios_binary=False, family=None,
-           trusted_workflow_sha=None,
-           sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
-    """Expose only the fixed replay-elected SDK family before platform setup."""
+def _write_matrix(ready_plans, github_output_path, *, ios_binary=False, family=None):
+    """Route a caller-authenticated election; never load a transported matrix."""
     from sdk_phase import route
 
     if type(ios_binary) is not bool:
@@ -730,20 +729,48 @@ def matrix(plan, discovery, state, github_output_path, *, repository_root=None, 
                       "android-binary", "android-package", "android-validation", "android-metadata"):
             return {"runner": "ubuntu-24.04", "runnerOs": "Linux", "runnerArch": "X64"}
         return route(ready)
-    inspected = product_reuse.inspect_products(plan, discovery, state,
-        repository_root=repository_root, environ=environ,
-        **({"sdk_original_workflow_sha": trusted_workflow_sha} if trusted_workflow_sha is not None else {}),
-        **_caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
-            sdk_facade_metadata_admission=sdk_facade_metadata_admission,
-            sdk_android_metadata_admission=sdk_android_metadata_admission))
     rows = [{**{field: ready[field] for field in ("product", "component", "phase", "target", "buildKey")},
              **worker_route(ready)}
-            for ready in inspected["readyPlans"]
+            for ready in ready_plans
             if selected(product_reuse._identity(ready))]
     value = {"include": rows}
     github_output(github_output_path, {"sdk_matrix": canonical_json_bytes(value).decode().strip(),
                                       "sdk_workers_required": bool(rows)})
     return value
+
+
+def matrix(plan, discovery, state, github_output_path, *, repository_root=None, environ=None, ios_binary=False, family=None,
+           trusted_workflow_sha=None,
+           sdk_validation_tooling=None, sdk_apple_validation_policy=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    """Expose only the fixed replay-elected SDK family before platform setup."""
+    if type(ios_binary) is not bool:
+        raise ValueError("SDK binary projection must be boolean")
+    if family is not None:
+        product_reuse._sdk_family_worker_instance(None, family)
+        if ios_binary:
+            raise ValueError("SDK family and binary projection are mutually exclusive")
+    selected = tuple(instance for instance in product_reuse.PHASE_INSTANCE_IDS
+        if (product_reuse._sdk_family_worker_instance(instance, family) if family is not None else
+            (product_reuse._sdk_ios_binary_worker_instance if ios_binary else
+             product_reuse._sdk_javascript_worker_instance)(instance)))
+    if family == "native-package":
+        # Preparation may be needed for validation/metadata after a package hit.
+        selected = tuple(instance for instance in product_reuse.PHASE_INSTANCE_IDS
+            if instance.product == "sdk" and instance.component in NATIVE_BINDINGS)
+    inspected = product_reuse.inspect_products(plan, discovery, state,
+        repository_root=repository_root, environ=environ,
+        requested_scope=selected,
+        **({"sdk_original_workflow_sha": trusted_workflow_sha} if trusted_workflow_sha is not None else {}),
+        **_caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
+            sdk_facade_metadata_admission=sdk_facade_metadata_admission,
+            sdk_android_metadata_admission=sdk_android_metadata_admission))
+    if family == "native-package":
+        from sdk_native_continuation import select_preparation_anchor
+        anchor = select_preparation_anchor(inspected["readyPlans"])
+        github_output(github_output_path, {"native_preparation_" + name.removeprefix("preparation_"): value for name, value in anchor.items()})
+    return _write_matrix(inspected["readyPlans"], github_output_path,
+                         ios_binary=ios_binary, family=family)
 
 
 @verification_scoped
@@ -762,7 +789,7 @@ def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha2
     product_reuse.capture_runtime_resume_upload(plan, destination, artifact_id=artifact_id,
         artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
         state_wave=state_wave, **({"sdk_state_wave": sdk_state_wave} if sdk_state_wave is not None else {}),
-        repository_root=repository_root, environ=environ, token=token)
+        repository_root=repository_root, environ=environ, token=token, allow_earlier_attempt=True)
     original = destination / "original"
     paths = {"input_root": original,
         "plan_path": original / "product-resume-inputs/plan/impact-plan.json",
@@ -806,7 +833,7 @@ def capture_transport(plan, destination, github_output_path, *, artifact_id,
         product_reuse.capture_runtime_resume_upload(plan, destination, artifact_id=artifact_id,
             artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
             sdk_state_wave=sdk_state_wave, state_wave=state_wave, repository_root=root,
-            environ=environ, token=token)
+            environ=environ, token=token, allow_earlier_attempt=True)
         original = destination / "original"
         paths = {"input_root": original,
             "plan_path": original / "product-resume-inputs/plan/impact-plan.json",
@@ -820,6 +847,7 @@ def capture_transport(plan, destination, github_output_path, *, artifact_id,
     return paths
 
 
+@verification_scoped
 def collect(input_root, destination, github_output_path, *, wave, trusted_workflow_sha,
             repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None,
             sdk_apple_validation_policy=None,
@@ -870,11 +898,8 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     if failed:
         github_output(github_output_path, {"sdk_matrix": '{"include":[]}', "sdk_workers_required": False})
     else:
-        ready = matrix(handoff / "product-resume-inputs/plan/impact-plan.json", handoff / "product-resume-state",
-                       handoff / "runtime-state", github_output_path, repository_root=root, environ=environ,
-                       trusted_workflow_sha=trusted_workflow_sha, **tooling,
-                       **({"ios_binary": True} if ios_binary else {}),
-                       **({"family": family} if family is not None else {}))
+        ready = _write_matrix(advanced["matrices"]["sdk"], github_output_path,
+                              ios_binary=ios_binary, family=family)
         if wave >= 2 and ready["include"]:
             raise ValueError("SDK workers remain after their final collection wave")
     return advanced
@@ -910,6 +935,7 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
     with verified_inputs(plan, discovery, state, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
+            requested_scope=(instance,),
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
             repository_root=root, environ=environ, token=token, **tooling) as inputs:
         selection = inputs["selection"]
@@ -1025,6 +1051,7 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
     with verified_inputs(plan, discovery, state, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
+            requested_scope=(instance,),
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
             repository_root=root, environ=environ, token=token, **tooling) as inputs:
         selection = inputs["selection"]

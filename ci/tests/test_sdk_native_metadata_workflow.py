@@ -62,6 +62,8 @@ class SdkNativeMetadataWorkflowTest(unittest.TestCase):
 
     @contextmanager
     def verified(self, *args, **kwargs):
+        self.assertEqual((workflow.PhaseInstanceId("sdk", self.arguments["component"], "metadata", "desktop"),),
+                         kwargs.pop("requested_scope"))
         self.assertEqual((self.plan_path, self.discovery, self.state), args)
         self.assertEqual({"artifact_id": 71, "artifact_sha256": self.arguments["sdk_inputs_artifact_sha256"],
             "trusted_workflow_sha": self.arguments["trusted_workflow_sha"],
@@ -90,6 +92,8 @@ class SdkNativeMetadataWorkflowTest(unittest.TestCase):
             self.live = False
 
     def inspect(self, *args, **kwargs):
+        self.assertEqual((workflow.PhaseInstanceId("sdk", self.arguments["preparation_component"], "package", "desktop"),),
+                         kwargs.pop("requested_scope"))
         self.assertTrue(self.live)
         self.events.append("inspect")
         self.assertEqual((self.plan_path, self.discovery, self.preparation_state), args)

@@ -1525,6 +1525,59 @@ class ProductReuseTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "current PR"):
             self.session(same_pr=catalog)
 
+    def test_older_exact_key_survives_newer_catalog_misses_and_matching_corruption_is_fatal(self):
+        inputs = all_inputs(CONTRACT_BINARY)
+        plan = plan_for(CONTRACT_BINARY, inputs, {})
+        original, archive = self.object_for_plan(plan, trust_domain="development")
+        older = self.catalog("same-pr", [(original, archive)])
+        unavailable = self.catalog("same-pr", [(original, None)])
+        changed = copy.deepcopy(inputs)
+        changed[CONTRACT_BINARY]["inventory"][0]["sha256"] = sha256_bytes(b"newer different source")
+        other, other_archive = self.object_for_plan(plan_for(CONTRACT_BINARY, changed, {}), trust_domain="development")
+        newer = self.catalog("same-pr", [(other, other_archive)])
+        session = self.session(same_pr=[newer, unavailable, older])
+        self.assertEqual(original["receiptBytes"], session.lookup("same-pr", plan).envelope["receiptBytes"])
+        archive.chmod(0o600)
+        archive.write_bytes(b"corrupt matching original")
+        with self.assertRaisesRegex(ReuseLookupError, "corrupt"):
+            session.lookup("same-pr", plan)
+
+    def test_historical_index_hint_checks_signature_and_provenance_without_product_body(self):
+        from ci import product_reuse as controller
+        from ci.tests.test_runtime_reference_transport import RangeOpener
+        plan = plan_for(CONTRACT_BINARY, all_inputs(CONTRACT_BINARY), {})
+        original, archive = self.object_for_plan(plan, trust_domain="development")
+        catalog = self.catalog("same-pr", [(original, archive)])
+        index = json.loads(catalog.manifest.read_bytes())
+        producer = index["producer"]
+        observed = {"run": {"id": producer["runId"], "run_attempt": producer["runAttempt"],
+                    "path": producer["workflowPath"]},
+                    "testedCommit": {"sha": producer["commit"], "tree": {"sha": producer["tree"]}}}
+        for corrupt in (False, True):
+            packed = self.root / f"historical-{corrupt}.zip"
+            with zipfile.ZipFile(packed, "w", compression=zipfile.ZIP_STORED) as output:
+                for name, path in (("product-index.json", catalog.manifest),
+                                   ("product-index.sig", catalog.signature), ("public-key.pub", catalog.public_key)):
+                    output.writestr(name, b"bad signature" if corrupt and name.endswith(".sig") else path.read_bytes())
+                output.writestr("large-original.bin", b"x" * (4 * 1024 * 1024))
+            raw = packed.read_bytes()
+            artifact = {"id": 99, "digest": sha256_bytes(raw), "size_in_bytes": len(raw),
+                "archive_download_url": "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/99/zip"}
+            ranges = RangeOpener({99: raw})
+            with mock.patch("runtime_reference_archive.urllib.request.build_opener", return_value=ranges), \
+                    mock.patch.object(controller, "_same_pr_run", return_value=observed) as provenance:
+                def hint():
+                    return controller._catalog_index_hint("same-pr", artifact, "synthetic", None,
+                        repository=REPOSITORY, pull_request=PULL_REQUEST, api="https://api.github.com")
+                if corrupt:
+                    with self.assertRaises(ValueError):
+                        hint()
+                    provenance.assert_not_called()
+                else:
+                    self.assertEqual(index, hint())
+                    provenance.assert_called_once()
+            self.assertLess(sum(end - start + 1 for _, start, end in ranges.requests), len(raw) // 4)
+
     def test_remote_capture_restores_only_the_index_verified_object(self) -> None:
         inputs = all_inputs(CONTRACT_BINARY)
         plan = plan_for(CONTRACT_BINARY, inputs, {})
@@ -2299,6 +2352,9 @@ class ProductReuseTest(unittest.TestCase):
         changed, changed_path = self.object_for_plan(plan, trust_domain="release", binary_salt=b"changed-product")
         with self.assertRaisesRegex(ValueError, "conflict"):
             self.session(stable=[stable], promoted_main=self.catalog("promoted-main", [(changed, changed_path)]))
+        with self.assertRaisesRegex(ValueError, "conflict"):
+            self.session(promoted_main=[self.catalog("promoted-main", [(first, first_path)]),
+                                       self.catalog("promoted-main", [(changed, changed_path)])])
 
     def test_safe_misses_emit_only_the_ready_wave_and_preserve_predecessors(self) -> None:
         inputs = all_inputs(CONTRACT_METADATA)

@@ -25,7 +25,7 @@ from products.sdk_package import _require_capability_output_separate
 
 def capture_apple_validation_attestation(plan_path, destination, *, target,
         expected_receipt_sha256, artifact_id, artifact_sha256, trusted_workflow_sha,
-        repository_root=None, environ=None, token):
+        repository_root=None, environ=None, token, original_run_attempt=None):
     """Preserve exact original upload bytes without signing or semantic replay."""
     if target not in ("ios-arm64", "ios-simulator-arm64"):
         raise ValueError("Apple attestation capture requires an exact validation target")
@@ -53,6 +53,9 @@ def capture_apple_validation_attestation(plan_path, destination, *, target,
             raise ValueError("Apple attestation capture requires an authorized PR or merge-group plan")
         producer = products.validate_producer(products._consumer(
             plan, os.environ if environ is None else environ)["producer"])
+        if original_run_attempt is not None:
+            producer = products._same_run_state_consumer({"producer": producer},
+                {**producer, "runAttempt": original_run_attempt})["producer"]
         job = f"product-validation / sdk-apple-validation-attestation-{target}"
         observed = products._observe_ci_producer_jobs({"attestation": producer},
             jobs_by_phase={"attestation": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)

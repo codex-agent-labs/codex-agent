@@ -93,11 +93,11 @@ class SdkIosBinaryProjectionTest(unittest.TestCase):
                 repository_root=self.root, environ={}, token="synthetic", ios_binary=True)
         captured.assert_called_once_with(self.plan, destination, artifact_id=51,
             artifact_sha256="sha256:" + "d" * 64, trusted_workflow_sha=PIN, state_wave=0, sdk_state_wave=3,
-            repository_root=self.root, environ={}, token="synthetic")
+            repository_root=self.root, environ={}, token="synthetic", allow_earlier_attempt=True)
         original = destination / "original"
         inspect.assert_called_once_with(original / "product-resume-inputs/plan/impact-plan.json",
             original / "product-resume-state", original / "runtime-state", repository_root=self.root, environ={},
-            sdk_original_workflow_sha=PIN)
+            sdk_original_workflow_sha=PIN, requested_scope=(workflow.PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"),))
         self.assertEqual(original / "runtime-state", result["state_root"])
         self.assertEqual(["sdk-ios"], [row["component"] for row in result["matrix"]["include"]])
         self.assertEqual(regular_file_inventory(self.inputs), regular_file_inventory(original))
@@ -112,7 +112,8 @@ class SdkIosBinaryProjectionTest(unittest.TestCase):
         def advance(plan, discovery, state, shards, destination, output, **kwargs):
             destination.mkdir(parents=True)
             (destination / "reuse-wave-result.json").write_bytes(b"new SDK state\n")
-            return {"synthetic": "advanced state boundary", "fullReuse": False}
+            return {"synthetic": "advanced state boundary", "fullReuse": False,
+                    "matrices": {"sdk": [IOS] if remaining else []}}
         before = regular_file_inventory(self.inputs)
         with patch.object(workflow.product_reuse, "collect_runtime_workers", side_effect=collect) as collected, \
                 patch.object(workflow.product_reuse, "advance_products", side_effect=advance) as advanced, \
@@ -137,9 +138,7 @@ class SdkIosBinaryProjectionTest(unittest.TestCase):
             matrix.assert_not_called()
             self.assertIn("sdk_workers_required=false", self.output.read_text())
         else:
-            matrix.assert_called_once_with(self.destination / "handoff/product-resume-inputs/plan/impact-plan.json",
-                self.destination / "handoff/product-resume-state", self.destination / "handoff/runtime-state",
-                self.output, repository_root=self.root, environ={}, trusted_workflow_sha=PIN, ios_binary=True)
+            matrix.assert_not_called()
         self.assertEqual(before, regular_file_inventory(self.inputs))
         for name in ("product-resume-inputs", "product-resume-state"):
             self.assertEqual(regular_file_inventory(self.inputs / name),

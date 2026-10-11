@@ -66,7 +66,7 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
     verified = product_reuse._verified_product_state(plan, discovery, state, root, environ,
-        sdk_validation_tooling, sdk_original_workflow_sha=trusted_workflow_sha,
+        sdk_validation_tooling, requested_scope=(_VALIDATION,), sdk_original_workflow_sha=trusted_workflow_sha,
         **{name: value for name, value in policies.items() if name != "sdk_validation_tooling"})
     elected = verified.prior_ready_plans.get(_VALIDATION)
     if elected is None or elected["buildKey"] != expected_build_key:
@@ -144,6 +144,7 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
                 raise ValueError("Android validation predecessor stage differs from its receipt")
         unchanged()
         with sdk_workflow.verified_inputs(plan, discovery, state,
+                requested_scope=(_VALIDATION,),
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
                 keys_directory=keys_directory, repository_root=root, environ=environ,

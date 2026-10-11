@@ -1,4 +1,4 @@
-"""Replay a completed failed nested SDK wave into a development-only cache.
+"""Replay a completed failed or cancelled SDK checkpoint into a development-only cache.
 
 This same-source-at-HEAD seam does not select a current run, grant release trust,
 or accept incomplete SDK phases. The original failed attempt is selected by the
@@ -24,7 +24,7 @@ from .products.receipt import validate_producer
 from .products.sdk_package import _require_capability_output_separate
 from .products.signing_isolation import require_no_signing_secret
 from .sdk_campaign_partial_catalog_caller import stage_partial_sdk_catalog
-from .sdk_nested_wave_locator import locate_failed_nested_sdk_wave
+from .sdk_nested_wave_locator import locate_failed_sdk_wave as locate_failed_nested_sdk_wave
 from .reuse import github_output
 
 
@@ -44,8 +44,8 @@ def replay_failed_nested_sdk_wave(plan_path, destination, *, producer, wave,
     expected_artifact_sha256 = require_sha256(expected_artifact_sha256,
         "Independently selected nested SDK state artifact digest")
     if (prior["event"] != "pull_request" or type(wave) is not int
-            or wave not in range(11, 17)):
-        raise ValueError("Nested SDK replay requires a prior PR wave 11–16")
+            or wave not in range(1, 20)):
+        raise ValueError("Nested SDK replay requires a prior PR wave 1–19")
     root = Path(repository_root).resolve(strict=True)
     plan_path = Path(plan_path).resolve(strict=True)
     destination = Path(destination).absolute()

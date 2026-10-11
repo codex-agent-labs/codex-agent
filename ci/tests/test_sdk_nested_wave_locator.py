@@ -18,6 +18,19 @@ _CURRENT = {"GITHUB_REPOSITORY": _PRODUCER["repository"],
 
 
 class NestedSdkWaveLocatorTest(TestCase):
+    def test_all_top_level_checkpoints_retain_successful_collectors_after_cancellation(self):
+        for wave in (*range(1, 11), 19):
+            with self.subTest(wave=wave), \
+                    patch.object(locator.products, '_observe_ci_producer_jobs',
+                        return_value=[{'run': {'status': 'completed', 'conclusion': 'cancelled'}}]) as observe, \
+                    patch.object(locator, '_locate', return_value=_PIN) as locate:
+                self.assertEqual(_PIN, locator.locate_failed_sdk_wave(_PRODUCER, wave=wave,
+                    trusted_workflow_sha=_SHA, token='fixture', environ={}))
+                self.assertEqual({'collector': f'product-validation / sdk-collect-{wave}'},
+                                 observe.call_args.kwargs['jobs_by_phase'])
+                self.assertEqual('.github/workflows/product-validation.yml',
+                    locate.call_args.kwargs['trusted_workflows_by_phase']['collector']['path'])
+
     def test_routes_match_nested_workflow_sources(self):
         workflows = Path(__file__).resolve().parents[2] / ".github/workflows"
         parent = (workflows / "product-validation.yml").read_text()

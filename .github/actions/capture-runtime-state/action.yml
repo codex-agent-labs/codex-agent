@@ -1,6 +1,9 @@
 name: Capture authenticated Runtime state
 description: Verify the exact parent upload and re-elect work before any platform setup.
 inputs:
+  preflight-wave:
+    default: ''
+    description: Collector-only wave; fail on absent uploads before recovering the parent.
   product:
     default: runtime
     description: Fixed runtime, sdk JavaScript, or sdk-ios-binary readiness projection.
@@ -53,6 +56,16 @@ inputs:
     default: ''
     description: Optional exact elected build key.
 outputs:
+  native-preparation-component:
+    value: ${{ steps.capture.outputs.native_preparation_component }}
+  native-preparation-phase:
+    value: ${{ steps.capture.outputs.native_preparation_phase }}
+  native-preparation-target:
+    value: ${{ steps.capture.outputs.native_preparation_target }}
+  native-preparation-build-key:
+    value: ${{ steps.capture.outputs.native_preparation_build_key }}
+  native-preparation-required:
+    value: ${{ steps.capture.outputs.native_preparation_required }}
   native_attestation_matrix:
     value: ${{ steps.capture.outputs.native_attestation_matrix }}
   native_receipt_sha256s:
@@ -93,6 +106,21 @@ runs:
         artifact-ids: ${{ inputs.plan-id }}
         path: build/runtime-plan
         merge-multiple: true
+    - if: inputs.preflight-wave != ''
+      shell: bash
+      env:
+        PRODUCT: ${{ inputs.product }}
+        SDK_FAMILY: ${{ inputs.sdk-family }}
+        WAVE: ${{ inputs.preflight-wave }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        family=()
+        if [ -n "$SDK_FAMILY" ]; then family=(--family "$SDK_FAMILY"); fi
+        python3 -B ci/runtime_workflow.py preflight --plan build/runtime-plan/impact-plan.json \
+          --product "$PRODUCT" --wave "$WAVE" ${family[@]+"${family[@]}"} \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA"
     - id: capture
       uses: ./.github/actions/hydrated-evidence-cache
       env:
