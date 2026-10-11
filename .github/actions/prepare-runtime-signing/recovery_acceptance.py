@@ -134,7 +134,8 @@ CONTROL_FILES |= CACHE_FIXED_FILES
 # Exact completed product closure, not the historical acceptance producer.
 SDK_FROZEN_REVISION = "969b272984b91f4dcf467a05319132e2bca3b52a"
 SDK_REGISTRY = "ci/products/registry.py"
-SDK_SELECTION_REVISION = "7a0759f087c5390d83704470bffa4b9eb9bac2de"
+# Reviewed throughput path memoization preserves every frozen phase inventory.
+SDK_SELECTION_REVISION = "7f0fa04497d0f14cbc3be39be7cb1fe82eae8086"
 SDK_SELECTOR = "ci/products/selection.py"
 
 

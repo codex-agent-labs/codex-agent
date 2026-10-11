@@ -23,6 +23,12 @@ SELECTOR = "ci/products/selection.py"
 
 
 class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
+    def test_sdk_selector_pin_matches_reviewed_throughput_bytes(self):
+        root = HELPER.parents[3]
+        self.assertEqual("7f0fa04497d0f14cbc3be39be7cb1fe82eae8086", recovery.SDK_SELECTION_REVISION)
+        self.assertEqual(recovery._blob(root, recovery.SDK_SELECTION_REVISION, recovery.SDK_SELECTOR),
+                         (root / recovery.SDK_SELECTOR).read_bytes())
+
     def test_current_full_caller_preserves_historical_transport_assertions(self):
         root = Path(__file__).resolve().parents[2]
         caller = (root / '.github/workflows/ci.yml').read_bytes()
