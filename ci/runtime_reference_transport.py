@@ -71,7 +71,9 @@ def validate_references(value, state_wave, *, sdk_state_wave=None):
     for record in inventory:
         validate_file_record(record, "Runtime reference file", with_kind=False, allow_empty=True)
         files[_path(record["relativePath"])] = record
-    if (sum(record["bytes"] for record in inventory) > 16 * 1024 * 1024 * 1024
+    # SDK carriers retain large iOS aliases; archive and individual-file bounds stay unchanged.
+    expanded_limit = (32 if sdk_state_wave is not None else 16) * 1024**3
+    if (sum(record["bytes"] for record in inventory) > expanded_limit
             or any(record["bytes"] > 8 * 1024 * 1024 * 1024 for record in inventory)):
         raise ValueError("Expanded Runtime reference inventory exceeds the transport byte bounds")
     references = require_sorted_unique_records(value["references"], "Runtime references")

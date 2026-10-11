@@ -234,12 +234,117 @@ class ContractProductResumeTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Prior SDK replay requires"):
                 adapter._verified_product_state(self.plan_path, resumed, resumed,
                     self.repository, self.environment, None)
+            (resumed / "prior-failed-sdk").rmdir()
+            (resumed / "prior-failed-sdk-javascript").mkdir()
+            with self.assertRaisesRegex(ValueError, "Prior JavaScript replay requires"):
+                adapter._verified_product_state(self.plan_path, resumed, resumed,
+                    self.repository, self.environment, None, requested_scope=(javascript,))
+            with mock.patch("sdk_ios_binary_recovery.replay_prior_javascript_package") as replay:
+                adapter._verified_product_state(self.plan_path, resumed, resumed,
+                    self.repository, self.environment, None, requested_scope=(ios,))
+            replay.assert_not_called()
+            (resumed / "prior-failed-sdk-javascript").rmdir()
             required = next(iter(scope.sources.values()))
             required.chmod(0o600)
             required.write_bytes(b"damaged required input")
             with self.assertRaises(ValueError):
                 adapter._verified_product_state(self.plan_path, resumed, resumed,
                     self.repository, self.environment, None, requested_scope=(javascript,))
+
+    def test_recovered_javascript_package_is_carried_from_its_own_root(self):
+        # Orchestration fixture: synthetic SDK election, real Contract replay,
+        # original object/shard verification and carrier writing. No host proof.
+        from products import reuse as reuse_planner
+        import sdk_ios_binary_recovery as recovery
+        from ci.tests.product_chain_support import write_receipt
+        from ci.products.receipt import write_output_manifest
+        package = adapter.PhaseInstanceId("sdk", "javascript", "package", "node")
+        validation = adapter.PhaseInstanceId("sdk", "javascript", "validation", "node")
+        stage = self.scratch / "package-stage"
+        (stage / "outputs").mkdir(parents=True)
+        (stage / "outputs/package.tgz").write_bytes(b"synthetic original package\n")
+        manifest = write_output_manifest(stage, "sdk", "javascript", "package", "node", "0.2.0",
+                                         {"package": "outputs"})
+        receipt = write_receipt(self.scratch / "original-receipt.json", product="sdk", component="javascript",
+            phase="package", target="node", outputs=manifest["outputs"], upstream=[], version="0.2.0",
+            context={"producer": {**self.producer, "runId": 6}})
+        package_plan = {field: receipt[field] for field in adapter.PHASE_PLAN_KEYS}
+        original_authorities, original_plan = adapter._authorities, reuse_planner._plan
+        original_wave = adapter._plan_with_sdk_tooling
+
+        def authorities(root, revision, closure):
+            rows = []
+            for identity in closure:
+                actual, _ = original_authorities(root, revision, (identity,))
+                rows.extend(actual or [{**adapter._identity_record(identity),
+                    "toolchainProfileDigest": "sha256:" + "a" * 64,
+                    "flagsDigest": "sha256:" + "b" * 64, "outputSchemaVersion": 1}])
+            return rows, None
+
+        def fixture_plan(identity, inputs, upstream, *location):
+            if identity.product == "runtime":
+                return reuse_planner.plan_phase(identity, upstream_receipts=upstream, **inputs[identity])
+            return original_plan(identity, inputs, upstream, *location)
+
+        def elect(wave, tooling, **kwargs):
+            records = [r for r in wave["availableObjects"] if adapter._identity(r) == package]
+            # Missing Runtime fixtures do not claim actual SDK key planning.
+            base = {**wave, "availableObjects": [r for r in wave["availableObjects"]
+                                                  if adapter._identity(r) != package]}
+            result = original_wave(base, tooling, **kwargs)
+            for row in result["phases"]:
+                identity = adapter._identity(row)
+                if identity == package:
+                    row.update(state="retained" if records else "build", buildKey=receipt["buildKey"],
+                        receiptSha256=records[0]["receiptSha256"] if records else None,
+                        objectSha256=records[0]["objectSha256"] if records else None,
+                        misses=[] if records else [{"source": s, "reason": "fixture-miss"} for s in adapter.SOURCES])
+                elif identity == validation and records:
+                    row.update(state="build", buildKey="sha256:" + "c" * 64,
+                        misses=[{"source": s, "reason": "fixture-miss"} for s in adapter.SOURCES])
+            result["matrices"] = {product: [{**adapter._identity_record(adapter._identity(row)),
+                "buildKey": row["buildKey"]} for row in result["phases"]
+                if row["product"] == product and row["state"] == "build"]
+                for product in ("contract", "runtime", "sdk")}
+            return result
+
+        def capture(plan, producer, key, destination, artifact_root, **kwargs):
+            self.assertEqual(receipt["buildKey"], key)
+            self.assertEqual("prior-failed-sdk-javascript", destination.name)
+            fixture.finalize_phase_object(stage_root=stage, phase_plan=package_plan,
+                producer=receipt["producer"], product_version="0.2.0", trust_domain="development",
+                destination=destination / "javascript/package/node/original/shard")
+            return [recovery._javascript_package_record(destination / "javascript/package/node", artifact_root)]
+
+        def synthetic_election(result, requested, **kwargs):
+            # Runtime execution prerequisites are intentionally absent here.
+            # Only the root recovery-to-carrier path is under test; helper
+            # tests independently authenticate uploads and original receipts.
+            selected = tuple(adapter._identity(row) for row in result["phases"] if row["state"] == "retained")
+            return result, selected, result["phases"]
+
+        resumed = self.scratch / "js-resumed"
+        with mock.patch.object(adapter, "_validate_plan", return_value=self.plan), \
+                mock.patch.object(adapter, "_requested", return_value=(validation,)), \
+                mock.patch.object(adapter, "_authorities", side_effect=authorities), \
+                mock.patch.object(reuse_planner, "_plan", side_effect=fixture_plan), \
+                mock.patch.object(adapter, "_plan_with_sdk_tooling", side_effect=elect), \
+                mock.patch.object(adapter, "_validate_reuse_result", side_effect=synthetic_election), \
+                mock.patch.object(adapter, "_prior_failed_pr_attempts", return_value=[]), \
+                mock.patch.object(recovery, "capture_prior_javascript_package", side_effect=capture) as captured:
+            result = adapter.resume_products(self.plan_path, self.discovery, self.state, self.handoff, resumed,
+                self.scratch / "js-output", repository_root=self.repository,
+                environ={**self.environment, "GITHUB_TOKEN": "synthetic"}, sdk_original_workflow_sha="a" * 40)
+        captured.assert_called_once()
+        reuse = load_canonical_json(resumed / "reuse-wave-result.json")
+        self.assertEqual(["validation"], [row["phase"] for row in reuse["matrices"]["sdk"]])
+        retained = next(row for row in reuse["phases"] if adapter._identity(row) == package)
+        self.assertEqual("retained", retained["state"])
+        self.assertEqual(receipt["buildKey"], retained["buildKey"])
+        original = resumed / "prior-failed-sdk-javascript/javascript/package/node/original/shard"
+        self.assertEqual((self.scratch / "original-receipt.json").read_bytes(),
+                         (original / "phase-receipt.json").read_bytes())
+        self.assertTrue(result["targetJobsRequired"])
 
     def test_future_attempt_and_different_run_contract_snapshots_reject(self):
         for field, value in (("GITHUB_RUN_ATTEMPT", "1"), ("GITHUB_RUN_ID", "8")):

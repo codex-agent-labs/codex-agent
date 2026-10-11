@@ -515,7 +515,8 @@ def _runtime_prior_workflow_sha(run, current_sha):
                              "b4148a6320d3dfe8bfb556c6327937c6b304cf4c",
                              "9be996a3269c324ad1beae37a06ff65219e69806",
                              "8a1c2a0c9a9ee1f3c5629d2d77278580f48a489c",
-                             "4dcf10739d30dc0462eb03090e17612d4ca6a97b")):
+                             "4dcf10739d30dc0462eb03090e17612d4ca6a97b",
+                             "53d6ad1e4d7cfba9267894af9b302e07f7cb6656")):
         try:
             _require_ci_workflow_reference(run,
                 f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{sha}", sha)
@@ -3926,6 +3927,16 @@ def _verified_product_state(
         prior_records.extend(replay_prior_ios_binary(sdk_capture, discovery_root,
             plan=plan, plan_path=plan_path, repository_root=root,
             consumer_producer=consumer["producer"],
+            trusted_workflow_sha=sdk_original_workflow_sha,
+            token=environment["GITHUB_TOKEN"], environ=environment))
+    javascript_capture = discovery_root / "prior-failed-sdk-javascript"
+    javascript_package = PhaseInstanceId("sdk", "javascript", "package", "node")
+    if (requested_scope is None or javascript_package in closure) and (javascript_capture.exists() or javascript_capture.is_symlink()):
+        if not sdk_original_workflow_sha or not environment.get("GITHUB_TOKEN"):
+            raise ValueError("Prior JavaScript replay requires caller-pinned workflow authority and token")
+        from sdk_ios_binary_recovery import replay_prior_javascript_package
+        prior_records.extend(replay_prior_javascript_package(javascript_capture, discovery_root,
+            plan=plan, consumer_producer=consumer["producer"],
             trusted_workflow_sha=sdk_original_workflow_sha,
             token=environment["GITHUB_TOKEN"], environ=environment))
     if requested_scope is not None:
@@ -7872,6 +7883,26 @@ def resume_products(
                         apple_package_origin=_apple_package_origin(captured_plan, root,
                             sdk_original_workflow_sha, environment), build_plan_consumer=retain,
                         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
+            javascript_package = PhaseInstanceId("sdk", "javascript", "package", "node")
+            javascript_misses = [phase for phase in reuse["phases"]
+                                 if _identity(phase) == javascript_package and phase["state"] == "build"]
+            if javascript_misses:
+                from sdk_ios_binary_recovery import capture_prior_javascript_package
+                javascript_records = capture_prior_javascript_package(plan,
+                    _consumer(plan, environment)["producer"], javascript_misses[0]["buildKey"],
+                    prepared / "prior-failed-sdk-javascript", prepared,
+                    environ=environment, trusted_workflow_sha=sdk_original_workflow_sha,
+                    token=environment["GITHUB_TOKEN"], attempts=attempts)
+                prior_sdk_records.extend(javascript_records)
+                if javascript_records:
+                    wave["availableObjects"] = sorted(
+                        (*initial_objects, *prior_records, *prior_sdk_records), key=_identity)
+                    ready_plans.clear()
+                    reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling,
+                        apple_policy=sdk_apple_validation_policy,
+                        apple_package_origin=_apple_package_origin(captured_plan, root,
+                            sdk_original_workflow_sha, environment), build_plan_consumer=retain,
+                        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
         _, selected, phases = _validate_reuse_result(reuse, requested, require_complete=False,
             sdk_runtime_external=wave.get("sdkRuntimeSource") == "released-default")
         by_id = {_identity(phase): phase for phase in phases}
@@ -7912,7 +7943,9 @@ def resume_products(
             if instance in originals:
                 carrier_phases.append(originals[instance])
             elif instance in elected_prior:
-                shard = (prepared / "prior-failed-sdk" / instance.component / instance.phase /
+                sdk_capture_root = ("prior-failed-sdk-javascript" if instance.component == "javascript"
+                                    else "prior-failed-sdk")
+                shard = (prepared / sdk_capture_root / instance.component / instance.phase /
                          instance.target / "original/shard" if instance.product == "sdk" else
                          prepared / "prior-failed-runtime" / instance.component / instance.phase / instance.target /
                          "phases" / instance.phase / "original/shard")

@@ -1,4 +1,4 @@
-"""Recover original successful iOS binary transport, never semantic admission."""
+"""Recover original successful iOS binary/JS package transport, not semantic admission."""
 
 from pathlib import Path
 import re
@@ -25,6 +25,178 @@ from sdk_apple_upload_locator import locate_original_apple_upload
 
 INSTANCE = PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
 _RELATIVE = "sdk-ios/binary/ios"
+_JAVASCRIPT_PACKAGE = PhaseInstanceId("sdk", "javascript", "package", "node")
+_JAVASCRIPT_RELATIVE = "javascript/package/node"
+
+
+def _javascript_package_record(capture, artifact_root):
+    verified = verify_phase_shard(Path(capture) / "original/shard", _JAVASCRIPT_PACKAGE)
+    return {**products._identity_record(_JAVASCRIPT_PACKAGE),
+        **{field: verified[field] for field in ("buildKey", "receiptSha256", "objectSha256")},
+        "objectPath": (Path(capture) / "original/shard" / verified["objectPath"])
+            .relative_to(artifact_root).as_posix()}
+
+
+def _capture_javascript_package(prior, artifact, destination, *, plan, consumer_producer,
+        build_key, trusted_workflow_sha, token):
+    """Authenticate a fixed successful original worker, not its failed collector."""
+    run, attempt = _require_prior(plan, consumer_producer, prior)
+    destination.mkdir(parents=True)
+    archive = destination / "transport.zip"
+    # The demonstrated small upload uses the existing private immutable-byte
+    # memo; fresh original source/job checks below remain mandatory on every use.
+    artifact, raw_upload = products._download_contract_ci_upload(artifact["id"], artifact["digest"],
+        artifact["name"], {"runId": run}, prior, token)
+    archive.write_bytes(raw_upload)
+    zipped, _, identity = products.verified_zip_contents(archive, retained_paths=(),
+        allow_empty_members=True, **products._CATALOG_ZIP_LIMITS)
+    if identity != {"bytes": artifact["size_in_bytes"], "sha256": artifact["digest"]}:
+        raise ValueError("Original JavaScript package upload identity changed")
+    original = destination / "original"
+    products.safe_extract(archive, original)
+    verified = verify_phase_shard(original / "shard", _JAVASCRIPT_PACKAGE)
+    receipt, raw = verified["receipt"], verified["receiptBytes"]
+    producer = receipt["producer"]
+    name = (f"codex-agent-sdk-worker-javascript-package-node-{build_key.removeprefix('sha256:')}-"
+            f"{producer['tree']}-attempt-{attempt}")
+    if (receipt["buildKey"] != build_key or receipt["trustDomain"] != "development"
+            or producer["runId"] != run or producer["runAttempt"] != attempt
+            or producer["repository"] != plan["repository"] or producer["event"] != "pull_request"
+            or producer["pullRequest"] != plan["pullRequest"] or artifact["name"] != name):
+        raise ValueError("Original JavaScript package differs from its selected phase or producer")
+    jobs = products.paginated_items(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
+        f"{run}/attempts/{attempt}/jobs", "jobs", token)
+    matching = products._matching_ci_jobs(jobs, "product-validation / sdk-javascript-package-node",
+                                         expected_build_key=build_key)
+    if len(matching) != 1:
+        raise ValueError("Original JavaScript package job is missing or ambiguous")
+    observed = products._observe_ci_producer_jobs({"package": producer},
+        jobs_by_phase={"package": matching[0]["name"]}, trusted_workflow_sha=trusted_workflow_sha, token=token)
+    products._require_artifact_job_window(observed[0], matching[0]["name"], artifact)
+    transport = {"artifact": artifact, "captureProducer": producer, "observed": observed,
+                 "packageReceiptSha256": verified["receiptSha256"]}
+    products.write_canonical_json(destination / "capture-transport.json", transport)
+    if (products.sha256_file(archive) != artifact["digest"]
+            or regular_file_inventory(original, allow_empty=True) != zipped
+            or read_regular_file_bytes(original / "shard/phase-receipt.json") != raw):
+        raise ValueError("Original JavaScript package capture changed during authentication")
+    return receipt
+
+
+def capture_prior_javascript_package(plan, consumer_producer, build_key, destination, artifact_root,
+        *, trusted_workflow_sha, token, environ, attempts=None):
+    """Recover only the demonstrated exact-key JS package from successful workers."""
+    require_no_signing_secret(environ)
+    context = canonical_json_bytes({"plan": plan, "consumer": consumer_producer})
+    require_sha256(build_key, "Current JavaScript package build key")
+    destination = Path(destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Prior JavaScript recovery destination must not exist")
+    attempts = products._prior_failed_pr_attempts(plan, consumer_producer, token) if attempts is None else attempts
+    prefix = f"codex-agent-sdk-worker-javascript-package-node-{build_key.removeprefix('sha256:')}-"
+    found = []
+    with tempfile.TemporaryDirectory(prefix="sdk-javascript-pr-recovery-") as temporary:
+        private = Path(temporary).resolve()
+        for prior in attempts:
+            run, attempt = _require_prior(plan, consumer_producer, prior)
+            workflow = products._runtime_prior_workflow_sha(prior, trusted_workflow_sha)
+            if workflow is None:
+                continue
+            uploads = products.paginated_items(
+                f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run}/artifacts", "artifacts", token)
+            suffix = f"-attempt-{attempt}"
+            candidates = [row for row in uploads if type(row) is dict and type(row.get("name")) is str
+                and row["name"].startswith(prefix) and row["name"].endswith(suffix)]
+            if len(candidates) > 1:
+                raise ValueError("Prior JavaScript package upload is ambiguous")
+            if not candidates or candidates[0].get("expired") is True:
+                continue
+            artifact = candidates[0]
+            if artifact.get("expired") is not False:
+                raise ValueError("Prior JavaScript package expiration is malformed")
+            if re.fullmatch(re.escape(prefix) + r"[0-9a-f]{40}" + re.escape(suffix), artifact["name"]) is None:
+                raise ValueError("Prior JavaScript package upload name is malformed")
+            jobs = products.paginated_items(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
+                f"{run}/attempts/{attempt}/jobs", "jobs", token)
+            jobs = products._matching_ci_jobs(jobs, "product-validation / sdk-javascript-package-node",
+                                              expected_build_key=build_key)
+            if len(jobs) != 1:
+                raise ValueError("Prior JavaScript package job is missing or ambiguous")
+            if jobs[0].get("conclusion") in {"failure", "cancelled", "skipped"}:
+                continue
+            if (jobs[0].get("status") != "completed" or jobs[0].get("conclusion") != "success"
+                    or jobs[0].get("run_id") != run or jobs[0].get("head_sha") != prior.get("head_sha")):
+                raise ValueError("Prior JavaScript package job differs from its original successful attempt")
+            source = private / f"{run}-{attempt}"
+            receipt = _capture_javascript_package(prior, artifact, source, plan=plan,
+                consumer_producer=consumer_producer, build_key=build_key,
+                trusted_workflow_sha=workflow, token=token)
+            found.append((source, receipt))
+        if not found:
+            return []
+        if any(receipt["outputs"] != found[0][1]["outputs"] for _, receipt in found[1:]):
+            raise ValueError("Prior JavaScript exact build key has conflicting output inventories")
+        source = found[0][0]
+        inventory = regular_file_inventory(source, allow_empty=True)
+        target = destination / _JAVASCRIPT_RELATIVE
+        if canonical_json_bytes({"plan": plan, "consumer": consumer_producer}) != context:
+            raise ValueError("JavaScript recovery caller changed during capture")
+        publish_regular_tree(source, target, allow_empty=True, expected_inventory=inventory)
+        require_no_signing_secret(environ)
+        return [_javascript_package_record(target, Path(artifact_root))]
+
+
+def replay_prior_javascript_package(capture_root, artifact_root, *, plan, consumer_producer,
+        trusted_workflow_sha, token, environ):
+    """Freshly authenticate the small original upload; never admit failed state ZIPs."""
+    require_no_signing_secret(environ)
+    context = canonical_json_bytes({"plan": plan, "consumer": consumer_producer})
+    root = Path(capture_root)
+    if not root.exists() and not root.is_symlink():
+        return []
+    require_regular_directory(root, "Prior JavaScript package recovery")
+    parent = root
+    for name in _JAVASCRIPT_RELATIVE.split("/"):
+        if sorted(path.name for path in parent.iterdir()) != [name]:
+            raise ValueError("Prior JavaScript capture has an unexpected family")
+        parent /= name
+        require_regular_directory(parent, "Prior JavaScript capture family")
+    fingerprint = _stage_fingerprint(root)
+    inventory = regular_file_inventory(parent, allow_empty=True)
+    raw = read_regular_file_bytes(parent / "original/shard/phase-receipt.json",
+                                 max_bytes=16 * 1024**2, reject_symlink_parents=True)
+    receipt = products.validate_phase_receipt(load_canonical_json_bytes(raw))
+    if products._identity(receipt) != _JAVASCRIPT_PACKAGE:
+        raise ValueError("Prior JavaScript recovery requires its exact package receipt")
+    producer = receipt["producer"]
+    prior = products.api_json(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
+        f"{producer['runId']}/attempts/{producer['runAttempt']}", token)
+    _require_prior(plan, consumer_producer, prior)
+    workflow = products._runtime_prior_workflow_sha(prior, trusted_workflow_sha)
+    if workflow is None:
+        raise ValueError("Prior JavaScript package lacks its reviewed original workflow")
+    transport = require_exact_keys(products._canonical_control(parent / "capture-transport.json", "Prior JS transport"),
+        {"artifact", "captureProducer", "observed", "packageReceiptSha256"}, "Prior JS transport")
+    if transport["captureProducer"] != producer or transport["packageReceiptSha256"] != sha256_bytes(raw):
+        raise ValueError("Prior JavaScript transport changes its original receipt or producer")
+    with tempfile.TemporaryDirectory(prefix="sdk-javascript-replay-") as temporary:
+        fresh = Path(temporary).resolve() / "capture"
+        _capture_javascript_package(prior, transport["artifact"], fresh, plan=plan,
+            consumer_producer=consumer_producer, build_key=receipt["buildKey"],
+            trusted_workflow_sha=workflow, token=token)
+        observed = products._canonical_control(fresh / "capture-transport.json", "Fresh JS transport")
+        if (any(observed["artifact"].get(field) != transport["artifact"].get(field)
+                for field in ("id", "name", "digest", "size_in_bytes", "created_at", "archive_download_url", "workflow_run"))
+                or [row for row in regular_file_inventory(fresh, allow_empty=True)
+             if row["relativePath"] != "capture-transport.json"] !=
+                [row for row in inventory if row["relativePath"] != "capture-transport.json"]):
+            raise ValueError("Prior JavaScript capture differs from its authenticated original upload")
+    record = _javascript_package_record(parent, Path(artifact_root))
+    if (_stage_fingerprint(root) != fingerprint or regular_file_inventory(parent, allow_empty=True) != inventory
+            or canonical_json_bytes({"plan": plan, "consumer": consumer_producer}) != context):
+        raise ValueError("Prior JavaScript original changed during readmission")
+    require_no_signing_secret(environ)
+    return [record]
 
 
 def _require_prior(plan, consumer, prior):

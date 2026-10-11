@@ -317,6 +317,38 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
             run_capture(rejected, {**base_artifact, 'digest': 'sha256:' + 'f'*64})
         self.assertFalse(rejected.exists())
 
+    def test_sdk_expanded_aliases_keep_runtime_and_member_byte_bounds(self):
+        gib = 1024**3
+
+        def envelope(size):
+            inventory = [{'relativePath': f'product-resume-state/alias-{index}.zip',
+                          'bytes': size, 'sha256': 'sha256:' + 'a' * 64}
+                         for index in range(4)]
+            return {'schemaVersion': 1,
+                    'base': {'artifactId': 101, 'artifactSha256': 'sha256:' + 'b' * 64,
+                             'stateWave': 0},
+                    'inventory': inventory,
+                    'references': [{**row, 'sourcePath': 'product-resume-state/original.zip'}
+                                   for row in inventory]}
+
+        validate_references(envelope(4 * gib), 1)  # Runtime remains bounded at 16 GiB.
+        for size in (7 * gib, 8 * gib):
+            value = envelope(size)
+            self.assertEqual(value, validate_references(value, 0, sdk_state_wave=1))
+            with self.assertRaisesRegex(ValueError, 'byte bounds'):
+                validate_references(value, 1)
+        overflow = envelope(8 * gib)
+        extra = {'relativePath': 'product-resume-state/alias-4.zip',
+                 'bytes': 1, 'sha256': 'sha256:' + 'a' * 64}
+        overflow['inventory'].append(extra)
+        overflow['references'].append({**extra, 'sourcePath': 'product-resume-state/extra.bin'})
+        with self.assertRaisesRegex(ValueError, 'byte bounds'):
+            validate_references(overflow, 0, sdk_state_wave=1)
+        oversized = envelope(7 * gib)
+        oversized['inventory'][0]['bytes'] = oversized['references'][0]['bytes'] = 9 * gib
+        with self.assertRaisesRegex(ValueError, 'byte bounds'):
+            validate_references(oversized, 0, sdk_state_wave=1)
+
     def test_exact_references_keep_all_original_bytes_and_reject_mutation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

@@ -13,6 +13,9 @@ from ci.tests import test_sdk_ios_package_upload as fixture
 from ci import sdk_ios_binary_recovery as recovery
 from products.inventory import canonical_json_bytes, regular_file_inventory, load_canonical_json_bytes
 from products.restore import verification_session
+from ci.tests.product_chain_support import write_receipt
+from products.receipt import write_output_manifest
+from products.restore import PHASE_PLAN_KEYS, finalize_phase_object
 
 
 class IosBinaryRecoveryTest(unittest.TestCase):
@@ -310,6 +313,134 @@ class IosBinaryRecoveryTest(unittest.TestCase):
                     plan_path=self.plan_path, repository_root=self.root,
                     consumer_producer={**self.producer, "runId": 72}, trusted_workflow_sha=self.pin,
                     token="synthetic-token", environ={})
+
+
+class JavascriptPackageRecoveryTest(unittest.TestCase):
+    """Synthetic official API transport fixtures, not genuine hosted acceptance."""
+    phase, target = "binary", "ios"
+    api = fixture.SdkIosBinaryUploadTest.api
+    archive = fixture.SdkIosBinaryUploadTest.archive
+    gates = IosBinaryRecoveryTest.gates
+
+    def setUp(self):
+        fixture.SdkIosBinaryUploadTest.setUp(self)
+        stage = self.work / "javascript-stage"
+        (stage / "outputs").mkdir(parents=True)
+        (stage / "outputs/package.tgz").write_bytes(b"synthetic packaged JavaScript bytes\n")
+        (stage / "outputs/package-inventory.json").write_bytes(b'{"synthetic":true}\n')
+        (stage / "outputs/package-evidence.txt").write_bytes(b"synthetic evidence, not host acceptance\n")
+        manifest = write_output_manifest(stage, "sdk", "javascript", "package", "node", "0.3.0",
+                                         {"package": "outputs"})
+        receipt = write_receipt(self.work / "js-receipt.json", product="sdk", component="javascript",
+            phase="package", target="node", outputs=manifest["outputs"], upstream=[], version="0.3.0",
+            version_identity="0.3.0", context={"producer": self.producer})
+        shard = self.work / "js-shard"
+        verified = finalize_phase_object(stage_root=stage,
+            phase_plan={name: receipt[name] for name in PHASE_PLAN_KEYS}, producer=self.producer,
+            product_version="0.3.0", trust_domain="development", destination=shard)
+        self.key = receipt["buildKey"]
+        self.receipt_bytes = verified["receiptBytes"]
+        self.jobs[0]["name"] = "product-validation / sdk-javascript-package-node"
+        self.artifact["name"] = (f"codex-agent-sdk-worker-javascript-package-node-{self.key.removeprefix('sha256:')}-"
+                                 f"{self.producer['tree']}-attempt-2")
+        self.files = {"shard/" + row["relativePath"]: (shard / row["relativePath"]).read_bytes()
+                      for row in regular_file_inventory(shard)}
+        self.files["execution/diagnostic.log"] = b""
+        self.archive()
+
+    def capture(self):
+        return recovery.capture_prior_javascript_package(self.plan, {**self.producer, "runId": 72},
+            self.key, self.output, self.work, trusted_workflow_sha=self.pin,
+            token="synthetic-token", environ={}, attempts=(self.run,))
+
+    def replay(self):
+        return recovery.replay_prior_javascript_package(self.output, self.work, plan=self.plan,
+            consumer_producer={**self.producer, "runId": 72}, trusted_workflow_sha=self.pin,
+            token="synthetic-token", environ={})
+
+    def test_original_successful_package_from_failed_parent_is_preserved_and_replayed(self):
+        with self.gates(), verification_session(), \
+                patch.object(recovery.products, "download_artifact", wraps=recovery.products.download_artifact) as download, \
+                patch.object(recovery.products, "_observe_ci_producer_jobs",
+                             wraps=recovery.products._observe_ci_producer_jobs) as observe:
+            records = self.capture()
+            inventory = regular_file_inventory(self.output, allow_empty=True)
+            self.assertEqual(records, self.replay())
+            self.assertEqual(inventory, regular_file_inventory(self.output, allow_empty=True))
+            self.assertEqual(1, download.call_count)
+            self.assertEqual(2, observe.call_count)
+        capture = self.output / "javascript/package/node"
+        self.assertEqual(self.receipt_bytes, (capture / "original/shard/phase-receipt.json").read_bytes())
+        self.assertEqual(self.raw, (capture / "transport.zip").read_bytes())
+        for name, contents in self.files.items():
+            self.assertEqual(contents, (capture / "original" / name).read_bytes())
+
+    def test_reviewed_original_publisher_remains_selectable_after_rotation(self):
+        original = "53d6ad1e4d7cfba9267894af9b302e07f7cb6656"
+        run = {**self.run, "referenced_workflows": [{
+            "path": f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{original}",
+            "sha": original, "ref": "refs/heads/reuse-authority"}]}
+        self.assertEqual(original, recovery.products._runtime_prior_workflow_sha(run, "e" * 40))
+        run["referenced_workflows"][0]["sha"] = "f" * 40
+        self.assertIsNone(recovery.products._runtime_prior_workflow_sha(run, "e" * 40))
+
+    def test_failed_or_live_job_is_not_admitted_and_wrong_key_is_a_miss(self):
+        with self.gates():
+            self.jobs[0]["conclusion"] = "failure"
+            with patch.object(recovery, "_capture_javascript_package") as acquire:
+                self.assertEqual([], self.capture())
+                acquire.assert_not_called()
+            self.jobs[0].update(conclusion=None, status="in_progress")
+            with self.assertRaisesRegex(ValueError, "successful attempt"):
+                self.capture()
+            self.artifact["name"] = self.artifact["name"].replace(self.key.removeprefix("sha256:"), "0" * 64)
+            self.assertEqual([], self.capture())
+
+    def test_ambiguous_upload_and_wrong_window_fail_closed(self):
+        with self.gates():
+            listing = recovery.products.paginated_items
+            def duplicate(url, field, token):
+                rows = listing(url, field, token)
+                return rows * 2 if field == "artifacts" else rows
+            with patch.object(recovery.products, "paginated_items", side_effect=duplicate), \
+                    self.assertRaisesRegex(ValueError, "ambiguous"):
+                self.capture()
+            self.artifact["created_at"] = "2026-09-11T11:15:00Z"
+            with self.assertRaises(ValueError):
+                self.capture()
+        self.assertFalse(self.output.exists())
+
+    def test_tampered_materialization_or_transport_cannot_replay(self):
+        with self.gates():
+            self.capture()
+            original = self.output / "javascript/package/node/original/execution/diagnostic.log"
+            original.write_bytes(b"tampered")
+            with self.assertRaisesRegex(ValueError, "authenticated original upload"):
+                self.replay()
+            original.write_bytes(b"")
+            transport = self.output / "javascript/package/node/capture-transport.json"
+            value = load_canonical_json_bytes(transport.read_bytes())
+            value["artifact"]["size_in_bytes"] += 1
+            transport.write_bytes(canonical_json_bytes(value))
+            with self.assertRaisesRegex(ValueError, "authenticated original upload"):
+                self.replay()
+
+    def test_conflicting_same_key_packages_never_publish(self):
+        with self.gates():
+            other = {**self.run, "id": 70}
+            original = load_canonical_json_bytes(self.receipt_bytes)
+            changed = {**original, "outputs": [{**original["outputs"][0], "sha256": "sha256:" + "0" * 64}]}
+            listing = recovery.products.paginated_items
+            def prior_listing(url, field, token):
+                rows = listing(url.replace("/70/", "/71/"), field, token)
+                return [{**row, "run_id": 70} for row in rows] if field == "jobs" and "/70/" in url else rows
+            with patch.object(recovery.products, "paginated_items", side_effect=prior_listing), \
+                    patch.object(recovery, "_capture_javascript_package", side_effect=(original, changed)), \
+                    self.assertRaisesRegex(ValueError, "conflicting output inventories"):
+                recovery.capture_prior_javascript_package(self.plan, {**self.producer, "runId": 72},
+                    self.key, self.output, self.work, trusted_workflow_sha=self.pin,
+                    token="synthetic-token", environ={}, attempts=(self.run, other))
+        self.assertFalse(self.output.exists())
 
 
 if __name__ == "__main__":
