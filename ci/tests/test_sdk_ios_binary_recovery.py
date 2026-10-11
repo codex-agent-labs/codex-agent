@@ -13,6 +13,7 @@ from ci.tests import test_sdk_ios_package_upload as fixture
 from ci import sdk_ios_binary_recovery as recovery
 from products.inventory import canonical_json_bytes, regular_file_inventory, load_canonical_json_bytes
 from products.restore import verification_session
+from products import restore as product_restore
 from ci.tests.product_chain_support import write_receipt
 from products.receipt import write_output_manifest
 from products.restore import PHASE_PLAN_KEYS, finalize_phase_object
@@ -57,6 +58,40 @@ class IosBinaryRecoveryTest(unittest.TestCase):
             plan_path=self.plan_path, repository_root=self.root,
             consumer_producer={**self.producer, "runId": 72}, trusted_workflow_sha=self.pin,
             token="synthetic-token", environ={})
+
+    def test_initial_capture_seals_only_its_completed_operation(self):
+        with self.gates():
+            download = recovery.products.download_artifact_to_file
+            with verification_session(), patch.object(product_restore, "_uncached_file_inventory",
+                    wraps=product_restore._uncached_file_inventory) as inventory:
+                original = self.capture()
+                self.assertEqual(1, download.call_count)
+                initial_scans = inventory.call_count
+                for _ in range(2):
+                    self.assertEqual(original, self.replay())
+                self.assertEqual(1, download.call_count)
+                self.assertEqual(initial_scans, inventory.call_count)
+                with patch.dict(self.artifact, {"expired": True}), self.assertRaises(ValueError):
+                    self.replay()
+                self.assertEqual(1, download.call_count)
+            with verification_session():
+                self.assertEqual(original, self.replay())
+            self.assertEqual(2, download.call_count)
+
+    def test_family_history_discovery_shares_run_lists_without_admission(self):
+        attempts = [{**self.run, "id": run, "conclusion": "failure"} for run in range(68, 72)]
+        arguments = {"trusted_workflow_sha": self.pin, "token": "synthetic-token", "environ": {},
+                     "attempts": attempts, "artifacts_by_run": {}, "jobs_by_attempt": {}}
+        producer = {**self.producer, "runId": 72}
+        key = load_canonical_json_bytes(self.receipt_bytes)["buildKey"]
+        with patch.object(recovery.products, "paginated_items", return_value=[]) as lists, \
+                patch.object(recovery.products, "_runtime_prior_workflow_sha", return_value=self.pin):
+            self.assertEqual([], recovery.capture_prior_ios_binary(self.plan_path, self.plan, producer,
+                key, self.work / "absent-ios", self.work, repository_root=self.root, **arguments))
+            self.assertEqual([], recovery.capture_prior_javascript_package(self.plan, producer,
+                key, self.work / "absent-js", self.work, **arguments))
+        self.assertEqual(4, lists.call_count)
+        self.assertEqual(4, len({call.args[0] for call in lists.call_args_list}))
 
     def test_session_downloads_once_but_observes_every_replay_and_expires(self):
         with self.gates():

@@ -7873,7 +7873,8 @@ def resume_products(
                     _consumer(plan, environment)["producer"], ios_misses[0]["buildKey"],
                     prepared / "prior-failed-sdk", prepared, repository_root=root,
                     environ=environment, trusted_workflow_sha=sdk_original_workflow_sha,
-                    token=environment["GITHUB_TOKEN"], attempts=attempts)
+                    token=environment["GITHUB_TOKEN"], attempts=attempts,
+                    artifacts_by_run=artifacts_by_run, jobs_by_attempt=jobs_by_attempt)
                 if prior_sdk_records:
                     wave["availableObjects"] = sorted(
                         (*initial_objects, *prior_records, *prior_sdk_records), key=_identity)
@@ -7892,7 +7893,8 @@ def resume_products(
                     _consumer(plan, environment)["producer"], javascript_misses[0]["buildKey"],
                     prepared / "prior-failed-sdk-javascript", prepared,
                     environ=environment, trusted_workflow_sha=sdk_original_workflow_sha,
-                    token=environment["GITHUB_TOKEN"], attempts=attempts)
+                    token=environment["GITHUB_TOKEN"], attempts=attempts,
+                    artifacts_by_run=artifacts_by_run, jobs_by_attempt=jobs_by_attempt)
                 prior_sdk_records.extend(javascript_records)
                 if javascript_records:
                     wave["availableObjects"] = sorted(

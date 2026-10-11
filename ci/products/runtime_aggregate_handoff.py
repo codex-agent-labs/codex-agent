@@ -260,6 +260,10 @@ def _verify_captured(root, keyring, keys_directory):
     transported_policy(root / "trust")
     if (selected / "trust").exists():
         transported_policy(selected / "trust")
+    contract_projection = verify_contract_component_projection(contract["stage"], contract["receiptPath"],
+        contract_args["contract_attestation"], contract_args["contract_attestation_signature"],
+        contract_args["contract_public_key"], expected_trust_domain="release", expected_contract_version=version,
+        required_components=("common", *NATIVE_TARGETS), keyring=keyring, keys_directory=keys_directory)
     signatures = {name: {} for name in ("variant_attestations", "variant_attestation_signatures", "variant_public_keys")}
     for target in NATIVE_TARGETS:
         native = root / "variant-inputs" / target
@@ -274,10 +278,7 @@ def _verify_captured(root, keyring, keys_directory):
         signatures["variant_attestations"][target] = native / f"{payload_stem}.attestation.json"
         signatures["variant_attestation_signatures"][target] = native / f"{payload_stem}.attestation.sig"
         signatures["variant_public_keys"][target] = native / "public-key.pub"
-        projection = verify_contract_component_projection(contract["stage"], contract["receiptPath"],
-            contract_args["contract_attestation"], contract_args["contract_attestation_signature"],
-            contract_args["contract_public_key"], expected_trust_domain="release", expected_contract_version=version,
-            required_components=("common", target), keyring=keyring, keys_directory=keys_directory)
+        projection = contract_projection.restrict(("common", target))
         for phase in ("package", "validation"):
             staged = root / "runtime-stages" / target / phase
             if tree(staged) != regular_file_inventory(original(target, phase, target)["stage"]):

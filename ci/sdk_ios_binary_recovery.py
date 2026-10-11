@@ -11,11 +11,14 @@ if __package__:
 import product_reuse as products
 from products.inventory import (
     _is_windows, canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
-    read_regular_file_bytes, regular_file_inventory, require_exact_keys, require_integer,
+    read_regular_file_bytes, require_exact_keys, require_integer,
     require_regular_directory, require_sha256, sha256_bytes,
 )
 from products.registry import PhaseInstanceId
-from products.restore import _VERIFICATION_SESSION, _stage_fingerprint, verify_phase_shard
+from products.restore import (
+    _VERIFICATION_SESSION, _stage_fingerprint, verify_phase_shard,
+    memoized_file_inventory as regular_file_inventory,
+)
 from products.verified_evidence import _source_identity
 from products.signing_isolation import require_no_signing_secret
 from reuse import run_matches_pr
@@ -84,7 +87,8 @@ def _capture_javascript_package(prior, artifact, destination, *, plan, consumer_
 
 
 def capture_prior_javascript_package(plan, consumer_producer, build_key, destination, artifact_root,
-        *, trusted_workflow_sha, token, environ, attempts=None):
+        *, trusted_workflow_sha, token, environ, attempts=None,
+        artifacts_by_run=None, jobs_by_attempt=None):
     """Recover only the demonstrated exact-key JS package from successful workers."""
     require_no_signing_secret(environ)
     context = canonical_json_bytes({"plan": plan, "consumer": consumer_producer})
@@ -94,6 +98,8 @@ def capture_prior_javascript_package(plan, consumer_producer, build_key, destina
         raise ValueError("Prior JavaScript recovery destination must not exist")
     attempts = products._prior_failed_pr_attempts(plan, consumer_producer, token) if attempts is None else attempts
     prefix = f"codex-agent-sdk-worker-javascript-package-node-{build_key.removeprefix('sha256:')}-"
+    artifacts_by_run = {} if artifacts_by_run is None else artifacts_by_run
+    jobs_by_attempt = {} if jobs_by_attempt is None else jobs_by_attempt
     found = []
     with tempfile.TemporaryDirectory(prefix="sdk-javascript-pr-recovery-") as temporary:
         private = Path(temporary).resolve()
@@ -102,8 +108,10 @@ def capture_prior_javascript_package(plan, consumer_producer, build_key, destina
             workflow = products._runtime_prior_workflow_sha(prior, trusted_workflow_sha)
             if workflow is None:
                 continue
-            uploads = products.paginated_items(
-                f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run}/artifacts", "artifacts", token)
+            if run not in artifacts_by_run:
+                artifacts_by_run[run] = products.paginated_items(
+                    f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run}/artifacts", "artifacts", token)
+            uploads = artifacts_by_run[run]
             suffix = f"-attempt-{attempt}"
             candidates = [row for row in uploads if type(row) is dict and type(row.get("name")) is str
                 and row["name"].startswith(prefix) and row["name"].endswith(suffix)]
@@ -116,8 +124,11 @@ def capture_prior_javascript_package(plan, consumer_producer, build_key, destina
                 raise ValueError("Prior JavaScript package expiration is malformed")
             if re.fullmatch(re.escape(prefix) + r"[0-9a-f]{40}" + re.escape(suffix), artifact["name"]) is None:
                 raise ValueError("Prior JavaScript package upload name is malformed")
-            jobs = products.paginated_items(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
-                f"{run}/attempts/{attempt}/jobs", "jobs", token)
+            if (run, attempt) not in jobs_by_attempt:
+                jobs_by_attempt[run, attempt] = products.paginated_items(
+                    f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run}/attempts/{attempt}/jobs",
+                    "jobs", token)
+            jobs = jobs_by_attempt[run, attempt]
             jobs = products._matching_ci_jobs(jobs, "product-validation / sdk-javascript-package-node",
                                               expected_build_key=build_key)
             if len(jobs) != 1:
@@ -337,16 +348,27 @@ def replay_prior_ios_binary(capture_root, artifact_root, *, plan_path, repositor
 
 
 def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, destination,
-        artifact_root, *, repository_root, environ, trusted_workflow_sha, token, attempts=None):
+        artifact_root, *, repository_root, environ, trusted_workflow_sha, token, attempts=None,
+        artifacts_by_run=None, jobs_by_attempt=None):
     """Search all permitted attempts, authenticate originals, reject key conflicts."""
     require_no_signing_secret(environ)
     require_sha256(build_key, "Current elected iOS binary key")
+    session = None if _is_windows() else _VERIFICATION_SESSION.get()
+    policy = _source_identity() if session is not None else None
+    plan_bytes = read_regular_file_bytes(plan_path, max_bytes=16 * 1024**2,
+        reject_symlink_parents=True) if session is not None else None
+    caller = canonical_json_bytes({"plan": plan, "consumer": consumer_producer})
+    if session is not None and (products._validate_plan(Path(plan_path), Path(repository_root)) != plan
+                                or plan["remoteBuildAuthorized"] is not True):
+        raise ValueError("Prior SDK recovery plan differs from its authorized caller")
     destination = Path(destination)
     if destination.exists() or destination.is_symlink():
         raise ValueError("Prior SDK capture destination must not exist")
     attempts = (products._prior_failed_pr_attempts(plan, consumer_producer, token)
                 if attempts is None else attempts)
     prefix = f"codex-agent-sdk-worker-sdk-ios-binary-ios-{build_key.removeprefix('sha256:')}-"
+    artifacts_by_run = {} if artifacts_by_run is None else artifacts_by_run
+    jobs_by_attempt = {} if jobs_by_attempt is None else jobs_by_attempt
     found = []
     with tempfile.TemporaryDirectory(prefix="sdk-ios-pr-recovery-") as temporary:
         scratch = Path(temporary).resolve()
@@ -355,8 +377,10 @@ def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, dest
             workflow = products._runtime_prior_workflow_sha(prior, trusted_workflow_sha)
             if workflow is None:
                 continue
-            artifacts = products.paginated_items(
-                f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run}/artifacts", "artifacts", token)
+            if run not in artifacts_by_run:
+                artifacts_by_run[run] = products.paginated_items(
+                    f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run}/artifacts", "artifacts", token)
+            artifacts = artifacts_by_run[run]
             suffix = f"-attempt-{attempt}"
             matching = [value for value in artifacts if type(value) is dict
                 and type(value.get("name")) is str and value["name"].startswith(prefix)
@@ -371,8 +395,11 @@ def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, dest
             match = re.fullmatch(re.escape(prefix) + r"([0-9a-f]{40})" + re.escape(suffix), listed["name"])
             if match is None:
                 raise ValueError("Prior SDK exact-key upload name is malformed")
-            jobs = products.paginated_items(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
-                f"{run}/attempts/{attempt}/jobs", "jobs", token)
+            if (run, attempt) not in jobs_by_attempt:
+                jobs_by_attempt[run, attempt] = products.paginated_items(
+                    f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run}/attempts/{attempt}/jobs",
+                    "jobs", token)
+            jobs = jobs_by_attempt[run, attempt]
             jobs = products._matching_ci_jobs(jobs, "product-validation / sdk-sdk-ios-binary-ios",
                                               expected_build_key=build_key)
             if len(jobs) != 1:
@@ -412,10 +439,10 @@ def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, dest
             verified = verify_phase_shard(capture / "original/shard", INSTANCE)
             if verified["receiptBytes"] != raw:
                 raise ValueError("Prior SDK captured original differs from discovery")
-            found.append((capture, verified["receipt"]))
+            found.append((capture, verified["receipt"], workflow))
         if not found:
             return []
-        if any(receipt["outputs"] != found[0][1]["outputs"] for _, receipt in found[1:]):
+        if any(receipt["outputs"] != found[0][1]["outputs"] for _, receipt, _ in found[1:]):
             raise ValueError("Prior SDK exact build key has conflicting output inventories")
         source = found[0][0]  # Original producer stays unchanged, even across equivalent attempts.
         target = destination / _RELATIVE
@@ -424,5 +451,26 @@ def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, dest
         if _stage_fingerprint(source) != fingerprint:
             raise ValueError("Prior SDK original changed during compact publication")
         publish_regular_tree(source, target, expected_inventory=inventory)
+        published = _stage_fingerprint(target)
+        record = _record(target, Path(artifact_root))
         require_no_signing_secret(environ)
-        return [_record(target, Path(artifact_root))]
+        if session is not None:
+            transport = products._canonical_control(target / "capture-transport.json", "Prior SDK transport")
+            context = canonical_json_bytes({"plan": plan, "consumer": consumer_producer,
+                "transport": transport, "workflow": found[0][2], "callerWorkflow": trusted_workflow_sha})
+            if (regular_file_inventory(target) != inventory or _stage_fingerprint(target) != published
+                    or read_regular_file_bytes(plan_path, reject_symlink_parents=True) != plan_bytes
+                    or canonical_json_bytes({"plan": plan, "consumer": consumer_producer}) != caller
+                    or _source_identity() != policy):
+                raise ValueError("Prior SDK original capture changed before completing its session")
+            key = (str(Path(repository_root).resolve(strict=True)), policy,
+                   sha256_bytes(plan_bytes), sha256_bytes(context))
+            # Same completed whole-upload proof as replay; no disk or cross-process authority.
+            digest = sha256_bytes(canonical_json_bytes(inventory))
+            with session["lock"]:
+                originals = session.setdefault("sdkIosOriginals", {})
+                if key in originals and originals[key] != digest:
+                    raise ValueError("Prior SDK original conflicts with completed session custody")
+                if len(originals) < 8:
+                    originals[key] = digest
+        return [record]

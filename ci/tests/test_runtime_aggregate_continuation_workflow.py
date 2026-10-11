@@ -34,11 +34,11 @@ class RuntimeAggregateContinuationWorkflowTest(unittest.TestCase):
         return {"runtime-continuation": {"result": "success", "outputs": output},
                 "runtime-collect-5": {"result": "success" if fresh else "skipped", "outputs": collected if fresh else {}}}
 
-    def run_selector(self, needs, expected_wave=None):
+    def run_selector(self, needs, expected_wave=None, recovery="false"):
         with tempfile.TemporaryDirectory(prefix="aggregate-selection-") as temporary:
             output = Path(temporary) / "output"
             environment = {key: value for key, value in os.environ.items() if key in {"SYSTEMROOT", "WINDIR"}}
-            environment.update(PREDECESSORS=json.dumps(needs), GITHUB_OUTPUT=str(output))
+            environment.update(PREDECESSORS=json.dumps(needs), GITHUB_OUTPUT=str(output), SDK_RECOVERY_ONLY=recovery)
             result = subprocess.run([sys.executable, "-I", "-B", "-c", self.script], cwd=temporary,
                                     env=environment, capture_output=True, text=True)
             if expected_wave is None:
@@ -48,15 +48,23 @@ class RuntimeAggregateContinuationWorkflowTest(unittest.TestCase):
                 self.assertEqual(0, result.returncode, result.stderr)
                 parent = needs["runtime-collect-5" if expected_wave == "5" else "runtime-continuation"]["outputs"]
                 self.assertEqual({"state_wave": expected_wave, "artifact_id": parent["artifact_id"],
-                                  "artifact_digest": parent["artifact_digest"]},
+                                  "artifact_digest": parent["artifact_digest"],
+                                  "reuse_completed": str(recovery == "true" and expected_wave != "5").lower(),
+                                  "aggregate_key": parent["aggregate_key"],
+                                  "aggregate_receipt_sha256": parent["aggregate_receipt_sha256"],
+                                  "aggregate_payload_complete": "true"},
                                  dict(line.split("=", 1) for line in output.read_text().splitlines()))
 
     def test_fresh_wave_five_and_every_retained_original_wave_preserve_upload_identity(self):
-        self.run_selector(self.fixture(True), "5")
-        for wave in range(5):
-            needs = self.fixture(False)
-            needs["runtime-continuation"]["outputs"]["state_wave"] = str(wave)
-            self.run_selector(needs, str(wave))
+        for recovery in ("false", "true"):
+            self.run_selector(self.fixture(True), "5", recovery)
+            for wave in range(5):
+                needs = self.fixture(False)
+                needs["runtime-continuation"]["outputs"]["state_wave"] = str(wave)
+                self.run_selector(needs, str(wave), recovery)
+        for invalid in ("", "TRUE", "1"):
+            for fresh in (False, True):
+                self.run_selector(self.fixture(fresh), recovery=invalid)
 
     def test_failed_skipped_cancelled_and_unexpected_collection_reject(self):
         for fresh in (True, False):
@@ -100,9 +108,14 @@ class RuntimeAggregateContinuationWorkflowTest(unittest.TestCase):
                       "aggregate_state != 'not-selected'", "!contains(needs.*.result, 'failure')"):
             self.assertIn(value, guard)
         self.assertLess(self.job.index("id: parent"), self.job.index("id: captured"))
-        self.assertLess(self.job.index("id: captured"), self.job.index("id: route"))
-        self.assertIn("ci/runtime_workflow.py continuation --require-completed", self.job)
-        self.assertNotRegex(self.job, r"secrets\.|PRIVATE_KEY|actions/setup-|setup-kmp|\./gradlew")
+        self.assertLess(self.job.index("id: parent"), self.job.index("restore-reuse-qualification"))
+        self.assertIn("id: captured\n        if: steps.parent.outputs.reuse_completed != 'true'", self.job)
+        self.assertIn("continuation: completed", self.job)
+        for field in ("aggregate_key", "aggregate_receipt_sha256", "aggregate_payload_complete"):
+            self.assertIn("steps.parent.outputs.reuse_completed == 'true' && steps.parent.outputs."
+                          + field + " || steps.captured.outputs." + field, self.job)
+        self.assertEqual(["REUSE_AUTHORITY_READ_TOKEN"], re.findall(r"secrets\.([A-Z_]+)", self.job))
+        self.assertNotRegex(self.job, r"PRIVATE_KEY|actions/setup-|setup-kmp|\./gradlew")
         self.assertIn("runtime-aggregate-continuation", workflow_job(self.source, "merge-gate"))
 
 

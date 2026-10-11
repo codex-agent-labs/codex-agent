@@ -22,6 +22,7 @@ import zipfile
 from .inventory import (
     PRODUCT_JSON_LIMIT,
     _is_windows,
+    _is_reparse_point,
     _open_directory,
     _open_regular_file,
     _stat_identity,
@@ -830,7 +831,8 @@ def _verified_object_snapshot(
     build_key: Any,
     receipt_sha256: Any,
     object_sha256: Any | None,
-) -> Iterator[tuple[Path, dict[str, Any]]]:
+    require_snapshot: bool = True,
+) -> Iterator[tuple[Path | None, dict[str, Any]]]:
     session = None if _is_windows() else _VERIFICATION_SESSION.get()
     # A missing transport digest cannot identify an immutable object in advance.
     if session is not None and object_sha256 is not None:
@@ -844,6 +846,18 @@ def _verified_object_snapshot(
                 source_key = (str(Path(archive).absolute()), identity, key)
                 with session["lock"]:
                     cached = session["objects"].get(source_key)
+                    proof = (session.get("objectProofs", {}).get(key)
+                             if source_key in session.get("objectSources", {}) else None)
+                if cached is None and not require_snapshot and proof is not None:
+                    # Only return verified metadata. Any payload consumer still
+                    # obtains a private snapshot and checks every byte's hash.
+                    if _stat_identity(os.fstat(descriptor)) != identity:
+                        raise CacheObjectError("Product cache object changed before metadata reuse")
+                    session["hits"] += 1
+                    yield None, deepcopy(proof)
+                    if _stat_identity(os.fstat(descriptor)) != identity:
+                        raise CacheObjectError("Product cache object changed during metadata reuse")
+                    return
                 if cached is not None:
                     snapshot, verification, snapshot_identity = cached
                     private_descriptor, private_stat = _open_safe_regular(snapshot, "Verified object snapshot")
@@ -868,20 +882,49 @@ def _verified_object_snapshot(
         snapshot = Path(temporary).resolve() / "object.zip"
         try:
             identity = _snapshot_archive(Path(archive), snapshot)
-            verification = _verify_snapshot(
-                snapshot,
-                build_key=build_key,
-                receipt_sha256=receipt_sha256,
-                object_identity=identity,
-                object_sha256=object_sha256,
-            )
+            verification = None
+            if session is not None and object_sha256 is not None:
+                if identity["sha256"] != key[2]:
+                    raise ValueError("Product cache object SHA-256 does not match the expected transport identity")
+                with session["lock"]:
+                    verification = deepcopy(session.get("objectProofs", {}).get(key))
+                if verification is not None and verification["objectBytes"] != identity["bytes"]:
+                    raise ValueError("Product cache object size differs from completed verification")
+            if verification is None:
+                verification = _verify_snapshot(
+                    snapshot,
+                    build_key=build_key,
+                    receipt_sha256=receipt_sha256,
+                    object_identity=identity,
+                    object_sha256=object_sha256,
+                )
+                if session is not None and object_sha256 is not None:
+                    size = len(verification["receiptBytes"]) + len(canonical_json_bytes(verification["manifest"]))
+                    with session["lock"]:
+                        proofs = session.setdefault("objectProofs", {})
+                        used = session.get("objectProofBytes", 0)
+                        # ponytail: 128 proofs/32 MiB encoded metadata; overflow verifies fully.
+                        if key not in proofs and len(proofs) < 128 and used + size <= 2 * PRODUCT_JSON_LIMIT:
+                            proofs[key] = deepcopy(verification)
+                            session["objectProofBytes"] = used + size
+            if session is not None and object_sha256 is not None:
+                with session["lock"]:
+                    sources = session.setdefault("objectSources", {})
+                    if key in session.get("objectProofs", {}) and len(sources) < 4096:
+                        sources[source_key] = key
         except (OSError, ValueError, zipfile.BadZipFile) as error:
             raise CacheObjectError(str(error)) from error
         if session is not None and object_sha256 is not None:
             session["misses"] += 1
-            # ponytail: bounded private custody; larger closures verify uncached.
+            # A newly seen alias has already passed its own complete byte hash.
+            # Share retained custody by exact identity instead of charging it twice.
             with session["lock"]:
-                if session["bytes"] + identity["bytes"] <= _VERIFICATION_CACHE_BYTES:
+                equivalent = next((value for (_, _, candidate), value in session["objects"].items()
+                                   if candidate == key), None)
+                if equivalent is not None and len(session["objects"]) < 4096:
+                    session["objects"][source_key] = equivalent
+                elif (len(session["objects"]) < 4096
+                      and session["bytes"] + identity["bytes"] <= _VERIFICATION_CACHE_BYTES):
                     retained = session["root"] / (secrets.token_hex(16) + ".zip")
                     shutil.move(snapshot, retained)
                     retained.chmod(0o400)
@@ -904,6 +947,7 @@ def verify_object(
         build_key=build_key,
         receipt_sha256=receipt_sha256,
         object_sha256=object_sha256,
+        require_snapshot=False,
     ) as (_, verification):
         return verification
 
@@ -1001,6 +1045,47 @@ def restore_object(
 
 def _stage_fingerprint(root):
     """Guard private, already-verified extraction custody without rehashing it."""
+    if not _is_windows():
+        anchor = _open_directory(root, "Verified stage directory")
+        def fail(error):
+            raise error
+        walk = os.fwalk(".", topdown=True, onerror=fail, follow_symlinks=False, dir_fd=anchor)
+        result = []
+        before = _stat_identity(os.fstat(anchor))
+        try:
+            for current, directories, files, parent in walk:
+                directories.sort()
+                entries = [(".", True), *((name, True) for name in directories),
+                           *((name, False) for name in sorted(files))]
+                for name, directory in entries:
+                    metadata = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    if (_is_reparse_point(metadata)
+                            or not (stat.S_ISDIR(metadata.st_mode) if directory else stat.S_ISREG(metadata.st_mode))):
+                        raise ValueError("Verified stage contains an unsafe entry")
+                    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                    if directory:
+                        flags |= getattr(os, "O_DIRECTORY", 0)
+                    descriptor = os.open(name, flags, dir_fd=parent)
+                    try:
+                        opened = os.fstat(descriptor)
+                        if _is_reparse_point(opened) or _stat_identity(opened) != _stat_identity(metadata):
+                            raise ValueError("Verified stage entry changed while opening")
+                        result.append((str(Path(root) / current / name), _stat_identity(opened)))
+                    finally:
+                        os.close(descriptor)
+            current = _open_directory(root, "Verified stage directory")
+            try:
+                if (_stat_identity(os.fstat(current)) != before
+                        or _stat_identity(os.fstat(anchor)) != before):
+                    raise ValueError("Verified stage directory changed during fingerprint")
+            finally:
+                os.close(current)
+            return tuple(result)
+        except OSError as error:
+            raise ValueError("Verified stage tree is missing or unsafe") from error
+        finally:
+            walk.close()
+            os.close(anchor)
     result = []
     for current, directories, files in os.walk(root, followlinks=False):
         directories.sort()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import os
 from pathlib import Path
+import shutil
 import stat
 import tempfile
 import unittest
@@ -157,6 +158,136 @@ class ProductRestoreTest(unittest.TestCase):
             leaf.symlink_to(self.receipt_path)
             with self.assertRaises((ValueError, OSError)):
                 product_restore.memoized_file_inventory(self.stage)
+
+    @unittest.skipIf(os.name == "nt", "Private verification reuse is POSIX-only")
+    def test_oversized_aliases_reuse_only_completed_proof_after_full_byte_hash(self):
+        stored = self.store()
+        arguments = {"build_key": stored["buildKey"], "receipt_sha256": stored["receiptSha256"],
+                     "object_sha256": stored["objectSha256"]}
+        alias = self.root / "alias.zip"
+        shutil.copyfile(stored["path"], alias)
+        with mock.patch.object(product_restore, "_VERIFICATION_CACHE_BYTES", 1), \
+                mock.patch.object(product_restore, "_verify_snapshot", wraps=product_restore._verify_snapshot) as verify, \
+                mock.patch.object(product_restore, "_snapshot_archive", wraps=product_restore._snapshot_archive) as snapshot:
+            with product_restore.verification_session() as session:
+                first = verify_object(stored["path"], **arguments)
+                first["receipt"]["producer"]["runId"] = 999
+                for source in (stored["path"], alias):
+                    self.assertEqual(self.receipt, verify_object(source, **arguments)["receipt"])
+                restore_object(alias, self.root / "restored", **arguments)
+                self.assertEqual(1, verify.call_count)
+                self.assertEqual(3, snapshot.call_count)
+                self.assertEqual(0, session["bytes"])
+                self.assertEqual(1, len(session["objectProofs"]))
+                before = alias.stat()
+                with alias.open("r+b") as stream:
+                    stream.write(b"BAD!")
+                os.utime(alias, ns=(before.st_atime_ns, before.st_mtime_ns))
+                with self.assertRaises(CacheObjectError):
+                    verify_object(alias, **arguments)
+                self.assertEqual(1, verify.call_count)
+                for field in ("receipt_sha256", "build_key"):
+                    with self.subTest(field=field), self.assertRaises(CacheObjectError):
+                        verify_object(stored["path"], **{**arguments, field: DIGEST_A})
+                self.assertEqual(1, len(session["objectProofs"]))
+                with self.assertRaises(CacheObjectError), product_restore._verified_object_snapshot(
+                        stored["path"], **arguments, require_snapshot=False) as (private, _):
+                    self.assertIsNone(private)
+                    stored["path"].chmod(0o600)
+                    stored["path"].write_bytes(stored["path"].read_bytes())
+            with product_restore.verification_session():
+                verify_object(stored["path"], **arguments)
+            self.assertEqual(4, verify.call_count)
+
+    @unittest.skipIf(os.name == "nt", "Private verification reuse is POSIX-only")
+    def test_completed_proof_metadata_bounds_fall_back_to_full_verification(self):
+        stored = self.store()
+        arguments = {"build_key": stored["buildKey"], "receipt_sha256": stored["receiptSha256"],
+                     "object_sha256": stored["objectSha256"]}
+        for limit in ("entries", "bytes", "sources"):
+            with self.subTest(limit=limit), product_restore.verification_session() as session, \
+                    mock.patch.object(product_restore, "_VERIFICATION_CACHE_BYTES", 1), \
+                    mock.patch.object(product_restore, "_verify_snapshot", wraps=product_restore._verify_snapshot) as verify:
+                if limit == "entries":
+                    session["objectProofs"] = dict.fromkeys(range(128))
+                elif limit == "bytes":
+                    session["objectProofBytes"] = 2 * product_restore.PRODUCT_JSON_LIMIT
+                else:
+                    session["objectSources"] = dict.fromkeys(range(4096))
+                for _ in range(2):
+                    self.assertEqual(self.receipt, verify_object(stored["path"], **arguments)["receipt"])
+                self.assertEqual(1 if limit == "sources" else 2, verify.call_count)
+                if limit == "sources":
+                    self.assertEqual(4096, len(session["objectSources"]))
+
+    @unittest.skipIf(os.name == "nt", "Private verification reuse is POSIX-only")
+    def test_aliases_share_private_archive_but_each_source_is_hashed(self):
+        stored = self.store()
+        arguments = {"build_key": stored["buildKey"], "receipt_sha256": stored["receiptSha256"],
+                     "object_sha256": stored["objectSha256"]}
+        paths = [stored["path"], self.root / "alias-1.zip", self.root / "alias-2.zip"]
+        for alias in paths[1:]:
+            shutil.copyfile(paths[0], alias)
+        with mock.patch.object(product_restore, "_VERIFICATION_CACHE_BYTES", paths[0].stat().st_size), \
+                product_restore.verification_session() as session, \
+                mock.patch.object(product_restore, "_snapshot_archive", wraps=product_restore._snapshot_archive) as snapshot, \
+                mock.patch.object(product_restore, "_verify_snapshot", wraps=product_restore._verify_snapshot) as verify:
+            for path in paths * 2:
+                self.assertEqual(self.receipt, verify_object(path, **arguments)["receipt"])
+            self.assertEqual(3, snapshot.call_count)
+            self.assertEqual(1, verify.call_count)
+            self.assertEqual(paths[0].stat().st_size, session["bytes"])
+            self.assertEqual(3, len(session["objects"]))
+            private = {value[0] for value in session["objects"].values()}
+            self.assertEqual(1, len(private))
+            before = paths[1].stat()
+            with paths[1].open("r+b") as stream:
+                stream.write(b"BAD!")
+            os.utime(paths[1], ns=(before.st_atime_ns, before.st_mtime_ns))
+            with self.assertRaises(CacheObjectError):
+                verify_object(paths[1], **arguments)
+            snapshot_path = private.pop()
+            snapshot_path.chmod(0o600)
+            with snapshot_path.open("r+b") as stream:
+                stream.write(b"BAD!")
+            with self.assertRaises(CacheObjectError):
+                verify_object(paths[0], **arguments)
+
+    @unittest.skipIf(os.name == "nt", "Descriptor traversal optimization is POSIX-only")
+    def test_private_fingerprint_anchors_ancestry_once_and_rejects_unsafe_paths(self):
+        nested = self.stage / "one/two/three/four/five"
+        nested.mkdir(parents=True)
+        for number in range(64):
+            (nested / str(number)).write_bytes(b"payload")
+        with mock.patch.object(os, "open", wraps=os.open) as opened:
+            before = product_restore._stage_fingerprint(self.stage)
+        self.assertLess(opened.call_count, 64 * 3 + 60)
+        self.assertEqual(64, len([path for path, _ in before if Path(path).parent == nested]))
+        unsafe = nested / "unsafe"
+        for kind in ("file", "directory", "fifo"):
+            with self.subTest(kind=kind):
+                if kind == "fifo":
+                    os.mkfifo(unsafe)
+                else:
+                    unsafe.symlink_to(self.stage if kind == "directory" else self.receipt_path)
+                try:
+                    with self.assertRaises((ValueError, OSError)):
+                        product_restore._stage_fingerprint(self.stage)
+                finally:
+                    unsafe.unlink()
+        alias = self.root / "alias"
+        alias.symlink_to(self.stage, target_is_directory=True)
+        with self.assertRaises((ValueError, OSError)):
+            product_restore._stage_fingerprint(alias / "one")
+        original_open = os.open
+        old = self.root / "old-stage"
+        def replace_root(name, *args, **kwargs):
+            if name == "1" and not old.exists():
+                self.stage.rename(old)
+                self.stage.mkdir()
+            return original_open(name, *args, **kwargs)
+        with mock.patch.object(os, "open", side_effect=replace_root), self.assertRaises(ValueError):
+            product_restore._stage_fingerprint(self.stage)
 
     def test_object_zip_fsync_uses_writable_descriptor(self) -> None:
         output = self.root / "object.zip"

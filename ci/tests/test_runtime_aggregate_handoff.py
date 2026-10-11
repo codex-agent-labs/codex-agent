@@ -56,11 +56,15 @@ class RuntimeAggregateHandoffTest(unittest.TestCase):
                 patch.object(reader, "verify_native_runtime_validation_content",
                              wraps=reader.verify_native_runtime_validation_content) as native, \
                 patch.object(reader, "verify_runtime_aggregate_artifacts",
-                             wraps=reader.verify_runtime_aggregate_artifacts) as aggregate, self.read() as verified:
+                             wraps=reader.verify_runtime_aggregate_artifacts) as aggregate, \
+                patch.object(reader, "verify_contract_component_projection",
+                             wraps=reader.verify_contract_component_projection) as projection, self.read() as verified:
             self.assertEqual(50, len(verified["receiptBytes"]))
             self.assertEqual("0.2.7", verified["manifest"]["runtimeVersion"])
             self.assertEqual(list(NATIVE_TARGETS), [call.args[0] for call in native.call_args_list])
             aggregate.assert_called_once()
+            projection.assert_called_once()
+            self.assertEqual(("common", *NATIVE_TARGETS), projection.call_args.kwargs["required_components"])
             self.assertNotEqual(self.carrier, verified["directory"])
             self.assertEqual(before, verified["inventory"])
             self.assertEqual(before, regular_file_inventory(verified["directory"], allow_empty=True))

@@ -86,6 +86,29 @@ class SdkWorkflowWiringTest(unittest.TestCase):
                 if f"uses: ./.github/workflows/{name}\n" in body)
             self.assertIn("secrets:\n      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}", job)
 
+    def test_input_staging_uses_hosted_cache_and_planner_can_overlap_with_identical_gates(self):
+        inputs = self.job("sdk-inputs")
+        staged = inputs.split("        id: staged\n", 1)[1].split("      - id: upload\n", 1)[0]
+        self.assertIn("uses: ./.github/actions/hydrated-evidence-cache", staged)
+        self.assertIn("mode: execute\n          script: |", staged)
+        self.assertIn("python3 -B -m ci.sdk_workflow", staged)
+        self.assertIn("path: ${{ steps.staged.outputs.input_root }}", inputs)
+        self.assertIn("overwrite: false", inputs)
+        planner = self.job("sdk-plan")
+        dependencies = re.search(r"    needs: \[(.*?)\]", planner)[1].split(", ")
+        input_dependencies = re.search(r"    needs: \[(.*?)\]", inputs)[1].split(", ")
+        self.assertNotIn("sdk-inputs", dependencies)
+        self.assertTrue(set(input_dependencies).issubset(dependencies))
+        self.assertNotIn("needs.sdk-inputs.", planner)
+        input_gate = inputs.split("    if: >-\n", 1)[1].split("    runs-on:", 1)[0].strip()
+        planner_gate = planner.split("    if: >-\n", 1)[1].split("    runs-on:", 1)[0].strip()
+        self.assertEqual(input_gate + " &&\n      needs.sdk-ios-binary-plan.result == 'success'", planner_gate)
+        for name in ("sdk-workers-1", "sdk-workers-2", "sdk-csharp-binary"):
+            dependencies = re.search(r"    needs: \[(.*?)\]", self.job(name))[1].split(", ")
+            self.assertIn("sdk-plan", dependencies)
+            self.assertIn("sdk-inputs", dependencies)
+            self.assertIn("needs.sdk-inputs.result == 'success'", self.job(name))
+
     def test_qualification_refresh_uses_existing_native_issuer_without_product_builds(self):
         caller = (ROOT / ".github/workflows/portable-reuse-proof.yml").read_text()
         cold = caller.split("  cold:\n", 1)[1].split("  warm:\n", 1)[0]
