@@ -40,10 +40,11 @@ def _retry_github_get(operation):
         for attempt in range(4):
             try:
                 return operation(*args, **kwargs)
-            except (urllib.error.URLError, TimeoutError) as error:
-                transient = (isinstance(error, TimeoutError)
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+                transient = (isinstance(error, (TimeoutError, ConnectionError))
                     or isinstance(error, urllib.error.HTTPError) and error.code in {502, 503, 504}
-                    or isinstance(error, urllib.error.URLError) and isinstance(error.reason, socket.gaierror))
+                    or isinstance(error, urllib.error.URLError)
+                    and isinstance(error.reason, (socket.gaierror, TimeoutError, ConnectionError)))
                 if attempt == 3 or not transient:
                     raise
                 if isinstance(error, urllib.error.HTTPError):

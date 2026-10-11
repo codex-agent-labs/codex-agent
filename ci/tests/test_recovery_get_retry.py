@@ -25,6 +25,9 @@ class RecoveryGetRetryTest(unittest.TestCase):
 
     def test_timeout_retries_are_bounded_and_authentication_errors_do_not_retry(self):
         for error, calls in ((TimeoutError("read timed out"), 4),
+                             (ConnectionResetError(104, "Connection reset by peer"), 4),
+                             (urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer")), 4),
+                             (urllib.error.URLError(TimeoutError("read timed out")), 4),
                              (urllib.error.URLError(socket.gaierror(8, "nodename nor servname provided")), 4),
                              (urllib.error.URLError(ssl.SSLCertVerificationError("certificate rejected")), 1),
                              (urllib.error.URLError("unknown transport failure"), 1),
