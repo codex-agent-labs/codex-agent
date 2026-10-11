@@ -52,6 +52,40 @@ class HydratedEvidenceTest(unittest.TestCase):
                     self.assertEqual(2, len(records))
                 self.assertEqual(2, execute.call_count)
 
+                import hosted_reuse_proof as proof
+                from products.restore import verification_session
+                spec = root / "fixture-spec.json"
+                spec.write_bytes(b"{}\n")
+
+                def prepare(_spec, work, _token):
+                    (work / "original").mkdir()
+                    (work / "original/runtime-original-references.json").write_bytes(canonical_json_bytes(value))
+
+                def capture(_plan, _producer, source, rows, destination, **_options):
+                    for row in rows:
+                        path = destination / row["relativePath"]
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(b"phase" if source["kind"] == "phase" else b"aggregate")
+                    return {"source": source["relativePath"]}
+
+                def backend(_command, **options):
+                    if options["env"]["INPUT_MODE"] == "save":
+                        records = json.loads(Path(options["env"]["INPUT_MANIFEST"]).read_text())
+                        self.assertEqual(2, len(records))
+                        for row in records:
+                            self.assertEqual(row["sha256"], sha256_bytes(cache.blob(row).read_bytes()))
+
+                execute.side_effect = backend
+                with verification_session(), patch.object(proof, "SPEC", spec), \
+                        patch.object(proof, "prepare", side_effect=prepare), \
+                        patch.object(proof.products, "_capture_runtime_original_reference_members", side_effect=capture) as captured, \
+                        patch.object(proof.products, "_register_qualified_original_projections") as register:
+                    proof.qualify_checkpoint(proof.PRODUCER, root / "checkpoint", "fixture-token",
+                                             trusted_workflow_sha="a" * 40)
+                self.assertEqual({"phase", "aggregate"}, {call.args[2]["kind"] for call in captured.call_args_list})
+                self.assertEqual(["phase"], [source["kind"] for source in register.call_args.args[1]["sources"]])
+                self.assertEqual(1, len(register.call_args.args[2]))
+
     def test_expired_private_projection_rehydrates_but_changed_custody_rejects(self):
         # Local fixture and mocked native envelope authentication, not hosted evidence.
         from ci.tests.test_runtime_original_ci import RuntimeOriginalCiTest, TARGET

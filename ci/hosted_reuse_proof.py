@@ -242,12 +242,18 @@ def qualify_checkpoint(plan, work, token, *, trusted_workflow_sha):
     cache.hosted("restore", refs, work)
     transports = []
     for source in refs["sources"]:
-        if source["kind"] != "phase":
-            continue
         rows = [row for row in refs["references"] if row["source"] == source["relativePath"]
                 and row["relativePath"].startswith(source["relativePath"] + "/")]
-        transports.append(products._capture_runtime_original_reference_members(plan, PRODUCER,
-            source, rows, original, trusted_workflow_sha=trusted_workflow_sha, token=token))
+        transport = products._capture_runtime_original_reference_members(plan, PRODUCER,
+            source, rows, original, trusted_workflow_sha=trusted_workflow_sha, token=token)
+        # Persistent phase custody can supply bytes without populating hydrated CAS.
+        # Presence avoids duplicate reads; the save backend still hashes every body.
+        for row in rows:
+            body = cache.blob(row)
+            if body is not None and not body.exists():
+                cache.retain(row, original / row["relativePath"])
+        if source["kind"] == "phase":
+            transports.append(transport)
     products._register_qualified_original_projections(original,
         {**refs, "sources": [source for source in refs["sources"] if source["kind"] == "phase"]},
         transports, trusted_workflow_sha=trusted_workflow_sha)
