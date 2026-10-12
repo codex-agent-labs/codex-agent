@@ -78,6 +78,22 @@ runs:
         cache-read-only: 'false'
         node-version: '24.18.0'
         product-worker: 'true'
+    - name: Provision locked consumer dependencies before offline validation
+      if: inputs.phase == 'validation'
+      shell: bash
+      env:
+        npm_config_offline: 'false'
+        npm_config_engine_strict: 'true'
+      run: |
+        set -euo pipefail
+        consumer_inputs=$(mktemp -d "$RUNNER_TEMP/sdk-js-consumer-inputs.XXXXXX")
+        cp "$GITHUB_WORKSPACE/codex-agent-bindings/javascript/consumer/package.json" \
+          "$GITHUB_WORKSPACE/codex-agent-bindings/javascript/consumer/package-lock.json" "$consumer_inputs/"
+        npm ci --prefix "$consumer_inputs" --ignore-scripts --no-audit --no-fund \
+          --cache "$GITHUB_WORKSPACE/codex-agent-sdk/build/npm/cache"
+        typescript_spec=$(node -p '"typescript@" + require(process.argv[1]).packages["node_modules/typescript"].version' "$consumer_inputs/package-lock.json")
+        npm cache add "$typescript_spec" --ignore-scripts \
+          --cache "$GITHUB_WORKSPACE/codex-agent-sdk/build/npm/cache"
     - name: Execute exact SDK phase within verified original input lifetimes
       shell: bash
       env:

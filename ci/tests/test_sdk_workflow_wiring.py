@@ -152,6 +152,28 @@ class SdkWorkflowWiringTest(unittest.TestCase):
             self.assertIn("product: sdk", collector)
         self.assertNotIn("one_directory", self.job("sdk-javascript"))
 
+    def test_javascript_validation_provisions_only_locked_consumer_inputs(self):
+        action = (ROOT / ".github/actions/sdk-javascript-worker/action.yml").read_text()
+        name = "Provision locked consumer dependencies before offline validation"
+        step = action.split("    - name: " + name + "\n", 1)[1].split("    - name:", 1)[0]
+        self.assertIn("if: inputs.phase == 'validation'", step)
+        self.assertIn("npm_config_offline: 'false'", step)
+        self.assertIn("npm_config_engine_strict: 'true'", step)
+        self.assertIn('mktemp -d "$RUNNER_TEMP/sdk-js-consumer-inputs.XXXXXX"', step)
+        for path in ("package.json", "package-lock.json"):
+            self.assertIn("codex-agent-bindings/javascript/consumer/" + path, step)
+        self.assertIn('npm ci --prefix "$consumer_inputs" --ignore-scripts --no-audit --no-fund', step)
+        self.assertIn('require(process.argv[1]).packages["node_modules/typescript"].version', step)
+        self.assertIn('npm cache add "$typescript_spec" --ignore-scripts', step)
+        self.assertIn('--cache "$GITHUB_WORKSPACE/codex-agent-sdk/build/npm/cache"', step)
+        self.assertLess(action.index("./.github/actions/setup-kmp"), action.index(name))
+        self.assertLess(action.index(name), action.index("Execute exact SDK phase"))
+        self.assertNotRegex(step, r"gradlew|cargo|cmake|xcodebuild|npm (?:pack|publish)|--force")
+        wiring = (ROOT / "gradle/build-logic/src/main/kotlin/codexagent.javascript-sdk.gradle.kts").read_text()
+        self.assertIn('val npmConsumerCacheDirectory = layout.buildDirectory.dir("npm/cache")', wiring)
+        self.assertIn('if (npmOffline) environment("npm_config_offline", "true")', wiring)
+        self.assertIn('environment("npm_config_cache", npmConsumerCacheDirectory.get().asFile.absolutePath)', wiring)
+
     def summary(self, needs):
         source = self.job("sdk-javascript").split("python3 - <<'PY'\n", 1)[1].rsplit("          PY", 1)[0]
         with tempfile.TemporaryDirectory(prefix="sdk-summary-output-") as temporary:
