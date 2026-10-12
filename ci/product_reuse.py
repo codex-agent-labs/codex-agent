@@ -566,7 +566,8 @@ def _runtime_prior_workflow_sha(run, current_sha):
                              "4dcf10739d30dc0462eb03090e17612d4ca6a97b",
                              "53d6ad1e4d7cfba9267894af9b302e07f7cb6656",
                              "496c58d0dd91a8d5170d048792e252182ebf5968",
-                             "dc9de1534ec42237c33a2c1506e046907df8e54a")):
+                             "dc9de1534ec42237c33a2c1506e046907df8e54a",
+                             "400b40cf06815101abd4a3f743b5d47cf19b190e")):
         try:
             _require_ci_workflow_reference(run,
                 f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{sha}", sha)
@@ -580,7 +581,13 @@ def _matching_ci_jobs(jobs, name, *, expected_build_key=None):
     names = {name}
     if expected_build_key is not None:
         require_sha256(expected_build_key, "Caller-pinned SDK worker build key")
-        names.add(f"{name} ({expected_build_key}, ...")
+        rendered = f"{name} ({expected_build_key}, ..."
+        names.add(rendered)
+        # GitHub also truncates the display at 118 characters plus ellipsis.
+        # This only locates candidates: callers still reject ambiguity and bind
+        # the full artifact name, receipt key, producer and upload/job window.
+        if len(rendered) > 121 and len(name) + len(" (sha256:") + 32 <= 118:
+            names.add(rendered[:118] + "...")
     matrix_name = re.compile(
         re.escape(name) + r" \(contracts, (?:true|false), (?:true|false), (?:true|false)\)"
     ) if name in {
@@ -4149,27 +4156,18 @@ def _verified_product_state(
             trusted_workflow_sha=sdk_original_workflow_sha,
             token=environment["GITHUB_TOKEN"], environ=environment,
             **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})))
-    javascript_capture = discovery_root / "prior-failed-sdk-javascript"
-    javascript_package = PhaseInstanceId("sdk", "javascript", "package", "node")
-    if (requested_scope is None or javascript_package in closure) and (javascript_capture.exists() or javascript_capture.is_symlink()):
-        if not sdk_original_workflow_sha or not environment.get("GITHUB_TOKEN"):
-            raise ValueError("Prior JavaScript replay requires caller-pinned workflow authority and token")
-        from sdk_ios_binary_recovery import replay_prior_javascript_package
-        prior_records.extend(replay_prior_javascript_package(javascript_capture, discovery_root,
-            plan=plan, consumer_producer=consumer["producer"],
-            trusted_workflow_sha=sdk_original_workflow_sha,
-            token=environment["GITHUB_TOKEN"], environ=environment))
-    javascript_validation = PhaseInstanceId("sdk", "javascript", "validation", "node")
-    javascript_validation_capture = discovery_root / "prior-failed-sdk-javascript-validation"
-    if (requested_scope is None or javascript_validation in closure) and (
-            javascript_validation_capture.exists() or javascript_validation_capture.is_symlink()):
-        if not sdk_original_workflow_sha or not environment.get("GITHUB_TOKEN"):
-            raise ValueError("Prior JavaScript validation requires original workflow authority and token")
-        from sdk_ios_binary_recovery import replay_prior_javascript_package
-        prior_records.extend(replay_prior_javascript_package(javascript_validation_capture, discovery_root,
-            plan=plan, consumer_producer=consumer["producer"], phase="validation",
-            trusted_workflow_sha=sdk_original_workflow_sha,
-            token=environment["GITHUB_TOKEN"], environ=environment))
+    for phase in ("package", "validation", "metadata"):
+        instance = PhaseInstanceId("sdk", "javascript", phase, "node")
+        capture = discovery_root / ("prior-failed-sdk-javascript" + ("" if phase == "package" else "-" + phase))
+        if (requested_scope is None or instance in closure) and (capture.exists() or capture.is_symlink()):
+            if not sdk_original_workflow_sha or not environment.get("GITHUB_TOKEN"):
+                raise ValueError("Prior JavaScript replay requires caller-pinned workflow authority and token")
+            from sdk_ios_binary_recovery import replay_prior_javascript_package
+            prior_records.extend(replay_prior_javascript_package(capture, discovery_root,
+                plan=plan, consumer_producer=consumer["producer"],
+                **({"phase": phase} if phase != "package" else {}),
+                trusted_workflow_sha=sdk_original_workflow_sha,
+                token=environment["GITHUB_TOKEN"], environ=environment))
     if requested_scope is not None:
         prior_records = [record for record in prior_records if _identity(record) in closure]
     initial_objects = []
@@ -8495,7 +8493,8 @@ def resume_products(
                 phase["product"] == "runtime" and phase["component"] in _RECOVERABLE_RUNTIME_COMPONENTS
                 or _identity(phase) in {PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"),
                     PhaseInstanceId("sdk", "javascript", "package", "node"),
-                    PhaseInstanceId("sdk", "javascript", "validation", "node")}) for phase in reuse["phases"])
+                    PhaseInstanceId("sdk", "javascript", "validation", "node"),
+                    PhaseInstanceId("sdk", "javascript", "metadata", "node")}) for phase in reuse["phases"])
             recovery_hints = {}
             if recoverable and completed_frozen is not None and not any(
                     phase["state"] == "build" and (phase["product"] == "runtime"
@@ -8506,7 +8505,8 @@ def resume_products(
                 # exact failed attempt and ordinary original bytes/conflicts.
                 recovery_hints = {"required_artifact_prefixes": (
                     "codex-agent-sdk-worker-javascript-package-node-",
-                    "codex-agent-sdk-worker-javascript-validation-node-"),
+                    "codex-agent-sdk-worker-javascript-validation-node-",
+                    "codex-agent-sdk-worker-javascript-metadata-node-"),
                     "artifact_inventory": paginated_items(
                         f"https://api.github.com/repos/{plan['repository']}/actions/artifacts",
                         "artifacts", environment["GITHUB_TOKEN"])}
@@ -8567,40 +8567,22 @@ def resume_products(
                         apple_package_origin=_apple_package_origin(captured_plan, root,
                             sdk_original_workflow_sha, environment), build_plan_consumer=retain,
                         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
-            javascript_package = PhaseInstanceId("sdk", "javascript", "package", "node")
-            javascript_misses = [phase for phase in reuse["phases"]
-                                 if _identity(phase) == javascript_package and phase["state"] == "build"]
-            if javascript_misses:
+            for phase in ("package", "validation", "metadata"):
+                instance = PhaseInstanceId("sdk", "javascript", phase, "node")
+                misses = [row for row in reuse["phases"]
+                          if _identity(row) == instance and row["state"] == "build"]
+                if not misses:
+                    continue
                 from sdk_ios_binary_recovery import capture_prior_javascript_package
-                javascript_records = capture_prior_javascript_package(plan,
-                    _consumer(plan, environment)["producer"], javascript_misses[0]["buildKey"],
-                    prepared / "prior-failed-sdk-javascript", prepared,
+                capture = prepared / ("prior-failed-sdk-javascript" + ("" if phase == "package" else "-" + phase))
+                records = capture_prior_javascript_package(plan,
+                    _consumer(plan, environment)["producer"], misses[0]["buildKey"], capture, prepared,
+                    **({"phase": phase} if phase != "package" else {}),
                     environ=environment, trusted_workflow_sha=sdk_original_workflow_sha,
                     token=environment["GITHUB_TOKEN"], attempts=attempts,
                     artifacts_by_run=artifacts_by_run, jobs_by_attempt=jobs_by_attempt)
-                prior_sdk_records.extend(javascript_records)
-                if javascript_records:
-                    wave["availableObjects"] = sorted(
-                        (*initial_objects, *prior_records, *prior_sdk_records), key=_identity)
-                    ready_plans.clear()
-                    reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling,
-                        apple_policy=sdk_apple_validation_policy, **semantic,
-                        apple_package_origin=_apple_package_origin(captured_plan, root,
-                            sdk_original_workflow_sha, environment), build_plan_consumer=retain,
-                        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
-            javascript_validation = PhaseInstanceId("sdk", "javascript", "validation", "node")
-            validation_misses = [phase for phase in reuse["phases"]
-                                 if _identity(phase) == javascript_validation and phase["state"] == "build"]
-            if validation_misses:
-                from sdk_ios_binary_recovery import capture_prior_javascript_package
-                validation_records = capture_prior_javascript_package(plan,
-                    _consumer(plan, environment)["producer"], validation_misses[0]["buildKey"],
-                    prepared / "prior-failed-sdk-javascript-validation", prepared, phase="validation",
-                    environ=environment, trusted_workflow_sha=sdk_original_workflow_sha,
-                    token=environment["GITHUB_TOKEN"], attempts=attempts,
-                    artifacts_by_run=artifacts_by_run, jobs_by_attempt=jobs_by_attempt)
-                prior_sdk_records.extend(validation_records)
-                if validation_records:
+                prior_sdk_records.extend(records)
+                if records:
                     wave["availableObjects"] = sorted(
                         (*initial_objects, *prior_records, *prior_sdk_records), key=_identity)
                     ready_plans.clear()
@@ -8650,8 +8632,7 @@ def resume_products(
             if instance in originals:
                 carrier_phases.append(originals[instance])
             elif instance in elected_prior:
-                sdk_capture_root = (("prior-failed-sdk-javascript-validation" if instance.phase == "validation"
-                                     else "prior-failed-sdk-javascript") if instance.component == "javascript"
+                sdk_capture_root = (("prior-failed-sdk-javascript" + ("" if instance.phase == "package" else "-" + instance.phase)) if instance.component == "javascript"
                                     else "prior-failed-sdk")
                 shard = (prepared / sdk_capture_root / instance.component / instance.phase /
                          instance.target / "original/shard" if instance.product == "sdk" else

@@ -1,4 +1,4 @@
-"""Recover original successful iOS binary/JS package transport, not semantic admission."""
+"""Recover original successful iOS binary/JS transport, not semantic admission."""
 
 from pathlib import Path
 import re
@@ -33,7 +33,7 @@ _JAVASCRIPT_RELATIVE = "javascript/package/node"
 
 
 def _javascript_instance(phase):
-    if phase not in {"package", "validation"}:
+    if phase not in {"package", "validation", "metadata"}:
         raise ValueError("Unsupported JavaScript original recovery phase")
     return PhaseInstanceId("sdk", "javascript", phase, "node")
 
@@ -95,7 +95,7 @@ def _capture_javascript_package(prior, artifact, destination, *, plan, consumer_
 def capture_prior_javascript_package(plan, consumer_producer, build_key, destination, artifact_root,
         *, trusted_workflow_sha, token, environ, attempts=None,
         artifacts_by_run=None, jobs_by_attempt=None, phase="package"):
-    """Recover an exact-key JS package/validation from successful original workers."""
+    """Recover an exact-key JS phase from successful original workers."""
     _javascript_instance(phase)
     require_no_signing_secret(environ)
     context = canonical_json_bytes({"plan": plan, "consumer": consumer_producer})

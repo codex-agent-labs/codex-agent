@@ -97,6 +97,36 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                 trusted_workflow_sha=PIN, repository_root=self.repository, environ=self.environment,
                 token="synthetic-token", sdk_javascript_only=family is None, sdk_family=family)
 
+    def test_truncated_matrix_display_preserves_full_key_and_ambiguity_gates(self):
+        for case in ("valid", "wrong-receipt-key", "wrong-display-key", "ambiguous"):
+            with self.subTest(case=case):
+                instance, ready, _, _, files = self.shard("metadata",
+                    wrong="key" if case == "wrong-receipt-key" else None)
+                with patch.object(adapter, "_verified_product_state", return_value=self.state({instance: ready})), \
+                        self.official_api({instance: ready}, {instance: archive(files)}) as (_, listing, _):
+                    original_listing = listing.side_effect
+                    def truncated(url, field, token):
+                        rows = original_listing(url, field, token)
+                        if field != "jobs":
+                            return rows
+                        jobs = [dict(row) for row in rows]
+                        key = "sha256:" + "f" * 64 if case == "wrong-display-key" else ready["buildKey"]
+                        jobs[-1]["name"] = f"{jobs[-1]['name']} ({key}, ..."[:118] + "..."
+                        if case == "ambiguous":
+                            jobs.append({**jobs[-1], "id": jobs[-1]["id"] + 1})
+                        return jobs
+                    listing.side_effect = truncated
+                    result = adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
+                        self.repository / ("collected-" + case), trusted_workflow_sha=PIN,
+                        repository_root=self.repository, environ=self.environment,
+                        token="synthetic-token", sdk_family="javascript-metadata")
+                row = result["rows"][0]
+                self.assertEqual("success" if case == "valid" else "failure", row["result"], row["reason"])
+                if case == "wrong-receipt-key":
+                    self.assertIn("elected plan and producer", row["reason"])
+                elif case != "valid":
+                    self.assertIn("missing or ambiguous", row["reason"])
+
     def test_retry_reuses_original_sibling_only_with_private_completed_collection(self):
         from products.inventory import write_canonical_json
         instance, ready, _, _, files = self.shard("package")

@@ -602,5 +602,16 @@ class JavascriptValidationRecoveryTest(JavascriptPackageRecoveryTest):
     javascript_phase = "validation"
 
 
+class JavascriptMetadataRecoveryTest(JavascriptPackageRecoveryTest):
+    """Recover the original metadata worker with GitHub's truncated display name."""
+    javascript_phase = "metadata"
+
+    @contextmanager
+    def gates(self):
+        with super().gates():
+            self.jobs[0]["name"] = self.jobs[0]["name"][:118] + "..."
+            yield
+
+
 if __name__ == "__main__":
     unittest.main()
