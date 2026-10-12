@@ -249,6 +249,7 @@ jobs:
       product_reuse_reason: ${{ steps.product-reuse.outputs.product_reuse_reason }}
       contract_reconciliation_required: ${{ steps.product-reuse.outputs.contract_reconciliation_required }}
       contract_next_phase: ${{ steps.product-reuse.outputs.contract_next_phase }}
+      native_contract_complete: ${{ steps.product-reuse.outputs.native_contract_complete }}
       tooling_required: ${{ steps.product-reuse.outputs.tooling_required }}
       tooling_miss: ${{ steps.product-reuse.outputs.tooling_miss }}
       tooling_artifact_id: ${{ steps.product-reuse.outputs.tooling_artifact_id }}
@@ -310,6 +311,10 @@ jobs:
         run: >-
           python3 ci/validation_reuse.py discover --plan build/ci/impact-plan.json
           --destination build/ci/reused-validation --github-output "$GITHUB_OUTPUT"
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        if: steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' && steps.validation-reuse.outputs.reused != 'true'
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - id: product-reuse
         if: steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' && steps.validation-reuse.outputs.reused != 'true'
         env:
@@ -318,15 +323,18 @@ jobs:
         run: |
           java_executable=$(readlink -f "$JAVA_HOME_17_X64/bin/java")
           test -f "$java_executable"
+          completion=()
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then completion=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
           python3 ci/product_reuse.py discover --plan build/ci/impact-plan.json \
             --destination build/product-reuse --handoff build/ci/product-reuse \
             --tooling-java-executable "$java_executable" \
             --tooling-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-            --github-output "$GITHUB_OUTPUT"
+            --github-output "$GITHUB_OUTPUT" ${completion[@]+"${completion[@]}"}
       - id: product-selection
         env:
           ORIGINAL_PRODUCT_MATRIX: ${{ steps.impact.outputs.product_matrix }}
           TOOLING_MISS: ${{ steps.product-reuse.outputs.tooling_miss }}
+          NATIVE_CONTRACT_COMPLETE: ${{ steps.product-reuse.outputs.native_contract_complete }}
           PRODUCT_FULL_REUSE: ${{ steps.product-reuse.outputs.full_reuse }}
           PRODUCT_TARGET_JOBS_REQUIRED: ${{ steps.product-reuse.outputs.target_jobs_required }}
           AUTHORIZED: ${{ steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' }}
@@ -337,6 +345,9 @@ jobs:
           miss = os.environ['TOOLING_MISS']
           if miss not in ('', 'true', 'false'):
               raise ValueError('Invalid tooling miss state')
+          native_contract = os.environ.get('NATIVE_CONTRACT_COMPLETE', '')
+          if native_contract not in ('', 'true', 'false'):
+              raise ValueError('Invalid native Contract completion state')
           full_reuse = os.environ['PRODUCT_FULL_REUSE']
           target_jobs = os.environ['PRODUCT_TARGET_JOBS_REQUIRED']
           if full_reuse not in ('', 'true', 'false') or target_jobs not in ('', 'true', 'false'):
@@ -352,6 +363,8 @@ jobs:
                   if miss == 'true' and not any(row['lane'] == 'contracts' for row in matrix):
                       matrix.insert(0, dict(lane='contracts', build=False, test=False, metadata=False))
           contracts = [row for row in matrix if row['lane'] == 'contracts']
+          if native_contract == 'true' and miss != 'true':
+              contracts = []
           if len(contracts) > 1:
               raise ValueError('Contract product lane is duplicated')
           matrix = [row for row in matrix if row['lane'] != 'contracts']
@@ -510,9 +523,10 @@ jobs:
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&
       github.event_name != 'workflow_dispatch' &&
-      needs.contract-validation.outputs.contract_continuation_result == 'success' &&
+      (needs.plan.outputs.native_contract_complete == 'true' ||
+      (needs.contract-validation.outputs.contract_continuation_result == 'success' &&
       needs.contract-validation.outputs.contract_complete == 'true' &&
-      needs.contract-validation.outputs.contract_attestation_result == 'success'
+      needs.contract-validation.outputs.contract_attestation_result == 'success'))
     needs: [plan, contract-validation]
     runs-on: ubuntu-24.04
     outputs:
@@ -572,21 +586,27 @@ jobs:
           RELEASE_CONTROL_SHA256: ${{ needs.contract-validation.outputs.contract_release_controls_digest }}
           TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
           GITHUB_TOKEN: ${{ github.token }}
+          NATIVE_CONTRACT_COMPLETE: ${{ needs.plan.outputs.native_contract_complete }}
         run: |
           controls=()
-          if [ -n "$STATE_CONTROL_ID" ]; then
+          if [ "$NATIVE_CONTRACT_COMPLETE" = true ]; then
             test -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}"
-            controls=(--state-control-id "$STATE_CONTROL_ID" --state-control-sha256 "$STATE_CONTROL_SHA256"
-              --release-control-id "$RELEASE_CONTROL_ID" --release-control-sha256 "$RELEASE_CONTROL_SHA256")
+            controls=(--native-contract --completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
+          else
+            controls=(--state-artifact-id "$STATE_ARTIFACT_ID" --state-artifact-sha256 "$STATE_ARTIFACT_SHA256"
+              --release-artifact-id "$RELEASE_ARTIFACT_ID" --release-artifact-sha256 "$RELEASE_ARTIFACT_SHA256"
+              --trusted-contract-workflow-path .github/workflows/contract-validation.yml
+              --trusted-contract-continuation-job "product-validation / contract-validation / contract-continuation")
+            if [ -n "$STATE_CONTROL_ID" ]; then
+              test -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}"
+              controls+=(--state-control-id "$STATE_CONTROL_ID" --state-control-sha256 "$STATE_CONTROL_SHA256"
+                --release-control-id "$RELEASE_CONTROL_ID" --release-control-sha256 "$RELEASE_CONTROL_SHA256")
+            fi
           fi
           python3 ci/product_reuse.py capture-product-resume-inputs \
             --plan build/product-resume-plan/impact-plan.json \
             --plan-artifact-id "$PLAN_ARTIFACT_ID" --plan-artifact-sha256 "$PLAN_ARTIFACT_SHA256" \
-            --state-artifact-id "$STATE_ARTIFACT_ID" --state-artifact-sha256 "$STATE_ARTIFACT_SHA256" \
-            --release-artifact-id "$RELEASE_ARTIFACT_ID" --release-artifact-sha256 "$RELEASE_ARTIFACT_SHA256" \
             --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-            --trusted-contract-workflow-path .github/workflows/contract-validation.yml \
-            --trusted-contract-continuation-job "product-validation / contract-validation / contract-continuation" \
             --destination build/product-resume-inputs ${controls[@]+"${controls[@]}"}
       - id: apple-policy
         if: needs.plan.outputs.tooling_required == 'true'
@@ -5456,6 +5476,7 @@ jobs:
           TOOLING_ARTIFACT_ID: ${{ needs.contract-validation.outputs.tooling_attestation_artifact_id }}
           TOOLING_ARTIFACT_SHA256: ${{ needs.contract-validation.outputs.tooling_attestation_artifact_sha256 }}
           CONTRACT_COMPLETE: ${{ needs.contract-validation.outputs.contract_complete }}
+          NATIVE_CONTRACT_COMPLETE: ${{ needs.plan.outputs.native_contract_complete }}
           CONTRACT_ATTESTATION_RESULT: ${{ needs.contract-validation.outputs.contract_attestation_result }}
           CONTRACT_ATTESTATION_ARTIFACT_ID: ${{ needs.contract-validation.outputs.contract_attestation_artifact_id }}
           CONTRACT_ATTESTATION_ARTIFACT_DIGEST: ${{ needs.contract-validation.outputs.contract_attestation_artifact_digest }}
@@ -5571,14 +5592,16 @@ jobs:
             [[ "$SDK_INPUTS_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
             [[ "$SDK_INPUTS_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           fi
-          if [ "$CONTRACT_COMPLETE" = true ]; then
+          if [ "$CONTRACT_COMPLETE" = true ] || [ "$NATIVE_CONTRACT_COMPLETE" = true ]; then
             if [[ "$RUNTIME_WAVE_FAILED" = *true* ]] || [ "$PRODUCT_FULL_REUSE" != true ]; then
               echo 'Product continuation is incomplete or a collected Runtime wave failed.' >&2
               exit 1
             fi
-            test "$CONTRACT_ATTESTATION_RESULT" = success
-            test -n "$CONTRACT_ATTESTATION_ARTIFACT_ID"
-            [[ "$CONTRACT_ATTESTATION_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+            if [ "$NATIVE_CONTRACT_COMPLETE" != true ]; then
+              test "$CONTRACT_ATTESTATION_RESULT" = success
+              test -n "$CONTRACT_ATTESTATION_ARTIFACT_ID"
+              [[ "$CONTRACT_ATTESTATION_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+            fi
             test "$PRODUCT_RESUME_RESULT" = success
             [[ "$PRODUCT_RESUME_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
             [[ "$PRODUCT_RESUME_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
