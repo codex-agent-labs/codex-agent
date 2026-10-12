@@ -8249,13 +8249,24 @@ def _capture_completed_contract_handoff(
             *({**record, "relativePath": f"contract-input/{record['relativePath']}"} for record in handoff_files),
         ), key=lambda record: record["relativePath"])
         phases = ("binary", "package", "validation", "metadata")
+        original_arguments = ({"original_run_id": original_run_id, "original_run_attempt": original_run_attempt}
+                              if original_run_id is not None or original_run_attempt is not None else {})
+        records, _ = _completed_contract_objects(plan, state, state,
+            os.environ if environ is None else environ, **original_arguments)
+        records = {record["phase"]: record for record in records}
         originals = {}
         for phase in phases:
-            originals[phase] = materialize_contract(
-                captured_plan, state, phase, private / phase, with_receipt=True,
-                repository_root=root, environ=environ,
-                **({"original_run_id": original_run_id, "original_run_attempt": original_run_attempt}
-                   if original_run_id is not None or original_run_attempt is not None else {}))
+            if phase in ("binary", "metadata"):
+                originals[phase] = materialize_contract(
+                    captured_plan, state, phase, private / phase, with_receipt=True,
+                    repository_root=root, environ=environ, **original_arguments)
+            else:
+                # These phases supply receipts only; verify their complete objects
+                # without extracting and publishing stages that nobody reads.
+                record = records[phase]
+                originals[phase] = verify_object(state / record["objectPath"],
+                    build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
+                    object_sha256=record["objectSha256"])
             raw = read_regular_file_bytes(handoff / f"execution-closure/receipts/{phase}.json",
                 max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
             if raw != originals[phase]["receiptBytes"]:

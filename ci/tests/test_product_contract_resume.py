@@ -361,7 +361,9 @@ class ContractProductResumeTest(unittest.TestCase):
             self.assertFalse((self.scratch / field).exists())
 
     def test_completed_original_contract_unlocks_real_runtime_plan_and_retains_signed_catalog(self):
-        resumed = self.resume(routing_output=True)
+        with mock.patch.object(adapter, "materialize_contract", wraps=adapter.materialize_contract) as materialize:
+            resumed = self.resume(routing_output=True)
+        self.assertEqual(["binary", "metadata"], [call.args[2] for call in materialize.call_args_list])
         request = load_canonical_json(resumed / "reuse-wave-request.json")
         result = load_canonical_json(resumed / "reuse-wave-result.json")
         self.assertFalse(result["fullReuse"])
@@ -387,6 +389,22 @@ class ContractProductResumeTest(unittest.TestCase):
                                 ("publicKey", "public-key.pub")):
             self.assertEqual((self.discovery / "catalog" / basename).read_bytes(),
                              (resumed / request["catalogs"]["samePr"][field]).read_bytes())
+
+    def test_receipt_only_contract_phases_still_reject_corrupt_original_objects(self):
+        for phase in ("package", "validation"):
+            state = self.scratch / phase / "state"
+            shutil.copytree(self.state, state)
+            with self.control_seams():
+                records, _ = adapter._completed_contract_objects(
+                    self.plan, state, state, self.environment)
+                record = next(row for row in records if row["phase"] == phase)
+                with (state / record["objectPath"]).open("ab") as changed:
+                    changed.write(b"corrupt original")
+                destination = self.scratch / phase / "handoff"
+                with self.subTest(phase=phase), self.assertRaises(ValueError):
+                    adapter._capture_completed_contract_handoff(self.plan_path, state, self.handoff,
+                        destination, repository_root=self.repository, environ=self.environment)
+            self.assertFalse(destination.exists())
 
     def test_later_continuation_replays_captured_inputs_without_original_discovery_or_handoff(self):
         resumed = self.resume()
