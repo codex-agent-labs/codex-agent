@@ -291,13 +291,31 @@ def completed_descriptor(raw, value):
     return document
 
 
+def completed_sdk_spec(root, document, value):
+    """Resolve the retained source through the approved native issuer's fixed parent."""
+    from products.inventory import git_regular_blob_bytes, load_canonical_json_bytes
+    spec = load_canonical_json_bytes(git_regular_blob_bytes(root,
+        document["policy"]["sdkCompletion"]["signerCommit"], "ci/tests/data/sdk-completed-resume.json", max_bytes=16 * 1024 * 1024))
+    count = 1
+    if spec.get("schemaVersion") == 2:
+        from completed_sdk_reuse import _spec
+        _spec(spec)
+        if any(spec["parent"][field] not in value["approvedVerifiers"] for field in ("signerCommit", "sourceCommit")):
+            raise ValueError("Incremental native parent is not independently approved")
+        count += len(spec["completedPhases"])
+        spec = load_canonical_json_bytes(git_regular_blob_bytes(root,
+            spec["parent"]["signerCommit"], "ci/tests/data/sdk-completed-resume.json", max_bytes=16 * 1024 * 1024))
+    if type(spec.get("schemaVersion")) is not int or spec["schemaVersion"] != 1:
+        raise ValueError("Completed reuse requires the fixed original native SDK source")
+    return spec, count
+
+
 def completed_environment(root, work, value):
     from products.inventory import canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes
     raw = authority.contents(".reuse/completed-reuse.json", value["authorityCommit"])
     document = completed_descriptor(raw, value)
     acquired = [history(root, record) for record in document["gitHistory"]]
-    spec = load_canonical_json_bytes(git_regular_blob_bytes(root,
-        document["policy"]["sdkCompletion"]["signerCommit"], "ci/tests/data/sdk-completed-resume.json", max_bytes=16 * 1024 * 1024))
+    spec, _ = completed_sdk_spec(root, document, value)
     if document["retainedSdkInputsSource"] != spec["sdkInputs"]["source"]:
         raise ValueError("Approved SDK source pin differs from the native issuer's fixed source")
     # This only distributes caller-owned pins. Each actual CLI independently
@@ -332,7 +350,8 @@ def verify_completed(root, work, value, token):
         sdk_completion=policy["sdkCompletion"], repository_root=root,
         revision=git(root, "rev-parse", "HEAD").decode().strip(), token=token,
         **qualification._native_pin_arguments(pins))
-    if report["completedFrozenPhases"] != 50 or report["completedSdkPhases"] != 1 or report["productBodiesDownloaded"] != 0:
+    _, expected_sdk = completed_sdk_spec(root, document, value)
+    if report["completedFrozenPhases"] != 50 or report["completedSdkPhases"] != expected_sdk or report["productBodiesDownloaded"] != 0:
         raise ValueError("Completed reuse verifier differs from its exact retained coverage")
     return {"kind": "completed-reuse-verification", "approvedConsumerCommit": value["activeVerifier"],
             "nativeCompletion": report, "selectedProductPhases": 0}
