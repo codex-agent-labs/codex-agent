@@ -35,6 +35,8 @@ on:
     outputs:
       artifact_id:
         value: ${{ jobs.sdk-android-metadata-result.outputs.artifact_id }}
+      routing:
+        value: ${{ jobs.sdk-android-metadata-result.outputs.routing }}
       artifact_digest:
         value: ${{ jobs.sdk-android-metadata-result.outputs.artifact_digest }}
       state_wave:
@@ -45,6 +47,10 @@ on:
 permissions:
   actions: read
   contents: read
+
+env:
+  CODEX_AGENT_THROUGHPUT_TRACE: '1'
+  CODEX_AGENT_PLAN_CONTROL_ID: ${{ fromJSON(inputs.planOutputs).plan_control_id }}
 
 jobs:
   sdk-android-metadata:
@@ -126,6 +132,7 @@ jobs:
         name: Re-elect original Android validation from wave 16
         uses: ./.github/actions/capture-runtime-state
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: android-validation
           plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
@@ -241,6 +248,8 @@ jobs:
           set -euo pipefail
           policy=()
           if [ -n "$APPLE_POLICY" ]; then policy+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
+          reuse=()
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
           python3 -B -m ci.sdk_workflow capture \
             --plan build/runtime-plan/impact-plan.json \
             --destination build/runtime-input-wave17 \
@@ -249,7 +258,7 @@ jobs:
             --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
             --family android-metadata --sdk-validation-tooling "$SDK_TOOLING" \
             --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
-            ${policy[@]+"${policy[@]}"}
+            ${policy[@]+"${policy[@]}"} ${reuse[@]+"${reuse[@]}"}
       - id: validation-handoff
         name: Recover the elected original Android validation upload
         shell: bash
@@ -337,6 +346,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
     steps:
@@ -365,6 +375,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: android-metadata
           plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
@@ -391,6 +402,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
+      routing: ${{ steps.result.outputs.routing }}
       artifact_digest: ${{ steps.result.outputs.artifact_digest }}
       state_wave: ${{ steps.result.outputs.state_wave }}
       sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}

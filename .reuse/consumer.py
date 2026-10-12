@@ -243,6 +243,101 @@ def qualification_environment(work, result, body_root):
             "CODEX_AGENT_REUSE_QUALIFICATION_SOURCE": result["originalSourceCommit"]}
 
 
+def completed_descriptor(raw, value):
+    """Owner policy selects separate semantic authority; never relabel body qualification."""
+    from products.inventory import load_canonical_json_bytes, require_exact_keys, canonical_json_bytes
+    from runtime_reference_transport import validate_sdk_input_source
+    document = load_canonical_json_bytes(raw)
+    require_exact_keys(document, {"schemaVersion", "policy", "retainedSdkInputsSource", "gitHistory"},
+                       "Protected completed-reuse descriptor")
+    if type(document["schemaVersion"]) is not int or document["schemaVersion"] != 1:
+        raise ValueError("Unsupported protected completed reuse descriptor")
+    policy = document["policy"]
+    require_exact_keys(policy, {"schemaVersion", "kind", "consumerCommit", "verifierPolicySha256",
+        "artifactId", "artifactSha256", "runId", "runAttempt", "signerCommit", "sourceCommit", "sdkCompletion"},
+        "Protected completed reuse policy")
+    if (type(policy["schemaVersion"]) is not int or policy["schemaVersion"] != 1
+            or policy["kind"] != "completed-frozen-reuse"
+            or policy["consumerCommit"] != value["activeVerifier"]):
+        raise ValueError("Completed reuse policy differs from active approved consumer")
+    authority.digest(policy["verifierPolicySha256"])
+    if len(canonical_json_bytes(policy)) > 4096:
+        raise ValueError("Completed reuse policy exceeds consumer bound")
+    import reuse_qualification as qualification
+    qualification._native_pin_arguments(policy["sdkCompletion"])
+    for pins in (policy, policy["sdkCompletion"]):
+        authority.digest(pins["artifactSha256"])
+        for key in ("artifactId", "runId", "runAttempt"):
+            if type(pins[key]) is not int or pins[key] <= 0:
+                raise ValueError("Completed native locator is not a positive exact identity")
+        for key in ("signerCommit", "sourceCommit"):
+            if authority.commit(pins[key]) not in value["approvedVerifiers"]:
+                raise ValueError("Completed reuse issuer/source is not independently approved")
+    original = [row for row in value["qualifications"] if row["artifactId"] == policy["artifactId"]]
+    if len(original) != 1 or any(original[0][field] != policy[field] for field in
+            ("artifactId", "artifactSha256", "runId", "runAttempt")) or original[0]["issuerSha"] != policy["signerCommit"]:
+        raise ValueError("Completed frozen proof differs from preserved qualification identity")
+    validate_sdk_input_source(document["retainedSdkInputsSource"])
+    records = document["gitHistory"]
+    if not isinstance(records, list) or not 1 <= len(records) <= 8:
+        raise ValueError("Completed reuse Git history is missing or excessive")
+    seen = set()
+    for record in records:
+        require_exact_keys(record, {"repository", "commit", "tree"}, "Approved original Git identity")
+        if record["repository"] != authority.REPOSITORY or authority.commit(record["commit"]) in seen:
+            raise ValueError("Conflicting completed reuse Git history")
+        authority.commit(record["tree"])
+        seen.add(record["commit"])
+    return document
+
+
+def completed_environment(root, work, value):
+    from products.inventory import canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes
+    raw = authority.contents(".reuse/completed-reuse.json", value["authorityCommit"])
+    document = completed_descriptor(raw, value)
+    acquired = [history(root, record) for record in document["gitHistory"]]
+    spec = load_canonical_json_bytes(git_regular_blob_bytes(root,
+        document["policy"]["sdkCompletion"]["signerCommit"], "ci/tests/data/sdk-completed-resume.json"))
+    if document["retainedSdkInputsSource"] != spec["sdkInputs"]["source"]:
+        raise ValueError("Approved SDK source pin differs from the native issuer's fixed source")
+    # This only distributes caller-owned pins. Each actual CLI independently
+    # acquires native proof and checks current inputs before any completed reuse.
+    paths = {}
+    for name, field in (("completed-reuse-policy.json", "policy"),
+                        ("retained-sdk-inputs-source.json", "retainedSdkInputsSource")):
+        path = work / name
+        with path.open("xb") as output:
+            output.write(canonical_json_bytes(document[field]))
+        paths[field] = str(path)
+    if authority.contents(".reuse/completed-reuse.json", value["authorityCommit"]) != raw:
+        raise ValueError("Approved completed reuse descriptor changed during provisioning")
+    result = {"kind": "completed-reuse-policy", "authorityCommit": value["authorityCommit"],
+              "approvedConsumerCommit": value["activeVerifier"],
+              "descriptorSha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+              "originalGit": acquired, "productArtifactDownloads": 0,
+              "nativeAuthentication": "required by each explicit consumer"}
+    return result, {"CODEX_AGENT_COMPLETED_REUSE_POLICY": paths["policy"],
+                    "CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE": paths["retainedSdkInputsSource"]}
+
+
+def verify_completed(root, work, value, token):
+    """Freshly verify semantic completion authority; no body-replay/projection claim."""
+    import reuse_qualification as qualification
+    from products.inventory import load_canonical_json_bytes
+    document = completed_descriptor(authority.contents(".reuse/completed-reuse.json", value["authorityCommit"]), value)
+    policy = document["policy"]
+    pins = {key: policy[key] for key in ("artifactId", "artifactSha256", "runId", "runAttempt", "signerCommit", "sourceCommit")}
+    cap, report = qualification.fetch_completed_frozen(work / "verification-authority",
+        consumer_commit=value["activeVerifier"], verifier_policy_sha256=policy["verifierPolicySha256"],
+        sdk_completion=policy["sdkCompletion"], repository_root=root,
+        revision=git(root, "rev-parse", "HEAD").decode().strip(), token=token,
+        **qualification._native_pin_arguments(pins))
+    if report["completedFrozenPhases"] != 50 or report["completedSdkPhases"] != 1 or report["productBodiesDownloaded"] != 0:
+        raise ValueError("Completed reuse verifier differs from its exact retained coverage")
+    return {"kind": "completed-reuse-verification", "approvedConsumerCommit": value["activeVerifier"],
+            "nativeCompletion": report, "selectedProductPhases": 0}
+
+
 def main():
     started = time.perf_counter()
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -264,13 +359,21 @@ def main():
         reuse_qualification._compatible_verifier(value["activeVerifier"])
         token = os.environ.get("GITHUB_TOKEN", "")
         if args.operation == "restore":
-            result = restore(root, work, value, args.artifact_id, token)
-            environment = qualification_environment(work, result, work / "hydrated-evidence")
+            if args.artifact_id is None:
+                if any(os.environ.get(name) for name in ("REQUESTED_ARTIFACT_SHA", "REQUESTED_RUN",
+                        "REQUESTED_ATTEMPT", "REQUESTED_ISSUER", "REQUESTED_SOURCE")):
+                    raise ValueError("Original qualification assertions require an explicit artifact selector")
+                result, environment = completed_environment(root, work, value)
+            else:
+                result = restore(root, work, value, args.artifact_id, token)
+                environment = qualification_environment(work, result, work / "hydrated-evidence")
             with Path(os.environ["GITHUB_ENV"]).open("a") as output:
                 for name, item in environment.items():
                     if "\n" in item or "\r" in item:
                         raise ValueError("Invalid runner environment value")
                     output.write(name + "=" + item + "\n")
+        elif args.artifact_id is None:
+            result = verify_completed(root, work, value, token)
         else:
             # A later process freshly reobserves the qualification producer too;
             # private files or environment values are never a portable witness.

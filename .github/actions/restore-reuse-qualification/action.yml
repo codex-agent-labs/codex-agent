@@ -1,5 +1,5 @@
-name: Restore through owner-approved unchanged verification
-description: Resolve fresh owner-only authority before native original authentication; caches remain content-only.
+name: Provision owner-approved reuse verification
+description: Resolve fresh owner-only caller pins; consumers authenticate native completion before reuse.
 inputs:
   authority-read-token:
     required: true
@@ -41,7 +41,7 @@ runs:
         source_root=$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)
         python3 -B "$source_root/.reuse/consumer.py" setup --repository-root "$GITHUB_WORKSPACE" --work "$RUNNER_TEMP/approved-reuse"
         bash "$GITHUB_WORKSPACE/.github/actions/restore-reuse-qualification/install-gh.sh"
-    - name: Fresh original native admission under the approved verifier
+    - name: Provision independent completion pins or authenticate an explicitly selected body qualification
       if: steps.native.outputs.supported == 'true'
       shell: bash
       env:

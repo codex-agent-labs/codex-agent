@@ -183,6 +183,9 @@ jobs:
           selected=()
           if [ -n "$SDK_VALIDATION_TOOLING" ]; then selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
           if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+          reuse=()
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
+          if [ -n "${CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE:-}" ]; then reuse+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE"); fi
           python3 -B -m ci.sdk_native_prepared_receiver \
             --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
             --preparation-state-root "$STATE" \
@@ -198,7 +201,7 @@ jobs:
             --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
             --keyring "$PWD/gradle/release/product-signing-keys.json" \
             --keys-directory "$PWD/gradle/release/keys" \
-            --repository-root "$PWD" ${selected[@]+"${selected[@]}"}
+            --repository-root "$PWD" ${selected[@]+"${selected[@]}"} ${reuse[@]+"${reuse[@]}"}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
@@ -399,6 +402,8 @@ jobs:
           selected=()
           if [ -n "$SDK_VALIDATION_TOOLING" ]; then selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
           if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then selected+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
+          if [ -n "${CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE:-}" ]; then selected+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE"); fi
           python3 -B -m ci.sdk_csharp_binary_workflow stage-original \
             --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
             --destination "$PWD/build/sdk-native-csharp-original" \
