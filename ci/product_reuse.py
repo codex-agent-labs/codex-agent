@@ -5277,6 +5277,18 @@ def _capture_runtime_contract(root, evidence, original, one_output, prepared, tr
         raise ValueError("Runtime worker Contract closure changed during capture")
     expected_files.extend({**record, "relativePath": f"execution-closure/{record['relativePath']}"}
                           for record in closure_files)
+    if (closure_source.parent / "contract-manifest.json").exists():
+        # Routing defers this body. Consumption uses the already authenticated
+        # binary predecessor and still verifies the complete signed closure below.
+        binary = original("contract", "contract", "binary", "common")
+        execution = one_output(binary, "contract-execution")
+        record = next(row for row in binary["receipt"]["outputs"]
+                      if row["relativePath"] == execution.relative_to(binary["stage"]).as_posix())
+        target = handoff / "execution-closure/execution/contract-execution.zip"
+        from runtime_reference_transport import _copy_exact
+        _copy_exact(execution, target, record)
+        expected_files.append({"relativePath": target.relative_to(handoff).as_posix(),
+                               "bytes": record["bytes"], "sha256": record["sha256"]})
     for phase in ("binary", "package", "validation", "metadata"):
         retained = original("contract", "contract", phase, "common")["receiptPath"]
         if read_regular_file_bytes(retained) != read_regular_file_bytes(

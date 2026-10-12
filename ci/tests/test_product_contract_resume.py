@@ -256,6 +256,19 @@ class ContractProductResumeTest(unittest.TestCase):
                 remote_members.append(name)
             return copy_reference_member(archive, name, destination, row)
         records, _ = adapter._completed_contract_objects(self.plan, self.state, self.state, self.environment)
+        from runtime_reference_transport import selected_reference_paths
+        references = [{'relativePath': 'product-resume-state/' + row['objectPath'],
+                       'bytes': 1, 'sha256': row['objectSha256']} for row in records]
+        transport = {'inventory': references, 'references': references}
+        self.assertEqual({row['relativePath'] for row in references},
+                         selected_reference_paths(transport, completed_frozen=cap))
+        marker = {'relativePath': 'product-resume-state/authenticated-contract/contract-input/contract-manifest.json',
+                  'bytes': 1, 'sha256': 'sha256:' + 'e' * 64}
+        transport['inventory'] = [*references, marker]
+        self.assertEqual({marker['relativePath']}, selected_reference_paths(transport, completed_frozen=cap))
+        transport['references'] = references[1:]
+        self.assertEqual({marker['relativePath'], references[0]['relativePath']},
+                         selected_reference_paths(transport, completed_frozen=cap))
         with mock.patch.object(adapter, '_authenticate_runtime_original_reference_source', return_value=(
                 {'id': 71}, None, [{'jobs': [{'name': 'product-validation / runtime-contract-binary-common'}]}], 'a' * 40)), \
                 mock.patch.object(adapter, '_runtime_original_locator', return_value=native['locator']), \
@@ -269,6 +282,31 @@ class ContractProductResumeTest(unittest.TestCase):
                     trusted_workflow_sha='a' * 40, token='fixture')
                 self.assertEqual((self.state / row['objectPath']).read_bytes(), target.read_bytes())
             self.assertEqual(3, len(remote_members))
+            # Exercise the shared worker boundary, where the deferred execution
+            # archive must rejoin the original signed closure before C# can run.
+            from types import SimpleNamespace
+            release = self.scratch / 'release-controls'
+            adapter.prepare_contract_release_controls(self.handoff, release)
+            small = release / 'contract-input'
+            evidence = {'attestation': small / 'codex-agent-contract-0.2.0.attestation.json',
+                'attestationSignature': small / 'codex-agent-contract-0.2.0.attestation.sig',
+                'publicKey': small / 'public-key.pub'}
+            def original(product, component, phase, target):
+                self.assertEqual(('contract', 'contract', 'common'), (product, component, target))
+                return {'stage': self.original / (phase + '-stage'), 'receiptPath': self.receipts[phase],
+                        'receipt': load_canonical_json(self.receipts[phase])}
+            def one_output(value, kind):
+                outputs = [row for row in value['receipt']['outputs'] if row['kind'] == kind]
+                self.assertEqual(1, len(outputs))
+                return value['stage'] / outputs[0]['relativePath']
+            prepared = self.scratch / 'worker-inputs'
+            prepared.mkdir()
+            trust = SimpleNamespace(keyring=self.repository / 'gradle/release/product-signing-keys.json',
+                                    keys=self.repository / 'gradle/release/keys')
+            _, _, handoff, _, inventory = adapter._capture_runtime_contract(
+                self.repository, evidence, original, one_output, prepared, trust)
+            self.assertEqual(regular_file_inventory(self.handoff), inventory)
+            self.assertEqual(inventory, regular_file_inventory(handoff))
             cached = next((self.scratch / 'body-cache').iterdir())
             cached.write_bytes(b'corrupt')
             with self.assertRaises(ValueError):
